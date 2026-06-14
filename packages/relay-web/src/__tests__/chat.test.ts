@@ -250,3 +250,38 @@ test("PromptInput disables its textarea when busy", () => {
   const wrapper = mount(PromptInput, { props: { busy: true } });
   expect((wrapper.find("textarea").element as HTMLTextAreaElement).disabled).toBe(true);
 });
+
+test("a finished turn on an unviewed session becomes unread, and select clears it", () => {
+  const store = useChatStore();
+  store.select("i1", "backend"); // viewing backend, not frontend
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("unread");
+  expect(store.sessionAttention("i1", "backend")).toBe("idle"); // viewed → no unread
+  store.select("i1", "frontend");
+  expect(store.sessionAttention("i1", "frontend")).toBe("idle");
+});
+
+test("working (a live turn) outranks unread", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("unread");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "frontend" } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("working");
+});
+
+test("an instance going offline clears its unread signals", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("unread");
+  store.applyEvent({ kind: "instance-status", instanceId: "i1", online: false } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("idle");
+});
+
+test("a cancelled turn on an unviewed session does NOT mark unread", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: false, cancelled: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("idle");
+});

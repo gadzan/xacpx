@@ -25,7 +25,7 @@ defineProps<{ messages: ChatMessage[]; streaming: string; liveTurn: LiveTurn | n
     <div v-if="streaming || liveTurn?.toolSteps.length || liveTurn?.reasoning" class="flex justify-start">
       <div data-test="msg-streaming" class="max-w-[80%] rounded-lg bg-slate-100 px-3 py-2 opacity-90">
         <ToolCallPanel v-if="liveTurn?.toolSteps.length" :steps="liveTurn.toolSteps" />
-        <ReasoningPanel v-if="liveTurn?.reasoning" :reasoning="liveTurn.reasoning" />
+        <ReasoningPanel v-if="liveTurn?.reasoning" :reasoning="liveTurn.reasoning" :streaming="true" />
         <StreamMarkdown v-if="streaming" :text="streaming" :streaming="true" />
       </div>
     </div>

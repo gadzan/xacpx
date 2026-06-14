@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useInstancesStore } from "../stores/instances";
+import { useChatStore } from "../stores/chat";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 
 const store = useInstancesStore();
+const chat = useChatStore();
 const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
 const dialogFor = ref<{ id: string; name: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
@@ -28,7 +30,11 @@ function remove(id: string, alias: string) {
         <li v-for="s in inst.sessions" :key="s.alias" class="flex items-center justify-between pr-2">
           <button class="flex flex-1 items-center gap-2 px-6 py-1 text-left text-sm hover:bg-slate-50"
                   @click="emit('select', inst.id, s.alias)">
-            <span v-if="s.running" class="text-amber-500">●</span>
+            <span v-if="chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
+                  class="text-amber-500 animate-pulse">●</span>
+            <span v-else-if="chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
+                  class="text-sky-500">●</span>
+            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="text-amber-500">●</span>
             {{ s.alias }} <span class="text-slate-400">({{ s.agent }})</span>
           </button>
           <button data-test="delete-session" class="text-xs text-red-400 hover:underline" @click.stop="remove(inst.id, s.alias)">delete</button>
