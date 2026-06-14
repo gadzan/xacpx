@@ -9,12 +9,23 @@ const diffLines = computed(() => {
   if (props.detail.type !== "diff") return { del: [] as string[], add: [] as string[] };
   return { del: props.detail.oldText.split("\n"), add: props.detail.newText.split("\n") };
 });
+// Non-empty changed-line counts for the +N/−N stat badges.
+const diffStats = computed(() => ({
+  add: diffLines.value.add.filter((l) => l.length > 0).length,
+  del: diffLines.value.del.filter((l) => l.length > 0).length,
+}));
 </script>
 
 <template>
   <div class="mt-1 space-y-1 text-xs">
     <template v-if="detail.type === 'diff'">
-      <div class="font-mono text-slate-500">📄 {{ detail.path }}</div>
+      <div class="flex items-center gap-2 font-mono text-slate-500">
+        <span>📄 {{ detail.path }}</span>
+        <span data-test="diff-stats" class="ml-auto flex items-center gap-1 text-[10px]">
+          <span v-if="diffStats.add" class="rounded bg-green-100 px-1 text-green-700">+{{ diffStats.add }}</span>
+          <span v-if="diffStats.del" class="rounded bg-red-100 px-1 text-red-700">−{{ diffStats.del }}</span>
+        </span>
+      </div>
       <div class="overflow-x-auto rounded bg-slate-50 p-2 font-mono">
         <div v-for="(l, i) in diffLines.del" :key="'d' + i" data-test="diff-del" class="whitespace-pre text-red-600">- {{ l }}</div>
         <div v-for="(l, i) in diffLines.add" :key="'a' + i" data-test="diff-add" class="whitespace-pre text-green-600">+ {{ l }}</div>

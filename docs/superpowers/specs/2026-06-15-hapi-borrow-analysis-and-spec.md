@@ -77,6 +77,31 @@ HAPI 与 xacpx 强同域：本地包裹 AI coding agent（Claude Code / Codex / 
 - **doctor 增项**：HAPI doctor 反而缺 acpx 解析/版本检查（xacpx 已有）；无新增可借。
 - **terminal/files（H）**：契合 relay 拓扑但需 connector 侧 PTY/fs + realpath 容器化安全模型（HAPI 自身实现 fail-open 且可绕过，**不可照抄**）。大型独立项目。
 
+## 5b. Pass 2 — 交互设计扩展（第一轮过于保守，补做）
+
+第一轮只取了 4 项偏"展示"的借鉴；经第二份**穷尽式交互设计内参**（hapi web 的 composer/thread/optimistic/transient/navigation/micro-interaction/density/markdown 九大 surface 全量枚举）复盘，补做以下**纯前端、可预览**的交互设计借鉴：
+
+| 借鉴点 | hapi 出处 | 落地 |
+|---|---|---|
+| **Composer slash 自动补全 popover** + 键位优先级阶梯 | `HappyComposer.tsx:405-498` 1.1/1.2（被内参称为"用户觉得欠缺的中心项"） | `lib/command-catalog.ts`（curated 静态目录，后续可 RPC 驱动）+ `PromptInput.vue`：`/`前缀建议、↑↓选择、Tab/Enter 补全、点击补全 |
+| **Esc 优先级**（先关 popover，再停 turn） | 1.2 #5/#6 | Esc：有 popover→先关；否则 busy→cancel |
+| **IME 合成保护**（CJK 关键修正） | 1.2 #1 | `e.isComposing` 时不拦截——中文回车确认候选不误发 |
+| **Send/Stop 按钮形变** + busy 时仍可输入 | 1.4 / 1.5 | 显式 Send；busy→Stop（emit cancel）；textarea busy 时不禁用（可预编排 + Esc 停） |
+| **↑/↓ 历史回溯**（shell 式） | 1.2 | 光标在行首时 ↑ 召回上一条已发送 |
+| **每会话草稿持久化** | 1.9 | `lib/composer-drafts.ts`（sessionStorage，按 instance+session key），切会话/刷新保留半成稿 |
+| **粘到底部 + "↓ Latest" 浮标** | 2.1 / auto-scroll | `MessageList.vue`：在底部才跟随；滚上去出现跳转浮标 |
+| **复制按钮**（消息 hover + execCommand 兜底） | 6.4 | `CopyButton.vue`，agent 消息悬浮显示 |
+| **Diff +N/−N 统计徽标** | 8.8 | `ToolDetail.vue` diff 头部统计 |
+| **循环"工作中"近义词**（vibing words） | 2a | `ChatPane.vue`（与未合并 PR #34 同源，本批次内联以保预览完整） |
+
+**仍 deferred（带 effort/原因，源自穷尽内参；多数需后端/协议或属大型独立项）**：
+- 需后端/协议：optimistic 消息生命周期（queued bar / 状态徽标 / 取消·编辑·重试，需 localId 回显 + `messages-consumed`/`message-cancelled` SSE，surface 3）、附件粘贴上传（1.6）、通知点击 deep-link `data.url`（5.4）、schedule-send UI（1.11，xacpx 有 /later 后端）。
+- 大型纯前端独立项：暗色主题 + 通用 `usePersistedPref` 偏好体系（7.\*，M/L 跨切面）、Shiki 语法高亮 + CodeBlock 折叠（8.1/8.2）、tap-to-expand-dialog 详情弹层（6.1）、会话大纲跳转 + 滚动锚点保持（2.2/2.4）、长按上下文菜单（6.5）、图片查看器（6.7）。
+- 小项后续：transient 三横幅（offline/syncing/reconnecting，4.1）+ syncing 状态机（4.2）、骨架屏（2.3）、空状态双 CTA（4.4）、live per-tool elapsed timer（6.2）、TodoWrite/plan checklist（8.9，依赖数据）、settings popover（1.7，依赖 model/effort 是否暴露）、haptics（1.10）、Shift+Tab 权限模式循环（1.3，依赖权限模式 UI）。
+- 两个"移植时要修正、别照抄"：空状态要 gate 在 `!isLoading`（hapi 加载中也显示空态）；SW 通知点击加 `clients.matchAll`+focus 防重复开标签。
+
+完整九大 surface 穷尽枚举见本次第二份 subagent 内参（含每项 file:line / 概念vs字面移植 / effort / 是否需后端）。
+
 ## 6. 验收
 
 - `bun run --cwd packages/relay-web test` 全绿（新增各 feature 的 vitest）。

@@ -14,6 +14,13 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("const a = 2");
   });
 
+  it("shows +N/−N stat badges for a diff", () => {
+    const w = render({ type: "diff", path: "src/x.ts", oldText: "a\nb", newText: "a\nb\nc\nd" });
+    const stats = w.find('[data-test="diff-stats"]').text();
+    expect(stats).toContain("+4"); // 4 non-empty added lines
+    expect(stats).toContain("−2"); // 2 non-empty removed lines
+  });
+
   it("renders a command with a terminal output block and exit code", () => {
     const w = render({ type: "command", command: "npm test", output: "12 passed", exitCode: 0 });
     expect(w.find('[data-test="cmd-command"]').text()).toContain("npm test");
