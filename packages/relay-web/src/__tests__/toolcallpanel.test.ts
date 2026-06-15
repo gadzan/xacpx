@@ -31,8 +31,9 @@ describe("ToolCallPanel", () => {
   it("marks a running step distinctly from a successful one", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     const rows = w.findAll('[data-test="tool-row"]');
-    expect(rows[0].text()).toContain("✅");
-    expect(rows[1].text()).toContain("⏳");
+    // Success → Check icon; running → spinning Loader2 icon (Lucide replaces the old emoji glyphs).
+    expect(rows[0].find('[data-test="step-status-success"]').exists()).toBe(true);
+    expect(rows[1].find('[data-test="step-status-running"]').exists()).toBe(true);
   });
 
   it("renders a kind/status summary in the header", () => {

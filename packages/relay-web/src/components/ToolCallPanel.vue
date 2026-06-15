@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
 import FueDot from "./FueDot.vue";
 import FueCallout from "./FueCallout.vue";
 import { useFue } from "../lib/use-fue";
 import type { Rect } from "../lib/fue-placement";
-import { AUTO_COLLAPSE_THRESHOLD, KIND_ICON, STATUS_ICON, summarizeSteps } from "../lib/tool-summary";
+import { AUTO_COLLAPSE_THRESHOLD, KIND_ICON, summarizeSteps } from "../lib/tool-summary";
 
 const props = defineProps<{ steps: ToolStepDto[] }>();
 
@@ -44,15 +45,16 @@ function fmtDuration(ms?: number): string {
 </script>
 
 <template>
-  <div class="mt-1 rounded border border-slate-200 text-xs">
-    <button ref="header" type="button" class="flex w-full items-center gap-1 px-2 py-1 text-left text-slate-600" @click="onHeaderClick">
-      <span>{{ open ? "▾" : "▸" }}</span>
-      <span>🔧 Tool calls</span>
+  <div class="mt-1 rounded-lg border border-border bg-surface text-xs">
+    <button ref="header" type="button" class="flex w-full items-center gap-1 px-2 py-1 text-left text-fg-muted" @click="onHeaderClick">
+      <ChevronDown v-if="open" :size="14" />
+      <ChevronRight v-else :size="14" />
+      <span class="inline-flex items-center gap-1"><Wrench :size="14" /> Tool calls</span>
       <FueDot v-if="showFueDot" :pulsing="fue.status.value === 'unseen'" />
-      <span v-else data-test="tool-count" class="text-slate-400">({{ steps.length }})</span>
-      <span data-test="tool-summary" class="ml-1 flex items-center gap-1 text-slate-400">
+      <span v-else data-test="tool-count" class="text-fg-muted">({{ steps.length }})</span>
+      <span data-test="tool-summary" class="ml-1 flex items-center gap-1 text-fg-muted">
         <span v-for="k in summary.kinds" :key="'k' + k.icon">{{ k.icon }}{{ k.count }}</span>
-        <span v-if="summary.statuses.length" class="text-slate-300">·</span>
+        <span v-if="summary.statuses.length" class="text-fg-muted">·</span>
         <span v-for="st in summary.statuses" :key="'s' + st.icon">{{ st.icon }}{{ st.count }}</span>
       </span>
     </button>
@@ -63,13 +65,15 @@ function fmtDuration(ms?: number): string {
       :anchor="anchor"
       @dismiss="fue.dismiss()"
     />
-    <ul v-if="open" class="divide-y divide-slate-100">
+    <ul v-if="open" class="divide-y divide-border">
       <li v-for="s in steps" :key="s.toolCallId">
-        <button type="button" data-test="tool-row" class="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-slate-50" @click="toggleRow(s.toolCallId)">
-          <span>{{ STATUS_ICON[s.status] }}</span>
+        <button type="button" data-test="tool-row" class="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-fg/5" @click="toggleRow(s.toolCallId)">
+          <Check v-if="s.status === 'success'" data-test="step-status-success" :size="14" class="text-run" />
+          <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="14" class="animate-spin motion-reduce:animate-none text-accent" />
+          <AlertTriangle v-else data-test="step-status-error" :size="14" class="text-danger" />
           <span>{{ KIND_ICON[s.kind] }}</span>
-          <span class="truncate font-mono text-slate-700">{{ s.title }}</span>
-          <span v-if="s.durationMs !== undefined" class="ml-auto text-slate-400">{{ fmtDuration(s.durationMs) }}</span>
+          <span class="truncate font-mono text-fg">{{ s.title }}</span>
+          <span v-if="s.durationMs !== undefined" class="ml-auto font-mono text-fg-muted">{{ fmtDuration(s.durationMs) }}</span>
         </button>
         <div v-if="expanded.has(s.toolCallId) && s.detail" class="px-2 pb-2">
           <ToolDetail :detail="s.detail" />
