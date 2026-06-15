@@ -25,6 +25,9 @@ export const useFilesStore = defineStore("files", () => {
   const diffPath = ref<string | null>(null); // null = whole-tree diff
   const tab = ref<"files" | "changes">("files");
   const changed = ref<Record<string, string>>({}); // relPath -> git porcelain status, for Files-tab badges
+  // Standalone read-only summary for the header chip — independent of the browsed
+  // workspace above, so showing it never disturbs file-browser navigation state.
+  const gitSummary = ref<{ workspace: string; changedCount: number; branch?: string } | null>(null);
   const query = ref("");
   const results = ref<string[]>([]);
   const searchTruncated = ref(false);
@@ -74,6 +77,27 @@ export const useFilesStore = defineStore("files", () => {
       changed.value = map;
     } catch {
       changed.value = {};
+    }
+  }
+
+  /** Read-only git summary for a session's workspace (header chip). Quiet: a
+   *  non-git workspace just clears the summary. `branch` is populated only if the
+   *  backend ever adds it to the diff result; today it stays undefined. */
+  async function loadGitSummary(id: string, ws: string): Promise<void> {
+    if (!id || !ws) {
+      gitSummary.value = null;
+      return;
+    }
+    try {
+      const r = await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws });
+      if (isErrorPayload(r)) {
+        gitSummary.value = null;
+        return;
+      }
+      const branch = typeof (r as { branch?: unknown }).branch === "string" ? (r as { branch?: string }).branch : undefined;
+      gitSummary.value = { workspace: ws, changedCount: r.files.length, ...(branch ? { branch } : {}) };
+    } catch {
+      gitSummary.value = null;
     }
   }
 
@@ -165,5 +189,5 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
-  return { instanceId, workspace, path, entries, file, diff, diffPath, changed, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus };
+  return { instanceId, workspace, path, entries, file, diff, diffPath, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary };
 });

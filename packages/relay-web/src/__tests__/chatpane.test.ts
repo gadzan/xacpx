@@ -10,6 +10,7 @@ vi.mock("../api/client", () => ({
 import ChatPane from "../components/ChatPane.vue";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
+import { useFilesStore } from "../stores/files";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -40,6 +41,25 @@ it("clicking the workspace chip emits show-files", async () => {
   const w = mount(ChatPane);
   await w.vm.$nextTick();
   await w.find('[data-test="ctx-chip-workspace"]').trigger("click");
+  expect(w.emitted("show-files")).toBeTruthy();
+});
+
+it("renders a git summary chip and clicking it opens the Changes tab", async () => {
+  seedInstance();
+  const chat = useChatStore();
+  const files = useFilesStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  // Set after mount so the immediate watch (which clears it via the mocked rpc)
+  // doesn't overwrite our fixture.
+  files.gitSummary = { workspace: "gaia", changedCount: 3 };
+  await w.vm.$nextTick();
+  const chip = w.find('[data-test="git-summary"]');
+  expect(chip.exists()).toBe(true);
+  expect(chip.text()).toContain("3 changed");
+  await chip.trigger("click");
+  expect(files.tab).toBe("changes");
   expect(w.emitted("show-files")).toBeTruthy();
 });
 

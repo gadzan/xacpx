@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
+import { useFilesStore } from "../stores/files";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 
@@ -9,13 +10,25 @@ const emit = defineEmits<{ (e: "show-files"): void }>();
 
 const chat = useChatStore();
 const instances = useInstancesStore();
+const files = useFilesStore();
 
 // Context for the header chips: the current session's workspace/agent plus the
-// instance name. Branch is intentionally absent — the protocol carries no git
-// branch yet (deferred to the read-only git summary batch).
+// instance name. Branch comes from the read-only git summary (undefined until the
+// backend ever adds it to the diff result).
 const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceId) : undefined));
 const currentSession = computed(() =>
   instance.value?.sessions.find((s) => s.alias === chat.sessionAlias),
+);
+
+// Keep a read-only git summary loaded for the current session's workspace so the
+// header chip reflects changes without the user opening the Files panel first.
+watch(
+  () => [chat.instanceId, currentSession.value?.workspace] as const,
+  ([id, ws]) => {
+    if (id && ws) void files.loadGitSummary(id, ws);
+    else files.gitSummary = null;
+  },
+  { immediate: true },
 );
 
 // Live elapsed clock for the active turn HUD.
@@ -59,6 +72,13 @@ const verb = computed(() => {
                   @click="emit('show-files')">📁 {{ currentSession.workspace }}</button>
           <span v-if="instance?.name" data-test="ctx-chip-instance" class="rounded bg-slate-100 px-1.5 py-0.5">@ {{ instance.name }}</span>
           <span v-if="currentSession?.agent" data-test="ctx-chip-agent" class="rounded bg-slate-100 px-1.5 py-0.5">🤖 {{ currentSession.agent }}</span>
+          <button v-if="files.gitSummary" data-test="git-summary"
+                  class="rounded bg-slate-100 px-1.5 py-0.5 hover:bg-slate-200" title="View changes"
+                  @click="files.tab = 'changes'; emit('show-files')">
+            <span class="text-sky-500">●</span>
+            <span v-if="files.gitSummary.branch"> {{ files.gitSummary.branch }} ·</span>
+            {{ files.gitSummary.changedCount }} changed
+          </button>
         </div>
       </div>
       <div v-if="chat.error" data-test="chat-error" class="bg-red-50 px-4 py-1 text-xs text-red-700">

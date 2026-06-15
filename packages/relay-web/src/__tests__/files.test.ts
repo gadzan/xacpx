@@ -110,6 +110,28 @@ describe("files store", () => {
     expect(s.error).toBe(""); // browsing stays clean — no error surfaced
   });
 
+  it("loadGitSummary stores a changed-file count for a workspace", async () => {
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ workspace: "ws", files: [{ path: "a.ts", status: " M" }, { path: "b.ts", status: "??" }], diff: "", truncated: false });
+    await s.loadGitSummary("i1", "ws");
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.diff", { workspace: "ws" });
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 2 });
+  });
+
+  it("loadGitSummary picks up a branch when the backend provides one", async () => {
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ workspace: "ws", branch: "main", files: [], diff: "", truncated: false });
+    await s.loadGitSummary("i1", "ws");
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 0, branch: "main" });
+  });
+
+  it("loadGitSummary clears the summary for a non-git workspace (error payload)", async () => {
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "not-a-git-repo" } });
+    await s.loadGitSummary("i1", "ws");
+    expect(s.gitSummary).toBeNull();
+  });
+
   it("surfaces an instance-side error payload as an error string", async () => {
     rpc.mockResolvedValueOnce({ error: { code: "internal", message: "path-escapes-workspace" } });
     const s = useFilesStore();
