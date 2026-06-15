@@ -52,10 +52,18 @@ function fmtDuration(ms?: number): string {
       <span class="inline-flex items-center gap-1"><Wrench :size="14" /> Tool calls</span>
       <FueDot v-if="showFueDot" :pulsing="fue.status.value === 'unseen'" />
       <span v-else data-test="tool-count" class="text-fg-muted">({{ steps.length }})</span>
-      <span data-test="tool-summary" class="ml-1 flex items-center gap-1 text-fg-muted">
-        <span v-for="k in summary.kinds" :key="'k' + k.icon">{{ k.icon }}{{ k.count }}</span>
+      <span data-test="tool-summary" class="ml-1 flex items-center gap-1.5 text-fg-muted">
+        <span v-for="k in summary.kinds" :key="'k' + k.label" :data-test="'sum-' + k.label"
+              class="inline-flex items-center gap-0.5">
+          <component :is="k.icon" :size="12" /><span class="tabular-nums">{{ k.count }}</span>
+        </span>
         <span v-if="summary.statuses.length" class="text-fg-muted">·</span>
-        <span v-for="st in summary.statuses" :key="'s' + st.icon">{{ st.icon }}{{ st.count }}</span>
+        <span v-for="st in summary.statuses" :key="'s' + st.label" :data-test="'sum-' + st.label"
+              class="inline-flex items-center gap-0.5"
+              :class="st.label === 'success' ? 'text-run' : st.label === 'error' ? 'text-danger' : 'text-fg-muted'">
+          <component :is="st.icon" :size="12"
+                     :class="st.label === 'running' ? 'animate-spin motion-reduce:animate-none' : ''" /><span class="tabular-nums">{{ st.count }}</span>
+        </span>
       </span>
     </button>
     <FueCallout

@@ -38,11 +38,12 @@ describe("ToolCallPanel", () => {
 
   it("renders a kind/status summary in the header", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
-    const sum = w.find('[data-test="tool-summary"]').text();
-    expect(sum).toContain("💻1"); // one execute
-    expect(sum).toContain("📖1"); // one read
-    expect(sum).toContain("✅1"); // one success
-    expect(sum).toContain("⏳1"); // one running
+    // Icons are now Lucide components; each entry carries a `sum-<label>` data-test
+    // alongside its count (one execute, one read, one success, one running).
+    expect(w.find('[data-test="sum-execute"]').text()).toContain("1");
+    expect(w.find('[data-test="sum-read"]').text()).toContain("1");
+    expect(w.find('[data-test="sum-success"]').text()).toContain("1");
+    expect(w.find('[data-test="sum-running"]').text()).toContain("1");
   });
 });
 
@@ -68,18 +69,21 @@ describe("ToolCallPanel auto-collapse", () => {
 describe("summarizeSteps", () => {
   it("counts by kind and status in stable order", () => {
     const sum = summarizeSteps(steps);
-    expect(sum.kinds).toEqual([
-      { icon: "📖", count: 1 },
-      { icon: "💻", count: 1 },
+    // icon is now a Lucide component, so assert on the stable label + count.
+    expect(sum.kinds.map((k) => ({ label: k.label, count: k.count }))).toEqual([
+      { label: "read", count: 1 },
+      { label: "execute", count: 1 },
     ]);
-    expect(sum.statuses).toEqual([
-      { icon: "⏳", count: 1 },
-      { icon: "✅", count: 1 },
+    expect(sum.statuses.map((s) => ({ label: s.label, count: s.count }))).toEqual([
+      { label: "running", count: 1 },
+      { label: "success", count: 1 },
     ]);
   });
 
   it("aggregates repeated kinds", () => {
-    expect(summarizeSteps(manySteps(4)).kinds).toEqual([{ icon: "📖", count: 4 }]);
+    expect(summarizeSteps(manySteps(4)).kinds.map((k) => ({ label: k.label, count: k.count }))).toEqual([
+      { label: "read", count: 4 },
+    ]);
   });
 });
 
