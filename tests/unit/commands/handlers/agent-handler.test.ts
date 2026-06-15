@@ -47,3 +47,13 @@ test("agent add for an identical existing agent is a no-op", async () => {
   await handleAgentAdd(context, "codex", "gpt-5.2[high]");
   expect(upserts).toHaveLength(0);
 });
+
+test("plain agent add does not wipe an existing model", async () => {
+  const { context, upserts } = makeContext({ codex: { driver: "codex", model: "gpt-5.2[high]" } });
+  await handleAgentAdd(context, "codex"); // no --model
+  // Either a no-op or an upsert that preserves the model — never a wipe.
+  if (upserts.length > 0) {
+    expect(upserts[0].config.model).toBe("gpt-5.2[high]");
+  }
+  expect(context.config.agents.codex.model).toBe("gpt-5.2[high]");
+});

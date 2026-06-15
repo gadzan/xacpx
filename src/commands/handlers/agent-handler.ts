@@ -34,10 +34,16 @@ export async function handleAgentAdd(context: CommandRouterContext, templateName
     return { text: a.unsupportedTemplate(listAgentTemplates().join("、")) };
   }
 
-  const normalizedModel = model?.trim();
-  const desired = normalizedModel ? { ...template, model: normalizedModel } : template;
-
   const existing = context.config.agents[templateName];
+  const normalizedModel = model?.trim();
+  // With --model: set/update it. Without --model: preserve an existing model so a
+  // plain re-add never silently wipes a configured default.
+  const desired = normalizedModel
+    ? { ...template, model: normalizedModel }
+    : existing?.model
+      ? { ...template, model: existing.model }
+      : template;
+
   if (existing) {
     // Same driver/command and same model → genuine no-op. A differing model with
     // the same base is treated as an update (the user explicitly passed --model).

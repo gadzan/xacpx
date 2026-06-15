@@ -134,6 +134,9 @@ export class SessionService {
       workspace,
       transport_session: transportSession,
       transport_agent_command: sameAgentExisting?.transport_agent_command,
+      // Carry the same-agent model so a recreated session is ensured under the
+      // same model that gets persisted (keeps acpx and state in agreement).
+      model: sameAgentExisting?.model,
       created_at: existing?.created_at ?? new Date().toISOString(),
       last_used_at: new Date().toISOString(),
     });

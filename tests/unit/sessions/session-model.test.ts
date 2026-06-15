@@ -77,6 +77,22 @@ test("setCurrentSessionModel sets the model of the chat's current session", asyn
   expect(current?.model).toBe("claude-opus-4-8");
 });
 
+test("resolveSession carries the same-agent session's model override", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.createSession("api-fix", "codex", "backend");
+  await service.setSessionModel("api-fix", "gpt-5.2[high]");
+  const resolved = service.resolveSession("api-fix", "codex", "backend", "backend:api-fix");
+  expect(resolved.model).toBe("gpt-5.2[high]");
+});
+
+test("resolveSession drops the model when the alias is recreated under a different agent", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.createSession("api-fix", "codex", "backend");
+  await service.setSessionModel("api-fix", "gpt-5.2[high]");
+  const resolved = service.resolveSession("api-fix", "claude", "backend", "backend:api-fix");
+  expect(resolved.model).toBeUndefined();
+});
+
 test("recreating an alias with the same agent carries the model over", async () => {
   const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   await service.createSession("api-fix", "codex", "backend");
