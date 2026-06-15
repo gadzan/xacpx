@@ -184,6 +184,18 @@ export class AcpxBridgeTransport implements SessionTransport {
     });
   }
 
+  async setModel(session: ResolvedSession, modelId: string): Promise<void> {
+    // Carry the NEW model so the global --model and the `set model` value agree.
+    await this.client.request("setModel", {
+      ...this.toParams({ ...session, model: modelId }),
+      modelId,
+    });
+  }
+
+  async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
+    return await this.client.request("getSessionModel", this.toParams(session));
+  }
+
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {
     return await this.client.request("cancel", this.toParams(session));
   }
@@ -221,6 +233,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       mcpCoordinatorSession: session.mcpCoordinatorSession,
       mcpSourceHandle: session.mcpSourceHandle,
       replyMode: session.replyMode ?? "verbose",
+      ...(session.model?.trim() ? { model: session.model.trim() } : {}),
     };
   }
 }
