@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>relay — control console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          mono: ['"Fira Code"', 'ui-monospace', 'monospace'],
+          sans: ['"Fira Sans"', 'ui-sans-serif', 'system-ui'],
+        },
+        colors: {
+          // dark
+          ink:      '#0F172A',
+          panel:    '#131C2E',
+          muted:    '#1E293B',
+          line:     '#243043',
+          fg:       '#F8FAFC',
+          dim:      '#94A3B8',
+          run:      '#22C55E',
+          amber:    '#F59E0B',
+          danger:   '#EF4444',
+          info:     '#38BDF8',
+          // light
+          'l-bg':    '#F8FAFC',
+          'l-panel': '#FFFFFF',
+          'l-line':  '#E2E8F0',
+          'l-fg':    '#0F172A',
+          'l-dim':   '#64748B',
+          'l-run':   '#16A34A',
+          'l-amber': '#D97706',
+          'l-danger':'#DC2626',
+          'l-info':  '#0284C7',
+        },
+        borderRadius: { md: '6px' },
+      },
+    },
+  };
+</script>
+<style>
+  :root { color-scheme: light dark; }
+  body { -webkit-font-smoothing: antialiased; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ---- running pulse + glow ---- */
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: .35; transform: scale(.7); }
+  }
+  .run-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+  .run-glow { text-shadow: 0 0 10px rgba(34,197,94,.55); }
+  .dark .run-ring { box-shadow: 0 0 0 1px rgba(34,197,94,.35), 0 0 16px -2px rgba(34,197,94,.45); }
+  .run-ring { box-shadow: 0 0 0 1px rgba(22,163,74,.35), 0 0 14px -3px rgba(22,163,74,.40); }
+
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .shimmer {
+    background: linear-gradient(90deg, rgba(148,163,184,.25) 0%, rgba(148,163,184,.75) 50%, rgba(148,163,184,.25) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+    animation: shimmer 2.2s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin 1s linear infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .run-dot, .shimmer, .spin { animation: none !important; }
+    .shimmer { color: #94A3B8; }
+  }
+
+  /* scrollbars */
+  .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #243043; border-radius: 6px; }
+  .dark .scroll-thin::-webkit-scrollbar-thumb { background: #243043; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #CBD5E1; }
+  .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+
+  /* subtle grid texture on the canvas */
+  .grid-tex {
+    background-image:
+      linear-gradient(to right, rgba(148,163,184,.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148,163,184,.04) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  button, a, [role="button"] { cursor: pointer; }
+  :focus-visible { outline: none; box-shadow: 0 0 0 2px #0F172A, 0 0 0 4px #22C55E; }
+  .dark :focus-visible { box-shadow: 0 0 0 2px #0F172A, 0 0 0 4px #22C55E; }
+</style>
+</head>
+
+<body class="font-sans bg-l-bg text-l-fg dark:bg-ink dark:text-fg antialiased h-screen overflow-hidden text-[13px] leading-relaxed">
+
+<div class="flex flex-col h-full">
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="h-12 shrink-0 flex items-center justify-between px-3 border-b border-l-line dark:border-line bg-l-panel dark:bg-panel">
+    <!-- left: wordmark + status pill -->
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2 pl-1">
+        <span class="grid place-items-center w-6 h-6 rounded-md bg-run/15 text-run dark:text-run">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </span>
+        <span class="font-mono font-bold text-[15px] tracking-tight">relay</span>
+      </div>
+      <span class="flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md font-mono text-[11px] font-medium bg-run/10 text-l-run dark:text-run border border-run/25">
+        <span class="relative flex w-1.5 h-1.5">
+          <span class="absolute inline-flex w-full h-full rounded-full bg-run run-dot"></span>
+          <span class="relative inline-flex w-1.5 h-1.5 rounded-full bg-run"></span>
+        </span>
+        connected
+      </span>
+    </div>
+
+    <!-- right: search, theme, settings -->
+    <div class="flex items-center gap-2">
+      <button class="group flex items-center gap-2 h-8 w-72 px-2.5 rounded-md border border-l-line dark:border-line bg-l-bg dark:bg-ink/60 text-l-dim dark:text-dim hover:border-l-dim/40 dark:hover:border-dim/40 transition-colors duration-200">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span class="text-[12px]">Search sessions, files…</span>
+        <span class="ml-auto font-mono text-[10px] px-1.5 py-0.5 rounded border border-l-line dark:border-line bg-l-panel dark:bg-muted text-l-dim dark:text-dim">⌘K</span>
+      </button>
+
+      <button onclick="toggleTheme()" aria-label="Toggle theme" class="grid place-items-center w-8 h-8 rounded-md border border-l-line dark:border-line text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg hover:border-l-dim/40 dark:hover:border-dim/40 transition-colors duration-200">
+        <svg class="hidden dark:block" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="block dark:hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+
+      <button aria-label="Settings" class="grid place-items-center w-8 h-8 rounded-md border border-l-line dark:border-line text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg hover:border-l-dim/40 dark:hover:border-dim/40 transition-colors duration-200">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ 3-PANE BODY ============ -->
+  <div class="flex flex-1 min-h-0">
+
+    <!-- ====== LEFT SIDEBAR : Instances ====== -->
+    <aside class="w-64 shrink-0 flex flex-col border-r border-l-line dark:border-line bg-l-panel dark:bg-panel">
+      <div class="h-9 shrink-0 flex items-center justify-between px-3 border-b border-l-line dark:border-line">
+        <span class="font-mono text-[11px] font-semibold uppercase tracking-widest text-l-dim dark:text-dim">Instances</span>
+        <button class="grid place-items-center w-5 h-5 rounded text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg transition-colors duration-200" aria-label="Collapse panel">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto scroll-thin py-2">
+
+        <!-- Instance: iso-test (ONLINE, open) -->
+        <div class="px-2">
+          <button class="w-full group flex items-center gap-2 h-7 px-1.5 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150">
+            <svg width="13" height="13" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <span class="w-1.5 h-1.5 rounded-full bg-run shrink-0"></span>
+            <span class="font-mono text-[12px] font-semibold">iso-test</span>
+            <span class="ml-auto font-mono text-[10px] text-l-dim dark:text-dim tnum">3</span>
+          </button>
+
+          <!-- sessions -->
+          <div class="ml-3 mt-0.5 pl-2 border-l border-l-line dark:border-line space-y-0.5">
+
+            <!-- backend — SELECTED + RUNNING -->
+            <button class="w-full flex items-center gap-2 h-8 pl-2 pr-2 rounded-md bg-run/10 dark:bg-run/[0.12] border border-run/30 run-ring transition-colors duration-150 text-left">
+              <span class="relative flex w-2 h-2 shrink-0">
+                <span class="absolute inline-flex w-full h-full rounded-full bg-run run-dot"></span>
+                <span class="relative inline-flex w-2 h-2 rounded-full bg-run"></span>
+              </span>
+              <span class="font-mono text-[12px] font-semibold text-l-run dark:text-fg run-glow">backend</span>
+              <span class="font-mono text-[10px] text-l-dim dark:text-dim">codex</span>
+              <span class="ml-auto flex items-center gap-1.5">
+                <span class="font-mono text-[10px] tnum text-l-run dark:text-run">0:42</span>
+                <span class="font-mono text-[10px] tnum px-1 rounded bg-run/15 text-l-run dark:text-run">2</span>
+              </span>
+            </button>
+
+            <!-- frontend — UNREAD -->
+            <button class="w-full flex items-center gap-2 h-8 pl-2 pr-2 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 text-left">
+              <span class="w-2 h-2 rounded-full bg-info shrink-0"></span>
+              <span class="font-mono text-[12px] font-medium">frontend</span>
+              <span class="font-mono text-[10px] text-l-dim dark:text-dim">claude</span>
+              <span class="ml-auto font-mono text-[9px] px-1 rounded-full bg-info/15 text-l-info dark:text-info uppercase tracking-wide">new</span>
+            </button>
+
+            <!-- infra — idle -->
+            <button class="w-full flex items-center gap-2 h-8 pl-2 pr-2 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 text-left">
+              <span class="w-2 h-2 rounded-full border border-l-dim/40 dark:border-dim/40 shrink-0"></span>
+              <span class="font-mono text-[12px] font-medium text-l-dim dark:text-fg/90">infra</span>
+              <span class="font-mono text-[10px] text-l-dim dark:text-dim">gemini</span>
+            </button>
+
+            <div class="pt-1 flex items-center gap-3">
+              <button class="flex items-center gap-1.5 h-6 px-2 rounded-md font-mono text-[11px] text-l-run dark:text-run hover:bg-run/10 transition-colors duration-150">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                new session
+              </button>
+              <button class="font-mono text-[11px] text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg transition-colors duration-150">Manage</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Instance: prod-box (ONLINE, open) -->
+        <div class="px-2 mt-2">
+          <button class="w-full group flex items-center gap-2 h-7 px-1.5 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150">
+            <svg width="13" height="13" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <span class="w-1.5 h-1.5 rounded-full bg-run shrink-0"></span>
+            <span class="font-mono text-[12px] font-semibold">prod-box</span>
+            <span class="ml-auto font-mono text-[10px] text-l-dim dark:text-dim tnum">2</span>
+          </button>
+          <div class="ml-3 mt-0.5 pl-2 border-l border-l-line dark:border-line space-y-0.5">
+            <button class="w-full flex items-center gap-2 h-8 pl-2 pr-2 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 text-left">
+              <span class="w-2 h-2 rounded-full border border-l-dim/40 dark:border-dim/40 shrink-0"></span>
+              <span class="font-mono text-[12px] font-medium">web</span>
+              <span class="font-mono text-[10px] text-l-dim dark:text-dim">claude</span>
+            </button>
+            <button class="w-full flex items-center gap-2 h-8 pl-2 pr-2 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 text-left">
+              <span class="w-2 h-2 rounded-full border border-l-dim/40 dark:border-dim/40 shrink-0"></span>
+              <span class="font-mono text-[12px] font-medium">api</span>
+              <span class="font-mono text-[10px] text-l-dim dark:text-dim">codex</span>
+            </button>
+            <div class="pt-1 flex items-center gap-3">
+              <button class="flex items-center gap-1.5 h-6 px-2 rounded-md font-mono text-[11px] text-l-run dark:text-run hover:bg-run/10 transition-colors duration-150">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                new session
+              </button>
+              <button class="font-mono text-[11px] text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg transition-colors duration-150">Manage</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Instance: laptop (OFFLINE, collapsed) -->
+        <div class="px-2 mt-2">
+          <button class="w-full group flex items-center gap-2 h-7 px-1.5 rounded-md hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 opacity-70">
+            <svg width="13" height="13" class="text-l-dim dark:text-dim -rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <span class="w-1.5 h-1.5 rounded-full bg-l-dim/50 dark:bg-dim/50 shrink-0"></span>
+            <span class="font-mono text-[12px] font-medium text-l-dim dark:text-dim">laptop</span>
+            <span class="ml-auto font-mono text-[10px] text-l-dim dark:text-dim uppercase tracking-wide">offline</span>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- sidebar footer add-instance -->
+      <div class="h-10 shrink-0 border-t border-l-line dark:border-line flex items-center px-3">
+        <button class="flex items-center gap-2 h-7 px-2 w-full rounded-md font-mono text-[11px] text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Connect instance
+        </button>
+      </div>
+    </aside>
+
+    <!-- ====== CENTER : Chat pane ====== -->
+    <main class="flex-1 min-w-0 flex flex-col bg-l-bg dark:bg-ink grid-tex">
+
+      <!-- session header -->
+      <div class="shrink-0 px-5 pt-3.5 pb-3 border-b border-l-line dark:border-line bg-l-bg/80 dark:bg-ink/80 backdrop-blur">
+        <div class="flex items-center gap-3 mb-2.5">
+          <span class="relative flex w-2.5 h-2.5">
+            <span class="absolute inline-flex w-full h-full rounded-full bg-run run-dot"></span>
+            <span class="relative inline-flex w-2.5 h-2.5 rounded-full bg-run"></span>
+          </span>
+          <h1 class="font-mono text-[17px] font-bold tracking-tight run-glow">backend</h1>
+          <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-run/12 text-l-run dark:text-run border border-run/25 uppercase tracking-wide">running</span>
+        </div>
+        <!-- context chips -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="flex items-center gap-1.5 h-6 px-2 rounded-md border border-l-line dark:border-line bg-l-panel dark:bg-panel font-mono text-[11px] text-l-dim dark:text-dim">
+            <svg width="13" height="13" class="text-l-info dark:text-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span class="text-l-fg dark:text-fg">gaia</span>
+          </span>
+          <span class="flex items-center gap-1.5 h-6 px-2 rounded-md border border-l-line dark:border-line bg-l-panel dark:bg-panel font-mono text-[11px] text-l-dim dark:text-dim">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.9 7.9"/></svg>
+            <span class="text-l-fg dark:text-fg">iso-test</span>
+          </span>
+          <span class="flex items-center gap-1.5 h-6 px-2 rounded-md border border-l-line dark:border-line bg-l-panel dark:bg-panel font-mono text-[11px] text-l-dim dark:text-dim">
+            <svg width="13" height="13" class="text-l-run dark:text-run" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4M8 16h.01M16 16h.01"/></svg>
+            <span class="text-l-fg dark:text-fg">codex</span>
+          </span>
+          <span class="flex items-center gap-1.5 h-6 px-2 rounded-md border border-l-line dark:border-line bg-l-panel dark:bg-panel font-mono text-[11px] text-l-dim dark:text-dim">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+            <span class="text-l-fg dark:text-fg">main</span>
+            <span class="text-l-dim dark:text-dim">·</span>
+            <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber"></span><span class="text-l-amber dark:text-amber">3 changed</span></span>
+          </span>
+        </div>
+      </div>
+
+      <!-- transcript -->
+      <div class="flex-1 overflow-y-auto scroll-thin px-5 py-6 space-y-6">
+
+        <!-- USER 1 -->
+        <div class="flex justify-end">
+          <div class="max-w-[78%] rounded-md rounded-tr-sm bg-l-panel dark:bg-muted border border-l-line dark:border-line px-3.5 py-2.5">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="font-mono text-[10px] uppercase tracking-widest text-l-dim dark:text-dim">you</span>
+            </div>
+            <p class="text-[13px] text-l-fg dark:text-fg">重构 session 加载逻辑，避免懒加载误显示 "no sessions yet"。</p>
+          </div>
+        </div>
+
+        <!-- ASSISTANT 1 -->
+        <div class="flex gap-3">
+          <span class="grid place-items-center w-7 h-7 shrink-0 rounded-md bg-run/12 text-l-run dark:text-run border border-run/25">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4M8 16h.01M16 16h.01"/></svg>
+          </span>
+          <div class="min-w-0 flex-1 max-w-[82%]">
+            <div class="flex items-center gap-2 mb-1.5">
+              <span class="font-mono text-[10px] uppercase tracking-widest text-l-run dark:text-run">codex</span>
+            </div>
+            <p class="text-[13px] text-l-fg dark:text-fg/95 mb-3">明白。问题在于 store 在首次渲染时同步返回空数组，把 “尚未加载” 当成 “没有会话”。我会把加载状态显式化，并仅在 fetch 完成后才决定是否展示空态。下面是修改步骤与补丁。</p>
+
+            <!-- collapsible tool steps -->
+            <details open class="group rounded-md border border-l-line dark:border-line bg-l-panel dark:bg-panel/60 mb-3">
+              <summary class="flex items-center gap-2 h-9 px-3 cursor-pointer select-none list-none">
+                <svg width="13" height="13" class="text-l-dim dark:text-dim transition-transform duration-200 group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                <span class="font-mono text-[11px] font-medium text-l-dim dark:text-dim">tool steps</span>
+                <span class="ml-1 font-mono text-[10px] px-1.5 rounded-full bg-run/12 text-l-run dark:text-run tnum">2</span>
+                <span class="ml-auto font-mono text-[10px] text-l-dim dark:text-dim">all done</span>
+              </summary>
+              <div class="border-t border-l-line dark:border-line divide-y divide-l-line dark:divide-line">
+                <div class="flex items-center gap-2.5 px-3 py-2">
+                  <span class="grid place-items-center w-4 h-4 rounded-full bg-run/15 text-l-run dark:text-run shrink-0">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </span>
+                  <span class="font-mono text-[11px] font-semibold text-l-info dark:text-info">Read</span>
+                  <span class="font-mono text-[11px] text-l-dim dark:text-dim truncate">src/stores/instances.ts</span>
+                </div>
+                <div class="flex items-center gap-2.5 px-3 py-2">
+                  <span class="grid place-items-center w-4 h-4 rounded-full bg-run/15 text-l-run dark:text-run shrink-0">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </span>
+                  <span class="font-mono text-[11px] font-semibold text-l-amber dark:text-amber">Edit</span>
+                  <span class="font-mono text-[11px] text-l-dim dark:text-dim truncate">src/stores/instances.ts</span>
+                  <span class="ml-auto font-mono text-[10px] tnum"><span class="text-l-run dark:text-run">+12</span> <span class="text-l-danger dark:text-danger">−3</span></span>
+                </div>
+              </div>
+            </details>
+
+            <!-- code snippet -->
+            <div class="rounded-md border border-l-line dark:border-line overflow-hidden bg-[#FBFCFE] dark:bg-[#0B1322]">
+              <div class="flex items-center gap-2 h-7 px-3 border-b border-l-line dark:border-line bg-l-panel dark:bg-panel/70">
+                <svg width="12" height="12" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <span class="font-mono text-[10px] text-l-dim dark:text-dim">instances.ts</span>
+                <span class="ml-auto font-mono text-[10px] text-l-dim dark:text-dim">typescript</span>
+              </div>
+              <pre class="font-mono text-[12px] leading-[1.7] px-4 py-3 overflow-x-auto scroll-thin"><code><span class="text-l-info dark:text-info">interface</span> <span class="text-l-amber dark:text-amber">InstanceState</span> {
+  status: <span class="text-l-run dark:text-run">'idle'</span> | <span class="text-l-run dark:text-run">'loading'</span> | <span class="text-l-run dark:text-run">'ready'</span>
+  sessions: Session[]
+}
+<span class="text-l-dim dark:text-dim">// empty state only once status === 'ready'</span>
+<span class="text-l-info dark:text-info">const</span> showEmpty = status === <span class="text-l-run dark:text-run">'ready'</span> && !sessions.length</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- USER 2 -->
+        <div class="flex justify-end">
+          <div class="max-w-[78%] rounded-md rounded-tr-sm bg-l-panel dark:bg-muted border border-l-line dark:border-line px-3.5 py-2.5">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="font-mono text-[10px] uppercase tracking-widest text-l-dim dark:text-dim">you</span>
+            </div>
+            <p class="text-[13px] text-l-fg dark:text-fg">顺手把空态和 loading 区分一下。</p>
+          </div>
+        </div>
+
+        <!-- ASSISTANT 2 — STREAMING -->
+        <div class="flex gap-3">
+          <span class="grid place-items-center w-7 h-7 shrink-0 rounded-md bg-run/12 text-l-run dark:text-run border border-run/25 run-ring">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4M8 16h.01M16 16h.01"/></svg>
+          </span>
+          <div class="min-w-0 flex-1 max-w-[82%]">
+            <div class="flex items-center gap-2 mb-1.5">
+              <span class="font-mono text-[10px] uppercase tracking-widest text-l-run dark:text-run run-glow">codex</span>
+              <span class="font-mono text-[9px] px-1.5 rounded-full bg-run/12 text-l-run dark:text-run uppercase tracking-wide">streaming</span>
+            </div>
+            <p class="text-[13px] text-l-fg dark:text-fg/95">好的，我会拆出独立的 <span class="font-mono text-[12px] text-l-info dark:text-info">&lt;EmptyState/&gt;</span> 和 <span class="font-mono text-[12px] text-l-amber dark:text-amber">&lt;LoadingSkeleton/&gt;</span>，由 status 决定渲染哪个<span class="inline-block w-1.5 h-4 align-text-bottom ml-0.5 bg-run/80 animate-pulse"></span></p>
+            <!-- reasoning shimmer -->
+            <div class="flex items-center gap-2 mt-2.5">
+              <svg width="13" height="13" class="text-l-dim dark:text-dim spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+              <span class="font-mono text-[11px] shimmer">Reasoning…</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TURN HUD bar -->
+      <div class="shrink-0 mx-5 mb-2 flex items-center gap-3 h-9 px-3 rounded-md border border-run/30 bg-run/[0.07] dark:bg-run/[0.09] run-ring">
+        <span class="relative flex w-2 h-2">
+          <span class="absolute inline-flex w-full h-full rounded-full bg-run run-dot"></span>
+          <span class="relative inline-flex w-2 h-2 rounded-full bg-run"></span>
+        </span>
+        <span class="font-mono text-[12px] font-semibold text-l-run dark:text-run run-glow">Working…</span>
+        <span class="font-mono text-[12px] tnum text-l-run dark:text-run">0:42</span>
+        <span class="font-mono text-[11px] text-l-dim dark:text-dim">· 2 tools</span>
+        <button class="ml-auto flex items-center gap-1.5 h-6 px-2.5 rounded-md border border-danger/40 text-l-danger dark:text-danger hover:bg-danger/10 font-mono text-[11px] font-medium transition-colors duration-200">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Cancel
+        </button>
+      </div>
+
+      <!-- COMPOSER -->
+      <div class="shrink-0 px-5 pb-4">
+        <div class="rounded-md border border-l-line dark:border-line bg-l-panel dark:bg-panel focus-within:border-run/50 dark:focus-within:border-run/50 transition-colors duration-200">
+          <textarea rows="2" placeholder="Message, or /command" class="w-full resize-none bg-transparent px-3.5 py-3 text-[13px] text-l-fg dark:text-fg placeholder:text-l-dim dark:placeholder:text-dim focus:outline-none scroll-thin"></textarea>
+          <div class="flex items-center gap-2 px-3 pb-2.5">
+            <!-- model chip -->
+            <button class="flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-l-line dark:border-line bg-l-bg dark:bg-ink/60 font-mono text-[11px] text-l-dim dark:text-dim hover:border-l-dim/40 dark:hover:border-dim/40 transition-colors duration-200">
+              <svg width="13" height="13" class="text-l-info dark:text-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4 17.5 2.5 2.5 0 0 1 2.5 13 2.5 2.5 0 0 1 4 8.5 2.5 2.5 0 0 1 5.5 4 2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 20 17.5 2.5 2.5 0 0 0 21.5 13 2.5 2.5 0 0 0 20 8.5 2.5 2.5 0 0 0 18.5 4 2.5 2.5 0 0 0 14.5 2z"/></svg>
+              <span class="text-l-fg dark:text-fg">gpt-5.2</span>
+              <span class="text-l-amber dark:text-amber">[high]</span>
+              <svg width="12" height="12" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+
+            <span class="ml-auto font-mono text-[10px] text-l-dim dark:text-dim hidden sm:inline">⏎ to send · ⇧⏎ newline</span>
+
+            <button class="flex items-center gap-1.5 h-8 px-3.5 rounded-md bg-run text-ink dark:text-ink font-mono text-[12px] font-bold hover:bg-run/90 transition-colors duration-200 shadow-[0_0_16px_-4px_rgba(34,197,94,.6)]">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ====== RIGHT PANEL : Files / Tasks ====== -->
+    <aside class="w-72 shrink-0 flex flex-col border-l border-l-line dark:border-line bg-l-panel dark:bg-panel">
+      <!-- tabs -->
+      <div class="h-9 shrink-0 flex items-center gap-1 px-2 border-b border-l-line dark:border-line">
+        <button class="flex items-center gap-1.5 h-7 px-2.5 rounded-md font-mono text-[11px] font-semibold text-l-fg dark:text-fg bg-l-bg dark:bg-muted transition-colors duration-150">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Files
+          <span class="font-mono text-[9px] px-1 rounded bg-amber/15 text-l-amber dark:text-amber tnum">3</span>
+        </button>
+        <button class="flex items-center gap-1.5 h-7 px-2.5 rounded-md font-mono text-[11px] font-medium text-l-dim dark:text-dim hover:text-l-fg dark:hover:text-fg transition-colors duration-150">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          Tasks
+        </button>
+      </div>
+
+      <!-- file tree -->
+      <div class="flex-1 overflow-y-auto scroll-thin py-2 px-1.5 font-mono text-[12px]">
+        <!-- src/ open -->
+        <div class="flex items-center gap-1.5 h-6 px-1.5 rounded text-l-fg dark:text-fg hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+          <svg width="12" height="12" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          <svg width="13" height="13" class="text-l-info dark:text-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <span>src</span>
+        </div>
+        <!-- stores/ -->
+        <div class="ml-4">
+          <div class="flex items-center gap-1.5 h-6 px-1.5 rounded text-l-fg dark:text-fg hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <svg width="12" height="12" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <svg width="13" height="13" class="text-l-info dark:text-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span>stores</span>
+          </div>
+          <!-- instances.ts highlighted modified -->
+          <div class="ml-4 flex items-center gap-1.5 h-6 px-1.5 rounded bg-amber/10 border border-amber/25 text-l-fg dark:text-fg cursor-pointer">
+            <svg width="13" height="13" class="ml-3.5 text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span class="text-l-amber dark:text-amber font-medium">instances.ts</span>
+            <span class="ml-auto w-1.5 h-1.5 rounded-full bg-amber shrink-0"></span>
+          </div>
+        </div>
+        <!-- components/ -->
+        <div class="ml-4">
+          <div class="flex items-center gap-1.5 h-6 px-1.5 rounded text-l-fg dark:text-fg hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <svg width="12" height="12" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            <svg width="13" height="13" class="text-l-info dark:text-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <span>components</span>
+          </div>
+          <div class="ml-4 flex items-center gap-1.5 h-6 px-1.5 rounded text-l-fg dark:text-fg hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <svg width="13" height="13" class="ml-3.5 text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span class="text-l-amber dark:text-amber font-medium">InstanceTree.vue</span>
+            <span class="ml-auto w-1.5 h-1.5 rounded-full bg-amber shrink-0"></span>
+          </div>
+          <div class="ml-4 flex items-center gap-1.5 h-6 px-1.5 rounded text-l-dim dark:text-dim hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <svg width="13" height="13" class="ml-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>SessionRow.vue</span>
+          </div>
+        </div>
+        <!-- packages/ -->
+        <div class="flex items-center gap-1.5 h-6 px-1.5 mt-0.5 rounded text-l-fg dark:text-fg hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+          <svg width="12" height="12" class="text-l-dim dark:text-dim -rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          <svg width="13" height="13" class="text-l-info dark:text-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <span>packages</span>
+          <span class="ml-1 text-[11px] text-l-dim dark:text-dim">relay-web/</span>
+        </div>
+      </div>
+
+      <!-- Changes summary -->
+      <div class="shrink-0 border-t border-l-line dark:border-line">
+        <div class="flex items-center gap-2 h-9 px-3">
+          <svg width="13" height="13" class="text-l-dim dark:text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+          <span class="font-mono text-[11px] font-semibold uppercase tracking-widest text-l-dim dark:text-dim">Changes</span>
+          <span class="ml-auto font-mono text-[11px] tnum text-l-dim dark:text-dim">3 files</span>
+          <span class="font-mono text-[11px] tnum text-l-run dark:text-run">+24</span>
+          <span class="font-mono text-[11px] tnum text-l-danger dark:text-danger">−7</span>
+        </div>
+        <div class="px-2 pb-3 space-y-0.5 font-mono text-[11px]">
+          <div class="flex items-center gap-2 h-6 px-1.5 rounded hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber shrink-0"></span>
+            <span class="text-l-fg dark:text-fg truncate">instances.ts</span>
+            <span class="ml-auto tnum text-l-run dark:text-run">+12</span>
+            <span class="tnum text-l-danger dark:text-danger">−3</span>
+          </div>
+          <div class="flex items-center gap-2 h-6 px-1.5 rounded hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber shrink-0"></span>
+            <span class="text-l-fg dark:text-fg truncate">InstanceTree.vue</span>
+            <span class="ml-auto tnum text-l-run dark:text-run">+9</span>
+            <span class="tnum text-l-danger dark:text-danger">−2</span>
+          </div>
+          <div class="flex items-center gap-2 h-6 px-1.5 rounded hover:bg-l-bg dark:hover:bg-muted/60 transition-colors duration-150 cursor-pointer">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber shrink-0"></span>
+            <span class="text-l-fg dark:text-fg truncate">files.ts</span>
+            <span class="ml-auto tnum text-l-run dark:text-run">+3</span>
+            <span class="tnum text-l-danger dark:text-danger">−2</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<script>
+  function toggleTheme() {
+    document.documentElement.classList.toggle('dark');
+  }
+</script>
+</body>
+</html>

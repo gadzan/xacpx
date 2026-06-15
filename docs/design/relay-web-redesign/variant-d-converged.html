@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>relay — console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+        },
+        colors: {
+          // dark — warm neutral (slightly olive/taupe)
+          ink: {
+            bg: '#17181A',
+            panel: '#1F2022',
+            elev: '#26282B',
+            border: '#2E3033',
+            fg: '#E9E9E6',
+            sub: '#9A9B98',
+          },
+          // light — warm cream
+          paper: {
+            bg: '#FAF9F6',
+            panel: '#FFFFFF',
+            border: '#ECEAE4',
+            fg: '#1C1C1A',
+            sub: '#6B6A66',
+          },
+          accent: {
+            DEFAULT: '#14B8A6',   // teal (dark base)
+            hover: '#2DD4BF',
+            light: '#0D9488',     // teal (light theme)
+          },
+          ok: { dark: '#34D399', light: '#10B981' },
+          warn: { dark: '#FBBF24', light: '#D97706' },
+          danger: { dark: '#F87171', light: '#EF4444' },
+          info: { dark: '#60A5FA', light: '#2563EB' },
+        },
+        boxShadow: {
+          'e1': '0 1px 2px rgba(40,38,32,0.06), 0 1px 1px rgba(40,38,32,0.04)',
+          'e2': '0 4px 12px rgba(40,38,32,0.08), 0 2px 4px rgba(40,38,32,0.05)',
+          'e3': '0 12px 32px rgba(40,38,32,0.14), 0 4px 8px rgba(40,38,32,0.06)',
+          'e1d': '0 1px 2px rgba(0,0,0,0.45)',
+          'e2d': '0 6px 18px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.4)',
+          'e3d': '0 18px 48px rgba(0,0,0,0.65), 0 6px 16px rgba(0,0,0,0.5)',
+        },
+        borderRadius: { xl: '0.75rem', '2xl': '1rem' },
+      },
+    },
+  };
+</script>
+<style>
+  *:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ring-bg, #17181A), 0 0 0 4px #14B8A6; border-radius: 7px; }
+  html { scroll-behavior: smooth; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  /* soft pulse for live dot — stays GREEN */
+  @keyframes softpulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0.45); }
+    50% { box-shadow: 0 0 0 5px rgba(52,211,153,0); }
+  }
+  .pulse-dot { animation: softpulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+  @keyframes spin360 { to { transform: rotate(360deg); } }
+  .spin { animation: spin360 0.9s linear infinite; }
+  /* shimmer for reasoning line */
+  @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  .shimmer-text {
+    background: linear-gradient(90deg, #6B6A66 0%, #1C1C1A 50%, #6B6A66 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 2.4s linear infinite;
+  }
+  .dark .shimmer-text { background: linear-gradient(90deg, #5f6058 0%, #E9E9E6 50%, #5f6058 100%); background-size:200% 100%; -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  /* streaming caret */
+  @keyframes blink { 0%,49% {opacity:1;} 50%,100% {opacity:0;} }
+  .caret::after { content:''; display:inline-block; width:2px; height:1em; background:#14B8A6; margin-left:2px; vertical-align:text-bottom; animation: blink 1s step-end infinite; }
+  /* scrollbars */
+  .thin-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .thin-scroll::-webkit-scrollbar-thumb { background: rgba(154,155,152,0.28); border-radius: 8px; }
+  .thin-scroll::-webkit-scrollbar-track { background: transparent; }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot, .spin, .shimmer-text, .caret::after { animation: none !important; }
+  }
+  /* teal gradient (replaces indigo→violet) */
+  .grad-cta { background-image: linear-gradient(135deg, #14B8A6 0%, #0EA5A0 100%); }
+  .grad-cta:hover { background-image: linear-gradient(135deg, #2DD4BF 0%, #14B8A6 100%); }
+</style>
+</head>
+<body class="font-sans antialiased bg-paper-bg dark:bg-ink-bg text-paper-fg dark:text-ink-fg selection:bg-accent/30">
+
+<!-- ============ TOP BAR ============ -->
+<header class="h-12 flex items-center justify-between px-3.5 border-b border-paper-border dark:border-ink-border bg-paper-panel/80 dark:bg-ink-panel/80 backdrop-blur-xl sticky top-0 z-30">
+  <!-- left -->
+  <div class="flex items-center gap-2.5">
+    <div class="flex items-center gap-1.5">
+      <div class="w-6 h-6 rounded-lg grad-cta flex items-center justify-center shadow-e1d">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/></svg>
+      </div>
+      <span class="text-[14px] font-semibold tracking-tight">relay</span>
+    </div>
+    <div class="flex items-center gap-1.5 pl-1.5 pr-2 py-0.5 rounded-full bg-ok-light/10 dark:bg-ok-dark/10 border border-ok-light/20 dark:border-ok-dark/20">
+      <span class="w-1.5 h-1.5 rounded-full bg-ok-light dark:bg-ok-dark"></span>
+      <span class="text-[10.5px] font-medium text-ok-light dark:text-ok-dark">connected</span>
+    </div>
+  </div>
+  <!-- right -->
+  <div class="flex items-center gap-1.5">
+    <button class="group flex items-center gap-2 w-64 h-8 px-2.5 rounded-lg bg-paper-bg dark:bg-ink-bg border border-paper-border dark:border-ink-border hover:border-accent/40 transition-colors cursor-pointer text-left">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <span class="text-[12.5px] text-paper-sub dark:text-ink-sub flex-1">Search…</span>
+      <kbd class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border text-paper-sub dark:text-ink-sub">⌘K</kbd>
+    </button>
+    <button onclick="toggleTheme()" aria-label="Toggle theme" class="w-8 h-8 grid place-items-center rounded-lg border border-paper-border dark:border-ink-border hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer text-paper-sub dark:text-ink-sub">
+      <svg class="hidden dark:block" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      <svg class="block dark:hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+    </button>
+    <button aria-label="Settings" class="w-8 h-8 grid place-items-center rounded-lg border border-paper-border dark:border-ink-border hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer text-paper-sub dark:text-ink-sub">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- ============ 3-PANE ============ -->
+<div class="flex h-[calc(100vh-3rem)] min-w-[1100px]">
+
+  <!-- ===== LEFT SIDEBAR ===== -->
+  <aside class="w-[252px] shrink-0 flex flex-col border-r border-paper-border dark:border-ink-border bg-paper-panel dark:bg-ink-panel">
+    <div class="flex items-center justify-between px-3 h-10 shrink-0">
+      <span class="text-[10.5px] font-semibold uppercase tracking-wider text-paper-sub dark:text-ink-sub">Instances</span>
+      <button class="w-5 h-5 grid place-items-center rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev text-paper-sub dark:text-ink-sub cursor-pointer transition-colors" aria-label="Toggle panel">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+      </button>
+    </div>
+
+    <nav class="flex-1 overflow-y-auto thin-scroll px-2 pb-2.5 space-y-2">
+      <!-- iso-test ONLINE -->
+      <div>
+        <button class="w-full flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer group">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="m6 9 6 6 6-6"/></svg>
+          <span class="w-2 h-2 rounded-full bg-ok-light dark:bg-ok-dark shrink-0"></span>
+          <span class="text-[12.5px] font-semibold flex-1 text-left">iso-test</span>
+          <span class="text-[10px] font-mono text-paper-sub dark:text-ink-sub">3</span>
+        </button>
+        <div class="mt-px ml-2.5 pl-2.5 border-l border-paper-border dark:border-ink-border space-y-px">
+          <!-- backend SELECTED -->
+          <a href="#" class="relative flex items-center gap-2 pl-2.5 pr-1.5 py-1.5 rounded-md bg-accent/10 dark:bg-accent/15 cursor-pointer">
+            <span class="absolute left-0 top-1 bottom-1 w-[3px] rounded-full bg-accent"></span>
+            <span class="w-2 h-2 rounded-full bg-ok-dark pulse-dot shrink-0"></span>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-1.5">
+                <span class="text-[12.5px] font-semibold text-accent dark:text-accent-hover truncate">backend</span>
+                <span class="text-[9.5px] font-mono px-1 py-px rounded bg-accent/15 text-accent dark:text-accent-hover">codex</span>
+              </div>
+              <div class="flex items-center gap-1.5 mt-px">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" class="text-ok-light dark:text-ok-dark spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                <span class="text-[10px] font-mono tnum text-ok-light dark:text-ok-dark">running · 0:42</span>
+                <span class="text-[10px] text-paper-sub dark:text-ink-sub">· 2 tools</span>
+              </div>
+            </div>
+          </a>
+          <!-- frontend UNREAD -->
+          <a href="#" class="flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer">
+            <span class="w-2 h-2 rounded-full bg-info-light dark:bg-info-dark shrink-0"></span>
+            <span class="text-[12.5px] font-medium flex-1 truncate">frontend</span>
+            <span class="text-[9.5px] font-mono px-1 py-px rounded bg-paper-bg dark:bg-ink-elev text-paper-sub dark:text-ink-sub">claude</span>
+            <span class="w-1.5 h-1.5 rounded-full bg-info-light dark:bg-info-dark"></span>
+          </a>
+          <!-- infra idle -->
+          <a href="#" class="flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer">
+            <span class="w-2 h-2 rounded-full bg-paper-border dark:bg-ink-sub/40 shrink-0"></span>
+            <span class="text-[12.5px] font-medium flex-1 truncate text-paper-sub dark:text-ink-sub">infra</span>
+            <span class="text-[9.5px] font-mono px-1 py-px rounded bg-paper-bg dark:bg-ink-elev text-paper-sub dark:text-ink-sub">gemini</span>
+          </a>
+          <div class="flex items-center gap-1.5 pt-1 pb-px pl-2.5">
+            <button class="flex items-center gap-1 text-[11px] font-medium text-accent dark:text-accent-hover hover:opacity-80 transition-opacity cursor-pointer">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              new session
+            </button>
+            <span class="text-paper-border dark:text-ink-border">·</span>
+            <button class="text-[11px] font-medium text-paper-sub dark:text-ink-sub hover:text-paper-fg dark:hover:text-ink-fg transition-colors cursor-pointer">Manage</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- prod-box ONLINE -->
+      <div>
+        <button class="w-full flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="m6 9 6 6 6-6"/></svg>
+          <span class="w-2 h-2 rounded-full bg-ok-light dark:bg-ok-dark shrink-0"></span>
+          <span class="text-[12.5px] font-semibold flex-1 text-left">prod-box</span>
+          <span class="text-[10px] font-mono text-paper-sub dark:text-ink-sub">2</span>
+        </button>
+        <div class="mt-px ml-2.5 pl-2.5 border-l border-paper-border dark:border-ink-border space-y-px">
+          <a href="#" class="flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer">
+            <span class="w-2 h-2 rounded-full bg-paper-border dark:bg-ink-sub/40 shrink-0"></span>
+            <span class="text-[12.5px] font-medium flex-1 truncate text-paper-sub dark:text-ink-sub">web</span>
+            <span class="text-[9.5px] font-mono px-1 py-px rounded bg-paper-bg dark:bg-ink-elev text-paper-sub dark:text-ink-sub">claude</span>
+          </a>
+          <a href="#" class="flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer">
+            <span class="w-2 h-2 rounded-full bg-paper-border dark:bg-ink-sub/40 shrink-0"></span>
+            <span class="text-[12.5px] font-medium flex-1 truncate text-paper-sub dark:text-ink-sub">api</span>
+            <span class="text-[9.5px] font-mono px-1 py-px rounded bg-paper-bg dark:bg-ink-elev text-paper-sub dark:text-ink-sub">codex</span>
+          </a>
+          <div class="flex items-center gap-1.5 pt-1 pb-px pl-2.5">
+            <button class="flex items-center gap-1 text-[11px] font-medium text-accent dark:text-accent-hover hover:opacity-80 transition-opacity cursor-pointer">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              new session
+            </button>
+            <span class="text-paper-border dark:text-ink-border">·</span>
+            <button class="text-[11px] font-medium text-paper-sub dark:text-ink-sub hover:text-paper-fg dark:hover:text-ink-fg transition-colors cursor-pointer">Manage</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- laptop OFFLINE collapsed -->
+      <div>
+        <button class="w-full flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer opacity-60">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub -rotate-90"><path d="m6 9 6 6 6-6"/></svg>
+          <span class="w-2 h-2 rounded-full bg-paper-border dark:bg-ink-sub/40 shrink-0"></span>
+          <span class="text-[12.5px] font-semibold flex-1 text-left text-paper-sub dark:text-ink-sub">laptop</span>
+          <span class="text-[10px] font-medium text-paper-sub dark:text-ink-sub">offline</span>
+        </button>
+      </div>
+    </nav>
+
+    <div class="shrink-0 px-2 pb-2.5 pt-1.5 border-t border-paper-border dark:border-ink-border">
+      <button class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer text-paper-sub dark:text-ink-sub">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        <span class="text-[12px] font-medium">Manage instances</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ===== CENTER CHAT ===== -->
+  <main class="flex-1 min-w-0 flex flex-col bg-paper-bg dark:bg-ink-bg">
+    <!-- header -->
+    <div class="shrink-0 px-5 h-[50px] flex items-center gap-2.5 border-b border-paper-border dark:border-ink-border bg-paper-panel/60 dark:bg-ink-panel/50 backdrop-blur-md">
+      <h1 class="text-[14px] font-semibold tracking-tight">backend</h1>
+      <div class="flex items-center gap-1 flex-wrap">
+        <span class="flex items-center gap-1.5 pl-1.5 pr-2 py-0.5 rounded-md bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border text-[10.5px] font-medium text-paper-sub dark:text-ink-sub">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-warn-light dark:text-warn-dark"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+          gaia
+        </span>
+        <span class="flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-md bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border text-[10.5px] font-medium text-paper-sub dark:text-ink-sub">
+          <span class="font-mono text-accent dark:text-accent-hover">@</span> iso-test
+        </span>
+        <span class="flex items-center gap-1.5 pl-1.5 pr-2 py-0.5 rounded-md bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border text-[10.5px] font-medium text-paper-sub dark:text-ink-sub">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent dark:text-accent-hover"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>
+          codex
+        </span>
+        <span class="flex items-center gap-1.5 pl-1.5 pr-2 py-0.5 rounded-md bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border text-[10.5px] font-medium text-paper-sub dark:text-ink-sub">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v6a3 3 0 0 0 3 3h6"/></svg>
+          main
+          <span class="w-1 h-1 rounded-full bg-warn-light dark:bg-warn-dark"></span>
+          <span class="text-warn-light dark:text-warn-dark">3 changed</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- transcript -->
+    <div class="flex-1 overflow-y-auto thin-scroll px-5 py-5">
+      <div class="max-w-3xl mx-auto space-y-5">
+
+        <!-- USER 1 -->
+        <div class="flex justify-end">
+          <div class="max-w-[80%] rounded-2xl rounded-tr-md px-3.5 py-2 bg-accent/10 dark:bg-accent/15 border border-accent/15 dark:border-accent/20">
+            <p class="text-[14px] leading-relaxed">重构 session 加载逻辑，避免懒加载误显示 "no sessions yet"。</p>
+          </div>
+        </div>
+
+        <!-- ASSISTANT 1 -->
+        <div class="flex gap-2.5">
+          <div class="w-6 h-6 shrink-0 rounded-lg bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border grid place-items-center mt-0.5">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent dark:text-accent-hover"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>
+          </div>
+          <div class="flex-1 min-w-0 space-y-2.5">
+            <p class="text-[14px] leading-relaxed text-paper-fg dark:text-ink-fg">问题出在 store 在首次渲染时同步返回空数组，而异步加载尚未完成。我把加载状态显式建模，并在 selector 里区分 <span class="font-mono text-[12.5px] px-1 py-0.5 rounded bg-paper-panel dark:bg-ink-elev">loading</span> 与真正的空态。</p>
+
+            <!-- tool steps card -->
+            <div class="rounded-lg border border-paper-border dark:border-ink-border bg-paper-panel dark:bg-ink-panel shadow-e1 dark:shadow-e1d overflow-hidden">
+              <button class="w-full flex items-center gap-2 px-3 py-2 hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="m6 9 6 6 6-6"/></svg>
+                <span class="text-[11.5px] font-semibold text-paper-sub dark:text-ink-sub">Tool steps</span>
+                <span class="text-[10.5px] font-mono text-ok-light dark:text-ok-dark">2 done</span>
+                <span class="flex-1"></span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-ok-light dark:text-ok-dark"><path d="M20 6 9 17l-5-5"/></svg>
+              </button>
+              <div class="px-3 pb-2.5 space-y-1 border-t border-paper-border dark:border-ink-border pt-2">
+                <div class="flex items-center gap-2 text-[12px]">
+                  <span class="w-4 h-4 grid place-items-center rounded-full bg-ok-light/15 dark:bg-ok-dark/15 shrink-0">
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" class="text-ok-light dark:text-ok-dark"><path d="M20 6 9 17l-5-5"/></svg>
+                  </span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-paper-sub dark:text-ink-sub"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                  <span class="font-medium">Read</span>
+                  <span class="font-mono text-[11px] text-paper-sub dark:text-ink-sub truncate">src/stores/instances.ts</span>
+                </div>
+                <div class="flex items-center gap-2 text-[12px]">
+                  <span class="w-4 h-4 grid place-items-center rounded-full bg-ok-light/15 dark:bg-ok-dark/15 shrink-0">
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" class="text-ok-light dark:text-ok-dark"><path d="M20 6 9 17l-5-5"/></svg>
+                  </span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
+                  <span class="font-medium">Edit</span>
+                  <span class="font-mono text-[11px] text-paper-sub dark:text-ink-sub truncate">src/stores/instances.ts</span>
+                  <span class="font-mono text-[10.5px] text-ok-light dark:text-ok-dark">+12</span>
+                  <span class="font-mono text-[10.5px] text-danger-light dark:text-danger-dark">−3</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- code snippet -->
+            <div class="rounded-lg border border-paper-border dark:border-ink-border bg-[#F6F4EF] dark:bg-[#141517] overflow-hidden shadow-e1 dark:shadow-e1d">
+              <div class="flex items-center justify-between px-3 py-1.5 border-b border-paper-border dark:border-ink-border">
+                <span class="font-mono text-[10.5px] text-paper-sub dark:text-ink-sub">instances.ts</span>
+                <span class="font-mono text-[10px] text-paper-sub dark:text-ink-sub">typescript</span>
+              </div>
+              <pre class="px-3 py-2.5 text-[12px] leading-[1.6] font-mono overflow-x-auto thin-scroll"><code><span class="text-[#0E9384] dark:text-[#5EEAD4]">export const</span> <span class="text-[#2563EB] dark:text-[#82AAFF]">selectSessions</span> = (s: State) => {
+  <span class="text-[#0E9384] dark:text-[#5EEAD4]">if</span> (s.status === <span class="text-[#A16207] dark:text-[#C3E88D]">'loading'</span>) <span class="text-[#0E9384] dark:text-[#5EEAD4]">return</span> { loading: <span class="text-[#C2410C] dark:text-[#F78C6C]">true</span>, items: [] };
+  <span class="text-[#0E9384] dark:text-[#5EEAD4]">if</span> (s.loaded && s.items.length === <span class="text-[#C2410C] dark:text-[#F78C6C]">0</span>)
+    <span class="text-[#0E9384] dark:text-[#5EEAD4]">return</span> { loading: <span class="text-[#C2410C] dark:text-[#F78C6C]">false</span>, items: [], empty: <span class="text-[#C2410C] dark:text-[#F78C6C]">true</span> };
+  <span class="text-[#0E9384] dark:text-[#5EEAD4]">return</span> { loading: <span class="text-[#C2410C] dark:text-[#F78C6C]">false</span>, items: s.items };
+};</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- USER 2 -->
+        <div class="flex justify-end">
+          <div class="max-w-[80%] rounded-2xl rounded-tr-md px-3.5 py-2 bg-accent/10 dark:bg-accent/15 border border-accent/15 dark:border-accent/20">
+            <p class="text-[14px] leading-relaxed">顺手把空态和 loading 区分一下。</p>
+          </div>
+        </div>
+
+        <!-- ASSISTANT 2 streaming -->
+        <div class="flex gap-2.5">
+          <div class="w-6 h-6 shrink-0 rounded-lg bg-paper-panel dark:bg-ink-elev border border-paper-border dark:border-ink-border grid place-items-center mt-0.5">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent dark:text-accent-hover"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>
+          </div>
+          <div class="flex-1 min-w-0 space-y-2">
+            <p class="text-[14px] leading-relaxed text-paper-fg dark:text-ink-fg">好的。空态我会渲染一个独立的 <span class="font-mono text-[12.5px] px-1 py-0.5 rounded bg-paper-panel dark:bg-ink-elev">EmptyState</span> 组件，而 loading 期间显示骨架屏，避免两者混淆<span class="caret"></span></p>
+            <div class="flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent dark:text-accent-hover shrink-0"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg>
+              <span class="text-[12px] font-medium shimmer-text">Reasoning…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- composer area -->
+    <div class="shrink-0 px-5 pb-4 pt-1.5 bg-gradient-to-t from-paper-bg dark:from-ink-bg to-transparent">
+      <div class="max-w-3xl mx-auto space-y-2">
+        <!-- TURN HUD -->
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ok-light/8 dark:bg-ok-dark/10 border border-ok-light/20 dark:border-ok-dark/20">
+          <span class="w-2 h-2 rounded-full bg-ok-light dark:bg-ok-dark pulse-dot"></span>
+          <span class="text-[12px] font-semibold text-ok-light dark:text-ok-dark">Working…</span>
+          <span class="font-mono text-[12px] tnum font-semibold text-ok-light dark:text-ok-dark">0:42</span>
+          <span class="text-[11.5px] text-paper-sub dark:text-ink-sub">· 2 tools</span>
+          <span class="flex-1"></span>
+          <button class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger-light dark:text-danger-dark hover:opacity-80 transition-opacity cursor-pointer">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            Cancel
+          </button>
+        </div>
+
+        <!-- COMPOSER -->
+        <div class="rounded-lg border border-paper-border dark:border-ink-border bg-paper-panel dark:bg-ink-panel shadow-e2 dark:shadow-e2d focus-within:border-accent/50 transition-colors">
+          <textarea rows="2" placeholder="Message, or /command" class="w-full bg-transparent resize-none px-3.5 pt-2.5 pb-1 text-[14px] leading-relaxed placeholder:text-paper-sub dark:placeholder:text-ink-sub focus:outline-none thin-scroll"></textarea>
+          <div class="flex items-center justify-between px-2.5 pb-2.5 pt-0.5">
+            <!-- model chip -->
+            <button class="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev transition-colors cursor-pointer text-paper-sub dark:text-ink-sub">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent dark:text-accent-hover"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg>
+              <span class="font-mono text-[11.5px] font-medium text-paper-fg dark:text-ink-fg">gpt-5.2<span class="text-paper-sub dark:text-ink-sub">[high]</span></span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <!-- send -->
+            <button class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md grad-cta text-white text-[12.5px] font-semibold shadow-e1d transition-all cursor-pointer hover:shadow-e2d">
+              Send
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== RIGHT PANEL ===== -->
+  <aside class="w-[300px] shrink-0 flex flex-col border-l border-paper-border dark:border-ink-border bg-paper-panel dark:bg-ink-panel">
+    <!-- tabs -->
+    <div class="shrink-0 h-10 flex items-center gap-1 px-2.5 border-b border-paper-border dark:border-ink-border">
+      <button class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent/10 dark:bg-accent/15 text-accent dark:text-accent-hover text-[11.5px] font-semibold cursor-pointer">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+        Files
+      </button>
+      <button class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-paper-sub dark:text-ink-sub hover:bg-paper-bg dark:hover:bg-ink-elev text-[11.5px] font-medium transition-colors cursor-pointer">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 12H3M16 6H3M21 18H3"/></svg>
+        Tasks
+      </button>
+    </div>
+
+    <!-- file tree -->
+    <div class="flex-1 overflow-y-auto thin-scroll p-2.5">
+      <div class="text-[11px] font-mono leading-5 space-y-px">
+        <!-- src/ open -->
+        <div class="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="m6 9 6 6 6-6"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent dark:text-accent-hover"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+          <span class="font-sans text-[12px] font-medium">src</span>
+        </div>
+        <!-- stores/ -->
+        <div class="ml-3 pl-1.5 border-l border-paper-border dark:border-ink-border">
+          <div class="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="m6 9 6 6 6-6"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <span class="font-sans text-[12px] font-medium">stores</span>
+          </div>
+          <div class="ml-3 pl-1.5 border-l border-paper-border dark:border-ink-border">
+            <!-- instances.ts highlighted modified -->
+            <div class="flex items-center gap-1.5 px-1.5 py-1 rounded-md bg-accent/10 dark:bg-accent/15 cursor-pointer">
+              <span class="w-[11px]"></span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+              <span class="font-sans text-[12px] flex-1 text-accent dark:text-accent-hover font-medium">instances.ts</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-warn-light dark:bg-warn-dark"></span>
+            </div>
+          </div>
+        </div>
+        <!-- components/ -->
+        <div class="ml-3 pl-1.5 border-l border-paper-border dark:border-ink-border">
+          <div class="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="m6 9 6 6 6-6"/></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+            <span class="font-sans text-[12px] font-medium">components</span>
+          </div>
+          <div class="ml-3 pl-1.5 border-l border-paper-border dark:border-ink-border">
+            <div class="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+              <span class="w-[11px]"></span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+              <span class="font-sans text-[12px] flex-1">InstanceTree.vue</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-warn-light dark:bg-warn-dark"></span>
+            </div>
+          </div>
+        </div>
+        <!-- packages/relay-web -->
+        <div class="flex items-center gap-1.5 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub -rotate-90"><path d="m6 9 6 6 6-6"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+          <span class="font-sans text-[12px] font-medium text-paper-sub dark:text-ink-sub">packages/relay-web</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- changes summary -->
+    <div class="shrink-0 border-t border-paper-border dark:border-ink-border p-2.5">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-[10.5px] font-semibold uppercase tracking-wider text-paper-sub dark:text-ink-sub">Changes</span>
+        <div class="flex items-center gap-1.5 font-mono text-[10.5px]">
+          <span class="text-paper-sub dark:text-ink-sub">3 files</span>
+          <span class="text-ok-light dark:text-ok-dark">+24</span>
+          <span class="text-danger-light dark:text-danger-dark">−7</span>
+        </div>
+      </div>
+      <div class="space-y-px">
+        <div class="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub shrink-0"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+          <span class="font-mono text-[11px] flex-1 truncate">instances.ts</span>
+          <span class="font-mono text-[10.5px] text-ok-light dark:text-ok-dark">+12</span>
+          <span class="font-mono text-[10.5px] text-danger-light dark:text-danger-dark">−3</span>
+        </div>
+        <div class="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub shrink-0"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+          <span class="font-mono text-[11px] flex-1 truncate">InstanceTree.vue</span>
+          <span class="font-mono text-[10.5px] text-ok-light dark:text-ok-dark">+9</span>
+          <span class="font-mono text-[10.5px] text-danger-light dark:text-danger-dark">−2</span>
+        </div>
+        <div class="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-paper-bg dark:hover:bg-ink-elev cursor-pointer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-paper-sub dark:text-ink-sub shrink-0"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+          <span class="font-mono text-[11px] flex-1 truncate">files.ts</span>
+          <span class="font-mono text-[10.5px] text-ok-light dark:text-ok-dark">+3</span>
+          <span class="font-mono text-[10.5px] text-danger-light dark:text-danger-dark">−2</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    html.classList.toggle('dark');
+    document.documentElement.style.setProperty('--ring-bg', html.classList.contains('dark') ? '#17181A' : '#FAF9F6');
+  }
+  document.documentElement.style.setProperty('--ring-bg', '#17181A');
+</script>
+</body>
+</html>
