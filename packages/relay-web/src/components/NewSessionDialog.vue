@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { X } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
 
@@ -97,30 +98,30 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="emit('close')">
-    <div class="w-full max-w-md rounded-xl bg-white shadow-xl" data-test="new-session-dialog">
-      <header class="flex items-center justify-between border-b px-5 py-3">
-        <h2 class="text-sm font-semibold">New session <span class="font-normal text-slate-400">· {{ instanceName }}</span></h2>
-        <button class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600" aria-label="Close" @click="emit('close')">✕</button>
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
+    <div class="w-full max-w-md rounded-xl border border-border bg-raised shadow-xl" data-test="new-session-dialog">
+      <header class="flex items-center justify-between border-b border-border px-5 py-3">
+        <h2 class="text-sm font-semibold text-fg">New session <span class="font-normal text-fg-muted">· {{ instanceName }}</span></h2>
+        <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" aria-label="Close" @click="emit('close')"><X :size="16" /></button>
       </header>
 
       <div class="space-y-4 px-5 py-4">
-        <div v-if="pending" data-test="ns-pending" class="rounded-lg bg-blue-50 px-3 py-3 text-xs text-blue-700">
+        <div v-if="pending" data-test="ns-pending" class="rounded-lg bg-info/10 px-3 py-3 text-xs text-info">
           Session is being created and will appear in the list shortly…
         </div>
-        <div v-else-if="loading" class="py-6 text-center text-sm text-slate-400">Loading options…</div>
+        <div v-else-if="loading" class="py-6 text-center text-sm text-fg-muted">Loading options…</div>
         <template v-else>
           <label class="block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">Session alias <span class="font-normal text-slate-400">(optional)</span></span>
+            <span class="mb-1 block text-xs font-medium text-fg-muted">Session alias <span class="font-normal text-fg-muted">(optional)</span></span>
             <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
-                   class="w-full rounded-lg border px-3 py-2 text-sm focus:border-slate-400 focus:outline-none"
+                   class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                    @keydown.enter="submit" />
           </label>
 
           <label class="block">
-            <span class="mb-1 block text-xs font-medium text-slate-600">Agent</span>
+            <span class="mb-1 block text-xs font-medium text-fg-muted">Agent</span>
             <select v-model="agentValue" data-test="ns-agent"
-                    class="w-full rounded-lg border bg-white px-3 py-2 text-sm focus:border-slate-400 focus:outline-none">
+                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
               <optgroup v-if="inst?.agents.length" label="Configured">
                 <option v-for="a in inst.agents" :key="a.name" :value="a.name">{{ a.name }} · {{ a.driver }}</option>
               </optgroup>
@@ -134,40 +135,40 @@ async function submit(): Promise<void> {
 
           <div class="block">
             <div class="mb-1 flex items-center justify-between">
-              <span class="text-xs font-medium text-slate-600">Workspace</span>
+              <span class="text-xs font-medium text-fg-muted">Workspace</span>
               <div class="flex gap-1">
                 <button type="button" data-test="ns-ws-mode-existing"
                         class="rounded px-2 py-0.5 text-xs"
-                        :class="wsMode === 'existing' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                        :class="wsMode === 'existing' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'existing'">Existing</button>
                 <button type="button" data-test="ns-ws-mode-path"
                         class="rounded px-2 py-0.5 text-xs"
-                        :class="wsMode === 'path' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+                        :class="wsMode === 'path' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'path'">New path</button>
               </div>
             </div>
             <select v-if="wsMode === 'existing'" v-model="workspaceSel" data-test="ns-workspace"
-                    class="w-full rounded-lg border bg-white px-3 py-2 text-sm focus:border-slate-400 focus:outline-none">
+                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
               <option v-for="w in inst?.workspaces ?? []" :key="w.name" :value="w.name">{{ w.name }} — {{ w.cwd }}</option>
             </select>
             <input v-else v-model="workspacePath" data-test="ns-ws-path" placeholder="/abs/path"
-                   class="w-full rounded-lg border px-3 py-2 text-sm focus:border-slate-400 focus:outline-none" />
+                   class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
           </div>
 
-          <p v-if="error" data-test="ns-error" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{{ error }}</p>
+          <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ error }}</p>
         </template>
       </div>
 
-      <footer class="flex justify-end gap-2 border-t px-5 py-3">
+      <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
         <template v-if="pending">
           <button data-test="ns-pending-close"
-                  class="rounded-lg bg-slate-800 px-4 py-1.5 text-sm font-medium text-white hover:bg-slate-700"
+                  class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"
                   @click="emit('created', submittedAlias); emit('close')">OK</button>
         </template>
         <template v-else>
-          <button class="rounded-lg px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100" @click="emit('close')">Cancel</button>
+          <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">Cancel</button>
           <button data-test="ns-create" :disabled="!canSubmit"
-                  class="rounded-lg bg-slate-800 px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-slate-700 disabled:opacity-40"
+                  class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
                   @click="submit">{{ submitting ? "Creating…" : "Create" }}</button>
         </template>
       </footer>
