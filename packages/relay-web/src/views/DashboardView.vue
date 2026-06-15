@@ -98,36 +98,41 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-screen flex-col bg-bg text-fg">
-    <!-- Global top bar: brand + connection status on the left; search, theme, settings on the right. -->
-    <header class="flex h-11 shrink-0 items-center gap-3 border-b border-border bg-surface px-3">
-      <BrandLogo />
-      <ConnectionBadge />
-      <div class="ml-auto flex items-center gap-1">
+    <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
+    <header class="sticky top-0 z-30 flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 backdrop-blur-xl">
+      <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. -->
+      <div class="flex items-center gap-2">
+        <BrandLogo />
+        <ConnectionBadge />
+      </div>
+      <!-- Right: search button with ⌘K chip, theme toggle, settings. -->
+      <div class="flex items-center gap-1.5">
         <button
           data-test="global-search"
           aria-label="Search"
-          class="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-fg-muted hover:bg-fg/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="group flex h-7 items-center gap-2 rounded-lg border border-border bg-bg px-2.5 text-left transition-colors hover:border-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
-          <Search :size="16" />
-          <span class="hidden font-mono sm:inline">⌘K</span>
+          <Search :size="14" class="text-fg-muted" />
+          <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">Search…</span>
+          <kbd class="hidden rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="theme-toggle"
           :aria-label="theme.mode === 'dark' ? 'Switch to light' : 'Switch to dark'"
-          class="rounded-md p-1.5 text-fg-muted hover:bg-fg/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           @click="theme.toggle()"
         >
-          <Moon v-if="theme.mode === 'dark'" :size="18" />
-          <Sun v-else :size="18" />
+          <Moon v-if="theme.mode === 'dark'" :size="15" />
+          <Sun v-else :size="15" />
         </button>
         <router-link
           to="/settings"
           data-test="settings-link"
           aria-label="Settings"
-          class="rounded-md p-1.5 text-fg-muted hover:bg-fg/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
-          <Settings :size="18" />
+          <Settings :size="15" />
         </router-link>
       </div>
     </header>
@@ -148,12 +153,12 @@ onUnmounted(() => {
 
       <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="left"
-           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
+           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:w-[248px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
            :class="leftOpen ? 'translate-x-0' : '-translate-x-full'">
-        <div class="flex items-center justify-between border-b border-border p-2 text-xs">
-          <router-link to="/settings" class="text-fg-muted hover:underline">Settings</router-link>
+        <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
+          <router-link to="/settings" class="font-semibold uppercase tracking-wider text-fg-muted hover:text-fg">Settings</router-link>
           <div class="flex items-center gap-3">
-            <button class="text-fg-muted hover:underline" @click="onLogout">Logout</button>
+            <button class="text-fg-muted hover:text-fg" @click="onLogout">Logout</button>
             <button data-test="close-instances" aria-label="Close instances"
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
