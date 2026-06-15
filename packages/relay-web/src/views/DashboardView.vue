@@ -11,11 +11,15 @@ import { useConnectionStore } from "../stores/connection";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
 import TaskPanel from "../components/TaskPanel.vue";
+import FilesPanel from "../components/FilesPanel.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ConnectionBadge from "../components/ConnectionBadge.vue";
+import CommandPalette from "../components/CommandPalette.vue";
+import { useComposerStore } from "../stores/composer";
 
 const instances = useInstancesStore();
 const chat = useChatStore();
+const composer = useComposerStore();
 const tasks = useTasksStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
@@ -27,9 +31,20 @@ let disconnect: (() => void) | null = null;
 // these flags are visually irrelevant because the lg: classes override the transform.
 const leftOpen = ref(false);
 const rightOpen = ref(false);
+const rightTab = ref<"tasks" | "files">("tasks");
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
+}
+
+// Cmd/Ctrl+K command palette.
+const paletteOpen = ref(false);
+const composerKey = () => `${chat.instanceId}\0${chat.sessionAlias}`;
+function onGlobalKey(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    paletteOpen.value = !paletteOpen.value;
+  }
 }
 
 async function onLogout() {
@@ -61,6 +76,7 @@ function onStatus(online: boolean) {
 }
 
 onMounted(async () => {
+  window.addEventListener("keydown", onGlobalKey);
   await instances.loadInstances();
   disconnect = connectEvents((event) => {
     instances.applyEvent(event);
@@ -70,7 +86,10 @@ onMounted(async () => {
   }, onStatus);
 });
 
-onUnmounted(() => disconnect?.());
+onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalKey);
+  disconnect?.();
+});
 </script>
 
 <template>
@@ -108,20 +127,29 @@ onUnmounted(() => disconnect?.());
 
       <!-- Center: chat, always full width of the remaining space. -->
       <div data-test="column" class="flex flex-1 flex-col">
-        <ChatPane />
+        <ChatPane @show-files="rightTab = 'files'" />
       </div>
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="right"
            class="fixed inset-y-0 right-0 z-40 w-72 max-w-[85%] shrink-0 transform overflow-y-auto border-l bg-white shadow-lg transition-transform lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'">
-        <div class="flex items-center justify-end border-b p-2 lg:hidden">
+        <div class="flex items-center gap-1 border-b p-2">
+          <div class="flex overflow-hidden rounded border text-xs">
+            <button data-test="right-tab-tasks" class="px-2 py-1" :class="rightTab === 'tasks' ? 'bg-sky-500 text-white' : 'text-slate-500'" @click="rightTab = 'tasks'">Tasks</button>
+            <button data-test="right-tab-files" class="px-2 py-1" :class="rightTab === 'files' ? 'bg-sky-500 text-white' : 'text-slate-500'" @click="rightTab = 'files'">Files</button>
+          </div>
           <button data-test="close-tasks" aria-label="Close tasks"
-                  class="text-slate-400 hover:text-slate-600" @click="rightOpen = false">✕</button>
+                  class="ml-auto text-slate-400 hover:text-slate-600 lg:hidden" @click="rightOpen = false">✕</button>
         </div>
-        <TaskPanel />
+        <TaskPanel v-if="rightTab === 'tasks'" />
+        <FilesPanel v-else :instance-id="chat.instanceId" />
       </div>
     </div>
     <NoticeToast />
+    <CommandPalette v-if="paletteOpen"
+                    @close="paletteOpen = false"
+                    @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }"
+                    @pick-command="(name) => { composer.requestInsert(composerKey(), name); paletteOpen = false; }" />
   </div>
 </template>

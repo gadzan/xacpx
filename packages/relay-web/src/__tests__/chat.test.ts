@@ -246,7 +246,54 @@ test("a cancelled finish marks the turn stopped, not errored", () => {
   expect(store.messages.at(-1)).toMatchObject({ status: "cancelled", text: "partial" });
 });
 
-test("PromptInput disables its textarea when busy", () => {
+test("PromptInput stays composable while busy but shows Stop and blocks send", async () => {
   const wrapper = mount(PromptInput, { props: { busy: true } });
-  expect((wrapper.find("textarea").element as HTMLTextAreaElement).disabled).toBe(true);
+  // Textarea is intentionally enabled while busy (pre-compose / Esc-to-stop).
+  expect((wrapper.find("textarea").element as HTMLTextAreaElement).disabled).toBe(false);
+  expect(wrapper.find('[data-test="composer-stop"]').exists()).toBe(true);
+  await wrapper.find("textarea").setValue("queued while busy");
+  await wrapper.find("textarea").trigger("keydown", { key: "Enter" });
+  expect(wrapper.emitted("send")).toBeFalsy(); // submit no-ops while busy
+});
+
+test("PromptInput Stop button and Esc-while-busy emit cancel", async () => {
+  const wrapper = mount(PromptInput, { props: { busy: true } });
+  await wrapper.find('[data-test="composer-stop"]').trigger("click");
+  await wrapper.find("textarea").trigger("keydown", { key: "Escape" });
+  expect(wrapper.emitted("cancel")?.length).toBe(2);
+});
+
+test("a finished turn on an unviewed session becomes unread, and select clears it", () => {
+  const store = useChatStore();
+  store.select("i1", "backend"); // viewing backend, not frontend
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("unread");
+  expect(store.sessionAttention("i1", "backend")).toBe("idle"); // viewed → no unread
+  store.select("i1", "frontend");
+  expect(store.sessionAttention("i1", "frontend")).toBe("idle");
+});
+
+test("working (a live turn) outranks unread", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("unread");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "frontend" } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("working");
+});
+
+test("an instance going offline clears its unread signals", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("unread");
+  store.applyEvent({ kind: "instance-status", instanceId: "i1", online: false } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("idle");
+});
+
+test("a cancelled turn on an unviewed session does NOT mark unread", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: false, cancelled: true } } as never);
+  expect(store.sessionAttention("i1", "frontend")).toBe("idle");
 });

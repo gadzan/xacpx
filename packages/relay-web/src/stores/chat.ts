@@ -23,7 +23,24 @@ export const useChatStore = defineStore("chat", () => {
   const sessionAlias = ref<string | null>(null);
   const messages = ref<ChatMessage[]>([]);
   const liveTurns = ref<Record<string, LiveTurn>>({});
+  // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
+  // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
+  const unread = ref<Set<string>>(new Set());
   const bufKey = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+
+  /** Which attention signal a session should show in the list. `working` (a live turn)
+   *  outranks `unread` (a finished-but-unviewed result); otherwise `idle`. */
+  function sessionAttention(instId: string, alias: string): "working" | "unread" | "idle" {
+    const k = bufKey(instId, alias);
+    if (liveTurns.value[k]) return "working";
+    if (unread.value.has(k)) return "unread";
+    return "idle";
+  }
+
+  /** Epoch ms when the session's live turn began, or null if it isn't working. */
+  function runningSince(instId: string, alias: string): number | null {
+    return liveTurns.value[bufKey(instId, alias)]?.startedAt ?? null;
+  }
 
   const selectedKey = computed(() =>
     instanceId.value && sessionAlias.value ? bufKey(instanceId.value, sessionAlias.value) : null,
@@ -77,6 +94,13 @@ export const useChatStore = defineStore("chat", () => {
     sessionAlias.value = alias;
     messages.value = [];
     error.value = "";
+    // Viewing a session clears its unread signal.
+    const k = bufKey(id, alias);
+    if (unread.value.has(k)) {
+      const next = new Set(unread.value);
+      next.delete(k);
+      unread.value = next;
+    }
   }
 
   async function loadHistory(): Promise<void> {
@@ -91,6 +115,8 @@ export const useChatStore = defineStore("chat", () => {
     if (event.kind === "instance-status" && !event.online) {
       const prefix = `${event.instanceId}\0`;
       for (const k of Object.keys(liveTurns.value)) if (k.startsWith(prefix)) delete liveTurns.value[k];
+      const next = new Set([...unread.value].filter((k) => !k.startsWith(prefix)));
+      if (next.size !== unread.value.size) unread.value = next;
       return;
     }
     if (event.kind !== "control-event") return;
@@ -109,7 +135,15 @@ export const useChatStore = defineStore("chat", () => {
       ensureTurn(bufKey(event.instanceId, e.sessionAlias)).reasoning += e.chunk;
     } else if (e.type === "turn-finished") {
       const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
+      const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
       flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
+      // A result that landed in a session the user isn't viewing earns an unread dot.
+      if (!selected && (status === "done" || status === "error")) {
+        const k = bufKey(event.instanceId, e.sessionAlias);
+        const next = new Set(unread.value);
+        next.add(k);
+        unread.value = next;
+      }
     }
   }
 
@@ -157,5 +191,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, busy, sending, error, select, loadHistory, applyEvent, send, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, applyEvent, send, cancel };
 });

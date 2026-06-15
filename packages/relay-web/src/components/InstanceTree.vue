@@ -1,13 +1,30 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onUnmounted, ref } from "vue";
 import { useInstancesStore } from "../stores/instances";
+import { useChatStore } from "../stores/chat";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 
 const store = useInstancesStore();
+const chat = useChatStore();
 const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
 const dialogFor = ref<{ id: string; name: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
+
+// 1Hz clock so working-session elapsed badges tick.
+const nowMs = ref(Date.now());
+const timer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
+onUnmounted(() => clearInterval(timer));
+
+// Compact elapsed label (e.g. "12s", "3m", "1h") for a working session, or "".
+function elapsedLabel(instanceId: string, alias: string): string {
+  const since = chat.runningSince(instanceId, alias);
+  if (since === null) return "";
+  const s = Math.max(0, Math.floor((nowMs.value - since) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h`;
+}
 
 async function toggle(id: string) {
   await store.loadSessions(id).catch(() => {});
@@ -28,11 +45,21 @@ function remove(id: string, alias: string) {
         <li v-for="s in inst.sessions" :key="s.alias" class="flex items-center justify-between pr-2">
           <button class="flex flex-1 items-center gap-2 px-6 py-1 text-left text-sm hover:bg-slate-50"
                   @click="emit('select', inst.id, s.alias)">
-            <span v-if="s.running" class="text-amber-500">●</span>
+            <span v-if="chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
+                  class="text-amber-500 animate-pulse">●</span>
+            <span v-else-if="chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
+                  class="text-sky-500">●</span>
+            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="text-amber-500">●</span>
             {{ s.alias }} <span class="text-slate-400">({{ s.agent }})</span>
+            <span v-if="elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
+                  class="ml-auto tabular-nums text-xs text-amber-500">{{ elapsedLabel(inst.id, s.alias) }}</span>
           </button>
           <button data-test="delete-session" class="text-xs text-red-400 hover:underline" @click.stop="remove(inst.id, s.alias)">delete</button>
         </li>
+        <li v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
+            class="px-6 py-1 text-xs text-slate-400">loading…</li>
+        <li v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
+            class="px-6 py-1 text-xs text-slate-400">no sessions yet</li>
       </ul>
       <div class="flex items-center gap-3 px-6 py-1.5">
         <button data-test="new-session" class="text-left text-xs font-medium text-slate-500 hover:text-slate-800"

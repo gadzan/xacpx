@@ -56,6 +56,16 @@ describe("MessageList", () => {
     });
     expect(wrapper.find('[data-test="msg-failed"]').exists()).toBe(true);
   });
+
+  it("offers a copy button on agent messages and hides jump-latest while pinned", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "out", text: "copy me" })], streaming: "", liveTurn: null },
+    });
+    expect(wrapper.find('[data-test="copy-button"]').exists()).toBe(true);
+    // atBottom defaults true → the jump-latest affordance is hidden (v-show).
+    const jump = wrapper.find('[data-test="jump-latest"]');
+    expect(jump.exists() && jump.isVisible()).toBe(false);
+  });
 });
 
 it("renders persisted tool steps under a completed out message", () => {
