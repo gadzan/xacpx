@@ -17,7 +17,7 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
-import { Search, Moon, Sun, Settings } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X } from "lucide-vue-next";
 import { useComposerStore } from "../stores/composer";
 
 const theme = useThemeStore();
@@ -155,7 +155,7 @@ onUnmounted(() => {
           <div class="flex items-center gap-3">
             <button class="text-fg-muted hover:underline" @click="onLogout">Logout</button>
             <button data-test="close-instances" aria-label="Close instances"
-                    class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false">✕</button>
+                    class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
         <InstanceTree @select="onSelect" />
@@ -176,7 +176,7 @@ onUnmounted(() => {
             <button data-test="right-tab-files" class="px-2 py-1" :class="rightTab === 'files' ? 'bg-accent text-white' : 'text-fg-muted'" @click="rightTab = 'files'">Files</button>
           </div>
           <button data-test="close-tasks" aria-label="Close tasks"
-                  class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false">✕</button>
+                  class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
         <TaskPanel v-if="rightTab === 'tasks'" />
         <FilesPanel v-else :instance-id="chat.instanceId" />

@@ -54,11 +54,11 @@ function remove(id: string, alias: string) {
           <button class="flex h-7 flex-1 items-center gap-2 px-6 text-left text-sm hover:bg-fg/5"
                   @click="emit('select', inst.id, s.alias)">
             <span v-if="chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
-                  class="text-run-bright animate-pulse motion-reduce:animate-none"
-                  style="text-shadow:0 0 8px rgb(var(--c-run-bright)/.5)">●</span>
+                  class="h-2 w-2 shrink-0 rounded-full bg-run-bright animate-pulse motion-reduce:animate-none"
+                  style="box-shadow:0 0 8px rgb(var(--c-run-bright)/.5)" />
             <span v-else-if="chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
-                  class="text-info">●</span>
-            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="text-run">●</span>
+                  class="h-2 w-2 shrink-0 rounded-full bg-info" />
+            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
             {{ s.alias }} <span class="font-mono text-fg-muted">({{ s.agent }})</span>
             <span v-if="elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
                   class="ml-auto font-mono tabular-nums text-xs text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
