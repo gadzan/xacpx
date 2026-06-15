@@ -28,20 +28,28 @@ describe("session-controls store", () => {
     expect(s.available).toEqual([]);
   });
 
-  it("setModel switches and optimistically updates current", async () => {
-    rpc.mockResolvedValueOnce({ ok: true });
+  it("setModel updates current optimistically before the RPC resolves", async () => {
+    let resolveRpc!: (v: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((r) => { resolveRpc = r; }));
     const s = useSessionControlsStore();
-    const ok = await s.setModel("i1", "backend", "claude-opus-4-8");
+    const p = s.setModel("i1", "backend", "claude-opus-4-8");
+    // The chip reflects the choice immediately — before the (slow) backend set resolves.
+    expect(s.current).toBe("claude-opus-4-8");
+    resolveRpc({ ok: true });
+    expect(await p).toBe(true);
     expect(rpc).toHaveBeenCalledWith("i1", "control.session.model.set", { sessionAlias: "backend", modelId: "claude-opus-4-8" });
-    expect(ok).toBe(true);
     expect(s.current).toBe("claude-opus-4-8");
   });
 
-  it("setModel surfaces an instance-side error payload", async () => {
-    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "requested model unsupported" } });
+  it("setModel reverts current on an instance-side error payload", async () => {
+    rpc.mockResolvedValueOnce({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] });
     const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    expect(s.current).toBe("gpt-5.2[high]");
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "requested model unsupported" } });
     const ok = await s.setModel("i1", "backend", "bogus");
     expect(ok).toBe(false);
     expect(s.error).toContain("unsupported");
+    expect(s.current).toBe("gpt-5.2[high]"); // reverted, not left on "bogus"
   });
 });

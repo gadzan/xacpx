@@ -35,12 +35,17 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
 
   async function setModel(instanceId: string, alias: string, id: string): Promise<boolean> {
     error.value = "";
+    // Reflect the choice in the chip immediately. The backend `set` spawns acpx and can
+    // take a second or two (or time out), so updating only AFTER the RPC left the chip
+    // showing the old model until the next session switch. Revert if the switch fails.
+    const prev = current.value;
+    current.value = id;
     try {
       const r = await api.rpc<{ ok?: boolean }>(instanceId, "control.session.model.set", { sessionAlias: alias, modelId: id });
-      if (isErrorPayload(r)) { error.value = r.error.message; return false; }
-      current.value = id; // optimistic; acpx already validated the id
+      if (isErrorPayload(r)) { current.value = prev; error.value = r.error.message; return false; }
       return true;
     } catch (e) {
+      current.value = prev;
       error.value = e instanceof Error ? e.message : "set-failed";
       return false;
     }
