@@ -20,5 +20,5 @@ watch(
     <ScheduledTasks />
     <OrchestrationTasks />
   </div>
-  <div v-else class="p-4 text-sm text-slate-400">No session selected.</div>
+  <div v-else class="p-4 text-sm text-fg-muted">No session selected.</div>
 </template>
