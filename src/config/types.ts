@@ -59,6 +59,8 @@ export interface LoggingConfig {
 export interface AgentConfig {
   driver: string;
   command?: string;
+  /** Default LLM model id for sessions of this agent (e.g. `gpt-5.2[high]`); a session-level model overrides it. */
+  model?: string;
 }
 
 export interface WorkspaceConfig {

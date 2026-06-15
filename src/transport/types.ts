@@ -27,6 +27,12 @@ export interface ResolvedSession {
   alias: string;
   agent: string;
   agentCommand?: string;
+  /**
+   * LLM model id to run this session under (e.g. `gpt-5.2[high]`). Resolved from
+   * the session's own override first, then the agent config default. When unset,
+   * no `--model` is passed and acpx uses the agent adapter's default.
+   */
+  model?: string;
   workspace: string;
   transportSession: string;
   source?: "xacpx" | "agent-side";

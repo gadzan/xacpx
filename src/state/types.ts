@@ -31,6 +31,8 @@ export interface LogicalSession {
   attached_at?: string;
   transport_agent_command?: string;
   mode_id?: string;
+  /** Per-session LLM model override (e.g. `gpt-5.2[high]`); falls back to the agent config default. */
+  model?: string;
   reply_mode?: "stream" | "final" | "verbose";
   created_at: string;
   last_used_at: string;
