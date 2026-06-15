@@ -5,6 +5,7 @@ import {
   type FsDiffPayload,
   type FsListPayload,
   type FsReadPayload,
+  type FsSearchPayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type OrchestrationTaskDto,
@@ -170,6 +171,11 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       const input = payload as FsDiffPayload;
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
       return await control.workspaceGitDiff(input.workspace, input.path); // WorkspaceDiff ≅ FsDiffResult
+    }
+    case MSG.fsSearch: {
+      const input = payload as FsSearchPayload;
+      if (!input.workspace) return errorPayload("bad-request", "workspace is required");
+      return await control.searchWorkspace(input.workspace, input.query ?? ""); // SearchResult ≅ FsSearchResult
     }
     default:
       return errorPayload("unknown-type", `unsupported rpc type: ${envelope.type}`);

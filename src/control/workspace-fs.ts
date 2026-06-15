@@ -27,6 +27,9 @@ const MAX_ENTRIES = 2000;
 const FILE_READ_CAP = 256 * 1024; // 256 KiB
 const DIFF_CAP = 512 * 1024; // 512 KiB
 const GIT_MAX_BUFFER = 32 * 1024 * 1024;
+const SEARCH_MAX_RESULTS = 200;
+const SEARCH_MAX_SCAN = 20000; // directory entries visited before giving up
+const SEARCH_SKIP_DIRS = new Set([".git", "node_modules"]);
 
 export interface FsEntry {
   name: string;
@@ -49,6 +52,12 @@ export interface FileContent {
 export interface DiffFile {
   path: string;
   status: string;
+}
+export interface SearchResult {
+  workspace: string;
+  query: string;
+  matches: string[];
+  truncated: boolean;
 }
 export interface WorkspaceDiff {
   workspace: string;
@@ -133,6 +142,45 @@ export class WorkspaceFs {
     } finally {
       await fh.close();
     }
+  }
+
+  /** Find files whose relative path contains `query` (case-insensitive). Walks the
+   *  tree breadth-first, skipping `.git`/`node_modules` and never following symlinks
+   *  (so it stays contained), bounded by a scan budget and a result cap. */
+  async search(workspace: string, query: string): Promise<SearchResult> {
+    const { root } = await this.resolve(workspace, undefined);
+    const needle = query.trim().toLowerCase();
+    const matches: string[] = [];
+    if (!needle) return { workspace, query, matches, truncated: false };
+
+    let scanned = 0;
+    let truncated = false;
+    const queue: string[] = [root];
+    while (queue.length) {
+      const dir = queue.shift()!;
+      let dirents;
+      try {
+        dirents = await readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const d of dirents) {
+        if (++scanned > SEARCH_MAX_SCAN) { truncated = true; break; }
+        if (d.isSymbolicLink()) continue; // never follow symlinks — keeps us contained
+        if (d.isDirectory()) {
+          if (!SEARCH_SKIP_DIRS.has(d.name)) queue.push(resolve(dir, d.name));
+        } else if (d.isFile()) {
+          const rel = relative(root, resolve(dir, d.name)).split(sep).join("/");
+          if (rel.toLowerCase().includes(needle)) {
+            matches.push(rel);
+            if (matches.length >= SEARCH_MAX_RESULTS) { truncated = true; break; }
+          }
+        }
+      }
+      if (truncated) break;
+    }
+    matches.sort();
+    return { workspace, query, matches, truncated };
   }
 
   async gitDiff(workspace: string, relPath?: string): Promise<WorkspaceDiff> {

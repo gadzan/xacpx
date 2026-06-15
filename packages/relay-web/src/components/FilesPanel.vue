@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 
@@ -9,6 +9,18 @@ const instances = useInstancesStore();
 
 const workspaces = computed(() => (props.instanceId ? instances.byId(props.instanceId)?.workspaces ?? [] : []));
 const crumbs = computed(() => (files.path ? files.path.split("/") : []));
+
+// Debounced file-name search.
+const searchInput = ref("");
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+function onSearchInput() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => void files.search(searchInput.value), 250);
+}
+function clearSearch() {
+  searchInput.value = "";
+  void files.search("");
+}
 
 // Format a byte size compactly.
 function fmtSize(n?: number): string {
@@ -31,6 +43,7 @@ watch(
   () => props.instanceId,
   async (id) => {
     files.reset();
+    searchInput.value = "";
     if (!id) return;
     files.instanceId = id;
     await instances.loadWorkspaces(id).catch(() => {});
@@ -49,6 +62,7 @@ watch(
 
 function onWorkspaceChange(e: Event) {
   const name = (e.target as HTMLSelectElement).value;
+  searchInput.value = "";
   if (props.instanceId) void files.selectWorkspace(props.instanceId, name);
 }
 </script>
@@ -74,8 +88,29 @@ function onWorkspaceChange(e: Event) {
 
       <!-- Files tab -->
       <div v-if="files.tab === 'files'" class="min-h-0 flex-1 overflow-y-auto">
-        <!-- breadcrumb -->
-        <div class="flex flex-wrap items-center gap-1 border-b px-2 py-1 text-xs text-slate-500">
+        <!-- search -->
+        <div class="flex items-center gap-1 border-b px-2 py-1">
+          <input v-model="searchInput" data-test="fs-search" placeholder="Search files by name…"
+                 class="min-w-0 flex-1 rounded border px-2 py-1 text-xs" @input="onSearchInput" />
+          <button v-if="searchInput" class="text-xs text-slate-400 hover:text-slate-700" @click="clearSearch">✕</button>
+        </div>
+
+        <!-- search results -->
+        <div v-if="files.query.trim()" data-test="fs-results">
+          <ul>
+            <li v-for="m in files.results" :key="m">
+              <button data-test="fs-result" class="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-slate-50" @click="files.openFile(m)">
+                <span>📄</span><span class="truncate font-mono text-xs text-slate-600">{{ m }}</span>
+              </button>
+            </li>
+            <li v-if="!files.results.length && !files.searching" class="px-3 py-2 text-xs text-slate-400">no matches</li>
+          </ul>
+          <div v-if="files.searchTruncated" class="px-3 py-1 text-xs text-amber-600">showing first 200 matches</div>
+          <div v-if="files.file" class="border-t" />
+        </div>
+
+        <!-- breadcrumb (hidden while searching) -->
+        <div v-if="!files.query.trim()" class="flex flex-wrap items-center gap-1 border-b px-2 py-1 text-xs text-slate-500">
           <button class="hover:underline" @click="files.up(-1)">{{ files.workspace ?? "root" }}</button>
           <template v-for="(c, i) in crumbs" :key="i">
             <span>/</span><button class="hover:underline" @click="files.up(i)">{{ c }}</button>
@@ -96,7 +131,7 @@ function onWorkspaceChange(e: Event) {
         </div>
 
         <!-- directory listing -->
-        <ul v-else>
+        <ul v-else-if="!files.query.trim()">
           <li v-for="e in files.entries" :key="e.name">
             <button data-test="fs-entry" class="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-slate-50" @click="files.open(e)">
               <span>{{ e.type === "dir" ? "📁" : "📄" }}</span>
@@ -111,10 +146,17 @@ function onWorkspaceChange(e: Event) {
       <!-- Changes (git diff) tab -->
       <div v-else class="min-h-0 flex-1 overflow-y-auto">
         <div v-if="files.diff">
+          <div v-if="files.diffPath" class="flex items-center gap-2 border-b bg-sky-50 px-3 py-1 text-xs">
+            <span class="truncate font-mono text-slate-700">{{ files.diffPath }}</span>
+            <button data-test="diff-all" class="ml-auto text-sky-600 hover:underline" @click="files.loadDiff()">← all files</button>
+          </div>
           <ul class="border-b text-xs">
-            <li v-for="f in files.diff.files" :key="f.path" data-test="diff-file" class="flex items-center gap-2 px-3 py-1">
-              <span class="w-6 font-mono text-slate-400">{{ f.status.trim() || "··" }}</span>
-              <span class="truncate font-mono text-slate-700">{{ f.path }}</span>
+            <li v-for="f in files.diff.files" :key="f.path">
+              <button data-test="diff-file" class="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-slate-50"
+                      :class="files.diffPath === f.path ? 'bg-sky-50' : ''" @click="files.loadDiff(f.path)">
+                <span class="w-6 font-mono text-slate-400">{{ f.status.trim() || "··" }}</span>
+                <span class="truncate font-mono text-slate-700">{{ f.path }}</span>
+              </button>
             </li>
             <li v-if="!files.diff.files.length" class="px-3 py-2 text-slate-400">no changes</li>
           </ul>

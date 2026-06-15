@@ -20,7 +20,7 @@ import {
 } from "../channels/channel-scope";
 import type { ControlEventBus } from "./control-event-bus";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
-import { WorkspaceFs, type DirListing, type FileContent, type WorkspaceDiff } from "./workspace-fs";
+import { WorkspaceFs, type DirListing, type FileContent, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
 
 export interface ControlSessionInfo {
   alias: string;
@@ -115,6 +115,10 @@ export class ControlService {
 
   workspaceGitDiff(workspace: string, path?: string): Promise<WorkspaceDiff> {
     return this.workspaceFs.gitDiff(workspace, path);
+  }
+
+  searchWorkspace(workspace: string, query: string): Promise<SearchResult> {
+    return this.workspaceFs.search(workspace, query);
   }
 
   get events(): ControlEventBus {

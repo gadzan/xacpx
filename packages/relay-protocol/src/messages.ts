@@ -30,6 +30,7 @@ export const MSG = {
   fsList: "control.fs.list",
   fsRead: "control.fs.read",
   fsDiff: "control.fs.diff",
+  fsSearch: "control.fs.search",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -241,5 +242,18 @@ export interface FsDiffResult {
   files: FsDiffFileDto[];
   /** Unified diff text vs HEAD (possibly truncated). */
   diff: string;
+  truncated: boolean;
+}
+export interface FsSearchPayload {
+  workspace: string;
+  /** Case-insensitive substring matched against each file's relative path. */
+  query: string;
+}
+export interface FsSearchResult {
+  workspace: string;
+  query: string;
+  /** Matching file paths relative to the workspace root. */
+  matches: string[];
+  /** True when the result cap was hit. */
   truncated: boolean;
 }

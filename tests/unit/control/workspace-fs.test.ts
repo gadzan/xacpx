@@ -79,6 +79,25 @@ describe("WorkspaceFs listing & reading", () => {
   });
 });
 
+describe("WorkspaceFs search", () => {
+  test("finds files by case-insensitive path substring", async () => {
+    const r = await fs.search("ws", "A.TS");
+    expect(r.matches).toContain("src/a.ts");
+    expect(r.truncated).toBe(false);
+  });
+
+  test("returns no matches for an empty or unmatched query", async () => {
+    expect((await fs.search("ws", "")).matches).toEqual([]);
+    expect((await fs.search("ws", "zzz-nope")).matches).toEqual([]);
+  });
+
+  test("does not follow a symlink that escapes the root", async () => {
+    // `escape` points outside; its `secret.txt` must never appear in results.
+    const r = await fs.search("ws", "secret");
+    expect(r.matches).toEqual([]);
+  });
+});
+
 describe("WorkspaceFs git diff", () => {
   test("throws on a non-git workspace", async () => {
     await expect(fs.gitDiff("ws")).rejects.toThrow("not-a-git-repo");

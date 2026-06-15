@@ -6,6 +6,7 @@ import {
   type FsEntryDto,
   type FsListResult,
   type FsReadResult,
+  type FsSearchResult,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 
@@ -21,7 +22,12 @@ export const useFilesStore = defineStore("files", () => {
   const entries = ref<FsEntryDto[]>([]);
   const file = ref<FsReadResult | null>(null);
   const diff = ref<FsDiffResult | null>(null);
+  const diffPath = ref<string | null>(null); // null = whole-tree diff
   const tab = ref<"files" | "changes">("files");
+  const query = ref("");
+  const results = ref<string[]>([]);
+  const searchTruncated = ref(false);
+  const searching = ref(false);
   const loading = ref(false);
   const error = ref("");
 
@@ -31,6 +37,9 @@ export const useFilesStore = defineStore("files", () => {
     entries.value = [];
     file.value = null;
     diff.value = null;
+    diffPath.value = null;
+    query.value = "";
+    results.value = [];
     error.value = "";
   }
 
@@ -39,6 +48,9 @@ export const useFilesStore = defineStore("files", () => {
     workspace.value = ws;
     file.value = null;
     diff.value = null;
+    diffPath.value = null;
+    query.value = "";
+    results.value = [];
     await list("");
   }
 
@@ -74,18 +86,54 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
+  /** Open a file by its full path relative to the workspace root (search results). */
+  async function openFile(relPath: string): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    loading.value = true;
+    error.value = "";
+    try {
+      file.value = unwrap(await api.rpc<FsReadResult>(instanceId.value, "control.fs.read", { workspace: workspace.value, path: relPath }));
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : "read-failed";
+    } finally {
+      loading.value = false;
+    }
+  }
+
   /** Navigate to an ancestor by breadcrumb index (-1 = root). */
   function up(toIndex: number): void {
     const segs = path.value ? path.value.split("/") : [];
     void list(segs.slice(0, toIndex + 1).join("/"));
   }
 
-  async function loadDiff(): Promise<void> {
+  async function search(q: string): Promise<void> {
+    query.value = q;
+    if (!instanceId.value || !workspace.value || !q.trim()) {
+      results.value = [];
+      searchTruncated.value = false;
+      return;
+    }
+    searching.value = true;
+    error.value = "";
+    try {
+      const r = unwrap(await api.rpc<FsSearchResult>(instanceId.value, "control.fs.search", { workspace: workspace.value, query: q }));
+      results.value = r.matches;
+      searchTruncated.value = r.truncated;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : "search-failed";
+    } finally {
+      searching.value = false;
+    }
+  }
+
+  /** Load the git diff for the whole tree (path omitted) or one file. */
+  async function loadDiff(filePath?: string): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
     loading.value = true;
     error.value = "";
+    diffPath.value = filePath ?? null;
     try {
-      diff.value = unwrap(await api.rpc<FsDiffResult>(instanceId.value, "control.fs.diff", { workspace: workspace.value }));
+      diff.value = unwrap(await api.rpc<FsDiffResult>(instanceId.value, "control.fs.diff", { workspace: workspace.value, ...(filePath ? { path: filePath } : {}) }));
     } catch (e) {
       error.value = e instanceof Error ? e.message : "diff-failed";
       diff.value = null;
@@ -94,5 +142,5 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
-  return { instanceId, workspace, path, entries, file, diff, tab, loading, error, reset, selectWorkspace, list, open, up, loadDiff };
+  return { instanceId, workspace, path, entries, file, diff, diffPath, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff };
 });
