@@ -95,3 +95,22 @@ test("think uses description as prose text", () => {
   });
   expect(step.detail).toEqual({ type: "text", text: "Explore code" });
 });
+
+test("a failed read surfaces the error message from rawOutput.error", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t9", toolName: "read", kind: "read", status: "error",
+    rawInput: { filePath: "/tmp/missing.txt" },
+    content: [{ type: "content", content: { type: "text", text: "Error: File not found: /tmp/missing.txt" } }],
+    rawOutput: { error: "Error: File not found: /tmp/missing.txt" },
+  });
+  expect(step.status).toBe("error");
+  expect(step.error).toBe("Error: File not found: /tmp/missing.txt");
+});
+
+test("error field is omitted on success", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t10", toolName: "Bash", kind: "execute", status: "success",
+    rawInput: { command: "ls" }, rawOutput: { stdout: "a b", exitCode: 0, error: "ignored when not error" },
+  });
+  expect(step.error).toBeUndefined();
+});

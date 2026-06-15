@@ -4,10 +4,11 @@ import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
+import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import { Bot, CircleStop } from "lucide-vue-next";
 
-const props = defineProps<{ messages: ChatMessage[]; streaming: string; liveTurn: LiveTurn | null }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null }>();
 
 // Stick-to-bottom: keep the newest content in view while the user is at the bottom,
 // but don't yank them down if they've scrolled up to read history. A "jump to latest"
@@ -31,8 +32,15 @@ function scrollToBottom(smooth = false): void {
 }
 
 // New messages / streaming chunks / tool steps: follow only if already pinned to bottom.
+// The tail signal reacts to new parts AND growth of the final part (text length or a
+// tool's status flipping) so streaming keeps the latest content in view.
 watch(
-  () => [props.messages.length, props.streaming, props.liveTurn?.toolSteps.length, props.liveTurn?.reasoning],
+  () => {
+    const lt = props.liveTurn;
+    const last = lt?.parts[lt.parts.length - 1];
+    const tail = last ? (last.type === "tool" ? last.step.status : last.text.length) : 0;
+    return [props.messages.length, lt?.parts.length ?? 0, tail] as const;
+  },
   () => {
     if (atBottom.value) void nextTick(() => scrollToBottom(false));
   },
@@ -58,14 +66,17 @@ watch(
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
               <Bot :size="13" class="text-accent" />
             </div>
-            <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
+            <div data-test="msg-out" class="relative min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger' : ''">
-              <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
-              <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
-              <div class="relative">
-                <StreamMarkdown :text="m.text" class="text-[14px] leading-relaxed text-fg" />
-                <CopyButton v-if="m.text" :text="m.text" class="absolute right-0 top-0 opacity-0 transition-opacity group-hover:opacity-100" />
-              </div>
+              <CopyButton v-if="m.text" :text="m.text" class="absolute right-0 -top-1 z-10 opacity-0 transition-opacity group-hover:opacity-100" />
+              <!-- Ordered transcript (text / reasoning / tools inline). -->
+              <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" />
+              <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
+              <template v-else>
+                <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
+                <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
+                <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
+              </template>
               <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> Stopped</span>
               <span v-if="m.failed" data-test="msg-failed" class="text-xs text-danger">failed</span>
             </div>
@@ -73,14 +84,12 @@ watch(
         </template>
 
         <!-- live streaming assistant row -->
-        <div v-if="streaming || liveTurn?.toolSteps.length || liveTurn?.reasoning" class="flex gap-2.5">
+        <div v-if="liveTurn && liveTurn.parts.length" class="flex gap-2.5">
           <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
             <Bot :size="13" class="text-accent" />
           </div>
-          <div data-test="msg-streaming" class="min-w-0 flex-1 space-y-2">
-            <ToolCallPanel v-if="liveTurn?.toolSteps.length" :steps="liveTurn.toolSteps" />
-            <ReasoningPanel v-if="liveTurn?.reasoning" :reasoning="liveTurn.reasoning" :streaming="true" />
-            <StreamMarkdown v-if="streaming" :text="streaming" :streaming="true" class="caret text-[14px] leading-relaxed text-fg" />
+          <div data-test="msg-streaming" class="min-w-0 flex-1">
+            <TurnParts :parts="liveTurn.parts" :streaming="true" />
           </div>
         </div>
       </div>

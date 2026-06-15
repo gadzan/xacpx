@@ -97,6 +97,17 @@ test("rejects a malformed tool-event step", () => {
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { toolCallId: "t1" } } })).toBeNull();
 });
 
+test("accepts an error string on a failed tool-event step, rejects a non-string error", () => {
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { toolCallId: "t1", toolName: "read", kind: "read", status: "error", title: "x", error: "File not found" } },
+  })).not.toBeNull();
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { toolCallId: "t1", toolName: "read", kind: "read", status: "error", title: "x", error: 42 } },
+  })).toBeNull();
+});
+
 test("rejects a tool-event step with an unknown detail tag", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

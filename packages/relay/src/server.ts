@@ -4,7 +4,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type RelayEnvelope, type ToolStepDto,
+  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type RelayEnvelope, type ToolStepDto, type TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -47,9 +47,28 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const webGateway = new WebGateway();
 
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string }
+  // `parts` records text / reasoning / tool events in arrival order so the web can
+  // replay history inline (same model the live view builds). `steps`/`reasoning`/`text`
+  // remain for the flat fallback + the persisted `text` column.
+  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[] }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+  // Coalescing appenders — consecutive same-type chunks merge into one part.
+  const pushTextPart = (a: TurnAccumulator, chunk: string) => {
+    const last = a.parts[a.parts.length - 1];
+    if (last?.type === "text") last.text += chunk;
+    else a.parts.push({ type: "text", text: chunk });
+  };
+  const pushReasoningPart = (a: TurnAccumulator, chunk: string) => {
+    const last = a.parts[a.parts.length - 1];
+    if (last?.type === "reasoning") last.text = (last.text + chunk).slice(0, REASONING_CAP);
+    else a.parts.push({ type: "reasoning", text: chunk.slice(0, REASONING_CAP) });
+  };
+  const pushToolPart = (a: TurnAccumulator, step: ToolStepDto) => {
+    const i = a.parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
+    if (i >= 0) (a.parts[i] as Extract<TurnPartDto, { type: "tool" }>).step = step;
+    else a.parts.push({ type: "tool", step });
+  };
 
   const gateway = new InstanceGateway({
     instances,
@@ -66,22 +85,23 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const event = (envelope.payload as InstanceEventPayload).event as ControlEventDto;
         webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
         if (event.type === "turn-started") {
-          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "" });
+          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [] });
         } else if (event.type === "turn-output") {
           // Only append to an existing buffer; never lazily resurrect one. A buffer
           // is created solely by turn-started, so a stray streaming event arriving
           // after an offline sweep (or with no turn-started) is dropped instead of
           // leaking a buffer that no turn-finished will ever clear.
           const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a) a.text += event.chunk;
+          if (a) { a.text += event.chunk; pushTextPart(a, event.chunk); }
         } else if (event.type === "tool-event") {
           const a = turnBuffers.get(key(instanceId, event.sessionAlias));
           if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
             a.steps.set(event.step.toolCallId, event.step);
+            pushToolPart(a, event.step);
           }
         } else if (event.type === "turn-thought") {
           const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a) a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP);
+          if (a) { a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP); pushReasoningPart(a, event.chunk); }
         } else if (event.type === "turn-finished") {
           const k = key(instanceId, event.sessionAlias);
           const a = turnBuffers.get(k);
@@ -91,7 +111,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           const hasStructured = steps.length > 0 || a.reasoning.length > 0;
           if (a.text || hasStructured) {
             const structured = hasStructured
-              ? { toolSteps: steps, ...(a.reasoning ? { reasoning: a.reasoning } : {}) }
+              ? { toolSteps: steps, ...(a.reasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
               : undefined;
             messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
           }

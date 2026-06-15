@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { ControlEventDto, ToolStepDto } from "./dtos.js";
+import type { ControlEventDto, ToolStepDto, TurnPartDto } from "./dtos.js";
 import type { InstanceNoticePayload } from "./messages.js";
 
 /** Envelope `type` for every relay→web push. */
@@ -14,8 +14,10 @@ export interface MessageRecordDto {
   direction: MessageDirection;
   text: string;
   createdAt: string;
-  /** Present on completed `out` turns: persisted tool steps + reasoning. */
-  structured?: { toolSteps: ToolStepDto[]; reasoning?: string };
+  /** Present on completed `out` turns. `parts` is the ordered transcript (text /
+   *  reasoning / tool inline, as produced); `toolSteps`/`reasoning` are kept as a
+   *  flat fallback for older persisted rows that predate `parts`. */
+  structured?: { toolSteps: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[] };
 }
 
 /** Server→web push payloads (tagged with the originating instance). */
@@ -81,6 +83,7 @@ function validToolStep(s: unknown): boolean {
   if (typeof c.toolCallId !== "string" || typeof c.toolName !== "string" || typeof c.title !== "string") return false;
   if (typeof c.kind !== "string" || !TOOL_STEP_KINDS.has(c.kind)) return false;
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status)) return false;
+  if (!optStr(c.error)) return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null) return false;
     if (!validToolDetail(c.detail as Record<string, unknown>)) return false;

@@ -1,17 +1,41 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { MessageRecordDto, ToolStepDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { MessageRecordDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error";
 
+/** One transcript entry, kept in arrival order so text / reasoning / tool calls
+ *  render inline exactly as the agent produced them (mirrors the hub's persistence). */
+export type TurnPart = TurnPartDto;
+
 export interface LiveTurn {
-  text: string;
-  toolSteps: ToolStepDto[];
-  reasoning: string;
+  parts: TurnPart[];
   status: "working" | "streaming";
   startedAt: number;
 }
+
+// Coalescing appenders — consecutive same-type chunks merge into one part. Text chunks
+// already carry their own "\n\n" separators (restored at control-service), so text parts
+// concatenate verbatim. Exported-free module helpers keep applyEvent terse.
+function appendText(parts: TurnPart[], chunk: string): void {
+  const last = parts[parts.length - 1];
+  if (last?.type === "text") last.text += chunk;
+  else parts.push({ type: "text", text: chunk });
+}
+function appendReasoning(parts: TurnPart[], chunk: string): void {
+  const last = parts[parts.length - 1];
+  if (last?.type === "reasoning") last.text += chunk;
+  else parts.push({ type: "reasoning", text: chunk });
+}
+function upsertTool(parts: TurnPart[], step: ToolStepDto): void {
+  const i = parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
+  if (i >= 0) parts[i] = { type: "tool", step };
+  else parts.push({ type: "tool", step });
+}
+const textOf = (parts: TurnPart[]): string => parts.filter((p) => p.type === "text").map((p) => p.text).join("");
+const toolStepsOf = (parts: TurnPart[]): ToolStepDto[] => parts.filter((p) => p.type === "tool").map((p) => (p as Extract<TurnPart, { type: "tool" }>).step);
+const reasoningOf = (parts: TurnPart[]): string => parts.filter((p) => p.type === "reasoning").map((p) => p.text).join("");
 
 export interface ChatMessage extends MessageRecordDto {
   failed?: boolean;
@@ -48,7 +72,8 @@ export const useChatStore = defineStore("chat", () => {
   const liveTurn = computed<LiveTurn | null>(() =>
     selectedKey.value ? liveTurns.value[selectedKey.value] ?? null : null,
   );
-  const streaming = computed(() => liveTurn.value?.text ?? "");
+  const streaming = computed(() => (liveTurn.value ? textOf(liveTurn.value.parts) : ""));
+  const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
   const busy = computed(() => liveTurn.value !== null);
 
   const sending = ref(false);
@@ -56,7 +81,7 @@ export const useChatStore = defineStore("chat", () => {
 
   function ensureTurn(k: string): LiveTurn {
     let t = liveTurns.value[k];
-    if (!t) { t = { text: "", toolSteps: [], reasoning: "", status: "working", startedAt: Date.now() }; liveTurns.value[k] = t; }
+    if (!t) { t = { parts: [], status: "working", startedAt: Date.now() }; liveTurns.value[k] = t; }
     return t;
   }
 
@@ -70,17 +95,21 @@ export const useChatStore = defineStore("chat", () => {
     delete liveTurns.value[k];
     const selected = instId === instanceId.value && alias === sessionAlias.value;
     if (status === "error" && selected) error.value = errorMessage ?? "turn-failed";
-    const hasContent = !!t && (t.text.length > 0 || t.toolSteps.length > 0 || t.reasoning.length > 0);
+    if (!t) return;
+    const text = textOf(t.parts);
+    const toolSteps = toolStepsOf(t.parts);
+    const reasoning = reasoningOf(t.parts);
+    const hasContent = text.length > 0 || toolSteps.length > 0 || reasoning.length > 0;
     if (hasContent && selected) {
-      const structured =
-        t!.toolSteps.length > 0 || t!.reasoning.length > 0
-          ? { toolSteps: t!.toolSteps, ...(t!.reasoning ? { reasoning: t!.reasoning } : {}) }
-          : undefined;
+      const hasStructured = toolSteps.length > 0 || reasoning.length > 0;
+      const structured = hasStructured
+        ? { toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts }
+        : undefined;
       messages.value.push({
         instanceId: instId,
         sessionAlias: alias,
         direction: "out",
-        text: t!.text,
+        text,
         createdAt: new Date().toISOString(),
         failed: status === "error",
         status,
@@ -125,14 +154,13 @@ export const useChatStore = defineStore("chat", () => {
       ensureTurn(bufKey(event.instanceId, e.sessionAlias));
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
-      t.text += e.chunk;
+      appendText(t.parts, e.chunk);
       t.status = "streaming";
     } else if (e.type === "tool-event") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
-      const idx = t.toolSteps.findIndex((s) => s.toolCallId === e.step.toolCallId);
-      if (idx >= 0) t.toolSteps[idx] = e.step; else t.toolSteps.push(e.step);
+      upsertTool(t.parts, e.step);
     } else if (e.type === "turn-thought") {
-      ensureTurn(bufKey(event.instanceId, e.sessionAlias)).reasoning += e.chunk;
+      appendReasoning(ensureTurn(bufKey(event.instanceId, e.sessionAlias)).parts, e.chunk);
     } else if (e.type === "turn-finished") {
       const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
@@ -191,5 +219,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, applyEvent, send, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, applyEvent, send, cancel };
 });

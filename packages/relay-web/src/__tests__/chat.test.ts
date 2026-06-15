@@ -225,8 +225,9 @@ test("live turn accumulates tool steps, reasoning, and flushes structured on fin
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "tool-event", chatKey: "c", sessionAlias: "backend", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } } } as never);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-thought", chatKey: "c", sessionAlias: "backend", chunk: "reasoning" } } as never);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "answer" } } as never);
-  expect(store.liveTurn?.toolSteps.length).toBe(1);
-  expect(store.liveTurn?.reasoning).toBe("reasoning");
+  // Parts preserve arrival order: tool, then reasoning, then text.
+  expect(store.liveTurn?.parts.map((p) => p.type)).toEqual(["tool", "reasoning", "text"]);
+  expect(store.liveToolSteps.length).toBe(1);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
   expect(store.busy).toBe(false);
   expect(store.liveTurn).toBeNull();
@@ -234,6 +235,8 @@ test("live turn accumulates tool steps, reasoning, and flushes structured on fin
   expect(last).toMatchObject({ direction: "out", text: "answer", status: "done" });
   expect(last.structured?.toolSteps.length).toBe(1);
   expect(last.structured?.reasoning).toBe("reasoning");
+  // The ordered transcript is persisted for inline replay on history reload.
+  expect(last.structured?.parts?.map((p) => p.type)).toEqual(["tool", "reasoning", "text"]);
 });
 
 test("a cancelled finish marks the turn stopped, not errored", () => {

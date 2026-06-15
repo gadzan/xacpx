@@ -2,14 +2,14 @@
 import { computed, ref } from "vue";
 import { Brain, ChevronDown, ChevronRight } from "lucide-vue-next";
 const props = withDefaults(defineProps<{ reasoning: string; defaultOpen?: boolean; streaming?: boolean }>(), {
-  defaultOpen: true,
+  defaultOpen: false,
   streaming: false,
 });
-// While the reasoning is still streaming we force the panel open (and ignore the
-// user's toggle) so the live thought is visible; once it settles, the user's own
-// open/closed preference takes over. Historical panels are never streaming.
-const localOpen = ref(props.defaultOpen ?? true);
-const open = computed(() => props.streaming || localOpen.value);
+// Reasoning is collapsed by default — the header (with a live shimmer while streaming)
+// signals it's there without burying the answer/tools below a wall of thought. The user
+// expands it on demand; their toggle is respected even mid-stream.
+const localOpen = ref(props.defaultOpen ?? false);
+const open = computed(() => localOpen.value);
 </script>
 
 <template>

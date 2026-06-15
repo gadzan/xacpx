@@ -109,6 +109,12 @@ test("accumulates tool steps + reasoning and persists structured on finish", asy
   expect(cached[0].text).toBe("done");
   expect(cached[0].structured?.reasoning).toBe("think more");
   expect(cached[0].structured?.toolSteps).toEqual([{ toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls", durationMs: 5 }]);
+  // Ordered transcript preserved for inline replay: tool (updated in place) → reasoning → text.
+  expect(cached[0].structured?.parts).toEqual([
+    { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls", durationMs: 5 } },
+    { type: "reasoning", text: "think more" },
+    { type: "text", text: "done" },
+  ]);
   runtime.close();
 });
 

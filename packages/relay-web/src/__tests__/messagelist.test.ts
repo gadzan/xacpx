@@ -1,8 +1,9 @@
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 import MessageList from "../components/MessageList.vue";
-import type { ChatMessage } from "../stores/chat";
+import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
+import ToolStepCard from "../components/ToolStepCard.vue";
 
 function msg(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -14,11 +15,14 @@ function msg(partial: Partial<ChatMessage>): ChatMessage {
     ...partial,
   };
 }
+function live(parts: LiveTurn["parts"]): LiveTurn {
+  return { parts, status: "streaming", startedAt: 0 };
+}
 
 describe("MessageList", () => {
   it("renders agent output as markdown", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "out", text: "**bold**" })], streaming: "", liveTurn: null },
+      props: { messages: [msg({ direction: "out", text: "**bold**" })], liveTurn: null },
     });
     const out = wrapper.find('[data-test="msg-out"]');
     expect(out.html()).toContain("<strong>bold</strong>");
@@ -26,7 +30,7 @@ describe("MessageList", () => {
 
   it("keeps user input as plain text (no markdown rendering)", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "in", text: "**not bold**" })], streaming: "", liveTurn: null },
+      props: { messages: [msg({ direction: "in", text: "**not bold**" })], liveTurn: null },
     });
     const inEl = wrapper.find('[data-test="msg-in"]');
     expect(inEl.exists()).toBe(true);
@@ -36,14 +40,14 @@ describe("MessageList", () => {
 
   it("does not render raw HTML from agent output", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "out", text: "<script>alert(1)</script>" })], streaming: "", liveTurn: null },
+      props: { messages: [msg({ direction: "out", text: "<script>alert(1)</script>" })], liveTurn: null },
     });
     expect(wrapper.html()).not.toContain("<script>alert(1)</script>");
   });
 
   it("renders the live streaming bubble as healed markdown", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [], streaming: "answer **important", liveTurn: null },
+      props: { messages: [], liveTurn: live([{ type: "text", text: "answer **important" }]) },
     });
     const bubble = wrapper.find('[data-test="msg-streaming"]');
     expect(bubble.exists()).toBe(true);
@@ -52,14 +56,14 @@ describe("MessageList", () => {
 
   it("marks failed output messages", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "out", text: "boom", failed: true })], streaming: "", liveTurn: null },
+      props: { messages: [msg({ direction: "out", text: "boom", failed: true })], liveTurn: null },
     });
     expect(wrapper.find('[data-test="msg-failed"]').exists()).toBe(true);
   });
 
   it("offers a copy button on agent messages and hides jump-latest while pinned", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "out", text: "copy me" })], streaming: "", liveTurn: null },
+      props: { messages: [msg({ direction: "out", text: "copy me" })], liveTurn: null },
     });
     expect(wrapper.find('[data-test="copy-button"]').exists()).toBe(true);
     // atBottom defaults true → the jump-latest affordance is hidden (v-show).
@@ -68,30 +72,74 @@ describe("MessageList", () => {
   });
 });
 
-it("renders persisted tool steps under a completed out message", () => {
+it("renders legacy persisted tool steps (no parts) under a completed out message", () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({ direction: "out", text: "done", status: "done", structured: { toolSteps: [{ toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" }] } })],
-      streaming: "",
       liveTurn: null,
     },
   });
+  // Legacy rows (no `parts`) fall back to the aggregated panel.
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(true);
+});
+
+it("renders persisted `parts` inline in arrival order (tool then text)", () => {
+  const wrapper = mount(MessageList, {
+    props: {
+      messages: [msg({
+        direction: "out", text: "all done", status: "done",
+        structured: {
+          toolSteps: [{ toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" }],
+          parts: [
+            { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } },
+            { type: "text", text: "all done" },
+          ],
+        },
+      })],
+      liveTurn: null,
+    },
+  });
+  // Inline cards, not the aggregated legacy panel.
+  expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
+  expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(false);
+  expect(wrapper.find('[data-test="msg-out"]').text()).toContain("all done");
+});
+
+it("shows a failed tool's error message in red", () => {
+  const wrapper = mount(MessageList, {
+    props: {
+      messages: [msg({
+        direction: "out", text: "", status: "done",
+        structured: {
+          toolSteps: [],
+          parts: [{ type: "tool", step: { toolCallId: "t1", toolName: "read", kind: "read", status: "error", title: "missing.txt", error: "Error: File not found: missing.txt" } }],
+        },
+      })],
+      liveTurn: null,
+    },
+  });
+  const err = wrapper.find('[data-test="tool-step-error"]');
+  expect(err.exists()).toBe(true);
+  expect(err.text()).toContain("File not found");
 });
 
 it("renders a cancelled marker on a stopped message", () => {
   const wrapper = mount(MessageList, {
-    props: { messages: [msg({ direction: "out", text: "partial", status: "cancelled" })], streaming: "", liveTurn: null },
+    props: { messages: [msg({ direction: "out", text: "partial", status: "cancelled" })], liveTurn: null },
   });
   expect(wrapper.find('[data-test="msg-cancelled"]').exists()).toBe(true);
 });
 
-it("renders live tool panel above the streaming bubble", () => {
+it("renders live tool steps inline in the streaming bubble", () => {
   const wrapper = mount(MessageList, {
     props: {
-      messages: [], streaming: "thinking",
-      liveTurn: { text: "thinking", toolSteps: [{ toolCallId: "t1", toolName: "R", kind: "read", status: "running", title: "a.ts" }], reasoning: "", status: "streaming", startedAt: 0 },
+      messages: [],
+      liveTurn: live([
+        { type: "tool", step: { toolCallId: "t1", toolName: "R", kind: "read", status: "running", title: "a.ts" } },
+        { type: "text", text: "thinking" },
+      ]),
     },
   });
-  expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(true);
+  expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
+  expect(wrapper.find('[data-test="msg-streaming"]').text()).toContain("thinking");
 });

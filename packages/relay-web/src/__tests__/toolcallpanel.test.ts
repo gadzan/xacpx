@@ -88,17 +88,22 @@ describe("summarizeSteps", () => {
 });
 
 describe("ReasoningPanel", () => {
-  it("renders reasoning text inside a collapsible", () => {
+  it("collapses by default; opening reveals the reasoning text", async () => {
     const w = mount(ReasoningPanel, { props: { reasoning: "step by step" } });
     expect(w.text()).toContain("Reasoning");
+    // Collapsed by default — the thought doesn't bury the answer below it.
+    expect(w.find('[data-test="reasoning-body"]').exists()).toBe(false);
+    await w.find("button").trigger("click");
     expect(w.find('[data-test="reasoning-body"]').text()).toContain("step by step");
   });
 
-  it("shows a shimmer and stays open while streaming", () => {
-    const w = mount(ReasoningPanel, { props: { reasoning: "thinking", streaming: true, defaultOpen: false } });
+  it("shows a shimmer while streaming but stays collapsed until opened", async () => {
+    const w = mount(ReasoningPanel, { props: { reasoning: "thinking", streaming: true } });
     expect(w.find('[data-test="reasoning-shimmer"]').exists()).toBe(true);
     expect(w.text()).toContain("Reasoning…");
-    // Forced open despite defaultOpen=false.
+    // No longer force-opened mid-stream; the user expands on demand.
+    expect(w.find('[data-test="reasoning-body"]').exists()).toBe(false);
+    await w.find("button").trigger("click");
     expect(w.find('[data-test="reasoning-body"]').exists()).toBe(true);
   });
 

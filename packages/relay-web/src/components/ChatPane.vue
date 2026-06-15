@@ -42,7 +42,7 @@ const elapsed = computed(() => {
   const s = Math.max(0, Math.floor((nowMs.value - chat.liveTurn.startedAt) / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 });
-const runningTools = computed(() => chat.liveTurn?.toolSteps.filter((t) => t.status === "running").length ?? 0);
+const runningTools = computed(() => chat.liveToolSteps.filter((t) => t.status === "running").length);
 
 // Whimsical near-synonyms cycled through while a turn runs (à la Claude Code / HAPI's
 // "vibing messages"). Purely cosmetic; reuses the 1Hz clock, rotating every ~4s on a
@@ -92,7 +92,7 @@ const verb = computed(() => {
         {{ chat.error }}
         <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
       </div>
-      <MessageList :messages="chat.messages" :streaming="chat.streaming" :live-turn="chat.liveTurn" />
+      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" />
       <!-- composer area -->
       <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-5 pb-4 pt-1.5">
         <!-- TURN HUD -->

@@ -105,7 +105,17 @@ export interface ToolStepDto {
   title: string;
   durationMs?: number;
   detail?: ToolDetailDto;
+  /** Failure message, present only when status === "error". */
+  error?: string;
 }
+
+/** One entry in a turn's transcript, ordered as the agent produced it. Lets the web
+ *  render text / reasoning / tool calls inline in arrival order instead of bucketing
+ *  them into separate aggregated panels. */
+export type TurnPartDto =
+  | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "tool"; step: ToolStepDto };
 
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
