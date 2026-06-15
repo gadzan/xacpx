@@ -62,4 +62,29 @@ describe("InstanceTree session management", () => {
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     expect(w.find('[data-test="attention-dot"]').attributes("data-attention")).toBe("unread");
   });
+
+  it("shows an empty-state row for an instance with no sessions", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="no-sessions"]').exists()).toBe(true);
+  });
+
+  it("renders an elapsed badge for a working session", () => {
+    const instances = useInstancesStore();
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    const chat = useChatStore();
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const badge = w.find('[data-test="session-elapsed"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toMatch(/^\d+[smh]$/);
+  });
+
+  it("shows no elapsed badge for an idle session", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="session-elapsed"]').exists()).toBe(false);
+  });
 });

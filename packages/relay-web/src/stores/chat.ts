@@ -37,6 +37,11 @@ export const useChatStore = defineStore("chat", () => {
     return "idle";
   }
 
+  /** Epoch ms when the session's live turn began, or null if it isn't working. */
+  function runningSince(instId: string, alias: string): number | null {
+    return liveTurns.value[bufKey(instId, alias)]?.startedAt ?? null;
+  }
+
   const selectedKey = computed(() =>
     instanceId.value && sessionAlias.value ? bufKey(instanceId.value, sessionAlias.value) : null,
   );
@@ -186,5 +191,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, busy, unread, sessionAttention, sending, error, select, loadHistory, applyEvent, send, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, applyEvent, send, cancel };
 });
