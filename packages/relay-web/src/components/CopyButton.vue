@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{ text: string }>();
 const copied = ref(false);
@@ -33,10 +34,12 @@ async function copy(): Promise<void> {
   <button
     data-test="copy-button"
     type="button"
+    aria-label="Copy"
     :title="copied ? 'Copied' : 'Copy'"
-    class="rounded p-1 text-xs leading-none text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+    class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5 hover:text-fg"
     @click.stop="copy"
   >
-    {{ copied ? "✓" : "⧉" }}
+    <Check v-if="copied" :size="14" class="text-run" />
+    <Copy v-else :size="14" />
   </button>
 </template>

@@ -56,19 +56,23 @@ const html = computed(() => renderMarkdown(props.text, { streaming: props.stream
   margin: 0.2em 0;
 }
 .stream-md a {
-  color: #2563eb;
+  color: rgb(var(--c-accent));
   text-decoration: underline;
 }
+/* Inline code: bg-fg/5 text-fg rounded px-1 */
 .stream-md code {
-  background: rgba(15, 23, 42, 0.08);
+  background: rgb(var(--c-fg) / 0.05);
+  color: rgb(var(--c-fg));
   border-radius: 4px;
   padding: 0.1em 0.3em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.9em;
 }
+/* Code block: bg-raised border border-border rounded-lg, font-mono text-[13px] */
 .stream-md pre {
-  background: #0f172a;
-  color: #e2e8f0;
+  background: rgb(var(--c-raised));
+  color: rgb(var(--c-fg));
+  border: 1px solid rgb(var(--c-border));
   border-radius: 8px;
   padding: 0.7em 0.9em;
   overflow-x: auto;
@@ -78,13 +82,33 @@ const html = computed(() => renderMarkdown(props.text, { streaming: props.stream
   background: transparent;
   padding: 0;
   color: inherit;
-  font-size: 0.85em;
+  font-size: 13px;
+}
+/* Cool syntax palette: keyword=accent, string=run, comment=fg-muted, number=info */
+.stream-md .hljs-keyword,
+.stream-md .hljs-built_in,
+.stream-md .hljs-name,
+.stream-md .hljs-tag {
+  color: rgb(var(--c-accent));
+}
+.stream-md .hljs-string,
+.stream-md .hljs-attr,
+.stream-md .hljs-symbol {
+  color: rgb(var(--c-run));
+}
+.stream-md .hljs-comment,
+.stream-md .hljs-quote {
+  color: rgb(var(--c-fg-muted));
+}
+.stream-md .hljs-number,
+.stream-md .hljs-literal {
+  color: rgb(var(--c-info));
 }
 .stream-md blockquote {
-  border-left: 3px solid rgba(15, 23, 42, 0.2);
+  border-left: 3px solid rgb(var(--c-border));
   margin: 0.6em 0;
   padding-left: 0.8em;
-  color: rgba(15, 23, 42, 0.7);
+  color: rgb(var(--c-fg-muted));
 }
 .stream-md table {
   border-collapse: collapse;
@@ -92,12 +116,12 @@ const html = computed(() => renderMarkdown(props.text, { streaming: props.stream
 }
 .stream-md th,
 .stream-md td {
-  border: 1px solid rgba(15, 23, 42, 0.2);
+  border: 1px solid rgb(var(--c-border));
   padding: 0.3em 0.6em;
 }
 .stream-md hr {
   border: none;
-  border-top: 1px solid rgba(15, 23, 42, 0.15);
+  border-top: 1px solid rgb(var(--c-border));
   margin: 0.8em 0;
 }
 </style>
