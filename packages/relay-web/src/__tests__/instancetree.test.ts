@@ -26,13 +26,31 @@ describe("InstanceTree session management", () => {
     expect(w.findComponent({ name: "NewSessionDialog" }).exists()).toBe(false);
   });
 
-  it("deletes a session", async () => {
+  it("deletes a session only after confirming (two-step)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    // First click only arms the confirm — it must NOT delete.
+    await w.find('[data-test="delete-session"]').trigger("click");
+    expect(remove).not.toHaveBeenCalled();
+    expect(w.find('[data-test="confirm-delete"]').exists()).toBe(true);
+    // Confirming deletes.
+    await w.find('[data-test="confirm-delete"]').trigger("click");
+    expect(remove).toHaveBeenCalledWith("i1", "backend");
+  });
+
+  it("cancels a pending delete without removing", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
     const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     await w.find('[data-test="delete-session"]').trigger("click");
-    expect(remove).toHaveBeenCalledWith("i1", "backend");
+    await w.find('[data-test="cancel-delete"]').trigger("click");
+    expect(remove).not.toHaveBeenCalled();
+    // Confirm UI is gone; the trash affordance is back.
+    expect(w.find('[data-test="confirm-delete"]').exists()).toBe(false);
+    expect(w.find('[data-test="delete-session"]').exists()).toBe(true);
   });
 
   it("mounts with an empty chat store and shows no attention dot for idle sessions", () => {
