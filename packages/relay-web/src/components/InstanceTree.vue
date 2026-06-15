@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from "vue";
+import { ChevronDown, ChevronRight, Plus, Settings2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import NewSessionDialog from "./NewSessionDialog.vue";
@@ -26,6 +27,10 @@ function elapsedLabel(instanceId: string, alias: string): string {
   return `${Math.floor(s / 3600)}h`;
 }
 
+function isSelected(instanceId: string, alias: string): boolean {
+  return chat.instanceId === instanceId && chat.sessionAlias === alias;
+}
+
 async function toggle(id: string) {
   await store.loadSessions(id).catch(() => {});
 }
@@ -35,37 +40,41 @@ function remove(id: string, alias: string) {
 </script>
 
 <template>
-  <div class="flex h-full flex-col overflow-y-auto border-r bg-white">
-    <div v-for="inst in store.instances" :key="inst.id" class="border-b">
+  <div class="flex h-full flex-col overflow-y-auto border-r border-border bg-surface">
+    <div v-for="inst in store.instances" :key="inst.id" class="border-b border-border">
       <button class="flex w-full items-center gap-2 px-3 py-2 text-left" @click="toggle(inst.id)">
-        <span class="h-2 w-2 rounded-full" :class="inst.online ? 'bg-green-500' : 'bg-slate-300'" data-test="online-dot" />
-        <span class="font-medium">{{ inst.name }}</span>
+        <ChevronDown v-if="inst.sessionsLoaded" :size="14" class="text-fg-muted" />
+        <ChevronRight v-else :size="14" class="text-fg-muted" />
+        <span class="h-2 w-2 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
+        <span class="font-medium text-fg">{{ inst.name }}</span>
       </button>
       <ul>
-        <li v-for="s in inst.sessions" :key="s.alias" class="flex items-center justify-between pr-2">
-          <button class="flex flex-1 items-center gap-2 px-6 py-1 text-left text-sm hover:bg-slate-50"
+        <li v-for="s in inst.sessions" :key="s.alias" class="flex items-center justify-between pr-2"
+            :class="isSelected(inst.id, s.alias) ? 'bg-accent/10 border-l-2 border-accent' : ''">
+          <button class="flex h-7 flex-1 items-center gap-2 px-6 text-left text-sm hover:bg-fg/5"
                   @click="emit('select', inst.id, s.alias)">
             <span v-if="chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
-                  class="text-amber-500 animate-pulse">●</span>
+                  class="text-run-bright animate-pulse motion-reduce:animate-none"
+                  style="text-shadow:0 0 8px rgb(var(--c-run-bright)/.5)">●</span>
             <span v-else-if="chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
-                  class="text-sky-500">●</span>
-            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="text-amber-500">●</span>
-            {{ s.alias }} <span class="text-slate-400">({{ s.agent }})</span>
+                  class="text-info">●</span>
+            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="text-run">●</span>
+            {{ s.alias }} <span class="font-mono text-fg-muted">({{ s.agent }})</span>
             <span v-if="elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
-                  class="ml-auto tabular-nums text-xs text-amber-500">{{ elapsedLabel(inst.id, s.alias) }}</span>
+                  class="ml-auto font-mono tabular-nums text-xs text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
           </button>
-          <button data-test="delete-session" class="text-xs text-red-400 hover:underline" @click.stop="remove(inst.id, s.alias)">delete</button>
+          <button data-test="delete-session" class="text-xs text-danger hover:underline" @click.stop="remove(inst.id, s.alias)">delete</button>
         </li>
         <li v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
-            class="px-6 py-1 text-xs text-slate-400">loading…</li>
+            class="px-6 py-1 text-xs text-fg-muted">loading…</li>
         <li v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
-            class="px-6 py-1 text-xs text-slate-400">no sessions yet</li>
+            class="px-6 py-1 text-xs text-fg-muted">no sessions yet</li>
       </ul>
       <div class="flex items-center gap-3 px-6 py-1.5">
-        <button data-test="new-session" class="text-left text-xs font-medium text-slate-500 hover:text-slate-800"
-                @click="dialogFor = { id: inst.id, name: inst.name }">+ new session</button>
-        <button data-test="manage-instance" class="text-left text-xs font-medium text-slate-500 hover:text-slate-800"
-                @click="manageFor = { id: inst.id, name: inst.name }">Manage</button>
+        <button data-test="new-session" class="flex items-center gap-1 text-left text-xs font-medium text-fg-muted hover:text-fg"
+                @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" />new session</button>
+        <button data-test="manage-instance" class="flex items-center gap-1 text-left text-xs font-medium text-fg-muted hover:text-fg"
+                @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="14" />Manage</button>
       </div>
     </div>
 
