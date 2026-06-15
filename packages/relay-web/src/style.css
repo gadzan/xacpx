@@ -10,12 +10,12 @@
   --c-border: 228 233 240;      /* #E4E9F0 */
   --c-fg: 18 24 35;             /* #121823 */
   --c-fg-muted: 91 102 117;     /* #5B6675 */
-  --c-accent: 46 123 224;       /* #2E7BE0 */
-  --c-accent-hover: 37 105 200; /* #2569C8 */
-  --c-run: 31 157 87;           /* #1F9D57 */
-  --c-run-bright: 52 192 110;   /* #34C06E */
-  --c-warn: 217 119 6;          /* #D97706 */
-  --c-danger: 239 68 68;        /* #EF4444 */
+  --c-accent: 29 111 214;       /* #1D6FD6 — AA on white/F6F8FB */
+  --c-accent-hover: 26 99 192;  /* #1A63C0 */
+  --c-run: 25 122 67;           /* #197A43 — AA */
+  --c-run-bright: 52 192 110;   /* #34C06E (dot fill, not text) */
+  --c-warn: 180 83 9;           /* #B45309 — AA */
+  --c-danger: 200 30 30;        /* #C81E1E — AA */
   --c-info: 37 99 235;          /* #2563EB */
 }
 .dark {

@@ -79,7 +79,7 @@ function fmtDuration(ms?: number): string {
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="14" class="text-run" />
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="14" class="animate-spin motion-reduce:animate-none text-accent" />
           <AlertTriangle v-else data-test="step-status-error" :size="14" class="text-danger" />
-          <span>{{ KIND_ICON[s.kind] }}</span>
+          <component :is="KIND_ICON[s.kind]" :size="14" class="shrink-0 text-fg-muted" />
           <span class="truncate font-mono text-fg">{{ s.title }}</span>
           <span v-if="s.durationMs !== undefined" class="ml-auto font-mono text-fg-muted">{{ fmtDuration(s.durationMs) }}</span>
         </button>

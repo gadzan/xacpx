@@ -5,6 +5,7 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import CopyButton from "./CopyButton.vue";
+import { CircleStop } from "lucide-vue-next";
 
 const props = defineProps<{ messages: ChatMessage[]; streaming: string; liveTurn: LiveTurn | null }>();
 
@@ -51,7 +52,7 @@ watch(
           <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
           <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
           <StreamMarkdown :text="m.text" />
-          <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="text-xs text-warn">⏹ Stopped</span>
+          <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> Stopped</span>
           <span v-if="m.failed" data-test="msg-failed" class="text-xs text-danger">failed</span>
           <CopyButton v-if="m.text" :text="m.text" class="absolute right-1 top-1 opacity-0 transition-opacity group-hover:opacity-100" />
         </div>

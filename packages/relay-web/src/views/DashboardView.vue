@@ -17,7 +17,7 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
-import { Search, Moon, Sun, Settings, X } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu } from "lucide-vue-next";
 import { useComposerStore } from "../stores/composer";
 
 const theme = useThemeStore();
@@ -135,7 +135,7 @@ onUnmounted(() => {
     <!-- Mobile top bar: hamburger opens the instance tree, Tasks opens the task panel. -->
     <div class="flex items-center gap-2 border-b border-border bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" aria-label="Open instances"
-              class="rounded p-1 text-lg leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true">☰</button>
+              class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <span class="flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
       <button data-test="open-tasks" class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
               @click="rightOpen = true">Tasks</button>
