@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from "vue";
+import { Command, MessageSquare, Search } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { COMMAND_CATALOG } from "../lib/command-catalog";
 
@@ -73,23 +74,27 @@ onMounted(() => void nextTick(() => input.value?.focus()));
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/30 pt-24" data-test="command-palette" @click.self="emit('close')">
-    <div class="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-xl">
-      <input ref="input" v-model="query" data-test="palette-input"
-             placeholder="Jump to a session or pick a command…"
-             class="w-full border-b px-4 py-3 text-sm outline-none"
-             @input="active = 0; clampActive()" @keydown="onKeydown" />
+  <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24" data-test="command-palette" @click.self="emit('close')">
+    <div class="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-xl">
+      <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+        <Search :size="16" class="shrink-0 text-fg-muted" />
+        <input ref="input" v-model="query" data-test="palette-input"
+               placeholder="Jump to a session or pick a command…"
+               class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted outline-none"
+               @input="active = 0; clampActive()" @keydown="onKeydown" />
+      </div>
       <ul class="max-h-80 overflow-y-auto py-1 text-sm">
         <li v-for="(r, i) in rows" :key="`${r.kind}:${r.label}:${i}`">
           <button data-test="palette-row" class="flex w-full items-center gap-2 px-4 py-1.5 text-left"
-                  :class="i === active ? 'bg-sky-50' : 'hover:bg-slate-50'"
+                  :class="i === active ? 'bg-accent/10 text-accent' : 'text-fg hover:bg-fg/5'"
                   @mouseenter="active = i" @click="choose(r)">
-            <span>{{ r.kind === "session" ? "💬" : "⌘" }}</span>
-            <span class="font-medium text-slate-700">{{ r.label }}</span>
-            <span class="truncate text-xs text-slate-400">{{ r.sub }}</span>
+            <MessageSquare v-if="r.kind === 'session'" :size="14" class="shrink-0" />
+            <Command v-else :size="14" class="shrink-0" />
+            <span class="font-medium" :class="r.kind === 'command' ? 'font-mono' : ''">{{ r.label }}</span>
+            <span class="truncate text-xs text-fg-muted">{{ r.sub }}</span>
           </button>
         </li>
-        <li v-if="!rows.length" class="px-4 py-3 text-xs text-slate-400">no matches</li>
+        <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted">no matches</li>
       </ul>
     </div>
   </div>
