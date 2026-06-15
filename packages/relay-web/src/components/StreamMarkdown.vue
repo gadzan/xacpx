@@ -59,30 +59,36 @@ const html = computed(() => renderMarkdown(props.text, { streaming: props.stream
   color: rgb(var(--c-accent));
   text-decoration: underline;
 }
-/* Inline code: bg-fg/5 text-fg rounded px-1 */
+/* Inline code: bg-surface rounded px-1 py-0.5 font-mono text-[12.5px] (mockup line 298) */
 .stream-md code {
-  background: rgb(var(--c-fg) / 0.05);
+  background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
   border-radius: 4px;
   padding: 0.1em 0.3em;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9em;
+  font-size: 12.5px;
 }
-/* Code block: bg-raised border border-border rounded-lg, font-mono text-[13px] */
+/* Code block: cool snippet panel (mockup lines 331–346) — bg-bg/raised, border-border,
+   rounded-lg, font-mono text-[13px], overflow-x with thin scrollbar. */
 .stream-md pre {
-  background: rgb(var(--c-raised));
+  background: rgb(var(--c-bg));
   color: rgb(var(--c-fg));
   border: 1px solid rgb(var(--c-border));
   border-radius: 8px;
-  padding: 0.7em 0.9em;
+  padding: 0.65em 0.85em;
   overflow-x: auto;
   margin: 0.6em 0;
+  box-shadow: var(--shadow-e1);
 }
+.stream-md pre::-webkit-scrollbar { height: 8px; }
+.stream-md pre::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
+.stream-md pre::-webkit-scrollbar-track { background: transparent; }
 .stream-md pre code {
   background: transparent;
   padding: 0;
   color: inherit;
   font-size: 13px;
+  line-height: 1.6;
 }
 /* Cool syntax palette: keyword=accent, string=run, comment=fg-muted, number=info */
 .stream-md .hljs-keyword,

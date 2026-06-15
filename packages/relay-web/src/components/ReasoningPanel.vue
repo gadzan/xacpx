@@ -13,13 +13,14 @@ const open = computed(() => props.streaming || localOpen.value);
 </script>
 
 <template>
-  <div class="mt-1 rounded-lg border border-border bg-surface text-xs">
-    <button type="button" class="flex w-full items-center gap-1 px-2 py-1 text-left text-fg-muted" @click="localOpen = !localOpen">
-      <ChevronDown v-if="open" :size="14" />
-      <ChevronRight v-else :size="14" />
-      <span class="inline-flex items-center gap-1"><Brain :size="14" /> {{ streaming ? "Reasoning…" : "Reasoning" }}</span>
+  <div class="overflow-hidden rounded-lg border border-border bg-surface text-xs shadow-e1">
+    <button type="button" class="flex w-full items-center gap-1.5 px-3 py-2 text-left text-fg-muted" @click="localOpen = !localOpen">
+      <ChevronDown v-if="open" :size="13" />
+      <ChevronRight v-else :size="13" />
+      <Brain :size="13" :class="streaming ? 'text-accent' : ''" />
+      <span class="text-[12px] font-medium" :class="streaming ? 'shimmer-text' : ''">{{ streaming ? "Reasoning…" : "Reasoning" }}</span>
       <span v-if="streaming" data-test="reasoning-shimmer" class="ml-1 inline-block h-1.5 w-1.5 animate-pulse motion-reduce:animate-none rounded-full bg-fg-muted" aria-hidden="true" />
     </button>
-    <p v-if="open" data-test="reasoning-body" class="whitespace-pre-wrap px-2 pb-2 text-fg-muted">{{ reasoning }}</p>
+    <p v-if="open" data-test="reasoning-body" class="whitespace-pre-wrap border-t border-border px-3 pb-2.5 pt-2 text-[12px] leading-relaxed text-fg-muted">{{ reasoning }}</p>
   </div>
 </template>

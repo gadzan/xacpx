@@ -45,23 +45,24 @@ function fmtDuration(ms?: number): string {
 </script>
 
 <template>
-  <div class="mt-1 rounded-lg border border-border bg-surface text-xs">
-    <button ref="header" type="button" class="flex w-full items-center gap-1 px-2 py-1 text-left text-fg-muted" @click="onHeaderClick">
-      <ChevronDown v-if="open" :size="14" />
-      <ChevronRight v-else :size="14" />
-      <span class="inline-flex items-center gap-1"><Wrench :size="14" /> Tool calls</span>
+  <div class="overflow-hidden rounded-lg border border-border bg-surface text-xs shadow-e1">
+    <button ref="header" type="button"
+            class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg" @click="onHeaderClick">
+      <ChevronDown v-if="open" :size="13" class="text-fg-muted" />
+      <ChevronRight v-else :size="13" class="text-fg-muted" />
+      <span class="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-fg-muted"><Wrench :size="13" /> Tool steps</span>
       <FueDot v-if="showFueDot" :pulsing="fue.status.value === 'unseen'" />
-      <span v-else data-test="tool-count" class="text-fg-muted">({{ steps.length }})</span>
-      <span data-test="tool-summary" class="ml-1 flex items-center gap-1.5 text-fg-muted">
+      <span v-else data-test="tool-count" class="font-mono text-[10.5px] text-fg-muted">{{ steps.length }}</span>
+      <span data-test="tool-summary" class="ml-1 flex items-center gap-1.5 text-[10.5px] text-fg-muted">
         <span v-for="k in summary.kinds" :key="'k' + k.label" :data-test="'sum-' + k.label"
               class="inline-flex items-center gap-0.5">
-          <component :is="k.icon" :size="12" /><span class="tabular-nums">{{ k.count }}</span>
+          <component :is="k.icon" :size="11" /><span class="tabular-nums">{{ k.count }}</span>
         </span>
         <span v-if="summary.statuses.length" class="text-fg-muted">·</span>
         <span v-for="st in summary.statuses" :key="'s' + st.label" :data-test="'sum-' + st.label"
               class="inline-flex items-center gap-0.5"
               :class="st.label === 'success' ? 'text-run' : st.label === 'error' ? 'text-danger' : 'text-fg-muted'">
-          <component :is="st.icon" :size="12"
+          <component :is="st.icon" :size="11"
                      :class="st.label === 'running' ? 'animate-spin motion-reduce:animate-none' : ''" /><span class="tabular-nums">{{ st.count }}</span>
         </span>
       </span>
@@ -73,17 +74,20 @@ function fmtDuration(ms?: number): string {
       :anchor="anchor"
       @dismiss="fue.dismiss()"
     />
-    <ul v-if="open" class="divide-y divide-border">
+    <ul v-if="open" class="space-y-1 border-t border-border px-3 pb-2.5 pt-2">
       <li v-for="s in steps" :key="s.toolCallId">
-        <button type="button" data-test="tool-row" class="flex w-full items-center gap-2 px-2 py-1 text-left hover:bg-fg/5" @click="toggleRow(s.toolCallId)">
-          <Check v-if="s.status === 'success'" data-test="step-status-success" :size="14" class="text-run" />
-          <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="14" class="animate-spin motion-reduce:animate-none text-accent" />
-          <AlertTriangle v-else data-test="step-status-error" :size="14" class="text-danger" />
-          <component :is="KIND_ICON[s.kind]" :size="14" class="shrink-0 text-fg-muted" />
-          <span class="truncate font-mono text-fg">{{ s.title }}</span>
-          <span v-if="s.durationMs !== undefined" class="ml-auto font-mono text-fg-muted">{{ fmtDuration(s.durationMs) }}</span>
+        <button type="button" data-test="tool-row" class="flex w-full items-center gap-2 rounded text-left text-[12px] hover:bg-fg/5" @click="toggleRow(s.toolCallId)">
+          <span class="grid h-4 w-4 shrink-0 place-items-center rounded-full"
+                :class="s.status === 'success' ? 'bg-run/15' : s.status === 'running' ? 'bg-accent/15' : 'bg-danger/15'">
+            <Check v-if="s.status === 'success'" data-test="step-status-success" :size="9" class="text-run" />
+            <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="9" class="animate-spin motion-reduce:animate-none text-accent" />
+            <AlertTriangle v-else data-test="step-status-error" :size="9" class="text-danger" />
+          </span>
+          <component :is="KIND_ICON[s.kind]" :size="12" class="shrink-0 text-fg-muted" />
+          <span class="truncate font-mono text-[11px] text-fg">{{ s.title }}</span>
+          <span v-if="s.durationMs !== undefined" class="ml-auto font-mono text-[10.5px] text-fg-muted">{{ fmtDuration(s.durationMs) }}</span>
         </button>
-        <div v-if="expanded.has(s.toolCallId) && s.detail" class="px-2 pb-2">
+        <div v-if="expanded.has(s.toolCallId) && s.detail" class="px-2 pb-2 pt-1">
           <ToolDetail :detail="s.detail" />
         </div>
       </li>

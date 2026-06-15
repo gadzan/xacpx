@@ -5,7 +5,7 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import CopyButton from "./CopyButton.vue";
-import { CircleStop } from "lucide-vue-next";
+import { Bot, CircleStop } from "lucide-vue-next";
 
 const props = defineProps<{ messages: ChatMessage[]; streaming: string; liveTurn: LiveTurn | null }>();
 
@@ -41,27 +41,47 @@ watch(
 
 <template>
   <div class="relative flex-1 overflow-hidden">
-    <div ref="scroller" data-test="msg-scroller" class="h-full space-y-2 overflow-y-auto p-4" @scroll="onScroll">
-      <div v-for="(m, i) in messages" :key="i" class="group flex" :class="m.direction === 'in' ? 'justify-end' : 'justify-start'">
-        <pre v-if="m.direction === 'in'" data-test="msg-in"
-             class="max-w-[80%] whitespace-pre-wrap rounded-lg bg-accent/10 px-3 py-2 text-sm leading-relaxed text-fg"
-             :class="m.failed ? 'ring-1 ring-danger' : ''">{{ m.text }}<span v-if="m.failed" data-test="msg-failed" class="ml-2 text-xs text-danger">failed</span></pre>
-        <div v-else data-test="msg-out"
-             class="relative max-w-[80%] rounded-lg bg-surface px-3 py-2 text-sm leading-relaxed text-fg"
-             :class="m.failed ? 'ring-1 ring-danger' : ''">
-          <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
-          <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
-          <StreamMarkdown :text="m.text" />
-          <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> Stopped</span>
-          <span v-if="m.failed" data-test="msg-failed" class="text-xs text-danger">failed</span>
-          <CopyButton v-if="m.text" :text="m.text" class="absolute right-1 top-1 opacity-0 transition-opacity group-hover:opacity-100" />
-        </div>
-      </div>
-      <div v-if="streaming || liveTurn?.toolSteps.length || liveTurn?.reasoning" class="flex justify-start">
-        <div data-test="msg-streaming" class="max-w-[80%] rounded-lg bg-surface px-3 py-2 text-sm leading-relaxed text-fg opacity-90">
-          <ToolCallPanel v-if="liveTurn?.toolSteps.length" :steps="liveTurn.toolSteps" />
-          <ReasoningPanel v-if="liveTurn?.reasoning" :reasoning="liveTurn.reasoning" :streaming="true" />
-          <StreamMarkdown v-if="streaming" :text="streaming" :streaming="true" />
+    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-5 py-5" @scroll="onScroll">
+      <div class="mx-auto max-w-3xl space-y-5">
+        <template v-for="(m, i) in messages" :key="i">
+          <!-- USER row -->
+          <div v-if="m.direction === 'in'" class="flex justify-end">
+            <div data-test="msg-in"
+                 class="max-w-[80%] rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
+                 :class="m.failed ? 'ring-1 ring-danger' : ''">
+              <p class="whitespace-pre-wrap text-[14px] leading-relaxed text-fg">{{ m.text }}</p>
+              <span v-if="m.failed" data-test="msg-failed" class="mt-1 inline-block text-xs text-danger">failed</span>
+            </div>
+          </div>
+          <!-- ASSISTANT row -->
+          <div v-else class="group flex gap-2.5">
+            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
+              <Bot :size="13" class="text-accent" />
+            </div>
+            <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
+                 :class="m.failed ? 'rounded-lg ring-1 ring-danger' : ''">
+              <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
+              <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
+              <div class="relative">
+                <StreamMarkdown :text="m.text" class="text-[14px] leading-relaxed text-fg" />
+                <CopyButton v-if="m.text" :text="m.text" class="absolute right-0 top-0 opacity-0 transition-opacity group-hover:opacity-100" />
+              </div>
+              <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> Stopped</span>
+              <span v-if="m.failed" data-test="msg-failed" class="text-xs text-danger">failed</span>
+            </div>
+          </div>
+        </template>
+
+        <!-- live streaming assistant row -->
+        <div v-if="streaming || liveTurn?.toolSteps.length || liveTurn?.reasoning" class="flex gap-2.5">
+          <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
+            <Bot :size="13" class="text-accent" />
+          </div>
+          <div data-test="msg-streaming" class="min-w-0 flex-1 space-y-2">
+            <ToolCallPanel v-if="liveTurn?.toolSteps.length" :steps="liveTurn.toolSteps" />
+            <ReasoningPanel v-if="liveTurn?.reasoning" :reasoning="liveTurn.reasoning" :streaming="true" />
+            <StreamMarkdown v-if="streaming" :text="streaming" :streaming="true" class="caret text-[14px] leading-relaxed text-fg" />
+          </div>
         </div>
       </div>
     </div>
