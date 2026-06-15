@@ -163,6 +163,6 @@ test("InstanceTree renders an online dot per instance", () => {
   const wrapper = mount(InstanceTree);
   const dots = wrapper.findAll('[data-test="online-dot"]');
   expect(dots.length).toBe(2);
-  expect(dots[0]!.classes()).toContain("bg-green-500");
-  expect(dots[1]!.classes()).toContain("bg-slate-300");
+  expect(dots[0]!.classes()).toContain("bg-run");
+  expect(dots[1]!.classes()).toContain("bg-fg-muted");
 });
