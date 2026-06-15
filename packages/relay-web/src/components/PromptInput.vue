@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { Brain, Check, ChevronDown, Send } from "lucide-vue-next";
 import { suggestCommands } from "../lib/command-catalog";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { useComposerStore } from "../stores/composer";
@@ -120,61 +121,63 @@ function onInput() {
 </script>
 
 <template>
-  <form class="relative border-t p-3" @submit.prevent="submit">
+  <form class="relative border-t border-border p-3" @submit.prevent="submit">
     <!-- Suggestion popover, anchored above the input. -->
     <ul v-if="showSuggestions" data-test="cmd-suggestions"
-        class="absolute bottom-full left-3 right-3 mb-1 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+        class="absolute bottom-full left-3 right-3 mb-1 max-h-48 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg">
       <li v-for="(s, i) in suggestions" :key="s.name">
         <button type="button" data-test="cmd-suggestion"
                 class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sm"
-                :class="i === activeIdx ? 'bg-sky-50' : 'hover:bg-slate-50'"
+                :class="i === activeIdx ? 'bg-accent/10' : 'hover:bg-fg/10'"
                 @mousedown.prevent="acceptSuggestion(i)">
-          <span class="font-mono font-medium text-slate-700">{{ s.name }}</span>
-          <span class="truncate text-xs text-slate-400">{{ s.hint }}</span>
+          <span class="font-mono font-medium text-fg">{{ s.name }}</span>
+          <span class="truncate text-xs text-fg-muted">{{ s.hint }}</span>
         </button>
       </li>
     </ul>
 
-    <div class="flex items-end gap-2">
+    <div class="flex items-end gap-2 rounded-lg border border-border bg-surface p-1">
       <!-- Stays enabled while busy so you can pre-compose the next message and press
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"
-                class="w-full resize-none rounded border px-3 py-2 text-sm"
+                class="w-full resize-none bg-transparent px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted focus:outline-none"
                 :placeholder="busy ? 'Agent is working… (Esc to stop)' : 'Message, or /command'"
                 @input="onInput"
                 @keydown="onKeydown"
                 @blur="showSuggestions = false" />
       <button v-if="busy" type="button" data-test="composer-stop"
-              class="shrink-0 rounded bg-red-500 px-3 py-2 text-sm font-medium text-white hover:bg-red-600"
+              class="shrink-0 rounded bg-danger px-3 py-2 text-sm font-medium text-white hover:opacity-90"
               @click="emit('cancel')">Stop</button>
       <button v-else type="submit" data-test="composer-send" :disabled="!text.trim()"
-              class="shrink-0 rounded bg-sky-500 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:bg-slate-200 disabled:text-slate-400">Send</button>
+              class="inline-flex shrink-0 items-center gap-1.5 rounded bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted">
+        <Send :size="14" />Send</button>
     </div>
 
     <!-- Inline session-control chips (model selector). -->
     <div v-if="instanceId && sessionAlias" class="mt-2 flex items-center gap-2 text-xs">
       <div class="relative">
         <button type="button" data-test="model-chip"
-                class="rounded bg-slate-100 px-2 py-0.5 text-slate-600 hover:bg-slate-200"
+                class="inline-flex items-center gap-1 rounded border border-border bg-bg px-2 py-0.5 text-fg-muted hover:bg-fg/10"
                 :disabled="!controls.available.length"
                 @click="modelMenuOpen = !modelMenuOpen">
-          🧠 {{ controls.current || "model" }}
-          <span v-if="controls.available.length" class="text-slate-400">▾</span>
+          <Brain :size="14" />
+          <span class="font-mono">{{ controls.current || "model" }}</span>
+          <ChevronDown v-if="controls.available.length" :size="12" />
         </button>
         <ul v-if="modelMenuOpen && controls.available.length" data-test="model-menu"
-            class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+            class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg">
           <li v-for="m in controls.available" :key="m">
             <button type="button" data-test="model-option"
                     class="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-                    :class="m === controls.current ? 'bg-sky-50 text-sky-700' : 'hover:bg-slate-50 text-slate-600'"
+                    :class="m === controls.current ? 'bg-accent/10 text-accent' : 'hover:bg-fg/10 text-fg-muted'"
                     @click="pickModel(m)">
               <span class="font-mono">{{ m }}</span>
-              <span v-if="m === controls.current" class="ml-auto">✓</span>
+              <Check v-if="m === controls.current" :size="14" class="ml-auto" />
             </button>
           </li>
         </ul>
       </div>
-      <span v-if="controls.error" data-test="model-error" class="text-red-500">{{ controls.error }}</span>
+      <span v-if="controls.error" data-test="model-error" class="text-danger">{{ controls.error }}</span>
     </div>
   </form>
 </template>
