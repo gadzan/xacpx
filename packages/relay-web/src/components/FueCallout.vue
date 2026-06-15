@@ -46,17 +46,20 @@ onBeforeUnmount(() => {
     <div
       ref="card"
       data-test="fue-callout"
-      class="fixed z-50 w-64 rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-lg"
+      class="fixed z-50 w-64 rounded-lg border border-border bg-raised p-3 text-sm shadow-lg"
       :style="style"
       role="dialog"
     >
-      <p class="font-medium text-slate-800">{{ title }}</p>
-      <p class="mt-1 text-xs text-slate-500">{{ body }}</p>
+      <p class="flex items-center gap-2 font-medium text-fg">
+        <span class="inline-block h-2 w-2 rounded-full bg-accent" aria-hidden="true" />
+        {{ title }}
+      </p>
+      <p class="mt-1 text-xs text-fg-muted">{{ body }}</p>
       <div class="mt-2 flex justify-end">
         <button
           data-test="fue-dismiss"
           type="button"
-          class="rounded bg-sky-500 px-2 py-1 text-xs font-medium text-white hover:bg-sky-600"
+          class="rounded bg-accent px-2 py-1 text-xs font-medium text-white hover:bg-accent-hover"
           @click="emit('dismiss')"
         >
           Got it
