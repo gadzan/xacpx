@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { ToolDetailDto } from "@ganglion/xacpx-relay-protocol";
 import { File, Search } from "lucide-vue-next";
+import ExpandableBlock from "./ExpandableBlock.vue";
 
 const props = defineProps<{ detail: ToolDetailDto }>();
 
@@ -27,26 +28,34 @@ const diffStats = computed(() => ({
           <span v-if="diffStats.del" class="text-danger">−{{ diffStats.del }}</span>
         </span>
       </div>
-      <div class="overflow-x-auto rounded bg-bg p-2 font-mono">
-        <div v-for="(l, i) in diffLines.del" :key="'d' + i" data-test="diff-del" class="whitespace-pre text-danger">- {{ l }}</div>
-        <div v-for="(l, i) in diffLines.add" :key="'a' + i" data-test="diff-add" class="whitespace-pre text-run">+ {{ l }}</div>
-      </div>
+      <ExpandableBlock>
+        <div class="overflow-x-auto rounded bg-bg p-2 font-mono">
+          <div v-for="(l, i) in diffLines.del" :key="'d' + i" data-test="diff-del" class="whitespace-pre text-danger">- {{ l }}</div>
+          <div v-for="(l, i) in diffLines.add" :key="'a' + i" data-test="diff-add" class="whitespace-pre text-run">+ {{ l }}</div>
+        </div>
+      </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'command'">
       <div data-test="cmd-command" class="font-mono text-fg">$ {{ detail.command }}</div>
-      <pre v-if="detail.output" data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
+      <ExpandableBlock v-if="detail.output">
+        <pre data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
+      </ExpandableBlock>
       <div v-if="detail.exitCode !== undefined" class="text-fg-muted">exit {{ detail.exitCode }}</div>
     </template>
 
     <template v-else-if="detail.type === 'read'">
       <div data-test="read-path" class="inline-flex items-center gap-1 font-mono text-fg"><File :size="14" />{{ detail.path }}<span v-if="detail.lines" class="ml-2 text-fg-muted">{{ detail.lines }}</span></div>
-      <pre v-if="detail.preview" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
+      <ExpandableBlock v-if="detail.preview">
+        <pre class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
+      </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'search'">
       <div data-test="search-query" class="inline-flex items-center gap-1 font-mono text-fg"><Search :size="14" />{{ detail.query }}</div>
-      <pre v-if="detail.output" data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+      <ExpandableBlock v-if="detail.output">
+        <pre data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+      </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'fields'">
@@ -56,11 +65,15 @@ const diffStats = computed(() => ({
           <dd :data-test="'field-' + f.label" class="font-mono text-fg break-all">{{ f.value }}</dd>
         </template>
       </dl>
-      <pre v-if="detail.output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+      <ExpandableBlock v-if="detail.output">
+        <pre class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+      </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'text'">
-      <p data-test="tool-text" class="whitespace-pre-wrap text-fg-muted">{{ detail.text }}</p>
+      <ExpandableBlock>
+        <p data-test="tool-text" class="whitespace-pre-wrap text-fg-muted">{{ detail.text }}</p>
+      </ExpandableBlock>
     </template>
   </div>
 </template>
