@@ -9,8 +9,39 @@ vi.mock("../api/client", () => ({
 
 import ChatPane from "../components/ChatPane.vue";
 import { useChatStore } from "../stores/chat";
+import { useInstancesStore } from "../stores/instances";
 
 beforeEach(() => setActivePinia(createPinia()));
+
+function seedInstance() {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "backend", agent: "codex", workspace: "gaia" }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+}
+
+it("renders workspace, instance and agent context chips for the current session", async () => {
+  seedInstance();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  expect(w.find('[data-test="ctx-chip-workspace"]').text()).toContain("gaia");
+  expect(w.find('[data-test="ctx-chip-instance"]').text()).toContain("prod-box");
+  expect(w.find('[data-test="ctx-chip-agent"]').text()).toContain("codex");
+});
+
+it("clicking the workspace chip emits show-files", async () => {
+  seedInstance();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  await w.find('[data-test="ctx-chip-workspace"]').trigger("click");
+  expect(w.emitted("show-files")).toBeTruthy();
+});
 
 it("shows a working HUD while a live turn is active", async () => {
   const chat = useChatStore();

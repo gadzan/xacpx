@@ -1,10 +1,22 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from "vue";
 import { useChatStore } from "../stores/chat";
+import { useInstancesStore } from "../stores/instances";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 
+const emit = defineEmits<{ (e: "show-files"): void }>();
+
 const chat = useChatStore();
+const instances = useInstancesStore();
+
+// Context for the header chips: the current session's workspace/agent plus the
+// instance name. Branch is intentionally absent — the protocol carries no git
+// branch yet (deferred to the read-only git summary batch).
+const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceId) : undefined));
+const currentSession = computed(() =>
+  instance.value?.sessions.find((s) => s.alias === chat.sessionAlias),
+);
 
 // Live elapsed clock for the active turn HUD.
 const nowMs = ref(Date.now());
@@ -39,7 +51,16 @@ const verb = computed(() => {
       Select a session
     </div>
     <template v-else>
-      <div class="border-b px-4 py-2 text-sm font-medium">{{ chat.sessionAlias }}</div>
+      <div class="border-b px-4 py-2">
+        <div class="text-sm font-medium">{{ chat.sessionAlias }}</div>
+        <div v-if="currentSession || instance" class="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+          <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
+                  class="rounded bg-slate-100 px-1.5 py-0.5 hover:bg-slate-200" title="Browse files"
+                  @click="emit('show-files')">📁 {{ currentSession.workspace }}</button>
+          <span v-if="instance?.name" data-test="ctx-chip-instance" class="rounded bg-slate-100 px-1.5 py-0.5">@ {{ instance.name }}</span>
+          <span v-if="currentSession?.agent" data-test="ctx-chip-agent" class="rounded bg-slate-100 px-1.5 py-0.5">🤖 {{ currentSession.agent }}</span>
+        </div>
+      </div>
       <div v-if="chat.error" data-test="chat-error" class="bg-red-50 px-4 py-1 text-xs text-red-700">
         {{ chat.error }}
         <button class="ml-2 underline" @click="chat.error = ''">dismiss</button>

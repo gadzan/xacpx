@@ -110,7 +110,7 @@ onUnmounted(() => disconnect?.());
 
       <!-- Center: chat, always full width of the remaining space. -->
       <div data-test="column" class="flex flex-1 flex-col">
-        <ChatPane />
+        <ChatPane @show-files="rightTab = 'files'" />
       </div>
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
