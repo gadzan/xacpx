@@ -1,3 +1,42 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* Light theme */
+  --c-bg: 246 248 251;          /* #F6F8FB */
+  --c-surface: 255 255 255;     /* #FFFFFF */
+  --c-raised: 255 255 255;      /* #FFFFFF (+shadow) */
+  --c-border: 228 233 240;      /* #E4E9F0 */
+  --c-fg: 18 24 35;             /* #121823 */
+  --c-fg-muted: 91 102 117;     /* #5B6675 */
+  --c-accent: 46 123 224;       /* #2E7BE0 */
+  --c-accent-hover: 37 105 200; /* #2569C8 */
+  --c-run: 31 157 87;           /* #1F9D57 */
+  --c-run-bright: 52 192 110;   /* #34C06E */
+  --c-warn: 217 119 6;          /* #D97706 */
+  --c-danger: 239 68 68;        /* #EF4444 */
+  --c-info: 37 99 235;          /* #2563EB */
+}
+.dark {
+  /* Dark theme */
+  --c-bg: 14 17 22;             /* #0E1116 */
+  --c-surface: 21 26 33;        /* #151A21 */
+  --c-raised: 27 33 42;         /* #1B212A */
+  --c-border: 38 45 56;         /* #262D38 */
+  --c-fg: 232 236 241;          /* #E8ECF1 */
+  --c-fg-muted: 148 160 176;    /* #94A0B0 */
+  --c-accent: 79 155 245;       /* #4F9BF5 */
+  --c-accent-hover: 107 176 248;/* #6BB0F8 */
+  --c-run: 70 194 119;          /* #46C277 */
+  --c-run-bright: 105 214 137;  /* #69D689 */
+  --c-warn: 251 191 36;         /* #FBBF24 */
+  --c-danger: 248 113 113;      /* #F87171 */
+  --c-info: 96 165 250;         /* #60A5FA */
+}
+
+/* Brand gradient — logo only */
+:root { --brand-from: #4F9BF5; --brand-to: #69D689; }
+
+html, body, #app { height: 100%; }
+body { @apply bg-bg text-fg font-sans antialiased; }
