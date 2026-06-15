@@ -5,6 +5,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
+import { AtSign, Bot, Folder, GitBranch, Wrench } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
@@ -60,37 +61,42 @@ const verb = computed(() => {
 
 <template>
   <div class="flex h-full flex-1 flex-col">
-    <div v-if="!chat.sessionAlias" class="flex flex-1 items-center justify-center text-slate-400">
+    <div v-if="!chat.sessionAlias" class="flex flex-1 items-center justify-center text-fg-muted">
       Select a session
     </div>
     <template v-else>
-      <div class="border-b px-4 py-2">
-        <div class="text-sm font-medium">{{ chat.sessionAlias }}</div>
-        <div v-if="currentSession || instance" class="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
+      <div class="border-b border-border px-4 py-2">
+        <div class="text-sm font-medium text-fg">{{ chat.sessionAlias }}</div>
+        <div v-if="currentSession || instance" class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-fg-muted">
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
-                  class="rounded bg-slate-100 px-1.5 py-0.5 hover:bg-slate-200" title="Browse files"
-                  @click="emit('show-files')">📁 {{ currentSession.workspace }}</button>
-          <span v-if="instance?.name" data-test="ctx-chip-instance" class="rounded bg-slate-100 px-1.5 py-0.5">@ {{ instance.name }}</span>
-          <span v-if="currentSession?.agent" data-test="ctx-chip-agent" class="rounded bg-slate-100 px-1.5 py-0.5">🤖 {{ currentSession.agent }}</span>
+                  class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted hover:bg-fg/5"
+                  title="Browse files"
+                  @click="emit('show-files')"><Folder :size="14" />{{ currentSession.workspace }}</button>
+          <span v-if="instance?.name" data-test="ctx-chip-instance"
+                class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted"><AtSign :size="14" />{{ instance.name }}</span>
+          <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
+                class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted"><Bot :size="14" />{{ currentSession.agent }}</span>
           <button v-if="files.gitSummary" data-test="git-summary"
-                  class="rounded bg-slate-100 px-1.5 py-0.5 hover:bg-slate-200" title="View changes"
+                  class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted hover:bg-fg/5"
+                  title="View changes"
                   @click="files.tab = 'changes'; emit('show-files')">
-            <span class="text-sky-500">●</span>
-            <span v-if="files.gitSummary.branch"> {{ files.gitSummary.branch }} ·</span>
+            <GitBranch :size="14" />
+            <span class="h-1.5 w-1.5 rounded-full bg-info" aria-hidden="true" />
+            <span v-if="files.gitSummary.branch">{{ files.gitSummary.branch }} ·</span>
             {{ files.gitSummary.changedCount }} changed
           </button>
         </div>
       </div>
-      <div v-if="chat.error" data-test="chat-error" class="bg-red-50 px-4 py-1 text-xs text-red-700">
+      <div v-if="chat.error" data-test="chat-error" class="bg-danger/10 px-4 py-1 text-xs text-danger">
         {{ chat.error }}
-        <button class="ml-2 underline" @click="chat.error = ''">dismiss</button>
+        <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
       </div>
       <MessageList :messages="chat.messages" :streaming="chat.streaming" :live-turn="chat.liveTurn" />
-      <div v-if="chat.busy" data-test="turn-hud" class="flex items-center gap-2 px-4 py-1 text-xs text-slate-500">
-        <span class="animate-pulse">●</span>
-        <span>{{ verb }}… {{ elapsed }}</span>
-        <span v-if="runningTools > 0">· 🔧 {{ runningTools }}</span>
-        <button data-test="cancel-turn" class="ml-auto text-red-500 hover:underline" @click="chat.cancel">Cancel</button>
+      <div v-if="chat.busy" data-test="turn-hud" class="flex items-center gap-2 px-4 py-1 text-xs text-fg-muted">
+        <span class="h-1.5 w-1.5 rounded-full bg-run-bright animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+        <span><span class="font-mono tabular-nums">{{ verb }}… {{ elapsed }}</span></span>
+        <span v-if="runningTools > 0" class="inline-flex items-center gap-1">· <Wrench :size="12" /> {{ runningTools }}</span>
+        <button data-test="cancel-turn" class="ml-auto text-danger hover:underline" @click="chat.cancel">Cancel</button>
       </div>
       <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
