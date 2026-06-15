@@ -138,6 +138,10 @@ export interface SessionTransport {
     options?: PromptOptions,
   ): Promise<{ text: string }>;
   setMode(session: ResolvedSession, modeId: string): Promise<void>;
+  /** Switch the running session's model. Optional: transports that can't omit it. */
+  setModel?(session: ResolvedSession, modelId: string): Promise<void>;
+  /** Read the current model and the agent-advertised available model ids. Optional. */
+  getSessionModel?(session: ResolvedSession): Promise<{ current?: string; available: string[] }>;
   cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }>;
   hasSession(session: ResolvedSession): Promise<boolean>;
   listAgentSessions?(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined>;

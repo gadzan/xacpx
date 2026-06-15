@@ -134,6 +134,10 @@ export interface SessionLifecycleOps {
 
 export interface SessionInteractionOps {
   setModeTransportSession: (session: import("../transport/types").ResolvedSession, modeId: string) => Promise<void>;
+  setModelTransportSession: (session: import("../transport/types").ResolvedSession, modelId: string) => Promise<void>;
+  getModelTransportSession: (
+    session: import("../transport/types").ResolvedSession,
+  ) => Promise<{ current?: string; available: string[] }>;
   cancelTransportSession: (
     session: import("../transport/types").ResolvedSession,
   ) => Promise<{ cancelled: boolean; message: string }>;

@@ -18,7 +18,7 @@ export interface GroupListFilter {
 export type ParsedCommand =
   | { kind: "help"; topic?: string }
   | { kind: "agents" }
-  | { kind: "agent.add"; template: string }
+  | { kind: "agent.add"; template: string; model?: string }
   | { kind: "agent.rm"; name: string }
   | { kind: "permission.status" }
   | { kind: "permission.mode.set"; mode: "approve-all" | "approve-reads" | "deny-all" }
@@ -49,12 +49,14 @@ export type ParsedCommand =
   | { kind: "task.cancel"; taskId: string }
   | { kind: "mode.show" }
   | { kind: "mode.set"; modeId: string }
+  | { kind: "model.show" }
+  | { kind: "model.set"; modelId: string }
   | { kind: "replymode.show" }
   | { kind: "replymode.set"; replyMode: "stream" | "final" | "verbose" }
   | { kind: "replymode.reset" }
   | { kind: "session.use"; alias: string }
   | { kind: "session.use.previous" }
-  | { kind: "session.new"; alias: string; agent: string; workspace: string }
+  | { kind: "session.new"; alias: string; agent: string; workspace: string; model?: string }
   | { kind: "session.shortcut"; agent: string; cwd?: string; workspace?: string }
   | { kind: "session.shortcut.new"; agent: string; cwd?: string; workspace?: string }
   | { kind: "session.attach"; alias: string; agent: string; workspace: string; transportSession: string }
@@ -122,6 +124,7 @@ export function parseCommand(input: string): ParsedCommand {
   }
   if (command === "/clear") return { kind: "session.reset" };
   if (command === "/mode" && parts.length === 1) return { kind: "mode.show" };
+  if (command === "/model" && parts.length === 1) return { kind: "model.show" };
   if (command === "/replymode" && parts.length === 1) return { kind: "replymode.show" };
   if (command === "/config" && parts.length === 1) return { kind: "config.show" };
   if (command === "/permission" && parts.length === 1) return { kind: "permission.status" };
@@ -272,6 +275,10 @@ export function parseCommand(input: string): ParsedCommand {
     return { kind: "mode.set", modeId: parts[1] };
   }
 
+  if (command === "/model" && parts[1]) {
+    return { kind: "model.set", modelId: parts.slice(1).join(" ") };
+  }
+
   if (command === "/replymode" && parts[1] === "reset" && parts.length === 2) {
     return { kind: "replymode.reset" };
   }
@@ -280,7 +287,17 @@ export function parseCommand(input: string): ParsedCommand {
   }
 
   if (command === "/agent" && parts[1] === "add" && parts[2]) {
-    return { kind: "agent.add", template: parts[2] };
+    // Optional `--model <id>` / `-m <id>` sets the agent's default model.
+    let model = "";
+    for (let index = 3; index < parts.length; index += 1) {
+      if ((parts[index] === "--model" || parts[index] === "-m") && index + 1 < parts.length) {
+        model = parts[index + 1] ?? "";
+        index += 1;
+      }
+    }
+    return model.trim().length > 0
+      ? { kind: "agent.add", template: parts[2], model: model.trim() }
+      : { kind: "agent.add", template: parts[2] };
   }
 
   if (command === "/agent" && parts[1] === "rm" && parts[2]) {
@@ -367,6 +384,7 @@ export function parseCommand(input: string): ParsedCommand {
       const alias = parts[2];
       let agent = "";
       let workspace = "";
+      let model = "";
       let invalid = false;
 
       for (let index = 3; index < parts.length; index += 1) {
@@ -386,6 +404,14 @@ export function parseCommand(input: string): ParsedCommand {
           workspace = parts[index + 1] ?? "";
           index += 1;
           continue;
+        } else if (parts[index] === "--model" || parts[index] === "-m") {
+          if (index + 1 >= parts.length) {
+            invalid = true;
+            break;
+          }
+          model = parts[index + 1] ?? "";
+          index += 1;
+          continue;
         }
 
         invalid = true;
@@ -393,7 +419,9 @@ export function parseCommand(input: string): ParsedCommand {
       }
 
       if (!invalid && alias.trim().length > 0 && agent.trim().length > 0 && workspace.trim().length > 0) {
-        return { kind: "session.new", alias, agent, workspace };
+        return model.trim().length > 0
+          ? { kind: "session.new", alias, agent, workspace, model: model.trim() }
+          : { kind: "session.new", alias, agent, workspace };
       }
     }
 

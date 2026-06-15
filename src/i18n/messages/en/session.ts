@@ -50,6 +50,14 @@ export const session: SessionMessages = {
   modeNotSet: "not set",
   modeSet: (modeId) => `Current session mode set to: ${modeId}`,
 
+  modelHeader: "Current model:",
+  modelSessionLabel: (alias) => `- Session: ${alias}`,
+  modelModelLabel: (modelId) => `- model: ${modelId}`,
+  modelNotSet: "not set (using agent default)",
+  modelAvailableLabel: (models) => `- available: ${models}`,
+  modelSet: (modelId) => `Current session model switched to: ${modelId}`,
+  modelSetFailed: (modelId, detail) => `Failed to switch model: ${modelId}\n${detail}`,
+
   // handleReplyModeShow / handleReplyModeSet / handleReplyModeReset
   replyModeHeader: "Current reply mode:",
   replyModeSessionLabel: (alias) => `- Session: ${alias}`,
@@ -152,6 +160,13 @@ export const session: SessionMessages = {
   modeHelpCmdShowDesc: "Show the saved mode of the current session",
   modeHelpCmdSet: "/mode <id>",
   modeHelpCmdSetDesc: "Set the current session mode",
+
+  // modelHelp metadata
+  modelHelpSummary: "View or switch the LLM model for the current session.",
+  modelHelpCmdShow: "/model",
+  modelHelpCmdShowDesc: "Show the current session model and the available ones",
+  modelHelpCmdSet: "/model <id>",
+  modelHelpCmdSetDesc: "Switch the current session model (e.g. gpt-5.2[high])",
 
   // replyModeHelp metadata
   replyModeHelpSummary: "View or set the reply output mode for the current logical session.",

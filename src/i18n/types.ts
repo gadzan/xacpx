@@ -38,6 +38,15 @@ export interface SessionMessages {
   modeNotSet: string;
   modeSet: (modeId: string) => string;
 
+  // handleModelShow / handleModelSet
+  modelHeader: string;
+  modelSessionLabel: (alias: string) => string;
+  modelModelLabel: (modelId: string) => string;
+  modelNotSet: string;
+  modelAvailableLabel: (models: string) => string;
+  modelSet: (modelId: string) => string;
+  modelSetFailed: (modelId: string, detail: string) => string;
+
   // handleReplyModeShow / handleReplyModeSet / handleReplyModeReset
   replyModeHeader: string;
   replyModeSessionLabel: (alias: string) => string;
@@ -127,6 +136,13 @@ export interface SessionMessages {
   modeHelpCmdShowDesc: string;
   modeHelpCmdSet: string;
   modeHelpCmdSetDesc: string;
+
+  // modelHelp metadata
+  modelHelpSummary: string;
+  modelHelpCmdShow: string;
+  modelHelpCmdShowDesc: string;
+  modelHelpCmdSet: string;
+  modelHelpCmdSetDesc: string;
 
   // replyModeHelp metadata
   replyModeHelpSummary: string;
