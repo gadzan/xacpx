@@ -5,7 +5,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
-import { AtSign, Bot, Folder, GitBranch, Wrench } from "lucide-vue-next";
+import { Bot, Folder, GitBranch, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
@@ -65,25 +65,26 @@ const verb = computed(() => {
       Select a session
     </div>
     <template v-else>
-      <div class="border-b border-border px-4 py-2">
-        <div class="text-sm font-medium text-fg">{{ chat.sessionAlias }}</div>
-        <div v-if="currentSession || instance" class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-fg-muted">
+      <!-- header -->
+      <div class="shrink-0 flex h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-5 backdrop-blur-md">
+        <h1 class="text-[14px] font-semibold tracking-tight text-fg">{{ chat.sessionAlias }}</h1>
+        <div v-if="currentSession || instance" class="flex flex-wrap items-center gap-1">
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
-                  class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted hover:bg-fg/5"
+                  class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   title="Browse files"
-                  @click="emit('show-files')"><Folder :size="14" />{{ currentSession.workspace }}</button>
+                  @click="emit('show-files')"><Folder :size="11" class="text-warn" />{{ currentSession.workspace }}</button>
           <span v-if="instance?.name" data-test="ctx-chip-instance"
-                class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted"><AtSign :size="14" />{{ instance.name }}</span>
+                class="flex items-center gap-1 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="font-mono text-accent">@</span>{{ instance.name }}</span>
           <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
-                class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted"><Bot :size="14" />{{ currentSession.agent }}</span>
+                class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="text-accent" />{{ currentSession.agent }}</span>
           <button v-if="files.gitSummary" data-test="git-summary"
-                  class="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-1.5 py-0.5 text-fg-muted hover:bg-fg/5"
+                  class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   title="View changes"
                   @click="files.tab = 'changes'; emit('show-files')">
-            <GitBranch :size="14" />
-            <span class="h-1.5 w-1.5 rounded-full bg-info" aria-hidden="true" />
-            <span v-if="files.gitSummary.branch">{{ files.gitSummary.branch }} ·</span>
-            {{ files.gitSummary.changedCount }} changed
+            <GitBranch :size="11" class="text-warn" />
+            <span v-if="files.gitSummary.branch">{{ files.gitSummary.branch }}</span>
+            <span class="h-1 w-1 rounded-full bg-warn" aria-hidden="true" />
+            <span class="text-warn">{{ files.gitSummary.changedCount }} changed</span>
           </button>
         </div>
       </div>
@@ -92,15 +93,24 @@ const verb = computed(() => {
         <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
       </div>
       <MessageList :messages="chat.messages" :streaming="chat.streaming" :live-turn="chat.liveTurn" />
-      <div v-if="chat.busy" data-test="turn-hud" class="flex items-center gap-2 px-4 py-1 text-xs text-fg-muted">
-        <span class="h-1.5 w-1.5 rounded-full bg-run-bright animate-pulse motion-reduce:animate-none" aria-hidden="true" />
-        <span><span class="font-mono tabular-nums">{{ verb }}… {{ elapsed }}</span></span>
-        <span v-if="runningTools > 0" class="inline-flex items-center gap-1">· <Wrench :size="12" /> {{ runningTools }}</span>
-        <button data-test="cancel-turn" class="ml-auto text-danger hover:underline" @click="chat.cancel">Cancel</button>
+      <!-- composer area -->
+      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-5 pb-4 pt-1.5">
+        <!-- TURN HUD -->
+        <div v-if="chat.busy" data-test="turn-hud"
+             class="flex items-center gap-2 rounded-lg border border-run/20 bg-run/8 px-3 py-1.5">
+          <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
+          <span class="text-[12px] font-semibold text-run">{{ verb }}…</span>
+          <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
+          <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? "tool" : "tools" }}</span>
+          <span class="flex-1" />
+          <button data-test="cancel-turn"
+                  class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
+                  @click="chat.cancel"><X :size="13" />Cancel</button>
+        </div>
+        <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                     :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
+                     @send="chat.send" @cancel="chat.cancel" />
       </div>
-      <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
-                   :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                   @send="chat.send" @cancel="chat.cancel" />
     </template>
   </div>
 </template>
