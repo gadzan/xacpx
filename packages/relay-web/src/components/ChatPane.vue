@@ -92,7 +92,9 @@ const verb = computed(() => {
         <span v-if="runningTools > 0">· 🔧 {{ runningTools }}</span>
         <button data-test="cancel-turn" class="ml-auto text-red-500 hover:underline" @click="chat.cancel">Cancel</button>
       </div>
-      <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`" @send="chat.send" @cancel="chat.cancel" />
+      <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                   :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
+                   @send="chat.send" @cancel="chat.cancel" />
     </template>
   </div>
 </template>

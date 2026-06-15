@@ -6,6 +6,8 @@ import {
   type FsListPayload,
   type FsReadPayload,
   type FsSearchPayload,
+  type SessionModelGetPayload,
+  type SessionModelSetPayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type OrchestrationTaskDto,
@@ -176,6 +178,17 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       const input = payload as FsSearchPayload;
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
       return await control.searchWorkspace(input.workspace, input.query ?? ""); // SearchResult ≅ FsSearchResult
+    }
+    case MSG.sessionModelGet: {
+      const input = payload as SessionModelGetPayload;
+      if (!input.sessionAlias) return errorPayload("bad-request", "sessionAlias is required");
+      return await control.getSessionModel(input.chatKey, input.sessionAlias); // ≅ SessionModelResult
+    }
+    case MSG.sessionModelSet: {
+      const input = payload as SessionModelSetPayload;
+      if (!input.sessionAlias || !input.modelId) return errorPayload("bad-request", "sessionAlias and modelId are required");
+      await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
+      return { ok: true };
     }
     default:
       return errorPayload("unknown-type", `unsupported rpc type: ${envelope.type}`);

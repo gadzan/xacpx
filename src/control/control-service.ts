@@ -1,6 +1,6 @@
 import type { Agent as ChatAgent, ChatRequestMetadata } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
-import type { ResolvedSession } from "../transport/types";
+import type { ResolvedSession, SessionTransport } from "../transport/types";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry";
 import type {
   CreateScheduledTaskInput,
@@ -45,8 +45,11 @@ export interface ControlServiceDeps {
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
-    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat"
+    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel"
   >;
+  // The active transport, for reading/switching a session's model. setModel/
+  // getSessionModel are optional on the interface — absence is handled gracefully.
+  transport: Pick<SessionTransport, "setModel" | "getSessionModel">;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
@@ -119,6 +122,29 @@ export class ControlService {
 
   searchWorkspace(workspace: string, query: string): Promise<SearchResult> {
     return this.workspaceFs.search(workspace, query);
+  }
+
+  /** Read a session's current model and the agent-advertised available ids. */
+  async getSessionModel(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session) return { available: [] };
+    if (!this.deps.transport.getSessionModel) return { current: session.model, available: [] };
+    return await this.deps.transport.getSessionModel(session);
+  }
+
+  /** Switch a session's model (acpx validates the id) and persist the override. */
+  async setSessionModel(chatKey: string, alias: string, modelId: string): Promise<void> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session) throw new Error("session not found");
+    if (!this.deps.transport.setModel) throw new Error("the active transport does not support switching models");
+    await this.deps.transport.setModel(session, modelId);
+    await this.deps.sessions.setSessionModel(session.alias, modelId);
+  }
+
+  /** Resolve a chat-scoped display alias to its ResolvedSession, or null. */
+  private async resolveControlSession(chatKey: string, alias: string): Promise<ResolvedSession | null> {
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+    return await this.deps.sessions.getSession(internalAlias);
   }
 
   get events(): ControlEventBus {

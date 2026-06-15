@@ -3,11 +3,25 @@ import { computed, nextTick, ref, watch } from "vue";
 import { suggestCommands } from "../lib/command-catalog";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { useComposerStore } from "../stores/composer";
+import { useSessionControlsStore } from "../stores/session-controls";
 
-const props = defineProps<{ busy?: boolean; draftKey?: string }>();
+const props = defineProps<{ busy?: boolean; draftKey?: string; instanceId?: string | null; sessionAlias?: string | null }>();
 const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
 
 const composer = useComposerStore();
+const controls = useSessionControlsStore();
+
+// Load the session's model for the composer chip whenever the session changes.
+const modelMenuOpen = ref(false);
+watch(
+  () => [props.instanceId, props.sessionAlias] as const,
+  ([id, alias]) => { void controls.loadModel(id ?? null, alias ?? null); modelMenuOpen.value = false; },
+  { immediate: true },
+);
+async function pickModel(id: string) {
+  modelMenuOpen.value = false;
+  if (props.instanceId && props.sessionAlias) await controls.setModel(props.instanceId, props.sessionAlias, id);
+}
 const text = ref(loadDraft(props.draftKey ?? ""));
 const textarea = ref<HTMLTextAreaElement | null>(null);
 
@@ -135,6 +149,32 @@ function onInput() {
               @click="emit('cancel')">Stop</button>
       <button v-else type="submit" data-test="composer-send" :disabled="!text.trim()"
               class="shrink-0 rounded bg-sky-500 px-3 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:bg-slate-200 disabled:text-slate-400">Send</button>
+    </div>
+
+    <!-- Inline session-control chips (model selector). -->
+    <div v-if="instanceId && sessionAlias" class="mt-2 flex items-center gap-2 text-xs">
+      <div class="relative">
+        <button type="button" data-test="model-chip"
+                class="rounded bg-slate-100 px-2 py-0.5 text-slate-600 hover:bg-slate-200"
+                :disabled="!controls.available.length"
+                @click="modelMenuOpen = !modelMenuOpen">
+          🧠 {{ controls.current || "model" }}
+          <span v-if="controls.available.length" class="text-slate-400">▾</span>
+        </button>
+        <ul v-if="modelMenuOpen && controls.available.length" data-test="model-menu"
+            class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          <li v-for="m in controls.available" :key="m">
+            <button type="button" data-test="model-option"
+                    class="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+                    :class="m === controls.current ? 'bg-sky-50 text-sky-700' : 'hover:bg-slate-50 text-slate-600'"
+                    @click="pickModel(m)">
+              <span class="font-mono">{{ m }}</span>
+              <span v-if="m === controls.current" class="ml-auto">✓</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+      <span v-if="controls.error" data-test="model-error" class="text-red-500">{{ controls.error }}</span>
     </div>
   </form>
 </template>

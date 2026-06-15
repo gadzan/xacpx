@@ -31,6 +31,8 @@ export const MSG = {
   fsRead: "control.fs.read",
   fsDiff: "control.fs.diff",
   fsSearch: "control.fs.search",
+  sessionModelGet: "control.session.model.get",
+  sessionModelSet: "control.session.model.set",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -256,4 +258,22 @@ export interface FsSearchResult {
   matches: string[];
   /** True when the result cap was hit. */
   truncated: boolean;
+}
+
+export interface SessionModelGetPayload {
+  chatKey: string;
+  sessionAlias: string;
+}
+
+export interface SessionModelSetPayload {
+  chatKey: string;
+  sessionAlias: string;
+  modelId: string;
+}
+
+export interface SessionModelResult {
+  /** The session's current model id, if known. */
+  current?: string;
+  /** Agent-advertised model ids the session can switch to (may be empty). */
+  available: string[];
 }

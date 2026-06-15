@@ -41,6 +41,8 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   // `relay:<accountId>` channel scope that prompt/list resolve against, else a
   // freshly created session is unreachable by a subsequent prompt.
   MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsRemove,
+  // Model get/set resolve the session within the caller's chat scope.
+  MSG.sessionModelGet, MSG.sessionModelSet,
 ]);
 
 function requireJson(contentType: string | undefined): boolean {
