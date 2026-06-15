@@ -116,9 +116,15 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   const update = event.params?.update;
   if (!update) return;
 
-  if (state.formatToolCalls && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")) {
+  if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+    // Structured consumers (e.g. the relay web dashboard) render tool calls in
+    // their own UI, so they receive events through `onToolEvent` regardless of the
+    // channel's text replyMode. Only the legacy inline-text rendering — which
+    // spills tool calls into the reply stream — stays gated behind verbose mode
+    // (`formatToolCalls`). Previously the whole branch was gated, so a channel with
+    // replyMode "stream"/"final" silently dropped structured events too.
     const wantsStructured = state.toolEventMode === "structured" || state.toolEventMode === "both";
-    const wantsText = state.toolEventMode === "text" || state.toolEventMode === "both";
+    const wantsText = (state.toolEventMode === "text" || state.toolEventMode === "both") && state.formatToolCalls;
 
     // Defense-in-depth: if a transport set mode='structured' without wiring
     // onToolEvent, drop the event silently rather than throwing or leaking

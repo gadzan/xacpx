@@ -61,6 +61,65 @@ test("when onToolEvent is provided, tool_call events do NOT enter state.segments
   ]);
 });
 
+test("structured tool events fire even when formatToolCalls is false (non-verbose channels)", () => {
+  // The relay web dashboard consumes tool events structurally and renders them in
+  // its own UI, so it must receive them regardless of the channel's text replyMode.
+  // A channel with replyMode "stream"/"final" sets formatToolCalls=false, which used
+  // to suppress the ENTIRE tool_call branch — dropping structured events too.
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  parseStreamingChunks(
+    state,
+    JSON.stringify({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "t1",
+          kind: "execute",
+          title: "bash",
+          rawInput: { command: "ls" },
+          status: "in_progress",
+        },
+      },
+    }),
+  );
+  // Structured event still emitted; nothing leaks into the text segments.
+  expect(state.segments).toEqual([]);
+  expect(events).toEqual([
+    {
+      toolCallId: "t1",
+      toolName: "bash",
+      kind: "execute",
+      summary: "ls",
+      rawInput: { command: "ls" },
+      status: "running",
+    },
+  ]);
+});
+
+test("inline-text tool rendering stays gated behind formatToolCalls (text mode, non-verbose)", () => {
+  // A plain text channel in non-verbose mode must NOT spill tool calls into the reply.
+  const state = createStreamingPromptState(false, { mode: "text" });
+  parseStreamingChunks(
+    state,
+    JSON.stringify({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "t1",
+          kind: "read",
+          title: "Read File",
+          rawInput: { path: "foo.ts" },
+          status: "completed",
+        },
+      },
+    }),
+  );
+  expect(state.segments).toEqual([]);
+});
+
 test("when onToolEvent is undefined, tool_call still folds into text segments (backward compat)", () => {
   const state = createStreamingPromptState(true);
   parseStreamingChunks(
