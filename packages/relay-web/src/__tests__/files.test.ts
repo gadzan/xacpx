@@ -89,6 +89,27 @@ describe("files store", () => {
     expect(s.results).toEqual([]);
   });
 
+  it("loadStatus populates the changed map from a whole-tree diff", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "ws";
+    rpc.mockResolvedValueOnce({ workspace: "ws", files: [{ path: "src/a.ts", status: " M" }, { path: "new.ts", status: "??" }], diff: "", truncated: false });
+    await s.loadStatus();
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.diff", { workspace: "ws" });
+    expect(s.changed).toEqual({ "src/a.ts": " M", "new.ts": "??" });
+  });
+
+  it("loadStatus clears the changed map quietly for a non-git workspace (no error)", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "ws";
+    s.changed = { stale: "M" };
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "not-a-git-repo" } });
+    await s.loadStatus();
+    expect(s.changed).toEqual({});
+    expect(s.error).toBe(""); // browsing stays clean — no error surfaced
+  });
+
   it("surfaces an instance-side error payload as an error string", async () => {
     rpc.mockResolvedValueOnce({ error: { code: "internal", message: "path-escapes-workspace" } });
     const s = useFilesStore();

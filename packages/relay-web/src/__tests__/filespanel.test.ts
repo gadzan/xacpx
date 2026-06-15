@@ -43,6 +43,25 @@ describe("FilesPanel file viewer", () => {
     expect((navigator.clipboard.writeText as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith("hello");
   });
 
+  it("badges directory entries with git status", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.path = "";
+    files.entries = [
+      { name: "src", type: "dir" },
+      { name: "clean.ts", type: "file", size: 1 },
+      { name: "new.ts", type: "file", size: 1 },
+    ];
+    files.changed = { "src/a.ts": " M", "new.ts": "??" };
+    await w.vm.$nextTick();
+    const badges = w.findAll('[data-test="fs-status"]');
+    // src (dir, nested change) + new.ts (untracked) badge; clean.ts has none.
+    expect(badges.length).toBe(2);
+    const texts = badges.map((b) => b.text());
+    expect(texts).toContain("•"); // src directory contains a change
+    expect(texts).toContain("U"); // new.ts is untracked
+  });
+
   it("hides the gutter and copy button for a binary file", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();

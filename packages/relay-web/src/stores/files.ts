@@ -24,6 +24,7 @@ export const useFilesStore = defineStore("files", () => {
   const diff = ref<FsDiffResult | null>(null);
   const diffPath = ref<string | null>(null); // null = whole-tree diff
   const tab = ref<"files" | "changes">("files");
+  const changed = ref<Record<string, string>>({}); // relPath -> git porcelain status, for Files-tab badges
   const query = ref("");
   const results = ref<string[]>([]);
   const searchTruncated = ref(false);
@@ -38,6 +39,7 @@ export const useFilesStore = defineStore("files", () => {
     file.value = null;
     diff.value = null;
     diffPath.value = null;
+    changed.value = {};
     query.value = "";
     results.value = [];
     error.value = "";
@@ -49,9 +51,30 @@ export const useFilesStore = defineStore("files", () => {
     file.value = null;
     diff.value = null;
     diffPath.value = null;
+    changed.value = {};
     query.value = "";
     results.value = [];
     await list("");
+    void loadStatus();
+  }
+
+  /** Quietly fetch git status for badge annotation. Failures (e.g. a non-git
+   *  workspace) clear the badges without surfacing an error, so plain browsing
+   *  stays clean — the Changes tab's loadDiff() is what surfaces git errors. */
+  async function loadStatus(): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    try {
+      const r = await api.rpc<FsDiffResult>(instanceId.value, "control.fs.diff", { workspace: workspace.value });
+      if (isErrorPayload(r)) {
+        changed.value = {};
+        return;
+      }
+      const map: Record<string, string> = {};
+      for (const f of r.files) map[f.path] = f.status;
+      changed.value = map;
+    } catch {
+      changed.value = {};
+    }
   }
 
   async function list(dir: string): Promise<void> {
@@ -142,5 +165,5 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
-  return { instanceId, workspace, path, entries, file, diff, diffPath, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff };
+  return { instanceId, workspace, path, entries, file, diff, diffPath, changed, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus };
 });

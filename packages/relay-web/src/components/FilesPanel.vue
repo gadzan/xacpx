@@ -39,6 +39,29 @@ function fmtSize(n?: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+// Git-status badge for a directory entry, derived from the quietly-loaded status map.
+// Files show their own porcelain code; directories show a dot if they contain changes.
+function entryRel(name: string): string {
+  return files.path ? `${files.path}/${name}` : name;
+}
+function statusBadge(code: string): { label: string; cls: string } {
+  const c = code.trim();
+  if (c.includes("?")) return { label: "U", cls: "text-amber-600" }; // untracked
+  if (c.includes("A")) return { label: "A", cls: "text-green-600" };
+  if (c.includes("D")) return { label: "D", cls: "text-red-600" };
+  if (c.includes("R")) return { label: "R", cls: "text-violet-600" };
+  if (c.includes("M")) return { label: "M", cls: "text-sky-600" };
+  return { label: c[0] ?? "•", cls: "text-slate-500" };
+}
+function entryStatus(e: { name: string; type: string }): { label: string; cls: string } | null {
+  const rel = entryRel(e.name);
+  if (e.type === "file") {
+    const code = files.changed[rel];
+    return code ? statusBadge(code) : null;
+  }
+  const prefix = `${rel}/`;
+  return Object.keys(files.changed).some((p) => p.startsWith(prefix)) ? { label: "•", cls: "text-sky-500" } : null;
+}
 function diffLineClass(line: string): string {
   if (line.startsWith("+") && !line.startsWith("+++")) return "text-green-600";
   if (line.startsWith("-") && !line.startsWith("---")) return "text-red-600";
@@ -154,7 +177,9 @@ function onWorkspaceChange(e: Event) {
             <button data-test="fs-entry" class="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-slate-50" @click="files.open(e)">
               <span>{{ e.type === "dir" ? "📁" : "📄" }}</span>
               <span class="truncate" :class="e.type === 'dir' ? 'text-slate-700' : 'text-slate-600'">{{ e.name }}</span>
-              <span v-if="e.type === 'file'" class="ml-auto text-xs text-slate-400">{{ fmtSize(e.size) }}</span>
+              <span v-if="entryStatus(e)" data-test="fs-status" class="ml-auto w-4 text-center font-mono text-xs font-bold" :class="entryStatus(e)!.cls"
+                    :title="files.changed[entryRel(e.name)] || 'contains changes'">{{ entryStatus(e)!.label }}</span>
+              <span v-if="e.type === 'file'" class="text-xs text-slate-400" :class="entryStatus(e) ? 'ml-1' : 'ml-auto'">{{ fmtSize(e.size) }}</span>
             </button>
           </li>
           <li v-if="!files.entries.length && !files.loading" class="px-3 py-2 text-xs text-slate-400">empty directory</li>
