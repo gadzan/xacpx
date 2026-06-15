@@ -14,9 +14,12 @@ import TaskPanel from "../components/TaskPanel.vue";
 import FilesPanel from "../components/FilesPanel.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ConnectionBadge from "../components/ConnectionBadge.vue";
+import CommandPalette from "../components/CommandPalette.vue";
+import { useComposerStore } from "../stores/composer";
 
 const instances = useInstancesStore();
 const chat = useChatStore();
+const composer = useComposerStore();
 const tasks = useTasksStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
@@ -32,6 +35,16 @@ const rightTab = ref<"tasks" | "files">("tasks");
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
+}
+
+// Cmd/Ctrl+K command palette.
+const paletteOpen = ref(false);
+const composerKey = () => `${chat.instanceId}\0${chat.sessionAlias}`;
+function onGlobalKey(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    paletteOpen.value = !paletteOpen.value;
+  }
 }
 
 async function onLogout() {
@@ -63,6 +76,7 @@ function onStatus(online: boolean) {
 }
 
 onMounted(async () => {
+  window.addEventListener("keydown", onGlobalKey);
   await instances.loadInstances();
   disconnect = connectEvents((event) => {
     instances.applyEvent(event);
@@ -72,7 +86,10 @@ onMounted(async () => {
   }, onStatus);
 });
 
-onUnmounted(() => disconnect?.());
+onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalKey);
+  disconnect?.();
+});
 </script>
 
 <template>
@@ -130,5 +147,9 @@ onUnmounted(() => disconnect?.());
       </div>
     </div>
     <NoticeToast />
+    <CommandPalette v-if="paletteOpen"
+                    @close="paletteOpen = false"
+                    @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }"
+                    @pick-command="(name) => { composer.requestInsert(composerKey(), name); paletteOpen = false; }" />
   </div>
 </template>

@@ -2,10 +2,12 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { suggestCommands } from "../lib/command-catalog";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
+import { useComposerStore } from "../stores/composer";
 
 const props = defineProps<{ busy?: boolean; draftKey?: string }>();
 const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
 
+const composer = useComposerStore();
 const text = ref(loadDraft(props.draftKey ?? ""));
 const textarea = ref<HTMLTextAreaElement | null>(null);
 
@@ -17,6 +19,16 @@ watch(
   (next, prev) => {
     if (prev) saveDraft(prev, text.value);
     text.value = loadDraft(next ?? "");
+  },
+);
+
+// External insert requests (e.g. command palette) targeted at this session.
+watch(
+  () => composer.insertRequest,
+  (req) => {
+    if (!req || req.key !== (props.draftKey ?? "")) return;
+    text.value = text.value.trim() ? `${text.value.trimEnd()} ${req.text}` : req.text;
+    void nextTick(() => textarea.value?.focus());
   },
 );
 

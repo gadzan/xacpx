@@ -1,7 +1,11 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 import PromptInput from "../components/PromptInput.vue";
 import { suggestCommands } from "../lib/command-catalog";
+
+// PromptInput now uses the composer store, which needs an active pinia.
+beforeEach(() => setActivePinia(createPinia()));
 
 describe("suggestCommands", () => {
   it("suggests by first-token prefix", () => {
@@ -75,5 +79,18 @@ describe("PromptInput composer", () => {
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("");
     await w.setProps({ draftKey: "k1" }); // back → restored
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("half-typed");
+  });
+
+  it("inserts text from a composer store request targeting this session", async () => {
+    const { useComposerStore } = await import("../stores/composer");
+    const composer = useComposerStore();
+    const w = mount(PromptInput, { props: { draftKey: "ins-key" } });
+    composer.requestInsert("ins-key", "/status");
+    await w.vm.$nextTick();
+    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("/status");
+    // a request for a different session is ignored
+    composer.requestInsert("other", "/help");
+    await w.vm.$nextTick();
+    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("/status");
   });
 });
