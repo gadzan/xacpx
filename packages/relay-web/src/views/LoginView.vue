@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth";
+import BrandLogo from "../components/BrandLogo.vue";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -14,13 +15,15 @@ async function submit() {
 </script>
 
 <template>
-  <div class="flex h-screen items-center justify-center bg-slate-100">
-    <form class="w-80 space-y-3 rounded-lg bg-white p-6 shadow" @submit.prevent="submit">
-      <h1 class="text-lg font-semibold">xacpx relay</h1>
-      <input v-model="username" class="w-full rounded border px-3 py-2" placeholder="username" />
-      <input v-model="password" type="password" class="w-full rounded border px-3 py-2" placeholder="password" />
-      <p v-if="auth.error" class="text-sm text-red-600">{{ auth.error }}</p>
-      <button class="w-full rounded bg-slate-800 px-3 py-2 text-white" type="submit">Sign in</button>
+  <div class="flex h-screen items-center justify-center bg-bg">
+    <form class="w-80 space-y-3 rounded-lg border border-border bg-surface p-6 shadow-xl" @submit.prevent="submit">
+      <div class="mb-2 flex justify-center">
+        <BrandLogo />
+      </div>
+      <input v-model="username" class="w-full rounded border border-border bg-bg px-3 py-2 text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" placeholder="username" />
+      <input v-model="password" type="password" class="w-full rounded border border-border bg-bg px-3 py-2 text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" placeholder="password" />
+      <p v-if="auth.error" class="text-sm text-danger">{{ auth.error }}</p>
+      <button class="w-full rounded bg-accent px-3 py-2 text-white hover:bg-accent-hover" type="submit">Sign in</button>
     </form>
   </div>
 </template>
