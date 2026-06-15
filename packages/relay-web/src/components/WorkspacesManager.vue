@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
+import { confirm } from "../lib/use-confirm";
 
 const props = defineProps<{ instanceId: string }>();
 const store = useInstancesStore();
@@ -24,6 +26,13 @@ async function create(): Promise<void> {
 
 async function remove(wsName: string): Promise<void> {
   if (busy.value) return;
+  const ok = await confirm({
+    title: "Remove workspace?",
+    message: `"${wsName}" will be removed from this instance.`,
+    confirmLabel: "Remove",
+    tone: "danger",
+  });
+  if (!ok) return;
   busy.value = true; error.value = "";
   try { await store.removeWorkspace(props.instanceId, wsName); }
   catch (e) { error.value = e instanceof Error ? e.message : "remove failed"; }
@@ -39,7 +48,9 @@ async function remove(wsName: string): Promise<void> {
     <ul v-else class="divide-y divide-border rounded border border-border">
       <li v-for="w in inst?.workspaces ?? []" :key="w.name" class="flex items-center justify-between px-3 py-2 text-sm text-fg">
         <span><span class="font-medium">{{ w.name }}</span> — <span class="text-fg-muted">{{ w.cwd }}</span></span>
-        <button :data-test="`wm-remove-${w.name}`" class="text-danger hover:underline disabled:opacity-50" :disabled="busy" @click="remove(w.name)">remove</button>
+        <button :data-test="`wm-remove-${w.name}`" :title="`Remove ${w.name}`" :aria-label="`Remove workspace ${w.name}`"
+                class="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50"
+                :disabled="busy" @click="remove(w.name)"><Trash2 :size="14" /></button>
       </li>
     </ul>
     <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">

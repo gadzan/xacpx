@@ -17,7 +17,8 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, LogOut } from "lucide-vue-next";
+import { confirm } from "../lib/use-confirm";
 import { useComposerStore } from "../stores/composer";
 
 const theme = useThemeStore();
@@ -52,6 +53,13 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 
 async function onLogout() {
+  const ok = await confirm({
+    title: "Sign out?",
+    message: "You'll need to sign in again to access the dashboard.",
+    confirmLabel: "Sign out",
+    tone: "default",
+  });
+  if (!ok) return;
   await auth.logout();
   router.push({ name: "login" });
 }
@@ -158,7 +166,7 @@ onUnmounted(() => {
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <router-link to="/settings" class="font-semibold uppercase tracking-wider text-fg-muted hover:text-fg">Settings</router-link>
           <div class="flex items-center gap-3">
-            <button class="text-fg-muted hover:text-fg" @click="onLogout">Logout</button>
+            <button title="Sign out" aria-label="Sign out" class="text-fg-muted hover:text-fg" @click="onLogout"><LogOut :size="15" /></button>
             <button data-test="close-instances" aria-label="Close instances"
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>

@@ -1,11 +1,13 @@
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import WorkspacesManager from "../components/WorkspacesManager.vue";
 import AgentsManager from "../components/AgentsManager.vue";
 import { useInstancesStore } from "../stores/instances";
+import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 
 beforeEach(() => setActivePinia(createPinia()));
+afterEach(() => settleConfirm(false));
 
 function seed(store: ReturnType<typeof useInstancesStore>) {
   store.instances = [{
@@ -34,6 +36,8 @@ test("WorkspacesManager surfaces a remove-in-use error", async () => {
   vi.spyOn(store, "removeWorkspace").mockRejectedValue(new Error("workspace \"backend\" is in use by an existing session"));
   const w = mount(WorkspacesManager, { props: { instanceId: "i1" } });
   await w.get('[data-test="wm-remove-backend"]').trigger("click");
+  expect(useConfirmState().value?.title).toBe("Remove workspace?");
+  settleConfirm(true); // confirm the popup
   await flushPromises();
   expect(w.get('[data-test="wm-error"]').text()).toMatch(/in use/);
 });
@@ -66,5 +70,18 @@ test("AgentsManager removes a configured agent", async () => {
   const removeAgent = vi.spyOn(store, "removeAgent").mockResolvedValue(undefined as never);
   const w = mount(AgentsManager, { props: { instanceId: "i1" } });
   await w.get('[data-test="am-remove-codex"]').trigger("click");
+  expect(removeAgent).not.toHaveBeenCalled(); // awaits popup confirm first
+  settleConfirm(true);
+  await flushPromises();
   expect(removeAgent).toHaveBeenCalledWith("i1", "codex");
+});
+
+test("AgentsManager does not remove when the confirm is cancelled", async () => {
+  const store = useInstancesStore(); seed(store);
+  const removeAgent = vi.spyOn(store, "removeAgent").mockResolvedValue(undefined as never);
+  const w = mount(AgentsManager, { props: { instanceId: "i1" } });
+  await w.get('[data-test="am-remove-codex"]').trigger("click");
+  settleConfirm(false);
+  await flushPromises();
+  expect(removeAgent).not.toHaveBeenCalled();
 });

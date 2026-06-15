@@ -1,12 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TaskPanel from "../components/TaskPanel.vue";
 import { useTasksStore } from "../stores/tasks";
 import { useChatStore } from "../stores/chat";
+import { settleConfirm } from "../lib/use-confirm";
 
 describe("TaskPanel", () => {
   beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => settleConfirm(false));
 
   it("shows a hint when no session is selected", () => {
     const w = mount(TaskPanel);
@@ -35,6 +37,9 @@ describe("TaskPanel", () => {
     const spy = vi.spyOn(tasks, "cancelScheduled").mockResolvedValue();
     const w = mount(TaskPanel);
     await w.find('[data-test="cancel-scheduled"]').trigger("click");
+    expect(spy).not.toHaveBeenCalled(); // awaits popup confirm
+    settleConfirm(true);
+    await flushPromises();
     expect(spy).toHaveBeenCalledWith("9");
   });
 });

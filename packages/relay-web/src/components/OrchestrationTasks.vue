@@ -1,8 +1,20 @@
 <script setup lang="ts">
-import { List } from "lucide-vue-next";
+import { Ban, List } from "lucide-vue-next";
 import { useTasksStore } from "../stores/tasks";
+import { confirm } from "../lib/use-confirm";
 
 const tasks = useTasksStore();
+
+async function cancel(taskId: string) {
+  const ok = await confirm({
+    title: "Cancel task?",
+    message: "The running orchestration task will be stopped.",
+    confirmLabel: "Cancel task",
+    cancelLabel: "Keep running",
+    tone: "danger",
+  });
+  if (ok) await tasks.cancelOrchestration(taskId);
+}
 
 // Map an orchestration task status to a semantic text color.
 function statusClass(status: string): string {
@@ -23,7 +35,9 @@ function statusClass(status: string): string {
           <List :size="14" class="shrink-0 text-fg-muted" />
           <span class="truncate">{{ t.task }} <span class="text-xs" :class="statusClass(t.status)">({{ t.status }})</span></span>
         </span>
-        <button data-test="cancel-orchestration" class="ml-2 text-xs text-danger hover:underline" @click="tasks.cancelOrchestration(t.taskId)">cancel</button>
+        <button data-test="cancel-orchestration" title="Cancel task" aria-label="Cancel orchestration task"
+                class="ml-2 grid h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
+                @click="cancel(t.taskId)"><Ban :size="13" /></button>
       </li>
       <li v-if="tasks.orchestration.length === 0" class="text-xs text-fg-muted">No orchestration tasks.</li>
     </ul>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
+import { confirm } from "../lib/use-confirm";
 
 const props = defineProps<{ instanceId: string }>();
 const store = useInstancesStore();
@@ -25,6 +27,13 @@ async function add(): Promise<void> {
 
 async function remove(name: string): Promise<void> {
   if (busy.value) return;
+  const ok = await confirm({
+    title: "Remove agent?",
+    message: `"${name}" will be removed from this instance.`,
+    confirmLabel: "Remove",
+    tone: "danger",
+  });
+  if (!ok) return;
   busy.value = true; error.value = "";
   try { await store.removeAgent(props.instanceId, name); }
   catch (e) { error.value = e instanceof Error ? e.message : "remove failed"; }
@@ -44,7 +53,9 @@ function hint(installed: string): string {
     <ul v-else class="divide-y divide-border rounded border border-border">
       <li v-for="a in inst?.agents ?? []" :key="a.name" class="flex items-center justify-between px-3 py-2 text-sm text-fg">
         <span><span class="font-medium">{{ a.name }}</span> · <span class="text-fg-muted">{{ a.driver }}</span></span>
-        <button :data-test="`am-remove-${a.name}`" class="text-danger hover:underline disabled:opacity-50" :disabled="busy" @click="remove(a.name)">remove</button>
+        <button :data-test="`am-remove-${a.name}`" :title="`Remove ${a.name}`" :aria-label="`Remove agent ${a.name}`"
+                class="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50"
+                :disabled="busy" @click="remove(a.name)"><Trash2 :size="14" /></button>
       </li>
     </ul>
     <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">

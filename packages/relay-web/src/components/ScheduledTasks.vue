@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { Clock } from "lucide-vue-next";
+import { Clock, Trash2 } from "lucide-vue-next";
 import { useTasksStore } from "../stores/tasks";
 import { useChatStore } from "../stores/chat";
+import { confirm } from "../lib/use-confirm";
 
 const tasks = useTasksStore();
 const chat = useChatStore();
@@ -16,6 +17,17 @@ async function create() {
   executeAt.value = "";
   message.value = "";
 }
+
+async function cancel(id: string) {
+  const ok = await confirm({
+    title: "Cancel scheduled task?",
+    message: "It will be removed from the schedule and won't run.",
+    confirmLabel: "Cancel task",
+    cancelLabel: "Keep",
+    tone: "danger",
+  });
+  if (ok) await tasks.cancelScheduled(id);
+}
 </script>
 
 <template>
@@ -27,7 +39,9 @@ async function create() {
           <Clock :size="14" class="shrink-0 text-fg-muted" />
           <span class="truncate"><span class="font-mono text-fg-muted">{{ new Date(t.executeAt).toLocaleString() }}</span> {{ t.message }}</span>
         </span>
-        <button data-test="cancel-scheduled" class="ml-2 text-xs text-danger hover:underline" @click="tasks.cancelScheduled(t.id)">cancel</button>
+        <button data-test="cancel-scheduled" title="Cancel scheduled task" aria-label="Cancel scheduled task"
+                class="ml-2 grid h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
+                @click="cancel(t.id)"><Trash2 :size="13" /></button>
       </li>
       <li v-if="tasks.scheduled.length === 0" class="text-xs text-fg-muted">No scheduled tasks.</li>
     </ul>

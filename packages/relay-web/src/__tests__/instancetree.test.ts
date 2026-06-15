@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import InstanceTree from "../components/InstanceTree.vue";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 
 const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
   id: "i1", name: "pc", online: true, lastSeenAt: null, sessions, sessionsLoaded, agents: [], workspaces: [],
@@ -11,6 +12,7 @@ const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
 
 describe("InstanceTree session management", () => {
   beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => settleConfirm(false)); // clear any dangling global confirm
 
   it("opens the new-session dialog from the + new session button", async () => {
     const store = useInstancesStore();
@@ -26,31 +28,30 @@ describe("InstanceTree session management", () => {
     expect(w.findComponent({ name: "NewSessionDialog" }).exists()).toBe(false);
   });
 
-  it("deletes a session only after confirming (two-step)", async () => {
+  it("opens a popup confirm and deletes only after confirming", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
     const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    // First click only arms the confirm — it must NOT delete.
+    // Clicking the trash opens the global confirm, but does NOT delete yet.
     await w.find('[data-test="delete-session"]').trigger("click");
     expect(remove).not.toHaveBeenCalled();
-    expect(w.find('[data-test="confirm-delete"]').exists()).toBe(true);
-    // Confirming deletes.
-    await w.find('[data-test="confirm-delete"]').trigger("click");
+    expect(useConfirmState().value?.title).toBe("Delete session?");
+    // Confirming resolves the dialog → delete fires.
+    settleConfirm(true);
+    await flushPromises();
     expect(remove).toHaveBeenCalledWith("i1", "backend");
   });
 
-  it("cancels a pending delete without removing", async () => {
+  it("does not delete when the confirm is cancelled", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
     const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     await w.find('[data-test="delete-session"]').trigger("click");
-    await w.find('[data-test="cancel-delete"]').trigger("click");
+    settleConfirm(false);
+    await flushPromises();
     expect(remove).not.toHaveBeenCalled();
-    // Confirm UI is gone; the trash affordance is back.
-    expect(w.find('[data-test="confirm-delete"]').exists()).toBe(false);
-    expect(w.find('[data-test="delete-session"]').exists()).toBe(true);
   });
 
   it("mounts with an empty chat store and shows no attention dot for idle sessions", () => {
