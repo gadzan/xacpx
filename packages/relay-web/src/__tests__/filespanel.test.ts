@@ -57,9 +57,11 @@ describe("FilesPanel file viewer", () => {
     const badges = w.findAll('[data-test="fs-status"]');
     // src (dir, nested change) + new.ts (untracked) badge; clean.ts has none.
     expect(badges.length).toBe(2);
-    const texts = badges.map((b) => b.text());
-    expect(texts).toContain("•"); // src directory contains a change
-    expect(texts).toContain("U"); // new.ts is untracked
+    // Badges are warn dots; their title carries the porcelain meaning.
+    const titles = badges.map((b) => b.attributes("title"));
+    expect(titles.some((t) => t?.startsWith("•"))).toBe(true); // src directory contains a change
+    expect(titles.some((t) => t?.startsWith("U"))).toBe(true); // new.ts is untracked
+    expect(badges.every((b) => b.classes().includes("bg-warn"))).toBe(true);
   });
 
   it("hides the gutter and copy button for a binary file", async () => {
