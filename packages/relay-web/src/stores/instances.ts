@@ -39,6 +39,14 @@ export const useInstancesStore = defineStore("instances", () => {
     if (inst) inst.sessions = sessions;
   }
 
+  // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
+  // also pulls agents + the driver catalog.
+  async function loadWorkspaces(instanceId: string): Promise<void> {
+    const { workspaces } = await api.rpc<{ workspaces: WorkspaceDto[] }>(instanceId, "control.workspaces.list");
+    const inst = byId(instanceId);
+    if (inst) inst.workspaces = workspaces;
+  }
+
   // Pull the instance's configured agents + workspaces to drive the create-session
   // form's dropdowns. Called when the dialog opens.
   async function loadFormOptions(instanceId: string): Promise<void> {
@@ -122,5 +130,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, removeSession, applyEvent, byId };
+  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, removeSession, applyEvent, byId };
 });

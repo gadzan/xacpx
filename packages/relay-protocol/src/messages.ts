@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentDto, ControlEventDto, OrchestrationTaskDto, ScheduledTaskDto, SessionDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, OrchestrationTaskDto, ScheduledTaskDto, SessionDto, WorkspaceDto } from "./dtos.js";
 
 // Instance <-> relay message types. Convention: chatKey for relay-driven chats
 // is `relay:<accountId>`; the relay server stamps chatKey/senderId/isOwner on
@@ -27,6 +27,9 @@ export const MSG = {
   orchestrationList: "control.orchestration.list",
   orchestrationGet: "control.orchestration.get",
   orchestrationCancel: "control.orchestration.cancel",
+  fsList: "control.fs.list",
+  fsRead: "control.fs.read",
+  fsDiff: "control.fs.diff",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -196,3 +199,47 @@ export interface OrchestrationCancelPayload {
   taskId: string;
 }
 export type OrchestrationCancelResult = OrchestrationTaskDto;
+
+// --- workspace file browser (read-only, scoped to a configured workspace root) ---
+export interface FsListPayload {
+  /** Configured workspace name. */
+  workspace: string;
+  /** Directory path relative to the workspace root; defaults to the root. */
+  path?: string;
+}
+export interface FsListResult {
+  workspace: string;
+  /** Normalized path relative to the workspace root ("" = root). */
+  path: string;
+  entries: FsEntryDto[];
+}
+export interface FsReadPayload {
+  workspace: string;
+  /** File path relative to the workspace root. */
+  path: string;
+}
+export interface FsReadResult {
+  workspace: string;
+  path: string;
+  /** UTF-8 content (possibly truncated). Empty when `binary` is true. */
+  content: string;
+  /** Total file size in bytes. */
+  size: number;
+  /** True when the file exceeded the read cap and `content` is a prefix. */
+  truncated: boolean;
+  /** True when the file looks binary; `content` is then empty. */
+  binary: boolean;
+}
+export interface FsDiffPayload {
+  workspace: string;
+  /** Optional file path (relative) to scope the diff; defaults to the whole tree. */
+  path?: string;
+}
+export interface FsDiffResult {
+  workspace: string;
+  /** Changed files from `git status` (includes untracked). */
+  files: FsDiffFileDto[];
+  /** Unified diff text vs HEAD (possibly truncated). */
+  diff: string;
+  truncated: boolean;
+}

@@ -27,6 +27,21 @@ export interface WorkspaceDto {
   description?: string;
 }
 
+/** A single entry in a workspace directory listing (read-only file browser). */
+export interface FsEntryDto {
+  name: string;
+  type: "dir" | "file";
+  /** File size in bytes; omitted for directories. */
+  size?: number;
+}
+
+/** A changed file in a workspace's git working tree. `status` is the porcelain XY
+ *  code (e.g. " M", "A ", "??", "D "). */
+export interface FsDiffFileDto {
+  path: string;
+  status: string;
+}
+
 // Keep in sync with ScheduledTaskStatus in src/scheduled/scheduled-types.ts
 export type ScheduledTaskStatusDto =
   | "pending"

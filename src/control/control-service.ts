@@ -20,6 +20,7 @@ import {
 } from "../channels/channel-scope";
 import type { ControlEventBus } from "./control-event-bus";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
+import { WorkspaceFs, type DirListing, type FileContent, type WorkspaceDiff } from "./workspace-fs";
 
 export interface ControlSessionInfo {
   alias: string;
@@ -97,6 +98,24 @@ export interface ControlExecuteCommandInput {
 // connector first). Holds no state of its own beyond in-flight turn tracking.
 export class ControlService {
   constructor(private readonly deps: ControlServiceDeps) {}
+
+  // Read-only workspace file browser, scoped to configured workspace roots. Lazily
+  // reads the live workspace list so newly-created workspaces are immediately browsable.
+  private readonly workspaceFs = new WorkspaceFs(() =>
+    this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
+  );
+
+  listDirectory(workspace: string, path?: string): Promise<DirListing> {
+    return this.workspaceFs.listDirectory(workspace, path);
+  }
+
+  readWorkspaceFile(workspace: string, path: string): Promise<FileContent> {
+    return this.workspaceFs.readFile(workspace, path);
+  }
+
+  workspaceGitDiff(workspace: string, path?: string): Promise<WorkspaceDiff> {
+    return this.workspaceFs.gitDiff(workspace, path);
+  }
 
   get events(): ControlEventBus {
     return this.deps.events;

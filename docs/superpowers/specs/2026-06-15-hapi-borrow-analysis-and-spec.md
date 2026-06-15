@@ -102,6 +102,27 @@ HAPI 与 xacpx 强同域：本地包裹 AI coding agent（Claude Code / Codex / 
 
 完整九大 surface 穷尽枚举见本次第二份 subagent 内参（含每项 file:line / 概念vs字面移植 / effort / 是否需后端）。
 
+## 5c. Pass 3 — 工作空间文件浏览器 + git diff（用户点名要做，原 defer 项 H）
+
+借鉴 hapi 的"远程查看实例机器上工作空间文件 + 内容 + git diff"。契合 relay 拓扑：connector 跑在用户机器上，本就能访问 workspace 磁盘。**全栈**实现（core → connector → protocol → relay-web），hub 无需改动（`control.fs.*` 走既有 `control.` 前缀白名单，且非 chat-scoped）。
+
+**安全模型（关键，刻意与 hapi 的 fail-open 相反）**：`src/control/workspace-fs.ts`
+- **默认拒绝**：只接受已配置的 workspace 名，绝不接受任意绝对路径（`path-must-be-relative`）。
+- **realpath 容器化**：目标经 symlink 解析后必须仍在 symlink-解析后的 workspace root 内，`..` 和 symlink 都逃不出去（`path-escapes-workspace`）。已端到端验证：`../../../etc/passwd` 与 symlink 逃逸均被拒。
+- **只读**：无写方法；git 走 `execFile`(参数数组、绝不 shell)跑只读子命令，路径无法注入命令。
+- **有界**：目录条目 2000、文件 256 KiB、diff 512 KiB 上限；NUL 字节判定 binary 且不回传内容。
+- `~` 展开（配置常用 `~`/`~/path`）。
+
+**分层**：
+- protocol：`MSG.fs{List,Read,Diff}` = `control.fs.{list,read,diff}` + `Fs{List,Read,Diff}Payload/Result` + `FsEntryDto`/`FsDiffFileDto`。
+- core：`WorkspaceFs`（上述安全逻辑）+ `ControlService.{listDirectory,readWorkspaceFile,workspaceGitDiff}`，经 `xacpx/plugin-api` 暴露给 connector。
+- connector：`control-bridge.ts` 三个 case 转发。
+- relay-web：`stores/files.ts` + `FilesPanel.vue`（workspace 下拉 + 懒加载目录树 + 面包屑 + 文件查看器[truncated/binary 徽标] + Changes 标签的 git status 文件列表 + 着色 unified diff）；右栏 Tasks|Files 切换；`instances.loadWorkspaces`。
+
+**测试**：`tests/unit/control/workspace-fs.test.ts`（容器化/逃逸/symlink/binary/git diff/~，10 例，真实临时目录 + git）；`packages/relay-web/src/__tests__/files.test.ts`（store 逻辑 + 错误 payload，4 例）。端到端经真实 relay 验证（list/read/diff/home-~/两类安全拒绝）。
+
+**v1 已知边界（后续可加）**：无文件搜索（`rg --files`）、无 staged/unstaged 分离视图、diff 仅 `git diff HEAD`（fallback `git diff`）、无文件写、无 syntax 高亮（复用纯文本 + diff 着色）。
+
 ## 6. 验收
 
 - `bun run --cwd packages/relay-web test` 全绿（新增各 feature 的 vitest）。

@@ -2,6 +2,9 @@ import {
   MSG,
   errorPayload,
   type CommandExecutePayload,
+  type FsDiffPayload,
+  type FsListPayload,
+  type FsReadPayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type OrchestrationTaskDto,
@@ -152,6 +155,21 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     case MSG.orchestrationCancel: {
       const input = payload as OrchestrationCancelPayload;
       return orchestrationTaskToDto(await control.cancelOrchestrationTask({ taskId: input.taskId }));
+    }
+    case MSG.fsList: {
+      const input = payload as FsListPayload;
+      if (!input.workspace) return errorPayload("bad-request", "workspace is required");
+      return await control.listDirectory(input.workspace, input.path); // DirListing ≅ FsListResult
+    }
+    case MSG.fsRead: {
+      const input = payload as FsReadPayload;
+      if (!input.workspace || !input.path) return errorPayload("bad-request", "workspace and path are required");
+      return await control.readWorkspaceFile(input.workspace, input.path); // FileContent ≅ FsReadResult
+    }
+    case MSG.fsDiff: {
+      const input = payload as FsDiffPayload;
+      if (!input.workspace) return errorPayload("bad-request", "workspace is required");
+      return await control.workspaceGitDiff(input.workspace, input.path); // WorkspaceDiff ≅ FsDiffResult
     }
     default:
       return errorPayload("unknown-type", `unsupported rpc type: ${envelope.type}`);
