@@ -275,13 +275,22 @@ export class ControlService {
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
     });
+    // The transport delivers reply segments pre-split on paragraph boundaries and
+    // trimmed, so the original "\n\n" between paragraphs is gone. Both consumers of
+    // turn-output — the web live view and the hub's persisted-history buffer — simply
+    // concatenate the chunks, which runs multi-paragraph replies together on one line
+    // (very visible with reasoning models that emit structured prose). Re-insert the
+    // paragraph break between segments at the source so live and history stay identical.
+    let emittedChunk = false;
     const emitChunk = (chunk: string) => {
+      if (!chunk) return;
       this.deps.events.emit({
         type: "turn-output",
         chatKey: input.chatKey,
         sessionAlias: input.sessionAlias,
-        chunk,
+        chunk: emittedChunk ? `\n\n${chunk}` : chunk,
       });
+      emittedChunk = true;
     };
     try {
       const response = await this.deps.agent.chat({

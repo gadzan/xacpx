@@ -59,9 +59,36 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   expect(seen).toEqual([
     { type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend" },
     { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "chunk-1" },
-    { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "final" },
+    // Subsequent chunks carry the restored paragraph break (segments arrive trimmed).
+    { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "\n\nfinal" },
     { type: "turn-finished", chatKey: "relay:acct-1", sessionAlias: "backend", ok: true },
   ]);
+});
+
+test("multi-paragraph reply: each segment after the first restores the \\n\\n break", async () => {
+  // Regression: the transport strips paragraph boundaries when splitting into
+  // trimmed segments. Concatenating bare segments ran paragraphs together; the
+  // control layer re-inserts "\n\n" so web live + persisted history reconstruct
+  // the original structure.
+  const { control, seen } = makeControl(async (request) => {
+    await request.reply?.("Paragraph one.");
+    await request.reply?.("Paragraph two.");
+    await request.reply?.("Paragraph three.");
+    return { text: "" }; // streaming mode: final text already pushed via reply()
+  });
+
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "explain",
+    senderId: "acct-1",
+    isOwner: true,
+  });
+
+  const chunks = seen.filter((e) => e.type === "turn-output").map((e) => (e as { chunk: string }).chunk);
+  expect(chunks).toEqual(["Paragraph one.", "\n\nParagraph two.", "\n\nParagraph three."]);
+  // Accumulating the chunks (as web + hub both do) yields proper paragraphs.
+  expect(chunks.join("")).toBe("Paragraph one.\n\nParagraph two.\n\nParagraph three.");
 });
 
 test("prompt rejects unknown session without emitting turn events", async () => {
