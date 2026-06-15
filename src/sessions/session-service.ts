@@ -134,6 +134,9 @@ export class SessionService {
       workspace,
       transport_session: transportSession,
       transport_agent_command: sameAgentExisting?.transport_agent_command,
+      // Carry the same-agent model so a recreated session is ensured under the
+      // same model that gets persisted (keeps acpx and state in agreement).
+      model: sameAgentExisting?.model,
       created_at: existing?.created_at ?? new Date().toISOString(),
       last_used_at: new Date().toISOString(),
     });
@@ -615,6 +618,8 @@ export class SessionService {
       alias: session.alias,
       agent: session.agent,
       agentCommand: session.transport_agent_command ?? resolveAgentCommand(agentConfig.driver, agentConfig.command),
+      // Session-level model wins; otherwise fall back to the agent config default.
+      model: session.model ?? agentConfig.model,
       workspace: session.workspace,
       transportSession: session.transport_session,
       source: session.source,
@@ -626,6 +631,51 @@ export class SessionService {
       replyMode: session.reply_mode,
       cwd: workspaceConfig.cwd,
     };
+  }
+
+  /** Persist (or clear) a session's model override by internal alias. */
+  async setSessionModel(alias: string, modelId: string | undefined): Promise<void> {
+    await this.mutate(async () => {
+      const session = this.state.sessions[alias];
+      if (!session) {
+        throw new Error(`session "${alias}" does not exist`);
+      }
+
+      const normalized = modelId?.trim();
+      if (normalized) {
+        session.model = normalized;
+      } else {
+        delete session.model;
+      }
+
+      session.last_used_at = new Date(this.now()).toISOString();
+      await this.persist();
+    });
+  }
+
+  /** Persist (or clear) the model override of the chat's current session. */
+  async setCurrentSessionModel(chatKey: string, modelId: string | undefined): Promise<void> {
+    await this.mutate(async () => {
+      const currentAlias = this.state.chat_contexts[chatKey]?.current_session;
+      if (!currentAlias) {
+        throw new Error("no current session selected");
+      }
+
+      const session = this.state.sessions[currentAlias];
+      if (!session) {
+        throw new Error("no current session selected");
+      }
+
+      const normalized = modelId?.trim();
+      if (normalized) {
+        session.model = normalized;
+      } else {
+        delete session.model;
+      }
+
+      session.last_used_at = new Date(this.now()).toISOString();
+      await this.persist();
+    });
   }
 
   async setSessionTransportAgentCommand(alias: string, transportAgentCommand: string | undefined): Promise<void> {
@@ -697,6 +747,7 @@ export class SessionService {
             ? { transport_agent_command: sameAgentExisting.transport_agent_command }
             : {}),
         mode_id: sameAgentExisting?.mode_id,
+        model: sameAgentExisting?.model,
         reply_mode: sameAgentExisting?.reply_mode,
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,

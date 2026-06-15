@@ -21,6 +21,7 @@ This document lists the commands you can send to `xacpx` from WeChat. The README
 | Attach a local Agent native session | `/ssn ...`, `/ss attach native ...` |
 | Adjust the reply mode | `/replymode ...` |
 | Adjust the acpx mode | `/mode ...` |
+| View or switch the model | `/model ...` |
 | Cancel the current task | `/cancel`, `/stop` |
 | Modify configuration | `/config ...` |
 | Modify the permission policy | `/permission ...`, `/pm ...` |
@@ -56,6 +57,7 @@ An agent is the configuration of the underlying tool you want to drive, e.g. `co
 |------|------|
 | `/agents` | View registered agents |
 | `/agent add <codex|claude|pi|openclaw|gemini|cursor|copilot|droid|factory-droid|factorydroid|iflow|kilocode|kimi|kiro|opencode|qoder|qwen|trae>` | Add a built-in agent template; an existing agent with the same name but a different configuration will not be overwritten |
+| `/agent add <template> --model <id>` | Add (or update) the agent and set its default model (e.g. `gpt-5.2[high]`), used by every session of that agent unless overridden |
 | `/agent rm <name>` | Delete an agent |
 
 Examples:
@@ -64,6 +66,7 @@ Examples:
 /agent add codex
 /agent add claude
 /agent add kimi
+/agent add codex --model gpt-5.2[high]
 /agents
 /agent rm claude
 ```
@@ -112,6 +115,7 @@ A session is the logical session you operate from WeChat. Each session is bound 
 | `/ss new <agent> --ws <workspace>` | Force-create a new session using an existing workspace |
 | `/session new <alias> --agent <agent> --ws <workspace>` | Create a session with a specified alias |
 | `/session new <alias> -a <agent> --ws <workspace>` | Short form for creating a session with a specified alias |
+| `/session new <alias> -a <agent> --ws <workspace> --model <id>` | Also pin the session's LLM model (e.g. `gpt-5.2[high]`); `-m` is the short form. Overrides the agent default |
 | `/use <alias>` | Switch the current session |
 | `/use <fragment>` | Switch by alias fragment: exact > prefix > substring; multiple matches list candidates for you to choose again |
 | `/use -` | Switch between the current session and the previous session (like shell's `cd -`) |
@@ -239,6 +243,22 @@ Known common values:
 
 - `codex`: `plan`
 - `cursor`: `agent`, `plan`, `ask`
+
+## Model
+
+`/model` views or switches the LLM model of the current session. acpx validates the id against the models the agent advertises and applies it to the running session (immediately during an active turn, otherwise from the next turn). There are three ways to set a model, in increasing precedence: the agent default (`/agent add <template> --model <id>`), the per-session pin (`/session new ... --model <id>`), and a live switch (`/model <id>`).
+
+| Command | Description |
+|------|------|
+| `/model` | View the current session's model and the available model ids |
+| `/model <id>` | Switch the current session's model (e.g. `gpt-5.2[high]`) |
+
+Examples:
+
+```text
+/model
+/model gpt-5.2[high]
+```
 
 ## Configuration
 
@@ -454,7 +474,7 @@ More examples:
 
 ## Group Permissions
 
-In group chats, only read-only commands (`/help`, `/status`, `/sessions`, `/config`, ...) and plain prompts are open to every member. Control commands (`/clear`, `/use`, `/session new`, `/mode`, `/permission`, `/later` control, ...) are restricted to the chat owner:
+In group chats, only read-only commands (`/help`, `/status`, `/sessions`, `/config`, ...) and plain prompts are open to every member. Control commands (`/clear`, `/use`, `/session new`, `/mode`, `/model <id>`, `/permission`, `/later` control, ...) are restricted to the chat owner:
 
 - Channels that report group roles grant owner automatically (e.g. Yuanbao recognizes the bot owner).
 - WeChat carries **no group-role information**, so configure your own sender id in `channel.ownerIds` (or `channels[].ownerIds`) to authorize yourself; see [config-reference.md — `channel.ownerIds`](./config-reference.md#channelownerids). Your sender id appears as `senderId` in the `command.blocked` entry written to `~/.xacpx/runtime/app.log` when a command is denied.

@@ -80,6 +80,7 @@ export class ConfigStore {
       agents[name] = {
         driver: agent.driver,
         ...(agent.command ? { command: agent.command } : {}),
+        ...(agent.model ? { model: agent.model } : {}),
       };
     });
   }

@@ -11,6 +11,8 @@ export type BridgeMethod =
   | "resumeAgentSession"
   | "prompt"
   | "setMode"
+  | "setModel"
+  | "getSessionModel"
   | "cancel"
   | "removeSession"
   | "getAgentSessionId";

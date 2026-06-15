@@ -21,6 +21,7 @@ const PRIMARY_COMMAND_BY_TOPIC: Record<string, string> = {
   config: "/config",
   orchestration: "/delegate",
   mode: "/mode",
+  model: "/model",
   replymode: "/replymode",
   status: "/status",
   cancel: "/cancel",

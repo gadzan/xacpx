@@ -58,6 +58,8 @@ export interface LaunchQueueOwnerInput {
   sourceHandle?: string;
   permissionMode: PermissionMode;
   nonInteractivePermissions: NonInteractivePermissions;
+  /** Session options forwarded to the warm queue owner (e.g. the resolved model id). */
+  sessionOptions?: QueueOwnerPayload["sessionOptions"];
 }
 
 export function buildXacpxMcpServerSpec(input: {
@@ -152,6 +154,7 @@ export class AcpxQueueOwnerLauncher {
       nonInteractivePermissions: input.nonInteractivePermissions,
       ttlMs: this.ttlMs,
       maxQueueDepth: this.maxQueueDepth,
+      ...(input.sessionOptions ? { sessionOptions: input.sessionOptions } : {}),
       mcpServers: [buildXacpxMcpServerSpec({
         xacpxCommand: this.xacpxCommand,
         coordinatorSession: input.coordinatorSession,

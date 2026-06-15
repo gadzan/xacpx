@@ -440,6 +440,7 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 |------|------|------|------|
 | `driver` | `string` | Yes | Agent driver type, passed as the first positional argument to acpx |
 | `command` | `string` | No | Explicitly specify the raw command for a custom agent. When omitted, acpx's default behavior is used |
+| `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
 
 Notes:
 

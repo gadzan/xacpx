@@ -31,6 +31,8 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "resumeAgentSession",
   "prompt",
   "setMode",
+  "setModel",
+  "getSessionModel",
   "cancel",
   "removeSession",
   "getAgentSessionId",
@@ -43,6 +45,8 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "resumeAgentSession",
   "prompt",
   "setMode",
+  "setModel",
+  "getSessionModel",
   "cancel",
   "removeSession",
   "getAgentSessionId",
@@ -157,6 +161,7 @@ export class BridgeServer {
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          model: asOptionalString(params.model),
           mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
           mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         }, (progress) => {
@@ -182,6 +187,7 @@ export class BridgeServer {
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          model: asOptionalString(params.model),
           mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
           mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           text: requirePromptText(params, media),
@@ -226,6 +232,21 @@ export class BridgeServer {
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           modeId: requireString(params, "modeId"),
+        });
+      case "setModel":
+        return await this.runtime.setModel({
+          agent: requireString(params, "agent"),
+          agentCommand: asOptionalString(params.agentCommand),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+          modelId: requireString(params, "modelId"),
+        });
+      case "getSessionModel":
+        return await this.runtime.getSessionModel({
+          agent: requireString(params, "agent"),
+          agentCommand: asOptionalString(params.agentCommand),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
         });
       case "cancel":
         return await this.runtime.cancel({

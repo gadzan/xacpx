@@ -73,12 +73,19 @@ interface BridgeSessionInput {
   agentCommand?: string;
   cwd: string;
   name: string;
+  model?: string;
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
   replyMode?: "stream" | "final" | "verbose";
   media?: PromptMediaInput;
   toolEvents?: boolean;
   toolEventMode?: ToolEventMode;
+}
+
+/** A global `--model <id>` flag when a model is set, else nothing. */
+function modelArgs(model?: string): string[] {
+  const trimmed = model?.trim();
+  return trimmed ? ["--model", trimmed] : [];
 }
 
 interface StreamingPromptRunnerOptions {
@@ -513,6 +520,58 @@ export class BridgeRuntime {
     return {};
   }
 
+  async setModel(input: {
+    agent: string;
+    agentCommand?: string;
+    cwd: string;
+    name: string;
+    modelId: string;
+  }): Promise<Record<string, never>> {
+    // Pass the new model both as the `set model` value and the global --model.
+    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({ ...input, model: input.modelId }, [
+      "set",
+      "-s",
+      input.name,
+      "model",
+      input.modelId,
+    ]));
+    const result = await this.run(spawnSpec.command, spawnSpec.args);
+
+    if (result.code !== 0) {
+      throw new Error(result.stderr || result.stdout || "set-model failed");
+    }
+
+    return {};
+  }
+
+  async getSessionModel(input: {
+    agent: string;
+    agentCommand?: string;
+    cwd: string;
+    name: string;
+  }): Promise<{ current?: string; available: string[] }> {
+    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
+      "status",
+      "-s",
+      input.name,
+    ], { format: "json" }));
+    const result = await this.run(spawnSpec.command, spawnSpec.args);
+
+    if (result.code !== 0) {
+      throw new Error(result.stderr || result.stdout || "status failed");
+    }
+
+    try {
+      const json = JSON.parse(result.stdout) as { model?: string; availableModels?: string[] };
+      return {
+        current: typeof json.model === "string" ? json.model : undefined,
+        available: Array.isArray(json.availableModels) ? json.availableModels.filter((m): m is string => typeof m === "string") : [],
+      };
+    } catch {
+      return { available: [] };
+    }
+  }
+
   async cancel(input: {
     agent: string;
     agentCommand?: string;
@@ -568,6 +627,7 @@ export class BridgeRuntime {
       agentCommand?: string;
       cwd: string;
       name?: string;
+      model?: string;
     },
     tail: string[],
     options: { verbose?: boolean; format?: "quiet" | "json" } = {},
@@ -578,6 +638,7 @@ export class BridgeRuntime {
       "--cwd",
       input.cwd,
       ...this.buildPermissionArgs(),
+      ...modelArgs(input.model),
     ];
     if (options.verbose) {
       prefix.push("--verbose");
@@ -595,6 +656,7 @@ export class BridgeRuntime {
       agentCommand?: string;
       cwd: string;
       name: string;
+      model?: string;
     },
     tail: string[],
   ): string[] {
@@ -605,6 +667,7 @@ export class BridgeRuntime {
       "--cwd",
       input.cwd,
       ...this.buildPermissionArgs(),
+      ...modelArgs(input.model),
       ...this.buildQueueOwnerTtlArgs(),
     ];
     if (input.agentCommand) {

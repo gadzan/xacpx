@@ -23,7 +23,7 @@ export function handleAgents(context: CommandRouterContext): RouterResponse {
   return { text: context.config ? renderAgents(context.config) : "No config loaded." };
 }
 
-export async function handleAgentAdd(context: CommandRouterContext, templateName: string): Promise<RouterResponse> {
+export async function handleAgentAdd(context: CommandRouterContext, templateName: string, model?: string): Promise<RouterResponse> {
   const a = t().agent;
   if (!context.config || !context.configStore) {
     return { text: a.noWritableConfig };
@@ -35,14 +35,28 @@ export async function handleAgentAdd(context: CommandRouterContext, templateName
   }
 
   const existing = context.config.agents[templateName];
+  const normalizedModel = model?.trim();
+  // With --model: set/update it. Without --model: preserve an existing model so a
+  // plain re-add never silently wipes a configured default.
+  const desired = normalizedModel
+    ? { ...template, model: normalizedModel }
+    : existing?.model
+      ? { ...template, model: existing.model }
+      : template;
+
   if (existing) {
-    if (sameAgentConfig(existing, template)) {
-      return { text: a.alreadyExists(templateName) };
+    // Same driver/command and same model → genuine no-op. A differing model with
+    // the same base is treated as an update (the user explicitly passed --model).
+    if (sameAgentConfig(existing, desired)) {
+      if ((existing.model ?? undefined) === (desired.model ?? undefined)) {
+        return { text: a.alreadyExists(templateName) };
+      }
+    } else {
+      return { text: a.alreadyExistsDifferent(templateName) };
     }
-    return { text: a.alreadyExistsDifferent(templateName) };
   }
 
-  const updated = await context.configStore.upsertAgent(templateName, template);
+  const updated = await context.configStore.upsertAgent(templateName, desired);
   context.replaceConfig(updated);
   return { text: a.saved(templateName) };
 }

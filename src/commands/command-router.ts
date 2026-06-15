@@ -20,6 +20,8 @@ import {
   handleCancel,
   handleModeSet,
   handleModeShow,
+  handleModelSet,
+  handleModelShow,
   handlePrompt,
   handlePromptWithSession,
   handleReplyModeReset,
@@ -190,7 +192,7 @@ export class CommandRouter {
         case "agents":
           return handleAgents(this.createHandlerContext());
         case "agent.add":
-          return await handleAgentAdd(this.createHandlerContext(), command.template);
+          return await handleAgentAdd(this.createHandlerContext(), command.template, command.model);
         case "agent.rm":
           return await handleAgentRemove(this.createHandlerContext(), command.name);
         case "permission.status":
@@ -225,6 +227,7 @@ export class CommandRouter {
             command.alias,
             command.agent,
             command.workspace,
+            command.model,
           );
         case "session.shortcut":
           return await handleSessionShortcut(this.createSessionHandlerContext(reply, perfSpan), chatKey, command.agent, command, false);
@@ -253,6 +256,10 @@ export class CommandRouter {
           return await handleModeShow(this.createSessionHandlerContext(undefined, perfSpan), chatKey);
         case "mode.set":
           return await handleModeSet(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.modeId);
+        case "model.show":
+          return await handleModelShow(this.createSessionHandlerContext(undefined, perfSpan), chatKey);
+        case "model.set":
+          return await handleModelSet(this.createSessionHandlerContext(reply, perfSpan), chatKey, command.modelId);
         case "replymode.show":
           return await handleReplyModeShow(this.createSessionHandlerContext(undefined, perfSpan), chatKey);
         case "replymode.set":
@@ -519,6 +526,8 @@ export class CommandRouter {
   private createSessionInteractionOps(perfSpan?: PerfSpan): SessionInteractionOps {
     return {
       setModeTransportSession: (session, modeId) => this.setModeTransportSession(session, modeId),
+      setModelTransportSession: (session, modelId) => this.setModelTransportSession(session, modelId),
+      getModelTransportSession: (session) => this.getModelTransportSession(session),
       cancelTransportSession: (session) => this.cancelTransportSession(session),
       promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride) =>
         this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan),
@@ -835,6 +844,23 @@ export class CommandRouter {
 
   private async setModeTransportSession(session: ResolvedSession, modeId: string) {
     return await this.measureTransportCall("set_mode", session, () => this.transport.setMode(session, modeId));
+  }
+
+  private async setModelTransportSession(session: ResolvedSession, modelId: string) {
+    if (!this.transport.setModel) {
+      throw new Error("the active transport does not support switching models");
+    }
+    const setModel = this.transport.setModel.bind(this.transport);
+    return await this.measureTransportCall("set_model", session, () => setModel(session, modelId));
+  }
+
+  private async getModelTransportSession(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
+    if (!this.transport.getSessionModel) {
+      // Transport can't query acpx; fall back to the resolved model with no catalog.
+      return { current: session.model, available: [] };
+    }
+    const getSessionModel = this.transport.getSessionModel.bind(this.transport);
+    return await this.measureTransportCall("get_model", session, () => getSessionModel(session));
   }
 
   private async cancelTransportSession(session: ResolvedSession) {

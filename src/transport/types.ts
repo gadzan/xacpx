@@ -27,6 +27,12 @@ export interface ResolvedSession {
   alias: string;
   agent: string;
   agentCommand?: string;
+  /**
+   * LLM model id to run this session under (e.g. `gpt-5.2[high]`). Resolved from
+   * the session's own override first, then the agent config default. When unset,
+   * no `--model` is passed and acpx uses the agent adapter's default.
+   */
+  model?: string;
   workspace: string;
   transportSession: string;
   source?: "xacpx" | "agent-side";
@@ -132,6 +138,10 @@ export interface SessionTransport {
     options?: PromptOptions,
   ): Promise<{ text: string }>;
   setMode(session: ResolvedSession, modeId: string): Promise<void>;
+  /** Switch the running session's model. Optional: transports that can't omit it. */
+  setModel?(session: ResolvedSession, modelId: string): Promise<void>;
+  /** Read the current model and the agent-advertised available model ids. Optional. */
+  getSessionModel?(session: ResolvedSession): Promise<{ current?: string; available: string[] }>;
   cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }>;
   hasSession(session: ResolvedSession): Promise<boolean>;
   listAgentSessions?(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined>;

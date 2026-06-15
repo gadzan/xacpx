@@ -47,6 +47,14 @@ export const session: SessionMessages = {
   modeNotSet: "未设置",
   modeSet: (modeId) => `已设置当前会话 mode：${modeId}`,
 
+  modelHeader: "当前 model：",
+  modelSessionLabel: (alias) => `- 会话：${alias}`,
+  modelModelLabel: (modelId) => `- model：${modelId}`,
+  modelNotSet: "未设置（使用 agent 默认）",
+  modelAvailableLabel: (models) => `- 可选：${models}`,
+  modelSet: (modelId) => `已切换当前会话 model：${modelId}`,
+  modelSetFailed: (modelId, detail) => `切换 model 失败：${modelId}\n${detail}`,
+
   // handleReplyModeShow / handleReplyModeSet / handleReplyModeReset
   replyModeHeader: "当前 reply mode：",
   replyModeSessionLabel: (alias) => `- 会话：${alias}`,
@@ -142,6 +150,13 @@ export const session: SessionMessages = {
   modeHelpCmdShowDesc: "查看当前会话已保存的 mode",
   modeHelpCmdSet: "/mode <id>",
   modeHelpCmdSetDesc: "设置当前会话 mode",
+
+  // modelHelp metadata
+  modelHelpSummary: "查看或切换当前会话的 LLM model。",
+  modelHelpCmdShow: "/model",
+  modelHelpCmdShowDesc: "查看当前会话 model 及可选项",
+  modelHelpCmdSet: "/model <id>",
+  modelHelpCmdSetDesc: "切换当前会话 model（如 gpt-5.2[high]）",
 
   // replyModeHelp metadata
   replyModeHelpSummary: "查看或设置当前逻辑会话的回复输出模式。",

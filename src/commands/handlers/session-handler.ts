@@ -110,6 +110,20 @@ export function modeHelp(): HelpTopicMetadata {
   };
 }
 
+export function modelHelp(): HelpTopicMetadata {
+  const s = t().session;
+  return {
+    topic: "model",
+    aliases: [],
+    summary: s.modelHelpSummary,
+    commands: [
+      { usage: s.modelHelpCmdShow, description: s.modelHelpCmdShowDesc },
+      { usage: s.modelHelpCmdSet, description: s.modelHelpCmdSetDesc },
+    ],
+    examples: ["/model", "/model gpt-5.2[high]"],
+  };
+}
+
 export function replyModeHelp(): HelpTopicMetadata {
   const s = t().session;
   return {
@@ -195,6 +209,7 @@ export async function handleSessionNew(
   alias: string,
   agent: string,
   workspace: string,
+  model?: string,
 ): Promise<RouterResponse> {
   const channelId = getChannelIdFromChatKey(chatKey);
   const internalAlias = scopeDisplayAliasToInternal(channelId, alias);
@@ -209,6 +224,13 @@ export async function handleSessionNew(
   }
 
   const session = context.lifecycle.resolveSession(internalAlias, agent, workspace, `${workspace}:${internalAlias}`);
+  // An explicit --model overrides the agent default for this session, and must be
+  // on the ResolvedSession before ensureTransportSession so acpx creates the
+  // session under that model.
+  const normalizedModel = model?.trim();
+  if (normalizedModel) {
+    session.model = normalizedModel;
+  }
   const releaseTransportReservation = await context.lifecycle.reserveTransportSession(session.transportSession);
   try {
     try {
@@ -222,6 +244,9 @@ export async function handleSessionNew(
     }
 
     await context.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+    if (normalizedModel) {
+      await context.sessions.setSessionModel(internalAlias, normalizedModel);
+    }
     await context.sessions.useSession(chatKey, internalAlias);
     await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.agent_command_refresh_failed");
     await context.logger.info("session.created", "created and selected logical session", {
@@ -391,6 +416,56 @@ export async function handleModeSet(
   await context.interaction.setModeTransportSession(session, modeId);
   await context.sessions.setCurrentSessionMode(chatKey, modeId);
   return { text: t().session.modeSet(modeId) };
+}
+
+export async function handleModelShow(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
+  const session = await context.sessions.getCurrentSession(chatKey);
+  if (!session) {
+    return { text: t().session.noCurrent };
+  }
+
+  const s = t().session;
+  // Best-effort live query; fall back to the resolved model if the transport or
+  // acpx can't answer (e.g. session not yet warm).
+  let current = session.model;
+  let available: string[] = [];
+  try {
+    const queried = await context.interaction.getModelTransportSession(session);
+    current = queried.current ?? session.model;
+    available = queried.available;
+  } catch {
+    // keep the resolved model; no catalog
+  }
+
+  const lines = [
+    s.modelHeader,
+    s.modelSessionLabel(toDisplaySessionAlias(session.alias)),
+    s.modelModelLabel(current ?? s.modelNotSet),
+  ];
+  if (available.length > 0) {
+    lines.push(s.modelAvailableLabel(available.join(", ")));
+  }
+  return { text: lines.join("\n") };
+}
+
+export async function handleModelSet(
+  context: SessionHandlerContext,
+  chatKey: string,
+  modelId: string,
+): Promise<RouterResponse> {
+  const session = await context.sessions.getCurrentSession(chatKey);
+  if (!session) {
+    return { text: t().session.noCurrent };
+  }
+
+  try {
+    await context.interaction.setModelTransportSession(session, modelId);
+  } catch (error) {
+    // acpx rejects an unsupported model id (validated against advertised models).
+    return { text: t().session.modelSetFailed(modelId, error instanceof Error ? error.message : String(error)) };
+  }
+  await context.sessions.setCurrentSessionModel(chatKey, modelId);
+  return { text: t().session.modelSet(modelId) };
 }
 
 export async function handleReplyModeShow(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {

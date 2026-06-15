@@ -282,9 +282,11 @@ export function parseConfig(
   for (const [name, agent] of Object.entries(rawAgents)) {
     const driver = agent.driver;
     const command = typeof agent.command === "string" ? resolveAgentCommand(driver, agent.command) : undefined;
+    const model = typeof agent.model === "string" && agent.model.trim().length > 0 ? agent.model.trim() : undefined;
     agents[name] = {
       driver,
       ...(command ? { command } : {}),
+      ...(model ? { model } : {}),
     };
   }
 

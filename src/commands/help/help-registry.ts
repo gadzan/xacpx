@@ -6,6 +6,7 @@ import { permissionHelp } from "../handlers/permission-handler";
 import {
   cancelHelp,
   modeHelp,
+  modelHelp,
   nativeSessionHelp,
   replyModeHelp,
   sessionHelp,
@@ -24,6 +25,7 @@ function buildHelpTopics(): HelpTopicMetadata[] {
     configHelp(),
     orchestrationHelp(),
     modeHelp(),
+    modelHelp(),
     replyModeHelp(),
     statusHelp(),
     cancelHelp(),
