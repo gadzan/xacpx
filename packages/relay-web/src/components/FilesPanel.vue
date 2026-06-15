@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
+import CopyButton from "./CopyButton.vue";
 
 const props = defineProps<{ instanceId: string | null }>();
 const files = useFilesStore();
@@ -9,6 +10,15 @@ const instances = useInstancesStore();
 
 const workspaces = computed(() => (props.instanceId ? instances.byId(props.instanceId)?.workspaces ?? [] : []));
 const crumbs = computed(() => (files.path ? files.path.split("/") : []));
+
+// Line-numbered gutter for the file viewer. Above this many lines we fall back to a
+// plain <pre> so we don't emit tens of thousands of DOM nodes for a large file.
+const LINE_GUTTER_LIMIT = 5000;
+const fileLines = computed(() => {
+  const f = files.file;
+  if (!f || f.binary) return [];
+  return f.content.split("\n");
+});
 
 // Debounced file-name search.
 const searchInput = ref("");
@@ -124,9 +134,17 @@ function onWorkspaceChange(e: Event) {
             <span class="text-slate-400">{{ fmtSize(files.file.size) }}</span>
             <span v-if="files.file.truncated" class="rounded bg-amber-100 px-1 text-amber-700">truncated</span>
             <span v-if="files.file.binary" class="rounded bg-slate-200 px-1 text-slate-600">binary</span>
-            <button class="ml-auto text-slate-400 hover:text-slate-700" @click="files.file = null">✕</button>
+            <CopyButton v-if="!files.file.binary" :text="files.file.content" class="ml-auto" />
+            <button class="text-slate-400 hover:text-slate-700" @click="files.file = null">✕</button>
           </div>
-          <pre v-if="!files.file.binary" class="overflow-x-auto p-2 font-mono text-xs leading-snug text-slate-700 whitespace-pre">{{ files.file.content }}</pre>
+          <!-- numbered gutter for reasonable files; plain <pre> as a fallback for huge ones -->
+          <div v-if="!files.file.binary && fileLines.length <= LINE_GUTTER_LIMIT" data-test="file-body" class="overflow-x-auto font-mono text-xs leading-snug">
+            <div v-for="(l, i) in fileLines" :key="i" data-test="file-line" class="flex">
+              <span class="sticky left-0 w-12 shrink-0 select-none border-r bg-slate-50 px-2 text-right text-slate-300 tabular-nums">{{ i + 1 }}</span>
+              <span class="whitespace-pre px-3 text-slate-700">{{ l || " " }}</span>
+            </div>
+          </div>
+          <pre v-else-if="!files.file.binary" class="overflow-x-auto p-2 font-mono text-xs leading-snug text-slate-700 whitespace-pre">{{ files.file.content }}</pre>
           <div v-else class="p-3 text-xs text-slate-400">Binary file not shown.</div>
         </div>
 
