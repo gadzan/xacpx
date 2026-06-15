@@ -17,7 +17,7 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
-import { Search, Moon, Sun, Settings, X, Menu } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List } from "lucide-vue-next";
 import { useComposerStore } from "../stores/composer";
 
 const theme = useThemeStore();
@@ -173,13 +173,21 @@ onUnmounted(() => {
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 w-72 max-w-[85%] shrink-0 transform overflow-y-auto border-l border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
+           class="fixed inset-y-0 right-0 z-40 w-72 max-w-[85%] shrink-0 transform overflow-y-auto border-l border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'">
-        <div class="flex items-center gap-1 border-b border-border p-2">
-          <div class="flex overflow-hidden rounded border border-border text-xs">
-            <button data-test="right-tab-tasks" class="px-2 py-1" :class="rightTab === 'tasks' ? 'bg-accent text-white' : 'text-fg-muted'" @click="rightTab = 'tasks'">Tasks</button>
-            <button data-test="right-tab-files" class="px-2 py-1" :class="rightTab === 'files' ? 'bg-accent text-white' : 'text-fg-muted'" @click="rightTab = 'files'">Files</button>
-          </div>
+        <div class="flex h-9 items-center gap-1 border-b border-border px-2.5">
+          <button data-test="right-tab-files"
+                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  :class="rightTab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  @click="rightTab = 'files'">
+            <FileText :size="13" />Files
+          </button>
+          <button data-test="right-tab-tasks"
+                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  :class="rightTab === 'tasks' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  @click="rightTab = 'tasks'">
+            <List :size="13" />Tasks
+          </button>
           <button data-test="close-tasks" aria-label="Close tasks"
                   class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
