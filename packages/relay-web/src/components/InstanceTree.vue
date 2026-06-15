@@ -56,7 +56,10 @@ function remove(id: string, alias: string) {
           </button>
           <button data-test="delete-session" class="text-xs text-red-400 hover:underline" @click.stop="remove(inst.id, s.alias)">delete</button>
         </li>
-        <li v-if="!inst.sessions.length" data-test="no-sessions" class="px-6 py-1 text-xs text-slate-400">no sessions yet</li>
+        <li v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
+            class="px-6 py-1 text-xs text-slate-400">loading…</li>
+        <li v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
+            class="px-6 py-1 text-xs text-slate-400">no sessions yet</li>
       </ul>
       <div class="flex items-center gap-3 px-6 py-1.5">
         <button data-test="new-session" class="text-left text-xs font-medium text-slate-500 hover:text-slate-800"

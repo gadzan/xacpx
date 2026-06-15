@@ -5,8 +5,8 @@ import InstanceTree from "../components/InstanceTree.vue";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 
-const instance = (sessions: unknown[] = []) => ({
-  id: "i1", name: "pc", online: true, lastSeenAt: null, sessions, agents: [], workspaces: [],
+const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
+  id: "i1", name: "pc", online: true, lastSeenAt: null, sessions, sessionsLoaded, agents: [], workspaces: [],
 });
 
 describe("InstanceTree session management", () => {
@@ -63,11 +63,19 @@ describe("InstanceTree session management", () => {
     expect(w.find('[data-test="attention-dot"]').attributes("data-attention")).toBe("unread");
   });
 
-  it("shows an empty-state row for an instance with no sessions", () => {
+  it("shows an empty-state row only once sessions have loaded", () => {
     const store = useInstancesStore();
-    store.instances = [instance([])] as never;
+    store.instances = [instance([], true)] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     expect(w.find('[data-test="no-sessions"]').exists()).toBe(true);
+  });
+
+  it("shows a loading row (not the empty state) before sessions have loaded", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([], false)] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="sessions-loading"]').exists()).toBe(true);
+    expect(w.find('[data-test="no-sessions"]').exists()).toBe(false);
   });
 
   it("renders an elapsed badge for a working session", () => {

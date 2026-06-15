@@ -17,6 +17,9 @@ export interface InstanceView {
   online: boolean;
   lastSeenAt: string | null;
   sessions: SessionDto[];
+  // Distinguishes "sessions never fetched" from "fetched and genuinely empty" so the
+  // sidebar only shows the "no sessions yet" empty row once a list has actually loaded.
+  sessionsLoaded: boolean;
   agents: AgentDto[];
   workspaces: WorkspaceDto[];
   agentCatalog: AgentCatalogEntryDto[];
@@ -26,17 +29,26 @@ export const useInstancesStore = defineStore("instances", () => {
   const instances = ref<InstanceView[]>([]);
 
   async function loadInstances(): Promise<void> {
-    const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
+    const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
     instances.value = rows.map((r) => {
       const prev = byId(r.id);
-      return { ...r, sessions: prev?.sessions ?? [], agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
+      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
     });
+    // Eagerly populate the session list for every online instance so the sidebar shows
+    // them without the user having to click the instance first. Fire-and-forget: a slow
+    // or failing instance must not block the rest of the dashboard from rendering.
+    for (const inst of instances.value) {
+      if (inst.online && !inst.sessionsLoaded) void loadSessions(inst.id).catch(() => {});
+    }
   }
 
   async function loadSessions(instanceId: string): Promise<void> {
     const { sessions } = await api.rpc<{ sessions: SessionDto[] }>(instanceId, "control.sessions.list");
     const inst = byId(instanceId);
-    if (inst) inst.sessions = sessions;
+    if (inst) {
+      inst.sessions = sessions;
+      inst.sessionsLoaded = true;
+    }
   }
 
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
@@ -120,7 +132,12 @@ export const useInstancesStore = defineStore("instances", () => {
   function applyEvent(event: WebServerEvent): void {
     if (event.kind === "instance-status") {
       const inst = byId(event.instanceId);
-      if (inst) inst.online = event.online;
+      if (inst) {
+        inst.online = event.online;
+        // An instance that just came online may not have had its sessions fetched yet
+        // (it was offline at the initial snapshot) — pull them now so the sidebar fills in.
+        if (event.online && !inst.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
+      }
     } else if (event.kind === "control-event" && event.event.type === "sessions-changed") {
       void loadSessions(event.instanceId).catch(() => {});
     }

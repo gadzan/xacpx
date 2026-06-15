@@ -15,7 +15,7 @@ test("loadInstances populates the list with online flags", async () => {
 
 test("applyEvent instance-status toggles online without refetch", () => {
   const store = useInstancesStore();
-  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] }];
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
   store.applyEvent({ kind: "instance-status", instanceId: "i1", online: false });
   expect(store.instances[0]?.online).toBe(false);
 });
@@ -25,9 +25,40 @@ test("loadSessions caches sessions under the instance", async () => {
     result: { sessions: [{ alias: "backend", agent: "claude", workspace: "/w", transportSession: "t", running: false }] },
   }), { status: 200 })));
   const store = useInstancesStore();
-  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] }];
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
   await store.loadSessions("i1");
   expect(store.instances[0]?.sessions.map((s) => s.alias)).toEqual(["backend"]);
+});
+
+test("loadInstances eagerly loads sessions for online instances", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+    const url = typeof input === "string" ? input : String(input);
+    const body = url.includes("/rpc")
+      ? { result: { sessions: [{ alias: "backend", agent: "claude", workspace: "/w", transportSession: "t", running: false }] } }
+      : { instances: [{ id: "i1", name: "pc", online: true, lastSeenAt: null }, { id: "i2", name: "off", online: false, lastSeenAt: null }] };
+    return new Response(JSON.stringify(body), { status: 200 });
+  }));
+  const store = useInstancesStore();
+  await store.loadInstances();
+  // Wait a microtask turn for the fire-and-forget loadSessions to settle.
+  await new Promise((r) => setTimeout(r, 0));
+  expect(store.byId("i1")!.sessions.map((s) => s.alias)).toEqual(["backend"]);
+  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+  // The offline instance is left untouched (no eager fetch).
+  expect(store.byId("i2")!.sessionsLoaded).toBe(false);
+  vi.unstubAllGlobals();
+});
+
+test("applyEvent instance-status loads sessions when an instance comes online", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [{ alias: "backend", agent: "claude", workspace: "/w", transportSession: "t", running: false }] });
+  store.applyEvent({ kind: "instance-status", instanceId: "i1", online: true });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list");
+  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+  vi.restoreAllMocks();
 });
 
 describe("createSession timeout handling", () => {
@@ -35,7 +66,7 @@ describe("createSession timeout handling", () => {
 
   function seed() {
     const store = useInstancesStore();
-    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] }];
+    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
     return store;
   }
 
@@ -83,7 +114,7 @@ describe("agent catalog + management actions", () => {
 
   test("loadAgentCatalog stores the catalog on the instance", async () => {
     const store = useInstancesStore();
-    store.instances = [{ id: "i1", name: "n", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] }];
+    store.instances = [{ id: "i1", name: "n", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
     const { api } = await import("../api/client");
     vi.spyOn(api, "rpc").mockResolvedValue({ agents: [{ driver: "gemini", configured: false, installed: "unknown" }] });
     await store.loadAgentCatalog("i1");
@@ -93,7 +124,7 @@ describe("agent catalog + management actions", () => {
 
   test("createAgent refreshes once (single catalog fetch, no double)", async () => {
     const store = useInstancesStore();
-    store.instances = [{ id: "i1", name: "n", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] }];
+    store.instances = [{ id: "i1", name: "n", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
     const { api } = await import("../api/client");
     const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
       if (type === "control.agents.list") return { agents: [] } as never;
@@ -111,7 +142,7 @@ describe("agent catalog + management actions", () => {
 
   test("removeAgent surfaces an instance-side error payload", async () => {
     const store = useInstancesStore();
-    store.instances = [{ id: "i1", name: "n", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] }];
+    store.instances = [{ id: "i1", name: "n", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
     const { api } = await import("../api/client");
     vi.spyOn(api, "rpc").mockResolvedValue({ error: { code: "internal", message: 'agent "codex" is in use by an existing session' } });
     await expect(store.removeAgent("i1", "codex")).rejects.toThrow(/in use/);
@@ -126,8 +157,8 @@ test("InstanceTree renders an online dot per instance", () => {
   setActivePinia(createPinia());
   const store = useInstancesStore();
   store.instances = [
-    { id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] },
-    { id: "i2", name: "srv", online: false, lastSeenAt: null, sessions: [], agents: [], workspaces: [], agentCatalog: [] },
+    { id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+    { id: "i2", name: "srv", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
   ];
   const wrapper = mount(InstanceTree);
   const dots = wrapper.findAll('[data-test="online-dot"]');
