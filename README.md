@@ -331,6 +331,7 @@ These templates only write `driver`; the actual launch command is resolved by ac
 | `/use <alias>` | Switch the current session |
 | `/status` | Show the current session status |
 | `/mode` / `/mode <id>` | View or set the underlying `acpx` mode |
+| `/model` / `/model <id>` | View or switch the session's LLM model (also `/session new --model`, `/agent add --model`) |
 | `/replymode` | Show the current reply mode |
 | `/replymode stream` | Streaming replies |
 | `/replymode verbose` | Streaming + tool-call summaries |
