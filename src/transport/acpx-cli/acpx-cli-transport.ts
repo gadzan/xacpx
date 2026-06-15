@@ -315,6 +315,45 @@ export class AcpxCliTransport implements SessionTransport {
     ]));
   }
 
+  // acpx's generic config setter: `<agent> set -s <name> model '<id>'`. Build args
+  // with the NEW model so the global --model and the `set model` value agree.
+  // acpx validates the id against the agent's advertised models and applies it to
+  // a live queue owner immediately (or persists it for the next turn when idle).
+  async setModel(session: ResolvedSession, modelId: string): Promise<void> {
+    await this.run(this.buildArgs({ ...session, model: modelId }, [
+      "set",
+      "-s",
+      session.transportSession,
+      "model",
+      modelId,
+    ]));
+  }
+
+  // Read the session's current model and the agent-advertised available ids from
+  // `<agent> status --format json`. Returns an empty list when status output is
+  // not parseable, so callers can still show the current model.
+  async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
+    const prefix = ["--format", "json", "--cwd", session.cwd, ...this.buildPermissionArgs()];
+    const tail = ["status", "-s", session.transportSession];
+    const args = session.agentCommand
+      ? [...prefix, "--agent", session.agentCommand, ...tail]
+      : [...prefix, session.agent, ...tail];
+    const result = await this.runCommandWithTimeout(this.runCommand, args);
+    if (result.code !== 0) {
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
+    }
+    try {
+      const json = JSON.parse(result.stdout) as { model?: string; availableModels?: string[] };
+      return {
+        current: typeof json.model === "string" ? json.model : undefined,
+        available: Array.isArray(json.availableModels) ? json.availableModels.filter((m): m is string => typeof m === "string") : [],
+      };
+    } catch {
+      return { available: [] };
+    }
+  }
+
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {
     const output = await this.run(this.buildArgs(session, [
       "cancel",
@@ -386,6 +425,7 @@ export class AcpxCliTransport implements SessionTransport {
       ...(session.mcpSourceHandle ? { sourceHandle: session.mcpSourceHandle } : {}),
       permissionMode: this.permissionMode,
       nonInteractivePermissions: this.nonInteractivePermissions,
+      ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
     });
   }
 
@@ -642,6 +682,7 @@ export class AcpxCliTransport implements SessionTransport {
       "--cwd",
       session.cwd,
       ...this.buildPermissionArgs(),
+      ...this.buildModelArgs(session),
     ];
     if (session.agentCommand) {
       return [...prefix, "--agent", session.agentCommand, ...tail];
@@ -666,6 +707,7 @@ export class AcpxCliTransport implements SessionTransport {
       "--cwd",
       session.cwd,
       ...this.buildPermissionArgs(),
+      ...this.buildModelArgs(session),
       ...this.buildQueueOwnerTtlArgs(),
     ];
     const tail = promptFile
@@ -677,6 +719,14 @@ export class AcpxCliTransport implements SessionTransport {
     }
 
     return [...prefix, session.agent, ...tail];
+  }
+
+  // The session's resolved model id as a global `--model` flag (empty when unset).
+  // acpx persists it into the session record and re-applies it on each turn, so
+  // passing it on both create and prompt keeps warm and cold paths consistent.
+  private buildModelArgs(session: ResolvedSession): string[] {
+    const model = session.model?.trim();
+    return model ? ["--model", model] : [];
   }
 
   // `--ttl` only governs the prompt path's queue owner warm window, so it is
