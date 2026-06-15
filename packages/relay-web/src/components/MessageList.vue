@@ -45,6 +45,13 @@ watch(
     if (atBottom.value) void nextTick(() => scrollToBottom(false));
   },
 );
+
+// Compact local time for the per-message action/info row (e.g. "15:45").
+function fmtTime(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
 </script>
 
 <template>
@@ -66,9 +73,8 @@ watch(
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
               <Bot :size="13" class="text-accent" />
             </div>
-            <div data-test="msg-out" class="relative min-w-0 flex-1 space-y-2.5"
+            <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger' : ''">
-              <CopyButton v-if="m.text" :text="m.text" class="absolute right-0 -top-1 z-10 opacity-0 transition-opacity group-hover:opacity-100" />
               <!-- Ordered transcript (text / reasoning / tools inline). -->
               <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" />
               <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
@@ -77,8 +83,13 @@ watch(
                 <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
                 <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
               </template>
-              <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> Stopped</span>
-              <span v-if="m.failed" data-test="msg-failed" class="text-xs text-danger">failed</span>
+              <!-- Dedicated action/info row for this record: copy + time + status, on its own line. -->
+              <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
+                <CopyButton v-if="m.text" :text="m.text" />
+                <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> Stopped</span>
+                <span v-if="m.failed" data-test="msg-failed" class="text-[11px] text-danger">failed</span>
+              </div>
             </div>
           </div>
         </template>

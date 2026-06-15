@@ -70,6 +70,20 @@ describe("MessageList", () => {
     const jump = wrapper.find('[data-test="jump-latest"]');
     expect(jump.exists() && jump.isVisible()).toBe(false);
   });
+
+  it("puts copy + time in a dedicated action row at the bottom of the record", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "out", text: "hi", createdAt: "2026-06-13T08:30:00.000Z" })], liveTurn: null },
+    });
+    const actions = wrapper.find('[data-test="msg-actions"]');
+    expect(actions.exists()).toBe(true);
+    // The row carries the copy action and the time info.
+    expect(actions.find('[data-test="copy-button"]').exists()).toBe(true);
+    expect(actions.find('[data-test="msg-time"]').exists()).toBe(true);
+    // It is the last child of the message body (its own line at the bottom).
+    const body = wrapper.find('[data-test="msg-out"]').element;
+    expect(body.lastElementChild?.getAttribute("data-test")).toBe("msg-actions");
+  });
 });
 
 it("renders legacy persisted tool steps (no parts) under a completed out message", () => {
