@@ -185,7 +185,10 @@ onUnmounted(() => {
       </div>
 
       <!-- Center: chat, always full width of the remaining space. -->
-      <div data-test="column" class="flex flex-1 flex-col">
+      <!-- min-w-0: let this flex child shrink to its share instead of growing to its
+           widest content (a tool card's command/diff line), which would otherwise push
+           the right panel off-screen. Wide tool content scrolls/wraps within instead. -->
+      <div data-test="column" class="flex min-w-0 flex-1 flex-col">
         <ChatPane @show-files="rightTab = 'files'" />
       </div>
 

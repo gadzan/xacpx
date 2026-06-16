@@ -30,6 +30,17 @@ test("renders mobile drawer controls", async () => {
   expect(wrapper.find('[data-test="open-tasks"]').exists()).toBe(true);
 });
 
+test("chat column is shrinkable (min-w-0) so wide tool content can't push the right panel off-screen", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  // The center column is the one without a drawer marker (the side panels are drawers).
+  // Regression: without min-w-0 the flex-1 column grows to its widest content (a tool
+  // card's command/diff line), shoving the fixed-width right panel out of the viewport.
+  const center = wrapper.find('[data-test="column"]:not([data-drawer])');
+  expect(center.exists()).toBe(true);
+  expect(center.classes()).toContain("min-w-0");
+});
+
 test("instance drawer starts off-canvas and opens via the hamburger", async () => {
   const wrapper = mountDash();
   await flushPromises();

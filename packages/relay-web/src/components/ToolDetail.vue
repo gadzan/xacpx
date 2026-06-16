@@ -21,9 +21,9 @@ const diffStats = computed(() => ({
 <template>
   <div class="mt-1 space-y-1 text-xs">
     <template v-if="detail.type === 'diff'">
-      <div class="flex items-center gap-2 font-mono text-fg-muted">
-        <span class="inline-flex items-center gap-1"><File :size="14" />{{ detail.path }}</span>
-        <span data-test="diff-stats" class="ml-auto flex items-center gap-2 font-mono text-[10px]">
+      <div class="flex min-w-0 items-center gap-2 font-mono text-fg-muted">
+        <span class="inline-flex min-w-0 items-center gap-1"><File :size="14" class="shrink-0" /><span class="truncate">{{ detail.path }}</span></span>
+        <span data-test="diff-stats" class="ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px]">
           <span v-if="diffStats.add" class="text-run">+{{ diffStats.add }}</span>
           <span v-if="diffStats.del" class="text-danger">−{{ diffStats.del }}</span>
         </span>
@@ -37,7 +37,7 @@ const diffStats = computed(() => ({
     </template>
 
     <template v-else-if="detail.type === 'command'">
-      <div data-test="cmd-command" class="font-mono text-fg">$ {{ detail.command }}</div>
+      <div data-test="cmd-command" class="break-all font-mono text-fg">$ {{ detail.command }}</div>
       <ExpandableBlock v-if="detail.output">
         <pre data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
       </ExpandableBlock>
@@ -45,14 +45,14 @@ const diffStats = computed(() => ({
     </template>
 
     <template v-else-if="detail.type === 'read'">
-      <div data-test="read-path" class="inline-flex items-center gap-1 font-mono text-fg"><File :size="14" />{{ detail.path }}<span v-if="detail.lines" class="ml-2 text-fg-muted">{{ detail.lines }}</span></div>
+      <div data-test="read-path" class="flex min-w-0 items-center gap-1 font-mono text-fg"><File :size="14" class="shrink-0" /><span class="truncate">{{ detail.path }}</span><span v-if="detail.lines" class="ml-2 shrink-0 text-fg-muted">{{ detail.lines }}</span></div>
       <ExpandableBlock v-if="detail.preview">
         <pre class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
       </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'search'">
-      <div data-test="search-query" class="inline-flex items-center gap-1 font-mono text-fg"><Search :size="14" />{{ detail.query }}</div>
+      <div data-test="search-query" class="flex min-w-0 items-center gap-1 font-mono text-fg"><Search :size="14" class="shrink-0" /><span class="truncate">{{ detail.query }}</span></div>
       <ExpandableBlock v-if="detail.output">
         <pre data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
       </ExpandableBlock>
