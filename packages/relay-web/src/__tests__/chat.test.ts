@@ -75,6 +75,22 @@ test("seedActiveTurns rebuilds a live turn (working dot + HUD) lost on refresh",
   expect(store.messages.at(-1)).toMatchObject({ direction: "out", text: "half-written" });
 });
 
+test("a turn-finished racing ahead of seedActiveTurns does not resurrect the finished turn", () => {
+  // Regression (review H1): the ws stream is live before the active-turns snapshot is
+  // applied. If turn-finished arrives in that gap, seeding the stale snapshot must NOT
+  // re-create the turn (which would wedge the session "working" forever). A different,
+  // un-finished session in the same snapshot must still seed normally.
+  const store = useChatStore();
+  // The finish already arrived (no live turn existed to flush); then the stale snapshot lands.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "relay:a", sessionAlias: "raced", ok: true } });
+  store.seedActiveTurns([
+    { instanceId: "i1", sessionAlias: "raced", status: "streaming", startedAt: 1, parts: [{ type: "text", text: "stale" }] },
+    { instanceId: "i1", sessionAlias: "fresh", status: "streaming", startedAt: 1, parts: [{ type: "text", text: "live" }] },
+  ]);
+  expect(store.sessionAttention("i1", "raced")).not.toBe("working"); // not resurrected
+  expect(store.sessionAttention("i1", "fresh")).toBe("working"); // guard isn't over-broad
+});
+
 test("loadActiveTurns fetches the in-flight snapshot and seeds it", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
     turns: [{ instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 5, parts: [{ type: "text", text: "live" }] }],

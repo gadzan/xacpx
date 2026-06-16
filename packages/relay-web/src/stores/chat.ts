@@ -66,6 +66,12 @@ export const useChatStore = defineStore("chat", () => {
   // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
   // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
   const unread = ref<Set<string>>(new Set());
+  // Keys whose most recent event was `turn-finished`. Guards the seed-vs-finish race: a
+  // `turn-finished` can arrive (over the live ws) AFTER the hub served the active-turns
+  // snapshot but BEFORE seedActiveTurns applies it — without this, the stale snapshot
+  // would resurrect the finished turn and wedge the session "working" forever. Cleared
+  // when a fresh `turn-started` supersedes the finish. Non-reactive: a plain guard set.
+  const finishedTurns = new Set<string>();
   const bufKey = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
 
   /** Which attention signal a session should show in the list. `working` (a live turn)
@@ -163,11 +169,11 @@ export const useChatStore = defineStore("chat", () => {
    *  (turn-output / tool-event / turn-finished) continue and finalize each turn. */
   function seedActiveTurns(turns: LiveTurnSnapshotDto[]): void {
     for (const t of turns) {
-      liveTurns.value[bufKey(t.instanceId, t.sessionAlias)] = {
-        parts: t.parts as TurnPart[],
-        status: t.status,
-        startedAt: t.startedAt,
-      };
+      const k = bufKey(t.instanceId, t.sessionAlias);
+      // Don't overwrite a live turn already tracked from the ws stream (it's fresher),
+      // and don't resurrect one that finished in the snapshot→seed gap (see finishedTurns).
+      if (liveTurns.value[k] || finishedTurns.has(k)) continue;
+      liveTurns.value[k] = { parts: t.parts as TurnPart[], status: t.status, startedAt: t.startedAt };
     }
   }
 
@@ -187,7 +193,9 @@ export const useChatStore = defineStore("chat", () => {
     if (event.kind !== "control-event") return;
     const e = event.event;
     if (e.type === "turn-started") {
-      ensureTurn(bufKey(event.instanceId, e.sessionAlias));
+      const k = bufKey(event.instanceId, e.sessionAlias);
+      finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
+      ensureTurn(k);
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
       appendText(t.parts, e.chunk);
@@ -200,6 +208,9 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "turn-finished") {
       const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
+      // Mark finished so a late active-turns snapshot can't resurrect this turn, even if
+      // the finish raced ahead of seedActiveTurns (no live turn existed to flush yet).
+      finishedTurns.add(bufKey(event.instanceId, e.sessionAlias));
       flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
       // A result that landed in a session the user isn't viewing earns an unread dot.
       if (!selected && (status === "done" || status === "error")) {
