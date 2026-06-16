@@ -4,7 +4,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type RelayEnvelope, type ToolStepDto, type TurnPartDto,
+  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope, type ToolStepDto, type TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -50,9 +50,27 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // `parts` records text / reasoning / tool events in arrival order so the web can
   // replay history inline (same model the live view builds). `steps`/`reasoning`/`text`
   // remain for the flat fallback + the persisted `text` column.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[] }
+  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+  // Snapshot the in-flight turns for one instance so a (re)connecting web client can
+  // rebuild the live view after a refresh (see GET /api/active-turns). `parts` is the
+  // live array — fine to hand out by reference since the route serializes it at once.
+  const listActiveTurns = (instanceId: string): LiveTurnSnapshotDto[] => {
+    const prefix = `${instanceId}\0`;
+    const out: LiveTurnSnapshotDto[] = [];
+    for (const [k, a] of turnBuffers) {
+      if (!k.startsWith(prefix)) continue;
+      out.push({
+        instanceId,
+        sessionAlias: k.slice(prefix.length),
+        parts: a.parts,
+        status: a.text ? "streaming" : "working",
+        startedAt: a.startedAt,
+      });
+    }
+    return out;
+  };
   // Coalescing appenders — consecutive same-type chunks merge into one part.
   const pushTextPart = (a: TurnAccumulator, chunk: string) => {
     const last = a.parts[a.parts.length - 1];
@@ -85,7 +103,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const event = (envelope.payload as InstanceEventPayload).event as ControlEventDto;
         webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
         if (event.type === "turn-started") {
-          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [] });
+          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
         } else if (event.type === "turn-output") {
           // Only append to an existing buffer; never lazily resurrect one. A buffer
           // is created solely by turn-started, so a stray streaming event arriving
@@ -126,6 +144,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     accounts, instances, messages, gateway, webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays ?? 30,
     maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
+    activeTurns: listActiveTurns,
   });
   return { db, accounts, instances, messages, gateway, webGateway, app, close: () => db.close() };
 }

@@ -20,7 +20,7 @@ vi.mock("../api/client", () => ({
   },
 }));
 
-import { useChatStore } from "../stores/chat";
+import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { ApiError } from "../api/client";
 import PromptInput from "../components/PromptInput.vue";
 
@@ -55,6 +55,41 @@ test("loadHistory pulls cached messages for the selected session", async () => {
   store.select("i1", "backend");
   await store.loadHistory();
   expect(store.messages.map((m) => m.text)).toEqual(["hi"]);
+});
+
+test("seedActiveTurns rebuilds a live turn (working dot + HUD) lost on refresh", () => {
+  const store = useChatStore();
+  store.seedActiveTurns([
+    { instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 1000, parts: [{ type: "text", text: "half-written" }] },
+  ]);
+  // The sidebar "working" dot lights up without the session being selected.
+  expect(store.sessionAttention("i1", "backend")).toBe("working");
+  expect(store.runningSince("i1", "backend")).toBe(1000);
+  // Selecting the running session shows its live content + the busy HUD.
+  store.select("i1", "backend");
+  expect(store.busy).toBe(true);
+  expect(store.streaming).toBe("half-written");
+  // A later turn-finished finalizes the seeded turn into a persisted message.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "relay:a", sessionAlias: "backend", ok: true } });
+  expect(store.busy).toBe(false);
+  expect(store.messages.at(-1)).toMatchObject({ direction: "out", text: "half-written" });
+});
+
+test("loadActiveTurns fetches the in-flight snapshot and seeds it", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    turns: [{ instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 5, parts: [{ type: "text", text: "live" }] }],
+  }), { status: 200 })));
+  const store = useChatStore();
+  await store.loadActiveTurns();
+  expect(store.sessionAttention("i1", "backend")).toBe("working");
+  store.select("i1", "backend");
+  expect(store.streaming).toBe("live");
+});
+
+test("select persists the open session so a refresh can restore it", () => {
+  const store = useChatStore();
+  store.select("i9", "frontend");
+  expect(loadPersistedSelection()).toEqual({ instanceId: "i9", alias: "frontend" });
 });
 
 test("surfaces an error when send fails", async () => {

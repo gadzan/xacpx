@@ -1,7 +1,23 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { MessageRecordDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { LiveTurnSnapshotDto, MessageRecordDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
+
+// Remember which session was open so a page refresh returns to it (selection is not
+// part of the route). Paired with the active-turn snapshot, a refresh mid-turn lands
+// back on the live conversation instead of an empty pane.
+const SELECTION_KEY = "xrelay.selectedSession";
+function persistSelection(instanceId: string, alias: string): void {
+  try { localStorage.setItem(SELECTION_KEY, JSON.stringify({ instanceId, alias })); } catch { /* storage may be blocked */ }
+}
+export function loadPersistedSelection(): { instanceId: string; alias: string } | null {
+  try {
+    const raw = localStorage.getItem(SELECTION_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as { instanceId?: unknown; alias?: unknown };
+    return typeof v.instanceId === "string" && typeof v.alias === "string" ? { instanceId: v.instanceId, alias: v.alias } : null;
+  } catch { return null; }
+}
 
 export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error";
 
@@ -121,6 +137,7 @@ export const useChatStore = defineStore("chat", () => {
   function select(id: string, alias: string): void {
     instanceId.value = id;
     sessionAlias.value = alias;
+    persistSelection(id, alias);
     messages.value = [];
     error.value = "";
     // Viewing a session clears its unread signal.
@@ -138,6 +155,25 @@ export const useChatStore = defineStore("chat", () => {
       `/api/instances/${instanceId.value}/sessions/${sessionAlias.value}/messages`,
     );
     messages.value = rows;
+  }
+
+  /** Rebuild live turns from the hub's in-flight snapshot (after a refresh/reconnect).
+   *  Seeds by absolute (instance, session) key so sidebar "working" dots light up and
+   *  the open conversation's HUD/streaming bubble reappear; subsequent ws events
+   *  (turn-output / tool-event / turn-finished) continue and finalize each turn. */
+  function seedActiveTurns(turns: LiveTurnSnapshotDto[]): void {
+    for (const t of turns) {
+      liveTurns.value[bufKey(t.instanceId, t.sessionAlias)] = {
+        parts: t.parts as TurnPart[],
+        status: t.status,
+        startedAt: t.startedAt,
+      };
+    }
+  }
+
+  async function loadActiveTurns(): Promise<void> {
+    const { turns } = await api.get<{ turns: LiveTurnSnapshotDto[] }>("/api/active-turns");
+    seedActiveTurns(turns);
   }
 
   function applyEvent(event: WebServerEvent): void {
@@ -219,5 +255,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, applyEvent, send, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, loadActiveTurns, seedActiveTurns, applyEvent, send, cancel };
 });

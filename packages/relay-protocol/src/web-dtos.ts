@@ -20,6 +20,19 @@ export interface MessageRecordDto {
   structured?: { toolSteps: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[] };
 }
 
+/** A snapshot of a turn still in flight on an instance, handed to a (re)connecting
+ *  web client so a refresh mid-turn restores the live HUD / streaming bubble (and the
+ *  session's "working" dot) instead of losing them until `turn-finished` persists.
+ *  Mirrors the live `parts` transcript the streaming view builds. */
+export interface LiveTurnSnapshotDto {
+  instanceId: string;
+  sessionAlias: string;
+  parts: TurnPartDto[];
+  status: "working" | "streaming";
+  /** Epoch ms the turn began on the hub, so the elapsed-time HUD stays accurate. */
+  startedAt: number;
+}
+
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent =
   | { kind: "instance-status"; instanceId: string; online: boolean }

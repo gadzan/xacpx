@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { connectEvents } from "../api/events";
 import { useAuthStore } from "../stores/auth";
 import { useInstancesStore } from "../stores/instances";
-import { useChatStore } from "../stores/chat";
+import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
@@ -73,6 +73,7 @@ function onSelect(instanceId: string, alias: string) {
 let everOnline = false;
 async function reloadSnapshot() {
   await instances.loadInstances().catch(() => {});
+  await chat.loadActiveTurns().catch(() => {}); // re-seed live HUDs / working dots
   if (chat.instanceId && chat.sessionAlias) {
     await instances.loadSessions(chat.instanceId).catch(() => {});
     await chat.loadHistory().catch(() => {});
@@ -96,6 +97,15 @@ onMounted(async () => {
     tasks.applyEvent(event);
     notices.applyEvent(event);
   }, onStatus);
+  // Re-seed any in-flight turns (sidebar "working" dots + live view) lost on refresh.
+  await chat.loadActiveTurns().catch(() => {});
+  // Return to the session that was open before the refresh. Gate only on the instance
+  // existing (the eager session list may still be loading); loadHistory handles a
+  // since-deleted session gracefully by showing an empty pane.
+  const prior = loadPersistedSelection();
+  if (prior && instances.byId(prior.instanceId)) {
+    onSelect(prior.instanceId, prior.alias);
+  }
 });
 
 onUnmounted(() => {

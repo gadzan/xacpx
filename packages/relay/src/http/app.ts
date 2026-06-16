@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
 
-import { MSG } from "@ganglion/xacpx-relay-protocol";
+import { MSG, type LiveTurnSnapshotDto } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
@@ -18,6 +18,8 @@ export interface AppDeps {
   instances: InstanceStore;
   gateway: GatewayForApp;
   messages: MessageStore;
+  /** Snapshot the in-flight turns for an instance (for the active-turns endpoint). */
+  activeTurns?: (instanceId: string) => LiveTurnSnapshotDto[];
   webRoot?: string;
   sessionTtlMs?: number;
   inviteTtlMs?: number;
@@ -168,6 +170,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const account = c.get("account");
     const removed = deps.instances.remove(c.req.param("id"), account.id);
     return removed ? c.json({ ok: true }) : c.json({ error: "not-found" }, 404);
+  });
+
+  // In-flight turns across all of the account's instances, so a refreshed web client
+  // restores live HUDs / streaming bubbles / "working" dots without waiting for finish.
+  app.get("/api/active-turns", (c) => {
+    const account = c.get("account");
+    const turns: LiveTurnSnapshotDto[] = [];
+    for (const inst of deps.instances.listByAccount(account.id)) {
+      for (const t of deps.activeTurns?.(inst.id) ?? []) turns.push(t);
+    }
+    return c.json({ turns });
   });
 
   app.get("/api/instances/:id/sessions/:alias/messages", (c) => {

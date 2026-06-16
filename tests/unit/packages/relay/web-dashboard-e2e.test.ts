@@ -49,11 +49,32 @@ test("instance event flows to web client and is cached as history", async () => 
   ws.on("message", (d) => events.push(String(d)));
   await new Promise<void>((resolve) => ws.on("open", () => resolve()));
 
+  // resolve the instance id up front (needed for the active-turns assertions below)
+  const listRes0 = await fetch(`${base}/api/instances`, { headers: { cookie } });
+  const { instances: insts0 } = (await listRes0.json()) as { instances: Array<{ id: string }> };
+  const instId0 = insts0[0]!.id;
+
   // instance emits a streamed turn (turn-started opens the accumulator)
   listeners.forEach((l) => l({ type: "turn-started", chatKey: "relay:x", sessionAlias: "backend" }));
   listeners.forEach((l) => l({ type: "turn-output", chatKey: "relay:x", sessionAlias: "backend", chunk: "done" }));
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Mid-turn (before turn-finished): the in-flight snapshot is exposed so a refreshed
+  // web client can rebuild the live view instead of losing the running task.
+  const activeRes = await fetch(`${base}/api/active-turns`, { headers: { cookie } });
+  const { turns } = (await activeRes.json()) as { turns: Array<{ instanceId: string; sessionAlias: string; status: string; parts: Array<{ type: string; text?: string }> }> };
+  expect(turns).toHaveLength(1);
+  expect(turns[0]!.sessionAlias).toBe("backend");
+  expect(turns[0]!.instanceId).toBe(instId0);
+  expect(turns[0]!.status).toBe("streaming");
+  expect(turns[0]!.parts).toEqual([{ type: "text", text: "done" }]);
+
   listeners.forEach((l) => l({ type: "turn-finished", chatKey: "relay:x", sessionAlias: "backend", ok: true }));
   await new Promise((r) => setTimeout(r, 200));
+
+  // After the turn settles, the snapshot is empty (it flushed to persisted history).
+  const activeAfter = await fetch(`${base}/api/active-turns`, { headers: { cookie } });
+  expect(((await activeAfter.json()) as { turns: unknown[] }).turns).toHaveLength(0);
 
   const kinds = events
     .map((raw) => { const d = decodeEnvelope(raw); return d.ok ? parseWebServerEvent(d.envelope) : null; })
