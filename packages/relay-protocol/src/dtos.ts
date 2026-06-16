@@ -59,6 +59,19 @@ export interface ScheduledTaskDto {
   message: string;
   status: ScheduledTaskStatusDto;
   createdAt: string;
+  /** Set once the task has fired successfully (status "executed"). */
+  executedAt?: string;
+  /** Set when a fire attempt failed (status "failed"). */
+  failedAt?: string;
+  /** Failure reason, present alongside `failedAt`. */
+  lastError?: string;
+}
+
+/** Marks a turn (and its inbound prompt message) as originating from a fired
+ *  scheduled task, so the web can badge it and link back to the schedule entry. */
+export interface ScheduledOriginDto {
+  taskId: string;
+  executeAt: string;
 }
 
 // Keep in sync with OrchestrationTaskStatus in src/orchestration/orchestration-types.ts
@@ -120,10 +133,22 @@ export type TurnPartDto =
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
-  | { type: "turn-started"; chatKey: string; sessionAlias: string }
+  // `prompt`/`scheduled` are set only for turns started by a fired scheduled task,
+  // so the hub can persist the inbound prompt and the web can badge it.
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
   | { type: "scheduled-changed"; chatKey: string }
+  // Recovered prior conversation for a freshly-attached native session; the hub seeds
+  // these rows into the session's history so the dashboard isn't blank.
+  | { type: "session-history"; chatKey: string; sessionAlias: string; messages: SessionHistoryRowDto[] }
   | { type: "orchestration-changed" };
+
+/** One recovered history row (a persisted-shaped message) for a native-session seed. */
+export interface SessionHistoryRowDto {
+  direction: "in" | "out";
+  text: string;
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[] };
+}

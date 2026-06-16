@@ -6,10 +6,17 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { Bot, CircleStop, Loader2, RotateCcw } from "lucide-vue-next";
+import { Bot, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
+
+import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
+// A message's schedule origin — set live on the optimistic row (`scheduled`) and
+// persisted on history rows (`structured.scheduled`), so the badge survives a reload.
+function schedOf(m: ChatMessage): ScheduledOriginDto | undefined {
+  return m.scheduled ?? m.structured?.scheduled;
+}
 
 // Stick-to-bottom: keep the newest content in view while the user is at the bottom,
 // but don't yank them down if they've scrolled up to read history. A "jump to latest"
@@ -89,6 +96,26 @@ watch(
   },
 );
 
+// "View" on a fired task (ScheduledTasks panel) jumps the conversation to that run.
+// Nonce-keyed so clicking View again on the same task re-triggers the scroll. Finds the
+// inbound row tagged with the task id; if it isn't loaded (older history), pages aren't
+// auto-fetched here — the badge still anchors it once scrolled into the loaded range.
+watch(
+  () => props.scrollToScheduled?.nonce,
+  () => {
+    const taskId = props.scrollToScheduled?.taskId;
+    if (!taskId) return;
+    void nextTick(() => {
+      // Task ids are sanitized to [0-9a-z], so a plain attribute selector is safe.
+      const el = scroller.value?.querySelector(`[data-scheduled-task="${taskId}"]`);
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        atBottom.value = false;
+      }
+    });
+  },
+);
+
 // New messages / streaming chunks / tool steps: follow only if already pinned to bottom.
 // The tail signal reacts to new parts AND growth of the final part (text length or a
 // tool's status flipping) so streaming keeps the latest content in view.
@@ -125,8 +152,15 @@ function fmtTime(iso?: string): string {
              re-key/re-render every row — avoids markdown re-parse + scroll jank. -->
         <template v-for="(m, i) in messages" :key="m.id !== undefined ? `p${m.id}` : `o${m.createdAt}:${i}`">
           <!-- USER row -->
-          <div v-if="m.direction === 'in'" class="cv-row flex justify-end">
+          <div v-if="m.direction === 'in'" class="cv-row flex justify-end"
+               :data-scheduled-task="schedOf(m)?.taskId">
             <div class="flex max-w-[80%] flex-col items-end">
+              <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
+              <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
+                    class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10.5px] font-medium text-accent"
+                    :title="`Scheduled for ${new Date(schedOf(m)!.executeAt).toLocaleString()}`">
+                <Clock :size="11" />Scheduled
+              </span>
               <div data-test="msg-in"
                    class="rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
                    :class="m.failed ? 'ring-1 ring-danger' : ''">

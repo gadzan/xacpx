@@ -8,6 +8,11 @@ import { t } from "../i18n/index.js";
 
 export interface ScheduledDispatchDeps {
   getSession: (alias: string) => Promise<ResolvedSession | null>;
+  // Resolve a task's stored session alias to the internal alias for its chat before
+  // lookup. Web (control) tasks store the DISPLAY alias (e.g. "home-opencode"), while
+  // sessions are keyed by the channel-scoped internal alias (e.g. "relay:home-opencode").
+  // Idempotent for already-internal aliases, so WeChat-stored aliases are unaffected.
+  resolveAliasForChat?: (chatKey: string, alias: string) => Promise<string>;
   resolveSession: (
     alias: string,
     agent: string,
@@ -34,7 +39,10 @@ async function dispatchBound(
   abortSignal: AbortSignal,
   deps: ScheduledDispatchDeps,
 ): Promise<void> {
-  const session = await deps.getSession(task.session_alias);
+  const internalAlias = deps.resolveAliasForChat
+    ? await deps.resolveAliasForChat(task.chat_key, task.session_alias)
+    : task.session_alias;
+  const session = await deps.getSession(internalAlias);
   if (!session) {
     throw new Error(`session "${task.session_alias}" not found for scheduled task`);
   }
@@ -43,6 +51,7 @@ async function dispatchBound(
     chatKey: task.chat_key,
     taskId: task.id,
     sessionAlias: task.session_alias,
+    executeAt: task.execute_at,
     noticeText,
     promptText: task.message,
     abortSignal,
@@ -69,6 +78,7 @@ async function dispatchTemp(
       chatKey: task.chat_key,
       taskId: task.id,
       sessionAlias: task.session_alias,
+      executeAt: task.execute_at,
       sessionDescriptor: { alias, agent: task.agent, workspace: task.workspace, transportSession },
       noticeText,
       promptText: task.message,

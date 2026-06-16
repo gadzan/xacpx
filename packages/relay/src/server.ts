@@ -104,6 +104,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
         if (event.type === "turn-started") {
           turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+          // A scheduled-origin turn carries its prompt here (a normal web turn persists
+          // its inbound message via the prompt RPC instead). Persist it so the fired
+          // task's prompt shows in history, not just the agent's out-of-context reply.
+          if (event.prompt) messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
         } else if (event.type === "turn-output") {
           // Only append to an existing buffer; never lazily resurrect one. A buffer
           // is created solely by turn-started, so a stray streaming event arriving
@@ -132,6 +136,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               ? { toolSteps: steps, ...(a.reasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
               : undefined;
             messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
+          }
+        } else if (event.type === "session-history") {
+          // Seed a freshly-attached native session's recovered prior conversation into
+          // history (one-time). Guard against re-seeding an already-populated session so a
+          // redelivered event can't duplicate the backlog.
+          const existing = messages.listBySession(accountId, instanceId, event.sessionAlias, { limit: 1 });
+          if (existing.messages.length === 0) {
+            for (const row of event.messages) {
+              messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured);
+            }
           }
         }
       } else if (envelope.type === MSG.instanceNotice) {

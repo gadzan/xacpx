@@ -94,6 +94,7 @@ const verb = computed(() => {
       </div>
       <MessageList :messages="chat.messages" :live-turn="chat.liveTurn"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                   :scroll-to-scheduled="chat.scrollRequest"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
       <!-- composer area -->

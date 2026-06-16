@@ -204,7 +204,52 @@ test("scheduledTaskToDto maps snake_case record", () => {
   } as never)).toEqual({ id: "i", sessionAlias: "s", executeAt: "e", message: "m", status: "pending", createdAt: "c" });
 });
 
+test("scheduledTaskToDto carries terminal-run fields so the web shows Done/Failed", () => {
+  expect(scheduledTaskToDto({
+    id: "i", chat_key: "k", session_alias: "s", execute_at: "e", message: "m", status: "failed", created_at: "c",
+    executed_at: undefined, failed_at: "f", last_error: "boom",
+  } as never)).toEqual({ id: "i", sessionAlias: "s", executeAt: "e", message: "m", status: "failed", createdAt: "c", failedAt: "f", lastError: "boom" });
+  expect(scheduledTaskToDto({
+    id: "i", chat_key: "k", session_alias: "s", execute_at: "e", message: "m", status: "executed", created_at: "c",
+    executed_at: "x",
+  } as never)).toEqual({ id: "i", sessionAlias: "s", executeAt: "e", message: "m", status: "executed", createdAt: "c", executedAt: "x" });
+});
+
 import { createControlEventBus } from "../../../../src/control/control-event-bus";
+
+test("subscribeControlEvents maps native session-history into persisted-shaped wire rows", () => {
+  const events = createControlEventBus();
+  const sent: Array<{ type: string; payload: any }> = [];
+  const control = { events } as never;
+  const stop = subscribeControlEvents(control, (type, payload) => sent.push({ type, payload }));
+
+  events.emit({
+    type: "session-history", chatKey: "relay:a", sessionAlias: "backend",
+    messages: [
+      { role: "user", text: "summarize" },
+      {
+        role: "agent", text: "it's a CLI",
+        parts: [
+          { kind: "reasoning", text: "thinking" },
+          { kind: "tool", tool: { toolCallId: "t1", toolName: "Read", kind: "read", status: "success", rawInput: { path: "a.ts" } } },
+          { kind: "text", text: "it's a CLI" },
+        ],
+      },
+    ],
+  } as never);
+  stop();
+
+  const ev = sent[0]!.payload.event;
+  expect(ev.type).toBe("session-history");
+  expect(ev.sessionAlias).toBe("backend");
+  expect(ev.messages[0]).toEqual({ direction: "in", text: "summarize" });
+  const agent = ev.messages[1];
+  expect(agent.direction).toBe("out");
+  expect(agent.text).toBe("it's a CLI");
+  expect(agent.structured.parts.map((p: any) => p.type)).toEqual(["reasoning", "tool", "text"]);
+  expect(agent.structured.toolSteps[0]).toMatchObject({ toolCallId: "t1", kind: "read" });
+  expect(agent.structured.reasoning).toBe("thinking");
+});
 
 test("subscribeControlEvents normalizes tool-event into a step DTO", () => {
   const events = createControlEventBus();

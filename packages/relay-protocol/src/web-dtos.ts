@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { ControlEventDto, ToolStepDto, TurnPartDto } from "./dtos.js";
+import type { ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto } from "./dtos.js";
 import type { InstanceNoticePayload } from "./messages.js";
 
 /** Envelope `type` for every relay→web push. */
@@ -17,10 +17,11 @@ export interface MessageRecordDto {
   direction: MessageDirection;
   text: string;
   createdAt: string;
-  /** Present on completed `out` turns. `parts` is the ordered transcript (text /
-   *  reasoning / tool inline, as produced); `toolSteps`/`reasoning` are kept as a
-   *  flat fallback for older persisted rows that predate `parts`. */
-  structured?: { toolSteps: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[] };
+  /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
+   *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
+   *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
+   *  `reasoning` are a flat fallback for older rows that predate `parts`. */
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto };
 }
 
 /** A snapshot of a turn still in flight on an instance, handed to a (re)connecting

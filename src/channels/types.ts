@@ -51,6 +51,9 @@ export interface ScheduledChannelMessageInput {
   sessionDescriptor?: ScheduledSessionDescriptor;
   accountId?: string;
   replyContextToken?: string;
+  // The task's scheduled execution time (ISO). Carried so structured channels
+  // (relay) can tag the fired turn with its schedule origin for the web badge.
+  executeAt?: string;
   noticeText: string;
   promptText: string;
   // Bounds the non-interactive agent turn so a wedged scheduled prompt cannot

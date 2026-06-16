@@ -38,6 +38,29 @@ describe("MessageList", () => {
     expect(inEl.text()).toContain("**not bold**");
   });
 
+  it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "summarize commits", scheduled: { taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z" } })], liveTurn: null },
+    });
+    expect(wrapper.find('[data-test="msg-scheduled-badge"]').exists()).toBe(true);
+    expect(wrapper.find('[data-scheduled-task="ab12"]').exists()).toBe(true);
+  });
+
+  it("badges a persisted scheduled prompt from history (structured.scheduled)", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "ran", structured: { scheduled: { taskId: "cd34", executeAt: "2026-06-16T09:00:00.000Z" } } })], liveTurn: null },
+    });
+    expect(wrapper.find('[data-test="msg-scheduled-badge"]').exists()).toBe(true);
+    expect(wrapper.find('[data-scheduled-task="cd34"]').exists()).toBe(true);
+  });
+
+  it("a normal user message carries no schedule badge", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "hi there" })], liveTurn: null },
+    });
+    expect(wrapper.find('[data-test="msg-scheduled-badge"]').exists()).toBe(false);
+  });
+
   it("does not render raw HTML from agent output", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "out", text: "<script>alert(1)</script>" })], liveTurn: null },

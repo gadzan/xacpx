@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { LiveTurnSnapshotDto, MessageRecordDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { LiveTurnSnapshotDto, MessageRecordDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -56,6 +56,9 @@ const reasoningOf = (parts: TurnPart[]): string => parts.filter((p) => p.type ==
 export interface ChatMessage extends MessageRecordDto {
   failed?: boolean;
   status?: TurnStatus;
+  // Present on an inbound prompt produced by a fired scheduled task — drives the
+  // "⏰ Scheduled" badge so a turn that appears on its own has visible provenance.
+  scheduled?: ScheduledOriginDto;
 }
 
 export const useChatStore = defineStore("chat", () => {
@@ -100,6 +103,13 @@ export const useChatStore = defineStore("chat", () => {
 
   const sending = ref(false);
   const error = ref("");
+  // "View" on a fired scheduled task asks MessageList to scroll to that run. Nonce-keyed
+  // so repeat clicks on the same task re-trigger the jump (a plain id wouldn't change).
+  const scrollRequest = ref<{ taskId: string; nonce: number } | null>(null);
+  let scrollNonce = 0;
+  function requestScrollToScheduled(taskId: string): void {
+    scrollRequest.value = { taskId, nonce: ++scrollNonce };
+  }
   // Cursor pagination for "load older" on scroll-up. `hasMoreOlder` = older rows exist
   // beyond what's loaded; `loadingOlder` guards against overlapping fetches.
   const HISTORY_PAGE = 100;
@@ -229,6 +239,20 @@ export const useChatStore = defineStore("chat", () => {
       const k = bufKey(event.instanceId, e.sessionAlias);
       finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
       ensureTurn(k);
+      // A scheduled-origin turn has no optimistic user bubble (no one typed it), so
+      // surface its prompt as an inbound message — with the schedule badge — when this
+      // session is the one being viewed. History persists the same "in" row server-side.
+      const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
+      if (e.prompt && selected) {
+        messages.value.push({
+          instanceId: event.instanceId,
+          sessionAlias: e.sessionAlias,
+          direction: "in",
+          text: e.prompt,
+          createdAt: new Date().toISOString(),
+          ...(e.scheduled ? { scheduled: e.scheduled } : {}),
+        });
+      }
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
       appendText(t.parts, e.chunk);
@@ -238,6 +262,13 @@ export const useChatStore = defineStore("chat", () => {
       upsertTool(t.parts, e.step);
     } else if (e.type === "turn-thought") {
       appendReasoning(ensureTurn(bufKey(event.instanceId, e.sessionAlias)).parts, e.chunk);
+    } else if (e.type === "session-history") {
+      // A freshly-attached native session's prior conversation was just seeded into the
+      // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
+      // already persisted and the next loadHistory on select will show it).
+      if (event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value) {
+        void loadHistory().catch(() => {});
+      }
     } else if (e.type === "turn-finished") {
       const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
@@ -309,5 +340,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });

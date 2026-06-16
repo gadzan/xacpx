@@ -18,6 +18,7 @@ import {
   type ScheduledCreatePayload,
   type ScheduledListPayload,
   type ScheduledTaskDto,
+  type SessionHistoryRowDto,
   type AgentsCreatePayload,
   type AgentsRemovePayload,
   type SessionsCreatePayload,
@@ -40,6 +41,9 @@ export function scheduledTaskToDto(record: ReturnType<ControlService["listSchedu
     message: record.message,
     status: record.status,
     createdAt: record.created_at,
+    ...(record.executed_at ? { executedAt: record.executed_at } : {}),
+    ...(record.failed_at ? { failedAt: record.failed_at } : {}),
+    ...(record.last_error ? { lastError: record.last_error } : {}),
   };
 }
 
@@ -200,6 +204,34 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
   }
 }
 
+// Map recovered native-session history (neutral core shape) to wire rows. User turns
+// become plain `in` rows; agent turns carry the ordered transcript (text / reasoning /
+// tool) plus the flat fallbacks, reusing the same tool-step presentation as live turns.
+function historyMessagesToRows(
+  messages: Extract<Parameters<Parameters<ControlService["events"]["subscribe"]>[0]>[0], { type: "session-history" }>["messages"],
+): SessionHistoryRowDto[] {
+  return messages.map((m) => {
+    if (m.role === "user") return { direction: "in", text: m.text };
+    const parts: NonNullable<SessionHistoryRowDto["structured"]>["parts"] = [];
+    const toolSteps: NonNullable<SessionHistoryRowDto["structured"]>["toolSteps"] = [];
+    const reasoningChunks: string[] = [];
+    for (const p of m.parts ?? []) {
+      if (p.kind === "text") parts!.push({ type: "text", text: p.text });
+      else if (p.kind === "reasoning") { parts!.push({ type: "reasoning", text: p.text }); reasoningChunks.push(p.text); }
+      else if (p.kind === "tool") { const step = toolUseEventToStepDto(p.tool); parts!.push({ type: "tool", step }); toolSteps!.push(step); }
+    }
+    const hasStructured = toolSteps!.length > 0 || reasoningChunks.length > 0 || parts!.length > 0;
+    const structured = hasStructured
+      ? {
+          ...(toolSteps!.length ? { toolSteps } : {}),
+          ...(reasoningChunks.length ? { reasoning: reasoningChunks.join("\n") } : {}),
+          ...(parts!.length ? { parts } : {}),
+        }
+      : undefined;
+    return { direction: "out" as const, text: m.text, ...(structured ? { structured } : {}) };
+  });
+}
+
 export function subscribeControlEvents(
   control: ControlService,
   sendEvent: (type: string, payload: unknown) => void,
@@ -208,6 +240,12 @@ export function subscribeControlEvents(
     if (event.type === "tool-event") {
       sendEvent(MSG.instanceEvent, {
         event: { type: "tool-event", chatKey: event.chatKey, sessionAlias: event.sessionAlias, step: toolUseEventToStepDto(event.event) },
+      });
+      return;
+    }
+    if (event.type === "session-history") {
+      sendEvent(MSG.instanceEvent, {
+        event: { type: "session-history", chatKey: event.chatKey, sessionAlias: event.sessionAlias, messages: historyMessagesToRows(event.messages) },
       });
       return;
     }

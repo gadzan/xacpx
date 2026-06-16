@@ -812,6 +812,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const scheduledScheduler = new ScheduledTaskScheduler(scheduledService, {
     dispatchTask: buildScheduledDispatchTask({
       getSession: (alias) => sessions.getSession(alias),
+      resolveAliasForChat: (chatKey, alias) => sessions.resolveAliasForChat(chatKey, alias),
       resolveSession: (alias, agent, workspace, transportSession) =>
         sessions.resolveSession(alias, agent, workspace, transportSession),
       sendScheduledMessage: async (input) => {
@@ -823,6 +824,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       ...(transport.removeSession ? { removeSession: (session) => transport.removeSession!(session) } : {}),
       logger,
     }),
+    // A fired task reaches a terminal state here; tell structured consumers (the web
+    // panel) so it reloads and the run shows its Done/Failed status instead of vanishing.
+    onSettled: (task) => controlEvents.emit({ type: "scheduled-changed", chatKey: task.chat_key }),
     logger,
   });
 

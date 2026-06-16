@@ -18,7 +18,8 @@ import {
   isSessionAliasVisibleInChannel,
   toDisplaySessionAlias,
 } from "../channels/channel-scope";
-import type { ControlEventBus } from "./control-event-bus";
+import type { ControlEventBus, ScheduledOrigin } from "./control-event-bus";
+import { readNativeSessionHistory, type NativeHistoryMessage } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
 import { WorkspaceFs, type DirListing, type FileContent, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
 
@@ -74,7 +75,7 @@ export interface ControlServiceDeps {
     nativeMeta?: { title?: string | null; updatedAt?: string },
   ) => Promise<ResolvedSession>;
   activeTurns: Pick<ActiveTurnRegistry, "isActiveAnywhere">;
-  scheduled: Pick<ScheduledTaskService, "listPending" | "createTask" | "cancelPending">;
+  scheduled: Pick<ScheduledTaskService, "listPending" | "listRecentForChat" | "createTask" | "cancelPending">;
   orchestration: Pick<OrchestrationService, "listTasks" | "getTask" | "requestTaskCancellation">;
   events: ControlEventBus;
   // Read-only config views + a persisting workspace creator. Supplied by main.ts
@@ -106,6 +107,20 @@ export interface ControlPromptResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+}
+
+/** A turn started by a fired scheduled task. Runs through the same agent + turn-event
+ *  machinery as a normal prompt, so it streams live and persists to history — but it
+ *  also carries the prompt text + schedule origin in turn-started, so the hub can
+ *  persist the inbound message and the web can badge the run. */
+export interface ControlScheduledTurnInput {
+  chatKey: string;
+  sessionAlias: string;
+  promptText: string;
+  taskId: string;
+  executeAt: string;
+  accountId?: string;
+  abortSignal?: AbortSignal;
 }
 
 export interface ControlExecuteCommandInput {
@@ -214,10 +229,26 @@ export class ControlService {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
     // When an agentSessionId is supplied the user picked an existing native session to
     // resume; otherwise create a fresh transport session (the default `/session new`).
+    // Native attach: recover the agent-side rollout's prior conversation from acpx's own
+    // persisted record and seed it into history, so the dashboard isn't blank. This MUST
+    // happen BEFORE the attach — acpx's resume reuses the source record and overwrites its
+    // conversation with an empty one, so reading afterwards finds nothing. Best-effort: a
+    // read failure (no record, shape drift) must never fail the attach itself.
+    let nativeHistory: NativeHistoryMessage[] = [];
+    if (agentSessionId) {
+      try {
+        nativeHistory = await readNativeSessionHistory({ agentSessionId });
+      } catch {
+        /* best-effort history seed */
+      }
+    }
     const session = agentSessionId
       ? await this.deps.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId)
       : await this.deps.createSessionWithTransport(internalAlias, agent, workspace);
     this.deps.events.emit({ type: "sessions-changed" });
+    if (nativeHistory.length > 0) {
+      this.deps.events.emit({ type: "session-history", chatKey, sessionAlias: alias, messages: nativeHistory });
+    }
     return {
       alias: toDisplaySessionAlias(session.alias),
       agent: session.agent,
@@ -268,8 +299,11 @@ export class ControlService {
     await this.deps.workspaces.remove(name);
   }
 
+  // The web panel shows upcoming AND recently-fired tasks (with their Done/Failed
+  // status), so a triggered task leaves a record instead of vanishing. Text channels
+  // (`/later list`) keep using listPending via the command handler.
   listScheduledTasks(chatKey: string): ScheduledTaskRecord[] {
-    return this.deps.scheduled.listPending(chatKey);
+    return this.deps.scheduled.listRecentForChat(chatKey);
   }
 
   async createScheduledTask(input: CreateScheduledTaskInput): Promise<ScheduledTaskRecord> {
@@ -305,7 +339,46 @@ export class ControlService {
   private readonly inFlight = new Map<string, { controller: AbortController; settled: Promise<void> }>();
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    const key = turnKey(input.chatKey, input.sessionAlias);
+    return this.executeTurn({
+      chatKey: input.chatKey,
+      sessionAlias: input.sessionAlias,
+      text: input.text,
+      senderId: input.senderId,
+      ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
+      ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
+    });
+  }
+
+  /** Run a fired scheduled task as a real turn through the same machinery as a manual
+   *  prompt — so it streams live and persists to history — while tagging turn-started
+   *  with the prompt text + schedule origin so the hub records the inbound message and
+   *  the web can badge it. Owner-authorized: the task was owner-gated at creation. */
+  async runScheduledTurn(input: ControlScheduledTurnInput): Promise<ControlPromptResult> {
+    return this.executeTurn({
+      chatKey: input.chatKey,
+      sessionAlias: input.sessionAlias,
+      text: input.promptText,
+      senderId: "scheduler",
+      isOwner: true,
+      ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      turnStarted: { prompt: input.promptText, scheduled: { taskId: input.taskId, executeAt: input.executeAt } },
+    });
+  }
+
+  private async executeTurn(params: {
+    chatKey: string;
+    sessionAlias: string;
+    text: string;
+    senderId: string;
+    isOwner?: boolean;
+    accountId?: string;
+    // External abort (e.g. the scheduler's per-dispatch timeout) linked to this turn.
+    abortSignal?: AbortSignal;
+    // Extra fields stamped onto turn-started for scheduled-origin turns.
+    turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin };
+  }): Promise<ControlPromptResult> {
+    const key = turnKey(params.chatKey, params.sessionAlias);
     const existing = this.inFlight.get(key);
     if (existing) {
       // A live, un-cancelled turn really is busy — reject right away.
@@ -323,11 +396,17 @@ export class ControlService {
       }
     }
     const controller = new AbortController();
+    // Link an external abort (scheduler dispatch timeout) to this turn so a wedged
+    // scheduled prompt is cancelled cooperatively, just like a user Stop.
+    if (params.abortSignal) {
+      if (params.abortSignal.aborted) controller.abort();
+      else params.abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     this.inFlight.set(key, { controller, settled });
     try {
-      await this.deps.sessions.useSession(input.chatKey, input.sessionAlias);
+      await this.deps.sessions.useSession(params.chatKey, params.sessionAlias);
     } catch (error) {
       this.inFlight.delete(key);
       resolveSettled();
@@ -335,8 +414,10 @@ export class ControlService {
     }
     this.deps.events.emit({
       type: "turn-started",
-      chatKey: input.chatKey,
-      sessionAlias: input.sessionAlias,
+      chatKey: params.chatKey,
+      sessionAlias: params.sessionAlias,
+      ...(params.turnStarted?.prompt ? { prompt: params.turnStarted.prompt } : {}),
+      ...(params.turnStarted?.scheduled ? { scheduled: params.turnStarted.scheduled } : {}),
     });
     // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
     // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.
@@ -346,7 +427,7 @@ export class ControlService {
     // those we re-insert the break between segments so live and history stay identical.
     let streamMode = false;
     try {
-      const resolved = await this.resolveControlSession(input.chatKey, input.sessionAlias);
+      const resolved = await this.resolveControlSession(params.chatKey, params.sessionAlias);
       streamMode = resolved?.replyMode === "stream";
     } catch {
       // Best-effort: fall back to batched paragraph reconstruction.
@@ -356,18 +437,18 @@ export class ControlService {
       if (!chunk) return;
       this.deps.events.emit({
         type: "turn-output",
-        chatKey: input.chatKey,
-        sessionAlias: input.sessionAlias,
+        chatKey: params.chatKey,
+        sessionAlias: params.sessionAlias,
         chunk: !streamMode && emittedChunk ? `\n\n${chunk}` : chunk,
       });
       emittedChunk = true;
     };
     try {
       const response = await this.deps.agent.chat({
-        accountId: input.accountId ?? "control",
-        conversationId: input.chatKey,
-        text: input.text,
-        metadata: buildControlMetadata(input.senderId, input.isOwner),
+        accountId: params.accountId ?? "control",
+        conversationId: params.chatKey,
+        text: params.text,
+        metadata: buildControlMetadata(params.senderId, params.isOwner),
         abortSignal: controller.signal,
         reply: async (chunk) => {
           emitChunk(chunk);
@@ -375,16 +456,16 @@ export class ControlService {
         onToolEvent: (event) => {
           this.deps.events.emit({
             type: "tool-event",
-            chatKey: input.chatKey,
-            sessionAlias: input.sessionAlias,
+            chatKey: params.chatKey,
+            sessionAlias: params.sessionAlias,
             event,
           });
         },
         onThought: (chunk) => {
           this.deps.events.emit({
             type: "turn-thought",
-            chatKey: input.chatKey,
-            sessionAlias: input.sessionAlias,
+            chatKey: params.chatKey,
+            sessionAlias: params.sessionAlias,
             chunk,
           });
         },
@@ -394,8 +475,8 @@ export class ControlService {
       }
       this.deps.events.emit({
         type: "turn-finished",
-        chatKey: input.chatKey,
-        sessionAlias: input.sessionAlias,
+        chatKey: params.chatKey,
+        sessionAlias: params.sessionAlias,
         ok: true,
       });
       return { ok: true, text: response.text };
@@ -403,8 +484,8 @@ export class ControlService {
       const errorMessage = toErrorMessage(error);
       this.deps.events.emit({
         type: "turn-finished",
-        chatKey: input.chatKey,
-        sessionAlias: input.sessionAlias,
+        chatKey: params.chatKey,
+        sessionAlias: params.sessionAlias,
         ok: false,
         errorMessage,
         ...(controller.signal.aborted ? { cancelled: true } : {}),

@@ -80,6 +80,24 @@ test("bound task uses the persisted session and never tears it down", async () =
   expect(removed).toHaveLength(0);
 });
 
+test("bound task resolves a web display alias to the internal alias before lookup", async () => {
+  // Web (control) tasks store the DISPLAY alias; sessions are keyed by the channel-scoped
+  // internal alias. Without resolution the lookup misses → "session not found".
+  const webTask: ScheduledTaskRecord = {
+    ...boundTask, id: "web1", chat_key: "relay:acct-1", session_alias: "home-opencode",
+  };
+  const lookups: string[] = [];
+  const dispatch = buildScheduledDispatchTask({
+    getSession: async (alias) => { lookups.push(alias); return alias === "relay:home-opencode" ? resolved(alias, "opencode", "home", "home:home-opencode") : null; },
+    resolveAliasForChat: async (chatKey, alias) => (chatKey === "relay:acct-1" && alias === "home-opencode" ? "relay:home-opencode" : alias),
+    resolveSession: () => { throw new Error("bound dispatch must not resolve a transient session"); },
+    sendScheduledMessage: async () => {},
+  });
+
+  await expect(dispatch(webTask, new AbortController().signal)).resolves.toBeUndefined();
+  expect(lookups).toEqual(["relay:home-opencode"]); // resolved, not the raw display alias
+});
+
 test("legacy task without session_mode dispatches as bound", async () => {
   const sent: ScheduledChannelMessageInput[] = [];
   const legacy: ScheduledTaskRecord = { ...boundTask, id: "old1" };

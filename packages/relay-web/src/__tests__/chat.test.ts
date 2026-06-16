@@ -40,6 +40,37 @@ test("streaming turn output accumulates then commits on finish", () => {
   expect(store.messages.at(-1)).toMatchObject({ direction: "out", text: "hello" });
 });
 
+test("a scheduled turn-started surfaces its prompt as a badged inbound message (selected session)", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend",
+    prompt: "summarize commits", scheduled: { taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z" },
+  } } as never);
+  const last = store.messages.at(-1)!;
+  expect(last).toMatchObject({ direction: "in", text: "summarize commits", scheduled: { taskId: "ab12" } });
+});
+
+test("a scheduled turn-started for an unselected session does not pollute the open transcript", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-started", chatKey: "relay:a1", sessionAlias: "other",
+    prompt: "do thing", scheduled: { taskId: "zz99", executeAt: "2026-06-16T09:00:00.000Z" },
+  } } as never);
+  expect(store.messages.some((m) => m.text === "do thing")).toBe(false);
+});
+
+test("requestScrollToScheduled bumps a nonce-keyed scroll request", () => {
+  const store = useChatStore();
+  expect(store.scrollRequest).toBeNull();
+  store.requestScrollToScheduled("ab12");
+  expect(store.scrollRequest).toMatchObject({ taskId: "ab12" });
+  const firstNonce = store.scrollRequest!.nonce;
+  store.requestScrollToScheduled("ab12");
+  expect(store.scrollRequest!.nonce).not.toBe(firstNonce); // repeat clicks re-trigger
+});
+
 test("events for a different session are ignored", () => {
   const store = useChatStore();
   store.select("i1", "backend");
@@ -349,7 +380,7 @@ test("live turn accumulates tool steps, reasoning, and flushes structured on fin
   expect(store.liveTurn).toBeNull();
   const last = store.messages.at(-1)!;
   expect(last).toMatchObject({ direction: "out", text: "answer", status: "done" });
-  expect(last.structured?.toolSteps.length).toBe(1);
+  expect(last.structured?.toolSteps?.length).toBe(1);
   expect(last.structured?.reasoning).toBe("reasoning");
   // The ordered transcript is persisted for inline replay on history reload.
   expect(last.structured?.parts?.map((p) => p.type)).toEqual(["tool", "reasoning", "text"]);
