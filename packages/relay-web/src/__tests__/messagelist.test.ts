@@ -179,6 +179,14 @@ it("does not emit load-older when already loading or no older history", async ()
   expect(wrapper.emitted("loadOlder")).toBeFalsy();
 });
 
+it("marks message rows as content-visibility virtualized (cv-row)", () => {
+  const wrapper = mount(MessageList, {
+    props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },
+  });
+  // Both the user and assistant row roots opt into off-screen render skipping.
+  expect(wrapper.findAll(".cv-row").length).toBe(2);
+});
+
 it("shows a spinner while an older page is loading", () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "out", text: "x" })], liveTurn: null, hasMoreOlder: true, loadingOlder: true },

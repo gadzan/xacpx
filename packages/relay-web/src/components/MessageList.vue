@@ -96,7 +96,7 @@ function fmtTime(iso?: string): string {
              re-key/re-render every row — avoids markdown re-parse + scroll jank. -->
         <template v-for="(m, i) in messages" :key="m.id !== undefined ? `p${m.id}` : `o${m.createdAt}:${i}`">
           <!-- USER row -->
-          <div v-if="m.direction === 'in'" class="flex justify-end">
+          <div v-if="m.direction === 'in'" class="cv-row flex justify-end">
             <div class="flex max-w-[80%] flex-col items-end">
               <div data-test="msg-in"
                    class="rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
@@ -113,7 +113,7 @@ function fmtTime(iso?: string): string {
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <div v-else class="group flex gap-2.5">
+          <div v-else class="cv-row group flex gap-2.5">
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
               <Bot :size="13" class="text-accent" />
             </div>
@@ -161,3 +161,17 @@ function fmtTime(iso?: string): string {
     </button>
   </div>
 </template>
+
+<style scoped>
+/* Virtualize the transcript without a JS windowing library: the browser skips layout
+   and paint for off-screen rows, so a long history (paginated in via load-older) stays
+   smooth no matter how heavy each row is (markdown, tool cards, diffs). `auto` in
+   contain-intrinsic-size makes each row remember its real size once rendered, keeping
+   the scrollbar stable; the 88px is only the first-paint estimate for never-seen rows.
+   Rows remain in the DOM, so streaming, variable heights, expand/collapse, find-in-page
+   and the prepend scroll-anchor all keep working. */
+.cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 88px;
+}
+</style>
