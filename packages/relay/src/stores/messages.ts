@@ -5,12 +5,19 @@ import type { SqlDriver } from "../db.js";
 type StructuredTurn = NonNullable<MessageRecordDto["structured"]>;
 
 interface MessageRow {
+  id: number;
   instance_id: string;
   session_alias: string;
   direction: MessageDirection;
   text: string;
   created_at: string;
   structured: string | null;
+}
+
+export interface MessagePage {
+  messages: MessageRecordDto[];
+  /** True when older rows exist beyond this page (drives "load older" on scroll-up). */
+  hasMore: boolean;
 }
 
 export class MessageStore {
@@ -23,23 +30,43 @@ export class MessageStore {
     );
   }
 
-  /** Most recent `limit` rows for one session, oldest-first, scoped to the owning account. */
-  listBySession(accountId: string, instanceId: string, sessionAlias: string, limit = 100): MessageRecordDto[] {
+  /**
+   * One page of a session's history, oldest-first, scoped to the owning account.
+   * Without `before` returns the most recent `limit` rows; with `before` returns the
+   * `limit` rows immediately OLDER than that message id (cursor pagination for
+   * "load older" on scroll-up). `hasMore` reports whether further-back rows exist.
+   */
+  listBySession(
+    accountId: string,
+    instanceId: string,
+    sessionAlias: string,
+    opts: { limit?: number; before?: number } = {},
+  ): MessagePage {
+    const limit = opts.limit ?? 100;
+    const before = opts.before ?? null;
+    // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
+         AND (? IS NULL OR m.id < ?)
        ORDER BY m.id DESC LIMIT ?`,
-      [accountId, instanceId, sessionAlias, limit],
+      [accountId, instanceId, sessionAlias, before, before, limit + 1],
     );
-    return rows.reverse().map((r) => ({
-      instanceId: r.instance_id,
-      sessionAlias: r.session_alias,
-      direction: r.direction,
-      text: r.text,
-      createdAt: r.created_at,
-      ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
-    }));
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      hasMore,
+      messages: page.reverse().map((r) => ({
+        id: r.id,
+        instanceId: r.instance_id,
+        sessionAlias: r.session_alias,
+        direction: r.direction,
+        text: r.text,
+        createdAt: r.created_at,
+        ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
+      })),
+    };
   }
 
   /** Deletes messages older than maxAgeMs and/or beyond the newest maxPerSession per (instance, session). Returns rows deleted. */

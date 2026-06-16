@@ -187,8 +187,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const account = c.get("account");
     const instance = deps.instances.getOwned(c.req.param("id"), account.id);
     if (!instance) return c.json({ error: "not-found" }, 404);
-    const messages = deps.messages.listBySession(account.id, instance.id, c.req.param("alias"));
-    return c.json({ messages });
+    // Cursor pagination: `before` = oldest id the client already has (load older);
+    // `limit` is clamped to [1, 200]. Both optional — omitted = most recent page.
+    const limitRaw = Number(c.req.query("limit"));
+    const beforeRaw = Number(c.req.query("before"));
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 100;
+    const before = Number.isFinite(beforeRaw) && beforeRaw > 0 ? Math.floor(beforeRaw) : undefined;
+    const page = deps.messages.listBySession(account.id, instance.id, c.req.param("alias"), {
+      limit,
+      ...(before !== undefined ? { before } : {}),
+    });
+    return c.json(page);
   });
 
   app.post("/api/instances/:id/rpc", async (c) => {

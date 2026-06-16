@@ -15,9 +15,11 @@ test("append + listBySession round-trips structured data", async () => {
   const store = new MessageStore(db);
   const structured = { toolSteps: [{ toolCallId: "t1", toolName: "Read", kind: "read", status: "success", title: "a.ts" }], reasoning: "thought" };
   store.append("i1", "backend", "out", "answer", structured as never);
-  const rows = store.listBySession("a1", "i1", "backend");
-  expect(rows[0]).toMatchObject({ direction: "out", text: "answer" });
-  expect(rows[0].structured).toEqual(structured);
+  const { messages, hasMore } = store.listBySession("a1", "i1", "backend");
+  expect(messages[0]).toMatchObject({ direction: "out", text: "answer" });
+  expect(messages[0].structured).toEqual(structured);
+  expect(typeof messages[0].id).toBe("number"); // cursor id exposed
+  expect(hasMore).toBe(false);
   db.close();
 });
 
@@ -25,7 +27,29 @@ test("append without structured yields no structured field", async () => {
   const db = await seeded();
   const store = new MessageStore(db);
   store.append("i1", "backend", "in", "hi");
-  const rows = store.listBySession("a1", "i1", "backend");
-  expect(rows[0].structured).toBeUndefined();
+  const { messages } = store.listBySession("a1", "i1", "backend");
+  expect(messages[0].structured).toBeUndefined();
+  db.close();
+});
+
+test("listBySession paginates oldest-first with a `before` cursor and hasMore", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  for (let i = 1; i <= 5; i++) store.append("i1", "backend", "in", `m${i}`);
+
+  // Most recent 2 rows (oldest-first within the page), and there's older history.
+  const page1 = store.listBySession("a1", "i1", "backend", { limit: 2 });
+  expect(page1.messages.map((m) => m.text)).toEqual(["m4", "m5"]);
+  expect(page1.hasMore).toBe(true);
+
+  // Load older: the 2 rows immediately before the oldest id we have (m4).
+  const page2 = store.listBySession("a1", "i1", "backend", { limit: 2, before: page1.messages[0]!.id });
+  expect(page2.messages.map((m) => m.text)).toEqual(["m2", "m3"]);
+  expect(page2.hasMore).toBe(true);
+
+  // The final older page exhausts history → hasMore false.
+  const page3 = store.listBySession("a1", "i1", "backend", { limit: 2, before: page2.messages[0]!.id });
+  expect(page3.messages.map((m) => m.text)).toEqual(["m1"]);
+  expect(page3.hasMore).toBe(false);
   db.close();
 });

@@ -9,6 +9,9 @@ export type MessageDirection = "in" | "out";
 
 /** A cached chat line echoed to the web client. */
 export interface MessageRecordDto {
+  /** Monotonic row id from the hub store. Present on persisted rows (used as the
+   *  pagination cursor for "load older"); absent on optimistic/live client rows. */
+  id?: number;
   instanceId: string;
   sessionAlias: string;
   direction: MessageDirection;
