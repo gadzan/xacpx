@@ -250,6 +250,16 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** Retry a failed outbound user message. Drops the failed attempt from the transcript
+   *  (send() re-adds it optimistically) so a successful retry leaves exactly one clean
+   *  entry rather than a failed line plus a duplicate. */
+  async function resend(message: ChatMessage): Promise<void> {
+    if (!message.failed || message.direction !== "in") return;
+    const idx = messages.value.indexOf(message);
+    if (idx >= 0) messages.value.splice(idx, 1);
+    await send(message.text);
+  }
+
   async function cancel(): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
@@ -266,5 +276,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, loadActiveTurns, seedActiveTurns, applyEvent, send, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });

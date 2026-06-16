@@ -6,9 +6,10 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { Bot, CircleStop } from "lucide-vue-next";
+import { Bot, CircleStop, RotateCcw } from "lucide-vue-next";
 
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null }>();
+const emit = defineEmits<{ resend: [message: ChatMessage] }>();
 
 // Stick-to-bottom: keep the newest content in view while the user is at the bottom,
 // but don't yank them down if they've scrolled up to read history. A "jump to latest"
@@ -61,11 +62,19 @@ function fmtTime(iso?: string): string {
         <template v-for="(m, i) in messages" :key="i">
           <!-- USER row -->
           <div v-if="m.direction === 'in'" class="flex justify-end">
-            <div data-test="msg-in"
-                 class="max-w-[80%] rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
-                 :class="m.failed ? 'ring-1 ring-danger' : ''">
-              <p class="whitespace-pre-wrap text-[14px] leading-relaxed text-fg">{{ m.text }}</p>
-              <span v-if="m.failed" data-test="msg-failed" class="mt-1 inline-block text-xs text-danger">failed</span>
+            <div class="flex max-w-[80%] flex-col items-end">
+              <div data-test="msg-in"
+                   class="rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
+                   :class="m.failed ? 'ring-1 ring-danger' : ''">
+                <p class="whitespace-pre-wrap text-[14px] leading-relaxed text-fg">{{ m.text }}</p>
+              </div>
+              <!-- Failed sends get a compact retry affordance on their own line below. -->
+              <div v-if="m.failed" class="mt-1 flex items-center gap-2">
+                <span data-test="msg-failed" class="text-xs text-danger">Failed to send</span>
+                <button type="button" data-test="msg-resend"
+                        class="inline-flex items-center gap-1 text-xs font-medium text-accent hover:opacity-80"
+                        title="Resend this message" @click="emit('resend', m)"><RotateCcw :size="12" />Resend</button>
+              </div>
             </div>
           </div>
           <!-- ASSISTANT row -->

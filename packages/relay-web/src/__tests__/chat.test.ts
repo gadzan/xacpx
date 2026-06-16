@@ -117,6 +117,26 @@ test("surfaces an error when send fails", async () => {
   expect(chat.sending).toBe(false);
 });
 
+test("resend drops the failed attempt and re-sends, leaving one clean entry on success", async () => {
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  // First attempt fails (non-timeout) → the optimistic user message is marked failed.
+  rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
+  await chat.send("play");
+  const failed = chat.messages.at(-1)!;
+  expect(failed.failed).toBe(true);
+  expect(chat.messages.filter((m) => m.direction === "in")).toHaveLength(1);
+
+  // Retry succeeds → exactly one "in" entry remains (the failed one was dropped), not two.
+  rpc.mockResolvedValueOnce({ ok: true });
+  await chat.resend(failed);
+  const ins = chat.messages.filter((m) => m.direction === "in");
+  expect(ins).toHaveLength(1);
+  expect(ins[0]?.text).toBe("play");
+  expect(ins[0]?.failed).toBeUndefined();
+  expect(chat.error).toBe("");
+});
+
 test("a prompt RPC timeout does not surface an error (results stream via events)", async () => {
   rpc.mockRejectedValueOnce(new ApiError("timeout", 504));
   const chat = useChatStore();

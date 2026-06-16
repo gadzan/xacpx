@@ -137,6 +137,21 @@ it("shows a failed tool's error message in red", () => {
   expect(err.text()).toContain("File not found");
 });
 
+it("shows a resend control on a failed user message and emits the message on click", async () => {
+  const failed = msg({ direction: "in", text: "retry me", failed: true });
+  const wrapper = mount(MessageList, { props: { messages: [failed], liveTurn: null } });
+  const btn = wrapper.find('[data-test="msg-resend"]');
+  expect(btn.exists()).toBe(true);
+  expect(wrapper.find('[data-test="msg-failed"]').exists()).toBe(true);
+  await btn.trigger("click");
+  expect(wrapper.emitted("resend")?.[0]?.[0]).toMatchObject({ text: "retry me", failed: true });
+});
+
+it("shows no resend control on a successful user message", () => {
+  const wrapper = mount(MessageList, { props: { messages: [msg({ direction: "in", text: "ok" })], liveTurn: null } });
+  expect(wrapper.find('[data-test="msg-resend"]').exists()).toBe(false);
+});
+
 it("renders a cancelled marker on a stopped message", () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "out", text: "partial", status: "cancelled" })], liveTurn: null },

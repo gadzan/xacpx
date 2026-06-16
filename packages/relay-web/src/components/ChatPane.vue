@@ -92,7 +92,7 @@ const verb = computed(() => {
         {{ chat.error }}
         <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
       </div>
-      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" />
+      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" @resend="chat.resend" />
       <!-- composer area -->
       <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-5 pb-4 pt-1.5">
         <!-- TURN HUD -->
