@@ -23,6 +23,7 @@ export const useFilesStore = defineStore("files", () => {
   const file = ref<FsReadResult | null>(null);
   const diff = ref<FsDiffResult | null>(null);
   const diffPath = ref<string | null>(null); // null = whole-tree diff
+  const notGit = ref(false); // workspace isn't a git repo — a normal Changes-tab empty state, not an error
   const tab = ref<"files" | "changes">("files");
   const changed = ref<Record<string, string>>({}); // relPath -> git porcelain status, for Files-tab badges
   // Standalone read-only summary for the header chip — independent of the browsed
@@ -42,6 +43,7 @@ export const useFilesStore = defineStore("files", () => {
     file.value = null;
     diff.value = null;
     diffPath.value = null;
+    notGit.value = false;
     changed.value = {};
     query.value = "";
     results.value = [];
@@ -54,6 +56,7 @@ export const useFilesStore = defineStore("files", () => {
     file.value = null;
     diff.value = null;
     diffPath.value = null;
+    notGit.value = false;
     changed.value = {};
     query.value = "";
     results.value = [];
@@ -181,13 +184,21 @@ export const useFilesStore = defineStore("files", () => {
     diffPath.value = filePath ?? null;
     try {
       diff.value = unwrap(await api.rpc<FsDiffResult>(instanceId.value, "control.fs.diff", { workspace: workspace.value, ...(filePath ? { path: filePath } : {}) }));
+      notGit.value = false;
     } catch (e) {
-      error.value = e instanceof Error ? e.message : "diff-failed";
+      const msg = e instanceof Error ? e.message : "diff-failed";
       diff.value = null;
+      // A non-git workspace is an expected state for the Changes tab — surface it as a
+      // calm inline empty state, not a sticky error banner the user can't dismiss.
+      if (msg === "not-a-git-repo") {
+        notGit.value = true;
+      } else {
+        error.value = msg;
+      }
     } finally {
       loading.value = false;
     }
   }
 
-  return { instanceId, workspace, path, entries, file, diff, diffPath, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary };
+  return { instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary };
 });

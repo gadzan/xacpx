@@ -70,4 +70,15 @@ describe("FilesPanel navigation rail", () => {
     // The diff selection is cleared so the center shows the freshly opened file, not a mix.
     expect(files.diffPath).toBeNull();
   });
+
+  it("shows a calm empty state (not a dismiss-less error banner) for a non-git workspace's Changes tab", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.tab = "changes";
+    files.notGit = true; // backend reported "not-a-git-repo"
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="changes-not-git"]').exists()).toBe(true);
+    // The sticky, undismissable error banner must NOT be used for this expected state.
+    expect(w.find('[data-test="files-error"]').exists()).toBe(false);
+  });
 });

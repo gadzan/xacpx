@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, File, FileText, Folder, List, X } from "lucide-vue-next";
+import { ChevronRight, File, FileText, Folder, GitBranch, List, X } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
@@ -229,6 +229,12 @@ watch(
             </li>
             <li v-if="!files.diff.files.length" class="px-1.5 py-1 text-xs text-fg-muted">no changes</li>
           </ul>
+        </div>
+        <!-- A non-git workspace is normal here — a calm note, not an error banner. -->
+        <div v-else-if="files.notGit" data-test="changes-not-git" class="flex flex-col items-center gap-1.5 p-6 text-center text-xs text-fg-muted">
+          <GitBranch :size="20" class="text-fg-muted/60" />
+          <span>Not a git repository</span>
+          <span class="text-[11px] text-fg-muted/70">This workspace has no version control to show changes for.</span>
         </div>
         <div v-else-if="!files.loading" class="p-3 text-xs text-fg-muted">no diff loaded</div>
       </div>

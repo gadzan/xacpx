@@ -79,6 +79,27 @@ describe("files store", () => {
     expect(s.diffPath).toBe(null);
   });
 
+  it("flags a non-git workspace on loadDiff without raising the sticky error banner", async () => {
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
+    const s = useFilesStore();
+    await s.selectWorkspace("i1", "ws");
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "not-a-git-repo" } });
+    await s.loadDiff();
+    expect(s.notGit).toBe(true);
+    expect(s.diff).toBeNull();
+    expect(s.error).toBe(""); // expected state → no dismiss-less error banner
+  });
+
+  it("clears the non-git flag once a real diff loads", async () => {
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
+    const s = useFilesStore();
+    await s.selectWorkspace("i1", "ws");
+    s.notGit = true;
+    rpc.mockResolvedValueOnce({ workspace: "ws", files: [{ path: "f.txt", status: " M" }], diff: "@@\n+x", truncated: false });
+    await s.loadDiff();
+    expect(s.notGit).toBe(false);
+  });
+
   it("an empty search query clears results without an rpc", async () => {
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
     const s = useFilesStore();
