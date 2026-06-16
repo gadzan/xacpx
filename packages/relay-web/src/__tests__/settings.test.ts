@@ -7,6 +7,10 @@ vi.mock("../api/client", () => ({
   ApiError: class extends Error {},
 }));
 
+const push = vi.fn();
+vi.mock("vue-router", () => ({ useRouter: () => ({ push }) }));
+vi.mock("../lib/use-confirm", () => ({ confirm: vi.fn().mockResolvedValue(true) }));
+
 import { api } from "../api/client";
 import SettingsView from "../views/SettingsView.vue";
 import { useAuthStore } from "../stores/auth";
@@ -15,7 +19,7 @@ const get = api.get as unknown as ReturnType<typeof vi.fn>;
 const post = api.post as unknown as ReturnType<typeof vi.fn>;
 
 describe("SettingsView", () => {
-  beforeEach(() => { setActivePinia(createPinia()); get.mockReset(); post.mockReset(); });
+  beforeEach(() => { setActivePinia(createPinia()); get.mockReset(); post.mockReset(); push.mockReset(); });
 
   it("loads and shows the retention policy", async () => {
     get.mockResolvedValueOnce({ historyRetention: { days: 30, maxPerSession: 2000 } });
@@ -59,5 +63,17 @@ describe("SettingsView", () => {
     expect(post).toHaveBeenCalledWith("/api/instances/pairing-token", { name: "" });
     expect(w.text()).toContain("PAIR9");
     expect(w.text()).toContain("channel add relay");
+  });
+
+  it("signs out from the Account section (logout now lives in Settings, not the sidebar)", async () => {
+    get.mockResolvedValueOnce({ historyRetention: { days: 30, maxPerSession: 2000 } });
+    const auth = useAuthStore();
+    auth.logout = vi.fn().mockResolvedValue(undefined);
+    const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
+    await flushPromises();
+    await w.find('[data-test="logout"]').trigger("click");
+    await flushPromises();
+    expect(auth.logout).toHaveBeenCalled();
+    expect(push).toHaveBeenCalledWith({ name: "login" });
   });
 });

@@ -105,12 +105,23 @@ test("the center column shows the chat by default and the file viewer when a fil
   expect(wrapper.findComponent(ChatPane).exists()).toBe(false);
 });
 
-test("the sidebar toggle collapses the instances column on desktop", async () => {
+test("the sidebar header toggle collapses the instances column, and the edge handle restores it", async () => {
   const wrapper = mountDash();
   await flushPromises();
   const left = wrapper.find('[data-drawer="left"]');
   expect(left.classes()).toContain("lg:w-[248px]");
+  // No expand handle while the sidebar is open.
+  expect(wrapper.find('[data-test="expand-left"]').exists()).toBe(false);
+
+  // Collapse via the control in the sidebar's own header.
   await wrapper.find('[data-test="toggle-left"]').trigger("click");
   expect(left.classes()).toContain("lg:w-0");
   expect(left.classes()).not.toContain("lg:w-[248px]");
+
+  // Once collapsed, a slim edge handle appears and brings the sidebar back.
+  const handle = wrapper.find('[data-test="expand-left"]');
+  expect(handle.exists()).toBe(true);
+  await handle.trigger("click");
+  expect(left.classes()).toContain("lg:w-[248px]");
+  expect(wrapper.find('[data-test="expand-left"]').exists()).toBe(false);
 });

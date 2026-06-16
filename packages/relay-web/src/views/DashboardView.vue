@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
 import { connectEvents } from "../api/events";
-import { useAuthStore } from "../stores/auth";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
@@ -19,8 +17,7 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
-import { confirm } from "../lib/use-confirm";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -29,8 +26,6 @@ const files = useFilesStore();
 const tasks = useTasksStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
-const auth = useAuthStore();
-const router = useRouter();
 let disconnect: (() => void) | null = null;
 
 // Mobile-only drawer state. On desktop (lg:) both panels are static columns and
@@ -65,18 +60,6 @@ function onGlobalKey(e: KeyboardEvent) {
     e.preventDefault();
     paletteOpen.value = !paletteOpen.value;
   }
-}
-
-async function onLogout() {
-  const ok = await confirm({
-    title: "Sign out?",
-    message: "You'll need to sign in again to access the dashboard.",
-    confirmLabel: "Sign out",
-    tone: "default",
-  });
-  if (!ok) return;
-  await auth.logout();
-  router.push({ name: "login" });
 }
 
 function onSelect(instanceId: string, alias: string) {
@@ -133,18 +116,10 @@ onUnmounted(() => {
   <div class="flex h-screen flex-col bg-bg text-fg">
     <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
     <header class="sticky top-0 z-30 flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 backdrop-blur-xl">
-      <!-- Left: sidebar toggle (desktop), brand X mark + "xacpx · relay" lockup, then the Connected pill. -->
+      <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The
+           sidebar collapse control lives in the sidebar's own header (and a slim edge
+           handle below), not up here. -->
       <div class="flex items-center gap-2">
-        <button
-          data-test="toggle-left"
-          :aria-label="leftCollapsed ? 'Show sidebar' : 'Hide sidebar'"
-          :title="leftCollapsed ? 'Show sidebar' : 'Hide sidebar'"
-          class="hidden h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:grid"
-          @click="leftCollapsed = !leftCollapsed"
-        >
-          <PanelLeftOpen v-if="leftCollapsed" :size="15" />
-          <PanelLeftClose v-else :size="15" />
-        </button>
         <BrandLogo />
         <ConnectionBadge />
       </div>
@@ -199,15 +174,22 @@ onUnmounted(() => {
            class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-[transform,width] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
            :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0' : 'lg:w-[248px]']">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
-          <router-link to="/settings" class="font-semibold uppercase tracking-wider text-fg-muted hover:text-fg">Settings</router-link>
-          <div class="flex items-center gap-3">
-            <button title="Sign out" aria-label="Sign out" class="text-fg-muted hover:text-fg" @click="onLogout"><LogOut :size="15" /></button>
+          <span class="font-semibold uppercase tracking-wider text-fg-muted">Instances</span>
+          <div class="flex items-center gap-2">
+            <button data-test="toggle-left" aria-label="Hide sidebar" title="Hide sidebar"
+                    class="hidden h-6 w-6 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
+                    @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
             <button data-test="close-instances" aria-label="Close instances"
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
         <InstanceTree @select="onSelect" />
       </div>
+
+      <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
+      <button v-if="leftCollapsed" data-test="expand-left" aria-label="Show sidebar" title="Show sidebar"
+              class="hidden w-5 shrink-0 items-center justify-center border-r border-border bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
+              @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
 
       <!-- Center: chat, always full width of the remaining space. -->
       <!-- min-w-0: let this flex child shrink to its share instead of growing to its

@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import { LogOut } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
+import { confirm } from "../lib/use-confirm";
 
 const auth = useAuthStore();
 const theme = useThemeStore();
+const router = useRouter();
 const retention = ref<{ days: number; maxPerSession: number } | null>(null);
 const invite = ref("");
 const pairing = ref("");
@@ -26,6 +30,18 @@ async function genInvite() {
 async function genPairing() {
   const r = await api.post<{ token: string }>("/api/instances/pairing-token", { name: pairingName.value });
   pairing.value = r.token;
+}
+
+async function onLogout() {
+  const ok = await confirm({
+    title: "Sign out?",
+    message: "You'll need to sign in again to access the dashboard.",
+    confirmLabel: "Sign out",
+    tone: "default",
+  });
+  if (!ok) return;
+  await auth.logout();
+  router.push({ name: "login" });
 }
 </script>
 
@@ -72,12 +88,23 @@ async function genPairing() {
       <div v-if="invite" class="mt-2 rounded bg-bg border border-border p-2 text-xs text-fg break-all">Invite token: <code>{{ invite }}</code></div>
     </section>
 
-    <section>
+    <section class="mb-8">
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">History retention</h2>
       <p class="text-sm text-fg-muted">
         Keeps the newest <strong class="text-fg">{{ retention?.maxPerSession ?? "—" }}</strong> messages per session,
         for up to <strong class="text-fg">{{ retention?.days ?? "—" }}</strong> days. Configured server-side.
       </p>
+    </section>
+
+    <section>
+      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">Account</h2>
+      <button
+        data-test="logout"
+        class="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm text-fg-muted transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger"
+        @click="onLogout"
+      >
+        <LogOut :size="15" />Sign out
+      </button>
     </section>
   </div>
 </template>
