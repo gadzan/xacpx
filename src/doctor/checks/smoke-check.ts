@@ -1,5 +1,6 @@
 import { loadConfig } from "../../config/load-config";
 import { resolveAcpxCommandMetadata, type AcpxCommandMetadata } from "../../config/resolve-acpx-command";
+import { resolveRuntimeAgentCommand } from "../../config/resolve-agent-command";
 import type { AppConfig } from "../../config/types";
 import { resolveBridgeEntryPath, resolveRuntimePaths, type RuntimePaths } from "../../main";
 import { spawnAcpxBridgeClient, type ManagedBridgeClient } from "../../transport/acpx-bridge/acpx-bridge-client";
@@ -259,7 +260,16 @@ function buildSession(options: {
   return {
     alias: "xacpx-doctor",
     agent: options.agent,
-    ...(agentConfig.command ? { agentCommand: agentConfig.command } : {}),
+    // Resolve the SAME way the runtime spawn paths do, so the smoke test validates the
+    // real agent command (incl. a locally-preferred native CLI), not acpx's npx fallback.
+    ...((): { agentCommand?: string } => {
+      const agentCommand = resolveRuntimeAgentCommand(
+        agentConfig.driver,
+        agentConfig.command,
+        options.config.transport.preferLocalAgents !== false,
+      );
+      return agentCommand ? { agentCommand } : {};
+    })(),
     workspace: options.workspace,
     transportSession: `xacpx-doctor-${timestamp}`,
     replyMode: options.config.channel.replyMode,
