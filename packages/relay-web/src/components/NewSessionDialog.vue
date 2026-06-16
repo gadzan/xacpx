@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { X } from "lucide-vue-next";
+import { X, Loader2, AlertTriangle } from "lucide-vue-next";
 import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
@@ -89,6 +89,18 @@ watch([sessionSource, agentValue, workspaceSel], () => {
     wsMode.value = "existing";
     void loadNativeSessions();
   }
+});
+
+// Turn a raw backend error into a friendlier hint. Listing an agent's native sessions
+// shells out to its CLI, which can fail because the CLI isn't authenticated (e.g. codex
+// needs a login on the host) — surface that as a clear next step rather than a raw code.
+const nativeErrorHint = computed(() => {
+  const e = nativeError.value;
+  if (!e) return "";
+  if (/auth|login|unauthor|credential|sign[\s-]?in/i.test(e)) {
+    return `${agentValue.value || "This agent"} isn't authenticated on the host — log it in there (e.g. run its CLI login), then retry.`;
+  }
+  return "";
 });
 
 function nativeLabel(s: NativeSessionDto): string {
@@ -240,13 +252,30 @@ async function submit(): Promise<void> {
           <!-- Native attach: pick an existing acpx-owned rollout for the chosen agent + workspace. -->
           <label v-if="sessionSource === 'native'" class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">Native session</span>
-            <div v-if="nativeLoading" data-test="ns-native-loading" class="py-2 text-xs text-fg-muted">Listing native sessions…</div>
+            <!-- Loading: animated spinner + shimmering skeleton rows (the list can take a while). -->
+            <div v-if="nativeLoading" data-test="ns-native-loading" class="space-y-1.5">
+              <div class="flex items-center gap-2 text-xs text-fg-muted">
+                <Loader2 :size="13" class="animate-spin motion-reduce:animate-none text-accent" />
+                Listing native sessions…
+              </div>
+              <div v-for="n in 3" :key="n" class="h-7 animate-pulse rounded-lg bg-fg/5 motion-reduce:animate-none" :style="{ width: `${92 - n * 12}%` }" />
+            </div>
             <select v-else-if="nativeSessions.length" v-model="nativeSel" data-test="ns-native"
                     class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
               <option v-for="s in nativeSessions" :key="s.sessionId" :value="s.sessionId">{{ nativeLabel(s) }}</option>
             </select>
+            <!-- Error: distinct danger block with a friendly hint (e.g. agent not authenticated). -->
+            <div v-else-if="nativeError" data-test="ns-native-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">
+              <div class="flex items-start gap-1.5">
+                <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
+                <div class="min-w-0">
+                  <p class="break-words font-medium">{{ nativeError }}</p>
+                  <p v-if="nativeErrorHint" class="mt-1 text-danger/80">{{ nativeErrorHint }}</p>
+                </div>
+              </div>
+            </div>
             <p v-else data-test="ns-native-empty" class="rounded-lg bg-bg px-3 py-2 text-xs text-fg-muted">
-              {{ nativeError || "No native sessions found for this agent + workspace." }}
+              No native sessions found for this agent + workspace.
             </p>
           </label>
 

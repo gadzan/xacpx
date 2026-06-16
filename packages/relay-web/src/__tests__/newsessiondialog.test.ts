@@ -187,6 +187,26 @@ describe("NewSessionDialog", () => {
     expect(store.createSession).not.toHaveBeenCalled();
   });
 
+  it("surfaces a native-list failure as a distinct error block with an auth hint", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    vi.mocked(store.listNativeSessions).mockRejectedValue(new Error("Authentication required"));
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click");
+    await flushPromises();
+    const err = wrapper.find('[data-test="ns-native-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("Authentication required");
+    expect(err.text()).toMatch(/isn't authenticated/i); // friendly next-step hint
+    // The plain "no sessions" empty hint must NOT show when there's a real error.
+    expect(wrapper.find('[data-test="ns-native-empty"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
+  });
+
   it("shows a non-error pending notice on a create timeout and defers emit until acknowledged", async () => {
     const { wrapper, store } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
