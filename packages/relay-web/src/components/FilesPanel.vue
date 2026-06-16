@@ -1,16 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { ChevronRight, File, FileText, Folder, List, X } from "lucide-vue-next";
+import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
-import CopyButton from "./CopyButton.vue";
+import { useChatStore } from "../stores/chat";
 
+// Navigation-only file rail: a file tree (Files) and a changed-files list (Changes).
+// Opening a file or a single-file diff shows it full-width in the center column (see
+// FileViewer); the rail stays narrow and is just for getting around.
 const props = defineProps<{ instanceId: string | null }>();
 const files = useFilesStore();
 const instances = useInstancesStore();
+const chat = useChatStore();
 
-const workspaces = computed(() => (props.instanceId ? instances.byId(props.instanceId)?.workspaces ?? [] : []));
 const crumbs = computed(() => (files.path ? files.path.split("/") : []));
+
+// The panel follows the ACTIVE session's workspace — there's no manual picker, since the
+// workspace is a fixed property of the session you're chatting with.
+const activeWorkspace = computed(() => {
+  const inst = props.instanceId ? instances.byId(props.instanceId) : undefined;
+  return inst?.sessions.find((s) => s.alias === chat.sessionAlias)?.workspace ?? null;
+});
 
 // Changes summary: `N files · +X −Y`, derived (read-only) from the loaded diff.
 const changesSummary = computed(() => {
@@ -23,15 +34,6 @@ const changesSummary = computed(() => {
     else if (l.startsWith("-") && !l.startsWith("---")) del++;
   }
   return { fileCount: d.files.length, add, del };
-});
-
-// Line-numbered gutter for the file viewer. Above this many lines we fall back to a
-// plain <pre> so we don't emit tens of thousands of DOM nodes for a large file.
-const LINE_GUTTER_LIMIT = 5000;
-const fileLines = computed(() => {
-  const f = files.file;
-  if (!f || f.binary) return [];
-  return f.content.split("\n");
 });
 
 // Debounced file-name search.
@@ -54,7 +56,6 @@ function fmtSize(n?: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 // Git-status badge for a directory entry, derived from the quietly-loaded status map.
-// Files show their own porcelain code; directories show a dot if they contain changes.
 function entryRel(name: string): string {
   return files.path ? `${files.path}/${name}` : name;
 }
@@ -76,26 +77,40 @@ function entryStatus(e: { name: string; type: string }): { label: string; cls: s
   const prefix = `${rel}/`;
   return Object.keys(files.changed).some((p) => p.startsWith(prefix)) ? { label: "•", cls: "text-warn", dot: "bg-warn" } : null;
 }
-function diffLineClass(line: string): string {
-  if (line.startsWith("+") && !line.startsWith("+++")) return "text-run";
-  if (line.startsWith("-") && !line.startsWith("---")) return "text-danger";
-  if (line.startsWith("@@")) return "text-info";
-  if (line.startsWith("diff ") || line.startsWith("index ")) return "text-fg-muted";
-  return "text-fg-muted";
+
+// `true` when this entry is the file currently shown in the center viewer.
+function isOpen(name: string): boolean {
+  return !!files.file && files.file.path === entryRel(name);
 }
 
-// When the selected instance changes, reset and load its workspaces, auto-selecting
-// the first so the panel is immediately useful.
+// Open helpers: clear the counterpart so the center viewer shows exactly one thing —
+// a file or a single-file diff, never a stale mix.
+function openEntry(e: FsEntryDto) {
+  if (e.type === "file") files.diffPath = null;
+  void files.open(e);
+}
+function openSearchResult(m: string) {
+  files.diffPath = null;
+  void files.openFile(m);
+}
+function openDiff(path: string) {
+  files.file = null;
+  void files.loadDiff(path);
+}
+
+// Follow the instance + active session's workspace. Re-selects (and resets navigation)
+// whenever you switch to a session in a different workspace.
 watch(
-  () => props.instanceId,
-  async (id) => {
+  () => [props.instanceId, activeWorkspace.value] as const,
+  async ([id, ws]) => {
     files.reset();
     searchInput.value = "";
     if (!id) return;
     files.instanceId = id;
     await instances.loadWorkspaces(id).catch(() => {});
-    const first = instances.byId(id)?.workspaces?.[0];
-    if (first) void files.selectWorkspace(id, first.name);
+    // Default to the active session's workspace; fall back to the first configured one.
+    const target = ws ?? instances.byId(id)?.workspaces?.[0]?.name;
+    if (target) void files.selectWorkspace(id, target);
   },
   { immediate: true },
 );
@@ -106,12 +121,6 @@ watch(
     if (t === "changes" && !files.diff) void files.loadDiff();
   },
 );
-
-function onWorkspaceChange(e: Event) {
-  const name = (e.target as HTMLSelectElement).value;
-  searchInput.value = "";
-  if (props.instanceId) void files.selectWorkspace(props.instanceId, name);
-}
 </script>
 
 <template>
@@ -120,11 +129,12 @@ function onWorkspaceChange(e: Event) {
       Select a session to browse its workspace
     </div>
     <template v-else>
+      <!-- Active session's workspace (static — no picker) + Files / Changes tabs. -->
       <div class="flex items-center gap-2 border-b border-border p-2">
-        <select data-test="ws-select" class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg" :value="files.workspace ?? ''" @change="onWorkspaceChange">
-          <option v-if="!workspaces.length" value="">no workspaces</option>
-          <option v-for="w in workspaces" :key="w.name" :value="w.name">{{ w.name }}</option>
-        </select>
+        <div data-test="ws-label" class="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-fg" :title="files.workspace ?? ''">
+          <Folder :size="13" class="shrink-0 text-warn" />
+          <span class="truncate font-medium">{{ files.workspace ?? "—" }}</span>
+        </div>
         <div class="flex shrink-0 items-center gap-1">
           <button data-test="tab-files"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
@@ -157,7 +167,7 @@ function onWorkspaceChange(e: Event) {
           <ul class="p-2.5 text-[11px] font-mono leading-5 space-y-px">
             <li v-for="m in files.results" :key="m">
               <button data-test="fs-result"
-                      class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-raised cursor-pointer" @click="files.openFile(m)">
+                      class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-raised cursor-pointer" @click="openSearchResult(m)">
                 <File :size="13" class="shrink-0 text-fg-muted" />
                 <span class="truncate font-sans text-[12px] text-fg-muted">{{ m }}</span>
               </button>
@@ -165,7 +175,6 @@ function onWorkspaceChange(e: Event) {
             <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">no matches</li>
           </ul>
           <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">showing first 200 matches</div>
-          <div v-if="files.file" class="border-t border-border" />
         </div>
 
         <!-- breadcrumb (hidden while searching) -->
@@ -176,40 +185,18 @@ function onWorkspaceChange(e: Event) {
           </template>
         </div>
 
-        <!-- file viewer -->
-        <div v-if="files.file" data-test="file-viewer">
-          <div class="flex items-center gap-2 border-b border-border bg-bg px-2.5 py-1.5 text-xs">
-            <FileText :size="13" class="shrink-0 text-fg-muted" />
-            <span class="truncate font-mono text-fg">{{ files.file.path }}</span>
-            <span class="text-fg-muted">{{ fmtSize(files.file.size) }}</span>
-            <span v-if="files.file.truncated" class="rounded bg-warn/10 px-1 text-warn">truncated</span>
-            <span v-if="files.file.binary" class="rounded bg-fg/5 px-1 text-fg-muted">binary</span>
-            <CopyButton v-if="!files.file.binary" :text="files.file.content" class="ml-auto" />
-            <button aria-label="Close file" class="text-fg-muted hover:text-fg" @click="files.file = null"><X :size="14" /></button>
-          </div>
-          <!-- numbered gutter for reasonable files; plain <pre> as a fallback for huge ones -->
-          <div v-if="!files.file.binary && fileLines.length <= LINE_GUTTER_LIMIT" data-test="file-body" class="overflow-x-auto font-mono text-xs leading-snug">
-            <div v-for="(l, i) in fileLines" :key="i" data-test="file-line" class="flex">
-              <span class="sticky left-0 w-12 shrink-0 select-none border-r border-border bg-bg px-2 text-right text-fg-muted tabular-nums">{{ i + 1 }}</span>
-              <span class="whitespace-pre px-3 text-fg">{{ l || " " }}</span>
-            </div>
-          </div>
-          <pre v-else-if="!files.file.binary" class="overflow-x-auto p-2 font-mono text-xs leading-snug text-fg whitespace-pre">{{ files.file.content }}</pre>
-          <div v-else class="p-3 text-xs text-fg-muted">Binary file not shown.</div>
-        </div>
-
-        <!-- directory listing: tree-styled rows (chevron + folder/file icon, accent highlight on changed) -->
-        <ul v-else-if="!files.query.trim()" class="p-2.5 text-[11px] font-mono leading-5 space-y-px">
+        <!-- directory listing: tree-styled rows (chevron + folder/file icon) -->
+        <ul v-if="!files.query.trim()" class="p-2.5 text-[11px] font-mono leading-5 space-y-px">
           <li v-for="e in files.entries" :key="e.name">
             <button data-test="fs-entry"
                     class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left cursor-pointer"
-                    :class="entryStatus(e) ? 'bg-accent/10' : 'hover:bg-raised'" @click="files.open(e)">
+                    :class="isOpen(e.name) ? 'bg-accent/15' : (entryStatus(e) ? 'bg-accent/10' : 'hover:bg-raised')" @click="openEntry(e)">
               <ChevronRight v-if="e.type === 'dir'" :size="11" class="shrink-0 text-fg-muted" />
               <span v-else class="w-[11px] shrink-0" />
               <Folder v-if="e.type === 'dir'" :size="13" class="shrink-0" :class="entryStatus(e) ? 'text-accent' : 'text-fg-muted'" />
-              <File v-else :size="13" class="shrink-0" :class="entryStatus(e) ? 'text-accent' : 'text-fg-muted'" />
+              <File v-else :size="13" class="shrink-0" :class="isOpen(e.name) || entryStatus(e) ? 'text-accent' : 'text-fg-muted'" />
               <span class="flex-1 truncate font-sans text-[12px]"
-                    :class="entryStatus(e) ? 'text-accent font-medium' : (e.type === 'dir' ? 'text-fg font-medium' : 'text-fg-muted')">{{ e.name }}</span>
+                    :class="isOpen(e.name) || entryStatus(e) ? 'text-accent font-medium' : (e.type === 'dir' ? 'text-fg font-medium' : 'text-fg-muted')">{{ e.name }}</span>
               <span v-if="entryStatus(e)" data-test="fs-status" class="w-1.5 h-1.5 shrink-0 rounded-full"
                     :class="entryStatus(e)!.dot"
                     :title="`${entryStatus(e)!.label} — ${files.changed[entryRel(e.name)] || 'contains changes'}`" />
@@ -220,11 +207,10 @@ function onWorkspaceChange(e: Event) {
         </ul>
       </div>
 
-      <!-- Changes (git diff) tab -->
+      <!-- Changes (git status) tab: a list of changed files; pick one to view its diff in the center. -->
       <div v-else class="min-h-0 flex-1 overflow-y-auto thin-scroll">
         <div v-if="files.diff">
-          <!-- Changes summary header: N files · +X −Y -->
-          <div v-if="changesSummary && !files.diffPath" data-test="changes-summary" class="flex items-center justify-between border-b border-border px-2.5 py-2">
+          <div v-if="changesSummary" data-test="changes-summary" class="flex items-center justify-between border-b border-border px-2.5 py-2">
             <span class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">Changes</span>
             <div class="flex items-center gap-1.5 font-mono text-[10.5px] tabular-nums">
               <span class="text-fg-muted">{{ changesSummary.fileCount }} files</span>
@@ -232,15 +218,10 @@ function onWorkspaceChange(e: Event) {
               <span class="text-danger">−{{ changesSummary.del }}</span>
             </div>
           </div>
-          <div v-if="files.diffPath" class="flex items-center gap-2 border-b border-border bg-accent/10 px-2.5 py-1.5 text-xs">
-            <FileText :size="13" class="shrink-0 text-accent" />
-            <span class="truncate font-mono text-fg">{{ files.diffPath }}</span>
-            <button data-test="diff-all" class="ml-auto text-accent hover:underline" @click="files.loadDiff()">← all files</button>
-          </div>
-          <ul class="border-b border-border p-2.5 space-y-px">
+          <ul class="p-2.5 space-y-px">
             <li v-for="f in files.diff.files" :key="f.path">
               <button data-test="diff-file" class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
-                      :class="files.diffPath === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="files.loadDiff(f.path)">
+                      :class="files.diffPath === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
                 <FileText :size="12" class="shrink-0" :class="files.diffPath === f.path ? 'text-accent' : 'text-fg-muted'" />
                 <span class="flex-1 truncate font-mono text-[11px]" :class="files.diffPath === f.path ? 'text-accent' : 'text-fg'">{{ f.path }}</span>
                 <span class="shrink-0 font-mono text-[10.5px] uppercase tabular-nums" :class="statusBadge(f.status).cls">{{ f.status.trim() || "··" }}</span>
@@ -248,8 +229,6 @@ function onWorkspaceChange(e: Event) {
             </li>
             <li v-if="!files.diff.files.length" class="px-1.5 py-1 text-xs text-fg-muted">no changes</li>
           </ul>
-          <pre v-if="files.diff.diff" data-test="diff-body" class="overflow-x-auto p-2 font-mono text-xs leading-snug whitespace-pre"><span v-for="(l, i) in files.diff.diff.split('\n')" :key="i" class="block" :class="diffLineClass(l)">{{ l }}</span></pre>
-          <div v-if="files.diff.truncated" class="px-2.5 py-1 text-xs text-warn">diff truncated</div>
         </div>
         <div v-else-if="!files.loading" class="p-3 text-xs text-fg-muted">no diff loaded</div>
       </div>

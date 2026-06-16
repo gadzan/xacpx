@@ -10,9 +10,12 @@ vi.mock("../api/events", () => ({
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import DashboardView from "../views/DashboardView.vue";
+import ChatPane from "../components/ChatPane.vue";
+import FileViewer from "../components/FileViewer.vue";
 import { useChatStore } from "../stores/chat";
+import { useFilesStore } from "../stores/files";
 
-const stubs = { ChatPane: true, TaskPanel: true, "router-link": true };
+const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, "router-link": true };
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -87,4 +90,27 @@ test("selecting a session closes the instance drawer and routes to chat", async 
   await flushPromises();
   expect(chat.instanceId).toBe("i1");
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
+});
+
+test("the center column shows the chat by default and the file viewer when a file is open", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  expect(wrapper.findComponent(ChatPane).exists()).toBe(true);
+  expect(wrapper.findComponent(FileViewer).exists()).toBe(false);
+  // Opening a file from the rail takes over the center column.
+  const files = useFilesStore();
+  files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
+  await flushPromises();
+  expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
+  expect(wrapper.findComponent(ChatPane).exists()).toBe(false);
+});
+
+test("the sidebar toggle collapses the instances column on desktop", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const left = wrapper.find('[data-drawer="left"]');
+  expect(left.classes()).toContain("lg:w-[248px]");
+  await wrapper.find('[data-test="toggle-left"]').trigger("click");
+  expect(left.classes()).toContain("lg:w-0");
+  expect(left.classes()).not.toContain("lg:w-[248px]");
 });

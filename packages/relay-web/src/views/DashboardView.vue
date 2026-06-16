@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { connectEvents } from "../api/events";
 import { useAuthStore } from "../stores/auth";
@@ -8,8 +8,10 @@ import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
+import { useFilesStore } from "../stores/files";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
+import FileViewer from "../components/FileViewer.vue";
 import TaskPanel from "../components/TaskPanel.vue";
 import FilesPanel from "../components/FilesPanel.vue";
 import NoticeToast from "../components/NoticeToast.vue";
@@ -17,12 +19,13 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, LogOut } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
 import { confirm } from "../lib/use-confirm";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
+const files = useFilesStore();
 const tasks = useTasksStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
@@ -39,6 +42,21 @@ function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
 }
+
+// Desktop-only: collapse the instances sidebar to reclaim width. Persisted so the
+// choice survives reloads. (Mobile uses the leftOpen off-canvas drawer instead.)
+const leftCollapsed = ref(localStorage.getItem("xacpx.leftCollapsed") === "1");
+watch(leftCollapsed, (v) => localStorage.setItem("xacpx.leftCollapsed", v ? "1" : "0"));
+
+// A file/diff opened from the rail takes over the center column (FileViewer); Back
+// returns to the conversation. On mobile, opening one also closes the right drawer so
+// the viewer is actually visible.
+const viewingFile = computed(() => !!(files.file || files.diffPath));
+function closeFileViewer() {
+  files.file = null;
+  files.diffPath = null;
+}
+watch(viewingFile, (v) => { if (v) rightOpen.value = false; });
 
 // Cmd/Ctrl+K command palette.
 const paletteOpen = ref(false);
@@ -115,8 +133,18 @@ onUnmounted(() => {
   <div class="flex h-screen flex-col bg-bg text-fg">
     <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
     <header class="sticky top-0 z-30 flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 backdrop-blur-xl">
-      <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. -->
+      <!-- Left: sidebar toggle (desktop), brand X mark + "xacpx · relay" lockup, then the Connected pill. -->
       <div class="flex items-center gap-2">
+        <button
+          data-test="toggle-left"
+          :aria-label="leftCollapsed ? 'Show sidebar' : 'Hide sidebar'"
+          :title="leftCollapsed ? 'Show sidebar' : 'Hide sidebar'"
+          class="hidden h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:grid"
+          @click="leftCollapsed = !leftCollapsed"
+        >
+          <PanelLeftOpen v-if="leftCollapsed" :size="15" />
+          <PanelLeftClose v-else :size="15" />
+        </button>
         <BrandLogo />
         <ConnectionBadge />
       </div>
@@ -168,8 +196,8 @@ onUnmounted(() => {
 
       <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="left"
-           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:w-[248px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
-           :class="leftOpen ? 'translate-x-0' : '-translate-x-full'">
+           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-[transform,width] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
+           :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0' : 'lg:w-[248px]']">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <router-link to="/settings" class="font-semibold uppercase tracking-wider text-fg-muted hover:text-fg">Settings</router-link>
           <div class="flex items-center gap-3">
@@ -186,7 +214,8 @@ onUnmounted(() => {
            widest content (a tool card's command/diff line), which would otherwise push
            the right panel off-screen. Wide tool content scrolls/wraps within instead. -->
       <div data-test="column" class="flex min-w-0 flex-1 flex-col">
-        <ChatPane @show-files="rightTab = 'files'" />
+        <FileViewer v-if="viewingFile" @back="closeFileViewer" />
+        <ChatPane v-else @show-files="rightTab = 'files'" />
       </div>
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
