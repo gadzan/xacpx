@@ -276,7 +276,7 @@ function shortHash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
-function resolveDefaultXacpxCommand(env: NodeJS.ProcessEnv): string {
+export function resolveDefaultXacpxCommand(env: NodeJS.ProcessEnv): string {
   const cliCommand = coreEnv("CLI_COMMAND", env);
   if (cliCommand?.trim()) {
     return cliCommand.trim();

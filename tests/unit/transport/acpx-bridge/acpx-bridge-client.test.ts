@@ -224,6 +224,24 @@ test("omits the permission policy from the bridge spawn env when unset", () => {
   expect(env.XACPX_BRIDGE_ACPX_COMMAND).toBe("acpx");
 });
 
+test("hands the CLI command down to the bridge so its mcp-stdio launcher targets the CLI, not bridge-main", () => {
+  // The bridge's queue-owner launcher runs inside bridge-main.js; left to its own
+  // process.argv[1] it would point each agent's `mcp-stdio` coordinator server at
+  // bridge-main.js (which only speaks the bridge protocol → 30s MCP handshake stall per
+  // prompt). The console must therefore pass its real CLI command via XACPX_CLI_COMMAND.
+  const env = buildBridgeSpawnEnv({ cliCommand: "/usr/bin/node /opt/xacpx/dist/cli.js" });
+  expect(env.XACPX_CLI_COMMAND).toBe("/usr/bin/node /opt/xacpx/dist/cli.js");
+  expect(env.XACPX_CLI_COMMAND).not.toContain("bridge-main");
+});
+
+test("always sets a non-empty XACPX_CLI_COMMAND even without an explicit cliCommand", () => {
+  // Defaults to the console's resolved command; the key must be present so the bridge
+  // never falls back to its own bridge-main.js argv[1].
+  const env = buildBridgeSpawnEnv({});
+  expect(typeof env.XACPX_CLI_COMMAND).toBe("string");
+  expect(env.XACPX_CLI_COMMAND.length).toBeGreaterThan(0);
+});
+
 describe("AcpxBridgeClient", () => {
   test("delivers session.progress events to onEvent", async () => {
     const writes: string[] = [];
