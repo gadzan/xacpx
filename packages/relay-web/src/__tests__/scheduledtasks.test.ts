@@ -64,4 +64,37 @@ describe("ScheduledTasks panel", () => {
     await w.find('[data-test="view-scheduled"]').trigger("click");
     expect(spy).toHaveBeenCalledWith("ok1");
   });
+
+  function many(n: number): unknown[] {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `t${i}`, sessionAlias: "backend", executeAt: "2030-01-01T00:00:00Z",
+      message: `task ${i}`, status: "pending", createdAt: "x",
+    }));
+  }
+
+  it("caps the inline list at three and offers View all for the rest", () => {
+    seed(many(5));
+    const w = mount(ScheduledTasks, { global: { stubs: { teleport: true } } });
+    // Only the first three render inline; the drawer is closed so nothing extra mounts.
+    expect(w.findAll('[data-test="scheduled-item"]').length).toBe(3);
+    expect(w.find('[data-test="scheduled-view-all"]').text()).toContain("View all 5");
+    expect(w.find('[data-test="scheduled-drawer"]').exists()).toBe(false);
+  });
+
+  it("does not offer View all when three or fewer tasks", () => {
+    seed(many(3));
+    const w = mount(ScheduledTasks, { global: { stubs: { teleport: true } } });
+    expect(w.find('[data-test="scheduled-view-all"]').exists()).toBe(false);
+  });
+
+  it("opens a drawer with the full list and closes it again", async () => {
+    seed(many(5));
+    const w = mount(ScheduledTasks, { global: { stubs: { teleport: true } } });
+    await w.find('[data-test="scheduled-view-all"]').trigger("click");
+    expect(w.find('[data-test="scheduled-drawer"]').exists()).toBe(true);
+    // Inline three + all five in the drawer = eight rows total.
+    expect(w.findAll('[data-test="scheduled-item"]').length).toBe(8);
+    await w.find('[data-test="scheduled-drawer-close"]').trigger("click");
+    expect(w.find('[data-test="scheduled-drawer"]').exists()).toBe(false);
+  });
 });

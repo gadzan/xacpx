@@ -1,39 +1,23 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { Clock, Loader2, CheckCircle2, XCircle, AlertTriangle, Ban, Eye, Trash2, ChevronRight } from "lucide-vue-next";
-import type { ScheduledTaskStatusDto } from "@ganglion/xacpx-relay-protocol";
+import { computed, ref } from "vue";
+import { ChevronDown, X } from "lucide-vue-next";
 import { useTasksStore } from "../stores/tasks";
 import { useChatStore } from "../stores/chat";
-import { confirm } from "../lib/use-confirm";
+import ScheduledTaskRow from "./ScheduledTaskRow.vue";
 
 const tasks = useTasksStore();
 const chat = useChatStore();
 const executeAt = ref("");
 const message = ref("");
 
-// Rows collapse to a compact line by default (the list got long, especially with error
-// text). Click a row to expand its full message / time / failure reason. Expanded ids
-// are tracked in a reactive Set.
-const expanded = ref<Set<string>>(new Set());
-function toggle(id: string) {
-  const next = new Set(expanded.value);
-  next.has(id) ? next.delete(id) : next.add(id);
-  expanded.value = next;
-}
+// The right sidebar is tight, so the inline list shows only the first few tasks; the
+// rest live behind a "View all" drawer. Upcoming tasks sort first (see listRecentForChat),
+// so the most relevant ones stay visible.
+const INLINE_LIMIT = 3;
+const visible = computed(() => tasks.scheduled.slice(0, INLINE_LIMIT));
+const overflow = computed(() => Math.max(0, tasks.scheduled.length - INLINE_LIMIT));
 
-// Per-status presentation. "Upcoming" tasks can still be cancelled; everything else is a
-// terminal run record kept in place (Done/Failed/…) so a fired task never silently vanishes.
-type Pres = { label: string; cls: string; icon: typeof Clock; spin?: boolean };
-function present(status: ScheduledTaskStatusDto): Pres {
-  switch (status) {
-    case "pending": return { label: "Upcoming", cls: "text-fg-muted", icon: Clock };
-    case "triggering": return { label: "Running", cls: "text-run", icon: Loader2, spin: true };
-    case "executed": return { label: "Done", cls: "text-run", icon: CheckCircle2 };
-    case "failed": return { label: "Failed", cls: "text-danger", icon: XCircle };
-    case "missed": return { label: "Missed", cls: "text-warn", icon: AlertTriangle };
-    case "cancelled": return { label: "Cancelled", cls: "text-fg-muted", icon: Ban };
-  }
-}
+const drawerOpen = ref(false);
 
 async function create() {
   if (!chat.instanceId || !chat.sessionAlias || !executeAt.value || !message.value) return;
@@ -42,56 +26,47 @@ async function create() {
   executeAt.value = "";
   message.value = "";
 }
-
-async function cancel(id: string) {
-  const ok = await confirm({
-    title: "Cancel scheduled task?",
-    message: "It will be removed from the schedule and won't run.",
-    confirmLabel: "Cancel task",
-    cancelLabel: "Keep",
-    tone: "danger",
-  });
-  if (ok) await tasks.cancelScheduled(id);
-}
 </script>
 
 <template>
   <div class="border-b border-border bg-surface p-3">
     <h3 class="mb-2 text-xs font-semibold uppercase text-fg-muted">Scheduled</h3>
     <ul class="space-y-1">
-      <li v-for="t in tasks.scheduled" :key="t.id" data-test="scheduled-item" class="rounded-md border border-border bg-bg text-sm">
-        <!-- compact header (click to expand) + actions -->
-        <div class="flex items-center gap-1 px-2 py-1.5">
-          <button type="button" :data-test="`scheduled-toggle-${t.id}`" class="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer" @click="toggle(t.id)">
-            <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform" :class="expanded.has(t.id) ? 'rotate-90' : ''" />
-            <span :data-test="`scheduled-status-${t.id}`" class="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium" :class="present(t.status).cls">
-              <component :is="present(t.status).icon" :size="12" :class="present(t.status).spin ? 'animate-spin motion-reduce:animate-none' : ''" />
-              {{ present(t.status).label }}
-            </span>
-            <span class="min-w-0 flex-1 truncate text-[12.5px] text-fg">{{ t.message }}</span>
-          </button>
-          <span class="flex shrink-0 items-center gap-0.5">
-            <button v-if="t.status === 'executed'" data-test="view-scheduled" title="View this run in the conversation" aria-label="View run"
-                    class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-accent/15 hover:text-accent"
-                    @click="chat.requestScrollToScheduled(t.id)"><Eye :size="13" /></button>
-            <button v-if="t.status === 'pending'" data-test="cancel-scheduled" title="Cancel scheduled task" aria-label="Cancel scheduled task"
-                    class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
-                    @click="cancel(t.id)"><Trash2 :size="13" /></button>
-          </span>
-        </div>
-        <!-- expanded details -->
-        <div v-if="expanded.has(t.id)" :data-test="`scheduled-detail-${t.id}`" class="space-y-1 border-t border-border px-2 py-1.5">
-          <p class="whitespace-pre-wrap text-[12.5px] text-fg">{{ t.message }}</p>
-          <p class="font-mono text-[10.5px] tabular-nums text-fg-muted">{{ new Date(t.executeAt).toLocaleString() }}</p>
-          <p v-if="t.status === 'failed' && t.lastError" :data-test="`scheduled-error-${t.id}`" class="rounded bg-danger/10 px-2 py-1 text-[11px] text-danger">{{ t.lastError }}</p>
-        </div>
-      </li>
+      <ScheduledTaskRow v-for="t in visible" :key="t.id" :task="t" />
       <li v-if="tasks.scheduled.length === 0" class="text-xs text-fg-muted">No scheduled tasks.</li>
     </ul>
+    <button v-if="overflow > 0" type="button" data-test="scheduled-view-all"
+            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-md border border-border bg-bg px-2 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-accent/10 hover:text-accent"
+            @click="drawerOpen = true">
+      View all {{ tasks.scheduled.length }}
+      <ChevronDown :size="12" />
+    </button>
     <form class="mt-2 space-y-1" @submit.prevent="create">
       <input v-model="executeAt" type="datetime-local" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg" />
       <input v-model="message" placeholder="message" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
       <button type="submit" class="w-full rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent-hover">Schedule</button>
     </form>
+
+    <!-- "View all" drawer: the full, unbounded list of upcoming + recent runs, anchored
+         to the right edge so the sidebar stays compact. -->
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition-opacity duration-200 ease-out motion-reduce:transition-none"
+        enter-from-class="opacity-0"
+        leave-active-class="transition-opacity duration-150 ease-in motion-reduce:transition-none"
+        leave-to-class="opacity-0">
+        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-black/50" @click.self="drawerOpen = false" @keydown.esc="drawerOpen = false">
+          <aside class="flex h-full w-full max-w-md flex-col border-l border-border bg-raised shadow-xl" role="dialog" aria-label="All scheduled tasks">
+            <header class="flex items-center justify-between border-b border-border px-4 py-3">
+              <h2 class="text-sm font-semibold text-fg">Scheduled · {{ tasks.scheduled.length }}</h2>
+              <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" aria-label="Close" data-test="scheduled-drawer-close" @click="drawerOpen = false"><X :size="16" /></button>
+            </header>
+            <ul class="flex-1 space-y-1 overflow-y-auto p-3">
+              <ScheduledTaskRow v-for="t in tasks.scheduled" :key="t.id" :task="t" @view="drawerOpen = false" />
+            </ul>
+          </aside>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
