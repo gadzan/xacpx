@@ -152,6 +152,40 @@ it("shows no resend control on a successful user message", () => {
   expect(wrapper.find('[data-test="msg-resend"]').exists()).toBe(false);
 });
 
+it("emits load-older when scrolled near the top with older history available", async () => {
+  const wrapper = mount(MessageList, {
+    props: { messages: [msg({ direction: "out", text: "x" })], liveTurn: null, hasMoreOlder: true, loadingOlder: false },
+  });
+  const scroller = wrapper.find('[data-test="msg-scroller"]');
+  const el = scroller.element as HTMLElement;
+  // jsdom doesn't lay out, so fake the scroll metrics: near the top of a tall scroller.
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+  el.scrollTop = 10; // within TOP_THRESHOLD
+  await scroller.trigger("scroll");
+  expect(wrapper.emitted("loadOlder")).toBeTruthy();
+});
+
+it("does not emit load-older when already loading or no older history", async () => {
+  const wrapper = mount(MessageList, {
+    props: { messages: [msg({ direction: "out", text: "x" })], liveTurn: null, hasMoreOlder: false, loadingOlder: false },
+  });
+  const scroller = wrapper.find('[data-test="msg-scroller"]');
+  const el = scroller.element as HTMLElement;
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+  el.scrollTop = 0;
+  await scroller.trigger("scroll");
+  expect(wrapper.emitted("loadOlder")).toBeFalsy();
+});
+
+it("shows a spinner while an older page is loading", () => {
+  const wrapper = mount(MessageList, {
+    props: { messages: [msg({ direction: "out", text: "x" })], liveTurn: null, hasMoreOlder: true, loadingOlder: true },
+  });
+  expect(wrapper.find('[data-test="loading-older"]').exists()).toBe(true);
+});
+
 it("renders a cancelled marker on a stopped message", () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "out", text: "partial", status: "cancelled" })], liveTurn: null },

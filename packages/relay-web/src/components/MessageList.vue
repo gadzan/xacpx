@@ -6,10 +6,10 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { Bot, CircleStop, RotateCcw } from "lucide-vue-next";
+import { Bot, CircleStop, Loader2, RotateCcw } from "lucide-vue-next";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null }>();
-const emit = defineEmits<{ resend: [message: ChatMessage] }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean }>();
+const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 // Stick-to-bottom: keep the newest content in view while the user is at the bottom,
 // but don't yank them down if they've scrolled up to read history. A "jump to latest"
@@ -17,12 +17,40 @@ const emit = defineEmits<{ resend: [message: ChatMessage] }>();
 const scroller = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
 const THRESHOLD = 48; // px from bottom still counts as "at bottom"
+const TOP_THRESHOLD = 240; // px from top that triggers a "load older" page fetch
+
+// Distance-from-bottom captured when a "load older" fetch starts, so we can restore the
+// exact scroll position after the older page is PREPENDED (prepend only grows the top, so
+// distance-from-bottom is content-invariant). Null when no prepend is pending.
+let pendingDistFromBottom: number | null = null;
 
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+  // Near the top with older history available → fetch the previous page. Capture the
+  // anchor first; the prepend watcher below restores position once the rows arrive.
+  if (el.scrollTop <= TOP_THRESHOLD && props.hasMoreOlder && !props.loadingOlder && pendingDistFromBottom === null) {
+    pendingDistFromBottom = el.scrollHeight - el.scrollTop;
+    emit("loadOlder");
+  }
 }
+
+// When a "load older" fetch finishes (loadingOlder true→false, after the store has
+// prepended the page), restore the prior view by pinning distance-from-bottom so the
+// content the user was reading doesn't jump. Self-clears even on an empty/failed load.
+watch(
+  () => props.loadingOlder,
+  (now, prev) => {
+    if (!(prev && !now) || pendingDistFromBottom === null) return;
+    const anchor = pendingDistFromBottom;
+    pendingDistFromBottom = null;
+    void nextTick(() => {
+      const el = scroller.value;
+      if (el) el.scrollTop = el.scrollHeight - anchor;
+    });
+  },
+);
 
 function scrollToBottom(smooth = false): void {
   const el = scroller.value;
@@ -59,7 +87,14 @@ function fmtTime(iso?: string): string {
   <div class="relative flex-1 overflow-hidden">
     <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-5 py-5" @scroll="onScroll">
       <div class="mx-auto max-w-3xl space-y-5">
-        <template v-for="(m, i) in messages" :key="i">
+        <!-- Older-history affordance: a spinner while a page loads, else a hint that more
+             exists. Prepending older rows keeps the scroll position pinned (see watcher). -->
+        <div v-if="loadingOlder" data-test="loading-older" class="flex justify-center py-1 text-[11px] text-fg-muted">
+          <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
+        </div>
+        <!-- Stable keys (persisted id, else an optimistic-row key) so a prepend doesn't
+             re-key/re-render every row — avoids markdown re-parse + scroll jank. -->
+        <template v-for="(m, i) in messages" :key="m.id !== undefined ? `p${m.id}` : `o${m.createdAt}:${i}`">
           <!-- USER row -->
           <div v-if="m.direction === 'in'" class="flex justify-end">
             <div class="flex max-w-[80%] flex-col items-end">

@@ -100,6 +100,11 @@ export const useChatStore = defineStore("chat", () => {
 
   const sending = ref(false);
   const error = ref("");
+  // Cursor pagination for "load older" on scroll-up. `hasMoreOlder` = older rows exist
+  // beyond what's loaded; `loadingOlder` guards against overlapping fetches.
+  const HISTORY_PAGE = 100;
+  const hasMoreOlder = ref(false);
+  const loadingOlder = ref(false);
 
   function ensureTurn(k: string): LiveTurn {
     let t = liveTurns.value[k];
@@ -146,6 +151,8 @@ export const useChatStore = defineStore("chat", () => {
     persistSelection(id, alias);
     messages.value = [];
     error.value = "";
+    hasMoreOlder.value = false;
+    loadingOlder.value = false;
     // Viewing a session clears its unread signal.
     const k = bufKey(id, alias);
     if (unread.value.has(k)) {
@@ -157,10 +164,36 @@ export const useChatStore = defineStore("chat", () => {
 
   async function loadHistory(): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
-    const { messages: rows } = await api.get<{ messages: MessageRecordDto[] }>(
-      `/api/instances/${instanceId.value}/sessions/${sessionAlias.value}/messages`,
+    const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
+      `/api/instances/${instanceId.value}/sessions/${sessionAlias.value}/messages?limit=${HISTORY_PAGE}`,
     );
     messages.value = rows;
+    hasMoreOlder.value = hasMore ?? false;
+  }
+
+  /** Fetch the page of history immediately older than the oldest row we hold and PREPEND
+   *  it (cursor = oldest persisted id). The caller (MessageList) preserves scroll position
+   *  across the prepend. No-op while another page is in flight or when none remain. */
+  async function loadOlder(): Promise<void> {
+    if (!instanceId.value || !sessionAlias.value || loadingOlder.value || !hasMoreOlder.value) return;
+    const oldestId = messages.value.find((m) => typeof m.id === "number")?.id;
+    if (oldestId === undefined) return;
+    const id = instanceId.value;
+    const alias = sessionAlias.value;
+    loadingOlder.value = true;
+    try {
+      const { messages: older, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
+        `/api/instances/${id}/sessions/${alias}/messages?before=${oldestId}&limit=${HISTORY_PAGE}`,
+      );
+      // The session may have changed while awaiting; only apply if still selected.
+      if (id !== instanceId.value || alias !== sessionAlias.value) return;
+      if (older.length > 0) messages.value = [...older, ...messages.value];
+      hasMoreOlder.value = hasMore ?? false;
+    } catch {
+      // Best-effort: leave hasMoreOlder set so a later scroll retries.
+    } finally {
+      loadingOlder.value = false;
+    }
   }
 
   /** Rebuild live turns from the hub's in-flight snapshot (after a refresh/reconnect).
@@ -276,5 +309,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, select, loadHistory, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });

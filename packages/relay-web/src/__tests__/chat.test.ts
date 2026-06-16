@@ -102,6 +102,46 @@ test("loadActiveTurns fetches the in-flight snapshot and seeds it", async () => 
   expect(store.streaming).toBe("live");
 });
 
+test("loadHistory records hasMore; loadOlder prepends the older page and updates the cursor", async () => {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    calls.push(path);
+    if (path.includes("before=")) {
+      // Older page: two rows immediately before id 10, and no more remain.
+      return new Response(JSON.stringify({
+        messages: [
+          { id: 8, instanceId: "i1", sessionAlias: "s1", direction: "in", text: "older-a", createdAt: "t" },
+          { id: 9, instanceId: "i1", sessionAlias: "s1", direction: "out", text: "older-b", createdAt: "t" },
+        ],
+        hasMore: false,
+      }), { status: 200 });
+    }
+    // Initial page: most recent row id 10, with older history available.
+    return new Response(JSON.stringify({
+      messages: [{ id: 10, instanceId: "i1", sessionAlias: "s1", direction: "in", text: "newest", createdAt: "t" }],
+      hasMore: true,
+    }), { status: 200 });
+  }));
+
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await chat.loadHistory();
+  expect(chat.messages.map((m) => m.text)).toEqual(["newest"]);
+  expect(chat.hasMoreOlder).toBe(true);
+
+  await chat.loadOlder();
+  // Older rows PREPENDED, oldest-first, ahead of the existing newest row.
+  expect(chat.messages.map((m) => m.text)).toEqual(["older-a", "older-b", "newest"]);
+  expect(chat.hasMoreOlder).toBe(false);
+  // The cursor was the oldest id we held (10).
+  expect(calls.some((c) => c.includes("before=10"))).toBe(true);
+
+  // No older remain → loadOlder is now a no-op (no extra fetch).
+  const before = calls.length;
+  await chat.loadOlder();
+  expect(calls.length).toBe(before);
+});
+
 test("select persists the open session so a refresh can restore it", () => {
   const store = useChatStore();
   store.select("i9", "frontend");
