@@ -195,6 +195,9 @@ export function parseConfig(
   ) {
     throw new Error("transport.queueOwnerTtlSeconds must be a non-negative number (0 = keep alive forever)");
   }
+  if ("preferLocalAgents" in transport && typeof transport.preferLocalAgents !== "boolean") {
+    throw new Error("transport.preferLocalAgents must be a boolean");
+  }
 
   if (!isRecord(raw.agents)) {
     throw new Error("agents must be an object");

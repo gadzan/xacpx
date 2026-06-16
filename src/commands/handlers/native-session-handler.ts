@@ -1,4 +1,4 @@
-import { resolveAgentCommand } from "../../config/resolve-agent-command";
+import { resolveRuntimeAgentCommand } from "../../config/resolve-agent-command";
 import { getChannelIdFromChatKey, scopeDisplayAliasToInternal, toDisplaySessionAlias } from "../../channels/channel-scope";
 import type { AgentSession, AgentSessionListQuery, AgentSessionListResult, ResolvedSession } from "../../transport/types";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../workspace-name";
@@ -230,7 +230,7 @@ async function resolveNativeTarget(
   return {
     agent,
     agentDisplayName: displayAgentName(agent),
-    agentCommand: resolveAgentCommand(agentConfig.driver, agentConfig.command),
+    agentCommand: resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, context.config?.transport.preferLocalAgents !== false),
     workspace: workspaceResolution.workspace,
     workspaceLabel: workspaceResolution.workspaceLabel,
     cwd: workspaceResolution.cwd,

@@ -1,4 +1,4 @@
-import { resolveAgentCommand } from "../config/resolve-agent-command";
+import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
 import type { AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -617,7 +617,7 @@ export class SessionService {
     return {
       alias: session.alias,
       agent: session.agent,
-      agentCommand: session.transport_agent_command ?? resolveAgentCommand(agentConfig.driver, agentConfig.command),
+      agentCommand: session.transport_agent_command ?? resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, this.config.transport.preferLocalAgents !== false),
       // Session-level model wins; otherwise fall back to the agent config default.
       model: session.model ?? agentConfig.model,
       workspace: session.workspace,

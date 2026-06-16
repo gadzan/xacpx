@@ -88,6 +88,7 @@ How xacpx communicates with the acpx backend.
 | `nonInteractivePermissions` | `"deny"` \| `"fail"` | No | Permission policy for non-interactive scenarios, defaults to `"deny"` |
 | `permissionPolicy` | `string` | No | Path to the acpx permission policy file (passed through as `acpx --permission-policy <value>`); not enabled when omitted |
 | `queueOwnerTtlSeconds` | `number` | No | acpx queue owner idle time-to-live (seconds), passed through to the prompt command as `acpx --ttl <value>`. Defaults to `1800` (30 minutes); `0` = live forever. See the "Reducing agent cold starts" notes below |
+| `preferLocalAgents` | `boolean` | No | Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback when one is on `PATH` (currently the unpinned-npx drivers `opencode` and `kilocode`). Avoids a per-cold-start npm-registry fetch — faster and immune to network blips (e.g. `ECONNRESET` during agent init). Defaults to `true`; set `false` to always use acpx's default resolution. A per-agent `command` override still takes precedence |
 
 ### `type` Options
 
