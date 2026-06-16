@@ -1500,3 +1500,50 @@ test("/use -: friendly message when there is no previous", async () => {
 
   expect(res.text).toContain(t().session.noPreviousSession);
 });
+
+// --- native-session control surface (web add-session "attach native session") ---
+
+test("listNativeSessionsForControl queries the transport filtered to the workspace cwd", async () => {
+  const { router, transport } = buildRouter();
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [{ sessionId: "ses_1", title: "Old work", updatedAt: "2026-06-10T00:00:00Z", cwd: "/tmp/backend" }],
+  }));
+
+  const result = await router.listNativeSessionsForControl("codex", "backend");
+
+  expect(result).toEqual([{ sessionId: "ses_1", title: "Old work", updatedAt: "2026-06-10T00:00:00Z", cwd: "/tmp/backend" }]);
+  const query = (transport.listAgentSessions as ReturnType<typeof mock>).mock.calls.at(-1)?.[0];
+  expect(query).toMatchObject({ agent: "codex", cwd: "/tmp/backend", filterCwd: "/tmp/backend" });
+});
+
+test("listNativeSessionsForControl rejects an unknown agent or workspace", async () => {
+  const { router } = buildRouter();
+  await expect(router.listNativeSessionsForControl("nope", "backend")).rejects.toThrow(/unknown agent/);
+});
+
+test("attachNativeSessionWithTransport resumes the agent session and records a native binding", async () => {
+  const { router, transport, sessions } = buildRouter();
+
+  const session = await router.attachNativeSessionWithTransport(
+    "relay:resumed", "codex", "backend", "ses_42",
+    { title: "Resumed", updatedAt: "2026-06-12T00:00:00Z" },
+  );
+
+  expect(session.alias).toBe("relay:resumed");
+  // Resumed via the native --resume-session path, never a fresh ensureSession.
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("ses_42");
+  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  // Persisted as an agent-side (native) session carrying the agent_session_id.
+  const stored = await sessions.getSession("relay:resumed");
+  expect(stored?.source).toBe("agent-side");
+  expect(stored?.agentSessionId).toBe("ses_42");
+});
+
+test("attachNativeSessionWithTransport refuses to overwrite an existing alias", async () => {
+  const { router } = buildRouter();
+  await router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_1");
+  await expect(
+    router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_2"),
+  ).rejects.toThrow(/already exists/);
+});

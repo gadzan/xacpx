@@ -42,7 +42,7 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   // Session ops are chat-scoped too: created sessions must land in the same
   // `relay:<accountId>` channel scope that prompt/list resolve against, else a
   // freshly created session is unreachable by a subsequent prompt.
-  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsRemove,
+  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsNativeList, MSG.sessionsRemove,
   // Model get/set resolve the session within the caller's chat scope.
   MSG.sessionModelGet, MSG.sessionModelSet,
 ]);

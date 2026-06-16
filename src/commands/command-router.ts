@@ -5,7 +5,8 @@ import type { AppLogger } from "../logging/app-logger";
 import { createNoopAppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { PromptMediaInput, ReplyQuotaContext, SessionTransport } from "../transport/types";
-import type { ResolvedSession } from "../transport/types";
+import type { AgentSession, ResolvedSession } from "../transport/types";
+import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
 import type { PerfSpan } from "../perf/perf-tracer";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import { resolveSessionAgentCommandFromIndex, type SessionAgentCommandResolver } from "../transport/acpx-session-index";
@@ -523,6 +524,92 @@ export class CommandRouter {
         await this.refreshSessionTransportAgentCommand(internalAlias);
       } catch (error) {
         await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
+          alias: internalAlias,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return session;
+    } finally {
+      await release();
+    }
+  }
+
+  /**
+   * List the agent-native (acpx-owned) sessions for a given agent + workspace, for the
+   * web "attach a native session" picker. Resolves the workspace's cwd from config and
+   * the agent's runtime command, then queries the transport, filtered to that cwd.
+   * Returns [] when the transport doesn't support native listing.
+   */
+  async listNativeSessionsForControl(agent: string, workspace: string): Promise<AgentSession[]> {
+    const listAgentSessions = this.transport.listAgentSessions?.bind(this.transport);
+    if (!listAgentSessions) return [];
+    const agentConfig = this.config?.agents[agent];
+    const workspaceConfig = this.config?.workspaces[workspace];
+    if (!agentConfig || !workspaceConfig) {
+      throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
+    }
+    const agentCommand = resolveRuntimeAgentCommand(
+      agentConfig.driver,
+      agentConfig.command,
+      this.config?.transport.preferLocalAgents !== false,
+    );
+    const result = await listAgentSessions({
+      agent,
+      ...(agentCommand ? { agentCommand } : {}),
+      cwd: workspaceConfig.cwd,
+      filterCwd: workspaceConfig.cwd,
+    });
+    return result?.sessions ?? [];
+  }
+
+  /**
+   * Create a logical session bound to an EXISTING agent-native session (resume) — the
+   * web counterpart of `/ssn` → select. Mirrors createSessionWithTransport but resumes
+   * the given agentSessionId and records the binding as a native ("agent-side")
+   * attachment. `internalAlias` must already be channel-scoped (e.g. "relay:demo").
+   */
+  async attachNativeSessionWithTransport(
+    internalAlias: string,
+    agent: string,
+    workspace: string,
+    agentSessionId: string,
+    nativeMeta?: { title?: string | null; updatedAt?: string },
+  ): Promise<ResolvedSession> {
+    if (!this.transport.resumeAgentSession) {
+      throw new Error("the active transport does not support native sessions");
+    }
+    const existing = this.sessions.getResolvedSessionByInternalAlias(internalAlias);
+    if (existing) {
+      throw new Error(`session "${internalAlias}" already exists`);
+    }
+    const session = this.sessions.resolveSession(
+      internalAlias,
+      agent,
+      workspace,
+      `${workspace}:${internalAlias}`,
+    );
+    const release = await this.reserveLogicalTransportSession(session.transportSession);
+    try {
+      await this.transport.resumeAgentSession(session, agentSessionId);
+      const exists = await this.checkTransportSession(session);
+      if (!exists) {
+        throw new Error(`transport session "${session.transportSession}" could not be verified`);
+      }
+      await this.sessions.attachNativeSession({
+        alias: internalAlias,
+        agent,
+        workspace,
+        transportSession: session.transportSession,
+        agentSessionId,
+        ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
+        ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
+      });
+      // Best-effort: a transient refresh failure must not fail an attach that already
+      // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
+      try {
+        await this.refreshSessionTransportAgentCommand(internalAlias);
+      } catch (error) {
+        await this.logger.error("session.native.agent_command_refresh_failed", "failed to refresh native session agent command", {
           alias: internalAlias,
           error: error instanceof Error ? error.message : String(error),
         });

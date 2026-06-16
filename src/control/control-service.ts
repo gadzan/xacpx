@@ -1,6 +1,6 @@
 import type { Agent as ChatAgent, ChatRequestMetadata } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
-import type { ResolvedSession, SessionTransport } from "../transport/types";
+import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry";
 import type {
   CreateScheduledTaskInput,
@@ -35,6 +35,14 @@ export interface ControlAgentInfo {
   driver: string;
 }
 
+/** An agent-native (acpx-owned) session available to attach as a new logical session. */
+export interface ControlNativeSessionInfo {
+  sessionId: string;
+  title?: string | null;
+  updatedAt?: string;
+  cwd?: string;
+}
+
 export interface ControlWorkspaceInfo {
   name: string;
   cwd: string;
@@ -54,6 +62,17 @@ export interface ControlServiceDeps {
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
   createSessionWithTransport: (internalAlias: string, agent: string, workspace: string) => Promise<ResolvedSession>;
+  // List the agent-native sessions for an agent + workspace (web native-attach picker).
+  listNativeSessions: (agent: string, workspace: string) => Promise<AgentSession[]>;
+  // Bind a new logical session to an EXISTING agent-native session (resume), the web
+  // counterpart of `/ssn` → select. Wired to CommandRouter.attachNativeSessionWithTransport.
+  attachNativeSessionWithTransport: (
+    internalAlias: string,
+    agent: string,
+    workspace: string,
+    agentSessionId: string,
+    nativeMeta?: { title?: string | null; updatedAt?: string },
+  ) => Promise<ResolvedSession>;
   activeTurns: Pick<ActiveTurnRegistry, "isActiveAnywhere">;
   scheduled: Pick<ScheduledTaskService, "listPending" | "createTask" | "cancelPending">;
   orchestration: Pick<OrchestrationService, "listTasks" | "getTask" | "requestTaskCancellation">;
@@ -169,9 +188,35 @@ export class ControlService {
       }));
   }
 
-  async createSession(chatKey: string, alias: string, agent: string, workspace: string): Promise<ControlSessionInfo> {
+  /**
+   * List the agent-native (acpx-owned) sessions for an agent + workspace, so the web
+   * add-session dialog can offer "attach an existing native session". These are the
+   * agent's own rollouts on disk (per-cwd), not chat-scoped — chatKey is accepted only
+   * for call-shape symmetry with the other session control methods.
+   */
+  async listNativeSessions(_chatKey: string, agent: string, workspace: string): Promise<ControlNativeSessionInfo[]> {
+    const sessions = await this.deps.listNativeSessions(agent, workspace);
+    return sessions.map((s) => ({
+      sessionId: s.sessionId,
+      title: s.title ?? null,
+      ...(s.updatedAt !== undefined ? { updatedAt: s.updatedAt } : {}),
+      ...(s.cwd !== undefined ? { cwd: s.cwd } : {}),
+    }));
+  }
+
+  async createSession(
+    chatKey: string,
+    alias: string,
+    agent: string,
+    workspace: string,
+    agentSessionId?: string,
+  ): Promise<ControlSessionInfo> {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
-    const session = await this.deps.createSessionWithTransport(internalAlias, agent, workspace);
+    // When an agentSessionId is supplied the user picked an existing native session to
+    // resume; otherwise create a fresh transport session (the default `/session new`).
+    const session = agentSessionId
+      ? await this.deps.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId)
+      : await this.deps.createSessionWithTransport(internalAlias, agent, workspace);
     this.deps.events.emit({ type: "sessions-changed" });
     return {
       alias: toDisplaySessionAlias(session.alias),

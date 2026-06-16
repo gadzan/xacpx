@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type SessionDto, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
+import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
@@ -113,15 +113,24 @@ export const useInstancesStore = defineStore("instances", () => {
   // so a timeout is reported as `{pending:true}` (not a hard error). Every other
   // failure — including the instance-side `{error}` payload surfaced by `unwrap` —
   // is a real failure and rethrows.
-  async function createSession(instanceId: string, alias: string, agent: string, workspace: string): Promise<{ pending: boolean }> {
+  async function createSession(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string): Promise<{ pending: boolean }> {
     try {
-      unwrap(await api.rpc(instanceId, "control.sessions.create", { alias, agent, workspace }));
+      // agentSessionId, when set, resumes an existing agent-native session instead of
+      // creating a fresh transport session (the web "attach native session" option).
+      unwrap(await api.rpc(instanceId, "control.sessions.create", { alias, agent, workspace, ...(agentSessionId ? { agentSessionId } : {}) }));
     } catch (e) {
       if (e instanceof ApiError && (e.status === 504 || e.code === "timeout")) return { pending: true };
       throw e;
     }
     await loadSessions(instanceId);
     return { pending: false };
+  }
+
+  // The agent-native (acpx-owned) sessions available to attach for a given agent +
+  // workspace — the source list for the add-session dialog's "native" picker.
+  async function listNativeSessions(instanceId: string, agent: string, workspace: string): Promise<NativeSessionDto[]> {
+    const { sessions } = unwrap(await api.rpc<{ sessions: NativeSessionDto[] }>(instanceId, "control.sessions.native.list", { agent, workspace }));
+    return sessions;
   }
 
   async function removeSession(instanceId: string, alias: string): Promise<void> {
@@ -147,5 +156,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, removeSession, applyEvent, byId };
+  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, listNativeSessions, removeSession, applyEvent, byId };
 });

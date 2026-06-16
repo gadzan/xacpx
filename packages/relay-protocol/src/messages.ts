@@ -10,6 +10,7 @@ export const MSG = {
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
+  sessionsNativeList: "control.sessions.native.list",
   sessionsRemove: "control.sessions.remove",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
@@ -97,8 +98,27 @@ export interface SessionsCreatePayload {
   alias: string;
   agent: string;
   workspace: string;
+  /** When set, resume this existing agent-native session instead of creating a fresh one. */
+  agentSessionId?: string;
 }
 export type SessionsCreateResult = SessionDto;
+
+/** An agent-native (acpx-owned) session offered in the web add-session "native" picker. */
+export interface NativeSessionDto {
+  sessionId: string;
+  title?: string | null;
+  updatedAt?: string;
+  cwd?: string;
+}
+export interface SessionsNativeListPayload {
+  /** Server-stamped `relay:<accountId>`. */
+  chatKey: string;
+  agent: string;
+  workspace: string;
+}
+export interface SessionsNativeListResult {
+  sessions: NativeSessionDto[];
+}
 export interface SessionsRemovePayload {
   /** Server-stamped `relay:<accountId>`; scopes the alias to that channel. */
   chatKey: string;

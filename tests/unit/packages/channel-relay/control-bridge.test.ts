@@ -78,6 +78,26 @@ test("sessions.list / prompt / command.execute dispatch and shape results", asyn
   expect(await dispatch(bridge, req(MSG.commandExecute, { chatKey: "k", text: "/status", senderId: "acct" }))).toEqual({ output: "output" });
 });
 
+test("sessions.native.list lists, and sessions.create forwards agentSessionId for native resume", async () => {
+  const created: unknown[] = [];
+  const { control } = makeFakeControl({
+    listNativeSessions: async (_chatKey: string, _agent: string, _workspace: string) =>
+      [{ sessionId: "ses_1", title: "Old", updatedAt: "2026-06-10T00:00:00Z", cwd: "/ws" }],
+    createSession: async (chatKey: string, alias: string, agent: string, workspace: string, agentSessionId?: string) => {
+      created.push({ chatKey, alias, agent, workspace, agentSessionId });
+      return { alias, agent, workspace, transportSession: "t", running: false };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+
+  expect(await dispatch(bridge, req(MSG.sessionsNativeList, { chatKey: "relay:acct", agent: "codex", workspace: "backend" }))).toEqual({
+    sessions: [{ sessionId: "ses_1", title: "Old", updatedAt: "2026-06-10T00:00:00Z", cwd: "/ws" }],
+  });
+
+  await dispatch(bridge, req(MSG.sessionsCreate, { chatKey: "relay:acct", alias: "resumed", agent: "codex", workspace: "backend", agentSessionId: "ses_1" }));
+  expect(created).toEqual([{ chatKey: "relay:acct", alias: "resumed", agent: "codex", workspace: "backend", agentSessionId: "ses_1" }]);
+});
+
 test("scheduled list/create map records to camelCase DTOs; executeAt parsed to Date", async () => {
   const { control, calls } = makeFakeControl();
   const bridge = createControlBridge(control as never);

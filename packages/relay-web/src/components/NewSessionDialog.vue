@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { X } from "lucide-vue-next";
+import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
 
@@ -12,6 +13,7 @@ const inst = computed(() => store.byId(props.instanceId));
 
 const alias = ref("");
 const agentValue = ref("");           // chosen agent NAME or un-configured driver
+const sessionSource = ref<"new" | "native">("new"); // fresh transport session vs attach existing native session
 const wsMode = ref<"existing" | "path">("existing");
 const workspaceSel = ref("");
 const workspacePath = ref("");
@@ -20,6 +22,12 @@ const pending = ref(false);
 const submittedAlias = ref("");
 const error = ref("");
 const loading = ref(true);
+
+// Native ("agent-side") session attach: pick an existing acpx-owned rollout to resume.
+const nativeSessions = ref<NativeSessionDto[]>([]);
+const nativeSel = ref("");            // chosen agentSessionId
+const nativeLoading = ref(false);
+const nativeError = ref("");
 
 onMounted(async () => {
   try {
@@ -50,8 +58,49 @@ const aliasPlaceholder = computed(() =>
   resolvedWorkspaceName.value && agentValue.value ? genAlias(resolvedWorkspaceName.value, agentValue.value) : "auto",
 );
 
+// Native attach resolves the agent + workspace from config to list the agent's own
+// rollouts, so it requires a CONFIGURED agent and an EXISTING workspace.
+const agentIsConfigured = computed(() => configuredNames.value.has(agentValue.value));
+
+async function loadNativeSessions(): Promise<void> {
+  nativeSel.value = "";
+  nativeSessions.value = [];
+  nativeError.value = "";
+  if (sessionSource.value !== "native" || !agentValue.value || !workspaceSel.value) return;
+  if (!agentIsConfigured.value) {
+    nativeError.value = "Pick a configured agent to list its native sessions.";
+    return;
+  }
+  nativeLoading.value = true;
+  try {
+    nativeSessions.value = await store.listNativeSessions(props.instanceId, agentValue.value, workspaceSel.value);
+    nativeSel.value = nativeSessions.value[0]?.sessionId ?? "";
+  } catch (e) {
+    nativeError.value = e instanceof Error ? e.message : "failed to list native sessions";
+  } finally {
+    nativeLoading.value = false;
+  }
+}
+
+// (Re)fetch the native list whenever the source/agent/workspace changes while in native
+// mode. Native mode forces an existing workspace (a brand-new path has no rollouts yet).
+watch([sessionSource, agentValue, workspaceSel], () => {
+  if (sessionSource.value === "native") {
+    wsMode.value = "existing";
+    void loadNativeSessions();
+  }
+});
+
+function nativeLabel(s: NativeSessionDto): string {
+  const title = (s.title ?? "").trim() || s.sessionId;
+  const tail = s.sessionId.length > 8 ? `…${s.sessionId.slice(-8)}` : s.sessionId;
+  const when = s.updatedAt ? ` · ${new Date(s.updatedAt).toLocaleString()}` : "";
+  return `${title} (${tail})${when}`;
+}
+
 const canSubmit = computed(() => {
   if (submitting.value || !agentValue.value) return false;
+  if (sessionSource.value === "native") return !!nativeSel.value;
   if (wsMode.value === "existing") return !!workspaceSel.value;
   return !!workspacePath.value.trim();
 });
@@ -62,13 +111,32 @@ async function submit(): Promise<void> {
   error.value = "";
   try {
     const agentName = agentValue.value;
+    const existingAliases = (inst.value?.sessions ?? []).map((s) => s.alias);
+
+    // NATIVE: attach an existing agent-owned rollout. Agent + workspace are already
+    // configured (the picker only lists for those), so nothing new is written here —
+    // we just resume the chosen agentSessionId under a new logical alias.
+    if (sessionSource.value === "native") {
+      const workspaceName = workspaceSel.value;
+      const finalAlias = alias.value.trim() || uniqueName(genAlias(workspaceName, agentName), existingAliases);
+      if (!workspaceName || !finalAlias || !nativeSel.value) {
+        error.value = "pick a native session and a valid alias";
+        return;
+      }
+      const result = await store.createSession(props.instanceId, finalAlias, agentName, workspaceName, nativeSel.value);
+      if (result.pending) { submittedAlias.value = finalAlias; pending.value = true; return; }
+      emit("created", finalAlias);
+      emit("close");
+      return;
+    }
+
+    // NEW: create a fresh transport session.
     // 1) derive the workspace + alias names up front
     let workspaceName = workspaceSel.value;
     if (wsMode.value === "path") {
       const existing = (inst.value?.workspaces ?? []).map((w) => w.name);
       workspaceName = uniqueName(workspaceNameFromPath(workspacePath.value), existing);
     }
-    const existingAliases = (inst.value?.sessions ?? []).map((s) => s.alias);
     const finalAlias = alias.value.trim() || uniqueName(genAlias(workspaceName, agentName), existingAliases);
     // 2) guard against empty derived names (e.g. an all-symbols path/alias)
     //    BEFORE creating anything (agent/workspace), so nothing is written on bad input.
@@ -111,6 +179,20 @@ async function submit(): Promise<void> {
         </div>
         <div v-else-if="loading" class="py-6 text-center text-sm text-fg-muted">Loading options…</div>
         <template v-else>
+          <div class="block">
+            <span class="mb-1 block text-xs font-medium text-fg-muted">Source</span>
+            <div class="flex gap-1">
+              <button type="button" data-test="ns-source-new"
+                      class="flex-1 rounded px-2 py-1 text-xs"
+                      :class="sessionSource === 'new' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                      @click="sessionSource = 'new'">New session</button>
+              <button type="button" data-test="ns-source-native"
+                      class="flex-1 rounded px-2 py-1 text-xs"
+                      :class="sessionSource === 'native' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                      @click="sessionSource = 'native'">Native session</button>
+            </div>
+          </div>
+
           <label class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">Session alias <span class="font-normal text-fg-muted">(optional)</span></span>
             <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
@@ -136,7 +218,7 @@ async function submit(): Promise<void> {
           <div class="block">
             <div class="mb-1 flex items-center justify-between">
               <span class="text-xs font-medium text-fg-muted">Workspace</span>
-              <div class="flex gap-1">
+              <div v-if="sessionSource === 'new'" class="flex gap-1">
                 <button type="button" data-test="ns-ws-mode-existing"
                         class="rounded px-2 py-0.5 text-xs"
                         :class="wsMode === 'existing' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
@@ -154,6 +236,19 @@ async function submit(): Promise<void> {
             <input v-else v-model="workspacePath" data-test="ns-ws-path" placeholder="/abs/path"
                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
           </div>
+
+          <!-- Native attach: pick an existing acpx-owned rollout for the chosen agent + workspace. -->
+          <label v-if="sessionSource === 'native'" class="block">
+            <span class="mb-1 block text-xs font-medium text-fg-muted">Native session</span>
+            <div v-if="nativeLoading" data-test="ns-native-loading" class="py-2 text-xs text-fg-muted">Listing native sessions…</div>
+            <select v-else-if="nativeSessions.length" v-model="nativeSel" data-test="ns-native"
+                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              <option v-for="s in nativeSessions" :key="s.sessionId" :value="s.sessionId">{{ nativeLabel(s) }}</option>
+            </select>
+            <p v-else data-test="ns-native-empty" class="rounded-lg bg-bg px-3 py-2 text-xs text-fg-muted">
+              {{ nativeError || "No native sessions found for this agent + workspace." }}
+            </p>
+          </label>
 
           <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ error }}</p>
         </template>

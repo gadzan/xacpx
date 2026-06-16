@@ -22,6 +22,7 @@ import {
   type AgentsRemovePayload,
   type SessionsCreatePayload,
   type SessionsListPayload,
+  type SessionsNativeListPayload,
   type SessionsRemovePayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
@@ -78,7 +79,11 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     }
     case MSG.sessionsCreate: {
       const input = payload as SessionsCreatePayload;
-      return await control.createSession(input.chatKey, input.alias, input.agent, input.workspace);
+      return await control.createSession(input.chatKey, input.alias, input.agent, input.workspace, input.agentSessionId);
+    }
+    case MSG.sessionsNativeList: {
+      const input = payload as SessionsNativeListPayload;
+      return { sessions: await control.listNativeSessions(input.chatKey, input.agent, input.workspace) };
     }
     case MSG.sessionsRemove: {
       const input = payload as SessionsRemovePayload;

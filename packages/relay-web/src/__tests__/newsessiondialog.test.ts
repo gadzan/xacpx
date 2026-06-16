@@ -9,6 +9,7 @@ interface DialogOptions {
   workspaces?: Array<{ name: string; cwd: string; description?: string }>;
   agentCatalog?: Array<{ driver: string; configured: boolean; installed: "builtin" | "yes" | "unknown" }>;
   sessions?: Array<{ alias: string }>;
+  nativeSessions?: Array<{ sessionId: string; title?: string | null; updatedAt?: string; cwd?: string }>;
 }
 
 function mountDialog(opts: DialogOptions = {}) {
@@ -24,6 +25,7 @@ function mountDialog(opts: DialogOptions = {}) {
   vi.spyOn(store, "createAgent").mockResolvedValue(undefined as never);
   vi.spyOn(store, "createWorkspace").mockResolvedValue({ name: "ws", cwd: "/ws" } as never);
   vi.spyOn(store, "createSession").mockResolvedValue({ pending: false });
+  vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
   const wrapper = mount(NewSessionDialog, { props: { instanceId: "i1", instanceName: "pc" } });
   return { wrapper, store };
 }
@@ -147,6 +149,42 @@ describe("NewSessionDialog", () => {
     expect(wrapper.find('[data-test="ns-pending"]').exists()).toBe(true);
     await wrapper.get('[data-test="ns-pending-close"]').trigger("click");
     expect(wrapper.emitted("created")?.[0]).toEqual(["backend-codex"]);
+  });
+
+  it("native source lists the agent's rollouts and attaches the chosen one by agentSessionId", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+      nativeSessions: [{ sessionId: "ses_99", title: "Prior work", updatedAt: "2026-06-10T00:00:00Z", cwd: "/b" }],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click");
+    await flushPromises();
+    // The native list is queried for the chosen agent + workspace, and the picker shows.
+    expect(store.listNativeSessions).toHaveBeenCalledWith("i1", "codex", "backend");
+    expect(wrapper.find('[data-test="ns-native"]').exists()).toBe(true);
+    // Creating now resumes the (preselected) native session via its agentSessionId.
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", "ses_99");
+  });
+
+  it("native source with no rollouts shows an empty hint and blocks create", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+      nativeSessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-native-empty"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
+    expect(store.createSession).not.toHaveBeenCalled();
   });
 
   it("shows a non-error pending notice on a create timeout and defers emit until acknowledged", async () => {
