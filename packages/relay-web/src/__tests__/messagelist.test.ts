@@ -179,6 +179,26 @@ it("does not emit load-older when already loading or no older history", async ()
   expect(wrapper.emitted("loadOlder")).toBeFalsy();
 });
 
+it("re-pins to the bottom when the session changes (atBottom reset)", async () => {
+  const wrapper = mount(MessageList, {
+    props: { messages: [msg({ direction: "out", text: "hi" })], liveTurn: null, sessionKey: "a\0one" },
+  });
+  const scroller = wrapper.find('[data-test="msg-scroller"]');
+  const el = scroller.element as HTMLElement;
+  // User scrolls up in session "one" → detached from bottom, jump-latest shows.
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+  el.scrollTop = 100;
+  await scroller.trigger("scroll");
+  // Detached from the bottom → the jump-latest affordance is shown (v-show, not display:none).
+  expect(wrapper.find('[data-test="jump-latest"]').attributes("style") ?? "").not.toContain("display: none");
+  // Switching to another session re-pins to the bottom (new session opens at newest).
+  await wrapper.setProps({ sessionKey: "a\0two" });
+  await wrapper.vm.$nextTick();
+  expect(el.scrollTop).toBe(5000); // jumped to scrollHeight
+  expect(wrapper.find('[data-test="jump-latest"]').attributes("style") ?? "").toContain("display: none");
+});
+
 it("marks message rows as content-visibility virtualized (cv-row)", () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },

@@ -93,6 +93,7 @@ const verb = computed(() => {
         <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
       </div>
       <MessageList :messages="chat.messages" :live-turn="chat.liveTurn"
+                   :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
       <!-- composer area -->

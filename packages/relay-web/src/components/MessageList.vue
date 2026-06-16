@@ -8,7 +8,7 @@ import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import { Bot, CircleStop, Loader2, RotateCcw } from "lucide-vue-next";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 // Stick-to-bottom: keep the newest content in view while the user is at the bottom,
@@ -52,13 +52,42 @@ watch(
   },
 );
 
+let settleRaf = 0;
 function scrollToBottom(smooth = false): void {
   const el = scroller.value;
   if (!el) return;
   if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
   else el.scrollTop = el.scrollHeight; // jsdom / older engines
   atBottom.value = true;
+  // `content-visibility:auto` rows render lazily at the contain-intrinsic-size ESTIMATE,
+  // so on a long history the first jump can stop short of the true bottom (the real row
+  // heights aren't known until they paint). Re-pin over the next few frames as the
+  // newly-revealed rows settle. Skipped for smooth (the "↓ Latest" affordance) so we
+  // don't fight the animation, and where rAF is unavailable (jsdom tests).
+  if (smooth || typeof requestAnimationFrame !== "function") return;
+  if (settleRaf) cancelAnimationFrame(settleRaf);
+  let tries = 0;
+  const settle = (): void => {
+    settleRaf = 0;
+    const e = scroller.value;
+    if (!e) return;
+    if (e.scrollHeight - e.scrollTop - e.clientHeight > 1) e.scrollTop = e.scrollHeight;
+    if (++tries < 4) settleRaf = requestAnimationFrame(settle);
+  };
+  settleRaf = requestAnimationFrame(settle);
 }
+
+// Switching sessions: the newly selected session starts at the bottom (newest message),
+// regardless of where the user had scrolled in the previous one. Reset the stick-to-bottom
+// state so the history that loads in (async) gets pinned to the bottom by the watch below.
+watch(
+  () => props.sessionKey,
+  () => {
+    atBottom.value = true;
+    pendingDistFromBottom = null;
+    void nextTick(() => scrollToBottom(false));
+  },
+);
 
 // New messages / streaming chunks / tool steps: follow only if already pinned to bottom.
 // The tail signal reacts to new parts AND growth of the final part (text length or a
