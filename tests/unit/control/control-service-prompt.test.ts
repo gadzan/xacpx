@@ -142,6 +142,47 @@ test("second concurrent prompt on the same session is rejected; cancelTurn abort
   expect(control.cancelTurn("relay:acct-1", "backend")).toBe(false);
 });
 
+test("a follow-up prompt after Stop waits for the cancelled turn to drain, then runs", async () => {
+  // Regression: pressing Stop aborts the turn, but the transport teardown (acpx cancel
+  // + agent wind-down) is async, so the turn stays in `inFlight` for a moment. The web
+  // UI releases its busy state optimistically, so a follow-up message could land in that
+  // drain window and used to bounce with "turn-already-running". It must instead wait for
+  // the cancelled turn to settle and then start fresh.
+  let call = 0;
+  let releaseTeardown!: () => void;
+  const teardown = new Promise<void>((resolve) => {
+    releaseTeardown = resolve;
+  });
+  const { control } = makeControl(async (request) => {
+    call += 1;
+    if (call === 1) {
+      // First turn: block until aborted, then simulate a slow teardown before settling.
+      await new Promise<void>((resolve) => {
+        request.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await teardown; // the turn is still registered while this drains
+      throw new Error("aborted");
+    }
+    return { text: "second-done" };
+  });
+
+  const first = control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "long", senderId: "acct-1" });
+  await Promise.resolve();
+  expect(control.cancelTurn("relay:acct-1", "backend")).toBe(true);
+
+  // Follow-up issued while the first turn is still draining (teardown not yet released).
+  const second = control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "next", senderId: "acct-1" });
+  await Promise.resolve();
+
+  // Let the first turn finish unwinding; the follow-up should then proceed and succeed.
+  releaseTeardown();
+  const firstResult = await first;
+  expect(firstResult.ok).toBe(false);
+
+  const secondResult = await second;
+  expect(secondResult).toEqual({ ok: true, text: "second-done" });
+});
+
 test("prompt failure emits turn-finished with the error", async () => {
   const { control, seen } = makeControl(async () => {
     throw new Error("transport exploded");

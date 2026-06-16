@@ -255,19 +255,37 @@ export class ControlService {
     return task;
   }
 
-  private readonly inFlight = new Map<string, AbortController>();
+  // Each in-flight turn carries its AbortController plus a `settled` promise that
+  // resolves once the turn has fully unwound (transport cancelled, inFlight cleared).
+  private readonly inFlight = new Map<string, { controller: AbortController; settled: Promise<void> }>();
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
     const key = turnKey(input.chatKey, input.sessionAlias);
-    if (this.inFlight.has(key)) {
-      return { ok: false, errorMessage: "turn-already-running" };
+    const existing = this.inFlight.get(key);
+    if (existing) {
+      // A live, un-cancelled turn really is busy — reject right away.
+      if (!existing.controller.signal.aborted) {
+        return { ok: false, errorMessage: "turn-already-running" };
+      }
+      // A Stop is already unwinding this turn. Cancelling the transport and draining
+      // the agent takes time, during which the turn stays registered. Wait (bounded)
+      // for it to clear so the user's immediate follow-up starts a fresh turn instead
+      // of hitting "turn-already-running"; a wedged turn still falls through to the
+      // rejection below once the window elapses.
+      await raceWithTimeout(existing.settled, CANCEL_DRAIN_TIMEOUT_MS);
+      if (this.inFlight.has(key)) {
+        return { ok: false, errorMessage: "turn-already-running" };
+      }
     }
     const controller = new AbortController();
-    this.inFlight.set(key, controller);
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    this.inFlight.set(key, { controller, settled });
     try {
       await this.deps.sessions.useSession(input.chatKey, input.sessionAlias);
     } catch (error) {
       this.inFlight.delete(key);
+      resolveSettled();
       return { ok: false, errorMessage: toErrorMessage(error) };
     }
     this.deps.events.emit({
@@ -342,15 +360,16 @@ export class ControlService {
       return { ok: false, errorMessage };
     } finally {
       this.inFlight.delete(key);
+      resolveSettled();
     }
   }
 
   cancelTurn(chatKey: string, sessionAlias: string): boolean {
-    const controller = this.inFlight.get(turnKey(chatKey, sessionAlias));
-    if (!controller) {
+    const entry = this.inFlight.get(turnKey(chatKey, sessionAlias));
+    if (!entry) {
       return false;
     }
-    controller.abort();
+    entry.controller.abort();
     return true;
   }
 
@@ -369,6 +388,24 @@ export class ControlService {
       chunks.push(response.text);
     }
     return chunks.join("\n");
+  }
+}
+
+// Upper bound on how long a follow-up prompt waits for a just-cancelled turn to
+// finish tearing down before giving up and reporting the session still busy.
+const CANCEL_DRAIN_TIMEOUT_MS = 5000;
+
+// Resolve when `promise` settles or `ms` elapses, whichever comes first. The timer
+// is cleared on the winning path so a fast drain doesn't keep the event loop alive.
+async function raceWithTimeout(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
