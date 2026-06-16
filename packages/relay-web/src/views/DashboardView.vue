@@ -19,12 +19,10 @@ import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
 import { Search, Moon, Sun, Settings, X, Menu, FileText, List, LogOut } from "lucide-vue-next";
 import { confirm } from "../lib/use-confirm";
-import { useComposerStore } from "../stores/composer";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
-const composer = useComposerStore();
 const tasks = useTasksStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
@@ -44,7 +42,6 @@ function closeDrawers() {
 
 // Cmd/Ctrl+K command palette.
 const paletteOpen = ref(false);
-const composerKey = () => `${chat.instanceId}\0${chat.sessionAlias}`;
 function onGlobalKey(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
@@ -219,7 +216,6 @@ onUnmounted(() => {
     <NoticeToast />
     <CommandPalette v-if="paletteOpen"
                     @close="paletteOpen = false"
-                    @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }"
-                    @pick-command="(name) => { composer.requestInsert(composerKey(), name); paletteOpen = false; }" />
+                    @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }" />
   </div>
 </template>

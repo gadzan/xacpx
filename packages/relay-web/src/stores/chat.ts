@@ -262,19 +262,19 @@ export const useChatStore = defineStore("chat", () => {
     const optimistic: ChatMessage = { instanceId: instanceId.value, sessionAlias: sessionAlias.value, direction: "in", text, createdAt: new Date().toISOString() };
     messages.value.push(optimistic);
     try {
-      if (text.startsWith("/")) {
-        const { output } = await api.rpc<{ output: string }>(instanceId.value, "control.command.execute", { sessionAlias: sessionAlias.value, text });
-        messages.value.push({ instanceId: instanceId.value, sessionAlias: sessionAlias.value, direction: "out", text: output, createdAt: new Date().toISOString() });
-      } else {
-        const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", { sessionAlias: sessionAlias.value, text });
-        if (res && res.ok === false) {
-          error.value = res.errorMessage ?? "prompt-failed";
-          optimistic.failed = true;
-        }
+      // The web dashboard is GUI-first: every message — including `/`-prefixed text —
+      // is sent as a prompt so it streams as a normal turn. xacpx slash commands are
+      // not handled here; the console forwards control-channel `/` text to the agent
+      // verbatim (see command-router passthrough). Only WeChat/Feishu, which lack a
+      // GUI, still rely on xacpx command handling.
+      const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", { sessionAlias: sessionAlias.value, text });
+      if (res && res.ok === false) {
+        error.value = res.errorMessage ?? "prompt-failed";
+        optimistic.failed = true;
       }
     } catch (e) {
       const isTimeout = e instanceof ApiError && (e.status === 504 || e.code === "timeout");
-      if (text.startsWith("/") || !isTimeout) {
+      if (!isTimeout) {
         error.value = e instanceof ApiError ? e.code : "send-failed";
         optimistic.failed = true;
       }

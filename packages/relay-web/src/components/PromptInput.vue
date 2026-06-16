@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { nextTick, ref, watch } from "vue";
 import { Brain, Check, ChevronDown, Send } from "lucide-vue-next";
-import { suggestCommands } from "../lib/command-catalog";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
@@ -51,15 +50,6 @@ watch(
 const history = ref<string[]>([]);
 let historyIdx = -1; // -1 = editing a fresh line
 
-// Slash-command autocomplete popover.
-const suggestions = computed(() => suggestCommands(text.value));
-const showSuggestions = ref(false);
-const activeIdx = ref(0);
-function refreshSuggestions() {
-  showSuggestions.value = suggestions.value.length > 0;
-  activeIdx.value = 0;
-}
-
 function submit() {
   if (props.busy) return;
   const value = text.value.trim();
@@ -68,15 +58,6 @@ function submit() {
   if (history.value[history.value.length - 1] !== value) history.value.push(value);
   historyIdx = -1;
   text.value = "";
-  showSuggestions.value = false;
-}
-
-function acceptSuggestion(i = activeIdx.value) {
-  const s = suggestions.value[i];
-  if (!s) return;
-  text.value = s.name + " ";
-  showSuggestions.value = false;
-  void nextTick(() => textarea.value?.focus());
 }
 
 function recallHistory(dir: -1 | 1) {
@@ -96,19 +77,12 @@ function onKeydown(e: KeyboardEvent) {
   // the candidate, it must not submit. `isComposing` covers all input engines.
   if (e.isComposing) return;
   if (e.key === "Escape") {
-    if (showSuggestions.value) { showSuggestions.value = false; e.preventDefault(); return; }
     if (props.busy) { emit("cancel"); e.preventDefault(); }
     return;
   }
-  if (showSuggestions.value) {
-    if (e.key === "ArrowDown") { activeIdx.value = (activeIdx.value + 1) % suggestions.value.length; e.preventDefault(); return; }
-    if (e.key === "ArrowUp") { activeIdx.value = (activeIdx.value - 1 + suggestions.value.length) % suggestions.value.length; e.preventDefault(); return; }
-    if (e.key === "Tab") { acceptSuggestion(); e.preventDefault(); return; }
-    if (e.key === "Enter" && !e.shiftKey) { acceptSuggestion(); e.preventDefault(); return; }
-  }
   // Plain Enter submits; Shift+Enter inserts a newline (default behavior).
   if (e.key === "Enter" && !e.shiftKey) { submit(); e.preventDefault(); return; }
-  // History recall only when not navigating a popover and the caret sits at the start.
+  // History recall only when the caret sits at the very start of the input.
   const caretAtStart = (textarea.value?.selectionStart ?? 0) === 0 && (textarea.value?.selectionEnd ?? 0) === 0;
   if (e.key === "ArrowUp" && caretAtStart) { recallHistory(-1); e.preventDefault(); return; }
   if (e.key === "ArrowDown" && historyIdx !== -1 && caretAtStart) { recallHistory(1); e.preventDefault(); return; }
@@ -116,36 +90,20 @@ function onKeydown(e: KeyboardEvent) {
 
 function onInput() {
   historyIdx = -1;
-  refreshSuggestions();
 }
 </script>
 
 <template>
   <form class="relative border-t border-border p-3" @submit.prevent="submit">
-    <!-- Suggestion popover, anchored above the input. -->
-    <ul v-if="showSuggestions" data-test="cmd-suggestions"
-        class="absolute bottom-full left-3 right-3 mb-1 max-h-48 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg">
-      <li v-for="(s, i) in suggestions" :key="s.name">
-        <button type="button" data-test="cmd-suggestion"
-                class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sm"
-                :class="i === activeIdx ? 'bg-accent/10' : 'hover:bg-fg/10'"
-                @mousedown.prevent="acceptSuggestion(i)">
-          <span class="font-mono font-medium text-fg">{{ s.name }}</span>
-          <span class="truncate text-xs text-fg-muted">{{ s.hint }}</span>
-        </button>
-      </li>
-    </ul>
-
     <!-- COMPOSER — single elevated card: textarea on top, controls row below. -->
     <div class="rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
       <!-- Stays enabled while busy so you can pre-compose the next message and press
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"
                 class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
-                :placeholder="busy ? 'Agent is working… (Esc to stop)' : 'Message, or /command'"
+                :placeholder="busy ? 'Agent is working… (Esc to stop)' : 'Message'"
                 @input="onInput"
-                @keydown="onKeydown"
-                @blur="showSuggestions = false" />
+                @keydown="onKeydown" />
       <div class="flex items-center justify-between px-2.5 pb-2.5 pt-0.5">
         <!-- model chip (left) -->
         <div v-if="instanceId && sessionAlias" class="relative flex items-center gap-2">

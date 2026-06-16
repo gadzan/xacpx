@@ -101,6 +101,43 @@ test("routes plain text to the current session", async () => {
   expect(reply.text).toContain("agent:api-fix:check this stack trace");
 });
 
+test("control-channel slash commands pass through to the agent (web is GUI-first)", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  // Session set-up uses no control metadata, so `/session new` is still handled by xacpx.
+  await router.handle("relay:acct", "/session new web --agent codex --ws backend");
+
+  // A relay-web user types an xacpx command; with channel="control" the router forwards
+  // it verbatim to the agent instead of interpreting it (the web GUI owns these actions).
+  const reply = await router.handle(
+    "relay:acct", "/status", undefined, undefined, undefined, undefined,
+    { channel: "control", chatType: "direct" },
+  );
+
+  expect(getPromptMock(transport).mock.calls.at(-1)?.[1]).toBe("/status");
+  expect(reply.text).toContain("agent:web:/status"); // agent echoed it, not the xacpx status card
+});
+
+test("non-control channels still handle xacpx slash commands", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  await router.handle("wx:user", "/session new web --agent codex --ws backend");
+  const before = getPromptMock(transport).mock.calls.length;
+
+  // `/status` from a chat channel (no GUI) is handled by xacpx, never sent to the agent.
+  const reply = await router.handle(
+    "wx:user", "/status", undefined, undefined, undefined, undefined,
+    { channel: "weixin", chatType: "direct" },
+  );
+
+  expect(getPromptMock(transport).mock.calls.length).toBe(before);
+  expect(reply.text).not.toContain("agent:web:/status");
+});
+
 test("binds the current coordinator session as MCP identity for plain prompts", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();

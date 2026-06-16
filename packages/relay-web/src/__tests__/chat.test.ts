@@ -196,13 +196,16 @@ test("a non-timeout prompt error still surfaces", async () => {
   expect(chat.messages.at(-1)?.failed).toBe(true);
 });
 
-test("a /command timeout still surfaces (request/response, no streaming)", async () => {
+test("a /-prefixed message is a prompt: a timeout is treated as pending, not an error", async () => {
+  // `/` commands are no longer request/response — the web forwards them to the agent as
+  // prompts, so a 504/timeout means "the turn may still be running" (pending), exactly
+  // like a plain prompt, rather than a hard failure.
   rpc.mockRejectedValueOnce(new ApiError("timeout", 504));
   const chat = useChatStore();
   chat.select("i1", "s1");
   await chat.send("/status");
-  expect(chat.error).toBe("timeout");
-  expect(chat.messages.at(-1)?.failed).toBe(true);
+  expect(chat.error).toBe("");
+  expect(chat.messages.at(-1)?.failed).toBeUndefined();
 });
 
 test("keeps a per-session streaming buffer across selection changes", () => {
@@ -215,12 +218,14 @@ test("keeps a per-session streaming buffer across selection changes", () => {
   expect(chat.streaming).toBe("partial-A");
 });
 
-test("command send carries sessionAlias", async () => {
-  rpc.mockResolvedValueOnce({ output: "ok" });
+test("sends `/`-prefixed text as a prompt (web forwards slash commands to the agent)", async () => {
+  rpc.mockResolvedValueOnce({ ok: true });
   const chat = useChatStore();
   chat.select("inst", "backend");
   await chat.send("/status");
-  expect(rpc).toHaveBeenCalledWith("inst", "control.command.execute", { sessionAlias: "backend", text: "/status" });
+  // The web dashboard never invokes xacpx command handling; `/status` streams as a turn.
+  expect(rpc).toHaveBeenCalledWith("inst", "control.prompt", { sessionAlias: "backend", text: "/status" });
+  expect(rpc).not.toHaveBeenCalledWith("inst", "control.command.execute", expect.anything());
 });
 
 it("drops an instance's stream buffers when it goes offline", () => {

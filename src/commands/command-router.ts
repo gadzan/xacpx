@@ -141,7 +141,17 @@ export class CommandRouter {
     perfSpan?: PerfSpan,
   ): Promise<RouterResponse> {
     const startedAt = Date.now();
-    const command = parseCommand(input);
+    let command = parseCommand(input);
+    // GUI-first clients (relay-web and other structured control consumers) drive the
+    // console through the dashboard, not through xacpx slash commands. So anything the
+    // user types in the web chat box — including `/`-prefixed text — is forwarded
+    // verbatim to the agent instead of being interpreted by xacpx. WeChat/Feishu and
+    // other chat channels have no GUI and still depend on xacpx commands, so this
+    // passthrough is scoped to the control channel (set by the control service for
+    // every structured-control turn; see docs/control-module.md).
+    if (metadata?.channel === "control" && command.kind !== "prompt") {
+      command = { kind: "prompt", text: input.trim() };
+    }
     await this.logger.debug("command.parsed", "parsed inbound command", {
       chatKey,
       kind: command.kind,
