@@ -91,6 +91,40 @@ test("multi-paragraph reply: each segment after the first restores the \\n\\n br
   expect(chunks.join("")).toBe("Paragraph one.\n\nParagraph two.\n\nParagraph three.");
 });
 
+test("stream-mode session emits chunks verbatim (no paragraph reinsertion)", async () => {
+  // Raw streaming: the transport already forwards chunks with their real breaks, so the
+  // control layer must NOT insert an extra "\n\n" between segments (that would double the
+  // blank line and split a single paragraph). Batched sessions still get reinsertion.
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  events.subscribe((event) => seen.push(event));
+  const control = new ControlService({
+    agent: {
+      chat: async (request: ChatRequest) => {
+        await request.reply?.("Para one.\n\n");
+        await request.reply?.("Para two.");
+        return { text: "" };
+      },
+    },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
+      getSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws", replyMode: "stream" }),
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+  } as never);
+
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+
+  const chunks = seen.filter((e) => e.type === "turn-output").map((e) => (e as { chunk: string }).chunk);
+  expect(chunks).toEqual(["Para one.\n\n", "Para two."]);
+  expect(chunks.join("")).toBe("Para one.\n\nPara two.");
+});
+
 test("prompt rejects unknown session without emitting turn events", async () => {
   const { control, seen } = makeControl(async () => ({ text: "" }));
   const result = await control.prompt({
@@ -157,7 +191,10 @@ test("a follow-up prompt after Stop waits for the cancelled turn to drain, then 
     call += 1;
     if (call === 1) {
       // First turn: block until aborted, then simulate a slow teardown before settling.
+      // Handle an already-aborted signal too (the abort may land before this listener
+      // registers), so the test doesn't depend on microtask ordering.
       await new Promise<void>((resolve) => {
+        if (request.abortSignal?.aborted) return resolve();
         request.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
       });
       await teardown; // the turn is still registered while this drains

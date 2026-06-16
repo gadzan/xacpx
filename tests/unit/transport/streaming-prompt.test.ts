@@ -55,6 +55,21 @@ test("parseStreamingChunks accumulates text and detects paragraph boundary", () 
   expect(state.hasAgentMessage).toBe(true);
 });
 
+test("rawStream keeps text verbatim in the buffer (no paragraph split/trim)", () => {
+  const state = createStreamingPromptState(false, { rawStream: true });
+
+  parseStreamingChunks(state, makeChunkLine("Hello"));
+  parseStreamingChunks(state, makeChunkLine(" World\n\n"));
+  parseStreamingChunks(state, makeChunkLine("New paragraph"));
+
+  // Nothing is split off into segments; the live consumer drains `buffer` verbatim.
+  expect(state.segments).toEqual([]);
+  expect(state.buffer).toBe("Hello World\n\nNew paragraph");
+  // finalize() returns the buffer untrimmed in raw mode.
+  parseStreamingChunks(state, makeChunkLine("  trailing  "));
+  expect(state.finalize()).toBe("Hello World\n\nNew paragraph  trailing  ");
+});
+
 test("parseStreamingChunks handles multiple paragraph boundaries", () => {
   const state = createStreamingPromptState();
 

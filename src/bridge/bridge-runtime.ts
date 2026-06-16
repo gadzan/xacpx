@@ -97,6 +97,7 @@ interface StreamingPromptRunnerOptions {
   now?: () => number;
   formatToolCalls?: boolean;
   toolEventMode?: ToolEventMode;
+  rawStream?: boolean;
 }
 
 interface PromptStreamProcess {
@@ -423,6 +424,9 @@ export class BridgeRuntime {
       ...(structuredPrompt ? ["--file", structuredPrompt.filePath] : [input.text]),
     ]));
     const formatToolCalls = (input.replyMode ?? "verbose") === "verbose";
+    // replyMode "stream" → raw token streaming (one live bubble, low latency); the
+    // batched paragraph path stays for discrete-message channels (WeChat).
+    const rawStream = input.replyMode === "stream";
     // toolEventMode (Phase 1) wins; toolEvents:true (Phase 0 legacy) maps to "structured".
     const toolEventMode: ToolEventMode =
       input.toolEventMode ?? (input.toolEvents === true ? "structured" : "text");
@@ -431,6 +435,7 @@ export class BridgeRuntime {
         ? await this.runPromptCommand(spawnSpec.command, spawnSpec.args, onEvent, {
             formatToolCalls,
             toolEventMode,
+            rawStream,
           })
         : await this.run(spawnSpec.command, spawnSpec.args);
       return { text: getPromptText(result) };
@@ -782,8 +787,12 @@ export async function runStreamingPrompt(
     spawn(spawnCommand, spawnArgs, { stdio: ["ignore", "pipe", "pipe"] }) as unknown as PromptStreamProcess);
   const setIntervalFn = options.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
   const clearIntervalFn = options.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
-  const maxSegmentWaitMs = options.maxSegmentWaitMs ?? 30_000;
-  const flushCheckIntervalMs = options.flushCheckIntervalMs ?? 5_000;
+  const rawStream = options.rawStream ?? false;
+  // Raw streaming drains the buffer on a tight cadence so the live view updates ~5×/s
+  // with low first-token latency. The batched paragraph path keeps the long fallback
+  // window (it flushes whole paragraphs on `\n\n` and only times out on a stall).
+  const maxSegmentWaitMs = options.maxSegmentWaitMs ?? (rawStream ? 200 : 30_000);
+  const flushCheckIntervalMs = options.flushCheckIntervalMs ?? (rawStream ? 80 : 5_000);
   const now = options.now ?? (() => Date.now());
 
   return await new Promise((resolve, reject) => {
@@ -793,6 +802,7 @@ export async function runStreamingPrompt(
     const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
     const state = createStreamingPromptState(options.formatToolCalls ?? false, {
       mode: toolEventMode,
+      rawStream,
       ...(onEvent && (toolEventMode === "structured" || toolEventMode === "both")
         ? { onToolEvent: (toolEvent) => onEvent({ type: "prompt.tool_event", event: toolEvent }) }
         : {}),
@@ -807,7 +817,9 @@ export async function runStreamingPrompt(
     let lastReplyAt = now();
 
     const flushBuffer = () => {
-      const remaining = state.buffer.trim();
+      // Raw streaming forwards the buffer verbatim (the live view concatenates chunks);
+      // the batched path trims paragraph edges into discrete segments.
+      const remaining = rawStream ? state.buffer : state.buffer.trim();
       if (remaining.length > 0) {
         state.buffer = "";
         onEvent?.({ type: "prompt.segment", text: remaining });

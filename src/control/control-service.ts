@@ -293,12 +293,19 @@ export class ControlService {
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
     });
-    // The transport delivers reply segments pre-split on paragraph boundaries and
-    // trimmed, so the original "\n\n" between paragraphs is gone. Both consumers of
-    // turn-output — the web live view and the hub's persisted-history buffer — simply
-    // concatenate the chunks, which runs multi-paragraph replies together on one line
-    // (very visible with reasoning models that emit structured prose). Re-insert the
-    // paragraph break between segments at the source so live and history stay identical.
+    // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
+    // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.
+    // Batched sessions get pre-split, trimmed paragraph segments instead — there the
+    // original "\n\n" is gone, and both turn-output consumers (web live view + hub
+    // history buffer) simply concatenate, running paragraphs together on one line. For
+    // those we re-insert the break between segments so live and history stay identical.
+    let streamMode = false;
+    try {
+      const resolved = await this.resolveControlSession(input.chatKey, input.sessionAlias);
+      streamMode = resolved?.replyMode === "stream";
+    } catch {
+      // Best-effort: fall back to batched paragraph reconstruction.
+    }
     let emittedChunk = false;
     const emitChunk = (chunk: string) => {
       if (!chunk) return;
@@ -306,7 +313,7 @@ export class ControlService {
         type: "turn-output",
         chatKey: input.chatKey,
         sessionAlias: input.sessionAlias,
-        chunk: emittedChunk ? `\n\n${chunk}` : chunk,
+        chunk: !streamMode && emittedChunk ? `\n\n${chunk}` : chunk,
       });
       emittedChunk = true;
     };

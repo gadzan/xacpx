@@ -11,6 +11,12 @@ export interface StreamingPromptState {
   formatToolCalls: boolean;
   emittedToolCallIds: Set<string>;
   toolEventMode: ToolEventMode;
+  // Raw streaming (replyMode "stream"): the consumer renders one live bubble that
+  // concatenates chunks verbatim, so we DON'T split on paragraph boundaries or trim.
+  // Agent text accumulates raw in `buffer`; a short flush timer drains it as-is. This
+  // trades the batched paragraph model (good for discrete chat messages) for low
+  // first-token latency and smooth token streaming.
+  rawStream: boolean;
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
   finalize: () => string;
@@ -39,6 +45,7 @@ export type CreateStreamingPromptStateOptions =
   | ((event: ToolUseEvent) => void | Promise<void>)
   | {
       mode?: ToolEventMode;
+      rawStream?: boolean;
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
     };
@@ -50,6 +57,7 @@ export function createStreamingPromptState(
   let toolEventMode: ToolEventMode;
   let onToolEvent: ((event: ToolUseEvent) => void | Promise<void>) | undefined;
   let onThought: ((chunk: string) => void | Promise<void>) | undefined;
+  let rawStream = false;
 
   if (options === undefined) {
     toolEventMode = "text";
@@ -61,6 +69,7 @@ export function createStreamingPromptState(
   } else {
     onToolEvent = options.onToolEvent;
     onThought = options.onThought;
+    rawStream = options.rawStream ?? false;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
       onToolEvent,
@@ -75,13 +84,16 @@ export function createStreamingPromptState(
     formatToolCalls,
     emittedToolCallIds: new Set(),
     toolEventMode,
+    rawStream,
     onToolEvent,
     onThought,
     finalize(): string {
       if (this.pendingLine.trim().length > 0) {
         parseStreamingChunks(this, this.pendingLine);
       }
-      const remaining = this.buffer.trim();
+      // Raw streaming preserves the agent's exact text (the consumer concatenates
+      // verbatim); only the batched paragraph path trims segment edges.
+      const remaining = this.rawStream ? this.buffer : this.buffer.trim();
       this.buffer = "";
       this.pendingLine = "";
       return remaining;
@@ -175,6 +187,10 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   if (chunk.length === 0) return;
 
   state.buffer += chunk;
+
+  // Raw streaming: leave the text in `buffer` untouched — the transport's short flush
+  // timer drains it verbatim, so paragraph structure is preserved without splitting.
+  if (state.rawStream) return;
 
   // Split on paragraph boundaries (\n\n) — there may be multiple in a single chunk
   let boundary: number;

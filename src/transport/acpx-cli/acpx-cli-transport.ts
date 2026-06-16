@@ -265,6 +265,8 @@ export class AcpxCliTransport implements SessionTransport {
     try {
       if (reply || options?.onSegment || options?.onToolEvent || options?.onThought) {
         const formatToolCalls = (session.replyMode ?? "verbose") === "verbose";
+        // replyMode "stream" → raw token streaming (one live bubble, low latency).
+        const rawStream = session.replyMode === "stream";
         let toolEventMode = resolveToolEventMode(options);
         // Safety net: structured/both without an onToolEvent handler would
         // silently drop tool calls. Demote to 'text' so verbose tool calls
@@ -282,6 +284,7 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onSegment,
           options?.onToolEvent,
           options?.onThought,
+          rawStream,
         );
         const baseText = getPromptText(result);
         if (!reply) {
@@ -523,14 +526,17 @@ export class AcpxCliTransport implements SessionTransport {
     onSegment?: (text: string) => void | Promise<void>,
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
+    rawStream: boolean = false,
   ): Promise<{ result: CommandResult; overflowCount: number }> {
     const hooks = this.streamingHooks;
     const doSpawn = hooks.spawnPrompt
       ?? ((cmd, spawnArgs) => spawn(cmd, spawnArgs, { stdio: ["ignore", "pipe", "pipe"] }) as unknown as PromptStreamProcess);
     const setIntervalFn = hooks.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
     const clearIntervalFn = hooks.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
-    const maxSegmentWaitMs = hooks.maxSegmentWaitMs ?? 30_000;
-    const flushCheckIntervalMs = hooks.flushCheckIntervalMs ?? 5_000;
+    // Raw streaming drains the buffer on a tight cadence (~5×/s) for low-latency token
+    // streaming; the batched paragraph path keeps the long stall-fallback window.
+    const maxSegmentWaitMs = hooks.maxSegmentWaitMs ?? (rawStream ? 200 : 30_000);
+    const flushCheckIntervalMs = hooks.flushCheckIntervalMs ?? (rawStream ? 80 : 5_000);
     const now = hooks.now ?? (() => Date.now());
 
     return await new Promise((resolve, reject) => {
@@ -550,6 +556,7 @@ export class AcpxCliTransport implements SessionTransport {
 
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
+        rawStream,
         ...(userOnToolEvent
           ? {
               onToolEvent: (event) => {
@@ -596,7 +603,8 @@ export class AcpxCliTransport implements SessionTransport {
       };
 
       const flushBuffer = () => {
-        const remaining = state.buffer.trim();
+        // Raw streaming forwards the buffer verbatim; the batched path trims edges.
+        const remaining = rawStream ? state.buffer : state.buffer.trim();
         if (remaining.length > 0) {
           state.buffer = "";
           feedSegment(remaining);
