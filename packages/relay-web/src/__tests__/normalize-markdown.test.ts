@@ -15,6 +15,17 @@ describe("normalizeMarkdownTables", () => {
     expect(out).toBe("| # | 功能 | 说明 |\n| --- | --- | --- |\n| 1 | a | b |\n| 2 | c | d |");
   });
 
+  it("leaves pipe rows inside an indented (4-space) code block unchanged", () => {
+    // Indented code block — the pipes are code, not a table; must NOT get a delimiter.
+    const src = "Example:\n\n    | a | b |\n    | 1 | 2 |";
+    expect(normalizeMarkdownTables(src)).toBe(src);
+  });
+
+  it("leaves pipe rows inside a tab-indented code block unchanged", () => {
+    const src = "Example:\n\n\t| a | b |\n\t| 1 | 2 |";
+    expect(normalizeMarkdownTables(src)).toBe(src);
+  });
+
   it("does both: blank line before AND inserts a delimiter row", () => {
     const src = "text:\n| a | b |\n| 1 | 2 |";
     expect(normalizeMarkdownTables(src)).toBe("text:\n\n| a | b |\n| --- | --- |\n| 1 | 2 |");

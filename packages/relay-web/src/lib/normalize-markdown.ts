@@ -19,6 +19,12 @@ function isPipeRow(line: string): boolean {
   return line.trim().startsWith("|");
 }
 
+/** A markdown indented code block line (4+ leading spaces or a tab). Its `|`s are code,
+ *  not a table, so the normalizer must leave it alone. */
+function isIndentedCode(line: string): boolean {
+  return /^(?: {4,}|\t)/.test(line);
+}
+
 /**
  * Split a pipe row into its cells: trim, strip a single leading and single trailing
  * `|`, then split on `|`. Naive split — escaped `\|` is rare in agent tables and not
@@ -76,8 +82,9 @@ export function normalizeMarkdownTables(src: string): string {
     // Detect the START of a pipe-row run: current line is a pipe row, the previously
     // pushed line is NOT a pipe row, and this line is not itself a delimiter row.
     // (Data rows within a run are reached with prevPushedIsPipeRow === true and so
-    // never re-fire this branch.)
-    if (isPipeRow(line) && !prevPushedIsPipeRow && !isDelimiterRow(line)) {
+    // never re-fire this branch.) Indented (4-space / tab) lines are markdown indented
+    // code blocks — never treat them as tables, or we'd inject a delimiter into code.
+    if (isPipeRow(line) && !isIndentedCode(line) && !prevPushedIsPipeRow && !isDelimiterRow(line)) {
       const next = i + 1 < lines.length ? lines[i + 1] : null;
 
       if (next !== null && isPipeRow(next) && isDelimiterRow(next)) {
