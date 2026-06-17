@@ -93,6 +93,20 @@ test("accepts the new turn-status control events", () => {
   })).not.toBeNull();
 });
 
+test("parseWebServerEvent accepts a plan control event", () => {
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "plan", chatKey: "k", sessionAlias: "a", entries: [{ content: "x", status: "pending" }] },
+  })).not.toBeNull();
+});
+
+test("parseWebServerEvent rejects a plan event without entries", () => {
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "plan", chatKey: "k", sessionAlias: "a" },
+  })).toBeNull();
+});
+
 test("rejects a malformed tool-event step", () => {
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { toolCallId: "t1" } } })).toBeNull();
 });

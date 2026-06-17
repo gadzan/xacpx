@@ -130,6 +130,15 @@ export type TurnPartDto =
   | { type: "reasoning"; text: string }
   | { type: "tool"; step: ToolStepDto };
 
+/** One entry in the agent's ACP plan (todo list). STRUCTURALLY IDENTICAL to core
+ *  PlanEntry — the connector forwards plan events as pass-through, so any drift here
+ *  silently breaks the wire. */
+export interface PlanEntryDto {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  priority?: "high" | "medium" | "low";
+}
+
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
@@ -138,6 +147,7 @@ export type ControlEventDto =
   | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
+  | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
   | { type: "scheduled-changed"; chatKey: string }
