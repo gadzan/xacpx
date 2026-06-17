@@ -9,7 +9,11 @@ import type {
   ResolvedSession,
   SessionTransport,
 } from "../types";
-import { buildOverflowSummary, createQuotaGatedReplySink } from "../quota-gated-reply-sink";
+import {
+  buildOverflowSummary,
+  createQuotaGatedReplySink,
+  createVerbatimReplySink,
+} from "../quota-gated-reply-sink";
 import { resolveToolEventMode } from "../tool-event-mode.js";
 import type { BridgeMethod } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
@@ -65,11 +69,14 @@ export class AcpxBridgeTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
+    const streamMode = (session.effectiveReplyMode ?? session.replyMode) === "stream";
     const sink = reply
-      ? createQuotaGatedReplySink({
-          reply,
-          ...(replyContext ? { replyContext } : {}),
-        })
+      ? streamMode
+        ? createVerbatimReplySink(reply)
+        : createQuotaGatedReplySink({
+            reply,
+            ...(replyContext ? { replyContext } : {}),
+          })
       : null;
     let segmentError: unknown;
     let segmentChain = Promise.resolve();

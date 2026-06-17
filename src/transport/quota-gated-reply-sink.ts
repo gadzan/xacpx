@@ -228,6 +228,76 @@ export function createQuotaGatedReplySink(
   };
 }
 
+// Stream-mode (relay/control) reply sink. Unlike createQuotaGatedReplySink,
+// this does NOT route segments through SegmentAggregator (which is built for
+// WeChat's paragraph-batched, 9-message-budget output and \n-joins fine-grained
+// token drains, shredding multi-line markdown). Each segment is forwarded to
+// reply() IMMEDIATELY and VERBATIM in feed order — no \n-join, no (×N) folding,
+// no quota gating. The returned object is structurally compatible with the
+// QuotaGatedReplySink shape the transports rely on.
+export function createVerbatimReplySink(
+  reply: (text: string) => Promise<void>,
+): QuotaGatedReplySink {
+  let pendingError: QuotaDeferredError | undefined;
+  const inFlight = new Set<Promise<void>>();
+
+  const send = (text: string): void => {
+    const p = reply(text).catch((err) => {
+      if (isQuotaDeferredError(err)) {
+        if (!pendingError) {
+          pendingError = err;
+        }
+        return;
+      }
+      // Swallow generic send errors so a failed reply doesn't crash the prompt,
+      // mirroring createQuotaGatedReplySink (which routes them to onSendError;
+      // stream mode has no onSendError, so they are simply dropped).
+    });
+    inFlight.add(p);
+    void p.finally(() => {
+      inFlight.delete(p);
+    });
+  };
+
+  return {
+    feedSegment(segment: string): void {
+      // Fire reply() synchronously in feed order to preserve ordering.
+      if (segment.length === 0) return;
+      send(segment);
+    },
+    finalize(): { trailing: string; overflowCount: number } {
+      // Everything was sent immediately; nothing buffered.
+      return { trailing: "", overflowCount: 0 };
+    },
+    getOverflowCount(): number {
+      return 0;
+    },
+    getPendingError(): QuotaDeferredError | undefined {
+      return pendingError;
+    },
+    async drain(opts?: { timeoutMs?: number }): Promise<void> {
+      const timeoutMs = opts?.timeoutMs ?? 30_000;
+      const deadline = Date.now() + timeoutMs;
+      while (inFlight.size > 0) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, remaining);
+        });
+        try {
+          await Promise.race([
+            Promise.allSettled(Array.from(inFlight)).then(() => undefined),
+            timeout,
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+    },
+  };
+}
+
 export function buildOverflowSummary(overflowCount: number): string | undefined {
   if (overflowCount <= 0) return undefined;
   return t().misc.quotaOverflowSummary(overflowCount);

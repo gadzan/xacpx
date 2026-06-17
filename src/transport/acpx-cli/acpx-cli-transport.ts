@@ -19,7 +19,11 @@ import type {
 import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
-import { buildOverflowSummary, createQuotaGatedReplySink } from "../quota-gated-reply-sink";
+import {
+  buildOverflowSummary,
+  createQuotaGatedReplySink,
+  createVerbatimReplySink,
+} from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
 import { AcpxQueueOwnerLauncher } from "../acpx-queue-owner-launcher";
@@ -602,10 +606,12 @@ export class AcpxCliTransport implements SessionTransport {
       });
 
       const sink = reply
-        ? createQuotaGatedReplySink({
-            reply,
-            ...(replyContext ? { replyContext } : {}),
-          })
+        ? rawStream
+          ? createVerbatimReplySink(reply)
+          : createQuotaGatedReplySink({
+              reply,
+              ...(replyContext ? { replyContext } : {}),
+            })
         : null;
 
       const feedSegment = (segment: string) => {
