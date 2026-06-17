@@ -5,7 +5,6 @@ import { useAuthStore } from "../stores/auth";
 
 const auth = useAuthStore();
 const retention = ref<{ days: number; maxPerSession: number } | null>(null);
-const invite = ref("");
 const pairing = ref("");
 const pairingName = ref("");
 
@@ -15,11 +14,6 @@ onMounted(async () => {
     retention.value = cfg.historyRetention;
   } catch { /* leave null; UI shows a dash */ }
 });
-
-async function genInvite() {
-  const r = await api.post<{ invite: string }>("/api/invites");
-  invite.value = r.invite;
-}
 
 async function genPairing() {
   const r = await api.post<{ token: string }>("/api/instances/pairing-token", { name: pairingName.value });
@@ -44,12 +38,6 @@ async function genPairing() {
         <div>Run on the xacpx host:</div>
         <code class="block break-all">xacpx channel add relay --url &lt;this-relay-ws-url&gt; --token {{ pairing }}</code>
       </div>
-    </section>
-
-    <section v-if="auth.account?.role === 'admin'" data-test="invite-section" class="mb-8">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-slate-500">Invite an account</h2>
-      <button data-test="gen-invite" class="rounded bg-slate-700 px-3 py-1 text-sm text-white" @click="genInvite">Generate invite</button>
-      <div v-if="invite" class="mt-2 rounded bg-slate-100 p-2 text-xs break-all">Invite token: <code>{{ invite }}</code></div>
     </section>
 
     <section>
