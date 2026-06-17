@@ -5,13 +5,13 @@ import { createRelayRuntime } from "../../../../../packages/relay/src/server";
 
 async function loggedIn() {
   const runtime = await createRelayRuntime(":memory:");
-  runtime.accounts.createAccount("admin", "pw", "admin");
+  const account = runtime.accounts.createAccount("admin");
+  const { token: loginToken } = runtime.accounts.createLoginToken(account.id);
   const res = await runtime.app.request("/api/login", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "admin", password: "pw" }),
+    body: JSON.stringify({ token: loginToken }),
   });
   const cookie = res.headers.get("set-cookie")?.split(";")[0] ?? "";
-  const account = runtime.accounts.findByUsername("admin")!;
   runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", account.id, "pc", "h", "t"]);
   return { runtime, cookie };
 }

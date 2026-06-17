@@ -13,7 +13,7 @@ class FakeSocket {
 
 async function seeded() {
   const runtime = await createRelayRuntime(":memory:");
-  runtime.db.run("INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)", ["a1", "u", "h", "member", "t"]);
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
   runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
   return runtime;
 }

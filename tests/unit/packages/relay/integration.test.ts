@@ -18,10 +18,11 @@ test("pair -> credential persisted -> rpc via http proxy -> event ingestion", as
   const wsUrl = `ws://127.0.0.1:${(wss.address() as { port: number }).port}`;
 
   // admin + login cookie + pairing token (over the real HTTP app)
-  runtime.accounts.createAccount("admin", "pw", "admin");
+  const adminAccount = runtime.accounts.createAccount("admin");
+  const { token: loginToken } = runtime.accounts.createLoginToken(adminAccount.id);
   const loginRes = await runtime.app.request("/api/login", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "admin", password: "pw" }),
+    body: JSON.stringify({ token: loginToken }),
   });
   const cookie = loginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
   const tokenRes = await runtime.app.request("/api/instances/pairing-token", {

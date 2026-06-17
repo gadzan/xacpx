@@ -5,7 +5,7 @@ import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 async function seeded() {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
-  db.run("INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)", ["a1", "u", "h", "member", "t"]);
+  db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
   db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
   return db;
 }

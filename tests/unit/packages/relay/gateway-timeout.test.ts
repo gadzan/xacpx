@@ -19,7 +19,7 @@ async function makeGateway(requestTimeoutMs?: number) {
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const account = accounts.createAccount("alice", "pw", "member");
+  const account = accounts.createAccount("alice");
   const gateway = new InstanceGateway({ instances, requestTimeoutMs });
   const wss = new WebSocketServer({ port: 0 });
   await new Promise<void>((resolve) => wss.on("listening", () => resolve()));
