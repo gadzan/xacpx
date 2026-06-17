@@ -150,6 +150,20 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
+  /** Re-fetch the current view without resetting navigation — used by the manual refresh
+   *  button after the agent writes files. Tab-aware: Files re-lists the current dir and
+   *  refreshes git badges; Changes reloads the diff. */
+  async function refresh(): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    if (tab.value === "changes") {
+      await loadDiff(diffPath.value ?? undefined);
+      return;
+    }
+    await list(path.value);
+    await loadStatus();
+    await loadGitSummary(instanceId.value, workspace.value);
+  }
+
   /** Navigate to an ancestor by breadcrumb index (-1 = root). */
   function up(toIndex: number): void {
     const segs = path.value ? path.value.split("/") : [];
@@ -200,5 +214,5 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
-  return { instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary };
+  return { instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh };
 });

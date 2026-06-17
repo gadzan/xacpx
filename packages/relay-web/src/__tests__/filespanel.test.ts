@@ -71,6 +71,19 @@ describe("FilesPanel navigation rail", () => {
     expect(files.diffPath).toBeNull();
   });
 
+  it("has a refresh button that re-fetches the current view via the store", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const spy = vi.spyOn(files, "refresh").mockResolvedValue();
+    await w.vm.$nextTick();
+    const btn = w.find('[data-test="refresh-files"]');
+    expect(btn.exists()).toBe(true);
+    expect(btn.attributes("aria-label")).toBeTruthy();
+    expect(btn.attributes("title")).toBeTruthy();
+    await btn.trigger("click");
+    expect(spy).toHaveBeenCalled();
+  });
+
   it("shows a calm empty state (not a dismiss-less error banner) for a non-git workspace's Changes tab", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();

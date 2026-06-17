@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, File, FileText, Folder, GitBranch, List, X } from "lucide-vue-next";
+import { ChevronRight, File, FileText, Folder, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
@@ -136,6 +136,16 @@ watch(
           <span class="truncate font-medium">{{ files.workspace ?? "—" }}</span>
         </div>
         <div class="flex shrink-0 items-center gap-1">
+          <button
+            data-test="refresh-files"
+            title="Refresh file list"
+            aria-label="Refresh file list"
+            class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
+            :disabled="files.loading"
+            @click="files.refresh()"
+          >
+            <RefreshCw :size="13" :class="files.loading ? 'animate-spin motion-reduce:animate-none' : ''" />
+          </button>
           <button data-test="tab-files"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="files.tab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"

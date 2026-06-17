@@ -153,6 +153,43 @@ describe("files store", () => {
     expect(s.gitSummary).toBeNull();
   });
 
+  it("refresh() re-lists the current dir and refreshes git badges on the Files tab", async () => {
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
+    const s = useFilesStore();
+    await s.selectWorkspace("i1", "ws");
+    // Navigate into a child dir so refresh has a non-root current path to re-fetch.
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "src", entries: [] });
+    await s.open({ name: "src", type: "dir" });
+    expect(s.path).toBe("src");
+    expect(s.tab).toBe("files");
+    rpc.mockReset();
+    rpc.mockResolvedValue({ workspace: "ws", path: "src", entries: [{ name: "a.ts", type: "file", size: 1 }], files: [], diff: "", truncated: false });
+    await s.refresh();
+    // Re-lists the CURRENT path (not a navigation reset).
+    expect(rpc).toHaveBeenCalledWith("i1", "control.fs.list", { workspace: "ws", path: "src" });
+    expect(s.entries.map((e) => e.name)).toEqual(["a.ts"]);
+  });
+
+  it("refresh() reloads the diff on the Changes tab", async () => {
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
+    const s = useFilesStore();
+    await s.selectWorkspace("i1", "ws");
+    s.tab = "changes";
+    s.diffPath = "f.txt";
+    rpc.mockReset();
+    rpc.mockResolvedValue({ workspace: "ws", files: [{ path: "f.txt", status: " M" }], diff: "@@\n+x", truncated: false });
+    await s.refresh();
+    expect(rpc).toHaveBeenCalledWith("i1", "control.fs.diff", { workspace: "ws", path: "f.txt" });
+    // No list re-fetch on the Changes tab.
+    expect(rpc.mock.calls.some((c) => c[1] === "control.fs.list")).toBe(false);
+  });
+
+  it("refresh() is a no-op without an instance/workspace", async () => {
+    const s = useFilesStore();
+    await s.refresh();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it("surfaces an instance-side error payload as an error string", async () => {
     rpc.mockResolvedValueOnce({ error: { code: "internal", message: "path-escapes-workspace" } });
     const s = useFilesStore();
