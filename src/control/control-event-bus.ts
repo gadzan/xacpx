@@ -1,5 +1,5 @@
 import type { AppLogger } from "../logging/app-logger";
-import type { ToolUseEvent } from "../channels/types";
+import type { ToolUseEvent, PlanEntry } from "../channels/types";
 import type { NativeHistoryMessage } from "../transport/native-session-history";
 
 export interface ScheduledOrigin {
@@ -14,6 +14,7 @@ export type ControlEvent =
   | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; event: ToolUseEvent }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
+  | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntry[] }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
   | { type: "scheduled-changed"; chatKey: string }

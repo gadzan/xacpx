@@ -44,6 +44,23 @@ test("prompt emits turn-started and forwards tool/thought events", async () => {
   expect(tool.event.toolCallId).toBe("t1");
 });
 
+test("forwards an agent plan update as a plan ControlEvent", async () => {
+  const { deps, seen } = makeDeps(async (req) => {
+    await req.onPlan?.([{ content: "step", status: "in_progress" }]);
+    await req.reply("hello");
+    return { text: "" };
+  });
+  const control = new ControlService(deps as never);
+  await control.prompt({ chatKey: "relay:a", sessionAlias: "backend", text: "hi", senderId: "s" });
+
+  expect(seen).toContainEqual({
+    type: "plan",
+    chatKey: "relay:a",
+    sessionAlias: "backend",
+    entries: [{ content: "step", status: "in_progress" }],
+  });
+});
+
 test("an aborted turn finishes with cancelled:true", async () => {
   const { deps, seen } = makeDeps(async (req) => {
     const err = new Error("aborted");

@@ -469,6 +469,14 @@ export class ControlService {
             chunk,
           });
         },
+        onPlan: (entries) => {
+          this.deps.events.emit({
+            type: "plan",
+            chatKey: params.chatKey,
+            sessionAlias: params.sessionAlias,
+            entries,
+          });
+        },
       });
       if (response.text) {
         emitChunk(response.text);
