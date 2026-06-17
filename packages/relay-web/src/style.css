@@ -47,6 +47,10 @@
 :root { --brand-from: #4F9BF5; --brand-to: #69D689; }
 
 html, body, #app { height: 100%; }
+/* Off-canvas drawers (translate-x-full) live off the viewport edges; clip the page so
+   they can't add horizontal scroll on mobile. The app is a fixed-height SPA whose real
+   scrolling happens in inner containers, so clipping the document itself is safe. */
+html, body { overflow-x: hidden; }
 body { @apply bg-bg text-fg font-sans antialiased; }
 
 /* Branded focus ring on interactive elements (gap + accent halo). */

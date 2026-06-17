@@ -94,7 +94,7 @@ function onInput() {
 </script>
 
 <template>
-  <form class="relative border-t border-border p-3" @submit.prevent="submit">
+  <form class="relative border-t border-border px-0 py-3 lg:p-3" @submit.prevent="submit">
     <!-- COMPOSER — single elevated card: textarea on top, controls row below. -->
     <div class="rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
       <!-- Stays enabled while busy so you can pre-compose the next message and press

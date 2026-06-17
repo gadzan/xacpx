@@ -169,7 +169,7 @@ onUnmounted(() => {
     <div class="flex items-center gap-2 border-b border-border bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" aria-label="Open instances"
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
-      <span class="flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
+      <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
       <div class="flex shrink-0 items-center gap-1">
         <button data-test="open-files" aria-label="Open files"
                 class="flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
