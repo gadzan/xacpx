@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { MSG } from "../../../../packages/relay-protocol/src/index";
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
@@ -6,6 +9,7 @@ import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 import { createApp, GLOBAL_MAX_FAILURES, LOGIN_MAX_FAILURES } from "../../../../packages/relay/src/http/app";
+import { createRelayRuntime } from "../../../../packages/relay/src/server";
 
 async function makeApp(opts: { trustProxy?: boolean; now?: () => Date } = {}) {
   const db = await createSqlDriver(":memory:");
@@ -354,4 +358,64 @@ test("rpc rejects non-JSON content-type (CSRF backstop) but accepts application/
   });
   expect(ok.status).toBe(200);
   expect(rpcCalls.length).toBe(1);
+});
+
+// --- createRelayRuntime trustProxy wiring ---
+
+test("createRelayRuntime trustProxy:true — the assembled app honors XFF header for rate-limiting", async () => {
+  // This test verifies the wiring: createRelayRuntime({ trustProxy:true }) must
+  // thread the flag through to createApp, so the resulting app treats distinct
+  // X-Forwarded-For values as distinct rate-limit buckets.
+  const dbPath = join(mkdtempSync(join(tmpdir(), "relay-rt-")), "relay.db");
+  const runtime = await createRelayRuntime(dbPath, { trustProxy: true });
+  try {
+    // Create an admin account so we can attempt logins
+    const admin = runtime.accounts.createAccount("rtadmin");
+    void admin; // used only to seed the DB
+
+    const failLogin = (xff: string) =>
+      runtime.app.request("/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": xff },
+        body: JSON.stringify({ token: "bad-token" }),
+      });
+
+    // Exhaust the per-IP limit for "1.2.3.4"
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i++) {
+      expect((await failLogin("1.2.3.4")).status).toBe(401);
+    }
+    expect((await failLogin("1.2.3.4")).status).toBe(429);
+
+    // A different IP must still have a fresh bucket (not yet throttled)
+    expect((await failLogin("5.6.7.8")).status).toBe(401);
+  } finally {
+    runtime.close();
+  }
+});
+
+test("createRelayRuntime trustProxy:false (default) — XFF header is ignored, single bucket", async () => {
+  // With trustProxy omitted (defaults to false), all requests share the same
+  // "unknown" bucket regardless of XFF. Varied XFF values must NOT create
+  // separate buckets; the global limit is still reached.
+  const dbPath = join(mkdtempSync(join(tmpdir(), "relay-rt-")), "relay.db");
+  const runtime = await createRelayRuntime(dbPath);  // trustProxy defaults to false
+  try {
+    runtime.accounts.createAccount("rtadmin2");
+
+    const failLogin = (xff: string) =>
+      runtime.app.request("/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": xff },
+        body: JSON.stringify({ token: "bad-token" }),
+      });
+
+    // Use a distinct XFF each time — they must all share the same "unknown" bucket
+    for (let i = 0; i < LOGIN_MAX_FAILURES; i++) {
+      expect((await failLogin(`10.0.0.${i}`)).status).toBe(401);
+    }
+    // Next attempt (new XFF) is blocked: shared bucket was exhausted
+    expect((await failLogin("192.168.1.1")).status).toBe(429);
+  } finally {
+    runtime.close();
+  }
 });
