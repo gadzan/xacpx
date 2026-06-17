@@ -1,4 +1,4 @@
-import type { ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
 import { resolveToolEventMode } from "./tool-event-mode.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
@@ -19,6 +19,7 @@ export interface StreamingPromptState {
   rawStream: boolean;
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   finalize: () => string;
 }
 
@@ -37,6 +38,7 @@ interface StreamEvent {
       toolCallId?: string;
       rawInput?: unknown;
       rawOutput?: unknown;
+      entries?: unknown;
     };
   };
 }
@@ -48,6 +50,7 @@ export type CreateStreamingPromptStateOptions =
       rawStream?: boolean;
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
+      onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
     };
 
 export function createStreamingPromptState(
@@ -57,6 +60,7 @@ export function createStreamingPromptState(
   let toolEventMode: ToolEventMode;
   let onToolEvent: ((event: ToolUseEvent) => void | Promise<void>) | undefined;
   let onThought: ((chunk: string) => void | Promise<void>) | undefined;
+  let onPlan: ((entries: PlanEntry[]) => void | Promise<void>) | undefined;
   let rawStream = false;
 
   if (options === undefined) {
@@ -69,6 +73,7 @@ export function createStreamingPromptState(
   } else {
     onToolEvent = options.onToolEvent;
     onThought = options.onThought;
+    onPlan = options.onPlan;
     rawStream = options.rawStream ?? false;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
@@ -87,6 +92,7 @@ export function createStreamingPromptState(
     rawStream,
     onToolEvent,
     onThought,
+    onPlan,
     finalize(): string {
       if (this.pendingLine.trim().length > 0) {
         parseStreamingChunks(this, this.pendingLine);
@@ -158,6 +164,17 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
         state.segments.push(formatted);
       }
     }
+    return;
+  }
+
+  if (update.sessionUpdate === "plan") {
+    // ACP sends the full plan each time; forward verbatim (replace semantics). Validate
+    // shape defensively — a malformed entry must not crash the stream parser.
+    const entries = Array.isArray(update.entries)
+      ? update.entries.filter((x): x is PlanEntry =>
+          !!x && typeof x === "object" && typeof (x as PlanEntry).content === "string" && typeof (x as PlanEntry).status === "string")
+      : [];
+    if (entries.length > 0) void state.onPlan?.(entries);
     return;
   }
 

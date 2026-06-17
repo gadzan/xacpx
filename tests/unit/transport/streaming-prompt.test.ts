@@ -623,6 +623,29 @@ test("empty thought chunk does not invoke onThought", () => {
   expect(calls).toBe(0);
 });
 
+test("parses a plan update into onPlan with the full entry list (replace semantics)", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, { onPlan: (entries) => plans.push(entries) });
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "plan", entries: [
+      { content: "read files", status: "completed" },
+      { content: "write code", status: "in_progress", priority: "high" },
+    ] } },
+  }));
+  expect(plans).toEqual([[
+    { content: "read files", status: "completed" },
+    { content: "write code", status: "in_progress", priority: "high" },
+  ]]);
+});
+
+test("ignores a plan update with no entries array", () => {
+  let called = false;
+  const state = createStreamingPromptState(false, { onPlan: () => { called = true; } });
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: { sessionUpdate: "plan" } } }));
+  expect(called).toBe(false);
+});
+
 test("interleaved stream: thoughts reach onThought in order, agent message lands in segments, thoughts do not appear in segments or buffer", () => {
   const thoughts: string[] = [];
   const state = createStreamingPromptState(true, {
