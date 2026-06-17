@@ -315,4 +315,20 @@ describe("AcpxBridgeClient", () => {
     await promise;
     expect(events).toEqual([{ type: "prompt.thought", text: "deliberating" }]);
   });
+
+  test("delivers prompt.plan events to onEvent", async () => {
+    const writes: string[] = [];
+    const client = new AcpxBridgeClient((line) => { writes.push(line); return true; });
+    const events: Array<unknown> = [];
+    const promise = client.request("prompt", {}, (event) => events.push(event));
+    const req = JSON.parse(writes[0]);
+    const entries = [
+      { content: "Read the file", status: "completed", priority: "high" },
+      { content: "Make the edit", status: "in_progress" },
+    ];
+    client.handleLine(JSON.stringify({ id: req.id, event: "prompt.plan", entries }));
+    client.handleLine(JSON.stringify({ id: req.id, ok: true, result: { text: "done" } }));
+    await promise;
+    expect(events).toEqual([{ type: "prompt.plan", entries }]);
+  });
 });

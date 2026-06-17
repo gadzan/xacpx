@@ -1,4 +1,5 @@
 import {
+  encodeBridgePromptPlanEvent,
   encodeBridgePromptSegmentEvent,
   encodeBridgePromptThoughtEvent,
   encodeBridgePromptToolEvent,
@@ -214,6 +215,12 @@ export class BridgeServer {
               id: requestId,
               event: "prompt.thought",
               text: event.text,
+            }));
+          } else if (event.type === "prompt.plan") {
+            writeLine?.(encodeBridgePromptPlanEvent({
+              id: requestId,
+              event: "prompt.plan",
+              entries: event.entries,
             }));
           }
         });

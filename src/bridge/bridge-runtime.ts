@@ -20,12 +20,13 @@ import type {
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
 import type { AgentSessionListResult, PromptMediaInput } from "../transport/types";
 import type { ToolEventMode } from "../transport/tool-event-mode.js";
-import type { ToolUseEvent } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 
 type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
   | { type: "prompt.tool_event"; event: ToolUseEvent }
-  | { type: "prompt.thought"; text: string };
+  | { type: "prompt.thought"; text: string }
+  | { type: "prompt.plan"; entries: PlanEntry[] };
 
 export class EnsureSessionFailedError extends Error {
   readonly kind: "missing_optional_dep" | "generic";
@@ -812,6 +813,9 @@ export async function runStreamingPrompt(
       // so this side has no callback to await before resolving the prompt.
       ...(onEvent
         ? { onThought: (chunk) => onEvent({ type: "prompt.thought", text: chunk }) }
+        : {}),
+      ...(onEvent
+        ? { onPlan: (entries) => onEvent({ type: "prompt.plan", entries }) }
         : {}),
     });
     let lastReplyAt = now();
