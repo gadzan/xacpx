@@ -67,8 +67,8 @@ const verb = computed(() => {
     </div>
     <template v-else>
       <!-- header -->
-      <div class="shrink-0 flex h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-5 backdrop-blur-md">
-        <h1 class="text-[14px] font-semibold tracking-tight text-fg">{{ chat.sessionAlias }}</h1>
+      <div class="shrink-0 flex min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+        <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ chat.sessionAlias }}</h1>
         <div v-if="currentSession || instance" class="flex flex-wrap items-center gap-1">
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
                   class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
@@ -99,7 +99,7 @@ const verb = computed(() => {
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
       <!-- composer area -->
-      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-5 pb-4 pt-1.5">
+      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-3 lg:px-5 pb-4 pt-1.5">
         <!-- TURN HUD -->
         <div v-if="chat.busy" data-test="turn-hud"
              class="flex items-center gap-2 rounded-lg border border-run/20 bg-run/8 px-3 py-1.5">

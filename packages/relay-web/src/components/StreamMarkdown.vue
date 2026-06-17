@@ -117,8 +117,19 @@ const html = computed(() => renderMarkdown(props.text, { streaming: props.stream
   color: rgb(var(--c-fg-muted));
 }
 .stream-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
   margin: 0.6em 0;
+}
+.stream-md table::-webkit-scrollbar { height: 8px; }
+.stream-md table::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
+.stream-md table::-webkit-scrollbar-track { background: transparent; }
+.stream-md img {
+  max-width: 100%;
+  height: auto;
 }
 .stream-md th,
 .stream-md td {

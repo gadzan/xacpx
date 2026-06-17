@@ -14,6 +14,13 @@ describe("PromptInput composer", () => {
     expect(w.find('[data-test="cmd-suggestions"]').exists()).toBe(false);
   });
 
+  it("uses a 16px textarea on mobile (iOS auto-zoom guard) and 14px on desktop", () => {
+    const w = mount(PromptInput);
+    const cls = w.find("textarea").classes();
+    expect(cls).toContain("text-[16px]");
+    expect(cls).toContain("lg:text-[14px]");
+  });
+
   it("Enter submits a `/`-prefixed message verbatim (no autocomplete interception)", async () => {
     const w = mount(PromptInput);
     const ta = w.find("textarea");

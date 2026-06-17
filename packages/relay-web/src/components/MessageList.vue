@@ -141,7 +141,7 @@ function fmtTime(iso?: string): string {
 
 <template>
   <div class="relative flex-1 overflow-hidden">
-    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-5 py-5" @scroll="onScroll">
+    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-3 py-4 lg:px-5 lg:py-5" @scroll="onScroll">
       <div class="mx-auto max-w-3xl space-y-5">
         <!-- Older-history affordance: a spinner while a page loads, else a hint that more
              exists. Prepending older rows keeps the scroll position pinned (see watcher). -->

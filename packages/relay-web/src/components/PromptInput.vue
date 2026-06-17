@@ -100,7 +100,7 @@ function onInput() {
       <!-- Stays enabled while busy so you can pre-compose the next message and press
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"
-                class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
+                class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
                 :placeholder="busy ? 'Agent is working… (Esc to stop)' : 'Message'"
                 @input="onInput"
                 @keydown="onKeydown" />
