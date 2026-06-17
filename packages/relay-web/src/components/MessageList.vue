@@ -8,11 +8,7 @@ import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import { Bot, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
 
-// `paused` is true while the conversation is hidden (e.g. a file is open in the center
-// column). It pauses auto-scroll so a display:none scroller — whose scrollHeight is 0 —
-// isn't pinned to 0, preserving the exact position to return to. (A boolean prop defaults
-// to false when absent, so the default is "not paused" = live.)
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; paused?: boolean }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
@@ -65,9 +61,6 @@ watch(
 
 let settleRaf = 0;
 function scrollToBottom(smooth = false): void {
-  // Paused while hidden: a display:none scroller reports scrollHeight 0, so scrolling now
-  // would overwrite the position the user left at. Re-pinned on return (see the paused watch).
-  if (props.paused) return;
   const el = scroller.value;
   if (!el) return;
   if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
@@ -100,16 +93,6 @@ watch(
     atBottom.value = true;
     pendingDistFromBottom = null;
     void nextTick(() => scrollToBottom(false));
-  },
-);
-
-// Returning to the conversation (pane shown again after a file was open): if the user had
-// been pinned to the bottom, follow the live tail; if they'd scrolled up to read history,
-// the v-show'd scroller kept their exact spot, so leave it untouched.
-watch(
-  () => props.paused,
-  (now, prev) => {
-    if (!now && prev && atBottom.value) void nextTick(() => scrollToBottom(false));
   },
 );
 

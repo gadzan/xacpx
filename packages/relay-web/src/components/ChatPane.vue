@@ -8,10 +8,6 @@ import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
 import { Bot, Folder, GitBranch, X } from "lucide-vue-next";
 
-// `paused` is true while a file/diff takes over the center column. The pane stays mounted
-// (v-show) so the conversation scroll position is preserved; we forward the flag so the
-// message list pauses auto-scroll while hidden.
-defineProps<{ paused?: boolean }>();
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
 const chat = useChatStore();
@@ -97,7 +93,7 @@ const verb = computed(() => {
         {{ chat.error }}
         <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
       </div>
-      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" :paused="paused"
+      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"

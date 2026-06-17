@@ -143,23 +143,27 @@ test("selecting a session closes the instance drawer and routes to chat", async 
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
 });
 
-test("opening a file overlays the viewer but keeps the chat mounted (hidden + paused) so scroll is preserved", async () => {
+test("opening a file overlays the viewer but keeps the chat mounted+laid out (inert) so scroll is preserved without re-layout jank", async () => {
   const wrapper = mountDash();
   await flushPromises();
-  expect(wrapper.findComponent(ChatPane).exists()).toBe(true);
-  expect(wrapper.findComponent(ChatPane).props("paused")).toBe(false);
+  const chatBefore = wrapper.findComponent(ChatPane);
+  expect(chatBefore.exists()).toBe(true);
+  // Bound inert is false when no file is open (the stub surfaces the raw bound value; on the
+  // real single-root ChatPane Vue drops the attribute entirely when false).
+  expect(chatBefore.attributes("inert")).toBe("false");
   expect(wrapper.findComponent(FileViewer).exists()).toBe(false);
-  // Opening a file from the rail takes over the center column. ChatPane is NOT unmounted —
-  // it's hidden via v-show and told it's paused, so its scroll position survives the round
-  // trip (v-if would destroy the scroller and lose the spot).
+  // Opening a file overlays the FileViewer on top. ChatPane is NOT unmounted or hidden via
+  // display:none — it stays laid out underneath (just `inert`), so its scroll position is
+  // preserved and returning is a cheap repaint, not a full re-layout.
   const files = useFilesStore();
   files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
   await flushPromises();
   expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
   const chat = wrapper.findComponent(ChatPane);
   expect(chat.exists()).toBe(true);
-  expect(chat.props("paused")).toBe(true);
-  expect(chat.attributes("style") ?? "").toContain("display: none");
+  expect(chat.attributes("inert")).toBe("true"); // occluded → disabled for focus/interaction
+  // Not hidden via display:none (that's what caused the reveal jank).
+  expect(chat.attributes("style") ?? "").not.toContain("display: none");
 });
 
 test("the sidebar header toggle collapses the instances column, and the edge handle restores it", async () => {

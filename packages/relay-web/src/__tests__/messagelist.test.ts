@@ -202,45 +202,6 @@ it("does not emit load-older when already loading or no older history", async ()
   expect(wrapper.emitted("loadOlder")).toBeFalsy();
 });
 
-it("pauses auto-scroll while hidden, then re-pins to bottom on return if the user was at the bottom", async () => {
-  const wrapper = mount(MessageList, {
-    props: { messages: [msg({ direction: "out", text: "hi" })], liveTurn: null, sessionKey: "a\0one", paused: false },
-  });
-  const el = wrapper.find('[data-test="msg-scroller"]').element as HTMLElement;
-  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
-  Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
-  el.scrollTop = 5000; // at the bottom (atBottom stays true)
-
-  // Hide the pane (a file opened): a new streaming message must NOT move the scroller —
-  // a display:none scroller has scrollHeight 0, so scrolling would clobber the position.
-  await wrapper.setProps({ paused: true });
-  el.scrollTop = 1234; // simulate the browser preserving the left-at position
-  await wrapper.setProps({ messages: [msg({ direction: "out", text: "hi" }), msg({ direction: "out", text: "new" })] });
-  await wrapper.vm.$nextTick();
-  expect(el.scrollTop).toBe(1234); // untouched while paused
-
-  // Returning (un-paused) re-pins to the bottom because the user had been at the bottom.
-  await wrapper.setProps({ paused: false });
-  await wrapper.vm.$nextTick();
-  expect(el.scrollTop).toBe(5000);
-});
-
-it("on return, leaves the scroll position alone when the user had scrolled up to read history", async () => {
-  const wrapper = mount(MessageList, {
-    props: { messages: [msg({ direction: "out", text: "hi" })], liveTurn: null, sessionKey: "a\0one", paused: false },
-  });
-  const el = wrapper.find('[data-test="msg-scroller"]').element as HTMLElement;
-  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
-  Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
-  el.scrollTop = 100; // scrolled up → detached from bottom
-  await wrapper.find('[data-test="msg-scroller"]').trigger("scroll");
-
-  await wrapper.setProps({ paused: true });
-  await wrapper.setProps({ paused: false });
-  await wrapper.vm.$nextTick();
-  expect(el.scrollTop).toBe(100); // preserved, not yanked to the bottom
-});
-
 it("re-pins to the bottom when the session changes (atBottom reset)", async () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "out", text: "hi" })], liveTurn: null, sessionKey: "a\0one" },
