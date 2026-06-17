@@ -5,6 +5,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
+import PlanPanel from "./PlanPanel.vue";
 import { Bot, Folder, GitBranch, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
@@ -111,6 +112,7 @@ const verb = computed(() => {
                   class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
                   @click="chat.cancel"><X :size="13" />Cancel</button>
         </div>
+        <PlanPanel v-if="chat.liveTurn?.plan?.length" :entries="chat.liveTurn.plan" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                      @send="chat.send" @cancel="chat.cancel" />
