@@ -386,6 +386,17 @@ test("live turn accumulates tool steps, reasoning, and flushes structured on fin
   expect(last.structured?.parts?.map((p) => p.type)).toEqual(["tool", "reasoning", "text"]);
 });
 
+it("sets the live turn plan on a plan event and replaces it on the next", () => {
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const ev = (entries: unknown) => chat.applyEvent({ kind: "control-event", instanceId: "i1",
+    event: { type: "plan", chatKey: "relay:i1", sessionAlias: "backend", entries } } as never);
+  ev([{ content: "a", status: "in_progress" }]);
+  expect(chat.liveTurn?.plan).toEqual([{ content: "a", status: "in_progress" }]);
+  ev([{ content: "a", status: "completed" }, { content: "b", status: "pending" }]);
+  expect(chat.liveTurn?.plan?.length).toBe(2); // replace, not append
+});
+
 test("a cancelled finish marks the turn stopped, not errored", () => {
   const store = useChatStore();
   store.select("i1", "backend");

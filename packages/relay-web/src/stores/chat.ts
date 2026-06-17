@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { LiveTurnSnapshotDto, MessageRecordDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -29,6 +29,7 @@ export interface LiveTurn {
   parts: TurnPart[];
   status: "working" | "streaming";
   startedAt: number;
+  plan?: PlanEntryDto[];
 }
 
 // Coalescing appenders — consecutive same-type chunks merge into one part. Text chunks
@@ -262,6 +263,10 @@ export const useChatStore = defineStore("chat", () => {
       upsertTool(t.parts, e.step);
     } else if (e.type === "turn-thought") {
       appendReasoning(ensureTurn(bufKey(event.instanceId, e.sessionAlias)).parts, e.chunk);
+    } else if (e.type === "plan") {
+      // REPLACE semantics: each plan event carries the agent's full todo list, so the
+      // live turn holds the latest list verbatim (assignment, not append).
+      ensureTurn(bufKey(event.instanceId, e.sessionAlias)).plan = e.entries;
     } else if (e.type === "session-history") {
       // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
