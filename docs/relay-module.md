@@ -7,17 +7,20 @@
 - 运行时：Node >= 22.13（node:sqlite）或 Bun >= 1.2（bun:sqlite），SqlDriver 适配层自动选择。
 - 两个端口：HTTP API（默认 8787，登录/邀请/实例/RPC 代理）+ 实例 WS 网关（默认 8788）。
 - 快速开始：
-  1. `xacpx-relay init-admin --username admin --db ./relay.db`
+  1. `xacpx-relay user new --account admin --db ./relay.db`（打印一次性登录令牌）
   2. `xacpx-relay start --db ./relay.db`
-  3. `xacpx-relay token new --account admin --name home-pc --db ./relay.db`
+  3. `xacpx-relay pair --account admin --name home-pc --db ./relay.db`（铸造连接器配对令牌）
 - RPC 请求超时：`xacpx-relay start --request-timeout-ms <ms>` 限定网关 RPC 请求超时，默认 `120000`
   （共享常量 `DEFAULT_REQUEST_TIMEOUT_MS = 120s`，位于 packages/relay/src/gateway/instance-gateway.ts，
   网关回退与服务端均复用之）；agent 冷启动慢 / 长 prompt 时可调大。
-- 安全：scrypt 密码哈希（node:crypto 内置，格式含参数可迁移）；所有 token/凭证哈希落盘；登录限流（有界，见阶段五）；
+- 安全：登录令牌（login token）哈希落盘（scrypt，node:crypto 内置，格式含参数可迁移）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
-- CSRF backstop：登录/注册/RPC 以及 `POST /api/instances/pairing-token`、`POST /api/invites`
+- 账号模型：无密码、无角色、无邀请码；凭证为 CLI 铸造的登录令牌（`login_tokens` 表）；每个账号可持有多枚令牌；
+  `token revoke --id <id>` 吊销单枚令牌并级联删除其派生的所有 web 会话。
+- CSRF backstop：`/api/login`、RPC 以及 `POST /api/instances/pairing-token`
   统一要求 `content-type: application/json`（`requireJson`），否则返回 415。
+  `/api/register` 与 `/api/invites` 已移除（显式返回 404）；`/api/*` 鉴权网关仅豁免 `/api/login`。
 
 ## 连接器（@ganglion/xacpx-channel-relay）
 
@@ -83,7 +86,7 @@
   `startMaintenanceLoop(...)` 每小时一次（`setInterval` 并 `unref`，不挡进程退出）：
   - 按账龄裁剪 `messages`（`--history-retention-days`，默认 30 天）+ 每会话硬上限
     `MAX_MESSAGES_PER_SESSION = 2000`（保最新）——`MessageStore.prune({ maxAgeMs?, maxPerSession? })`；
-  - GC 过期/已用的 `web_sessions`、`invites`（`AccountStore.pruneExpired(now)`）与
+  - GC 过期的 `web_sessions`（`AccountStore.pruneExpired(now)`）与
     `pairing_tokens`（`InstanceStore.prunePairingTokens(now)`）。
 - **CLI**：`xacpx-relay start --history-retention-days <n>`（透传给维护循环）。
 
@@ -91,8 +94,8 @@
 
 服务端（packages/relay）：
 
-- **CSRF 415 backstop**：`POST /api/instances/pairing-token` 与 `POST /api/invites` 补上
-  `requireJson` 守卫（与登录/注册/RPC 一致），非 JSON 请求返回 415。
+- **CSRF 415 backstop**：`POST /api/instances/pairing-token` 补上
+  `requireJson` 守卫（与登录/RPC 一致），非 JSON 请求返回 415。
 - **登录限流有界**：限流表按时间淘汰过期条目 + 最旧窗口硬上限，避免无界 Map 内存 DoS。
 - **网关在线掉线即时拒绝**：`InstanceGateway` 在 socket 关闭时立即用 `instance-offline`
   排空在途请求（原先要等到 15s 超时才返回 503）。
@@ -169,8 +172,8 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   验证 实例事件 → relay → web 客户端 + 历史缓存的端到端路径。
 - 端到端手工验证 runbook：
   1. `bun run build:packages`
-  2. `node packages/relay/dist/cli.js init-admin --username admin --db /tmp/relay.db`
+  2. `node packages/relay/dist/cli.js user new --account admin --db /tmp/relay.db`（记下打印的登录令牌）
   3. `node packages/relay/dist/cli.js start --db /tmp/relay.db`
-  4. `node packages/relay/dist/cli.js token new --account admin --db /tmp/relay.db`
+  4. `node packages/relay/dist/cli.js pair --account admin --db /tmp/relay.db`（记下配对令牌）
   5. 另一终端：dry-run 或真实 xacpx 安装 channel-relay、channel add、restart，
-     然后 curl 登录 + `POST /api/instances/<id>/rpc {"type":"control.sessions.list"}` 验证。
+     然后 curl `POST /api/login` 用登录令牌换 cookie + `POST /api/instances/<id>/rpc {"type":"control.sessions.list"}` 验证。
