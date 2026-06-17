@@ -170,13 +170,13 @@ onUnmounted(() => {
       <button data-test="open-instances" aria-label="Open instances"
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
-      <div class="flex shrink-0 items-center gap-1">
-        <button data-test="open-files" aria-label="Open files"
-                class="flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
-                @click="openRight('files')"><FileText :size="14" />Files</button>
-        <button data-test="open-tasks" aria-label="Open tasks"
-                class="flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
-                @click="openRight('tasks')"><List :size="14" />Tasks</button>
+      <div class="flex shrink-0 items-center gap-0.5">
+        <button data-test="open-files" aria-label="Open files" title="Files"
+                class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
+                @click="openRight('files')"><FileText :size="18" /></button>
+        <button data-test="open-tasks" aria-label="Open tasks" title="Tasks"
+                class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
+                @click="openRight('tasks')"><List :size="18" /></button>
       </div>
     </div>
 

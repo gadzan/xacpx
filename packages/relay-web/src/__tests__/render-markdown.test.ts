@@ -59,6 +59,15 @@ describe("renderMarkdown", () => {
     expect(html).toContain("**important");
   });
 
+  it("wraps tables in a horizontal-scroll container (columns kept, no viewport overflow)", () => {
+    const html = renderMarkdown("| a | b |\n| --- | --- |\n| 1 | 2 |");
+    // The wrapper provides the scroll; the <table> keeps normal table layout.
+    expect(html).toContain('<div class="md-table-wrap"><table>');
+    expect(html).toContain("</table></div>");
+    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<td>1</td>");
+  });
+
   it("returns an empty string for empty input", () => {
     expect(renderMarkdown("")).toBe("");
   });

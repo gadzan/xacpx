@@ -116,17 +116,20 @@ const html = computed(() => renderMarkdown(props.text, { streaming: props.stream
   padding-left: 0.8em;
   color: rgb(var(--c-fg-muted));
 }
-.stream-md table {
-  display: block;
-  width: max-content;
+/* A wrapping div (emitted by the markdown renderer) provides horizontal scroll for wide
+   tables. The <table> itself keeps normal table layout so columns stay aligned — setting
+   display:block on the table would collapse the grid into a stacked single column. */
+.stream-md .md-table-wrap {
   max-width: 100%;
   overflow-x: auto;
-  border-collapse: collapse;
   margin: 0.6em 0;
 }
-.stream-md table::-webkit-scrollbar { height: 8px; }
-.stream-md table::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
-.stream-md table::-webkit-scrollbar-track { background: transparent; }
+.stream-md .md-table-wrap::-webkit-scrollbar { height: 8px; }
+.stream-md .md-table-wrap::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
+.stream-md .md-table-wrap::-webkit-scrollbar-track { background: transparent; }
+.stream-md table {
+  border-collapse: collapse;
+}
 .stream-md img {
   max-width: 100%;
   height: auto;

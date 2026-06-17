@@ -11,6 +11,12 @@ const md = new MarkdownIt({
   breaks: true,
 });
 
+// Wrap tables in a horizontally scrollable container so a wide table scrolls within the
+// message instead of overflowing the viewport — without display:block on the <table>,
+// which would collapse its column layout into a stacked single column.
+md.renderer.rules.table_open = () => '<div class="md-table-wrap"><table>';
+md.renderer.rules.table_close = () => "</table></div>";
+
 // Force every surviving link to open safely in a new tab. Registered once at module
 // load; DOMPurify is a singleton and this app only sanitizes through this module.
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
