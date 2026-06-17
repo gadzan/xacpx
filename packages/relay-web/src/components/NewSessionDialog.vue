@@ -206,6 +206,9 @@ function nativeLabel(s: NativeSessionDto): string {
   const when = s.updatedAt ? ` · ${new Date(s.updatedAt).toLocaleString()}` : "";
   return `${title} (${tail})${when}`;
 }
+const nativeGroups = computed<SelectGroup[]>(() => [
+  { options: nativeSessions.value.map((s) => ({ value: s.sessionId, label: nativeLabel(s) })) },
+]);
 
 const canSubmit = computed(() => {
   if (submitting.value || !agentValue.value) return false;
@@ -364,7 +367,7 @@ async function submit(): Promise<void> {
           </div>
 
           <!-- Native attach: pick an existing acpx-owned rollout for the chosen agent + workspace. -->
-          <label v-if="sessionSource === 'native'" class="block">
+          <div v-if="sessionSource === 'native'" class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">Native session</span>
             <!-- Loading: animated spinner + shimmering skeleton rows (the list can take a while). -->
             <div v-if="nativeLoading" data-test="ns-native-loading" class="space-y-1.5">
@@ -374,10 +377,8 @@ async function submit(): Promise<void> {
               </div>
               <div v-for="n in 3" :key="n" class="h-7 animate-pulse rounded-lg bg-fg/5 motion-reduce:animate-none" :style="{ width: `${92 - n * 12}%` }" />
             </div>
-            <select v-else-if="nativeSessions.length" v-model="nativeSel" data-test="ns-native"
-                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-              <option v-for="s in nativeSessions" :key="s.sessionId" :value="s.sessionId">{{ nativeLabel(s) }}</option>
-            </select>
+            <SelectMenu v-else-if="nativeSessions.length" v-model="nativeSel" :groups="nativeGroups"
+                        data-test="ns-native" aria-label="Native session" placeholder="Select a native session" />
             <!-- Error: distinct danger block with a friendly hint (e.g. agent not authenticated). -->
             <div v-else-if="nativeError" data-test="ns-native-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">
               <div class="flex items-start gap-1.5">
@@ -391,7 +392,7 @@ async function submit(): Promise<void> {
             <p v-else data-test="ns-native-empty" class="rounded-lg bg-bg px-3 py-2 text-xs text-fg-muted">
               No native sessions found for this agent + workspace.
             </p>
-          </label>
+          </div>
 
           <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ error }}</p>
         </template>
