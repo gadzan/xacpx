@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-/** 32 random bytes, base64url — used for invites, pairing tokens, credentials, web sessions. */
+/** 32 random bytes, base64url — used for login tokens, pairing tokens, credentials, web sessions. */
 export function generateToken(): string {
   return randomBytes(32).toString("base64url");
 }

@@ -7,7 +7,7 @@ describe("api client", () => {
   it("sends application/json content-type on a bodyless POST", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-    await api.post("/api/invites");
+    await api.post("/api/instances/pairing-token");
     const init = fetchMock.mock.calls[0][1];
     expect(init.headers["content-type"]).toBe("application/json");
     expect(init.credentials).toBe("include");
