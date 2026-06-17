@@ -1,6 +1,6 @@
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
-import type { ToolUseEvent } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 
 export type { ToolEventMode } from "./tool-event-mode.js";
@@ -111,6 +111,11 @@ export interface PromptOptions {
    * error observed rejects the prompt.
    */
   onThought?: (chunk: string) => void | Promise<void>;
+  /**
+   * Structured plan/todo side-channel: the agent's full ACP `plan` entry list,
+   * re-sent on every update (REPLACE, not append). Optional — text channels omit it.
+   */
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   /**
    * How tool_call / tool_call_update events are surfaced for this prompt.
    *
