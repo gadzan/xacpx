@@ -10,6 +10,7 @@ interface DialogOptions {
   agentCatalog?: Array<{ driver: string; configured: boolean; installed: "builtin" | "yes" | "unknown" }>;
   sessions?: Array<{ alias: string }>;
   nativeSessions?: Array<{ sessionId: string; title?: string | null; updatedAt?: string; cwd?: string }>;
+  modelSuggestions?: string[];
 }
 
 function mountDialog(opts: DialogOptions = {}) {
@@ -26,6 +27,7 @@ function mountDialog(opts: DialogOptions = {}) {
   vi.spyOn(store, "createWorkspace").mockResolvedValue({ name: "ws", cwd: "/ws" } as never);
   vi.spyOn(store, "createSession").mockResolvedValue({ pending: false });
   vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
+  vi.spyOn(store, "listModelSuggestions").mockResolvedValue(opts.modelSuggestions ?? []);
   const wrapper = mount(NewSessionDialog, { props: { instanceId: "i1", instanceName: "pc" } });
   return { wrapper, store };
 }
@@ -43,7 +45,7 @@ describe("NewSessionDialog", () => {
     await flushPromises();
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex-2", "codex", "backend");
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex-2", "codex", "backend", undefined, undefined);
   });
 
   it("selecting an un-configured driver auto-creates the agent before the session", async () => {
@@ -61,7 +63,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createAgent).toHaveBeenCalledWith("i1", "gemini", "gemini");
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-gemini", "gemini", "backend");
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-gemini", "gemini", "backend", undefined, undefined);
   });
 
   it("New-path workspace mode auto-creates a workspace from the path basename", async () => {
@@ -77,7 +79,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createWorkspace).toHaveBeenCalledWith("i1", "demo-project", "/tmp/demo-project");
-    expect(store.createSession).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project");
+    expect(store.createSession).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project", undefined, undefined);
   });
 
   it("an un-installed (unknown) driver is shown but disabled in the select", async () => {
@@ -149,6 +151,34 @@ describe("NewSessionDialog", () => {
     expect(wrapper.find('[data-test="ns-pending"]').exists()).toBe(true);
     await wrapper.get('[data-test="ns-pending-close"]').trigger("click");
     expect(wrapper.emitted("created")?.[0]).toEqual(["backend-codex"]);
+  });
+
+  it("forwards a chosen model override on create", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-model"]').setValue("gpt-5.2[high]");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
+  });
+
+  it("treats a literal \"default\" (or blank) model as the agent default — no override sent", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-model"]').setValue("  Default  ");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, undefined);
   });
 
   it("native source lists the agent's rollouts and attaches the chosen one by agentSessionId", async () => {

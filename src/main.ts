@@ -765,8 +765,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     agent,
     sessions,
     transport,
-    createSessionWithTransport: (internalAlias, agent, workspace) =>
-      router.createSessionWithTransport(internalAlias, agent, workspace),
+    createSessionWithTransport: (internalAlias, agent, workspace, model) =>
+      router.createSessionWithTransport(internalAlias, agent, workspace, model),
     listNativeSessions: (agent, workspace) =>
       router.listNativeSessionsForControl(agent, workspace),
     attachNativeSessionWithTransport: (internalAlias, agent, workspace, agentSessionId, nativeMeta) =>

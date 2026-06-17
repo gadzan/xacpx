@@ -498,6 +498,7 @@ export class CommandRouter {
     internalAlias: string,
     agent: string,
     workspace: string,
+    model?: string,
   ): Promise<ResolvedSession> {
     // Refuse to overwrite an existing alias: silently re-pointing it would either
     // reuse the old transport session (stale history) or orphan it, and a native
@@ -513,6 +514,13 @@ export class CommandRouter {
       workspace,
       `${workspace}:${internalAlias}`,
     );
+    // An explicit model override must be on the ResolvedSession BEFORE
+    // ensureTransportSession so acpx creates the session under that model
+    // (it carries through as `--model`). Mirrors handleSessionNew.
+    const normalizedModel = model?.trim();
+    if (normalizedModel) {
+      session.model = normalizedModel;
+    }
     const release = await this.reserveLogicalTransportSession(session.transportSession);
     try {
       await this.ensureTransportSession(session);
@@ -521,6 +529,9 @@ export class CommandRouter {
         throw new Error(`transport session "${session.transportSession}" could not be verified`);
       }
       await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+      if (normalizedModel) {
+        await this.sessions.setSessionModel(internalAlias, normalizedModel);
+      }
       // Best-effort: a transient refresh failure must not fail a create that has
       // already succeeded, bound, and verified. Mirrors the chat paths' use of
       // refreshSessionTransportAgentCommandBestEffort.

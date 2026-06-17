@@ -22,8 +22,8 @@ function makeDeps() {
       useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws/backend" }),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
     },
-    createSessionWithTransport: async (internalAlias: string, agent: string, workspace: string) => {
-      calls.push({ kind: "fresh", internalAlias, agent, workspace });
+    createSessionWithTransport: async (internalAlias: string, agent: string, workspace: string, model?: string) => {
+      calls.push({ kind: "fresh", internalAlias, agent, workspace, ...(model ? { model } : {}) });
       return { ...session, alias: internalAlias, agent, workspace };
     },
     listNativeSessions: async (_agent: string, _workspace: string) => [
@@ -76,6 +76,21 @@ test("createSession runs the transport lifecycle and emits sessions-changed", as
   expect(created.alias).toBe("docs");
   expect(calls).toEqual([{ kind: "fresh", internalAlias: "docs", agent: "codex", workspace: "/ws/docs" }]);
   expect(seen).toContainEqual({ type: "sessions-changed" });
+});
+
+test("createSession forwards a model override to the fresh-create lifecycle", async () => {
+  const { deps, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  await control.createSession("relay:acct", "docs", "codex", "/ws/docs", undefined, "gpt-5.2[high]");
+  expect(calls).toEqual([{ kind: "fresh", internalAlias: "docs", agent: "codex", workspace: "/ws/docs", model: "gpt-5.2[high]" }]);
+});
+
+test("createSession ignores a model override on a native attach (resume uses the rollout's model)", async () => {
+  const { deps, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  await control.createSession("relay:acct", "resumed", "codex", "/ws/docs", "ses_abc", "gpt-5.2[high]");
+  // Native attach path receives no model — it resumes under the rollout's recorded model.
+  expect(calls).toEqual([{ kind: "native", internalAlias: "resumed", agent: "codex", workspace: "/ws/docs", agentSessionId: "ses_abc" }]);
 });
 
 test("listNativeSessions maps agent-native sessions for the web picker", async () => {

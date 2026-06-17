@@ -100,6 +100,9 @@ export interface SessionsCreatePayload {
   workspace: string;
   /** When set, resume this existing agent-native session instead of creating a fresh one. */
   agentSessionId?: string;
+  /** Optional per-session model override (e.g. `gpt-5.2[high]`). Omitted/empty means
+   *  "use the agent's default model" — the web form's `default` choice. */
+  model?: string;
 }
 export type SessionsCreateResult = SessionDto;
 

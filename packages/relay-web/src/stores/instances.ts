@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
+import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type SessionModelResult, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
@@ -113,11 +113,13 @@ export const useInstancesStore = defineStore("instances", () => {
   // so a timeout is reported as `{pending:true}` (not a hard error). Every other
   // failure — including the instance-side `{error}` payload surfaced by `unwrap` —
   // is a real failure and rethrows.
-  async function createSession(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string): Promise<{ pending: boolean }> {
+  async function createSession(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): Promise<{ pending: boolean }> {
     try {
       // agentSessionId, when set, resumes an existing agent-native session instead of
       // creating a fresh transport session (the web "attach native session" option).
-      unwrap(await api.rpc(instanceId, "control.sessions.create", { alias, agent, workspace, ...(agentSessionId ? { agentSessionId } : {}) }));
+      // model, when set, overrides the agent's default model for the new session
+      // (empty/"default" is omitted so the agent default is used).
+      unwrap(await api.rpc(instanceId, "control.sessions.create", { alias, agent, workspace, ...(agentSessionId ? { agentSessionId } : {}), ...(model ? { model } : {}) }));
     } catch (e) {
       if (e instanceof ApiError && (e.status === 504 || e.code === "timeout")) return { pending: true };
       throw e;
@@ -131,6 +133,28 @@ export const useInstancesStore = defineStore("instances", () => {
   async function listNativeSessions(instanceId: string, agent: string, workspace: string): Promise<NativeSessionDto[]> {
     const { sessions } = unwrap(await api.rpc<{ sessions: NativeSessionDto[] }>(instanceId, "control.sessions.native.list", { agent, workspace }));
     return sessions;
+  }
+
+  // Best-effort model suggestions for the new-session form's datalist. acpx can't list
+  // an agent's models without a live session, so we reuse the advertised `available`
+  // list from any EXISTING session of the same agent + workspace. Returns [] when there
+  // is no such session (e.g. a brand-new agent) or on any failure — the form then falls
+  // back to a plain free-text input defaulting to "default".
+  async function listModelSuggestions(instanceId: string, agent: string, workspace: string): Promise<string[]> {
+    const inst = byId(instanceId);
+    const match = (inst?.sessions ?? []).find((s) => s.agent === agent && s.workspace === workspace);
+    if (!match) return [];
+    try {
+      const r = unwrap(await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: match.alias }));
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const m of [...(r.current ? [r.current] : []), ...r.available]) {
+        if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   async function removeSession(instanceId: string, alias: string): Promise<void> {
@@ -156,5 +180,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, listNativeSessions, removeSession, applyEvent, byId };
+  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, listNativeSessions, listModelSuggestions, removeSession, applyEvent, byId };
 });

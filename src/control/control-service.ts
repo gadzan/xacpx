@@ -62,7 +62,7 @@ export interface ControlServiceDeps {
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
-  createSessionWithTransport: (internalAlias: string, agent: string, workspace: string) => Promise<ResolvedSession>;
+  createSessionWithTransport: (internalAlias: string, agent: string, workspace: string, model?: string) => Promise<ResolvedSession>;
   // List the agent-native sessions for an agent + workspace (web native-attach picker).
   listNativeSessions: (agent: string, workspace: string) => Promise<AgentSession[]>;
   // Bind a new logical session to an EXISTING agent-native session (resume), the web
@@ -225,6 +225,7 @@ export class ControlService {
     agent: string,
     workspace: string,
     agentSessionId?: string,
+    model?: string,
   ): Promise<ControlSessionInfo> {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
     // When an agentSessionId is supplied the user picked an existing native session to
@@ -242,9 +243,11 @@ export class ControlService {
         /* best-effort history seed */
       }
     }
+    // `model` only applies to a fresh transport session; a native attach resumes the
+    // agent-side rollout under its own recorded model and ignores the override.
     const session = agentSessionId
       ? await this.deps.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId)
-      : await this.deps.createSessionWithTransport(internalAlias, agent, workspace);
+      : await this.deps.createSessionWithTransport(internalAlias, agent, workspace, model);
     this.deps.events.emit({ type: "sessions-changed" });
     if (nativeHistory.length > 0) {
       this.deps.events.emit({ type: "session-history", chatKey, sessionAlias: alias, messages: nativeHistory });

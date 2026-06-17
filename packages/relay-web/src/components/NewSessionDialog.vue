@@ -17,6 +17,8 @@ const sessionSource = ref<"new" | "native">("new"); // fresh transport session v
 const wsMode = ref<"existing" | "path">("existing");
 const workspaceSel = ref("");
 const workspacePath = ref("");
+const model = ref("");                  // model override; empty = agent default ("default")
+const modelSuggestions = ref<string[]>([]); // datalist hints from existing same-agent sessions
 const submitting = ref(false);
 const pending = ref(false);
 const submittedAlias = ref("");
@@ -89,6 +91,16 @@ watch([sessionSource, agentValue, workspaceSel], () => {
     wsMode.value = "existing";
     void loadNativeSessions();
   }
+});
+
+// Refresh the model datalist hints whenever the agent/workspace selection changes.
+// Best-effort: acpx can't enumerate an agent's models without a live session, so the
+// list is seeded from an existing same-agent+workspace session (empty otherwise). The
+// field stays a free-text input that defaults to "default", so [] is fine.
+watch([agentValue, workspaceSel], async () => {
+  modelSuggestions.value = [];
+  if (!agentValue.value || !workspaceSel.value) return;
+  modelSuggestions.value = await store.listModelSuggestions(props.instanceId, agentValue.value, workspaceSel.value);
 });
 
 // Turn a raw backend error into a friendlier hint. Listing an agent's native sessions
@@ -165,7 +177,10 @@ async function submit(): Promise<void> {
       await store.createWorkspace(props.instanceId, workspaceName, workspacePath.value.trim());
     }
     // 5) create the session (preserve PR #31 pending handling)
-    const result = await store.createSession(props.instanceId, finalAlias, agentName, workspaceName);
+    //    A blank or "default" model means "use the agent's default" — send nothing.
+    const modelOverride = model.value.trim();
+    const modelArg = modelOverride && modelOverride.toLowerCase() !== "default" ? modelOverride : undefined;
+    const result = await store.createSession(props.instanceId, finalAlias, agentName, workspaceName, undefined, modelArg);
     if (result.pending) { submittedAlias.value = finalAlias; pending.value = true; return; }
     emit("created", finalAlias);
     emit("close");
@@ -248,6 +263,20 @@ async function submit(): Promise<void> {
             <input v-else v-model="workspacePath" data-test="ns-ws-path" placeholder="/abs/path"
                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
           </div>
+
+          <!-- Model override (fresh sessions only). Editable: pick a suggested model or
+               type any id. Blank/"default" keeps the agent's default model. Native attach
+               resumes under the rollout's recorded model, so the field is hidden there. -->
+          <label v-if="sessionSource === 'new'" class="block">
+            <span class="mb-1 block text-xs font-medium text-fg-muted">Model <span class="font-normal text-fg-muted">(optional)</span></span>
+            <input v-model="model" data-test="ns-model" list="ns-model-list" placeholder="default"
+                   class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                   @keydown.enter="submit" />
+            <datalist id="ns-model-list">
+              <option value="default" />
+              <option v-for="m in modelSuggestions" :key="m" :value="m" />
+            </datalist>
+          </label>
 
           <!-- Native attach: pick an existing acpx-owned rollout for the chosen agent + workspace. -->
           <label v-if="sessionSource === 'native'" class="block">

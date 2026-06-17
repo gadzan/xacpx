@@ -117,6 +117,25 @@ test("createSessionWithTransport resolves, ensures the transport session, and bi
   expect(await sessions.getSession("relay:demo")).toBeTruthy();
 });
 
+test("createSessionWithTransport applies a model override to the session and persists it", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.workspaces.home = { cwd: "/tmp/home" };
+  const ensuredModels: Array<string | undefined> = [];
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementation(
+    async (s: { model?: string }) => {
+      // The model must be on the ResolvedSession BEFORE ensure, so acpx creates under it.
+      ensuredModels.push(s.model);
+    },
+  );
+  (transport.hasSession as ReturnType<typeof mock>).mockImplementation(async () => true);
+
+  await router.createSessionWithTransport("relay:demo", "codex", "home", "gpt-5.2[high]");
+
+  expect(ensuredModels).toEqual(["gpt-5.2[high]"]);
+  const persisted = await sessions.getSession("relay:demo");
+  expect(persisted?.model).toBe("gpt-5.2[high]");
+});
+
 test("createSessionWithTransport refuses to overwrite an existing logical alias", async () => {
   const { router, transport, sessions, config } = buildRouter();
   config.workspaces.home = { cwd: "/tmp/home" };

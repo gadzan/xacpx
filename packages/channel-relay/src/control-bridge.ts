@@ -83,7 +83,7 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     }
     case MSG.sessionsCreate: {
       const input = payload as SessionsCreatePayload;
-      return await control.createSession(input.chatKey, input.alias, input.agent, input.workspace, input.agentSessionId);
+      return await control.createSession(input.chatKey, input.alias, input.agent, input.workspace, input.agentSessionId, input.model);
     }
     case MSG.sessionsNativeList: {
       const input = payload as SessionsNativeListPayload;
