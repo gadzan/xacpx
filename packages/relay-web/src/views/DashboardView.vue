@@ -213,7 +213,10 @@ onUnmounted(() => {
            the right panel off-screen. Wide tool content scrolls/wraps within instead. -->
       <div data-test="column" class="flex min-w-0 flex-1 flex-col">
         <FileViewer v-if="viewingFile" @back="backToFileList" @close="closeFileViewer" />
-        <ChatPane v-else @show-files="rightTab = 'files'" />
+        <!-- ChatPane stays mounted (v-show, not v-if) while a file is open so the
+             conversation's scroll position is preserved on return; `paused` stops its
+             auto-scroll while hidden. -->
+        <ChatPane v-show="!viewingFile" :paused="viewingFile" @show-files="rightTab = 'files'" />
       </div>
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->

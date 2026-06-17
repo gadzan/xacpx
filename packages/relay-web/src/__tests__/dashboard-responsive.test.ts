@@ -143,17 +143,23 @@ test("selecting a session closes the instance drawer and routes to chat", async 
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
 });
 
-test("the center column shows the chat by default and the file viewer when a file is open", async () => {
+test("opening a file overlays the viewer but keeps the chat mounted (hidden + paused) so scroll is preserved", async () => {
   const wrapper = mountDash();
   await flushPromises();
   expect(wrapper.findComponent(ChatPane).exists()).toBe(true);
+  expect(wrapper.findComponent(ChatPane).props("paused")).toBe(false);
   expect(wrapper.findComponent(FileViewer).exists()).toBe(false);
-  // Opening a file from the rail takes over the center column.
+  // Opening a file from the rail takes over the center column. ChatPane is NOT unmounted —
+  // it's hidden via v-show and told it's paused, so its scroll position survives the round
+  // trip (v-if would destroy the scroller and lose the spot).
   const files = useFilesStore();
   files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
   await flushPromises();
   expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
-  expect(wrapper.findComponent(ChatPane).exists()).toBe(false);
+  const chat = wrapper.findComponent(ChatPane);
+  expect(chat.exists()).toBe(true);
+  expect(chat.props("paused")).toBe(true);
+  expect(chat.attributes("style") ?? "").toContain("display: none");
 });
 
 test("the sidebar header toggle collapses the instances column, and the edge handle restores it", async () => {
