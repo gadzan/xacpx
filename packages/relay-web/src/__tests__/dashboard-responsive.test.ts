@@ -57,6 +57,57 @@ test("instance drawer starts off-canvas and opens via the hamburger", async () =
   expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(true);
 });
 
+test("the mobile bar exposes a discoverable Files button that opens the Files drawer on the files tab", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const filesBtn = wrapper.find('[data-test="open-files"]');
+  expect(filesBtn.exists()).toBe(true);
+  const right = wrapper.find('[data-drawer="right"]');
+  expect(right.classes()).toContain("translate-x-full");
+
+  await filesBtn.trigger("click");
+  // Drawer is open...
+  expect(right.classes()).toContain("translate-x-0");
+  expect(right.classes()).not.toContain("translate-x-full");
+  // ...and showing the Files tab as active.
+  const filesTab = wrapper.find('[data-test="right-tab-files"]');
+  expect(filesTab.classes()).toContain("text-accent");
+  expect(filesTab.classes()).toContain("font-semibold");
+});
+
+test("file viewer Back returns to the file list (drawer reopens) and Close returns to the conversation", async () => {
+  const files = useFilesStore();
+  // Replace the FileViewer stub with a minimal one that re-emits back/close so we can
+  // exercise DashboardView's nav handlers (rightTab/rightOpen are internal refs, so we
+  // assert via observable drawer DOM).
+  const fvStub = { name: "FileViewer", template: "<div data-test=\"fv-stub\" />", emits: ["back", "close"] };
+  const wrapper = mount(DashboardView, {
+    global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true, FileViewer: fvStub } },
+  });
+  await flushPromises();
+  const right = wrapper.find('[data-drawer="right"]');
+
+  // Open a file so the (stubbed) FileViewer renders.
+  files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
+  await flushPromises();
+  expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
+
+  // Back -> file list: file cleared AND right drawer open on files.
+  wrapper.findComponent(FileViewer).vm.$emit("back");
+  await flushPromises();
+  expect(files.file).toBeNull();
+  expect(right.classes()).toContain("translate-x-0");
+  expect(right.classes()).not.toContain("translate-x-full");
+
+  // Re-open a file, then Close -> conversation: file cleared AND right drawer NOT open.
+  files.file = { workspace: "ws", path: "b.ts", content: "y", size: 1, truncated: false, binary: false };
+  await flushPromises();
+  wrapper.findComponent(FileViewer).vm.$emit("close");
+  await flushPromises();
+  expect(files.file).toBeNull();
+  expect(right.classes()).toContain("translate-x-full");
+});
+
 test("tasks drawer opens via the Tasks button", async () => {
   const wrapper = mountDash();
   await flushPromises();

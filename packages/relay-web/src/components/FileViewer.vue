@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ArrowLeft, FileText, FileDiff } from "lucide-vue-next";
+import { ArrowLeft, FileText, FileDiff, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
 import CopyButton from "./CopyButton.vue";
 
 // Roomy file/diff viewer that takes over the center column (the chat area) so file
 // content isn't squeezed into the narrow right rail. The rail keeps navigation; this
 // shows the selected file or single-file diff full-width, with a Back affordance.
-const emit = defineEmits<{ back: [] }>();
+const emit = defineEmits<{ back: []; close: [] }>();
 const files = useFilesStore();
 
 // Above this many lines we drop the per-line gutter and render a plain <pre> so a huge
@@ -38,9 +38,12 @@ function diffLineClass(line: string): string {
   <div class="flex h-full flex-1 flex-col bg-bg" data-test="file-viewer-center">
     <!-- header: back + path + meta -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
-      <button data-test="fv-back"
-              class="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('back')"><ArrowLeft :size="14" />Back</button>
+      <button data-test="fv-back-list" aria-label="Back to file list"
+              class="flex lg:hidden items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="emit('back')"><ArrowLeft :size="14" />Files</button>
+      <button data-test="fv-back" aria-label="Back"
+              class="hidden lg:flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="emit('close')"><ArrowLeft :size="14" />Back</button>
       <span class="h-4 w-px bg-border" aria-hidden="true" />
       <template v-if="files.file">
         <FileText :size="14" class="shrink-0 text-accent" />
@@ -48,12 +51,17 @@ function diffLineClass(line: string): string {
         <span class="shrink-0 text-[11px] text-fg-muted">{{ fmtSize(files.file.size) }}</span>
         <span v-if="files.file.truncated" class="shrink-0 rounded bg-warn/10 px-1 text-[10.5px] text-warn">truncated</span>
         <span v-if="files.file.binary" class="shrink-0 rounded bg-fg/5 px-1 text-[10.5px] text-fg-muted">binary</span>
-        <CopyButton v-if="!files.file.binary" :text="files.file.content" class="ml-auto shrink-0" />
       </template>
       <template v-else-if="files.diffPath">
         <FileDiff :size="14" class="shrink-0 text-accent" />
         <span class="truncate font-mono text-[12.5px] text-fg">{{ files.diffPath }}</span>
       </template>
+      <div class="ml-auto flex shrink-0 items-center gap-1">
+        <CopyButton v-if="files.file && !files.file.binary" :text="files.file.content" />
+        <button data-test="fv-close" aria-label="Close file"
+                class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:hidden"
+                @click="emit('close')"><X :size="16" /></button>
+      </div>
     </div>
 
     <!-- body -->

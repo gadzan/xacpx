@@ -37,6 +37,16 @@ function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
 }
+function openRight(tab: "tasks" | "files") {
+  rightTab.value = tab;
+  rightOpen.value = true;
+}
+// Mobile: "Back" from the file viewer returns to the FILE LIST (reopen the Files drawer),
+// not the conversation. Clearing the open file reverts the center to ChatPane underneath.
+function backToFileList() {
+  closeFileViewer();
+  openRight("files");
+}
 
 // Desktop-only: collapse the instances sidebar to reclaim width. Persisted so the
 // choice survives reloads. (Mobile uses the leftOpen off-canvas drawer instead.)
@@ -160,8 +170,14 @@ onUnmounted(() => {
       <button data-test="open-instances" aria-label="Open instances"
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <span class="flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
-      <button data-test="open-tasks" class="rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
-              @click="rightOpen = true">Tasks</button>
+      <div class="flex shrink-0 items-center gap-1">
+        <button data-test="open-files" aria-label="Open files"
+                class="flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
+                @click="openRight('files')"><FileText :size="14" />Files</button>
+        <button data-test="open-tasks" aria-label="Open tasks"
+                class="flex items-center gap-1 rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5"
+                @click="openRight('tasks')"><List :size="14" />Tasks</button>
+      </div>
     </div>
 
     <div class="flex flex-1 overflow-hidden">
@@ -196,7 +212,7 @@ onUnmounted(() => {
            widest content (a tool card's command/diff line), which would otherwise push
            the right panel off-screen. Wide tool content scrolls/wraps within instead. -->
       <div data-test="column" class="flex min-w-0 flex-1 flex-col">
-        <FileViewer v-if="viewingFile" @back="closeFileViewer" />
+        <FileViewer v-if="viewingFile" @back="backToFileList" @close="closeFileViewer" />
         <ChatPane v-else @show-files="rightTab = 'files'" />
       </div>
 

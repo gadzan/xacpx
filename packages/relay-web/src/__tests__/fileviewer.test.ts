@@ -44,13 +44,31 @@ describe("FileViewer", () => {
     expect(w.text()).toContain("Binary file not shown");
   });
 
-  it("emits back when the Back affordance is clicked", async () => {
+  it("the mobile Files affordance emits back (return to the file list)", async () => {
+    const w = mount(FileViewer, { global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.file = { workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false };
+    await w.vm.$nextTick();
+    await w.find('[data-test="fv-back-list"]').trigger("click");
+    expect(w.emitted("back")).toBeTruthy();
+  });
+
+  it("the mobile Close affordance emits close (return to the conversation)", async () => {
+    const w = mount(FileViewer, { global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.file = { workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false };
+    await w.vm.$nextTick();
+    await w.find('[data-test="fv-close"]').trigger("click");
+    expect(w.emitted("close")).toBeTruthy();
+  });
+
+  it("the desktop Back affordance emits close (desktop has the list always visible)", async () => {
     const w = mount(FileViewer, { global: { plugins: [pinia] } });
     const files = useFilesStore();
     files.file = { workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false };
     await w.vm.$nextTick();
     await w.find('[data-test="fv-back"]').trigger("click");
-    expect(w.emitted("back")).toBeTruthy();
+    expect(w.emitted("close")).toBeTruthy();
   });
 
   it("renders a single-file diff when a diff path is selected", async () => {

@@ -99,7 +99,7 @@ const verb = computed(() => {
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
       <!-- composer area -->
-      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-3 lg:px-5 pb-4 pt-1.5">
+      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-4 pt-1.5">
         <!-- TURN HUD -->
         <div v-if="chat.busy" data-test="turn-hud"
              class="flex items-center gap-2 rounded-lg border border-run/20 bg-run/8 px-3 py-1.5">
