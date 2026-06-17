@@ -167,6 +167,30 @@ describe("NewSessionDialog", () => {
     expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
   });
 
+  it("opens the themed model dropdown and forwards a clicked suggestion", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+      modelSuggestions: ["gpt-5.2[high]", "gpt-5.2[low]"],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-model"]').trigger("focus");
+    const list = wrapper.find('[data-test="ns-model-list"]');
+    expect(list.exists()).toBe(true);
+    // "default" is always offered first, then the suggestions.
+    const items = list.findAll("li");
+    expect(items).toHaveLength(3);
+    expect(items[0].text()).toContain("default");
+    expect(items[1].text()).toBe("gpt-5.2[high]");
+    expect(items[2].text()).toBe("gpt-5.2[low]");
+    await items[1].trigger("mousedown");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
+  });
+
   it("treats a literal \"default\" (or blank) model as the agent default — no override sent", async () => {
     const { wrapper, store } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],

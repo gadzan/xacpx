@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import { X, Loader2, AlertTriangle } from "lucide-vue-next";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { X, Loader2, AlertTriangle, ChevronDown } from "lucide-vue-next";
 import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
@@ -18,7 +18,67 @@ const wsMode = ref<"existing" | "path">("existing");
 const workspaceSel = ref("");
 const workspacePath = ref("");
 const model = ref("");                  // model override; empty = agent default ("default")
-const modelSuggestions = ref<string[]>([]); // datalist hints from existing same-agent sessions
+const modelSuggestions = ref<string[]>([]); // hints from existing same-agent sessions
+// Themed combobox state (a native <datalist> renders an unstyleable white OS popup that
+// clashes with the dark theme, so we roll our own dropdown).
+const modelOpen = ref(false);
+const modelHighlight = ref(0);
+const modelBoxEl = ref<HTMLElement | null>(null);
+
+// "default" is always first; then any deduped suggestions. Selecting "default" clears the
+// field so the placeholder shows and no override is sent.
+const modelOptions = computed(() => {
+  const seen = new Set<string>(["default"]);
+  const out = ["default"];
+  for (const m of modelSuggestions.value) {
+    if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+  }
+  return out;
+});
+const filteredModelOptions = computed(() => {
+  const q = model.value.trim().toLowerCase();
+  if (!q) return modelOptions.value;
+  return modelOptions.value.filter((o) => o.toLowerCase().includes(q));
+});
+
+function openModel(): void {
+  modelOpen.value = true;
+  modelHighlight.value = 0;
+}
+function closeModel(): void {
+  modelOpen.value = false;
+}
+function pickModel(opt: string): void {
+  model.value = opt === "default" ? "" : opt;
+  closeModel();
+}
+function onModelKeydown(e: KeyboardEvent): void {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (!modelOpen.value) { openModel(); return; }
+    modelHighlight.value = Math.min(modelHighlight.value + 1, filteredModelOptions.value.length - 1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    modelHighlight.value = Math.max(modelHighlight.value - 1, 0);
+  } else if (e.key === "Enter") {
+    if (modelOpen.value && modelHighlight.value >= 0 && modelHighlight.value < filteredModelOptions.value.length) {
+      e.preventDefault();
+      pickModel(filteredModelOptions.value[modelHighlight.value]);
+    } else {
+      submit();
+    }
+  } else if (e.key === "Escape" && modelOpen.value) {
+    e.stopPropagation();
+    closeModel();
+  }
+}
+
+// Close the dropdown on an outside click.
+function onDocPointerDown(e: MouseEvent): void {
+  if (modelOpen.value && modelBoxEl.value && !modelBoxEl.value.contains(e.target as Node)) closeModel();
+}
+onMounted(() => document.addEventListener("mousedown", onDocPointerDown));
+onBeforeUnmount(() => document.removeEventListener("mousedown", onDocPointerDown));
 const submitting = ref(false);
 const pending = ref(false);
 const submittedAlias = ref("");
@@ -267,16 +327,29 @@ async function submit(): Promise<void> {
           <!-- Model override (fresh sessions only). Editable: pick a suggested model or
                type any id. Blank/"default" keeps the agent's default model. Native attach
                resumes under the rollout's recorded model, so the field is hidden there. -->
-          <label v-if="sessionSource === 'new'" class="block">
+          <div v-if="sessionSource === 'new'" class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">Model <span class="font-normal text-fg-muted">(optional)</span></span>
-            <input v-model="model" data-test="ns-model" list="ns-model-list" placeholder="default"
-                   class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                   @keydown.enter="submit" />
-            <datalist id="ns-model-list">
-              <option value="default" />
-              <option v-for="m in modelSuggestions" :key="m" :value="m" />
-            </datalist>
-          </label>
+            <div ref="modelBoxEl" class="relative">
+              <input v-model="model" data-test="ns-model" placeholder="default" autocomplete="off"
+                     class="w-full rounded-lg border border-border bg-bg py-2 pl-3 pr-9 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                     @focus="openModel" @input="openModel" @keydown="onModelKeydown" />
+              <button type="button" tabindex="-1" aria-label="Toggle model list"
+                      class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-fg-muted hover:text-fg"
+                      @click="modelOpen ? closeModel() : openModel()">
+                <ChevronDown :size="16" class="transition-transform" :class="modelOpen ? 'rotate-180' : ''" />
+              </button>
+              <ul v-if="modelOpen && filteredModelOptions.length" data-test="ns-model-list"
+                  class="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-lg border border-border bg-raised py-1 shadow-xl">
+                <li v-for="(opt, i) in filteredModelOptions" :key="opt"
+                    class="flex cursor-pointer items-center justify-between px-3 py-1.5 text-sm"
+                    :class="i === modelHighlight ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:bg-fg/5'"
+                    @mousedown.prevent="pickModel(opt)" @mouseenter="modelHighlight = i">
+                  <span class="truncate">{{ opt }}</span>
+                  <span v-if="opt === 'default'" class="ml-2 shrink-0 text-xs text-fg-muted">agent default</span>
+                </li>
+              </ul>
+            </div>
+          </div>
 
           <!-- Native attach: pick an existing acpx-owned rollout for the chosen agent + workspace. -->
           <label v-if="sessionSource === 'native'" class="block">
