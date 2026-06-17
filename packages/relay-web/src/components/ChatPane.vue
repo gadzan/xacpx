@@ -112,7 +112,7 @@ const verb = computed(() => {
                   class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
                   @click="chat.cancel"><X :size="13" />Cancel</button>
         </div>
-        <PlanPanel v-if="chat.liveTurn?.plan?.length" :entries="chat.liveTurn.plan" />
+        <PlanPanel v-if="chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                      @send="chat.send" @cancel="chat.cancel" />

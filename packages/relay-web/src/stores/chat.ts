@@ -29,7 +29,6 @@ export interface LiveTurn {
   parts: TurnPart[];
   status: "working" | "streaming";
   startedAt: number;
-  plan?: PlanEntryDto[];
 }
 
 // Coalescing appenders — consecutive same-type chunks merge into one part. Text chunks
@@ -67,6 +66,10 @@ export const useChatStore = defineStore("chat", () => {
   const sessionAlias = ref<string | null>(null);
   const messages = ref<ChatMessage[]>([]);
   const liveTurns = ref<Record<string, LiveTurn>>({});
+  // The agent's plan/todo list, kept PER SESSION and OUTSIDE the live turn so it survives
+  // turn-finished — an agent often ends a turn mid-plan to ask a question, and the panel
+  // must not vanish. REPLACE semantics: a newer plan event for the session supersedes it.
+  const plans = ref<Record<string, PlanEntryDto[]>>({});
   // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
   // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
   const unread = ref<Set<string>>(new Set());
@@ -97,6 +100,9 @@ export const useChatStore = defineStore("chat", () => {
   );
   const liveTurn = computed<LiveTurn | null>(() =>
     selectedKey.value ? liveTurns.value[selectedKey.value] ?? null : null,
+  );
+  const sessionPlan = computed<PlanEntryDto[] | null>(() =>
+    selectedKey.value ? plans.value[selectedKey.value] ?? null : null,
   );
   const streaming = computed(() => (liveTurn.value ? textOf(liveTurn.value.parts) : ""));
   const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
@@ -264,9 +270,9 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "turn-thought") {
       appendReasoning(ensureTurn(bufKey(event.instanceId, e.sessionAlias)).parts, e.chunk);
     } else if (e.type === "plan") {
-      // REPLACE semantics: each plan event carries the agent's full todo list, so the
-      // live turn holds the latest list verbatim (assignment, not append).
-      ensureTurn(bufKey(event.instanceId, e.sessionAlias)).plan = e.entries;
+      // Lifetime decoupled from the live turn: persists past turn-finished, replaced only
+      // by a newer plan for this session. Keyed per session.
+      plans.value[bufKey(event.instanceId, e.sessionAlias)] = e.entries;
     } else if (e.type === "session-history") {
       // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
@@ -345,5 +351,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });

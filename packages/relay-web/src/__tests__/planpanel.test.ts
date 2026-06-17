@@ -58,4 +58,18 @@ describe("PlanPanel", () => {
     await w.vm.$nextTick();
     expect(calls.length).toBeGreaterThan(0);
   });
+  it("auto-collapses when the turn ends and expands when it runs", async () => {
+    const w = mount(PlanPanel, { props: { active: true, entries: [
+      { content: "a", status: "in_progress" },
+    ] } });
+    // active turn → expanded
+    expect(w.find('[data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");
+    // turn ends → collapses but STAYS mounted
+    await w.setProps({ active: false });
+    expect(w.find('[data-test="plan-panel"]').exists()).toBe(true);
+    expect(w.find('[data-test="plan-toggle"]').attributes("aria-expanded")).toBe("false");
+    // a new turn starts → expands again
+    await w.setProps({ active: true });
+    expect(w.find('[data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");
+  });
 });

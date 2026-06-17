@@ -3,8 +3,10 @@ import { ref, computed, watch, nextTick } from "vue";
 import { Circle, Loader2, CheckCircle2, ChevronDown, ChevronRight } from "lucide-vue-next";
 import type { PlanEntryDto } from "@ganglion/xacpx-relay-protocol";
 
-const props = defineProps<{ entries: PlanEntryDto[] }>();
-const expanded = ref(true);
+// `active` defaults to `undefined` (not Vue's Boolean-cast `false`) so an unspecified prop
+// leaves the panel expanded and the auto expand/collapse watch dormant.
+const props = withDefaults(defineProps<{ entries: PlanEntryDto[]; active?: boolean }>(), { active: undefined });
+const expanded = ref(props.active ?? true);
 const listEl = ref<HTMLUListElement | null>(null);
 const done = computed(() => props.entries.filter((e) => e.status === "completed").length);
 const activeIndex = computed(() => {
@@ -29,6 +31,9 @@ async function scrollToActive() {
 }
 watch(() => props.entries, scrollToActive, { flush: "post" });
 watch(expanded, scrollToActive);
+// Expand while a turn runs and collapse when it ends, without breaking manual toggle.
+// When `active` is unset (e.g. some tests) the watch never fires and expanded keeps its default.
+watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
 </script>
 
 <template>
