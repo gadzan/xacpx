@@ -880,7 +880,11 @@ test("weixin/default session with no reply_mode leaves effectiveReplyMode undefi
   expect(legacy!.effectiveReplyMode).toBeUndefined();
 });
 
-test("explicit reply_mode override wins over the relay stream default", async () => {
+test("relay ignores a reply_mode override and always streams; the raw override is preserved", async () => {
+  // Relay is hardcoded to stream — a per-session reply_mode override does NOT change the
+  // effective mode (the web has no use for other modes), but the raw override is still
+  // exposed on `replyMode` so `/replyMode show` reports it. Non-relay channels keep
+  // honoring the override via `replyMode` (effectiveReplyMode stays undefined for them).
   registerKnownChannelId("relay");
   const state = createEmptyState();
   seedSession(state, "relay:foo", "verbose");
@@ -888,10 +892,10 @@ test("explicit reply_mode override wins over the relay stream default", async ()
   const service = new SessionService(createConfig(), new MemoryStateStore(), state);
 
   const relay = service.getResolvedSessionByInternalAlias("relay:foo");
-  expect(relay!.replyMode).toBe("verbose");
-  expect(relay!.effectiveReplyMode).toBe("verbose");
+  expect(relay!.replyMode).toBe("verbose"); // raw override preserved
+  expect(relay!.effectiveReplyMode).toBe("stream"); // …but relay always streams
 
   const weixin = service.getResolvedSessionByInternalAlias("weixin:bar");
   expect(weixin!.replyMode).toBe("verbose");
-  expect(weixin!.effectiveReplyMode).toBe("verbose");
+  expect(weixin!.effectiveReplyMode).toBeUndefined();
 });
