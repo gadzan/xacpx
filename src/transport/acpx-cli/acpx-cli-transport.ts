@@ -4,7 +4,7 @@ import { spawn as spawnPty } from "node-pty";
 
 import { resolveSpawnCommand } from "../../process/spawn-command";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
-import type { ToolUseEvent } from "../../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
 import type {
   AgentSessionListQuery,
@@ -263,7 +263,7 @@ export class AcpxCliTransport implements SessionTransport {
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
     const args = this.buildPromptArgs(session, text, structuredPrompt?.filePath);
     try {
-      if (reply || options?.onSegment || options?.onToolEvent || options?.onThought) {
+      if (reply || options?.onSegment || options?.onToolEvent || options?.onThought || options?.onPlan) {
         const formatToolCalls = (session.replyMode ?? "verbose") === "verbose";
         // replyMode "stream" → raw token streaming (one live bubble, low latency).
         const rawStream = session.replyMode === "stream";
@@ -284,6 +284,7 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onSegment,
           options?.onToolEvent,
           options?.onThought,
+          options?.onPlan,
           rawStream,
         );
         const baseText = getPromptText(result);
@@ -526,6 +527,7 @@ export class AcpxCliTransport implements SessionTransport {
     onSegment?: (text: string) => void | Promise<void>,
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     rawStream: boolean = false,
   ): Promise<{ result: CommandResult; overflowCount: number }> {
     const hooks = this.streamingHooks;
@@ -551,8 +553,11 @@ export class AcpxCliTransport implements SessionTransport {
       let toolEventError: unknown;
       let thoughtChain = Promise.resolve();
       let thoughtError: unknown;
+      let planChain = Promise.resolve();
+      let planError: unknown;
       const userOnToolEvent = onToolEvent;
       const userOnThought = onThought;
+      const userOnPlan = onPlan;
 
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
@@ -577,6 +582,18 @@ export class AcpxCliTransport implements SessionTransport {
                   .then(() => userOnThought(chunk))
                   .catch((error) => {
                     thoughtError ??= error;
+                  });
+              },
+            }
+          : {}),
+        ...(userOnPlan
+          ? {
+              onPlan: (entries) => {
+                // Serialize handler invocations; first error wins.
+                planChain = planChain
+                  .then(() => userOnPlan(entries))
+                  .catch((error) => {
+                    planError ??= error;
                   });
               },
             }
@@ -654,6 +671,7 @@ export class AcpxCliTransport implements SessionTransport {
           segmentChain,
           toolEventChain,
           thoughtChain,
+          planChain,
         ]).then(() => {
           const deferred = sink?.getPendingError();
           if (deferred) {
@@ -670,6 +688,10 @@ export class AcpxCliTransport implements SessionTransport {
           }
           if (thoughtError) {
             reject(thoughtError);
+            return;
+          }
+          if (planError) {
+            reject(planError);
             return;
           }
           resolve({
