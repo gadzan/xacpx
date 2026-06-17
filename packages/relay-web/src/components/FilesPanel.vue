@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, File, FileText, Folder, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
+import { ChevronRight, CornerLeftUp, File, FileText, Folder, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
@@ -15,6 +15,12 @@ const instances = useInstancesStore();
 const chat = useChatStore();
 
 const crumbs = computed(() => (files.path ? files.path.split("/") : []));
+const atRoot = computed(() => crumbs.value.length === 0);
+// Go up one directory level. `up(i)` keeps the first i+1 path segments, so the parent of
+// the current dir is `up(crumbs.length - 2)` (and `up(-1)` lands on the workspace root).
+function upOne() {
+  if (!atRoot.value) files.up(crumbs.value.length - 2);
+}
 
 // The panel follows the ACTIVE session's workspace — there's no manual picker, since the
 // workspace is a fixed property of the session you're chatting with.
@@ -189,6 +195,11 @@ watch(
 
         <!-- breadcrumb (hidden while searching) -->
         <div v-if="!files.query.trim()" class="flex flex-wrap items-center gap-1 border-b border-border px-2.5 py-1.5 font-mono text-[11px] text-fg-muted">
+          <button data-test="fs-up" title="Up one level" aria-label="Up one level"
+                  class="grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+                  :disabled="atRoot || files.loading" @click="upOne">
+            <CornerLeftUp :size="13" />
+          </button>
           <button class="hover:text-fg" @click="files.up(-1)">{{ files.workspace ?? "root" }}</button>
           <template v-for="(c, i) in crumbs" :key="i">
             <span>/</span><button class="hover:text-fg" @click="files.up(i)">{{ c }}</button>

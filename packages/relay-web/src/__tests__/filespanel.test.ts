@@ -71,6 +71,29 @@ describe("FilesPanel navigation rail", () => {
     expect(files.diffPath).toBeNull();
   });
 
+  it("up button is disabled at the workspace root and goes up one level from a nested dir", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const up = vi.spyOn(files, "up").mockImplementation(() => {});
+
+    // At the root: no path segments → the button is present but disabled.
+    files.path = "";
+    await w.vm.$nextTick();
+    const btnRoot = w.find('[data-test="fs-up"]');
+    expect(btnRoot.exists()).toBe(true);
+    expect(btnRoot.attributes("disabled")).toBeDefined();
+    await btnRoot.trigger("click");
+    expect(up).not.toHaveBeenCalled();
+
+    // Two levels deep (src/lib): up one level keeps the first segment → up(0) ("src").
+    files.path = "src/lib";
+    await w.vm.$nextTick();
+    const btn = w.find('[data-test="fs-up"]');
+    expect(btn.attributes("disabled")).toBeUndefined();
+    await btn.trigger("click");
+    expect(up).toHaveBeenCalledWith(0);
+  });
+
   it("has a refresh button that re-fetches the current view via the store", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();
