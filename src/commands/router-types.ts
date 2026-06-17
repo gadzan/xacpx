@@ -5,7 +5,7 @@ import type { OrchestrationService } from "../orchestration/orchestration-servic
 import type { SessionService } from "../sessions/session-service";
 import type { PromptMediaInput, ReplyQuotaContext, SessionTransport } from "../transport/types";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
-import type { ToolUseEvent } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { PerfSpan } from "../perf/perf-tracer";
 
 export interface RouterResponse {
@@ -151,6 +151,7 @@ export interface SessionInteractionOps {
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   ) => Promise<{ text: string }>;
 }
 

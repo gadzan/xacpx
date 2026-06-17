@@ -14,7 +14,7 @@ import { PromptCommandError } from "../transport/prompt-output";
 import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
-import type { ToolUseEvent } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import { handlePermissionAutoSet, handlePermissionAutoStatus, handlePermissionModeSet, handlePermissionStatus } from "./handlers/permission-handler";
 import { handleConfigSet, handleConfigShow } from "./handlers/config-handler";
 import {
@@ -140,6 +140,7 @@ export class CommandRouter {
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   ): Promise<RouterResponse> {
     const startedAt = Date.now();
     let command = parseCommand(input);
@@ -387,6 +388,7 @@ export class CommandRouter {
               onThought,
               perfSpan,
               metadata,
+              onPlan,
             );
           }
           if (metadata?.scheduledSessionAlias) {
@@ -408,6 +410,7 @@ export class CommandRouter {
               onThought,
               perfSpan,
               metadata,
+              onPlan,
             );
           }
           return await handlePrompt(
@@ -423,6 +426,7 @@ export class CommandRouter {
             onThought,
             perfSpan,
             metadata,
+            onPlan,
           );
         }
       }
@@ -626,8 +630,8 @@ export class CommandRouter {
       setModelTransportSession: (session, modelId) => this.setModelTransportSession(session, modelId),
       getModelTransportSession: (session) => this.getModelTransportSession(session),
       cancelTransportSession: (session) => this.cancelTransportSession(session),
-      promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride) =>
-        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan),
+      promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride, onPlan) =>
+        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan),
     };
   }
 
@@ -856,6 +860,7 @@ export class CommandRouter {
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   ) {
     session.mcpCoordinatorSession ??= stableCoordinatorSession(session.transportSession);
     // `done` closes the race window between prompt resolving and the abort
@@ -922,6 +927,7 @@ export class CommandRouter {
           ...(reply ? { onSegment } : {}),
           ...(onToolEvent ? { onToolEvent } : {}),
           ...(onThought ? { onThought } : {}),
+          ...(onPlan ? { onPlan } : {}),
         }),
       );
     } catch (error) {

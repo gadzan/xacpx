@@ -7,7 +7,7 @@ import type {
 } from "../router-types";
 import type { PromptMediaInput, ResolvedSession } from "../../transport/types";
 import type { ReplyMode } from "../../config/types";
-import type { ToolUseEvent } from "../../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { PerfSpan } from "../../perf/perf-tracer";
 import type { HelpTopicMetadata } from "../help/help-types";
 import type { ChatRequestMetadata } from "../../weixin/agent/interface";
@@ -720,6 +720,7 @@ async function promptWithSession(
   onThought?: (chunk: string) => void | Promise<void>,
   perfSpan?: PerfSpan,
   metadata?: ChatRequestMetadata,
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
   // Ensure the session carries the resolved value so downstream transports
@@ -776,6 +777,7 @@ async function promptWithSession(
       onToolEvent,
       onThought,
       perfSpan,
+      onPlan,
     );
     if (claimHumanReply) {
       try {
@@ -820,13 +822,14 @@ export async function handlePromptWithSession(
   onThought?: (chunk: string) => void | Promise<void>,
   perfSpan?: PerfSpan,
   metadata?: ChatRequestMetadata,
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   try {
-    return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata);
+    return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan);
   } catch (error) {
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {
-      return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata);
+      return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan);
     }
     return context.recovery.renderTransportError(session, error);
   }
@@ -845,6 +848,7 @@ export async function handlePrompt(
   onThought?: (chunk: string) => void | Promise<void>,
   perfSpan?: PerfSpan,
   metadata?: ChatRequestMetadata,
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   const session = metadata?.boundSessionAlias
     ? context.sessions.getResolvedSessionByInternalAlias(metadata.boundSessionAlias)
@@ -853,7 +857,7 @@ export async function handlePrompt(
     return { text: t().session.noCurrent };
   }
 
-  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata);
+  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan);
 }
 
 function toCoordinatorRouteChatMetadata(

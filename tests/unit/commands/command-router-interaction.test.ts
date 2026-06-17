@@ -2091,3 +2091,39 @@ test("ownerIds: scheduled dispatch turns do not clobber the route isOwner", asyn
   const recorded = getRecordCoordinatorRouteContextMock(orchestration).mock.calls.at(-1)?.[0];
   expect(recorded?.isOwner).toBeUndefined();
 });
+
+test("threads onPlan through the prompt path into transport.prompt options", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  let receivedOnPlan: ((entries: Array<{ content: string; status: string }>) => void | Promise<void>) | undefined;
+  transport.prompt = mock(async (_session, _text, _reply, _replyContext, options) => {
+    receivedOnPlan = options?.onPlan;
+    return { text: "agent done" };
+  });
+  const router = new CommandRouter(sessions, transport);
+  const myOnPlan = mock((_entries: Array<{ content: string; status: string }>) => {});
+
+  await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  // handle(...) positional order: reply, replyContextToken, accountId, media,
+  // metadata, abortSignal, onToolEvent, onThought, perfSpan, onPlan.
+  await router.handle(
+    "wx:user",
+    "plan this out",
+    undefined, // reply
+    undefined, // replyContextToken
+    undefined, // accountId
+    undefined, // media
+    undefined, // metadata
+    undefined, // abortSignal
+    undefined, // onToolEvent
+    undefined, // onThought
+    undefined, // perfSpan
+    myOnPlan, // onPlan
+  );
+
+  // The exact callback reached transport.prompt's options object...
+  expect(receivedOnPlan).toBe(myOnPlan);
+  // ...and invoking it propagates the plan entries end-to-end.
+  await receivedOnPlan?.([{ content: "step one", status: "in_progress" }]);
+  expect(myOnPlan.mock.calls.at(-1)?.[0]).toEqual([{ content: "step one", status: "in_progress" }]);
+});
