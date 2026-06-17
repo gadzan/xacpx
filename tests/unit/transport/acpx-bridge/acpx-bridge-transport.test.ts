@@ -47,6 +47,19 @@ test("proxies ensureSession through the bridge client", async () => {
   }, undefined);
 });
 
+test("effectiveReplyMode 'stream' wins over an undefined replyMode in ensureSession params", async () => {
+  const request = mock(async () => ({}));
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.ensureSession({ ...session, effectiveReplyMode: "stream" });
+
+  expect(request).toHaveBeenCalledWith(
+    "ensureSession",
+    expect.objectContaining({ replyMode: "stream" }),
+    undefined,
+  );
+});
+
 test("proxies hasSession through the bridge client", async () => {
   const request = mock(async () => ({ exists: true }));
   const transport = new AcpxBridgeTransport({

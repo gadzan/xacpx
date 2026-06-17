@@ -264,9 +264,10 @@ export class AcpxCliTransport implements SessionTransport {
     const args = this.buildPromptArgs(session, text, structuredPrompt?.filePath);
     try {
       if (reply || options?.onSegment || options?.onToolEvent || options?.onThought || options?.onPlan) {
-        const formatToolCalls = (session.replyMode ?? "verbose") === "verbose";
+        const effectiveReplyMode = session.effectiveReplyMode ?? session.replyMode;
+        const formatToolCalls = (effectiveReplyMode ?? "verbose") === "verbose";
         // replyMode "stream" → raw token streaming (one live bubble, low latency).
-        const rawStream = session.replyMode === "stream";
+        const rawStream = effectiveReplyMode === "stream";
         let toolEventMode = resolveToolEventMode(options);
         // Safety net: structured/both without an onToolEvent handler would
         // silently drop tool calls. Demote to 'text' so verbose tool calls

@@ -831,3 +831,67 @@ test("getPreferredSessionForTransport resolves a rotated transport session via s
   expect(resolved!.alias).toBe("alias");
   expect(resolved!.transportSession).toBe("ws:alias:reset-1700000000000");
 });
+
+// --- effectiveReplyMode (relay/control stream default) ---
+
+function seedSession(
+  state: AppState,
+  alias: string,
+  replyMode?: "stream" | "final" | "verbose",
+): void {
+  state.sessions[alias] = {
+    alias,
+    agent: "codex",
+    workspace: "backend",
+    transport_session: `backend:${alias}`,
+    created_at: "2026-01-01T00:00:00.000Z",
+    last_used_at: "2026-01-01T00:00:00.000Z",
+    ...(replyMode ? { reply_mode: replyMode } : {}),
+  };
+}
+
+test("relay-channel session with no reply_mode resolves effectiveReplyMode 'stream'", async () => {
+  registerKnownChannelId("relay");
+  const state = createEmptyState();
+  seedSession(state, "relay:foo");
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+
+  const resolved = service.getResolvedSessionByInternalAlias("relay:foo");
+
+  expect(resolved).not.toBeNull();
+  expect(resolved!.replyMode).toBeUndefined();
+  expect(resolved!.effectiveReplyMode).toBe("stream");
+});
+
+test("weixin/default session with no reply_mode leaves effectiveReplyMode undefined", async () => {
+  const state = createEmptyState();
+  // explicit weixin prefix
+  seedSession(state, "weixin:foo");
+  // legacy unprefixed (also weixin)
+  seedSession(state, "legacy-foo");
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+
+  const prefixed = service.getResolvedSessionByInternalAlias("weixin:foo");
+  expect(prefixed).not.toBeNull();
+  expect(prefixed!.effectiveReplyMode).toBeUndefined();
+
+  const legacy = service.getResolvedSessionByInternalAlias("legacy-foo");
+  expect(legacy).not.toBeNull();
+  expect(legacy!.effectiveReplyMode).toBeUndefined();
+});
+
+test("explicit reply_mode override wins over the relay stream default", async () => {
+  registerKnownChannelId("relay");
+  const state = createEmptyState();
+  seedSession(state, "relay:foo", "verbose");
+  seedSession(state, "weixin:bar", "verbose");
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+
+  const relay = service.getResolvedSessionByInternalAlias("relay:foo");
+  expect(relay!.replyMode).toBe("verbose");
+  expect(relay!.effectiveReplyMode).toBe("verbose");
+
+  const weixin = service.getResolvedSessionByInternalAlias("weixin:bar");
+  expect(weixin!.replyMode).toBe("verbose");
+  expect(weixin!.effectiveReplyMode).toBe("verbose");
+});

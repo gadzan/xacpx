@@ -44,6 +44,14 @@ export interface ResolvedSession {
   mcpSourceHandle?: string;
   modeId?: string;
   replyMode?: "stream" | "final" | "verbose";
+  /**
+   * Channel-resolved effective reply mode. The relay/control channel defaults to
+   * "stream" (its dashboard is a streaming UI) so multi-line markdown isn't shredded
+   * by batched paragraph reconstruction. Consumers prefer this over `replyMode`;
+   * it's undefined for channels with no channel-level default (preserving their
+   * existing `replyMode ?? "verbose"` behavior).
+   */
+  effectiveReplyMode?: "stream" | "final" | "verbose";
   cwd: string;
   /**
    * True for a non-persisted, single-use session (e.g. a `/later` temp-mode

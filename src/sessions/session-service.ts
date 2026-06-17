@@ -614,6 +614,14 @@ export class SessionService {
       );
     }
 
+    // `session.alias` is the internal, channel-prefixed alias (the key of
+    // `state.sessions`), so we can derive the channel id from it. Relay/control
+    // sessions default to "stream" reply mode so their streaming dashboard isn't
+    // shredded by batched paragraph reconstruction; other channels keep the
+    // undefined default and their existing `replyMode ?? "verbose"` behavior.
+    const channelId = getChannelIdFromChatKey(session.alias);
+    const effectiveReplyMode = session.reply_mode ?? (channelId === "relay" ? "stream" : undefined);
+
     return {
       alias: session.alias,
       agent: session.agent,
@@ -629,6 +637,7 @@ export class SessionService {
       attachedAt: session.attached_at,
       modeId: session.mode_id,
       replyMode: session.reply_mode,
+      effectiveReplyMode,
       cwd: workspaceConfig.cwd,
     };
   }

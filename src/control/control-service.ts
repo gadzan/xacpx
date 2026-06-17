@@ -428,7 +428,7 @@ export class ControlService {
     let streamMode = false;
     try {
       const resolved = await this.resolveControlSession(params.chatKey, params.sessionAlias);
-      streamMode = resolved?.replyMode === "stream";
+      streamMode = (resolved?.effectiveReplyMode ?? resolved?.replyMode) === "stream";
     } catch {
       // Best-effort: fall back to batched paragraph reconstruction.
     }
