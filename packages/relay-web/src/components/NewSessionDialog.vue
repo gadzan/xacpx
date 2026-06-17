@@ -4,6 +4,7 @@ import { X, Loader2, AlertTriangle, ChevronDown } from "lucide-vue-next";
 import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = defineProps<{ instanceId: string; instanceName: string }>();
 const emit = defineEmits<{ created: [alias: string]; close: [] }>();
@@ -110,6 +111,30 @@ const configuredNames = computed(() => new Set((inst.value?.agents ?? []).map((a
 const extraDrivers = computed(() =>
   (inst.value?.agentCatalog ?? []).filter((c) => !c.configured),
 );
+
+// Agent picker groups: configured agents first, then un-configured catalog drivers
+// (an undetected CLI is shown but disabled). Mirrors the old <optgroup> layout.
+const agentGroups = computed<SelectGroup[]>(() => {
+  const groups: SelectGroup[] = [];
+  const configured = inst.value?.agents ?? [];
+  if (configured.length) {
+    groups.push({ label: "Configured", options: configured.map((a) => ({ value: a.name, label: `${a.name} · ${a.driver}` })) });
+  }
+  if (extraDrivers.value.length) {
+    groups.push({
+      label: "Available drivers",
+      options: extraDrivers.value.map((c) => ({
+        value: c.driver,
+        label: c.installed === "unknown" ? `${c.driver} — CLI not detected` : c.driver,
+        disabled: c.installed === "unknown",
+      })),
+    });
+  }
+  return groups;
+});
+const workspaceGroups = computed<SelectGroup[]>(() => [
+  { options: (inst.value?.workspaces ?? []).map((w) => ({ value: w.name, label: `${w.name} — ${w.cwd}` })) },
+]);
 
 const resolvedWorkspaceName = computed(() =>
   wsMode.value === "path"
@@ -287,20 +312,10 @@ async function submit(): Promise<void> {
                    @keydown.enter="submit" />
           </label>
 
-          <label class="block">
+          <div class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">Agent</span>
-            <select v-model="agentValue" data-test="ns-agent"
-                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-              <optgroup v-if="inst?.agents.length" label="Configured">
-                <option v-for="a in inst.agents" :key="a.name" :value="a.name">{{ a.name }} · {{ a.driver }}</option>
-              </optgroup>
-              <optgroup v-if="extraDrivers.length" label="Available drivers">
-                <option v-for="c in extraDrivers" :key="c.driver" :value="c.driver" :disabled="c.installed === 'unknown'">
-                  {{ c.driver }}{{ c.installed === 'unknown' ? ' — CLI not detected' : '' }}
-                </option>
-              </optgroup>
-            </select>
-          </label>
+            <SelectMenu v-model="agentValue" :groups="agentGroups" data-test="ns-agent" aria-label="Agent" placeholder="Select an agent" />
+          </div>
 
           <div class="block">
             <div class="mb-1 flex items-center justify-between">
@@ -316,10 +331,7 @@ async function submit(): Promise<void> {
                         @click="wsMode = 'path'">New path</button>
               </div>
             </div>
-            <select v-if="wsMode === 'existing'" v-model="workspaceSel" data-test="ns-workspace"
-                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-              <option v-for="w in inst?.workspaces ?? []" :key="w.name" :value="w.name">{{ w.name }} — {{ w.cwd }}</option>
-            </select>
+            <SelectMenu v-if="wsMode === 'existing'" v-model="workspaceSel" :groups="workspaceGroups" data-test="ns-workspace" aria-label="Workspace" placeholder="Select a workspace" />
             <input v-else v-model="workspacePath" data-test="ns-ws-path" placeholder="/abs/path"
                    class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
           </div>

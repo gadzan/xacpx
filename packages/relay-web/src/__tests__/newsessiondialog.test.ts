@@ -32,6 +32,13 @@ function mountDialog(opts: DialogOptions = {}) {
   return { wrapper, store };
 }
 
+// The Agent/Workspace pickers are custom SelectMenu dropdowns (button + list), not native
+// <select>s — open the trigger then click the option by its data-value.
+async function pick(wrapper: ReturnType<typeof mountDialog>["wrapper"], trigger: string, value: string) {
+  await wrapper.get(`[data-test="${trigger}"]`).trigger("click");
+  await wrapper.get(`[data-value="${value}"]`).trigger("mousedown");
+}
+
 describe("NewSessionDialog", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
@@ -59,7 +66,7 @@ describe("NewSessionDialog", () => {
       sessions: [],
     });
     await flushPromises();
-    await wrapper.get('[data-test="ns-agent"]').setValue("gemini");
+    await pick(wrapper, "ns-agent", "gemini");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createAgent).toHaveBeenCalledWith("i1", "gemini", "gemini");
@@ -82,7 +89,7 @@ describe("NewSessionDialog", () => {
     expect(store.createSession).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project", undefined, undefined);
   });
 
-  it("an un-installed (unknown) driver is shown but disabled in the select", async () => {
+  it("an un-installed (unknown) driver is shown but disabled in the agent picker", async () => {
     const { wrapper } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "backend", cwd: "/b" }],
@@ -93,9 +100,13 @@ describe("NewSessionDialog", () => {
       sessions: [],
     });
     await flushPromises();
-    const opt = wrapper.find('option[value="qwen"]');
+    await wrapper.get('[data-test="ns-agent"]').trigger("click");
+    const opt = wrapper.find('[data-value="qwen"]');
     expect(opt.exists()).toBe(true);
-    expect(opt.attributes("disabled")).toBeDefined();
+    expect(opt.classes()).toContain("cursor-not-allowed");
+    // Clicking a disabled option must not select it.
+    await opt.trigger("mousedown");
+    expect(wrapper.find('[data-value="qwen"]').exists()).toBe(true); // menu stays open
   });
 
   it("New-path mode with an all-symbols path shows an error and does not create a session", async () => {
@@ -125,7 +136,7 @@ describe("NewSessionDialog", () => {
       sessions: [],
     });
     await flushPromises();
-    await wrapper.get('[data-test="ns-agent"]').setValue("gemini");
+    await pick(wrapper, "ns-agent", "gemini");
     await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
     await wrapper.get('[data-test="ns-ws-path"]').setValue("@@@");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
