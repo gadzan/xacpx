@@ -97,16 +97,6 @@ xacpx-relay start --db /var/lib/xacpx-relay/relay.db --trust-proxy ...
 
 不经反代直接暴露时**不要**传该标志，否则客户端可伪造 `X-Forwarded-For` 绕过限流。
 
-## 升级迁移
-
-`xacpx-relay start` 在启动时**自动运行**数据库 schema 迁移：添加 `login_tokens` 表、为 `web_sessions` 补列 `login_token_id`、删除 `invites` 表、重建 `accounts` 表（去掉旧的 `password_hash` / `role` 列）。已有 cookie 会话在到期前继续有效，**无需**用户重新登录。
-
-**但已有账号不会自动获得登录令牌**——升级后须手动为每个需要 Web 访问的账号补发：
-
-```bash
-xacpx-relay user token --account <label> --db /var/lib/xacpx-relay/relay.db
-```
-
 ## 强制全员重登录
 
 停止 hub，在 DB 中清空 web 会话，然后重启：

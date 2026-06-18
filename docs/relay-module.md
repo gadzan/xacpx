@@ -158,9 +158,8 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 ### 数据库 `messages.structured` 列（packages/relay/src/db.ts）
 
-`messages` 表新增 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning? }`）：
+`messages` 表含 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning? }`），直接由建表 DDL 定义。
 
-- 建表 DDL 直接含此列；**幂等 `ALTER TABLE` 迁移**在启动时检查列是否存在（`PRAGMA table_info(messages)`），不存在则执行 `ALTER TABLE messages ADD COLUMN structured TEXT`，兼容旧部署。
 - `MessageStore.append(instanceId, alias, dir, text, structured?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto.structured` 中返回。
 
 ## 测试
