@@ -135,6 +135,61 @@ export class AccountStore {
     }));
   }
 
+  /**
+   * Returns all login tokens across all accounts, each with its owning account's
+   * total instance count. Intended for the `xacpx-relay ls` command output.
+   */
+  listTokens(): Array<{ id: string; label: string | null; createdAt: string; accountId: string; instanceCount: number }> {
+    return this.db.all<{
+      id: string;
+      label: string | null;
+      created_at: string;
+      account_id: string;
+      instance_count: number;
+    }>(
+      `SELECT lt.id, lt.label, lt.created_at, lt.account_id,
+        (SELECT COUNT(*) FROM instances i WHERE i.account_id = lt.account_id) AS instance_count
+       FROM login_tokens lt
+       ORDER BY lt.created_at`,
+    ).map((row) => ({
+      id: row.id,
+      label: row.label,
+      createdAt: row.created_at,
+      accountId: row.account_id,
+      instanceCount: row.instance_count,
+    }));
+  }
+
+  /**
+   * Resolves a token value or id/prefix to the owning account_id.
+   * Try order:
+   *   1. Raw token value hash lookup (resolveLoginToken)
+   *   2. Exact id match in login_tokens
+   *   3. Unique prefix match (WHERE id LIKE ? || '%') — accepts only if exactly one row
+   * Returns null if not found or prefix is ambiguous.
+   */
+  accountIdForToken(valueOrId: string): string | null {
+    // 1. Try raw token value
+    const byValue = this._resolveLoginToken(valueOrId);
+    if (byValue) return byValue.account.id;
+
+    // 2. Try exact id
+    const byId = this.db.get<{ account_id: string }>(
+      "SELECT account_id FROM login_tokens WHERE id = ?",
+      [valueOrId],
+    );
+    if (byId) return byId.account_id;
+
+    // 3. Try prefix
+    const byPrefix = this.db.all<{ account_id: string }>(
+      "SELECT account_id FROM login_tokens WHERE id LIKE ? || '%'",
+      [valueOrId],
+    );
+    if (byPrefix.length === 1) return byPrefix[0]!.account_id;
+
+    return null;
+  }
+
   revokeLoginToken(tokenId: string): boolean {
     // SELECT-then-DELETE is not atomic, but the hub is single-writer so no
     // concurrent revoke can race between these statements (same pattern as instances.ts).

@@ -7,9 +7,9 @@
 - 运行时：Node >= 22.13（node:sqlite）或 Bun >= 1.2（bun:sqlite），SqlDriver 适配层自动选择。
 - 两个端口：HTTP API（默认 8787，登录/邀请/实例/RPC 代理）+ 实例 WS 网关（默认 8788）。
 - 快速开始：
-  1. `xacpx-relay user new --account admin --db ./relay.db`（打印一次性登录令牌）
+  1. `xacpx-relay add token --db ./relay.db`（打印访问令牌，既用于 Web 登录也用于连接器注册）
   2. `xacpx-relay start --db ./relay.db`
-  3. `xacpx-relay pair --account admin --name home-pc --db ./relay.db`（铸造连接器配对令牌）
+  3. `xacpx channel add relay --url ws://<host>:8788 --token <token> --name home-pc`（连接器接入）
 - RPC 请求超时：`xacpx-relay start --request-timeout-ms <ms>` 限定网关 RPC 请求超时，默认 `120000`
   （共享常量 `DEFAULT_REQUEST_TIMEOUT_MS = 120s`，位于 packages/relay/src/gateway/instance-gateway.ts，
   网关回退与服务端均复用之）；agent 冷启动慢 / 长 prompt 时可调大。
@@ -30,9 +30,9 @@
   xacpx channel add relay --url ws://<relay-host>:8788 --token <pairing-token>
   xacpx restart
   ```
-- 首连用配对 token 注册并换发长期凭证，存 `<xacpx-home>/relay/credential.json`
-  （weixin 凭证先例；config.json 只存 url/pairingToken）。token 单次有效，
-  过期/已用需在 relay 侧重新生成并 `xacpx channel add relay` 更新。
+- 首连用访问令牌（或传统一次性配对令牌）注册并换发长期凭证，存 `<xacpx-home>/relay/credential.json`
+  （weixin 凭证先例；config.json 只存 url/pairingToken）。访问令牌可复用；
+  传统配对令牌单次有效，过期/已用需在 relay 侧重新生成并 `xacpx channel add relay` 更新。
 - 桥接面：relay 的 control.* RPC → 核心 ControlService（见 docs/control-module.md）；
   ControlEventBus 事件与编排通知上行为 instance.event / instance.notice。
 - 会话创建表单数据面：`control.agents.list`（列已配置 agent：name+driver）、
@@ -171,8 +171,7 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   验证 实例事件 → relay → web 客户端 + 历史缓存的端到端路径。
 - 端到端手工验证 runbook：
   1. `bun run build:packages`
-  2. `node packages/relay/dist/cli.js user new --account admin --db /tmp/relay.db`（记下打印的登录令牌）
+  2. `node packages/relay/dist/cli.js add token --db /tmp/relay.db`（记下打印的访问令牌）
   3. `node packages/relay/dist/cli.js start --db /tmp/relay.db`
-  4. `node packages/relay/dist/cli.js pair --account admin --db /tmp/relay.db`（记下配对令牌）
-  5. 另一终端：dry-run 或真实 xacpx 安装 channel-relay、channel add、restart，
-     然后 curl `POST /api/login` 用登录令牌换 cookie + `POST /api/instances/<id>/rpc {"type":"control.sessions.list"}` 验证。
+  4. 另一终端：dry-run 或真实 xacpx 安装 channel-relay、channel add（用上面的访问令牌）、restart，
+     然后 curl `POST /api/login` 用同一访问令牌换 cookie + `POST /api/instances/<id>/rpc {"type":"control.sessions.list"}` 验证。

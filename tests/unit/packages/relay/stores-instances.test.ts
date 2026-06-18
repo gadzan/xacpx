@@ -36,6 +36,37 @@ test("expired pairing token cannot be redeemed", async () => {
   expect(instances.redeemPairingToken(issued.token)).toBeNull();
 });
 
+test("registerInstanceForAccount creates instance with verifiable credential", async () => {
+  const { instances, account } = await makeStores();
+  const result = instances.registerInstanceForAccount(account.id, "home-pc", "0.11.0");
+  expect(result.instanceId).toBeString();
+  expect(result.credential).toBeString();
+  expect(result.accountId).toBe(account.id);
+  expect(result.name).toBe("home-pc");
+
+  const verified = instances.verifyCredential(result.instanceId, result.credential);
+  expect(verified?.accountId).toBe(account.id);
+  expect(verified?.name).toBe("home-pc");
+  expect(instances.verifyCredential(result.instanceId, "wrong")).toBeNull();
+});
+
+test("registerInstanceForAccount with undefined name generates a default name", async () => {
+  const { instances, account } = await makeStores();
+  const result = instances.registerInstanceForAccount(account.id, undefined);
+  expect(result.name).toMatch(/^instance-[0-9a-f]{8}$/);
+  expect(result.name).toBe(result.name); // stable
+});
+
+test("registerInstanceForAccount multiple calls create independent instances", async () => {
+  const { instances, account } = await makeStores();
+  const a = instances.registerInstanceForAccount(account.id, "box-a");
+  const b = instances.registerInstanceForAccount(account.id, "box-b");
+  expect(a.instanceId).not.toBe(b.instanceId);
+  expect(a.credential).not.toBe(b.credential);
+  const listed = instances.listByAccount(account.id);
+  expect(listed.length).toBe(2);
+});
+
 test("touch updates last_seen; listByAccount scopes; remove enforces ownership", async () => {
   const { instances, account, setNow } = await makeStores();
   const redeemed = instances.redeemPairingToken(

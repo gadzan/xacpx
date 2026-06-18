@@ -61,7 +61,7 @@ export const relayCliProvider: ChannelCliProvider = {
       issues.push({ kind: "invalid-config", message: `url must start with ws:// or wss://, got: ${url}` });
     }
     if (typeof options.pairingToken !== "string" || !options.pairingToken) {
-      issues.push({ kind: "missing-required-field", flag: "--token", message: "pairing token is required (generate via the relay: xacpx-relay token new)" });
+      issues.push({ kind: "missing-required-field", flag: "--token", message: "access token is required (generate one with: xacpx-relay add token)" });
     }
     return issues;
   },

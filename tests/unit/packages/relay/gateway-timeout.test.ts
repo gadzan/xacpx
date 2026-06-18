@@ -20,12 +20,12 @@ async function makeGateway(requestTimeoutMs?: number) {
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const account = accounts.createAccount("alice");
-  const gateway = new InstanceGateway({ instances, requestTimeoutMs });
+  const gateway = new InstanceGateway({ instances, accounts, requestTimeoutMs });
   const wss = new WebSocketServer({ port: 0 });
   await new Promise<void>((resolve) => wss.on("listening", () => resolve()));
   wss.on("connection", (socket) => gateway.handleConnection(socket));
   const port = (wss.address() as { port: number }).port;
-  return { gateway, instances, account, wss, url: `ws://127.0.0.1:${port}` };
+  return { gateway, instances, accounts, account, wss, url: `ws://127.0.0.1:${port}` };
 }
 
 function connect(url: string): Promise<WebSocket> {

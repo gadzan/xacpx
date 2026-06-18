@@ -17,12 +17,13 @@ git clone https://github.com/gadzan/xacpx && cd xacpx && bun install
 bun run build:relay         # → packages/relay/dist
 bun run build:relay-web     # → packages/relay-web/dist（不构建则没有 Web UI）
 
-# 2. 建首个账号（打印一次性登录令牌；--db 用绝对路径）
-node packages/relay/dist/cli.js user new --account admin --db /var/lib/xacpx-relay/relay.db
+# 2. 生成访问令牌（--db 用绝对路径）
+node packages/relay/dist/cli.js add token --db /var/lib/xacpx-relay/relay.db
 # 输出示例：
-#   login token: xrt_xxxxxxxxxxxx
+#   access token: xrt_xxxxxxxxxxxx
 #   (store it now — not shown again)
-# 把该令牌交给用户，他们在 Web 登录页的「Access token」字段粘贴即可。
+#   hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
+# 把该令牌交给用户：Web 登录页「Access token」字段粘贴登录；同时用来配对连接器。
 
 # 3. 起服务（--web-root 指向已构建的看板，否则无 UI）
 node packages/relay/dist/cli.js start \
@@ -30,62 +31,41 @@ node packages/relay/dist/cli.js start \
   --web-root /opt/xacpx/packages/relay-web/dist \
   --host 0.0.0.0 --http-port 8787 --ws-port 8788 --history-retention-days 30 --request-timeout-ms 120000
 
-# 4. 发连接器配对令牌（单次使用、--ttl-minutes 默认 10 分钟）
-node packages/relay/dist/cli.js pair --account admin --name home-pc --db /var/lib/xacpx-relay/relay.db
-
-# 5. 实例侧接入（--url 指向 8788 实例网关或其 wss:// 代理）
-xacpx channel add relay --url wss://relay.example.com --token <配对令牌> --name home-pc
+# 4. 实例侧接入（同一个 access token 直接用于配对，--url 指向 8788 实例网关或其 wss:// 代理）
+xacpx channel add relay --url wss://relay.example.com --token <上面的访问令牌> --name home-pc
 xacpx restart
 ```
 
 ## 关键事实
 
 - **双端口**：8787 = HTTP API + 看板 + 看板 `/ws`；8788 = 实例网关（实例在此注册）。两者分开便于分别防火墙。生产经反代终结 TLS，实例用 `wss://`。
-- **`xacpx-relay` CLI 子命令**：`start` / `user new` / `user token` / `user ls` / `user rm` / `token revoke` / `pair`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
+- **`xacpx-relay` CLI 子命令**：`start` / `add token` / `ls` / `rm token <value-or-id>`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
 - **持久化**：全部在单个 SQLite 文件（`--db`）。默认 `./relay.db` 是 **cwd 相对路径**（坑），务必用绝对路径。备份即停机/静默期 `cp` 该文件。
-- **凭证**：实例首连用一次性配对令牌换长期凭证，写入 `<xacpx-home>/relay/credential.json`（0600），不进 `config.json`。
+- **凭证**：访问令牌（access token）一令两用——既用于 Web 登录，也用于连接器首连（无需单独铸造配对令牌）。首连后实例换取长期凭证，写入 `<xacpx-home>/relay/credential.json`（0600），不进 `config.json`。
 - **自动 GC**：每小时清理超 `--history-retention-days`（默认 30，另每会话硬上限 2000 条）的缓存消息，以及过期的 web 会话和配对令牌。
 - **RPC 超时**：`--request-timeout-ms`（默认 120000）限定网关 RPC 请求超时；agent 冷启动慢 / 长 prompt 时可调大。
 - **多租户**：账号只见自己的实例/会话；服务端盖戳身份；登录令牌和凭证一律哈希存储。
 
-## 账号与登录令牌管理
+## 访问令牌管理
 
-登录凭证为 CLI 铸造的登录令牌（login token），不使用密码或邀请码。
-
-```bash
-# 新建账号并获取首个登录令牌（令牌只打印一次）
-xacpx-relay user new --account alice --db /var/lib/xacpx-relay/relay.db
-
-# 为已有账号补发一个额外登录令牌（可选 --label 备注用途）
-xacpx-relay user token --account alice [--label laptop] --db /var/lib/xacpx-relay/relay.db
-
-# 列出所有账号（显示账号名、创建时间、令牌数、实例数）
-xacpx-relay user ls --db /var/lib/xacpx-relay/relay.db
-
-# 删除账号（若账号下还有实例则拒绝，加 --force 则级联删除所有关联实例和令牌）
-xacpx-relay user rm --account alice --db /var/lib/xacpx-relay/relay.db
-xacpx-relay user rm --account alice --force --db /var/lib/xacpx-relay/relay.db
-```
-
-将令牌交给用户后，用户在 Web 看板登录页的「Access token」输入框中粘贴即可完成登录；服务端将令牌兑换为会话 cookie。
-
-## 登录令牌吊销
+访问令牌（access token）是唯一的凭证形式——既用于 Web 登录，也直接用于连接器注册（无需单独的配对令牌）。
 
 ```bash
-# 先用 user ls 确认账号，再通过日志或 DB 获取 login_token id，然后：
-xacpx-relay token revoke --id <login-token-id> --db /var/lib/xacpx-relay/relay.db
+# 生成一个新访问令牌（令牌只打印一次）
+xacpx-relay add token --db /var/lib/xacpx-relay/relay.db
+
+# 生成时加上备注标签（--label 可选）
+xacpx-relay add token --label laptop --db /var/lib/xacpx-relay/relay.db
+
+# 列出所有令牌（显示短 id、标签、创建时间、实例数）
+xacpx-relay ls --db /var/lib/xacpx-relay/relay.db
+
+# 删除令牌及其关联账号（级联删除所有实例和历史）
+# 可传令牌原值、完整 id 或 id 前缀（前缀唯一时才接受）
+xacpx-relay rm token <value-or-id> --db /var/lib/xacpx-relay/relay.db
 ```
 
-吊销后，该令牌派生的所有 web 会话同步失效（下次请求返回 401）。**注意**：已建立的 `/ws` 长连接不会被立即强制断开——需等到客户端重连时才感知；若需硬切，重启 hub 即可。
-
-## 连接器配对令牌
-
-```bash
-# 为账号铸造一枚配对令牌（单次使用，默认 10 分钟有效）
-xacpx-relay pair --account alice [--name home-pc] [--ttl-minutes 10] --db /var/lib/xacpx-relay/relay.db
-```
-
-连接器侧用该令牌完成首连注册，换取长期凭证后令牌自动失效。过期或已使用需重新 `pair` 后 `xacpx channel add relay` 更新。
+删除令牌后，该令牌派生的所有 web 会话同步失效（下次请求返回 401）。**注意**：已建立的 `/ws` 长连接不会被立即强制断开——需等到客户端重连时才感知；若需硬切，重启 hub 即可。
 
 ## 反向代理与限流（--trust-proxy）
 

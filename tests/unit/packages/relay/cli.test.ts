@@ -15,263 +15,237 @@ function makeTmpDb() {
   return join(mkdtempSync(join(tmpdir(), "relay-cli-")), "relay.db");
 }
 
-// --- user new ---
+// --- add token ---
 
-test("user new creates account and prints login token once", async () => {
+test("add token creates account and prints access token once", async () => {
   const dbPath = makeTmpDb();
   const io = makeIo();
-  const code = await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], io);
+  const code = await runRelayCli(["add", "token", "--db", dbPath], io);
   expect(code).toBe(0);
-  expect(io.lines.join("\n")).toMatch(/login token: \S{40,}/);
-  expect(io.lines.join("\n")).toContain("store it now");
+  const output = io.lines.join("\n");
+  expect(output).toMatch(/access token: \S{40,}/);
+  expect(output).toContain("store it now");
+  expect(output).toContain("xacpx channel add relay");
 
-  // account exists in the store
+  // a token exists in the store
   const rt = await createRelayRuntime(dbPath);
   try {
-    const acc = rt.accounts.findByUsername("alice");
-    expect(acc).not.toBeNull();
-    expect(acc!.username).toBe("alice");
+    const tokens = rt.accounts.listTokens();
+    expect(tokens.length).toBe(1);
   } finally {
     rt.close();
   }
 });
 
-test("user new duplicate account exits non-zero", async () => {
+test("add token --label persists the label on the login token", async () => {
   const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-  const io = makeIo();
-  const code = await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], io);
-  expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toMatch(/already exists|duplicate/i);
-});
-
-test("user new missing --account prints usage and exits non-zero", async () => {
-  const dbPath = makeTmpDb();
-  const io = makeIo();
-  const code = await runRelayCli(["user", "new", "--db", dbPath], io);
-  expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toContain("Usage");
-});
-
-// --- user token ---
-
-test("user token mints additional login token for existing account", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  const io = makeIo();
-  const code = await runRelayCli(["user", "token", "--account", "alice", "--db", dbPath], io);
-  expect(code).toBe(0);
-  expect(io.lines.join("\n")).toMatch(/login token: \S{40,}/);
-
-  // should now have 2 login tokens
-  const rt = await createRelayRuntime(dbPath);
-  try {
-    const acc = rt.accounts.findByUsername("alice")!;
-    const tokens = rt.accounts.listLoginTokens(acc.id);
-    expect(tokens.length).toBe(2);
-  } finally {
-    rt.close();
-  }
-});
-
-test("user token --label persists the label on the login token", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  const code = await runRelayCli(["user", "token", "--account", "alice", "--label", "laptop", "--db", dbPath], makeIo());
+  const code = await runRelayCli(["add", "token", "--label", "laptop", "--db", dbPath], makeIo());
   expect(code).toBe(0);
 
   const rt = await createRelayRuntime(dbPath);
   try {
-    const acc = rt.accounts.findByUsername("alice")!;
-    const tokens = rt.accounts.listLoginTokens(acc.id);
+    const tokens = rt.accounts.listTokens();
     expect(tokens.find((t) => t.label === "laptop")).toBeTruthy();
   } finally {
     rt.close();
   }
 });
 
-test("user token for unknown account exits non-zero", async () => {
+test("add token without --label stores null label", async () => {
   const dbPath = makeTmpDb();
-  const io = makeIo();
-  const code = await runRelayCli(["user", "token", "--account", "ghost", "--db", dbPath], io);
-  expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toMatch(/no such account/i);
+  await runRelayCli(["add", "token", "--db", dbPath], makeIo());
+
+  const rt = await createRelayRuntime(dbPath);
+  try {
+    const tokens = rt.accounts.listTokens();
+    expect(tokens[0].label).toBeNull();
+  } finally {
+    rt.close();
+  }
 });
 
-// --- user ls ---
-
-test("user ls lists accounts with token and instance counts", async () => {
+test("add token multiple times creates multiple tokens and accounts", async () => {
   const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-  await runRelayCli(["user", "token", "--account", "alice", "--db", dbPath], makeIo());
-  // second account with just its initial login token
-  await runRelayCli(["user", "new", "--account", "bob", "--db", dbPath], makeIo());
+  await runRelayCli(["add", "token", "--db", dbPath], makeIo());
+  await runRelayCli(["add", "token", "--db", dbPath], makeIo());
+
+  const rt = await createRelayRuntime(dbPath);
+  try {
+    const tokens = rt.accounts.listTokens();
+    expect(tokens.length).toBe(2);
+    // each token owns its own account
+    const accountIds = new Set(tokens.map((t) => t.accountId));
+    expect(accountIds.size).toBe(2);
+  } finally {
+    rt.close();
+  }
+});
+
+// --- ls ---
+
+test("ls lists tokens with label, created and instance count columns", async () => {
+  const dbPath = makeTmpDb();
+  await runRelayCli(["add", "token", "--label", "alice-key", "--db", dbPath], makeIo());
+  await runRelayCli(["add", "token", "--db", dbPath], makeIo());
 
   const io = makeIo();
-  const code = await runRelayCli(["user", "ls", "--db", dbPath], io);
+  const code = await runRelayCli(["ls", "--db", dbPath], io);
   expect(code).toBe(0);
   const output = io.lines.join("\n");
-  expect(output).toContain("alice");
-  expect(output).toContain("bob");
-  // header contains "tokens" column
-  expect(output).toMatch(/tokens/i);
-  // each account renders on its own line with correct counts
-  const aliceLine = io.lines.find((l) => l.startsWith("alice"));
-  const bobLine = io.lines.find((l) => l.startsWith("bob"));
-  expect(aliceLine).toBeTruthy();
-  expect(bobLine).toBeTruthy();
-  // alice has 2 tokens, bob has 1
-  expect(aliceLine!).toMatch(/\b2\b/);
-  expect(bobLine!).toMatch(/\b1\b/);
+  expect(output).toContain("alice-key");
+  // header contains expected columns
+  expect(output).toMatch(/id/i);
+  expect(output).toMatch(/label/i);
+  expect(output).toMatch(/instances/i);
+  // two data rows (plus header + separator = 4 lines total)
+  const dataLines = io.lines.filter((l) => l.match(/^\w{8}\s/));
+  expect(dataLines.length).toBe(2);
 });
 
-// --- user rm ---
-
-test("user rm without --force refuses when account has instances", async () => {
+test("ls prints (no tokens) when empty", async () => {
   const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
+  const io = makeIo();
+  const code = await runRelayCli(["ls", "--db", dbPath], io);
+  expect(code).toBe(0);
+  expect(io.lines.join("\n")).toContain("no tokens");
+});
 
-  // seed an instance via the pairing token flow
+// --- rm token ---
+
+test("rm token by raw value removes the account and its token", async () => {
+  const dbPath = makeTmpDb();
+  const addIo = makeIo();
+  await runRelayCli(["add", "token", "--db", dbPath], addIo);
+  // extract raw token from "access token: <value>" line
+  const tokenLine = addIo.lines.find((l) => l.startsWith("access token:"))!;
+  const rawToken = tokenLine.split(": ")[1].trim();
+
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "token", rawToken, "--db", dbPath], io);
+  expect(code).toBe(0);
+  expect(io.lines.join("\n")).toContain("removed");
+
   const rt = await createRelayRuntime(dbPath);
-  const acc = rt.accounts.findByUsername("alice")!;
-  const pairing = rt.instances.issuePairingToken(acc.id, "test-instance", 60_000);
-  rt.instances.redeemPairingToken(pairing.token);
+  try {
+    expect(rt.accounts.listTokens().length).toBe(0);
+  } finally {
+    rt.close();
+  }
+});
+
+test("rm token by short id prefix removes the account and its token", async () => {
+  const dbPath = makeTmpDb();
+  await runRelayCli(["add", "token", "--db", dbPath], makeIo());
+
+  const rt = await createRelayRuntime(dbPath);
+  const tokensBefore = rt.accounts.listTokens();
+  rt.close();
+  expect(tokensBefore.length).toBe(1);
+  const shortId = tokensBefore[0].id.slice(0, 8);
+
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "token", shortId, "--db", dbPath], io);
+  expect(code).toBe(0);
+  expect(io.lines.join("\n")).toContain("removed");
+
+  const rt2 = await createRelayRuntime(dbPath);
+  try {
+    expect(rt2.accounts.listTokens().length).toBe(0);
+  } finally {
+    rt2.close();
+  }
+});
+
+test("rm token cascades instances when present", async () => {
+  const dbPath = makeTmpDb();
+  const addIo = makeIo();
+  await runRelayCli(["add", "token", "--db", dbPath], addIo);
+  const tokenLine = addIo.lines.find((l) => l.startsWith("access token:"))!;
+  const rawToken = tokenLine.split(": ")[1].trim();
+
+  // seed an instance via registerInstanceForAccount (using raw token to get account)
+  const rt = await createRelayRuntime(dbPath);
+  const resolved = rt.accounts.resolveLoginToken(rawToken)!;
+  rt.instances.registerInstanceForAccount(resolved.account.id, "test-box");
   rt.close();
 
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "token", rawToken, "--db", dbPath], io);
+  expect(code).toBe(0);
+
+  const rt2 = await createRelayRuntime(dbPath);
+  try {
+    expect(rt2.accounts.listTokens().length).toBe(0);
+  } finally {
+    rt2.close();
+  }
+});
+
+test("rm token with unknown value exits non-zero", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "token", "definitely-does-not-exist", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toMatch(/not found/i);
+});
+
+test("rm token missing value argument prints usage and exits non-zero", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "token", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toContain("Usage");
+});
+
+// --- removed commands no longer recognized ---
+
+test("user new is no longer recognized (exits non-zero, shows usage)", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toContain("Usage");
+});
+
+test("user token is no longer recognized (exits non-zero, shows usage)", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["user", "token", "--account", "alice", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toContain("Usage");
+});
+
+test("user ls is no longer recognized (exits non-zero, shows usage)", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["user", "ls", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toContain("Usage");
+});
+
+test("user rm is no longer recognized (exits non-zero, shows usage)", async () => {
+  const dbPath = makeTmpDb();
   const io = makeIo();
   const code = await runRelayCli(["user", "rm", "--account", "alice", "--db", dbPath], io);
   expect(code).not.toBe(0);
-  const output = io.lines.join("\n");
-  // should mention instances or --force
-  expect(output).toMatch(/instance|--force/i);
-
-  // account must still exist
-  const rt2 = await createRelayRuntime(dbPath);
-  try {
-    expect(rt2.accounts.findByUsername("alice")).not.toBeNull();
-  } finally {
-    rt2.close();
-  }
+  expect(io.lines.join("\n")).toContain("Usage");
 });
 
-test("user rm --force deletes account and its tokens even with instances", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  // seed an instance and capture the account id before deletion
-  const rt = await createRelayRuntime(dbPath);
-  const acc = rt.accounts.findByUsername("alice")!;
-  const accId = acc.id;
-  const pairing = rt.instances.issuePairingToken(acc.id, "test-instance", 60_000);
-  rt.instances.redeemPairingToken(pairing.token);
-  // sanity: alice has a login token before deletion
-  expect(rt.accounts.listLoginTokens(accId).length).toBe(1);
-  rt.close();
-
-  const io = makeIo();
-  const code = await runRelayCli(["user", "rm", "--account", "alice", "--force", "--db", dbPath], io);
-  expect(code).toBe(0);
-
-  const rt2 = await createRelayRuntime(dbPath);
-  try {
-    expect(rt2.accounts.findByUsername("alice")).toBeNull();
-    const rows = rt2.accounts.listAccounts();
-    expect(rows.length).toBe(0);
-    // login_tokens cascaded away too
-    expect(rt2.accounts.listLoginTokens(accId).length).toBe(0);
-  } finally {
-    rt2.close();
-  }
-});
-
-test("user rm for missing account exits non-zero", async () => {
+test("token revoke is no longer recognized (exits non-zero, shows usage)", async () => {
   const dbPath = makeTmpDb();
   const io = makeIo();
-  const code = await runRelayCli(["user", "rm", "--account", "nobody", "--db", dbPath], io);
+  const code = await runRelayCli(["token", "revoke", "--id", "some-id", "--db", dbPath], io);
   expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toMatch(/no such account/i);
+  expect(io.lines.join("\n")).toContain("Usage");
 });
 
-// --- token revoke ---
-
-test("token revoke removes a valid login token", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  const rt = await createRelayRuntime(dbPath);
-  const acc = rt.accounts.findByUsername("alice")!;
-  const tokensBefore = rt.accounts.listLoginTokens(acc.id);
-  expect(tokensBefore.length).toBe(1);
-  const tokenId = tokensBefore[0].id;
-  rt.close();
-
-  const io = makeIo();
-  const code = await runRelayCli(["token", "revoke", "--id", tokenId, "--db", dbPath], io);
-  expect(code).toBe(0);
-  expect(io.lines.join("\n")).toMatch(/revoked/i);
-
-  const rt2 = await createRelayRuntime(dbPath);
-  try {
-    const acc2 = rt2.accounts.findByUsername("alice")!;
-    expect(rt2.accounts.listLoginTokens(acc2.id).length).toBe(0);
-  } finally {
-    rt2.close();
-  }
-});
-
-test("token revoke with bogus id exits non-zero", async () => {
+test("pair is no longer recognized (exits non-zero, shows usage)", async () => {
   const dbPath = makeTmpDb();
   const io = makeIo();
-  const code = await runRelayCli(["token", "revoke", "--id", "bogus-id", "--db", dbPath], io);
+  const code = await runRelayCli(["pair", "--account", "alice", "--db", dbPath], io);
   expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toMatch(/not found|no such|unknown/i);
+  expect(io.lines.join("\n")).toContain("Usage");
 });
-
-// --- pair ---
-
-test("pair mints a connector pairing token for an existing account", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  const io = makeIo();
-  const code = await runRelayCli(["pair", "--account", "alice", "--name", "pc", "--db", dbPath], io);
-  expect(code).toBe(0);
-  const output = io.lines.join("\n");
-  expect(output).toMatch(/pairing token: \S{40,}/);
-  expect(output).toContain("expires at:");
-  expect(output).toContain("xacpx channel add relay");
-});
-
-test("pair with custom ttl respects --ttl-minutes", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  const io = makeIo();
-  const code = await runRelayCli(["pair", "--account", "alice", "--ttl-minutes", "30", "--db", dbPath], io);
-  expect(code).toBe(0);
-});
-
-test("pair with non-numeric --ttl-minutes exits non-zero", async () => {
-  const dbPath = makeTmpDb();
-  await runRelayCli(["user", "new", "--account", "alice", "--db", dbPath], makeIo());
-
-  const io = makeIo();
-  const code = await runRelayCli(["pair", "--account", "alice", "--ttl-minutes", "abc", "--db", dbPath], io);
-  expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toMatch(/invalid --ttl-minutes/i);
-});
-
-test("pair for unknown account exits non-zero", async () => {
-  const dbPath = makeTmpDb();
-  const io = makeIo();
-  const code = await runRelayCli(["pair", "--account", "ghost", "--db", dbPath], io);
-  expect(code).not.toBe(0);
-  expect(io.lines.join("\n")).toMatch(/no such account/i);
-});
-
-// --- old commands removed ---
 
 test("init-admin is no longer recognized (exits non-zero, shows usage)", async () => {
   const dbPath = makeTmpDb();

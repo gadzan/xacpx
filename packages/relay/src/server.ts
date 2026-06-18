@@ -91,6 +91,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
 
   const gateway = new InstanceGateway({
     instances,
+    accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     onStatusChange: (instanceId, accountId, online) => {
       if (!online) {

@@ -9,6 +9,7 @@ import {
   type RelayEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
 
+import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
@@ -22,7 +23,8 @@ export interface GatewaySocket {
 }
 
 export interface InstanceGatewayDeps {
-  instances: Pick<InstanceStore, "redeemPairingToken" | "verifyCredential" | "touch">;
+  instances: Pick<InstanceStore, "redeemPairingToken" | "registerInstanceForAccount" | "verifyCredential" | "touch">;
+  accounts: Pick<AccountStore, "resolveLoginToken">;
   requestTimeoutMs?: number;
   onEvent?: (instanceId: string, accountId: string, envelope: RelayEnvelope) => void;
   onStatusChange?: (instanceId: string, accountId: string, online: boolean) => void;
@@ -117,14 +119,22 @@ export class InstanceGateway {
     }
     if (envelope.type === MSG.instanceRegister) {
       const payload = envelope.payload as InstanceRegisterPayload;
-      const redeemed = this.deps.instances.redeemPairingToken(payload?.pairingToken ?? "", payload?.coreVersion);
-      if (!redeemed) {
-        respond(errorPayload("pairing-failed", "pairing token is invalid, expired, or already used"));
-        return null;
+      const presented = payload?.pairingToken ?? "";
+      const viaLogin = this.deps.accounts.resolveLoginToken(presented);
+      let result;
+      if (viaLogin) {
+        result = this.deps.instances.registerInstanceForAccount(viaLogin.account.id, payload?.name, payload?.coreVersion);
+      } else {
+        const redeemed = this.deps.instances.redeemPairingToken(presented, payload?.coreVersion);
+        if (!redeemed) {
+          respond(errorPayload("pairing-failed", "token is invalid, expired, or already used"));
+          return null;
+        }
+        result = redeemed;
       }
-      respond({ instanceId: redeemed.instanceId, credential: redeemed.credential });
-      this.deps.instances.touch(redeemed.instanceId);
-      return { instanceId: redeemed.instanceId, accountId: redeemed.accountId };
+      respond({ instanceId: result.instanceId, credential: result.credential });
+      this.deps.instances.touch(result.instanceId);
+      return { instanceId: result.instanceId, accountId: result.accountId };
     }
     if (envelope.type === MSG.instanceAuth) {
       const payload = envelope.payload as InstanceAuthPayload;

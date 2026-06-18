@@ -12,14 +12,18 @@ class FakeSocket {
   emit(event: string, data?: unknown) { (this.listeners[event] ?? []).forEach((l) => l(data)); }
 }
 
+const stubAccounts = { resolveLoginToken: () => null };
+
 test("onStatusChange fires online on auth and offline on close", async () => {
   const events: Array<[string, string, boolean]> = [];
   const gateway = new InstanceGateway({
     instances: {
       redeemPairingToken: () => null,
+      registerInstanceForAccount: () => ({ instanceId: "i1", credential: "c", accountId: "a1", name: "" }),
       verifyCredential: () => ({ id: "i1", accountId: "a1" }),
       touch: () => {},
     } as never,
+    accounts: stubAccounts,
     onStatusChange: (instanceId, accountId, online) => events.push([instanceId, accountId, online]),
   });
   const socket = new FakeSocket();
@@ -37,9 +41,11 @@ test("sendRequest pending requests reject with instance-offline on disconnect", 
   const gateway = new InstanceGateway({
     instances: {
       redeemPairingToken: () => null,
+      registerInstanceForAccount: () => ({ instanceId: "i1", credential: "c", accountId: "a1", name: "" }),
       verifyCredential: () => ({ id: "i1", accountId: "a1" }),
       touch: () => {},
     } as never,
+    accounts: stubAccounts,
     // Large timeout: the test must prove the DRAIN rejects, not the timer.
     requestTimeoutMs: 60_000,
   });

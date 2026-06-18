@@ -352,6 +352,109 @@ test("deleteAccountCascade removes all related rows", async () => {
   expect(db.get("SELECT 1 FROM web_sessions WHERE account_id = ?", [account.id])).toBeUndefined();
 });
 
+// ── listTokens ────────────────────────────────────────────────────────────────
+
+test("listTokens returns all tokens across all accounts with instanceCount", async () => {
+  const { store, db } = await makeStore("2026-06-13T10:00:00.000Z");
+  const alice = store.createAccount("alice");
+  const bob = store.createAccount("bob");
+  const { id: t1 } = store.createLoginToken(alice.id, "laptop");
+  store.createLoginToken(alice.id, "desktop");
+  store.createLoginToken(bob.id, null);
+
+  // Seed one instance for alice
+  db.run(
+    "INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+    ["inst-1", alice.id, "box", "fakehash", "2026-06-13T10:00:00.000Z"]
+  );
+
+  const tokens = store.listTokens();
+  expect(tokens.length).toBe(3);
+  // alice tokens have instanceCount=1, bob token has instanceCount=0
+  const aliceTokens = tokens.filter((t) => t.accountId === alice.id);
+  const bobTokens = tokens.filter((t) => t.accountId === bob.id);
+  expect(aliceTokens.length).toBe(2);
+  expect(aliceTokens.every((t) => t.instanceCount === 1)).toBe(true);
+  expect(bobTokens[0].instanceCount).toBe(0);
+
+  // shape check
+  const first = tokens[0];
+  expect(typeof first.id).toBe("string");
+  expect(typeof first.createdAt).toBe("string");
+  expect(typeof first.accountId).toBe("string");
+});
+
+test("listTokens returns empty array when no tokens", async () => {
+  const { store } = await makeStore();
+  expect(store.listTokens()).toEqual([]);
+});
+
+test("listTokens orders oldest-first", async () => {
+  const { store, setNow } = await makeStore("2026-06-13T10:00:00.000Z");
+  const alice = store.createAccount("alice");
+  setNow("2026-06-13T10:00:00.000Z");
+  store.createLoginToken(alice.id, "first");
+  setNow("2026-06-13T11:00:00.000Z");
+  store.createLoginToken(alice.id, "second");
+
+  const tokens = store.listTokens();
+  expect(tokens.map((t) => t.label)).toEqual(["first", "second"]);
+});
+
+// ── accountIdForToken ─────────────────────────────────────────────────────────
+
+test("accountIdForToken resolves by raw token value", async () => {
+  const { store } = await makeStore();
+  const account = store.createAccount("alice");
+  const { token } = store.createLoginToken(account.id);
+
+  const resolved = store.accountIdForToken(token);
+  expect(resolved).toBe(account.id);
+});
+
+test("accountIdForToken resolves by full token id", async () => {
+  const { store } = await makeStore();
+  const account = store.createAccount("alice");
+  const { id: tokenId } = store.createLoginToken(account.id);
+
+  const resolved = store.accountIdForToken(tokenId);
+  expect(resolved).toBe(account.id);
+});
+
+test("accountIdForToken resolves by unique id prefix", async () => {
+  const { store } = await makeStore();
+  const account = store.createAccount("alice");
+  const { id: tokenId } = store.createLoginToken(account.id);
+  const prefix = tokenId.slice(0, 8);
+
+  const resolved = store.accountIdForToken(prefix);
+  expect(resolved).toBe(account.id);
+});
+
+test("accountIdForToken returns null for unknown value", async () => {
+  const { store } = await makeStore();
+  expect(store.accountIdForToken("does-not-exist")).toBeNull();
+});
+
+test("accountIdForToken returns null for ambiguous prefix", async () => {
+  const { store, db } = await makeStore();
+  const alice = store.createAccount("alice");
+  const bob = store.createAccount("bob");
+  // Force two tokens to share the same prefix by inserting directly with crafted ids
+  const { generateToken, hashToken } = await import("../../../../packages/relay/src/auth");
+  db.run(
+    "INSERT INTO login_tokens (id, token_hash, account_id, label, created_at, last_used_at) VALUES (?, ?, ?, NULL, ?, NULL)",
+    ["aaaa1111-0000-0000-0000-000000000001", hashToken(generateToken()), alice.id, "2026-06-13T10:00:00.000Z"]
+  );
+  db.run(
+    "INSERT INTO login_tokens (id, token_hash, account_id, label, created_at, last_used_at) VALUES (?, ?, ?, NULL, ?, NULL)",
+    ["aaaa1111-0000-0000-0000-000000000002", hashToken(generateToken()), bob.id, "2026-06-13T10:00:00.000Z"]
+  );
+
+  // "aaaa1111" matches both rows — must return null
+  expect(store.accountIdForToken("aaaa1111")).toBeNull();
+});
+
 // ── pruneExpired ──────────────────────────────────────────────────────────────
 
 test("pruneExpired removes only expired web_sessions and returns count", async () => {
