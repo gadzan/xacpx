@@ -22,7 +22,7 @@ bun run build:relay-web     # → packages/relay-web/dist（不构建则看板�
 # 2. 生成访问令牌 — DB 自动建在 ~/.xacpx-relay/relay.db
 node packages/relay/dist/cli.js add token
 # 输出示例：
-#   access token: xrt_xxxxxxxxxxxx
+#   access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
 #   (store it now — not shown again)
 #   hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
 # 把该令牌交给用户：Web 登录页「Access token」字段粘贴登录；同时用来配对连接器。

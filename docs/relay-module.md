@@ -5,19 +5,18 @@
 ## 服务端（@ganglion/xacpx-relay）
 
 - 运行时：Node >= 22.13（node:sqlite）或 Bun >= 1.2（bun:sqlite），SqlDriver 适配层自动选择。
-- 两个端口：HTTP API（默认 8787，登录/邀请/实例/RPC 代理）+ 实例 WS 网关（默认 8788）。
+- 两个端口：HTTP API（默认 8787，登录/实例/RPC 代理）+ 实例 WS 网关（默认 8788）。
 - 快速开始：
-  1. `xacpx-relay add token --db ./relay.db`（打印访问令牌，既用于 Web 登录也用于连接器注册）
-  2. `xacpx-relay start --db ./relay.db`
-  3. `xacpx channel add relay --url ws://<host>:8788 --token <token> --name home-pc`（连接器接入）
+  1. `xacpx-relay add token`（打印访问令牌，既用于 Web 登录也用于连接器注册；DB 默认 `~/.xacpx-relay/relay.db`，自动建目录）
+  2. `xacpx-relay start`（看板自动检测内置 `packages/relay-web/dist`）
+  3. `xacpx channel add relay --url <host> --token <access-token> --name home-pc`（连接器接入；`--url` 支持裸域名/IP[:端口]）
 - RPC 请求超时：`xacpx-relay start --request-timeout-ms <ms>` 限定网关 RPC 请求超时，默认 `120000`
   （共享常量 `DEFAULT_REQUEST_TIMEOUT_MS = 120s`，位于 packages/relay/src/gateway/instance-gateway.ts，
   网关回退与服务端均复用之）；agent 冷启动慢 / 长 prompt 时可调大。
-- 安全：登录令牌（login token）哈希落盘（scrypt，node:crypto 内置，格式含参数可迁移）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
+- 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
-- 账号模型：无密码、无角色、无邀请码；凭证为 CLI 铸造的登录令牌（`login_tokens` 表）；每个账号可持有多枚令牌；
-  `token revoke --id <id>` 吊销单枚令牌并级联删除其派生的所有 web 会话。
+- 账号模型：无密码、无角色、无邀请码；凭证为 CLI 铸造的登录令牌（`login_tokens` 表）。CLI 以令牌为中心：`add token` 建一个用户+令牌、`ls` 列出、`rm token <值或短id>` 删除该令牌背后的用户并级联删除其实例/会话/消息（底层 store 仍支持每账号多令牌）。
 - CSRF backstop：`/api/login`、RPC 以及 `POST /api/instances/pairing-token`
   统一要求 `content-type: application/json`（`requireJson`），否则返回 415。
   `/api/register` 与 `/api/invites` 已移除（显式返回 404）；`/api/*` 鉴权网关仅豁免 `/api/login`。
@@ -27,7 +26,7 @@
 - 安装与配对：
   ```
   xacpx plugin add @ganglion/xacpx-channel-relay
-  xacpx channel add relay --url ws://<relay-host>:8788 --token <pairing-token>
+  xacpx channel add relay --url <host> --token <access-token>   # --url 支持裸域名(wss)/IP[:端口](ws,默认 8788)
   xacpx restart
   ```
 - 首连用访问令牌（或传统一次性配对令牌）注册并换发长期凭证，存 `<xacpx-home>/relay/credential.json`

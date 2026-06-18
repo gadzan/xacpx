@@ -60,8 +60,9 @@ node packages/relay/dist/cli.js start
 `add token` prints the token **once**:
 
 ```
-token: xrt_8e1d2f…
+access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
 (store it now — not shown again)
+hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
 ```
 
 `start` confirms what is running:
