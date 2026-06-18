@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 import { createRelayRuntime, startRelayServer } from "./server.js";
 
@@ -6,12 +9,33 @@ export interface RelayCliIo {
   print(line: string): void;
 }
 
+/** Fixed absolute default DB path — independent of cwd so `add token` and `start` always hit the same DB. */
+export function defaultDbPath(): string {
+  return join(homedir(), ".xacpx-relay", "relay.db");
+}
+
+/**
+ * Locates the bundled relay-web dashboard relative to the compiled cli.js.
+ * Returns the path only if `index.html` is present there; otherwise undefined.
+ * Defensive: returns undefined if process.argv[1] is not set.
+ */
+export function resolveBundledWebRoot(): string | undefined {
+  const argv1 = process.argv[1];
+  if (!argv1) return undefined;
+  if (!argv1.endsWith("cli.js")) return undefined;
+  const here = dirname(argv1);
+  const candidate = resolve(here, "../../relay-web/dist");
+  return existsSync(join(candidate, "index.html")) ? candidate : undefined;
+}
+
 const USAGE = [
   "Usage: xacpx-relay <command>",
-  "  start        --db <path> [--http-port 8787] [--ws-port 8788] [--host 0.0.0.0] [--web-root <dir>] [--history-retention-days <n>] [--request-timeout-ms 120000] [--trust-proxy]",
-  "  add token    [--label <l>] --db <path>",
-  "  ls           --db <path>",
-  "  rm token <value-or-id>  --db <path>",
+  "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]",
+  "  add token  [--label <note>] [--db <path>]",
+  "  ls         [--db <path>]",
+  "  rm token <value-or-id> [--db <path>]",
+  "",
+  "  Defaults: --db ~/.xacpx-relay/relay.db   --web-root auto-detects the bundled dashboard",
 ].join("\n");
 
 function flag(args: string[], name: string): string | undefined {
@@ -38,7 +62,7 @@ export interface StartOptions {
 
 /** Pure arg-parser for the `start` subcommand — testable without starting a server. */
 export function parseStartOptions(args: string[]): StartOptions {
-  const dbPath = flag(args, "--db") ?? "./relay.db";
+  const dbPath = flag(args, "--db") ?? defaultDbPath();
   const retentionRaw = flag(args, "--history-retention-days");
   const retentionDays = retentionRaw !== undefined ? Number(retentionRaw) : undefined;
   const requestTimeoutRaw = flag(args, "--request-timeout-ms");
@@ -56,13 +80,16 @@ export function parseStartOptions(args: string[]): StartOptions {
 }
 
 export async function runRelayCli(args: string[], io: RelayCliIo): Promise<number> {
-  const dbPath = flag(args, "--db") ?? "./relay.db";
+  const dbPath = flag(args, "--db") ?? defaultDbPath();
 
   // start
   if (args[0] === "start") {
     const startOpts = parseStartOptions(args);
+    if (!startOpts.webRoot) {
+      startOpts.webRoot = resolveBundledWebRoot();
+    }
     const running = await startRelayServer(startOpts);
-    io.print(`xacpx-relay listening: http :${running.httpPort}, instance ws :${running.wsPort}, db ${startOpts.dbPath}`);
+    io.print(`xacpx-relay listening: http :${running.httpPort}, instance ws :${running.wsPort}, db ${startOpts.dbPath}, dashboard: ${startOpts.webRoot ?? "(none)"}`);
     return await new Promise<number>((resolve) => {
       const shutdown = () => {
         void running.close().then(() => resolve(0));

@@ -1,6 +1,9 @@
 // Minimal SQLite adapter: bun:sqlite when running under Bun (tests, optional
 // deployment), node:sqlite under Node (primary deployment). node:sqlite is NOT
 // implemented by Bun 1.3, hence the runtime switch.
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 export interface SqlDriver {
   exec(sql: string): void;
   run(sql: string, params?: ReadonlyArray<string | number | null>): void;
@@ -12,6 +15,9 @@ export interface SqlDriver {
 type SqlParams = ReadonlyArray<string | number | null>;
 
 export async function createSqlDriver(path: string): Promise<SqlDriver> {
+  if (path !== ":memory:") {
+    mkdirSync(dirname(path), { recursive: true });
+  }
   if (typeof Bun !== "undefined") {
     const { Database } = await import("bun:sqlite");
     const db = new Database(path);

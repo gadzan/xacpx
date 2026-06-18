@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runRelayCli, parseStartOptions } from "../../../../packages/relay/src/cli";
+import { runRelayCli, parseStartOptions, defaultDbPath } from "../../../../packages/relay/src/cli";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 
 function makeIo() {
@@ -269,6 +269,26 @@ test("unknown command prints usage and exits 1", async () => {
   const io = makeIo();
   expect(await runRelayCli(["bogus"], io)).toBe(1);
   expect(io.lines.join("\n")).toContain("Usage");
+});
+
+// --- defaultDbPath ---
+
+test("defaultDbPath returns an absolute path ending with /.xacpx-relay/relay.db", () => {
+  const p = defaultDbPath();
+  expect(p).toMatch(/\/.xacpx-relay\/relay\.db$/);
+  expect(p.startsWith("/")).toBe(true);
+});
+
+// --- parseStartOptions default DB path ---
+
+test("parseStartOptions([]) uses defaultDbPath() when --db is not given", () => {
+  const opts = parseStartOptions([]);
+  expect(opts.dbPath).toBe(defaultDbPath());
+});
+
+test("parseStartOptions with explicit --db still wins over default", () => {
+  const opts = parseStartOptions(["--db", "/x/y.db"]);
+  expect(opts.dbPath).toBe("/x/y.db");
 });
 
 // --- parseStartOptions flag-parsing ---
