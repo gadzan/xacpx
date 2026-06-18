@@ -11,7 +11,7 @@ The relay packages (`@ganglion/xacpx-relay`, `@ganglion/xacpx-channel-relay`, `@
 ## Architecture at a glance
 
 ```
-   xacpx instance A ─┐                         ┌─ browser (account: alice)
+   xacpx instance A ─┐                         ┌─ browser (token login)
    xacpx instance B ─┤  WSS (dial-out)         │  HTTPS + WSS
    xacpx instance C ─┴──────────────►  RELAY HUB  ◄───────────┘
                        :8788 instance gateway   :8787 HTTP API + web /ws
@@ -20,7 +20,7 @@ The relay packages (`@ganglion/xacpx-relay`, `@ganglion/xacpx-channel-relay`, `@
 ```
 
 - **Two ports.** The HTTP API and the dashboard's `/ws` fan-out share **8787**; the **instance** WebSocket gateway (where xacpx instances register) is **8788**. They are separate so you can firewall them independently.
-- **Multi-tenant.** Every account only ever sees its own instances and sessions; the server stamps identity on each proxied call. Secrets (passwords, pairing tokens, instance credentials, web-session cookies) are stored hashed.
+- **Multi-tenant.** Every token-user only ever sees its own instances and sessions; the server stamps identity on each proxied call. Tokens, instance credentials, and web-session cookies are stored hashed.
 - **Source of truth stays on the instances.** The hub caches recent messages for the dashboard but does not own your sessions — the instances do.
 
 ## Requirements
@@ -36,113 +36,146 @@ Clone the repository and build the relay server and the dashboard:
 ```bash
 git clone https://github.com/gadzan/xacpx
 cd xacpx
-bun install
-
-# Build the hub server (compiles relay-protocol + relay to ./packages/relay/dist)
-bun run build:relay
-
-# Build the web dashboard (outputs packages/relay-web/dist)
-bun run build:relay-web
+bun install && bun run build:relay && bun run build:relay-web
 ```
 
-::: tip The dashboard build is separate
-`build:relay-web` is **not** part of `build:packages`. If you skip it you will start an API with no UI. Always build it and point `--web-root` at `packages/relay-web/dist` (step 3).
+::: tip The dashboard build is included
+`build:relay-web` outputs `packages/relay-web/dist`. The server **auto-detects** this directory at startup — you do not need to pass `--web-root` unless you want to override it.
 :::
 
 The server entry point is `packages/relay/dist/cli.js`. After publish this same surface is exposed as the `xacpx-relay` binary; substitute `xacpx-relay <command>` for `node packages/relay/dist/cli.js <command>` everywhere below.
 
-## 2. Create the first admin account
+## 2. Quickstart (zero flags needed)
 
-The hub stores everything in a single SQLite file. Pick a **stable, absolute** path for it — the default `./relay.db` is resolved relative to the current working directory, which is an easy way to end up with two different databases.
+Auth is entirely token-based — **no passwords, no admin accounts, no invite flow**. A token IS a user. Mint one and start the server:
 
 ```bash
-node packages/relay/dist/cli.js init-admin \
-  --username admin \
-  --db /var/lib/xacpx-relay/relay.db
+# Step A — create a user + token (DB auto-created at ~/.xacpx-relay/relay.db)
+node packages/relay/dist/cli.js add token
+
+# Step B — start the server (uses the same default DB; dashboard auto-detected)
+node packages/relay/dist/cli.js start
 ```
 
-If you omit `--password`, the hub generates one and prints it **once**:
+`add token` prints the token **once**:
 
 ```
-admin account created: admin
-password: 3f9c1ab27de40c85
-(store it now — it is not shown again)
+token: xrt_8e1d2f…
+(store it now — not shown again)
 ```
 
-Save it in your password manager immediately.
+`start` confirms what is running:
 
-## 3. Start the server
+```
+xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /opt/xacpx/packages/relay-web/dist
+```
+
+Open `http://<host>:8787`, paste the token into the **Access token** field, and you are in.
+
+## 3. Token management
+
+The hub has exactly **4 CLI commands**; all flags are optional:
+
+### `add token` — create a user + login token
+
+```bash
+node packages/relay/dist/cli.js add token [--label <note>] [--db <path>]
+```
+
+Each call creates an isolated user and prints its access token once. The same token is used to:
+1. Log in to the web dashboard (paste into **Access token**).
+2. Pair an xacpx instance (`--token <T>` in `channel add relay`).
+
+Reuse the **same** token across multiple instances to group them under one user.
+
+### `ls` — list tokens
+
+```bash
+node packages/relay/dist/cli.js ls [--db <path>]
+```
+
+Shows: short id, label, created date, number of paired instances.
+
+### `rm token` — revoke a token (and its user)
+
+```bash
+node packages/relay/dist/cli.js rm token <value-or-id> [--db <path>]
+```
+
+Deletes the user behind that token and cascades to its instances, web sessions, and cached messages. Revocation kills that token's web sessions on the next request; an already-open dashboard `/ws` socket lingers until reconnect. To hard-cut all sessions: stop the hub, run `sqlite3 <db> "DELETE FROM web_sessions;"`, then restart.
+
+### `start` — start the server
 
 ```bash
 node packages/relay/dist/cli.js start \
-  --db /var/lib/xacpx-relay/relay.db \
-  --web-root /opt/xacpx/packages/relay-web/dist \
-  --host 0.0.0.0 \
-  --http-port 8787 \
-  --ws-port 8788 \
-  --history-retention-days 30
+  [--db <path>] \
+  [--web-root <dir>] \
+  [--host 0.0.0.0] \
+  [--http-port 8787] \
+  [--ws-port 8788] \
+  [--history-retention-days 30] \
+  [--request-timeout-ms 120000] \
+  [--trust-proxy]
 ```
-
-On success it prints:
-
-```
-xacpx-relay listening: http :8787, instance ws :8788, db /var/lib/xacpx-relay/relay.db
-```
-
-Open `http://<host>:8787/` and log in with the admin credentials from step 2.
-
-### `start` flags
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--db <path>` | `./relay.db` | SQLite database file. Use an absolute path. |
+| `--db <path>` | `~/.xacpx-relay/relay.db` | SQLite database file. The directory is created automatically. |
 | `--http-port <n>` | `8787` | HTTP API **and** the dashboard's `/ws` fan-out. |
 | `--ws-port <n>` | `8788` | Instance gateway — where xacpx instances register. |
 | `--host <addr>` | `0.0.0.0` | Bind address. |
-| `--web-root <dir>` | _(none)_ | Directory of built dashboard assets. **Omit and no UI is served.** |
+| `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves `packages/relay-web/dist` next to `cli.js`; only pass this to override. |
 | `--history-retention-days <n>` | `30` | Cached messages older than this are pruned hourly (also hard-capped at 2000 messages per session). |
+| `--request-timeout-ms <n>` | `120000` | Per-request timeout for proxied calls to instances. |
+| `--trust-proxy` | _(off)_ | Trust `X-Forwarded-For` for rate limiting. Pass this when behind a reverse proxy; **never** when directly internet-exposed (it would allow IP spoofing). |
 
 There is no `stop`/`status` subcommand — stop the hub with `Ctrl-C` / `SIGTERM` (run it under systemd, pm2, or Docker for lifecycle management).
 
+::: tip Rate limiting
+The hub enforces a per-client-IP rate limit plus a global failure ceiling. When running behind a reverse proxy, pass `--trust-proxy` so the real client IP from `X-Forwarded-For` is used for rate limiting, not your proxy's loopback address.
+:::
+
 ## 4. Pair an xacpx instance
-
-### Mint a pairing token (on the hub)
-
-```bash
-node packages/relay/dist/cli.js token new \
-  --account admin \
-  --name home-pc \
-  --ttl-minutes 10 \
-  --db /var/lib/xacpx-relay/relay.db
-```
-
-Output:
-
-```
-pairing token: 8e1d…(single-use, expires soon)
-expires at: 2026-06-13T12:00:00.000Z
-pair with: xacpx channel add relay --url ws://<relay-host>:<ws-port> --token <the-token>
-```
-
-The token is **single-use** and short-lived (`--ttl-minutes`, default 10).
 
 ### Attach the instance
 
-On the machine running the xacpx instance, add the relay connector channel, pointing `--url` at the **instance gateway** port (8788, or your `wss://` proxy):
+On the machine running the xacpx instance, add the relay connector channel using the **same token** you created in step 2:
 
 ```bash
 # After publish:
 xacpx plugin add @ganglion/xacpx-channel-relay
-xacpx channel add relay --url wss://relay.example.com --token <the-token> --name home-pc
+xacpx channel add relay --url <host> --token <T> [--name home-pc]
 xacpx restart
 ```
 
-`--url` must start with `ws://` or `wss://`; `--token` is the pairing token; `--name` is optional.
-
-On first connect the instance exchanges the one-shot pairing token for a long-lived credential, written (mode `0600`) to `<xacpx-home>/relay/credential.json` — **never** to `config.json` (which only keeps the url/name). Keep that file safe; it is the instance's identity.
-
 ::: details Pairing the connector before it is published to npm
 `xacpx plugin add` passes its argument straight to `npm install` / `bun add`, so a local path works — but `@ganglion/xacpx-channel-relay` depends on the (also unpublished) `@ganglion/xacpx-relay-protocol`, so a bare local install will not resolve that dependency from npm. Until the packages are released, the reliable path is to run the instance from a repo checkout where the workspace already links both packages, or to pack/link both (`relay-protocol` then `channel-relay`) into the instance's plugin home. After release, the two commands above are all you need.
+:::
+
+### `--url` shorthand rules
+
+`--url` accepts any of the following; the connector normalizes it to a full WebSocket URL:
+
+| What you pass | Resolved to |
+|---|---|
+| `relay.example.com` (bare domain) | `wss://relay.example.com` |
+| `1.2.3.4` (IP) | `ws://1.2.3.4:8788` |
+| `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
+| `localhost` | `ws://localhost:8788` |
+| `host:9000` | `ws://host:9000` |
+| `ws://…` or `wss://…` | used as-is |
+| `http://…` or `https://…` | mapped to `ws://…` / `wss://…` |
+
+::: warning IPv6
+Bare unbracketed IPv6 addresses are not supported. Use `[::1]:8788` instead.
+:::
+
+### How pairing works
+
+On first connect the instance exchanges the access token for a long-lived per-instance credential, written (mode `0600`) to `<xacpx-home>/relay/credential.json`. The `config.json` keeps only the url/name — the token is **never** stored there. The token is used only at first pairing — all subsequent reconnects use the stored credential.
+
+::: tip One token, multiple instances
+Reuse the same token on several instances (e.g. `home-pc`, `work-laptop`). They all appear under the same user in the dashboard.
 :::
 
 Back in the dashboard, the instance appears in the left column with a green dot once it is online. Select a session to chat; open the task panel (right column, or the **Tasks** button on mobile) for scheduled and orchestration tasks.
@@ -205,21 +238,23 @@ server {
 | 8788 | xacpx instances (gateway) | Yes, behind TLS |
 | — | `relay.db` | Never — it is a local file |
 
-## Accounts, invites & maintenance
+## Token & user management
 
-- **More accounts.** An admin can generate an **invite token** from the dashboard's **Settings** page; a new operator redeems it to create their own account. Invites are single-use.
-- **More instances.** Mint another pairing token (step 4) per instance.
-- **Automatic GC.** An hourly maintenance loop prunes cached messages past `--history-retention-days` (and the 2000-per-session cap) and deletes expired web sessions, invites, and pairing tokens. No cron needed.
+- **More users/instances:** run `add token` again — each call creates an isolated user. Reuse the same token on multiple instances to group them under one user.
+- **Audit:** `ls` shows all tokens with their labels, creation dates, and instance counts.
+- **Revoke:** `rm token <value-or-id>` removes the user and cascades to its instances, web sessions, and cached messages. The token's web sessions are killed on the next request; open `/ws` sockets linger until reconnect.
+- **Force global re-login:** stop the hub, `sqlite3 <db> "DELETE FROM web_sessions;"`, restart.
+- **Automatic GC:** an hourly maintenance loop prunes cached messages past `--history-retention-days` (and the 2000-per-session cap) and deletes expired web sessions. No cron needed.
 
 ## Persistence & backup
 
-Everything lives in the one SQLite file at `--db`. To back up, stop the hub (or snapshot during a quiet moment) and copy the file:
+Everything lives in the one SQLite file at `--db` (default `~/.xacpx-relay/relay.db`). To back up, stop the hub (or snapshot during a quiet moment) and copy the file:
 
 ```bash
-cp /var/lib/xacpx-relay/relay.db /backups/relay-$(date +%F).db
+cp ~/.xacpx-relay/relay.db /backups/relay-$(date +%F).db
 ```
 
-Losing it means losing accounts, instance registrations, and cached history — instances would need to be re-paired.
+Losing it means losing all token-users, instance registrations, and cached history — instances would need to be re-paired.
 
 ## Running under systemd (example)
 
@@ -230,8 +265,7 @@ Description=xacpx relay hub
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/xacpx
-ExecStart=/usr/bin/node packages/relay/dist/cli.js start --db /var/lib/xacpx-relay/relay.db --web-root /opt/xacpx/packages/relay-web/dist --host 127.0.0.1
+ExecStart=/usr/bin/node packages/relay/dist/cli.js start --host 127.0.0.1
 Restart=on-failure
 User=xacpx
 
@@ -239,15 +273,15 @@ User=xacpx
 WantedBy=multi-user.target
 ```
 
-Bind to `127.0.0.1` and let your reverse proxy face the internet.
+Bind to `127.0.0.1` and let your reverse proxy face the internet. The DB and dashboard are auto-detected from their defaults; add `--db` only if you want a non-default path.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Dashboard 404 / blank page | `--web-root` omitted or wrong | Build with `bun run build:relay-web`, point `--web-root` at `packages/relay-web/dist`. |
-| Instance never turns green | Wrong gateway URL/port, or expired token | Point `--url` at the **8788** gateway (or its `wss://` proxy); pairing tokens expire (`--ttl-minutes`) and are single-use — mint a fresh one. |
-| "two databases" / empty after restart | Default `./relay.db` is cwd-relative | Always pass an absolute `--db`. |
+| Dashboard 404 / blank page | Bundled `packages/relay-web/dist` is missing | Run `bun run build:relay-web` in the repo checkout; the server auto-detects it. Pass `--web-root` only if you built it to a custom path. |
+| Instance never turns green | Wrong gateway URL or revoked/mistyped token | Check that `--url` resolves to the **8788** gateway (or its `wss://` proxy); re-run `add token` and re-pair if the token was revoked. |
+| Custom `--db` not taking effect | `--db` passed inconsistently between commands | Pass the **same** `--db` path to both `add token` and `start`; the default `~/.xacpx-relay/relay.db` is a fixed absolute path so omitting `--db` consistently is safe. |
 | Live updates stall behind a proxy | Proxy not forwarding WebSocket upgrades on 8787 | Allow `Upgrade`/`Connection` headers on the dashboard route. |
 
 ## See also
