@@ -9,7 +9,7 @@ test("parseAddArgs accepts --url/--token/--name and rejects unknown flags", () =
   expect(relayCliProvider.parseAddArgs(["--url"]).ok).toBe(false);
 });
 
-test("buildDefaultConfig/validateConfig enforce url scheme and required token", () => {
+test("buildDefaultConfig/validateConfig enforce url and required token", () => {
   const config = relayCliProvider.buildDefaultConfig({ url: "ws://h:8788", token: "tok", name: "pc" });
   expect(config).toEqual({
     id: "relay", type: "relay", enabled: true,
@@ -22,9 +22,29 @@ test("buildDefaultConfig/validateConfig enforce url scheme and required token", 
   expect(relayCliProvider.validateConfig(relayCliProvider.buildDefaultConfig({ url: "ws://h", }))).toContainEqual(
     expect.objectContaining({ kind: "missing-required-field", flag: "--token" }),
   );
-  expect(relayCliProvider.validateConfig(relayCliProvider.buildDefaultConfig({ url: "https://h", token: "t" }))).toContainEqual(
-    expect.objectContaining({ kind: "invalid-config" }),
-  );
+  // https:// is now normalized to wss:// — no longer invalid
+  expect(relayCliProvider.validateConfig(relayCliProvider.buildDefaultConfig({ url: "https://h", token: "t" }))).toEqual([]);
+});
+
+test("buildDefaultConfig normalizes bare domain to wss://", () => {
+  const config = relayCliProvider.buildDefaultConfig({ url: "relay.example.com", token: "t" });
+  expect(config.options?.url).toBe("wss://relay.example.com");
+  expect(relayCliProvider.validateConfig(config)).toEqual([]);
+});
+
+test("buildDefaultConfig normalizes IPv4 to ws:// with default port 8788", () => {
+  const config = relayCliProvider.buildDefaultConfig({ url: "1.2.3.4", token: "t" });
+  expect(config.options?.url).toBe("ws://1.2.3.4:8788");
+  expect(relayCliProvider.validateConfig(config)).toEqual([]);
+});
+
+test("validateConfig accepts a config built from a bare domain (no ws:// issue)", () => {
+  // Simulate a hand-edited config.json with a bare domain
+  const config = {
+    id: "relay", type: "relay", enabled: true,
+    options: { url: "relay.example.com", pairingToken: "tok" },
+  };
+  expect(relayCliProvider.validateConfig(config)).toEqual([]);
 });
 
 test("renderSummary masks the pairing token", () => {
