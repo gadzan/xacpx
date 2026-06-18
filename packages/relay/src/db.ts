@@ -28,7 +28,10 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
     };
   }
   const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(path);
+  // node:sqlite defaults enableForeignKeyConstraints to true (PRAGMA foreign_keys = ON).
+  // The codebase invariant is FKs OFF (integrity is enforced by app-level manual cascades;
+  // declared FK constraints are decorative). Match bun:sqlite's default explicitly.
+  const db = new DatabaseSync(path, { enableForeignKeyConstraints: false });
   return {
     exec: (sql) => db.exec(sql),
     run: (sql, params: SqlParams = []) => {
@@ -43,6 +46,17 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
 }
 
 export function initSchema(db: SqlDriver): void {
+  // node:sqlite defaults foreign_keys = ON (enableForeignKeyConstraints: true).
+  // Migration 4's accounts rebuild issues DROP TABLE accounts, which SQLite rejects
+  // with "FOREIGN KEY constraint failed" when child tables (instances, web_sessions,
+  // pairing_tokens) reference accounts(id) and FKs are ON. PRAGMA foreign_keys must
+  // be set OUTSIDE a transaction (it is silently ignored inside one), so this must
+  // come before any BEGIN. This is a no-op for bun:sqlite (FKs already OFF) and
+  // enforces the codebase invariant regardless of driver or connection defaults.
+  // Do NOT re-enable afterward: the whole codebase assumes FKs OFF; integrity is
+  // maintained by the app-level manual cascades.
+  db.exec("PRAGMA foreign_keys = OFF");
+
   // Helper predicates used in migration guards below.
   // `t` is always an internal constant (PRAGMA can't be parameterized).
   const cols = (t: string) => db.all<{ name: string }>(`PRAGMA table_info(${t})`).map((c) => c.name);

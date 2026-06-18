@@ -262,6 +262,52 @@ test("idempotency: running initSchema 2× on a fresh (non-seeded) DB is stable",
   db.close();
 });
 
+// ── FK regression tests (node:sqlite emulation) ─────────────────────────────
+// node:sqlite defaults foreign_keys = ON (enableForeignKeyConstraints defaults
+// true). initSchema's accounts rebuild (DROP TABLE accounts) fails with
+// "FOREIGN KEY constraint failed" when child rows in instances/web_sessions
+// reference accounts(id) and FKs are ON. The fix: initSchema issues
+// PRAGMA foreign_keys = OFF before any other DDL (must be outside a
+// transaction, which it is at the top of initSchema).
+
+test("node:sqlite emulation: initSchema survives accounts rebuild when FKs are forced ON", async () => {
+  const db = await createSqlDriver(":memory:");
+  seedLegacyDb(db);
+  // Emulate node:sqlite's default — foreign_keys ON — BEFORE calling initSchema.
+  // Without Part B (PRAGMA foreign_keys = OFF at top of initSchema), this throws:
+  //   SqliteError: FOREIGN KEY constraint failed
+  // because DROP TABLE accounts is blocked by child rows in instances/web_sessions.
+  db.exec("PRAGMA foreign_keys = ON");
+  // Must complete without throwing.
+  expect(() => initSchema(db)).not.toThrow();
+  // Migration succeeded: accounts has no legacy columns.
+  const cols = db.all<{ name: string }>("PRAGMA table_info(accounts)").map((c) => c.name);
+  expect(cols).not.toContain("password_hash");
+  expect(cols).not.toContain("role");
+  expect(cols).toContain("id");
+  // Account id preserved.
+  const acc = db.get<{ id: string; username: string }>("SELECT id, username FROM accounts WHERE id = ?", ["acc1"]);
+  expect(acc).toBeDefined();
+  expect(acc!.username).toBe("alice");
+  // Child rows survived (no orphan caused by FK enforcement).
+  const inst = db.get<{ id: string }>("SELECT id FROM instances WHERE id = ?", ["inst1"]);
+  expect(inst).toBeDefined();
+  const sess = db.get<{ token_hash: string }>("SELECT token_hash FROM web_sessions WHERE token_hash = ?", ["sess_hash1"]);
+  expect(sess).toBeDefined();
+  db.close();
+});
+
+test("node:sqlite emulation: initSchema leaves foreign_keys OFF after completion", async () => {
+  const db = await createSqlDriver(":memory:");
+  seedLegacyDb(db);
+  db.exec("PRAGMA foreign_keys = ON");
+  initSchema(db);
+  // initSchema must leave FKs disabled (the invariant the codebase depends on).
+  const fk = db.get<{ foreign_keys: number }>("PRAGMA foreign_keys");
+  expect(fk?.foreign_keys).toBe(0);
+  db.close();
+});
+
 test("half-rename recovery: accounts_new exists, accounts missing → migration completes", async () => {
   const db = await createSqlDriver(":memory:");
   // Simulate a crash after DROP accounts but before RENAME accounts_new -> accounts:
