@@ -14,10 +14,11 @@ test("instance event flows to web client and is cached as history", async () => 
   const relay = await startRelayServer({ dbPath: ":memory:", httpPort: 0, wsPort: 0, host: "127.0.0.1" });
   const base = `http://127.0.0.1:${relay.httpPort}`;
 
-  relay.runtime.accounts.createAccount("admin", "pw", "admin");
+  const adminAccount = relay.runtime.accounts.createAccount("admin");
+  const { token: loginToken } = relay.runtime.accounts.createLoginToken(adminAccount.id);
   const login = await fetch(`${base}/api/login`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "admin", password: "pw" }),
+    body: JSON.stringify({ token: loginToken }),
   });
   const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
   const tokenRes = await fetch(`${base}/api/instances/pairing-token`, {

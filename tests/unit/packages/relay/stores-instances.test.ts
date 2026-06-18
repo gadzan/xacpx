@@ -10,7 +10,7 @@ async function makeStores(nowIso = "2026-06-13T10:00:00.000Z") {
   let now = new Date(nowIso);
   const accounts = new AccountStore(db, { now: () => now });
   const instances = new InstanceStore(db, { now: () => now });
-  const account = accounts.createAccount("alice", "pw", "member");
+  const account = accounts.createAccount("alice");
   return { instances, account, setNow: (iso: string) => { now = new Date(iso); } };
 }
 

@@ -20,7 +20,7 @@ export interface MaintenanceSummary {
   pairingTokensDeleted: number;
 }
 
-/** Runs one maintenance pass: prune old/excess messages, GC expired sessions/invites/pairing tokens. */
+/** Runs one maintenance pass: prune old/excess messages, GC expired sessions/pairing tokens. */
 export function runMaintenance(stores: MaintenanceStores, opts: MaintenanceOptions): MaintenanceSummary {
   const now = (opts.now ?? (() => new Date()))();
   const messagesDeleted = stores.messages.prune({

@@ -1,14 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import { generateToken, hashPassword, hashToken, verifyPassword } from "../auth.js";
+import { generateToken, hashToken } from "../auth.js";
 import type { SqlDriver } from "../db.js";
-
-export type AccountRole = "admin" | "member";
 
 export interface AccountRow {
   id: string;
   username: string;
-  role: AccountRole;
   createdAt: string;
 }
 
@@ -23,70 +20,140 @@ export class AccountStore {
     this.now = options.now ?? (() => new Date());
   }
 
-  createAccount(username: string, password: string, role: AccountRole): AccountRow {
+  createAccount(username: string): AccountRow {
     const id = randomUUID();
     const createdAt = this.now().toISOString();
     this.db.run(
-      "INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-      [id, username, hashPassword(password), role, createdAt],
+      "INSERT INTO accounts (id, username, created_at) VALUES (?, ?, ?)",
+      [id, username, createdAt],
     );
-    return { id, username, role, createdAt };
+    return { id, username, createdAt };
   }
 
   findByUsername(username: string): AccountRow | null {
-    const row = this.db.get<{ id: string; username: string; role: AccountRole; created_at: string }>(
-      "SELECT id, username, role, created_at FROM accounts WHERE username = ?",
+    const row = this.db.get<{ id: string; username: string; created_at: string }>(
+      "SELECT id, username, created_at FROM accounts WHERE username = ?",
       [username],
     );
-    return row ? { id: row.id, username: row.username, role: row.role, createdAt: row.created_at } : null;
+    return row ? { id: row.id, username: row.username, createdAt: row.created_at } : null;
   }
 
   findById(id: string): AccountRow | null {
-    const row = this.db.get<{ id: string; username: string; role: AccountRole; created_at: string }>(
-      "SELECT id, username, role, created_at FROM accounts WHERE id = ?",
+    const row = this.db.get<{ id: string; username: string; created_at: string }>(
+      "SELECT id, username, created_at FROM accounts WHERE id = ?",
       [id],
     );
-    return row ? { id: row.id, username: row.username, role: row.role, createdAt: row.created_at } : null;
+    return row ? { id: row.id, username: row.username, createdAt: row.created_at } : null;
   }
 
-  verifyLogin(username: string, password: string): AccountRow | null {
-    const row = this.db.get<{ id: string; username: string; password_hash: string; role: AccountRole; created_at: string }>(
-      "SELECT id, username, password_hash, role, created_at FROM accounts WHERE username = ?",
-      [username],
+  listAccounts(): Array<AccountRow & { tokenCount: number; instanceCount: number }> {
+    return this.db.all<{
+      id: string;
+      username: string;
+      created_at: string;
+      token_count: number;
+      instance_count: number;
+    }>(
+      `SELECT a.id, a.username, a.created_at,
+        (SELECT COUNT(*) FROM login_tokens lt WHERE lt.account_id = a.id) AS token_count,
+        (SELECT COUNT(*) FROM instances i WHERE i.account_id = a.id) AS instance_count
+       FROM accounts a
+       ORDER BY a.created_at`,
+    ).map((row) => ({
+      id: row.id,
+      username: row.username,
+      createdAt: row.created_at,
+      tokenCount: row.token_count,
+      instanceCount: row.instance_count,
+    }));
+  }
+
+  countInstances(accountId: string): number {
+    const row = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM instances WHERE account_id = ?",
+      [accountId],
     );
-    if (!row || !verifyPassword(password, row.password_hash)) return null;
-    return { id: row.id, username: row.username, role: row.role, createdAt: row.created_at };
+    return row?.n ?? 0;
   }
 
-  createInvite(createdByAccountId: string, ttlMs: number): { token: string; expiresAt: string } {
+  createLoginToken(accountId: string, label?: string): { id: string; token: string } {
+    const id = randomUUID();
     const token = generateToken();
-    const expiresAt = new Date(this.now().getTime() + ttlMs).toISOString();
+    const createdAt = this.now().toISOString();
     this.db.run(
-      "INSERT INTO invites (token_hash, created_by, expires_at) VALUES (?, ?, ?)",
-      [hashToken(token), createdByAccountId, expiresAt],
+      "INSERT INTO login_tokens (id, token_hash, account_id, label, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, NULL)",
+      [id, hashToken(token), accountId, label ?? null, createdAt],
     );
-    return { token, expiresAt };
+    return { id, token };
   }
 
-  validateInvite(token: string): boolean {
-    const row = this.db.get<{ expires_at: string; used_by: string | null }>(
-      "SELECT expires_at, used_by FROM invites WHERE token_hash = ?",
+  /**
+   * Single source of truth for login-token resolution: find the token row by
+   * hashed token, confirm the account still exists, THEN bump last_used_at.
+   * The bump happens only after the account is confirmed, so a token whose
+   * account was deleted does not get a wasted last_used_at update. Both
+   * findAccountByLoginToken and resolveLoginToken go through here, so the bump
+   * happens exactly once and identically for both.
+   */
+  private _resolveLoginToken(token: string): { account: AccountRow; loginTokenId: string } | null {
+    const row = this.db.get<{ id: string; account_id: string }>(
+      "SELECT id, account_id FROM login_tokens WHERE token_hash = ?",
       [hashToken(token)],
     );
-    if (!row || row.used_by !== null) return false;
-    return new Date(row.expires_at).getTime() > this.now().getTime();
+    if (!row) return null;
+    const account = this.findById(row.account_id);
+    if (!account) return null;
+    this.db.run(
+      "UPDATE login_tokens SET last_used_at = ? WHERE id = ?",
+      [this.now().toISOString(), row.id],
+    );
+    return { account, loginTokenId: row.id };
   }
 
-  markInviteUsed(token: string, usedByAccountId: string): void {
-    this.db.run("UPDATE invites SET used_by = ? WHERE token_hash = ?", [usedByAccountId, hashToken(token)]);
+  findAccountByLoginToken(token: string): AccountRow | null {
+    return this._resolveLoginToken(token)?.account ?? null;
   }
 
-  createWebSession(accountId: string, ttlMs: number): string {
+  resolveLoginToken(token: string): { account: AccountRow; loginTokenId: string } | null {
+    return this._resolveLoginToken(token);
+  }
+
+  listLoginTokens(accountId: string): Array<{ id: string; label: string | null; createdAt: string; lastUsedAt: string | null }> {
+    return this.db.all<{
+      id: string;
+      label: string | null;
+      created_at: string;
+      last_used_at: string | null;
+    }>(
+      "SELECT id, label, created_at, last_used_at FROM login_tokens WHERE account_id = ? ORDER BY created_at",
+      [accountId],
+    ).map((row) => ({
+      id: row.id,
+      label: row.label,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+    }));
+  }
+
+  revokeLoginToken(tokenId: string): boolean {
+    // SELECT-then-DELETE is not atomic, but the hub is single-writer so no
+    // concurrent revoke can race between these statements (same pattern as instances.ts).
+    const existing = this.db.get<{ id: string }>(
+      "SELECT id FROM login_tokens WHERE id = ?",
+      [tokenId],
+    );
+    if (!existing) return false;
+    this.db.run("DELETE FROM web_sessions WHERE login_token_id = ?", [tokenId]);
+    this.db.run("DELETE FROM login_tokens WHERE id = ?", [tokenId]);
+    return true;
+  }
+
+  createWebSession(accountId: string, loginTokenId: string, ttlMs: number): string {
     const token = generateToken();
     const expiresAt = new Date(this.now().getTime() + ttlMs).toISOString();
     this.db.run(
-      "INSERT INTO web_sessions (token_hash, account_id, expires_at) VALUES (?, ?, ?)",
-      [hashToken(token), accountId, expiresAt],
+      "INSERT INTO web_sessions (token_hash, account_id, login_token_id, expires_at) VALUES (?, ?, ?, ?)",
+      [hashToken(token), accountId, loginTokenId, expiresAt],
     );
     return token;
   }
@@ -104,13 +171,33 @@ export class AccountStore {
     this.db.run("DELETE FROM web_sessions WHERE token_hash = ?", [hashToken(token)]);
   }
 
-  /** Deletes expired web sessions and expired/used invites. Returns total rows removed. */
+  deleteAccountCascade(accountId: string): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.run(
+        "DELETE FROM messages WHERE instance_id IN (SELECT id FROM instances WHERE account_id = ?)",
+        [accountId],
+      );
+      this.db.run("DELETE FROM instances WHERE account_id = ?", [accountId]);
+      this.db.run("DELETE FROM pairing_tokens WHERE account_id = ?", [accountId]);
+      this.db.run("DELETE FROM web_sessions WHERE account_id = ?", [accountId]);
+      this.db.run("DELETE FROM login_tokens WHERE account_id = ?", [accountId]);
+      this.db.run("DELETE FROM accounts WHERE id = ?", [accountId]);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  /** Deletes expired web sessions. Returns rows removed. */
   pruneExpired(now: Date): number {
     const iso = now.toISOString();
-    const ws = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM web_sessions WHERE expires_at <= ?", [iso]);
+    const ws = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM web_sessions WHERE expires_at <= ?",
+      [iso],
+    );
     this.db.run("DELETE FROM web_sessions WHERE expires_at <= ?", [iso]);
-    const inv = this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM invites WHERE expires_at <= ? OR used_by IS NOT NULL", [iso]);
-    this.db.run("DELETE FROM invites WHERE expires_at <= ? OR used_by IS NOT NULL", [iso]);
-    return (ws?.n ?? 0) + (inv?.n ?? 0);
+    return ws?.n ?? 0;
   }
 }

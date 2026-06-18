@@ -35,6 +35,7 @@ export interface CreateRuntimeOptions {
   webRoot?: string;
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
+  trustProxy?: boolean;
 }
 
 /** Testable assembly without any network listener. */
@@ -159,6 +160,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     historyRetentionDays: options.historyRetentionDays ?? 30,
     maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
     activeTurns: listActiveTurns,
+    trustProxy: options.trustProxy,
   });
   return { db, accounts, instances, messages, gateway, webGateway, app, close: () => db.close() };
 }
@@ -171,6 +173,7 @@ export interface StartRelayOptions {
   webRoot?: string;
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
+  trustProxy?: boolean;
 }
 
 export interface RunningRelay {
@@ -185,6 +188,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays,
     requestTimeoutMs: options.requestTimeoutMs,
+    trustProxy: options.trustProxy,
   });
   const host = options.host ?? "0.0.0.0";
 

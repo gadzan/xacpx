@@ -14,7 +14,7 @@ async function freshDb() {
 test("MessageStore.prune deletes rows older than maxAgeMs", async () => {
   const db = await freshDb();
   const acc = new AccountStore(db);
-  const a = acc.createAccount("u", "p", "member");
+  const a = acc.createAccount("u");
   db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)",
     ["inst", a.id, "pc", "h", new Date("2020-01-01").toISOString()]);
   db.run("INSERT INTO messages (instance_id, session_alias, direction, text, created_at) VALUES (?,?,?,?,?)",
@@ -24,36 +24,36 @@ test("MessageStore.prune deletes rows older than maxAgeMs", async () => {
   const messages = new MessageStore(db, () => new Date("2020-06-02"));
   const deleted = messages.prune({ maxAgeMs: 7 * 24 * 60 * 60 * 1000 });
   expect(deleted).toBe(1);
-  expect(messages.listBySession(a.id, "inst", "s").map((r) => r.text)).toEqual(["new"]);
+  expect(messages.listBySession(a.id, "inst", "s").messages.map((r) => r.text)).toEqual(["new"]);
 });
 
 test("MessageStore.prune enforces maxPerSession keeping newest", async () => {
   const db = await freshDb();
   const acc = new AccountStore(db);
-  const a = acc.createAccount("u", "p", "member");
+  const a = acc.createAccount("u");
   db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)",
     ["inst", a.id, "pc", "h", new Date().toISOString()]);
   const messages = new MessageStore(db);
   for (let i = 0; i < 5; i++) messages.append("inst", "s", "in", `m${i}`);
   const deleted = messages.prune({ maxPerSession: 2 });
   expect(deleted).toBe(3);
-  expect(messages.listBySession(a.id, "inst", "s").map((r) => r.text)).toEqual(["m3", "m4"]);
+  expect(messages.listBySession(a.id, "inst", "s").messages.map((r) => r.text)).toEqual(["m3", "m4"]);
 });
 
-test("AccountStore.pruneExpired removes expired web sessions and invites", async () => {
+test("AccountStore.pruneExpired removes expired web sessions", async () => {
   const db = await freshDb();
   const acc = new AccountStore(db, { now: () => new Date("2020-01-01") });
-  const a = acc.createAccount("u", "p", "admin");
-  acc.createWebSession(a.id, 1000);
-  acc.createInvite(a.id, 1000);
+  const a = acc.createAccount("u");
+  const { id: loginTokenId } = acc.createLoginToken(a.id);
+  acc.createWebSession(a.id, loginTokenId, 1000);
   const removed = acc.pruneExpired(new Date("2020-02-01"));
-  expect(removed).toBeGreaterThanOrEqual(2);
+  expect(removed).toBeGreaterThanOrEqual(1);
 });
 
 test("InstanceStore.prunePairingTokens removes expired tokens", async () => {
   const db = await freshDb();
   const acc = new AccountStore(db);
-  const a = acc.createAccount("u", "p", "admin");
+  const a = acc.createAccount("u");
   const instances = new InstanceStore(db, { now: () => new Date("2020-01-01") });
   instances.issuePairingToken(a.id, "pc", 1000);
   const removed = instances.prunePairingTokens(new Date("2020-02-01"));

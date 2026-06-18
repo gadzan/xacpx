@@ -18,7 +18,7 @@ async function makeGateway() {
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const account = accounts.createAccount("alice", "pw", "member");
+  const account = accounts.createAccount("alice");
   const events: unknown[] = [];
   const gateway = new InstanceGateway({
     instances,

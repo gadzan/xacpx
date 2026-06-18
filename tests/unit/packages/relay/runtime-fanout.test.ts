@@ -13,7 +13,7 @@ class FakeSocket {
 
 async function seeded() {
   const runtime = await createRelayRuntime(":memory:");
-  runtime.db.run("INSERT INTO accounts (id, username, password_hash, role, created_at) VALUES (?,?,?,?,?)", ["a1", "u", "h", "member", "t"]);
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
   runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
   return runtime;
 }
@@ -45,7 +45,7 @@ test("control events broadcast to web sockets and turn output is cached on finis
     event: { type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true },
   });
 
-  const cached = runtime.messages.listBySession("a1", "i1", "backend");
+  const cached = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(cached.map((m) => [m.direction, m.text])).toEqual([["out", "hello"]]);
 
   runtime.close();
@@ -59,7 +59,7 @@ test("offline clears an in-flight turn buffer so a later finish flushes nothing"
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "partial" });
   runtime.gateway["deps"].onStatusChange!("i1", "a1", false);
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
-  expect(runtime.messages.listBySession("a1", "i1", "backend")).toEqual([]);
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages).toEqual([]);
   runtime.close();
 });
 
@@ -76,7 +76,7 @@ test("a stray streaming event after offline does not resurrect a leaking buffer"
   fire({ type: "tool-event", chatKey: "relay:a1", sessionAlias: "backend", step: { toolCallId: "t1", toolName: "Read", kind: "read", status: "success", title: "a.ts" } });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
   // Nothing persisted: the resurrected buffer would have flushed "stray"/a tool step.
-  expect(runtime.messages.listBySession("a1", "i1", "backend")).toEqual([]);
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages).toEqual([]);
   runtime.close();
 });
 
@@ -104,7 +104,7 @@ test("accumulates tool steps + reasoning and persists structured on finish", asy
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "done" });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
 
-  const cached = runtime.messages.listBySession("a1", "i1", "backend");
+  const cached = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(cached.length).toBe(1);
   expect(cached[0].text).toBe("done");
   expect(cached[0].structured?.reasoning).toBe("think more");
@@ -130,7 +130,7 @@ test("a scheduled-origin turn-started persists the inbound prompt with its sched
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "Here you go" });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
 
-  const cached = runtime.messages.listBySession("a1", "i1", "backend");
+  const cached = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(cached.map((m) => [m.direction, m.text])).toEqual([["in", "summarize commits"], ["out", "Here you go"]]);
   expect(cached[0].structured?.scheduled).toEqual({ taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z" });
   runtime.close();
@@ -149,13 +149,13 @@ test("session-history seeds a native session's recovered conversation once (idem
     ],
   };
   fire(seed);
-  let cached = runtime.messages.listBySession("a1", "i1", "native1");
+  let cached = runtime.messages.listBySession("a1", "i1", "native1").messages;
   expect(cached.map((m) => [m.direction, m.text])).toEqual([["in", "old question"], ["out", "old answer"]]);
   expect(cached[1].structured?.toolSteps?.[0]?.toolCallId).toBe("t1");
 
   // Re-delivery must NOT duplicate the backlog (guarded on an already-populated session).
   fire(seed);
-  cached = runtime.messages.listBySession("a1", "i1", "native1");
+  cached = runtime.messages.listBySession("a1", "i1", "native1").messages;
   expect(cached.length).toBe(2);
   runtime.close();
 });
@@ -168,7 +168,7 @@ test("a finish with no text but with tool steps still persists a structured turn
   fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
   fire({ type: "tool-event", chatKey: "relay:a1", sessionAlias: "backend", step: { toolCallId: "t1", toolName: "Read", kind: "read", status: "success", title: "a.ts" } });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
-  const cached = runtime.messages.listBySession("a1", "i1", "backend");
+  const cached = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(cached.length).toBe(1);
   expect(cached[0].structured?.toolSteps.length).toBe(1);
   runtime.close();
