@@ -7,7 +7,15 @@ import { api, ApiError } from "../api/client";
 // payload (the gateway resolves, it does not reject), so api.rpc won't throw.
 // Surface it as a real rejection so callers (the create-session dialog) can show it.
 function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
-  if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
+  if (isErrorPayload(result)) {
+    // `unknown-type` means the connector's relay channel doesn't implement this RPC —
+    // i.e. it runs an older xacpx core than the features this dashboard expects. Turn
+    // the raw "unsupported rpc type: …" into an actionable upgrade hint.
+    if (result.error.code === "unknown-type") {
+      throw new Error("This feature needs a newer connector — rebuild and reconnect the relay channel on that instance.");
+    }
+    throw new Error(result.error.message || result.error.code);
+  }
   return result;
 }
 
@@ -16,6 +24,10 @@ export interface InstanceView {
   name: string;
   online: boolean;
   lastSeenAt: string | null;
+  // The xacpx core version the connector reported at registration (null for legacy
+  // connectors that predate version reporting). Surfaced so operators can spot a
+  // version-skewed connector before its missing features fail with `unknown-type`.
+  coreVersion?: string | null;
   sessions: SessionDto[];
   // Distinguishes "sessions never fetched" from "fetched and genuinely empty" so the
   // sidebar only shows the "no sessions yet" empty row once a list has actually loaded.

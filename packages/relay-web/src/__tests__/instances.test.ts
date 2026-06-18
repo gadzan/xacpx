@@ -107,6 +107,15 @@ describe("createSession timeout handling", () => {
     await expect(store.createSession("i1", "backend", "codex", "home")).rejects.toThrow("workspace not registered");
     vi.restoreAllMocks();
   });
+
+  test("an `unknown-type` error becomes an actionable 'newer connector' hint", async () => {
+    const store = seed();
+    const { api } = await import("../api/client");
+    // A version-skewed connector that doesn't implement this RPC replies with `unknown-type`.
+    vi.spyOn(api, "rpc").mockResolvedValueOnce({ error: { code: "unknown-type", message: "unsupported rpc type: control.sessions.create" } });
+    await expect(store.createSession("i1", "backend", "codex", "home")).rejects.toThrow(/newer connector/i);
+    vi.restoreAllMocks();
+  });
 });
 
 describe("native session attach", () => {

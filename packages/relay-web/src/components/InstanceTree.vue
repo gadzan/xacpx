@@ -60,7 +60,8 @@ async function askDelete(id: string, alias: string) {
         <ChevronDown v-if="inst.sessionsLoaded" :size="12" class="shrink-0 text-fg-muted" />
         <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
         <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
-        <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'">{{ inst.name }}</span>
+        <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
+              :title="inst.coreVersion ? `connector core ${inst.coreVersion}` : 'connector core version unknown (legacy or pre-version connector)'">{{ inst.name }}</span>
         <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ inst.sessions.length }}</span>
         <span v-else class="text-[10px] font-medium text-fg-muted">offline</span>
       </button>
