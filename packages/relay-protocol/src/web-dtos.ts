@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { ControlEventDto, ToolStepDto } from "./dtos.js";
+import type { ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto } from "./dtos.js";
 import type { InstanceNoticePayload } from "./messages.js";
 
 /** Envelope `type` for every relay→web push. */
@@ -9,13 +9,32 @@ export type MessageDirection = "in" | "out";
 
 /** A cached chat line echoed to the web client. */
 export interface MessageRecordDto {
+  /** Monotonic row id from the hub store. Present on persisted rows (used as the
+   *  pagination cursor for "load older"); absent on optimistic/live client rows. */
+  id?: number;
   instanceId: string;
   sessionAlias: string;
   direction: MessageDirection;
   text: string;
   createdAt: string;
-  /** Present on completed `out` turns: persisted tool steps + reasoning. */
-  structured?: { toolSteps: ToolStepDto[]; reasoning?: string };
+  /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
+   *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
+   *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
+   *  `reasoning` are a flat fallback for older rows that predate `parts`. */
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto };
+}
+
+/** A snapshot of a turn still in flight on an instance, handed to a (re)connecting
+ *  web client so a refresh mid-turn restores the live HUD / streaming bubble (and the
+ *  session's "working" dot) instead of losing them until `turn-finished` persists.
+ *  Mirrors the live `parts` transcript the streaming view builds. */
+export interface LiveTurnSnapshotDto {
+  instanceId: string;
+  sessionAlias: string;
+  parts: TurnPartDto[];
+  status: "working" | "streaming";
+  /** Epoch ms the turn began on the hub, so the elapsed-time HUD stays accurate. */
+  startedAt: number;
 }
 
 /** Server→web push payloads (tagged with the originating instance). */
@@ -36,6 +55,7 @@ const CONTROL_EVENT_TYPES = new Set([
   "turn-started",
   "tool-event",
   "turn-thought",
+  "plan",
   "turn-finished",
   "sessions-changed",
   "scheduled-changed",
@@ -81,6 +101,7 @@ function validToolStep(s: unknown): boolean {
   if (typeof c.toolCallId !== "string" || typeof c.toolName !== "string" || typeof c.title !== "string") return false;
   if (typeof c.kind !== "string" || !TOOL_STEP_KINDS.has(c.kind)) return false;
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status)) return false;
+  if (!optStr(c.error)) return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null) return false;
     if (!validToolDetail(c.detail as Record<string, unknown>)) return false;
@@ -102,6 +123,8 @@ function validControlEvent(e: unknown): boolean {
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string";
   if (c.type === "turn-thought")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+  if (c.type === "plan")
+    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
   return true; // sessions-changed / orchestration-changed carry no extra required fields

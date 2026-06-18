@@ -31,17 +31,19 @@ describe("ToolCallPanel", () => {
   it("marks a running step distinctly from a successful one", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     const rows = w.findAll('[data-test="tool-row"]');
-    expect(rows[0].text()).toContain("✅");
-    expect(rows[1].text()).toContain("⏳");
+    // Success → Check icon; running → spinning Loader2 icon (Lucide replaces the old emoji glyphs).
+    expect(rows[0].find('[data-test="step-status-success"]').exists()).toBe(true);
+    expect(rows[1].find('[data-test="step-status-running"]').exists()).toBe(true);
   });
 
   it("renders a kind/status summary in the header", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
-    const sum = w.find('[data-test="tool-summary"]').text();
-    expect(sum).toContain("💻1"); // one execute
-    expect(sum).toContain("📖1"); // one read
-    expect(sum).toContain("✅1"); // one success
-    expect(sum).toContain("⏳1"); // one running
+    // Icons are now Lucide components; each entry carries a `sum-<label>` data-test
+    // alongside its count (one execute, one read, one success, one running).
+    expect(w.find('[data-test="sum-execute"]').text()).toContain("1");
+    expect(w.find('[data-test="sum-read"]').text()).toContain("1");
+    expect(w.find('[data-test="sum-success"]').text()).toContain("1");
+    expect(w.find('[data-test="sum-running"]').text()).toContain("1");
   });
 });
 
@@ -67,33 +69,41 @@ describe("ToolCallPanel auto-collapse", () => {
 describe("summarizeSteps", () => {
   it("counts by kind and status in stable order", () => {
     const sum = summarizeSteps(steps);
-    expect(sum.kinds).toEqual([
-      { icon: "📖", count: 1 },
-      { icon: "💻", count: 1 },
+    // icon is now a Lucide component, so assert on the stable label + count.
+    expect(sum.kinds.map((k) => ({ label: k.label, count: k.count }))).toEqual([
+      { label: "read", count: 1 },
+      { label: "execute", count: 1 },
     ]);
-    expect(sum.statuses).toEqual([
-      { icon: "⏳", count: 1 },
-      { icon: "✅", count: 1 },
+    expect(sum.statuses.map((s) => ({ label: s.label, count: s.count }))).toEqual([
+      { label: "running", count: 1 },
+      { label: "success", count: 1 },
     ]);
   });
 
   it("aggregates repeated kinds", () => {
-    expect(summarizeSteps(manySteps(4)).kinds).toEqual([{ icon: "📖", count: 4 }]);
+    expect(summarizeSteps(manySteps(4)).kinds.map((k) => ({ label: k.label, count: k.count }))).toEqual([
+      { label: "read", count: 4 },
+    ]);
   });
 });
 
 describe("ReasoningPanel", () => {
-  it("renders reasoning text inside a collapsible", () => {
+  it("collapses by default; opening reveals the reasoning text", async () => {
     const w = mount(ReasoningPanel, { props: { reasoning: "step by step" } });
     expect(w.text()).toContain("Reasoning");
+    // Collapsed by default — the thought doesn't bury the answer below it.
+    expect(w.find('[data-test="reasoning-body"]').exists()).toBe(false);
+    await w.find("button").trigger("click");
     expect(w.find('[data-test="reasoning-body"]').text()).toContain("step by step");
   });
 
-  it("shows a shimmer and stays open while streaming", () => {
-    const w = mount(ReasoningPanel, { props: { reasoning: "thinking", streaming: true, defaultOpen: false } });
+  it("shows a shimmer while streaming but stays collapsed until opened", async () => {
+    const w = mount(ReasoningPanel, { props: { reasoning: "thinking", streaming: true } });
     expect(w.find('[data-test="reasoning-shimmer"]').exists()).toBe(true);
     expect(w.text()).toContain("Reasoning…");
-    // Forced open despite defaultOpen=false.
+    // No longer force-opened mid-stream; the user expands on demand.
+    expect(w.find('[data-test="reasoning-body"]').exists()).toBe(false);
+    await w.find("button").trigger("click");
     expect(w.find('[data-test="reasoning-body"]').exists()).toBe(true);
   });
 

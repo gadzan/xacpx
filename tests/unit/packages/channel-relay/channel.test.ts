@@ -69,6 +69,51 @@ test("start requires ChannelStartInput.control and wires client + event subscrip
   await expect(noControl.start(bad.input as never)).rejects.toThrow(/control/);
 });
 
+test("sendScheduledMessage runs the fired task as a control turn (not a side notice)", async () => {
+  const calls: unknown[] = [];
+  const fakeClient = { start: () => {}, stop: () => {}, sendEvent: () => {} };
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: () => fakeClient as never,
+  });
+  const controller = new AbortController();
+  const { input } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).runScheduledTurn = async (arg: unknown) => { calls.push(arg); return { ok: true }; };
+  const startPromise = channel.start(input as never);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  await channel.sendScheduledMessage({
+    chatKey: "relay:acc", sessionAlias: "backend", taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z",
+    noticeText: "fired", promptText: "summarize commits",
+  } as never);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({ chatKey: "relay:acc", sessionAlias: "backend", taskId: "ab12", promptText: "summarize commits", executeAt: "2026-06-16T09:00:00.000Z" });
+
+  controller.abort();
+  await startPromise;
+});
+
+test("sendScheduledMessage throws when the turn fails, so the scheduler records a failed run", async () => {
+  const fakeClient = { start: () => {}, stop: () => {}, sendEvent: () => {} };
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: () => fakeClient as never,
+  });
+  const controller = new AbortController();
+  const { input } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).runScheduledTurn = async () => ({ ok: false, errorMessage: "turn-already-running" });
+  const startPromise = channel.start(input as never);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  await expect(channel.sendScheduledMessage({
+    chatKey: "relay:acc", sessionAlias: "backend", taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z",
+    noticeText: "fired", promptText: "x",
+  } as never)).rejects.toThrow(/turn-already-running/);
+
+  controller.abort();
+  await startPromise;
+});
+
 test("notify methods forward as instance notices through the client", async () => {
   const events: Array<{ type: string; payload: unknown }> = [];
   const fakeClient = { start: () => {}, stop: () => {}, sendEvent: (type: string, payload: unknown) => events.push({ type, payload }) };

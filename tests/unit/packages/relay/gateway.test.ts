@@ -18,10 +18,11 @@ async function makeGateway() {
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const account = accounts.createAccount("alice", "pw", "member");
+  const account = accounts.createAccount("alice");
   const events: unknown[] = [];
   const gateway = new InstanceGateway({
     instances,
+    accounts,
     requestTimeoutMs: 500,
     onEvent: (instanceId, accountId, envelope) => events.push({ instanceId, accountId, type: envelope.type }),
   });
@@ -29,7 +30,7 @@ async function makeGateway() {
   await new Promise<void>((resolve) => wss.on("listening", () => resolve()));
   wss.on("connection", (socket) => gateway.handleConnection(socket));
   const port = (wss.address() as { port: number }).port;
-  return { gateway, instances, account, events, wss, url: `ws://127.0.0.1:${port}` };
+  return { gateway, instances, accounts, account, events, wss, url: `ws://127.0.0.1:${port}` };
 }
 
 function connect(url: string): Promise<WebSocket> {
@@ -96,6 +97,27 @@ test("sendRequest round-trips through an authed instance; offline and timeout re
   expect(result).toEqual({ sessions: [] });
   await expect(gateway.sendRequest(redeemed.instanceId, MSG.prompt, {})).rejects.toThrow("timeout");
   socket.close();
+  wss.close();
+});
+
+test("register handshake via login token creates instance and marks it online", async () => {
+  const { gateway, accounts, account, wss, url } = await makeGateway();
+  const { token: loginToken } = accounts.createLoginToken(account.id, "test-key");
+  const socket = await connect(url);
+  socket.send(encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "hs-login",
+    type: MSG.instanceRegister, payload: { pairingToken: loginToken, name: "my-box", coreVersion: "0.11.0" },
+  }));
+  const res = await nextMessage(socket);
+  expect(res.kind).toBe("res");
+  expect(res.id).toBe("hs-login");
+  const payload = res.payload as { instanceId: string; credential: string };
+  expect(typeof payload.instanceId).toBe("string");
+  expect(typeof payload.credential).toBe("string");
+  expect(gateway.isOnline(payload.instanceId)).toBe(true);
+  socket.close();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(gateway.isOnline(payload.instanceId)).toBe(false);
   wss.close();
 });
 

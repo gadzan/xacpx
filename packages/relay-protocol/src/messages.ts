@@ -10,6 +10,7 @@ export const MSG = {
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
+  sessionsNativeList: "control.sessions.native.list",
   sessionsRemove: "control.sessions.remove",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
@@ -31,6 +32,8 @@ export const MSG = {
   fsRead: "control.fs.read",
   fsDiff: "control.fs.diff",
   fsSearch: "control.fs.search",
+  sessionModelGet: "control.session.model.get",
+  sessionModelSet: "control.session.model.set",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -95,8 +98,30 @@ export interface SessionsCreatePayload {
   alias: string;
   agent: string;
   workspace: string;
+  /** When set, resume this existing agent-native session instead of creating a fresh one. */
+  agentSessionId?: string;
+  /** Optional per-session model override (e.g. `gpt-5.2[high]`). Omitted/empty means
+   *  "use the agent's default model" — the web form's `default` choice. */
+  model?: string;
 }
 export type SessionsCreateResult = SessionDto;
+
+/** An agent-native (acpx-owned) session offered in the web add-session "native" picker. */
+export interface NativeSessionDto {
+  sessionId: string;
+  title?: string | null;
+  updatedAt?: string;
+  cwd?: string;
+}
+export interface SessionsNativeListPayload {
+  /** Server-stamped `relay:<accountId>`. */
+  chatKey: string;
+  agent: string;
+  workspace: string;
+}
+export interface SessionsNativeListResult {
+  sessions: NativeSessionDto[];
+}
 export interface SessionsRemovePayload {
   /** Server-stamped `relay:<accountId>`; scopes the alias to that channel. */
   chatKey: string;
@@ -256,4 +281,22 @@ export interface FsSearchResult {
   matches: string[];
   /** True when the result cap was hit. */
   truncated: boolean;
+}
+
+export interface SessionModelGetPayload {
+  chatKey: string;
+  sessionAlias: string;
+}
+
+export interface SessionModelSetPayload {
+  chatKey: string;
+  sessionAlias: string;
+  modelId: string;
+}
+
+export interface SessionModelResult {
+  /** The session's current model id, if known. */
+  current?: string;
+  /** Agent-advertised model ids the session can switch to (may be empty). */
+  available: string[];
 }

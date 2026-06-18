@@ -1,6 +1,9 @@
 // Minimal SQLite adapter: bun:sqlite when running under Bun (tests, optional
 // deployment), node:sqlite under Node (primary deployment). node:sqlite is NOT
 // implemented by Bun 1.3, hence the runtime switch.
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 export interface SqlDriver {
   exec(sql: string): void;
   run(sql: string, params?: ReadonlyArray<string | number | null>): void;
@@ -12,6 +15,9 @@ export interface SqlDriver {
 type SqlParams = ReadonlyArray<string | number | null>;
 
 export async function createSqlDriver(path: string): Promise<SqlDriver> {
+  if (path !== ":memory:") {
+    mkdirSync(dirname(path), { recursive: true });
+  }
   if (typeof Bun !== "undefined") {
     const { Database } = await import("bun:sqlite");
     const db = new Database(path);
@@ -28,7 +34,10 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
     };
   }
   const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(path);
+  // node:sqlite defaults enableForeignKeyConstraints to true (PRAGMA foreign_keys = ON).
+  // The codebase invariant is FKs OFF (integrity is enforced by app-level manual cascades;
+  // declared FK constraints are decorative). Match bun:sqlite's default explicitly.
+  const db = new DatabaseSync(path, { enableForeignKeyConstraints: false });
   return {
     exec: (sql) => db.exec(sql),
     run: (sql, params: SqlParams = []) => {
@@ -43,25 +52,45 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
 }
 
 export function initSchema(db: SqlDriver): void {
+  // ── Fresh CREATE IF NOT EXISTS blocks ────────────────────────────────────
+  // This is a create-only initSchema: there are no legacy DBs to migrate
+  // (the package is unpublished; the single local DB is already on the current
+  // schema). FKs are kept OFF via the driver option
+  // (node:sqlite: enableForeignKeyConstraints: false; bun:sqlite: OFF by default).
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('admin','member')),
       created_at TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS invites (
-      token_hash TEXT PRIMARY KEY,
-      created_by TEXT NOT NULL REFERENCES accounts(id),
-      expires_at TEXT NOT NULL,
-      used_by TEXT
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS login_tokens (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      account_id TEXT NOT NULL REFERENCES accounts(id),
+      label TEXT,
+      created_at TEXT NOT NULL,
+      last_used_at TEXT
     );
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS web_sessions (
       token_hash TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),
+      login_token_id TEXT REFERENCES login_tokens(id),
       expires_at TEXT NOT NULL
     );
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_web_sessions_login_token ON web_sessions(login_token_id);
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS pairing_tokens (
       token_hash TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -89,11 +118,4 @@ export function initSchema(db: SqlDriver): void {
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
   `);
-  // Migration: older deployments have `messages` without `structured`.
-  const hasStructured = db
-    .all<{ name: string }>("PRAGMA table_info(messages)")
-    .some((c) => c.name === "structured");
-  if (!hasStructured) {
-    db.exec("ALTER TABLE messages ADD COLUMN structured TEXT");
-  }
 }

@@ -59,6 +59,31 @@ describe("renderMarkdown", () => {
     expect(html).toContain("**important");
   });
 
+  it("wraps tables in a horizontal-scroll container (columns kept, no viewport overflow)", () => {
+    const html = renderMarkdown("| a | b |\n| --- | --- |\n| 1 | 2 |");
+    // The wrapper provides the scroll; the <table> keeps normal table layout.
+    expect(html).toContain('<div class="md-table-wrap"><table>');
+    expect(html).toContain("</table></div>");
+    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<td>1</td>");
+  });
+
+  it("recovers a table that the agent wrote without a blank line before it", () => {
+    const html = renderMarkdown("打开它：\n| # | 功能 |\n| --- | --- |\n| 1 | 跳 |");
+    expect(html).toContain('<div class="md-table-wrap"><table>');
+    expect(html).toContain("<th>功能</th>");
+    expect(html).toContain("<td>跳</td>");
+    // the lead-in text is still its own paragraph
+    expect(html).toContain("打开它：");
+  });
+
+  it("recovers a table missing its delimiter row", () => {
+    const html = renderMarkdown("| a | b |\n| 1 | 2 |");
+    expect(html).toContain("<table>");
+    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<td>1</td>");
+  });
+
   it("returns an empty string for empty input", () => {
     expect(renderMarkdown("")).toBe("");
   });

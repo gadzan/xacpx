@@ -13,16 +13,56 @@ test("driver run/get/all/exec roundtrip on :memory:", async () => {
   db.close();
 });
 
-test("initSchema creates all tables idempotently", async () => {
+test("fresh DB: accounts has exactly id/username/created_at (no password_hash/role)", async () => {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
-  initSchema(db); // idempotent
+  const cols = db.all<{ name: string }>("PRAGMA table_info(accounts)").map((c) => c.name);
+  expect(cols).toContain("id");
+  expect(cols).toContain("username");
+  expect(cols).toContain("created_at");
+  expect(cols).not.toContain("password_hash");
+  expect(cols).not.toContain("role");
+  db.close();
+});
+
+test("fresh DB: login_tokens table exists with expected columns", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const cols = db.all<{ name: string }>("PRAGMA table_info(login_tokens)").map((c) => c.name);
+  expect(cols).toContain("id");
+  expect(cols).toContain("token_hash");
+  expect(cols).toContain("account_id");
+  expect(cols).toContain("label");
+  expect(cols).toContain("created_at");
+  expect(cols).toContain("last_used_at");
+  db.close();
+});
+
+test("fresh DB: web_sessions has login_token_id column", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const cols = db.all<{ name: string }>("PRAGMA table_info(web_sessions)").map((c) => c.name);
+  expect(cols).toContain("login_token_id");
+  db.close();
+});
+
+test("fresh DB: invites table is absent", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
   const tables = db
     .all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     .map((row) => row.name);
-  for (const expected of ["accounts", "instances", "invites", "pairing_tokens", "web_sessions"]) {
-    expect(tables).toContain(expected);
-  }
+  expect(tables).not.toContain("invites");
+  db.close();
+});
+
+test("fresh DB: idx_web_sessions_login_token index exists", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const idx = db.get<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_web_sessions_login_token'"
+  );
+  expect(idx).toBeDefined();
   db.close();
 });
 
@@ -34,14 +74,20 @@ test("messages table has a structured column after initSchema", async () => {
   db.close();
 });
 
-test("initSchema adds structured to a pre-existing messages table (migration)", async () => {
+test("idempotency: running initSchema 2× on a fresh DB is stable", async () => {
   const db = await createSqlDriver(":memory:");
-  // Simulate an old deployment: messages table without the structured column.
-  db.exec(`CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, instance_id TEXT NOT NULL, session_alias TEXT NOT NULL,
-    direction TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL)`);
   initSchema(db);
-  const cols = db.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
-  expect(cols).toContain("structured");
+  initSchema(db); // second run must not throw
+  const tables = db
+    .all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    .map((row) => row.name);
+  for (const expected of ["accounts", "instances", "login_tokens", "messages", "pairing_tokens", "web_sessions"]) {
+    expect(tables).toContain(expected);
+  }
+  expect(tables).not.toContain("invites");
+  const idx = db.get<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_web_sessions_login_token'"
+  );
+  expect(idx).toBeDefined();
   db.close();
 });

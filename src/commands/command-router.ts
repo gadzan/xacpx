@@ -5,7 +5,8 @@ import type { AppLogger } from "../logging/app-logger";
 import { createNoopAppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { PromptMediaInput, ReplyQuotaContext, SessionTransport } from "../transport/types";
-import type { ResolvedSession } from "../transport/types";
+import type { AgentSession, ResolvedSession } from "../transport/types";
+import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
 import type { PerfSpan } from "../perf/perf-tracer";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import { resolveSessionAgentCommandFromIndex, type SessionAgentCommandResolver } from "../transport/acpx-session-index";
@@ -13,7 +14,7 @@ import { PromptCommandError } from "../transport/prompt-output";
 import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
-import type { ToolUseEvent } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import { handlePermissionAutoSet, handlePermissionAutoStatus, handlePermissionModeSet, handlePermissionStatus } from "./handlers/permission-handler";
 import { handleConfigSet, handleConfigShow } from "./handlers/config-handler";
 import {
@@ -139,9 +140,20 @@ export class CommandRouter {
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   ): Promise<RouterResponse> {
     const startedAt = Date.now();
-    const command = parseCommand(input);
+    let command = parseCommand(input);
+    // GUI-first clients (relay-web and other structured control consumers) drive the
+    // console through the dashboard, not through xacpx slash commands. So anything the
+    // user types in the web chat box — including `/`-prefixed text — is forwarded
+    // verbatim to the agent instead of being interpreted by xacpx. WeChat/Feishu and
+    // other chat channels have no GUI and still depend on xacpx commands, so this
+    // passthrough is scoped to the control channel (set by the control service for
+    // every structured-control turn; see docs/control-module.md).
+    if (metadata?.channel === "control" && command.kind !== "prompt") {
+      command = { kind: "prompt", text: input.trim() };
+    }
     await this.logger.debug("command.parsed", "parsed inbound command", {
       chatKey,
       kind: command.kind,
@@ -376,6 +388,7 @@ export class CommandRouter {
               onThought,
               perfSpan,
               metadata,
+              onPlan,
             );
           }
           if (metadata?.scheduledSessionAlias) {
@@ -397,6 +410,7 @@ export class CommandRouter {
               onThought,
               perfSpan,
               metadata,
+              onPlan,
             );
           }
           return await handlePrompt(
@@ -412,6 +426,7 @@ export class CommandRouter {
             onThought,
             perfSpan,
             metadata,
+            onPlan,
           );
         }
       }
@@ -483,6 +498,7 @@ export class CommandRouter {
     internalAlias: string,
     agent: string,
     workspace: string,
+    model?: string,
   ): Promise<ResolvedSession> {
     // Refuse to overwrite an existing alias: silently re-pointing it would either
     // reuse the old transport session (stale history) or orphan it, and a native
@@ -498,6 +514,13 @@ export class CommandRouter {
       workspace,
       `${workspace}:${internalAlias}`,
     );
+    // An explicit model override must be on the ResolvedSession BEFORE
+    // ensureTransportSession so acpx creates the session under that model
+    // (it carries through as `--model`). Mirrors handleSessionNew.
+    const normalizedModel = model?.trim();
+    if (normalizedModel) {
+      session.model = normalizedModel;
+    }
     const release = await this.reserveLogicalTransportSession(session.transportSession);
     try {
       await this.ensureTransportSession(session);
@@ -506,6 +529,9 @@ export class CommandRouter {
         throw new Error(`transport session "${session.transportSession}" could not be verified`);
       }
       await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+      if (normalizedModel) {
+        await this.sessions.setSessionModel(internalAlias, normalizedModel);
+      }
       // Best-effort: a transient refresh failure must not fail a create that has
       // already succeeded, bound, and verified. Mirrors the chat paths' use of
       // refreshSessionTransportAgentCommandBestEffort.
@@ -523,14 +549,100 @@ export class CommandRouter {
     }
   }
 
+  /**
+   * List the agent-native (acpx-owned) sessions for a given agent + workspace, for the
+   * web "attach a native session" picker. Resolves the workspace's cwd from config and
+   * the agent's runtime command, then queries the transport, filtered to that cwd.
+   * Returns [] when the transport doesn't support native listing.
+   */
+  async listNativeSessionsForControl(agent: string, workspace: string): Promise<AgentSession[]> {
+    const listAgentSessions = this.transport.listAgentSessions?.bind(this.transport);
+    if (!listAgentSessions) return [];
+    const agentConfig = this.config?.agents[agent];
+    const workspaceConfig = this.config?.workspaces[workspace];
+    if (!agentConfig || !workspaceConfig) {
+      throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
+    }
+    const agentCommand = resolveRuntimeAgentCommand(
+      agentConfig.driver,
+      agentConfig.command,
+      this.config?.transport.preferLocalAgents !== false,
+    );
+    const result = await listAgentSessions({
+      agent,
+      ...(agentCommand ? { agentCommand } : {}),
+      cwd: workspaceConfig.cwd,
+      filterCwd: workspaceConfig.cwd,
+    });
+    return result?.sessions ?? [];
+  }
+
+  /**
+   * Create a logical session bound to an EXISTING agent-native session (resume) — the
+   * web counterpart of `/ssn` → select. Mirrors createSessionWithTransport but resumes
+   * the given agentSessionId and records the binding as a native ("agent-side")
+   * attachment. `internalAlias` must already be channel-scoped (e.g. "relay:demo").
+   */
+  async attachNativeSessionWithTransport(
+    internalAlias: string,
+    agent: string,
+    workspace: string,
+    agentSessionId: string,
+    nativeMeta?: { title?: string | null; updatedAt?: string },
+  ): Promise<ResolvedSession> {
+    if (!this.transport.resumeAgentSession) {
+      throw new Error("the active transport does not support native sessions");
+    }
+    const existing = this.sessions.getResolvedSessionByInternalAlias(internalAlias);
+    if (existing) {
+      throw new Error(`session "${internalAlias}" already exists`);
+    }
+    const session = this.sessions.resolveSession(
+      internalAlias,
+      agent,
+      workspace,
+      `${workspace}:${internalAlias}`,
+    );
+    const release = await this.reserveLogicalTransportSession(session.transportSession);
+    try {
+      await this.transport.resumeAgentSession(session, agentSessionId);
+      const exists = await this.checkTransportSession(session);
+      if (!exists) {
+        throw new Error(`transport session "${session.transportSession}" could not be verified`);
+      }
+      await this.sessions.attachNativeSession({
+        alias: internalAlias,
+        agent,
+        workspace,
+        transportSession: session.transportSession,
+        agentSessionId,
+        ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
+        ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
+      });
+      // Best-effort: a transient refresh failure must not fail an attach that already
+      // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
+      try {
+        await this.refreshSessionTransportAgentCommand(internalAlias);
+      } catch (error) {
+        await this.logger.error("session.native.agent_command_refresh_failed", "failed to refresh native session agent command", {
+          alias: internalAlias,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return session;
+    } finally {
+      await release();
+    }
+  }
+
   private createSessionInteractionOps(perfSpan?: PerfSpan): SessionInteractionOps {
     return {
       setModeTransportSession: (session, modeId) => this.setModeTransportSession(session, modeId),
       setModelTransportSession: (session, modelId) => this.setModelTransportSession(session, modelId),
       getModelTransportSession: (session) => this.getModelTransportSession(session),
       cancelTransportSession: (session) => this.cancelTransportSession(session),
-      promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride) =>
-        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan),
+      promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride, onPlan) =>
+        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan),
     };
   }
 
@@ -759,6 +871,7 @@ export class CommandRouter {
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   ) {
     session.mcpCoordinatorSession ??= stableCoordinatorSession(session.transportSession);
     // `done` closes the race window between prompt resolving and the abort
@@ -825,6 +938,7 @@ export class CommandRouter {
           ...(reply ? { onSegment } : {}),
           ...(onToolEvent ? { onToolEvent } : {}),
           ...(onThought ? { onThought } : {}),
+          ...(onPlan ? { onPlan } : {}),
         }),
       );
     } catch (error) {

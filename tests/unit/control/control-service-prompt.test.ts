@@ -59,9 +59,70 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   expect(seen).toEqual([
     { type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend" },
     { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "chunk-1" },
-    { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "final" },
+    // Subsequent chunks carry the restored paragraph break (segments arrive trimmed).
+    { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "\n\nfinal" },
     { type: "turn-finished", chatKey: "relay:acct-1", sessionAlias: "backend", ok: true },
   ]);
+});
+
+test("multi-paragraph reply: each segment after the first restores the \\n\\n break", async () => {
+  // Regression: the transport strips paragraph boundaries when splitting into
+  // trimmed segments. Concatenating bare segments ran paragraphs together; the
+  // control layer re-inserts "\n\n" so web live + persisted history reconstruct
+  // the original structure.
+  const { control, seen } = makeControl(async (request) => {
+    await request.reply?.("Paragraph one.");
+    await request.reply?.("Paragraph two.");
+    await request.reply?.("Paragraph three.");
+    return { text: "" }; // streaming mode: final text already pushed via reply()
+  });
+
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "explain",
+    senderId: "acct-1",
+    isOwner: true,
+  });
+
+  const chunks = seen.filter((e) => e.type === "turn-output").map((e) => (e as { chunk: string }).chunk);
+  expect(chunks).toEqual(["Paragraph one.", "\n\nParagraph two.", "\n\nParagraph three."]);
+  // Accumulating the chunks (as web + hub both do) yields proper paragraphs.
+  expect(chunks.join("")).toBe("Paragraph one.\n\nParagraph two.\n\nParagraph three.");
+});
+
+test("stream-mode session emits chunks verbatim (no paragraph reinsertion)", async () => {
+  // Raw streaming: the transport already forwards chunks with their real breaks, so the
+  // control layer must NOT insert an extra "\n\n" between segments (that would double the
+  // blank line and split a single paragraph). Batched sessions still get reinsertion.
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  events.subscribe((event) => seen.push(event));
+  const control = new ControlService({
+    agent: {
+      chat: async (request: ChatRequest) => {
+        await request.reply?.("Para one.\n\n");
+        await request.reply?.("Para two.");
+        return { text: "" };
+      },
+    },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
+      getSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws", replyMode: "stream" }),
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+  } as never);
+
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+
+  const chunks = seen.filter((e) => e.type === "turn-output").map((e) => (e as { chunk: string }).chunk);
+  expect(chunks).toEqual(["Para one.\n\n", "Para two."]);
+  expect(chunks.join("")).toBe("Para one.\n\nPara two.");
 });
 
 test("prompt rejects unknown session without emitting turn events", async () => {
@@ -113,6 +174,50 @@ test("second concurrent prompt on the same session is rejected; cancelTurn abort
   release();
 
   expect(control.cancelTurn("relay:acct-1", "backend")).toBe(false);
+});
+
+test("a follow-up prompt after Stop waits for the cancelled turn to drain, then runs", async () => {
+  // Regression: pressing Stop aborts the turn, but the transport teardown (acpx cancel
+  // + agent wind-down) is async, so the turn stays in `inFlight` for a moment. The web
+  // UI releases its busy state optimistically, so a follow-up message could land in that
+  // drain window and used to bounce with "turn-already-running". It must instead wait for
+  // the cancelled turn to settle and then start fresh.
+  let call = 0;
+  let releaseTeardown!: () => void;
+  const teardown = new Promise<void>((resolve) => {
+    releaseTeardown = resolve;
+  });
+  const { control } = makeControl(async (request) => {
+    call += 1;
+    if (call === 1) {
+      // First turn: block until aborted, then simulate a slow teardown before settling.
+      // Handle an already-aborted signal too (the abort may land before this listener
+      // registers), so the test doesn't depend on microtask ordering.
+      await new Promise<void>((resolve) => {
+        if (request.abortSignal?.aborted) return resolve();
+        request.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await teardown; // the turn is still registered while this drains
+      throw new Error("aborted");
+    }
+    return { text: "second-done" };
+  });
+
+  const first = control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "long", senderId: "acct-1" });
+  await Promise.resolve();
+  expect(control.cancelTurn("relay:acct-1", "backend")).toBe(true);
+
+  // Follow-up issued while the first turn is still draining (teardown not yet released).
+  const second = control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "next", senderId: "acct-1" });
+  await Promise.resolve();
+
+  // Let the first turn finish unwinding; the follow-up should then proceed and succeed.
+  releaseTeardown();
+  const firstResult = await first;
+  expect(firstResult.ok).toBe(false);
+
+  const secondResult = await second;
+  expect(secondResult).toEqual({ ok: true, text: "second-done" });
 });
 
 test("prompt failure emits turn-finished with the error", async () => {

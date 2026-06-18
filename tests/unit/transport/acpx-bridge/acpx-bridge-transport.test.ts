@@ -47,6 +47,19 @@ test("proxies ensureSession through the bridge client", async () => {
   }, undefined);
 });
 
+test("effectiveReplyMode 'stream' wins over an undefined replyMode in ensureSession params", async () => {
+  const request = mock(async () => ({}));
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.ensureSession({ ...session, effectiveReplyMode: "stream" });
+
+  expect(request).toHaveBeenCalledWith(
+    "ensureSession",
+    expect.objectContaining({ replyMode: "stream" }),
+    undefined,
+  );
+});
+
 test("proxies hasSession through the bridge client", async () => {
   const request = mock(async () => ({ exists: true }));
   const transport = new AcpxBridgeTransport({
@@ -126,6 +139,33 @@ test("forwards bridge prompt segments into the reply callback", async () => {
   // user-visible content — a non-empty final would duplicate; only an
   // overflow_summary justifies a final-tier message.
   expect(segments).toEqual(["hello\nworld"]);
+});
+
+test("stream-mode session forwards fine-grained segments verbatim (no \\n-join)", async () => {
+  // Regression: with effectiveReplyMode 'stream' (relay/control path), each
+  // bridge prompt.segment must reach reply() VERBATIM and in order — the WeChat
+  // SegmentAggregator (which \n-joins token drains, shredding multi-line
+  // markdown like table headers) must be bypassed.
+  const request = mock(async (_method, _params, onEvent?: (event: { type: string; text: string }) => void) => {
+    onEvent?.({ type: "prompt.segment", text: "| # | 功能" });
+    onEvent?.({ type: "prompt.segment", text: " | 说明 |" });
+    return { text: "done" };
+  });
+  const segments: string[] = [];
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(
+      { ...session, effectiveReplyMode: "stream" },
+      "hello",
+      async (text) => {
+        segments.push(text);
+      },
+    ),
+  ).resolves.toEqual({ text: "" });
+  // Two segments arrive as two unmodified reply calls, NO "\n" inserted.
+  expect(segments).toEqual(["| # | 功能", " | 说明 |"]);
+  expect(segments.join("")).toBe("| # | 功能 | 说明 |");
 });
 
 

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from "vue";
+import { ChevronDown, ChevronRight, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { confirm } from "../lib/use-confirm";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 
@@ -26,46 +28,89 @@ function elapsedLabel(instanceId: string, alias: string): string {
   return `${Math.floor(s / 3600)}h`;
 }
 
+function isSelected(instanceId: string, alias: string): boolean {
+  return chat.instanceId === instanceId && chat.sessionAlias === alias;
+}
+
 async function toggle(id: string) {
   await store.loadSessions(id).catch(() => {});
 }
-function remove(id: string, alias: string) {
-  void store.removeSession(id, alias).catch(() => {});
+
+// Deleting a session is destructive and irreversible → confirm via the popup dialog.
+async function askDelete(id: string, alias: string) {
+  const ok = await confirm({
+    title: "Delete session?",
+    message: `"${alias}" will be permanently removed. This can't be undone.`,
+    confirmLabel: "Delete",
+    tone: "danger",
+  });
+  if (ok) void store.removeSession(id, alias).catch(() => {});
 }
 </script>
 
 <template>
-  <div class="flex h-full flex-col overflow-y-auto border-r bg-white">
-    <div v-for="inst in store.instances" :key="inst.id" class="border-b">
-      <button class="flex w-full items-center gap-2 px-3 py-2 text-left" @click="toggle(inst.id)">
-        <span class="h-2 w-2 rounded-full" :class="inst.online ? 'bg-green-500' : 'bg-slate-300'" data-test="online-dot" />
-        <span class="font-medium">{{ inst.name }}</span>
+  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5">
+    <!-- One instance group: header row + indented session rows + per-instance footer. -->
+    <div v-for="inst in store.instances" :key="inst.id" :class="inst.online ? '' : 'opacity-60'">
+      <!-- Instance header: chevron + online/offline dot + name + session count. -->
+      <button
+        class="group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised"
+        @click="toggle(inst.id)"
+      >
+        <ChevronDown v-if="inst.sessionsLoaded" :size="12" class="shrink-0 text-fg-muted" />
+        <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
+        <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
+        <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
+              :title="inst.coreVersion ? `connector core ${inst.coreVersion}` : 'connector core version unknown (legacy or pre-version connector)'">{{ inst.name }}</span>
+        <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ inst.sessions.length }}</span>
+        <span v-else class="text-[10px] font-medium text-fg-muted">offline</span>
       </button>
-      <ul>
-        <li v-for="s in inst.sessions" :key="s.alias" class="flex items-center justify-between pr-2">
-          <button class="flex flex-1 items-center gap-2 px-6 py-1 text-left text-sm hover:bg-slate-50"
-                  @click="emit('select', inst.id, s.alias)">
+
+      <!-- Indented session rows under an accent-able left rule. -->
+      <div class="ml-2.5 mt-px space-y-px border-l border-border pl-2.5">
+        <div
+          v-for="s in inst.sessions"
+          :key="s.alias"
+          class="group relative flex items-center rounded-md transition-colors"
+          :class="isSelected(inst.id, s.alias) ? 'bg-accent/10' : 'hover:bg-raised'"
+        >
+          <!-- Selected row: left accent bar. -->
+          <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+          <button
+            class="flex min-w-0 flex-1 items-center gap-2 py-1 pl-2.5 pr-1.5 text-left"
+            @click="emit('select', inst.id, s.alias)"
+          >
             <span v-if="chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
-                  class="text-amber-500 animate-pulse">●</span>
+                  class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
             <span v-else-if="chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
-                  class="text-sky-500">●</span>
-            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="text-amber-500">●</span>
-            {{ s.alias }} <span class="text-slate-400">({{ s.agent }})</span>
+                  class="h-2 w-2 shrink-0 rounded-full bg-info" />
+            <span v-else-if="s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
+            <span class="truncate text-[12.5px] font-medium" :class="isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg'">{{ s.alias }}</span>
+            <span class="shrink-0 rounded px-1 py-px font-mono text-[9.5px]"
+                  :class="isSelected(inst.id, s.alias) ? 'bg-accent/15 text-accent' : 'bg-bg text-fg-muted'">{{ s.agent }}</span>
             <span v-if="elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
-                  class="ml-auto tabular-nums text-xs text-amber-500">{{ elapsedLabel(inst.id, s.alias) }}</span>
+                  class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
           </button>
-          <button data-test="delete-session" class="text-xs text-red-400 hover:underline" @click.stop="remove(inst.id, s.alias)">delete</button>
-        </li>
-        <li v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
-            class="px-6 py-1 text-xs text-slate-400">loading…</li>
-        <li v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
-            class="px-6 py-1 text-xs text-slate-400">no sessions yet</li>
-      </ul>
-      <div class="flex items-center gap-3 px-6 py-1.5">
-        <button data-test="new-session" class="text-left text-xs font-medium text-slate-500 hover:text-slate-800"
-                @click="dialogFor = { id: inst.id, name: inst.name }">+ new session</button>
-        <button data-test="manage-instance" class="text-left text-xs font-medium text-slate-500 hover:text-slate-800"
-                @click="manageFor = { id: inst.id, name: inst.name }">Manage</button>
+          <!-- Delete: icon button → popup confirm. -->
+          <button data-test="delete-session" title="Delete session" aria-label="Delete session"
+                  class="mr-1 grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted opacity-0 transition-opacity hover:bg-danger/15 hover:text-danger group-hover:opacity-100"
+                  @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" /></button>
+        </div>
+
+        <div v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
+             class="py-1 pl-2.5 text-[11px] text-fg-muted">loading…</div>
+        <div v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
+             class="py-1 pl-2.5 text-[11px] text-fg-muted">no sessions yet</div>
+
+        <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria. -->
+        <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
+          <button data-test="new-session" title="New session" aria-label="New session"
+                  class="grid h-6 w-6 place-items-center rounded text-accent transition-colors hover:bg-accent/10"
+                  @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
+          <button data-test="manage-instance" title="Manage instance" aria-label="Manage instance"
+                  class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
+        </div>
       </div>
     </div>
 
@@ -73,5 +118,5 @@ function remove(id: string, alias: string) {
                       @close="dialogFor = null" @created="dialogFor = null" />
     <ManageInstanceDialog v-if="manageFor" :instance-id="manageFor.id" :instance-name="manageFor.name"
                           @close="manageFor = null" />
-  </div>
+  </nav>
 </template>

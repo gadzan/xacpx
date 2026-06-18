@@ -15,12 +15,14 @@ function seed() {
 describe("CommandPalette", () => {
   beforeEach(() => { setActivePinia(createPinia()); seed(); });
 
-  it("lists sessions and commands, sessions first", () => {
+  it("lists sessions across instances", () => {
     const w = mount(CommandPalette);
     const rows = w.findAll('[data-test="palette-row"]');
-    expect(rows.length).toBeGreaterThan(2);
+    expect(rows.length).toBe(2); // two seeded sessions, no xacpx command rows
     expect(rows[0].text()).toContain("backend");
-    expect(w.text()).toContain("/status"); // a command from the catalog
+    expect(rows[1].text()).toContain("frontend");
+    // The dashboard is GUI-first: xacpx slash commands are no longer surfaced here.
+    expect(w.text()).not.toContain("/status");
   });
 
   it("filters by the query across label and subtitle", async () => {
@@ -37,13 +39,6 @@ describe("CommandPalette", () => {
     await w.find('[data-test="palette-row"]').trigger("click");
     expect(w.emitted("select-session")?.[0]).toEqual(["i1", "backend"]);
     expect(w.emitted("close")).toBeTruthy();
-  });
-
-  it("emits pick-command when a command row is chosen", async () => {
-    const w = mount(CommandPalette);
-    await w.find('[data-test="palette-input"]').setValue("/status");
-    await w.find('[data-test="palette-row"]').trigger("click");
-    expect(w.emitted("pick-command")?.[0]).toEqual(["/status"]);
   });
 
   it("Enter selects the active row, Escape closes", async () => {

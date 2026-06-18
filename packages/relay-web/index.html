@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>xacpx relay</title>
+    <script>
+      (function () {
+        try {
+          var m = localStorage.getItem('relay-theme');
+          if (m !== 'dark' && m !== 'light') {
+            m = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+          }
+          document.documentElement.classList.toggle('dark', m === 'dark');
+          document.documentElement.style.colorScheme = m;
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

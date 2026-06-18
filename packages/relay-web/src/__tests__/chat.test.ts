@@ -20,7 +20,7 @@ vi.mock("../api/client", () => ({
   },
 }));
 
-import { useChatStore } from "../stores/chat";
+import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { ApiError } from "../api/client";
 import PromptInput from "../components/PromptInput.vue";
 
@@ -40,6 +40,37 @@ test("streaming turn output accumulates then commits on finish", () => {
   expect(store.messages.at(-1)).toMatchObject({ direction: "out", text: "hello" });
 });
 
+test("a scheduled turn-started surfaces its prompt as a badged inbound message (selected session)", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend",
+    prompt: "summarize commits", scheduled: { taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z" },
+  } } as never);
+  const last = store.messages.at(-1)!;
+  expect(last).toMatchObject({ direction: "in", text: "summarize commits", scheduled: { taskId: "ab12" } });
+});
+
+test("a scheduled turn-started for an unselected session does not pollute the open transcript", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-started", chatKey: "relay:a1", sessionAlias: "other",
+    prompt: "do thing", scheduled: { taskId: "zz99", executeAt: "2026-06-16T09:00:00.000Z" },
+  } } as never);
+  expect(store.messages.some((m) => m.text === "do thing")).toBe(false);
+});
+
+test("requestScrollToScheduled bumps a nonce-keyed scroll request", () => {
+  const store = useChatStore();
+  expect(store.scrollRequest).toBeNull();
+  store.requestScrollToScheduled("ab12");
+  expect(store.scrollRequest).toMatchObject({ taskId: "ab12" });
+  const firstNonce = store.scrollRequest!.nonce;
+  store.requestScrollToScheduled("ab12");
+  expect(store.scrollRequest!.nonce).not.toBe(firstNonce); // repeat clicks re-trigger
+});
+
 test("events for a different session are ignored", () => {
   const store = useChatStore();
   store.select("i1", "backend");
@@ -57,6 +88,97 @@ test("loadHistory pulls cached messages for the selected session", async () => {
   expect(store.messages.map((m) => m.text)).toEqual(["hi"]);
 });
 
+test("seedActiveTurns rebuilds a live turn (working dot + HUD) lost on refresh", () => {
+  const store = useChatStore();
+  store.seedActiveTurns([
+    { instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 1000, parts: [{ type: "text", text: "half-written" }] },
+  ]);
+  // The sidebar "working" dot lights up without the session being selected.
+  expect(store.sessionAttention("i1", "backend")).toBe("working");
+  expect(store.runningSince("i1", "backend")).toBe(1000);
+  // Selecting the running session shows its live content + the busy HUD.
+  store.select("i1", "backend");
+  expect(store.busy).toBe(true);
+  expect(store.streaming).toBe("half-written");
+  // A later turn-finished finalizes the seeded turn into a persisted message.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "relay:a", sessionAlias: "backend", ok: true } });
+  expect(store.busy).toBe(false);
+  expect(store.messages.at(-1)).toMatchObject({ direction: "out", text: "half-written" });
+});
+
+test("a turn-finished racing ahead of seedActiveTurns does not resurrect the finished turn", () => {
+  // Regression (review H1): the ws stream is live before the active-turns snapshot is
+  // applied. If turn-finished arrives in that gap, seeding the stale snapshot must NOT
+  // re-create the turn (which would wedge the session "working" forever). A different,
+  // un-finished session in the same snapshot must still seed normally.
+  const store = useChatStore();
+  // The finish already arrived (no live turn existed to flush); then the stale snapshot lands.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "relay:a", sessionAlias: "raced", ok: true } });
+  store.seedActiveTurns([
+    { instanceId: "i1", sessionAlias: "raced", status: "streaming", startedAt: 1, parts: [{ type: "text", text: "stale" }] },
+    { instanceId: "i1", sessionAlias: "fresh", status: "streaming", startedAt: 1, parts: [{ type: "text", text: "live" }] },
+  ]);
+  expect(store.sessionAttention("i1", "raced")).not.toBe("working"); // not resurrected
+  expect(store.sessionAttention("i1", "fresh")).toBe("working"); // guard isn't over-broad
+});
+
+test("loadActiveTurns fetches the in-flight snapshot and seeds it", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    turns: [{ instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 5, parts: [{ type: "text", text: "live" }] }],
+  }), { status: 200 })));
+  const store = useChatStore();
+  await store.loadActiveTurns();
+  expect(store.sessionAttention("i1", "backend")).toBe("working");
+  store.select("i1", "backend");
+  expect(store.streaming).toBe("live");
+});
+
+test("loadHistory records hasMore; loadOlder prepends the older page and updates the cursor", async () => {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    calls.push(path);
+    if (path.includes("before=")) {
+      // Older page: two rows immediately before id 10, and no more remain.
+      return new Response(JSON.stringify({
+        messages: [
+          { id: 8, instanceId: "i1", sessionAlias: "s1", direction: "in", text: "older-a", createdAt: "t" },
+          { id: 9, instanceId: "i1", sessionAlias: "s1", direction: "out", text: "older-b", createdAt: "t" },
+        ],
+        hasMore: false,
+      }), { status: 200 });
+    }
+    // Initial page: most recent row id 10, with older history available.
+    return new Response(JSON.stringify({
+      messages: [{ id: 10, instanceId: "i1", sessionAlias: "s1", direction: "in", text: "newest", createdAt: "t" }],
+      hasMore: true,
+    }), { status: 200 });
+  }));
+
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await chat.loadHistory();
+  expect(chat.messages.map((m) => m.text)).toEqual(["newest"]);
+  expect(chat.hasMoreOlder).toBe(true);
+
+  await chat.loadOlder();
+  // Older rows PREPENDED, oldest-first, ahead of the existing newest row.
+  expect(chat.messages.map((m) => m.text)).toEqual(["older-a", "older-b", "newest"]);
+  expect(chat.hasMoreOlder).toBe(false);
+  // The cursor was the oldest id we held (10).
+  expect(calls.some((c) => c.includes("before=10"))).toBe(true);
+
+  // No older remain → loadOlder is now a no-op (no extra fetch).
+  const before = calls.length;
+  await chat.loadOlder();
+  expect(calls.length).toBe(before);
+});
+
+test("select persists the open session so a refresh can restore it", () => {
+  const store = useChatStore();
+  store.select("i9", "frontend");
+  expect(loadPersistedSelection()).toEqual({ instanceId: "i9", alias: "frontend" });
+});
+
 test("surfaces an error when send fails", async () => {
   rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
   const chat = useChatStore();
@@ -64,6 +186,26 @@ test("surfaces an error when send fails", async () => {
   await chat.send("hello");
   expect(chat.error).toBe("instance-offline");
   expect(chat.sending).toBe(false);
+});
+
+test("resend drops the failed attempt and re-sends, leaving one clean entry on success", async () => {
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  // First attempt fails (non-timeout) → the optimistic user message is marked failed.
+  rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
+  await chat.send("play");
+  const failed = chat.messages.at(-1)!;
+  expect(failed.failed).toBe(true);
+  expect(chat.messages.filter((m) => m.direction === "in")).toHaveLength(1);
+
+  // Retry succeeds → exactly one "in" entry remains (the failed one was dropped), not two.
+  rpc.mockResolvedValueOnce({ ok: true });
+  await chat.resend(failed);
+  const ins = chat.messages.filter((m) => m.direction === "in");
+  expect(ins).toHaveLength(1);
+  expect(ins[0]?.text).toBe("play");
+  expect(ins[0]?.failed).toBeUndefined();
+  expect(chat.error).toBe("");
 });
 
 test("a prompt RPC timeout does not surface an error (results stream via events)", async () => {
@@ -85,13 +227,16 @@ test("a non-timeout prompt error still surfaces", async () => {
   expect(chat.messages.at(-1)?.failed).toBe(true);
 });
 
-test("a /command timeout still surfaces (request/response, no streaming)", async () => {
+test("a /-prefixed message is a prompt: a timeout is treated as pending, not an error", async () => {
+  // `/` commands are no longer request/response — the web forwards them to the agent as
+  // prompts, so a 504/timeout means "the turn may still be running" (pending), exactly
+  // like a plain prompt, rather than a hard failure.
   rpc.mockRejectedValueOnce(new ApiError("timeout", 504));
   const chat = useChatStore();
   chat.select("i1", "s1");
   await chat.send("/status");
-  expect(chat.error).toBe("timeout");
-  expect(chat.messages.at(-1)?.failed).toBe(true);
+  expect(chat.error).toBe("");
+  expect(chat.messages.at(-1)?.failed).toBeUndefined();
 });
 
 test("keeps a per-session streaming buffer across selection changes", () => {
@@ -104,12 +249,14 @@ test("keeps a per-session streaming buffer across selection changes", () => {
   expect(chat.streaming).toBe("partial-A");
 });
 
-test("command send carries sessionAlias", async () => {
-  rpc.mockResolvedValueOnce({ output: "ok" });
+test("sends `/`-prefixed text as a prompt (web forwards slash commands to the agent)", async () => {
+  rpc.mockResolvedValueOnce({ ok: true });
   const chat = useChatStore();
   chat.select("inst", "backend");
   await chat.send("/status");
-  expect(rpc).toHaveBeenCalledWith("inst", "control.command.execute", { sessionAlias: "backend", text: "/status" });
+  // The web dashboard never invokes xacpx command handling; `/status` streams as a turn.
+  expect(rpc).toHaveBeenCalledWith("inst", "control.prompt", { sessionAlias: "backend", text: "/status" });
+  expect(rpc).not.toHaveBeenCalledWith("inst", "control.command.execute", expect.anything());
 });
 
 it("drops an instance's stream buffers when it goes offline", () => {
@@ -225,15 +372,45 @@ test("live turn accumulates tool steps, reasoning, and flushes structured on fin
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "tool-event", chatKey: "c", sessionAlias: "backend", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } } } as never);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-thought", chatKey: "c", sessionAlias: "backend", chunk: "reasoning" } } as never);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "answer" } } as never);
-  expect(store.liveTurn?.toolSteps.length).toBe(1);
-  expect(store.liveTurn?.reasoning).toBe("reasoning");
+  // Parts preserve arrival order: tool, then reasoning, then text.
+  expect(store.liveTurn?.parts.map((p) => p.type)).toEqual(["tool", "reasoning", "text"]);
+  expect(store.liveToolSteps.length).toBe(1);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
   expect(store.busy).toBe(false);
   expect(store.liveTurn).toBeNull();
   const last = store.messages.at(-1)!;
   expect(last).toMatchObject({ direction: "out", text: "answer", status: "done" });
-  expect(last.structured?.toolSteps.length).toBe(1);
+  expect(last.structured?.toolSteps?.length).toBe(1);
   expect(last.structured?.reasoning).toBe("reasoning");
+  // The ordered transcript is persisted for inline replay on history reload.
+  expect(last.structured?.parts?.map((p) => p.type)).toEqual(["tool", "reasoning", "text"]);
+});
+
+it("sets the session plan on a plan event and replaces it on the next", () => {
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const ev = (entries: unknown) => chat.applyEvent({ kind: "control-event", instanceId: "i1",
+    event: { type: "plan", chatKey: "relay:i1", sessionAlias: "backend", entries } } as never);
+  ev([{ content: "a", status: "in_progress" }]);
+  expect(chat.sessionPlan).toEqual([{ content: "a", status: "in_progress" }]);
+  ev([{ content: "a", status: "completed" }, { content: "b", status: "pending" }]);
+  expect(chat.sessionPlan?.length).toBe(2); // replace, not append
+});
+
+it("keeps the session plan after the turn finishes (does not vanish)", () => {
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const apply = (event: unknown) => chat.applyEvent({ kind: "control-event", instanceId: "i1", event } as never);
+  // a turn is running and emits a plan
+  apply({ type: "turn-started", chatKey: "relay:i1", sessionAlias: "backend" });
+  apply({ type: "plan", chatKey: "relay:i1", sessionAlias: "backend", entries: [{ content: "a", status: "in_progress" }] });
+  expect(chat.sessionPlan?.length).toBe(1);
+  expect(chat.busy).toBe(true);
+  // turn ends (agent paused to ask a question)
+  apply({ type: "turn-finished", chatKey: "relay:i1", sessionAlias: "backend", ok: true });
+  // the live turn is gone but the plan persists
+  expect(chat.busy).toBe(false);
+  expect(chat.sessionPlan?.length).toBe(1);
 });
 
 test("a cancelled finish marks the turn stopped, not errored", () => {

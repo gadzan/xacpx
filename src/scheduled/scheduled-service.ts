@@ -75,6 +75,25 @@ export class ScheduledTaskService {
     return this.listPendingAllChats().filter((task) => task.chat_key === chatKey);
   }
 
+  // Chat-scoped view for the web panel: upcoming tasks (pending + in-flight
+  // triggering) first, then the most recent terminal runs (executed/failed/missed/
+  // cancelled) so a fired task leaves a visible record instead of silently vanishing.
+  // Terminal rows are capped so the list can't grow without bound.
+  listRecentForChat(chatKey: string, opts?: { terminalLimit?: number }): ScheduledTaskRecord[] {
+    const terminalLimit = opts?.terminalLimit ?? 20;
+    const mine = Object.values(this.state.scheduled_tasks).filter((task) => task.chat_key === chatKey);
+    const upcoming = mine
+      .filter((task) => task.status === "pending" || task.status === "triggering")
+      .sort((left, right) => left.execute_at.localeCompare(right.execute_at));
+    const settledAt = (task: ScheduledTaskRecord): string =>
+      task.executed_at ?? task.failed_at ?? task.cancelled_at ?? task.missed_at ?? task.triggered_at ?? task.created_at;
+    const terminal = mine
+      .filter((task) => task.status === "executed" || task.status === "failed" || task.status === "missed" || task.status === "cancelled")
+      .sort((left, right) => settledAt(right).localeCompare(settledAt(left)))
+      .slice(0, terminalLimit);
+    return [...upcoming, ...terminal];
+  }
+
   // Unscoped view for operator/internal surfaces (local CLI, the scheduler's
   // own claiming loop). Never expose this to a chat- or route-driven caller.
   listPendingAllChats(): ScheduledTaskRecord[] {

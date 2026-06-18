@@ -2,44 +2,31 @@ import { mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import PromptInput from "../components/PromptInput.vue";
-import { suggestCommands } from "../lib/command-catalog";
 
 // PromptInput now uses the composer store, which needs an active pinia.
 beforeEach(() => setActivePinia(createPinia()));
 
-describe("suggestCommands", () => {
-  it("suggests by first-token prefix", () => {
-    expect(suggestCommands("/s").map((c) => c.name)).toContain("/session");
-    expect(suggestCommands("/s").map((c) => c.name)).toContain("/status");
-    expect(suggestCommands("/s").map((c) => c.name)).toContain("/ssn");
-  });
-  it("stops once an argument (space) begins", () => {
-    expect(suggestCommands("/session new")).toEqual([]);
-  });
-  it("returns [] for non-slash input and exact complete matches", () => {
-    expect(suggestCommands("hello")).toEqual([]);
-    expect(suggestCommands("/status")).toEqual([]); // exact, nothing left to suggest
-  });
-});
-
 describe("PromptInput composer", () => {
-  it("shows a suggestion popover for a slash prefix and Tab completes it", async () => {
-    const w = mount(PromptInput);
-    const ta = w.find("textarea");
-    await ta.setValue("/se");
-    expect(w.find('[data-test="cmd-suggestions"]').exists()).toBe(true);
-    expect(w.find('[data-test="cmd-suggestions"]').text()).toContain("/session");
-    await ta.trigger("keydown", { key: "Tab" });
-    expect((ta.element as HTMLTextAreaElement).value).toBe("/session ");
-    expect(w.find('[data-test="cmd-suggestions"]').exists()).toBe(false);
-  });
-
-  it("Esc dismisses the popover before anything else", async () => {
+  it("does not surface an xacpx slash-command popover (web forwards `/` to the agent)", async () => {
     const w = mount(PromptInput);
     await w.find("textarea").setValue("/se");
-    expect(w.find('[data-test="cmd-suggestions"]').exists()).toBe(true);
-    await w.find("textarea").trigger("keydown", { key: "Escape" });
+    // The dashboard is GUI-first: typing `/` no longer pops a command catalog.
     expect(w.find('[data-test="cmd-suggestions"]').exists()).toBe(false);
+  });
+
+  it("uses a 16px textarea on mobile (iOS auto-zoom guard) and 14px on desktop", () => {
+    const w = mount(PromptInput);
+    const cls = w.find("textarea").classes();
+    expect(cls).toContain("text-[16px]");
+    expect(cls).toContain("lg:text-[14px]");
+  });
+
+  it("Enter submits a `/`-prefixed message verbatim (no autocomplete interception)", async () => {
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("/status");
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.[0]).toEqual(["/status"]);
   });
 
   it("Enter sends a plain message and records it in history for ↑ recall", async () => {
@@ -52,15 +39,6 @@ describe("PromptInput composer", () => {
     // Caret at start of an empty field → ArrowUp recalls the last sent line.
     await ta.trigger("keydown", { key: "ArrowUp" });
     expect((ta.element as HTMLTextAreaElement).value).toBe("hello there");
-  });
-
-  it("does not send while a suggestion is active (Enter accepts instead)", async () => {
-    const w = mount(PromptInput);
-    const ta = w.find("textarea");
-    await ta.setValue("/sta");
-    await ta.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")).toBeFalsy();
-    expect((ta.element as HTMLTextAreaElement).value).toBe("/status ");
   });
 
   it("ignores Enter mid-IME-composition (CJK input)", async () => {

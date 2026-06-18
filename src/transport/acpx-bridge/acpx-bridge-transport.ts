@@ -9,7 +9,11 @@ import type {
   ResolvedSession,
   SessionTransport,
 } from "../types";
-import { buildOverflowSummary, createQuotaGatedReplySink } from "../quota-gated-reply-sink";
+import {
+  buildOverflowSummary,
+  createQuotaGatedReplySink,
+  createVerbatimReplySink,
+} from "../quota-gated-reply-sink";
 import { resolveToolEventMode } from "../tool-event-mode.js";
 import type { BridgeMethod } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
@@ -65,11 +69,14 @@ export class AcpxBridgeTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
+    const streamMode = (session.effectiveReplyMode ?? session.replyMode) === "stream";
     const sink = reply
-      ? createQuotaGatedReplySink({
-          reply,
-          ...(replyContext ? { replyContext } : {}),
-        })
+      ? streamMode
+        ? createVerbatimReplySink(reply)
+        : createQuotaGatedReplySink({
+            reply,
+            ...(replyContext ? { replyContext } : {}),
+          })
       : null;
     let segmentError: unknown;
     let segmentChain = Promise.resolve();
@@ -77,6 +84,8 @@ export class AcpxBridgeTransport implements SessionTransport {
     let toolEventChain = Promise.resolve();
     let thoughtError: unknown;
     let thoughtChain = Promise.resolve();
+    let planError: unknown;
+    let planChain = Promise.resolve();
     let toolEventMode = resolveToolEventMode(options);
     // Safety net: structured/both without an onToolEvent handler would
     // silently drop tool calls. Demote to 'text' so verbose tool calls
@@ -133,10 +142,24 @@ export class AcpxBridgeTransport implements SessionTransport {
         }
         return;
       }
+      if (event.type === "prompt.plan") {
+        const onPlan = options?.onPlan;
+        if (onPlan) {
+          const entries = event.entries;
+          // Serialize handler invocations; first error wins.
+          planChain = planChain
+            .then(() => onPlan(entries))
+            .catch((error) => {
+              planError ??= error;
+            });
+        }
+        return;
+      }
     });
     await segmentChain;
     await toolEventChain;
     await thoughtChain;
+    await planChain;
     if (sink) {
       const { overflowCount } = sink.finalize();
       // Drain in-flight reply() promises and propagate any QuotaDeferredError
@@ -163,6 +186,9 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (thoughtError) {
         throw thoughtError;
       }
+      if (planError) {
+        throw planError;
+      }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }
     if (segmentError) {
@@ -173,6 +199,9 @@ export class AcpxBridgeTransport implements SessionTransport {
     }
     if (thoughtError) {
       throw thoughtError;
+    }
+    if (planError) {
+      throw planError;
     }
     return result;
   }
@@ -232,7 +261,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       name: session.transportSession,
       mcpCoordinatorSession: session.mcpCoordinatorSession,
       mcpSourceHandle: session.mcpSourceHandle,
-      replyMode: session.replyMode ?? "verbose",
+      replyMode: session.effectiveReplyMode ?? session.replyMode ?? "verbose",
       ...(session.model?.trim() ? { model: session.model.trim() } : {}),
     };
   }

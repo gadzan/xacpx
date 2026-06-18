@@ -4,8 +4,10 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
+  ControlService,
   CoordinatorMessageInput,
   MessageChannelRuntime,
+  ScheduledChannelMessageInput,
 } from "xacpx/plugin-api";
 
 import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
@@ -40,6 +42,10 @@ export class RelayChannel implements MessageChannelRuntime {
   private readonly credentials: CredentialStoreLike;
   private client: RelayClientLike | null = null;
   private unsubscribe: (() => void) | null = null;
+  // The structured control facade, captured at start(). Scheduled dispatch runs a
+  // fired task's prompt through this so it streams as a real turn (turn-* events flow
+  // over the same event subscription to the hub → conversation history + live view).
+  private control: ControlService | null = null;
 
   constructor(options: Record<string, unknown> | undefined, private readonly deps: RelayChannelDeps = {}) {
     this.config = parseRelayChannelConfig(options);
@@ -62,6 +68,7 @@ export class RelayChannel implements MessageChannelRuntime {
     if (!input.control) {
       throw new Error("relay channel requires ChannelStartInput.control (xacpx >= 0.11)");
     }
+    this.control = input.control;
     const bridge = createControlBridge(input.control);
     const client = (this.deps.createClient ?? ((options) => new RelayClient(options)))({
       url: this.config.url,
@@ -92,6 +99,7 @@ export class RelayChannel implements MessageChannelRuntime {
     this.unsubscribe = null;
     this.client?.stop();
     this.client = null;
+    this.control = null;
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
@@ -104,6 +112,28 @@ export class RelayChannel implements MessageChannelRuntime {
 
   async sendCoordinatorMessage(input: CoordinatorMessageInput): Promise<void> {
     this.sendNotice({ kind: "coordinator-message", chatKey: input.chatKey, text: input.text });
+  }
+
+  // A due scheduled task fires here. Run it through the control turn path (not a side
+  // notice) so it behaves exactly like a manual web prompt: the prompt appears in the
+  // conversation, the agent reply streams + persists, and the schedule origin badges it.
+  async sendScheduledMessage(input: ScheduledChannelMessageInput): Promise<void> {
+    if (!this.control) {
+      throw new Error("relay channel cannot dispatch scheduled task before start()");
+    }
+    const result = await this.control.runScheduledTurn({
+      chatKey: input.chatKey,
+      sessionAlias: input.sessionAlias,
+      promptText: input.promptText,
+      taskId: input.taskId ?? "",
+      executeAt: input.executeAt ?? new Date(0).toISOString(),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    // Surface a failed turn as a thrown error so the scheduler records the task as
+    // "failed" (and the web panel shows it) rather than silently "executed".
+    if (!result.ok) {
+      throw new Error(result.errorMessage ?? "scheduled turn failed");
+    }
   }
 
   private sendNotice(payload: InstanceNoticePayload): void {

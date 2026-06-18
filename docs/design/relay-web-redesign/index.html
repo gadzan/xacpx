@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>relay-web 重设计 · 方案对比</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: #0a0b0d; color: #e8e9ec; display: flex; flex-direction: column; height: 100vh; }
+  header { flex: none; padding: 10px 16px; border-bottom: 1px solid #1e2026; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .title { font-weight: 700; font-size: 14px; letter-spacing: .2px; }
+  .title span { color: #8b8f98; font-weight: 400; }
+  .tabs { display: flex; gap: 6px; }
+  button.tab { appearance: none; cursor: pointer; border: 1px solid #2a2d35; background: #15171c; color: #cfd2d8;
+               padding: 7px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; transition: all .15s ease;
+               display: flex; align-items: center; gap: 8px; }
+  button.tab:hover { border-color: #3a3e48; color: #fff; }
+  button.tab.active { background: #232732; border-color: #4f5b8a; color: #fff; }
+  .tab .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .meta { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 12px; color: #8b8f98; }
+  .meta a { color: #9aa6ff; text-decoration: none; }
+  .meta a:hover { text-decoration: underline; }
+  .desc { flex: none; padding: 8px 16px; font-size: 12.5px; color: #a6abb4; border-bottom: 1px solid #1e2026; line-height: 1.5; }
+  .desc b { color: #e8e9ec; font-weight: 600; }
+  .frame-wrap { flex: 1; min-height: 0; position: relative; background: #000; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  kbd { font: 11px ui-monospace, monospace; background: #1c1f26; border: 1px solid #2a2d35; border-bottom-width: 2px;
+        border-radius: 5px; padding: 1px 6px; color: #cfd2d8; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="title">relay-web 重设计 <span>· 高保真方案对比（暗/浅双主题，每屏右上角可切换）</span></div>
+    <div class="tabs">
+      <button class="tab active" data-k="e" onclick="pick('e')"><span class="dot" style="background:linear-gradient(135deg,#4F9BF5,#69D689)"></span>E · xacpx ★</button>
+      <button class="tab" data-k="d" onclick="pick('d')"><span class="dot" style="background:#14b8a6"></span>D · Converged</button>
+      <button class="tab" data-k="b" onclick="pick('b')"><span class="dot" style="background:#6366f1"></span>B · Linear</button>
+      <button class="tab" data-k="c" onclick="pick('c')"><span class="dot" style="background:#14b8a6"></span>C · Focused</button>
+      <button class="tab" data-k="a" onclick="pick('a')"><span class="dot" style="background:#22c55e"></span>A · Terminal</button>
+    </div>
+    <div class="meta">
+      <span>切换 <kbd>1</kbd>E <kbd>2</kbd>D <kbd>3</kbd>B <kbd>4</kbd>C <kbd>5</kbd>A</span>
+      <a id="open" href="variant-e-xacpx.html" target="_blank">新标签打开 ↗</a>
+    </div>
+  </header>
+  <div class="desc" id="desc"></div>
+  <div class="frame-wrap"><iframe id="frame" src="variant-e-xacpx.html"></iframe></div>
+
+<script>
+  const V = {
+    e: { file: "variant-e-xacpx.html",
+         d: "<b>E · xacpx ★（当前方向）</b> — D 的 Linear 结构 + xacpx 品牌蓝绿。冷调近黑 #0E1116 / 清透白 #F6F8FB；蓝 #4F9BF5 = 交互，调暗绿 #46C277 = 运行/成功（亮绿只留 logo 渐变+运行点）；Send 用蓝→绿渐变；内联 SVG 蓝绿 X logo + “xacpx · relay” 字标。比 D 再紧一档（bar/header ~44px、会话行 28px）。" },
+    d: { file: "variant-d-converged.html",
+         d: "<b>D · Converged</b> — B 的 Linear 结构 + C 的暖中性/青色配色，收紧一档。<i>（E 的上一版）</i>" },
+    b: { file: "variant-b-linear.html",
+         d: "<b>B · Linear / Product</b> — Linear/Vercel 式精致 SaaS。大留白、柔阴影分层、rounded-xl 卡片、靛蓝→紫渐变克制点缀。沉稳高级的“产品”感。<i>（你喜欢的结构）</i>" },
+    c: { file: "variant-c-focused.html",
+         d: "<b>C · Focused / Calm</b> — 对话为中心的专注式。暖中性 + 青色点缀。<i>（你喜欢的配色来源）</i>" },
+    a: { file: "variant-a-terminal.html",
+         d: "<b>A · Terminal / OLED</b> — 黑客/终端控制台气质。Fira Code 承载全部数据，发丝级分隔线，运行绿辉光。数据密集、扫读快。<i>（ui-ux-pro-max 推荐方向）</i>" },
+  };
+  const frame = document.getElementById("frame"), desc = document.getElementById("desc"), open = document.getElementById("open");
+  function pick(k){
+    const v = V[k]; if(!v) return;
+    frame.src = v.file; open.href = v.file; desc.innerHTML = v.d;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.k === k));
+  }
+  document.addEventListener("keydown", e => { if(e.key==="1")pick("e"); if(e.key==="2")pick("d"); if(e.key==="3")pick("b"); if(e.key==="4")pick("c"); if(e.key==="5")pick("a"); });
+  pick("e");
+</script>
+</body>
+</html>

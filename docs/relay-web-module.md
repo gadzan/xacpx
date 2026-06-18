@@ -10,7 +10,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **左栏**：实例-会话树（在线状态、运行中 ● 标记），新建/删除逻辑会话；顶部带 Settings / Logout；
 - **中栏**：选中会话的聊天流（历史回显 + prompt 流式渲染，运行中可取消，输入框支持 `/命令`）；
 - **右栏**：当前会话的任务面板（定时任务 + 编排任务，见下文 `TaskPanel`）。
-- **设置页**（`/settings`）：实例配对 token 生成、管理员邀请、只读历史保留摘要。
+- **设置页**（`/settings`）：实例接入 token 生成、主题切换、登出、只读历史保留摘要。
 - **全局**：底部右下角 `instance.notice` toast、离线时的 “Reconnecting…” 连接徽标。
 
 ## 技术栈
@@ -49,9 +49,10 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   右下角可关闭 toast——newest-first，最多保留 20 条、同屏展示最多 4 条。
 - `stores/connection.ts` + `components/ConnectionBadge.vue`：`connectEvents` 的 `onStatus`
   报告 `/ws` open/close，离线期间显示 “Reconnecting…” 徽标。
-- `views/SettingsView.vue`（路由 `/settings`）：实例配对 token 生成器（回显
-  `xacpx channel add relay --url ... --token ...` 命令）、admin-only 账号邀请生成器、
+- `views/SettingsView.vue`（路由 `/settings`）：实例接入 token 生成器（回显
+  `xacpx channel add relay --url ... --token ...` 命令）、主题切换、登出、
   只读历史保留摘要（来自 `GET /api/config`，保留策略服务端配置、v1 不可在 Web 改）。
+  （邀请/角色已移除——认证改为纯令牌，见 docs/relay-module.md。）
 
 ## 聊天流式缓冲（阶段四加固）
 
@@ -220,7 +221,7 @@ export interface LiveTurn {
 ## 阶段范围边界
 
 - **阶段三**交付登录 + 实例/会话树 + 对话流。
-- **阶段四**补齐：右栏任务面板（定时/编排）、设置页（邀请/配对/保留摘要）、notice toast、
+- **阶段四**补齐：右栏任务面板（定时/编排）、设置页（实例接入 token/保留摘要）、notice toast、
   连接恢复徽标、NUL-key 流式缓冲加固。
 - **阶段五**审计修复：API 客户端始终带 JSON content-type（对齐服务端 CSRF 415 守卫）、重连重拉快照 +
   重连定时器清理、聊天错误横幅 + 回合失败浮现 + 失败消息样式 + 切换会话清错 + 乐观失败标记、

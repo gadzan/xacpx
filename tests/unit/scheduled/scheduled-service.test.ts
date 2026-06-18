@@ -43,6 +43,25 @@ test("creates task with collision-checked lowercase id", async () => {
   expect(store.saves).toBe(1);
 });
 
+test("listRecentForChat returns upcoming first then recent terminal runs, scoped + capped", async () => {
+  const state = createEmptyState();
+  // Two upcoming (out of order), three terminal at different settle times, one other chat.
+  state.scheduled_tasks.up2 = { id: "up2", chat_key: "relay:a", session_alias: "s", execute_at: "2026-05-23T12:00:00.000Z", message: "later", status: "pending", created_at: "2026-05-23T09:00:00.000Z" };
+  state.scheduled_tasks.up1 = { id: "up1", chat_key: "relay:a", session_alias: "s", execute_at: "2026-05-23T10:00:00.000Z", message: "soon", status: "pending", created_at: "2026-05-23T09:00:00.000Z" };
+  state.scheduled_tasks.doneOld = { id: "doneold", chat_key: "relay:a", session_alias: "s", execute_at: "2026-05-23T08:00:00.000Z", message: "ran early", status: "executed", created_at: "2026-05-23T07:00:00.000Z", executed_at: "2026-05-23T08:00:01.000Z" };
+  state.scheduled_tasks.failNew = { id: "failnew", chat_key: "relay:a", session_alias: "s", execute_at: "2026-05-23T09:00:00.000Z", message: "broke", status: "failed", created_at: "2026-05-23T07:00:00.000Z", failed_at: "2026-05-23T09:00:02.000Z", last_error: "boom" };
+  state.scheduled_tasks.mine = { id: "mine", chat_key: "relay:b", session_alias: "s", execute_at: "2026-05-23T10:00:00.000Z", message: "other chat", status: "pending", created_at: "2026-05-23T09:00:00.000Z" };
+
+  const service = new ScheduledTaskService(state, new MemoryStore());
+  const ids = service.listRecentForChat("relay:a").map((t) => t.id);
+  // Upcoming sorted by execute_at asc, then terminal sorted by settle time desc.
+  expect(ids).toEqual(["up1", "up2", "failnew", "doneold"]);
+
+  // terminalLimit caps the terminal tail (upcoming are always kept).
+  const capped = service.listRecentForChat("relay:a", { terminalLimit: 1 }).map((t) => t.id);
+  expect(capped).toEqual(["up1", "up2", "failnew"]);
+});
+
 test("lists pending tasks ordered by execute_at, scoped to the caller chat, and cancels by #id case-insensitively", async () => {
   const state = createEmptyState();
   state.scheduled_tasks.bbbb = {

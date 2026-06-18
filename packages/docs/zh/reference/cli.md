@@ -164,18 +164,47 @@ xacpx mcp-stdio --coordinator-session <session> --source-handle <handle> --works
 
 ## Relay hub — `xacpx-relay`
 
-[自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。共三个子命令；在 relay 各包发布到 npm 之前，从仓库 checkout 用 `node packages/relay/dist/cli.js <命令>` 调用。
+[自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。共四个子命令；在 relay 各包发布到 npm 之前，从仓库 checkout 用 `node packages/relay/dist/cli.js <命令>` 调用。
 
 ```bash
-xacpx-relay init-admin --username <name> [--password <pw>] --db <path>
-xacpx-relay start --db <path> [--http-port 8787] [--ws-port 8788] [--host 0.0.0.0] [--web-root <dir>] [--history-retention-days 30]
-xacpx-relay token new --account <username> [--name <label>] [--ttl-minutes 10] --db <path>
+xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
+xacpx-relay add token [--label <note>] [--db <path>]
+xacpx-relay ls [--db <path>]
+xacpx-relay rm token <value-or-id> [--db <path>]
 ```
 
 | 命令 | 说明 |
 |---|---|
-| `init-admin` | 创建首个管理员账号。不带 `--password` 会**只打印一次**自动生成的密码。 |
-| `start` | 启动 hub。`--web-root` 必须指向已构建的看板（`packages/relay-web/dist`），否则不提供 UI。没有 `stop`/`status`——用 `SIGTERM`。 |
-| `token new` | 签发单次使用、短期有效的实例配对令牌。 |
+| `start` | 启动 hub。`--db` 默认 `~/.xacpx-relay/relay.db`（自动创建目录）。`--web-root` 默认指向内置的 `packages/relay-web/dist`，不传也能提供看板 UI。没有 `stop`/`status`——用 `SIGTERM`。 |
+| `add token` | 创建用户并生成登录令牌，**只打印一次**。同一个令牌既用于网页看板登录（粘贴到"访问令牌"输入框），也用于连接器（`--token`）。 |
+| `ls` | 列出所有令牌：短 id、标签、创建时间、已连接实例数。 |
+| `rm token <value-or-id>` | 删除该令牌对应的用户（级联删除所有关联数据）。 |
 
-实例侧用 relay 连接器频道接入：`xacpx channel add relay --url wss://<gateway> --token <配对令牌>`。完整部署流程见[自托管 Relay Hub](/zh/guide/relay-self-hosting)。
+**示例——生成令牌：**
+
+```
+$ xacpx-relay add token --label "my-instance"
+access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
+(store it now — not shown again)
+hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
+```
+
+**连接器命令**——将实例接入 hub：
+
+```bash
+xacpx channel add relay --url <host> --token <token> [--name <label>]
+```
+
+`--url` 是指向实例网关（默认端口 8788）或 TLS 代理的智能简写：
+
+| 输入 | 解析后的 URL |
+|---|---|
+| `relay.example.com` | `wss://relay.example.com` |
+| `1.2.3.4` | `ws://1.2.3.4:8788` |
+| `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
+| `localhost` | `ws://localhost:8788` |
+| `host:9000` | `ws://host:9000` |
+| `ws://…` / `wss://…` | 原样使用 |
+| `http://…` / `https://…` | 映射为 `ws://…` / `wss://…` |
+
+完整部署流程见[自托管 Relay Hub](/zh/guide/relay-self-hosting)。

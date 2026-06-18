@@ -11,6 +11,41 @@ import {
 } from "../../../src/bridge/bridge-runtime";
 import type { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
+test("rawStream flushes partial paragraphs verbatim on the tight cadence", async () => {
+  const segments: string[] = [];
+  let currentTime = 0;
+  let intervalCallback: (() => void) | undefined;
+  let dataHandler: ((chunk: string | Buffer) => void) | undefined;
+  let closeHandler: ((code: number | null) => void) | undefined;
+
+  const resultPromise = runStreamingPrompt(
+    "acpx",
+    ["prompt"],
+    async (event) => { if (event.type === "prompt.segment") segments.push(event.text); },
+    {
+      spawnPrompt: () =>
+        ({
+          stdout: { setEncoding: () => {}, on: (e: string, h: (chunk: string | Buffer) => void) => { if (e === "data") dataHandler = h; } },
+          stderr: { on: () => {} },
+          on: (e: string, h: (code: number | null) => void) => { if (e === "close") closeHandler = h; },
+        }) as never,
+      setIntervalFn: (callback) => { intervalCallback = callback; return 1; },
+      clearIntervalFn: () => {},
+      now: () => currentTime,
+      rawStream: true, // raw mode: default 200ms wait, no \n\n requirement, no trim
+    },
+  );
+
+  // A mid-paragraph chunk with NO blank line — batched mode would withhold it; raw mode
+  // flushes it verbatim once the (short) wait elapses.
+  dataHandler?.(`${JSON.stringify({ method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Half a sentence " } } } })}\n`);
+  currentTime = 250;
+  intervalCallback?.();
+  closeHandler?.(0);
+  await resultPromise;
+  expect(segments).toEqual(["Half a sentence "]); // verbatim, trailing space kept
+});
+
 test("flushes buffered prompt text after timeout when no paragraph boundary arrives", async () => {
   const segments: string[] = [];
   let currentTime = 0;

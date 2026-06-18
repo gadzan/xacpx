@@ -1,4 +1,4 @@
-import { resolveAgentCommand } from "../config/resolve-agent-command";
+import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
 import type { AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -614,10 +614,32 @@ export class SessionService {
       );
     }
 
+    // The relay/control channel ALWAYS uses raw "stream" reply mode and intentionally
+    // ignores every replyMode setting (per-session override AND channel/global config).
+    // replyMode — stream/verbose/final — only exists for TEXT channels (WeChat, Feishu)
+    // that batch agent output into a limited number of discrete chat messages. The relay
+    // web dashboard renders a single live markdown bubble and consumes the verbatim token
+    // stream, so batched paragraph reconstruction would only shred multi-line markdown
+    // (tables/headings). There is therefore no reason to ever run relay in another mode,
+    // so it's hardcoded here rather than routed through resolve-reply-mode.
+    //
+    // Detection is by the alias's channel prefix (`session.alias` is the internal,
+    // channel-prefixed key of `state.sessions`). The one false positive is a LEGACY
+    // (unprefixed) WeChat session a user literally named "relay:…": it would be read as
+    // relay and stream instead of batch. This is an accepted edge of the pre-existing
+    // channel-scope ambiguity (legacy weixin aliases aren't namespaced); the only robust
+    // fix is a per-session channel field / prefixing weixin aliases — a schema migration
+    // not worth it for this. Worst case: that one oddly-named session streams.
+    //
+    // Non-relay channels return `undefined` so their existing `replyMode ?? "verbose"`
+    // resolution (including per-session overrides via `session.reply_mode`) is unchanged.
+    const channelId = getChannelIdFromChatKey(session.alias);
+    const effectiveReplyMode = channelId === "relay" ? "stream" : undefined;
+
     return {
       alias: session.alias,
       agent: session.agent,
-      agentCommand: session.transport_agent_command ?? resolveAgentCommand(agentConfig.driver, agentConfig.command),
+      agentCommand: session.transport_agent_command ?? resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, this.config.transport.preferLocalAgents !== false),
       // Session-level model wins; otherwise fall back to the agent config default.
       model: session.model ?? agentConfig.model,
       workspace: session.workspace,
@@ -629,6 +651,7 @@ export class SessionService {
       attachedAt: session.attached_at,
       modeId: session.mode_id,
       replyMode: session.reply_mode,
+      effectiveReplyMode,
       cwd: workspaceConfig.cwd,
     };
   }

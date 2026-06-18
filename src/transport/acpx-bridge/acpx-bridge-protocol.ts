@@ -1,4 +1,4 @@
-import type { ToolUseEvent } from "../../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 
 export type BridgeMethod =
   | "ping"
@@ -74,6 +74,12 @@ export interface BridgePromptThoughtEvent {
   text: string;
 }
 
+export interface BridgePromptPlanEvent {
+  id: string;
+  event: "prompt.plan";
+  entries: PlanEntry[];
+}
+
 export interface BridgeSessionProgressEvent {
   id: string;
   event: "session.progress";
@@ -92,6 +98,7 @@ export type BridgeMessage<TResult = unknown> =
   | BridgePromptSegmentEvent
   | BridgePromptToolEvent
   | BridgePromptThoughtEvent
+  | BridgePromptPlanEvent
   | BridgeSessionProgressEvent
   | BridgeSessionNoteEvent;
 export type BridgeResponse<TResult = unknown> = BridgeSuccessResponse<TResult> | BridgeErrorResponse;
@@ -109,6 +116,10 @@ export function encodeBridgePromptToolEvent(event: BridgePromptToolEvent): strin
 }
 
 export function encodeBridgePromptThoughtEvent(event: BridgePromptThoughtEvent): string {
+  return `${JSON.stringify(event)}\n`;
+}
+
+export function encodeBridgePromptPlanEvent(event: BridgePromptPlanEvent): string {
   return `${JSON.stringify(event)}\n`;
 }
 

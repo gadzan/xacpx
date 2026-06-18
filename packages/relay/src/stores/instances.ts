@@ -40,6 +40,22 @@ export class InstanceStore {
     return { token, expiresAt };
   }
 
+  /**
+   * Creates a new instance for an account directly (without a pairing token).
+   * Used when the connector presents a login token instead of a pairing token.
+   */
+  registerInstanceForAccount(accountId: string, name: string | undefined, coreVersion?: string): RedeemedInstance {
+    const instanceId = randomUUID();
+    const credential = generateToken();
+    const nowIso = this.now().toISOString();
+    const instanceName = name ?? `instance-${instanceId.slice(0, 8)}`;
+    this.db.run(
+      "INSERT INTO instances (id, account_id, name, credential_hash, core_version, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [instanceId, accountId, instanceName, hashToken(credential), coreVersion ?? null, nowIso],
+    );
+    return { instanceId, credential, accountId, name: instanceName };
+  }
+
   /** Single-use: marks the token used and creates the instance row atomically-enough for our single-writer server. */
   redeemPairingToken(token: string, coreVersion?: string): RedeemedInstance | null {
     const tokenHash = hashToken(token);

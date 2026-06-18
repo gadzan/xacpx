@@ -89,12 +89,20 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   const rawOutputText = asString(event.rawOutput);
   const pc = parsedCmd0(input);
   const fallbackTitle = event.summary ?? event.toolName;
+  // On failure, surface the agent/tool error message so the web can show it in red.
+  // Agents put it in different places: rawOutput.error (opencode), a content text
+  // block, or the generic output field.
+  const errMsg =
+    event.status === "error"
+      ? asString(output.error) ?? asString(output.message) ?? textFromBlocks(blocks) ?? asString(output.output) ?? asString(output.text) ?? rawOutputText
+      : undefined;
   const base: Omit<ToolStepDto, "title" | "detail"> = {
     toolCallId: event.toolCallId,
     toolName: event.toolName,
     kind: event.kind,
     status: event.status,
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    ...(errMsg ? { error: cap(errMsg, 2000) } : {}),
   };
 
   if (event.kind === "edit") {

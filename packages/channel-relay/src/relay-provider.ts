@@ -6,6 +6,7 @@ import type {
   ChannelCliValidationIssue,
   ChannelRuntimeConfig,
 } from "xacpx/plugin-api";
+import { normalizeRelayUrl } from "./config.js";
 
 function stringField(input: ChannelCliInput, key: string): string | undefined {
   const value = input[key];
@@ -40,7 +41,7 @@ export const relayCliProvider: ChannelCliProvider = {
     const pairingToken = stringField(input, "token");
     const name = stringField(input, "name");
     const options: Record<string, unknown> = {};
-    if (url !== undefined) options.url = url;
+    if (url !== undefined) options.url = normalizeRelayUrl(url);
     if (pairingToken !== undefined) options.pairingToken = pairingToken;
     if (name !== undefined) options.name = name;
     return {
@@ -54,14 +55,14 @@ export const relayCliProvider: ChannelCliProvider = {
   validateConfig(config: ChannelRuntimeConfig): ChannelCliValidationIssue[] {
     const issues: ChannelCliValidationIssue[] = [];
     const options = (config.options ?? {}) as Record<string, unknown>;
-    const url = typeof options.url === "string" ? options.url : "";
+    const url = normalizeRelayUrl(typeof options.url === "string" ? options.url : "");
     if (!url) {
-      issues.push({ kind: "missing-required-field", flag: "--url", message: "relay gateway ws(s):// url is required" });
+      issues.push({ kind: "missing-required-field", flag: "--url", message: "relay url — a domain (wss), or IP[:port] (ws, default :8788) is required" });
     } else if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
-      issues.push({ kind: "invalid-config", message: `url must start with ws:// or wss://, got: ${url}` });
+      issues.push({ kind: "invalid-config", message: `url must be a domain, IP[:port], or ws(s):// address, got: ${String(options.url ?? "")}` });
     }
     if (typeof options.pairingToken !== "string" || !options.pairingToken) {
-      issues.push({ kind: "missing-required-field", flag: "--token", message: "pairing token is required (generate via the relay: xacpx-relay token new)" });
+      issues.push({ kind: "missing-required-field", flag: "--token", message: "access token is required (generate one with: xacpx-relay add token)" });
     }
     return issues;
   },
@@ -76,7 +77,7 @@ export const relayCliProvider: ChannelCliProvider = {
   async promptForMissingFields(input: ChannelCliInput, io: ChannelCliIo): Promise<ChannelCliInput> {
     const completed: ChannelCliInput = { ...input };
     if (!stringField(completed, "url")) {
-      const value = (await io.promptText("Relay gateway url (ws://host:8788): ")).trim();
+      const value = (await io.promptText("Relay url (domain, or IP[:port]; e.g. relay.example.com or 1.2.3.4): ")).trim();
       if (value) completed.url = value;
     }
     if (!stringField(completed, "token")) {

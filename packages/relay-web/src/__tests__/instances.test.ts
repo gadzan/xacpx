@@ -107,6 +107,52 @@ describe("createSession timeout handling", () => {
     await expect(store.createSession("i1", "backend", "codex", "home")).rejects.toThrow("workspace not registered");
     vi.restoreAllMocks();
   });
+
+  test("an `unknown-type` error becomes an actionable 'newer connector' hint", async () => {
+    const store = seed();
+    const { api } = await import("../api/client");
+    // A version-skewed connector that doesn't implement this RPC replies with `unknown-type`.
+    vi.spyOn(api, "rpc").mockResolvedValueOnce({ error: { code: "unknown-type", message: "unsupported rpc type: control.sessions.create" } });
+    await expect(store.createSession("i1", "backend", "codex", "home")).rejects.toThrow(/newer connector/i);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("native session attach", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function seed() {
+    const store = useInstancesStore();
+    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
+    return store;
+  }
+
+  test("listNativeSessions unwraps the sessions array", async () => {
+    const store = seed();
+    const { api } = await import("../api/client");
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [{ sessionId: "ses_1", title: "x" }] });
+    await expect(store.listNativeSessions("i1", "codex", "backend")).resolves.toEqual([{ sessionId: "ses_1", title: "x" }]);
+    expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.native.list", { agent: "codex", workspace: "backend" });
+    vi.restoreAllMocks();
+  });
+
+  test("createSession forwards agentSessionId for a native resume", async () => {
+    const store = seed();
+    const { api } = await import("../api/client");
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [] });
+    await store.createSession("i1", "resumed", "codex", "backend", "ses_1");
+    expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.create", { alias: "resumed", agent: "codex", workspace: "backend", agentSessionId: "ses_1" });
+    vi.restoreAllMocks();
+  });
+
+  test("createSession omits agentSessionId for a fresh session", async () => {
+    const store = seed();
+    const { api } = await import("../api/client");
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [] });
+    await store.createSession("i1", "fresh", "codex", "backend");
+    expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.create", { alias: "fresh", agent: "codex", workspace: "backend" });
+    vi.restoreAllMocks();
+  });
 });
 
 describe("agent catalog + management actions", () => {
@@ -163,6 +209,6 @@ test("InstanceTree renders an online dot per instance", () => {
   const wrapper = mount(InstanceTree);
   const dots = wrapper.findAll('[data-test="online-dot"]');
   expect(dots.length).toBe(2);
-  expect(dots[0]!.classes()).toContain("bg-green-500");
-  expect(dots[1]!.classes()).toContain("bg-slate-300");
+  expect(dots[0]!.classes()).toContain("bg-run");
+  expect(dots[1]!.classes()).toContain("bg-fg-muted");
 });

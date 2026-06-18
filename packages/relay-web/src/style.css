@@ -1,3 +1,96 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* Light theme */
+  --c-bg: 246 248 251;          /* #F6F8FB */
+  --c-surface: 255 255 255;     /* #FFFFFF */
+  --c-raised: 255 255 255;      /* #FFFFFF (+shadow) */
+  --c-border: 228 233 240;      /* #E4E9F0 */
+  --c-fg: 18 24 35;             /* #121823 */
+  --c-fg-muted: 91 102 117;     /* #5B6675 */
+  --c-accent: 29 111 214;       /* #1D6FD6 — AA on white/F6F8FB */
+  --c-accent-hover: 26 99 192;  /* #1A63C0 */
+  --c-run: 25 122 67;           /* #197A43 — AA */
+  --c-run-bright: 52 192 110;   /* #34C06E (dot fill, not text) */
+  --c-warn: 180 83 9;           /* #B45309 — AA */
+  --c-danger: 200 30 30;        /* #C81E1E — AA */
+  --c-info: 37 99 235;          /* #2563EB */
+  /* Elevation scale (soft, light theme) */
+  --shadow-e1: 0 1px 2px rgba(12,18,28,0.06), 0 1px 1px rgba(12,18,28,0.04);
+  --shadow-e2: 0 4px 12px rgba(12,18,28,0.08), 0 2px 4px rgba(12,18,28,0.05);
+  --shadow-e3: 0 12px 32px rgba(12,18,28,0.14), 0 4px 8px rgba(12,18,28,0.06);
+}
+.dark {
+  /* Dark theme */
+  --c-bg: 14 17 22;             /* #0E1116 */
+  --c-surface: 21 26 33;        /* #151A21 */
+  --c-raised: 27 33 42;         /* #1B212A */
+  --c-border: 38 45 56;         /* #262D38 */
+  --c-fg: 232 236 241;          /* #E8ECF1 */
+  --c-fg-muted: 148 160 176;    /* #94A0B0 */
+  --c-accent: 79 155 245;       /* #4F9BF5 */
+  --c-accent-hover: 107 176 248;/* #6BB0F8 */
+  --c-run: 70 194 119;          /* #46C277 */
+  --c-run-bright: 105 214 137;  /* #69D689 */
+  --c-warn: 251 191 36;         /* #FBBF24 */
+  --c-danger: 248 113 113;      /* #F87171 */
+  --c-info: 96 165 250;         /* #60A5FA */
+  /* Elevation scale (deeper, dark theme) */
+  --shadow-e1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-e2: 0 6px 18px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.45);
+  --shadow-e3: 0 18px 48px rgba(0,0,0,0.7), 0 6px 16px rgba(0,0,0,0.55);
+}
+
+/* Brand gradient — logo only */
+:root { --brand-from: #4F9BF5; --brand-to: #69D689; }
+
+html, body, #app { height: 100%; }
+/* Off-canvas drawers (translate-x-full) live off the viewport edges; clip the page so
+   they can't add horizontal scroll on mobile. The app is a fixed-height SPA whose real
+   scrolling happens in inner containers, so clipping the document itself is safe. */
+html, body { overflow-x: hidden; }
+body { @apply bg-bg text-fg font-sans antialiased; }
+
+/* Branded focus ring on interactive elements (gap + accent halo). */
+a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible,
+select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--c-bg)), 0 0 0 4px rgb(var(--c-accent));
+  border-radius: 6px;
+}
+
+/* Live run-dot: expanding bright-green ring (matches mockup softpulse). */
+@keyframes softpulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(105,214,137,0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(105,214,137,0); }
+}
+.pulse-dot { animation: softpulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+
+/* Reasoning shimmer (theme-aware sweep). */
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.shimmer-text {
+  background: linear-gradient(90deg, rgb(var(--c-fg-muted)) 0%, rgb(var(--c-fg)) 50%, rgb(var(--c-fg-muted)) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 2.4s linear infinite;
+}
+
+/* Streaming caret — accent blue. */
+@keyframes blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+.caret::after {
+  content: ''; display: inline-block; width: 2px; height: 1em;
+  background: rgb(var(--c-accent)); margin-left: 2px; vertical-align: text-bottom;
+  animation: blink 1s step-end infinite;
+}
+
+/* Thin themed scrollbars. */
+.thin-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.thin-scroll::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
+.thin-scroll::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot, .shimmer-text, .caret::after { animation: none !important; }
+}

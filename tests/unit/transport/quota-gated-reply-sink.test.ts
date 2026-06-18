@@ -3,6 +3,7 @@ import { describe, expect, test, beforeEach } from "bun:test";
 import {
   ADAPTIVE_WINDOW_SCHEDULE_MS,
   createQuotaGatedReplySink,
+  createVerbatimReplySink,
   getDefaultHeadsUpText,
 } from "../../../src/transport/quota-gated-reply-sink";
 import { QuotaDeferredError } from "../../../src/weixin/messaging/quota-errors";
@@ -353,5 +354,81 @@ describe("QuotaGatedReplySink deferred-error propagation", () => {
     await drainPromise;
     const elapsed = Date.now() - start;
     expect(elapsed).toBeLessThan(1_000);
+  });
+});
+
+describe("createVerbatimReplySink", () => {
+  test("forwards fine-grained segments verbatim and in order (no \\n-join, no folding)", async () => {
+    const received: string[] = [];
+    const sink = createVerbatimReplySink(async (text) => {
+      received.push(text);
+    });
+
+    const fed = ["| # | 功能 |", "\n", " 说明 |", "x", "x"];
+    for (const seg of fed) sink.feedSegment(seg);
+
+    const finalized = sink.finalize();
+    await sink.drain();
+
+    // Every segment reached reply() verbatim and in order.
+    expect(received).toEqual(fed);
+    // No \n inserted between segments; concatenation is exact.
+    expect(received.join("")).toBe(fed.join(""));
+    // Two identical "x" arrive as two separate calls — no "x (×2)" folding.
+    expect(received.filter((r) => r === "x")).toHaveLength(2);
+    // finalize() reports nothing buffered.
+    expect(finalized).toEqual({ trailing: "", overflowCount: 0 });
+    expect(sink.getOverflowCount()).toBe(0);
+    expect(sink.getPendingError()).toBeUndefined();
+  });
+
+  test("skips empty segments", async () => {
+    const received: string[] = [];
+    const sink = createVerbatimReplySink(async (text) => {
+      received.push(text);
+    });
+    sink.feedSegment("");
+    sink.feedSegment("hi");
+    sink.feedSegment("");
+    sink.finalize();
+    await sink.drain();
+    expect(received).toEqual(["hi"]);
+  });
+
+  test("captures QuotaDeferredError from reply() in pendingError", async () => {
+    const deferred = new QuotaDeferredError({ chatKey: "wx:v", reason: "exhausted" });
+    const sink = createVerbatimReplySink(async () => {
+      throw deferred;
+    });
+    sink.feedSegment("hello");
+    sink.finalize();
+    await sink.drain();
+    expect(sink.getPendingError()).toBe(deferred);
+  });
+
+  test("swallows generic reply() errors without crashing the prompt", async () => {
+    const sink = createVerbatimReplySink(async () => {
+      throw new Error("network blew up");
+    });
+    sink.feedSegment("payload");
+    sink.finalize();
+    await sink.drain();
+    expect(sink.getPendingError()).toBeUndefined();
+  });
+
+  test("drain() resolves once in-flight replies settle", async () => {
+    let resolveReply: (() => void) | undefined;
+    const sink = createVerbatimReplySink(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveReply = resolve;
+        }),
+    );
+    sink.feedSegment("slow");
+    sink.finalize();
+    const drainPromise = sink.drain({ timeoutMs: 1_000 });
+    resolveReply?.();
+    await drainPromise;
+    expect(sink.getPendingError()).toBeUndefined();
   });
 });

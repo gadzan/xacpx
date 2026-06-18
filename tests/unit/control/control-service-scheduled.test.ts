@@ -18,13 +18,14 @@ function makeControl() {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
   events.subscribe((event) => seen.push(event));
-  const calls: Record<string, unknown[]> = { create: [], cancel: [] };
+  const calls: Record<string, unknown[]> = { create: [], cancel: [], chat: [] };
   const control = new ControlService({
-    agent: { chat: async () => ({ text: "" }) },
-    sessions: {} as never,
+    agent: { chat: async (req: unknown) => { calls.chat.push(req); return { text: "ran ok" }; } },
+    sessions: { useSession: async () => {} },
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {
       listPending: (chatKey: string) => (chatKey === "relay:acct-1" ? [record] : []),
+      listRecentForChat: (chatKey: string) => (chatKey === "relay:acct-1" ? [record] : []),
       createTask: async (input: unknown) => {
         calls.create.push(input);
         return record;
@@ -40,10 +41,40 @@ function makeControl() {
   return { control, seen, calls };
 }
 
-test("listScheduledTasks scopes to the chat key", () => {
+test("listScheduledTasks scopes to the chat key (web panel: recent runs included)", () => {
   const { control } = makeControl();
   expect(control.listScheduledTasks("relay:acct-1")).toEqual([record]);
   expect(control.listScheduledTasks("relay:other")).toEqual([]);
+});
+
+test("runScheduledTurn streams a real turn tagged with prompt + schedule origin", async () => {
+  const { control, seen, calls } = makeControl();
+  const result = await control.runScheduledTurn({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    promptText: "summarize commits",
+    taskId: "ab12",
+    executeAt: "2026-06-14T10:00:00.000Z",
+  });
+  expect(result).toEqual({ ok: true, text: "ran ok" });
+  // The agent ran with the scheduled prompt.
+  expect(calls.chat).toHaveLength(1);
+  expect((calls.chat[0] as { text: string }).text).toBe("summarize commits");
+  // turn-started carries the prompt + origin so the hub persists the inbound message
+  // and the web badges it; turn-finished closes the turn.
+  const started = seen.find((e) => e.type === "turn-started");
+  expect(started).toMatchObject({
+    type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend",
+    prompt: "summarize commits", scheduled: { taskId: "ab12", executeAt: "2026-06-14T10:00:00.000Z" },
+  });
+  expect(seen.some((e) => e.type === "turn-finished" && e.ok === true)).toBe(true);
+});
+
+test("a normal prompt's turn-started carries no scheduled origin", async () => {
+  const { control, seen } = makeControl();
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1", isOwner: true });
+  const started = seen.find((e) => e.type === "turn-started");
+  expect(started).toEqual({ type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend" });
 });
 
 test("createScheduledTask delegates and emits scheduled-changed", async () => {

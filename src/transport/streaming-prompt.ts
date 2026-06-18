@@ -1,4 +1,4 @@
-import type { ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
 import { resolveToolEventMode } from "./tool-event-mode.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
@@ -11,8 +11,15 @@ export interface StreamingPromptState {
   formatToolCalls: boolean;
   emittedToolCallIds: Set<string>;
   toolEventMode: ToolEventMode;
+  // Raw streaming (replyMode "stream"): the consumer renders one live bubble that
+  // concatenates chunks verbatim, so we DON'T split on paragraph boundaries or trim.
+  // Agent text accumulates raw in `buffer`; a short flush timer drains it as-is. This
+  // trades the batched paragraph model (good for discrete chat messages) for low
+  // first-token latency and smooth token streaming.
+  rawStream: boolean;
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   finalize: () => string;
 }
 
@@ -31,6 +38,7 @@ interface StreamEvent {
       toolCallId?: string;
       rawInput?: unknown;
       rawOutput?: unknown;
+      entries?: unknown;
     };
   };
 }
@@ -39,8 +47,10 @@ export type CreateStreamingPromptStateOptions =
   | ((event: ToolUseEvent) => void | Promise<void>)
   | {
       mode?: ToolEventMode;
+      rawStream?: boolean;
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
+      onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
     };
 
 export function createStreamingPromptState(
@@ -50,6 +60,8 @@ export function createStreamingPromptState(
   let toolEventMode: ToolEventMode;
   let onToolEvent: ((event: ToolUseEvent) => void | Promise<void>) | undefined;
   let onThought: ((chunk: string) => void | Promise<void>) | undefined;
+  let onPlan: ((entries: PlanEntry[]) => void | Promise<void>) | undefined;
+  let rawStream = false;
 
   if (options === undefined) {
     toolEventMode = "text";
@@ -61,6 +73,8 @@ export function createStreamingPromptState(
   } else {
     onToolEvent = options.onToolEvent;
     onThought = options.onThought;
+    onPlan = options.onPlan;
+    rawStream = options.rawStream ?? false;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
       onToolEvent,
@@ -75,13 +89,17 @@ export function createStreamingPromptState(
     formatToolCalls,
     emittedToolCallIds: new Set(),
     toolEventMode,
+    rawStream,
     onToolEvent,
     onThought,
+    onPlan,
     finalize(): string {
       if (this.pendingLine.trim().length > 0) {
         parseStreamingChunks(this, this.pendingLine);
       }
-      const remaining = this.buffer.trim();
+      // Raw streaming preserves the agent's exact text (the consumer concatenates
+      // verbatim); only the batched paragraph path trims segment edges.
+      const remaining = this.rawStream ? this.buffer : this.buffer.trim();
       this.buffer = "";
       this.pendingLine = "";
       return remaining;
@@ -116,9 +134,15 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   const update = event.params?.update;
   if (!update) return;
 
-  if (state.formatToolCalls && (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")) {
+  if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+    // Structured consumers (e.g. the relay web dashboard) render tool calls in
+    // their own UI, so they receive events through `onToolEvent` regardless of the
+    // channel's text replyMode. Only the legacy inline-text rendering — which
+    // spills tool calls into the reply stream — stays gated behind verbose mode
+    // (`formatToolCalls`). Previously the whole branch was gated, so a channel with
+    // replyMode "stream"/"final" silently dropped structured events too.
     const wantsStructured = state.toolEventMode === "structured" || state.toolEventMode === "both";
-    const wantsText = state.toolEventMode === "text" || state.toolEventMode === "both";
+    const wantsText = (state.toolEventMode === "text" || state.toolEventMode === "both") && state.formatToolCalls;
 
     // Defense-in-depth: if a transport set mode='structured' without wiring
     // onToolEvent, drop the event silently rather than throwing or leaking
@@ -140,6 +164,17 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
         state.segments.push(formatted);
       }
     }
+    return;
+  }
+
+  if (update.sessionUpdate === "plan") {
+    // ACP sends the full plan each time; forward verbatim (replace semantics). Validate
+    // shape defensively — a malformed entry must not crash the stream parser.
+    const entries = Array.isArray(update.entries)
+      ? update.entries.filter((x): x is PlanEntry =>
+          !!x && typeof x === "object" && typeof (x as PlanEntry).content === "string" && typeof (x as PlanEntry).status === "string")
+      : [];
+    if (entries.length > 0) void state.onPlan?.(entries);
     return;
   }
 
@@ -169,6 +204,10 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   if (chunk.length === 0) return;
 
   state.buffer += chunk;
+
+  // Raw streaming: leave the text in `buffer` untouched — the transport's short flush
+  // timer drains it verbatim, so paragraph structure is preserved without splitting.
+  if (state.rawStream) return;
 
   // Split on paragraph boundaries (\n\n) — there may be multiple in a single chunk
   let boundary: number;

@@ -4,7 +4,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type RelayEnvelope, type ToolStepDto,
+  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope, type ToolStepDto, type TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -35,6 +35,7 @@ export interface CreateRuntimeOptions {
   webRoot?: string;
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
+  trustProxy?: boolean;
 }
 
 /** Testable assembly without any network listener. */
@@ -47,12 +48,50 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const webGateway = new WebGateway();
 
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string }
+  // `parts` records text / reasoning / tool events in arrival order so the web can
+  // replay history inline (same model the live view builds). `steps`/`reasoning`/`text`
+  // remain for the flat fallback + the persisted `text` column.
+  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+  // Snapshot the in-flight turns for one instance so a (re)connecting web client can
+  // rebuild the live view after a refresh (see GET /api/active-turns). `parts` is the
+  // live array — fine to hand out by reference since the route serializes it at once.
+  const listActiveTurns = (instanceId: string): LiveTurnSnapshotDto[] => {
+    const prefix = `${instanceId}\0`;
+    const out: LiveTurnSnapshotDto[] = [];
+    for (const [k, a] of turnBuffers) {
+      if (!k.startsWith(prefix)) continue;
+      out.push({
+        instanceId,
+        sessionAlias: k.slice(prefix.length),
+        parts: a.parts,
+        status: a.text ? "streaming" : "working",
+        startedAt: a.startedAt,
+      });
+    }
+    return out;
+  };
+  // Coalescing appenders — consecutive same-type chunks merge into one part.
+  const pushTextPart = (a: TurnAccumulator, chunk: string) => {
+    const last = a.parts[a.parts.length - 1];
+    if (last?.type === "text") last.text += chunk;
+    else a.parts.push({ type: "text", text: chunk });
+  };
+  const pushReasoningPart = (a: TurnAccumulator, chunk: string) => {
+    const last = a.parts[a.parts.length - 1];
+    if (last?.type === "reasoning") last.text = (last.text + chunk).slice(0, REASONING_CAP);
+    else a.parts.push({ type: "reasoning", text: chunk.slice(0, REASONING_CAP) });
+  };
+  const pushToolPart = (a: TurnAccumulator, step: ToolStepDto) => {
+    const i = a.parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
+    if (i >= 0) (a.parts[i] as Extract<TurnPartDto, { type: "tool" }>).step = step;
+    else a.parts.push({ type: "tool", step });
+  };
 
   const gateway = new InstanceGateway({
     instances,
+    accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     onStatusChange: (instanceId, accountId, online) => {
       if (!online) {
@@ -66,22 +105,27 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const event = (envelope.payload as InstanceEventPayload).event as ControlEventDto;
         webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
         if (event.type === "turn-started") {
-          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "" });
+          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+          // A scheduled-origin turn carries its prompt here (a normal web turn persists
+          // its inbound message via the prompt RPC instead). Persist it so the fired
+          // task's prompt shows in history, not just the agent's out-of-context reply.
+          if (event.prompt) messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
         } else if (event.type === "turn-output") {
           // Only append to an existing buffer; never lazily resurrect one. A buffer
           // is created solely by turn-started, so a stray streaming event arriving
           // after an offline sweep (or with no turn-started) is dropped instead of
           // leaking a buffer that no turn-finished will ever clear.
           const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a) a.text += event.chunk;
+          if (a) { a.text += event.chunk; pushTextPart(a, event.chunk); }
         } else if (event.type === "tool-event") {
           const a = turnBuffers.get(key(instanceId, event.sessionAlias));
           if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
             a.steps.set(event.step.toolCallId, event.step);
+            pushToolPart(a, event.step);
           }
         } else if (event.type === "turn-thought") {
           const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a) a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP);
+          if (a) { a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP); pushReasoningPart(a, event.chunk); }
         } else if (event.type === "turn-finished") {
           const k = key(instanceId, event.sessionAlias);
           const a = turnBuffers.get(k);
@@ -91,9 +135,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           const hasStructured = steps.length > 0 || a.reasoning.length > 0;
           if (a.text || hasStructured) {
             const structured = hasStructured
-              ? { toolSteps: steps, ...(a.reasoning ? { reasoning: a.reasoning } : {}) }
+              ? { toolSteps: steps, ...(a.reasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
               : undefined;
             messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
+          }
+        } else if (event.type === "session-history") {
+          // Seed a freshly-attached native session's recovered prior conversation into
+          // history (one-time). Guard against re-seeding an already-populated session so a
+          // redelivered event can't duplicate the backlog.
+          const existing = messages.listBySession(accountId, instanceId, event.sessionAlias, { limit: 1 });
+          if (existing.messages.length === 0) {
+            for (const row of event.messages) {
+              messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured);
+            }
           }
         }
       } else if (envelope.type === MSG.instanceNotice) {
@@ -106,6 +160,8 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     accounts, instances, messages, gateway, webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays ?? 30,
     maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
+    activeTurns: listActiveTurns,
+    trustProxy: options.trustProxy,
   });
   return { db, accounts, instances, messages, gateway, webGateway, app, close: () => db.close() };
 }
@@ -118,6 +174,7 @@ export interface StartRelayOptions {
   webRoot?: string;
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
+  trustProxy?: boolean;
 }
 
 export interface RunningRelay {
@@ -132,6 +189,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays,
     requestTimeoutMs: options.requestTimeoutMs,
+    trustProxy: options.trustProxy,
   });
   const host = options.host ?? "0.0.0.0";
 

@@ -1,6 +1,6 @@
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
-import type { ToolUseEvent } from "../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 
 export type { ToolEventMode } from "./tool-event-mode.js";
@@ -44,6 +44,14 @@ export interface ResolvedSession {
   mcpSourceHandle?: string;
   modeId?: string;
   replyMode?: "stream" | "final" | "verbose";
+  /**
+   * Channel-resolved effective reply mode. The relay/control channel defaults to
+   * "stream" (its dashboard is a streaming UI) so multi-line markdown isn't shredded
+   * by batched paragraph reconstruction. Consumers prefer this over `replyMode`;
+   * it's undefined for channels with no channel-level default (preserving their
+   * existing `replyMode ?? "verbose"` behavior).
+   */
+  effectiveReplyMode?: "stream" | "final" | "verbose";
   cwd: string;
   /**
    * True for a non-persisted, single-use session (e.g. a `/later` temp-mode
@@ -111,6 +119,11 @@ export interface PromptOptions {
    * error observed rejects the prompt.
    */
   onThought?: (chunk: string) => void | Promise<void>;
+  /**
+   * Structured plan/todo side-channel: the agent's full ACP `plan` entry list,
+   * re-sent on every update (REPLACE, not append). Optional — text channels omit it.
+   */
+  onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   /**
    * How tool_call / tool_call_update events are surfaced for this prompt.
    *

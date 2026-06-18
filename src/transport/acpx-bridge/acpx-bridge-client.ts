@@ -12,8 +12,9 @@ import {
 import { PromptCommandError } from "../prompt-output";
 import { MissingOptionalDepError } from "../../recovery/errors";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import type { ToolUseEvent } from "../../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
+import { resolveDefaultXacpxCommand } from "../acpx-queue-owner-launcher";
 
 // `boolean | void` return mirrors Writable.write: `false` only signals
 // backpressure (the line is still queued and delivered), never failure.
@@ -24,6 +25,7 @@ export type BridgeEvent =
   | { type: "prompt.segment"; text: string }
   | { type: "prompt.tool_event"; event: ToolUseEvent }
   | { type: "prompt.thought"; text: string }
+  | { type: "prompt.plan"; entries: PlanEntry[] }
   | { type: "session.progress"; stage: EnsureSessionProgressStage }
   | { type: "session.note"; text: string };
 
@@ -111,6 +113,11 @@ export class AcpxBridgeClient {
           type: "prompt.thought",
           text: message.text,
         });
+      } else if (message.event === "prompt.plan") {
+        pending.onEvent?.({
+          type: "prompt.plan",
+          entries: message.entries,
+        });
       } else if (message.event === "session.progress") {
         pending.onEvent?.({
           type: "session.progress",
@@ -175,6 +182,15 @@ export interface ManagedBridgeClient extends AcpxBridgeClient {
 
 interface SpawnedBridgeClientOptions {
   acpxCommand?: string;
+  /**
+   * The xacpx CLI command the bridge's queue-owner launcher should use to spawn the
+   * `mcp-stdio` coordinator server for each agent. MUST point at the CLI entry (cli.js),
+   * not the bridge entry: the launcher runs *inside* this bridge subprocess, where
+   * `process.argv[1]` is `bridge-main.js` — which only speaks the bridge protocol, so an
+   * agent's MCP `initialize` handshake against it never completes and stalls ~30s per
+   * prompt. Defaults to the console's own resolved command (see resolveDefaultXacpxCommand).
+   */
+  cliCommand?: string;
   bridgeEntryPath?: string;
   cwd?: string;
   permissionMode?: string;
@@ -189,6 +205,11 @@ export function buildBridgeSpawnEnv(
 ): Record<string, string> {
   return {
     XACPX_LANG: getLocale(),
+    // Resolved in the console process (where argv[1] is the CLI entry) and handed to the
+    // bridge so its queue-owner launcher points each agent's `mcp-stdio` coordinator server
+    // at the real CLI instead of bridge-main.js. resolveDefaultXacpxCommand honors an
+    // explicit XACPX_CLI_COMMAND first, so a user/operator override still wins.
+    XACPX_CLI_COMMAND: options.cliCommand ?? resolveDefaultXacpxCommand(process.env),
     XACPX_BRIDGE_ACPX_COMMAND: options.acpxCommand ?? "acpx",
     XACPX_BRIDGE_PERMISSION_MODE: options.permissionMode ?? "approve-all",
     XACPX_BRIDGE_NON_INTERACTIVE_PERMISSIONS: options.nonInteractivePermissions ?? "deny",

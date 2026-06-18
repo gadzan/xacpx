@@ -2,11 +2,12 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
 
-import { MSG } from "@ganglion/xacpx-relay-protocol";
+import { MSG, type LiveTurnSnapshotDto } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
+import { clientIp } from "./client-ip.js";
 
 export interface GatewayForApp {
   isOnline(instanceId: string): boolean;
@@ -18,20 +19,25 @@ export interface AppDeps {
   instances: InstanceStore;
   gateway: GatewayForApp;
   messages: MessageStore;
+  /** Snapshot the in-flight turns for an instance (for the active-turns endpoint). */
+  activeTurns?: (instanceId: string) => LiveTurnSnapshotDto[];
   webRoot?: string;
   sessionTtlMs?: number;
-  inviteTtlMs?: number;
   pairingTtlMs?: number;
   historyRetentionDays?: number;
   maxMessagesPerSession?: number;
+  trustProxy?: boolean;
   now?: () => Date;
 }
 
 const SESSION_COOKIE = "xrelay_session";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
-const LOGIN_MAX_FAILURES = 10;
+export const LOGIN_MAX_FAILURES = 10;
 const LOGIN_FAILURES_SWEEP_AT = 1024;
 const LOGIN_FAILURES_MAX = 4096;
+// Global failure ceiling: total failed /api/login attempts across all IPs per window.
+// Backstop so varied-IP / XFF-spoofing floods cannot fully bypass per-IP throttling.
+export const GLOBAL_MAX_FAILURES = 200;
 
 /** Chat-scoped control RPCs get chatKey/senderId/isOwner stamped server-side. */
 const CHAT_SCOPED_TYPES = new Set<string>([
@@ -40,7 +46,9 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   // Session ops are chat-scoped too: created sessions must land in the same
   // `relay:<accountId>` channel scope that prompt/list resolve against, else a
   // freshly created session is unreachable by a subsequent prompt.
-  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsRemove,
+  MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsNativeList, MSG.sessionsRemove,
+  // Model get/set resolve the session within the caller's chat scope.
+  MSG.sessionModelGet, MSG.sessionModelSet,
 ]);
 
 function requireJson(contentType: string | undefined): boolean {
@@ -51,18 +59,20 @@ type Vars = { Variables: { account: AccountRow } };
 
 export function createApp(deps: AppDeps): Hono<Vars> {
   const sessionTtlMs = deps.sessionTtlMs ?? 7 * 24 * 60 * 60 * 1000;
-  const inviteTtlMs = deps.inviteTtlMs ?? 24 * 60 * 60 * 1000;
   const pairingTtlMs = deps.pairingTtlMs ?? 10 * 60 * 1000;
+  const trustProxy = deps.trustProxy ?? false;
   const now = deps.now ?? (() => new Date());
+
+  // Per-IP failure tracking
   const loginFailures = new Map<string, { count: number; windowStart: number }>();
+  // Global failure window counter (single entry; reset on window expiry)
+  let globalFailures: { count: number; windowStart: number } = { count: 0, windowStart: 0 };
 
-  const app = new Hono<Vars>();
-
-  app.post("/api/login", async (c) => {
-    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
-    const body = (await c.req.json().catch(() => ({}))) as { username?: string; password?: string };
-    const username = body.username ?? "";
-    const nowMs = now().getTime();
+  /**
+   * Sweep stale entries from the per-IP failure Map when it grows oversized.
+   * Only touches the per-IP Map; the global counter resets lazily in recordFailure.
+   */
+  function sweepPerIpLoginFailures(nowMs: number): void {
     if (loginFailures.size > LOGIN_FAILURES_SWEEP_AT) {
       for (const [k, v] of loginFailures) {
         if (nowMs - v.windowStart >= LOGIN_WINDOW_MS) loginFailures.delete(k);
@@ -76,39 +86,74 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         }
       }
     }
-    const failures = loginFailures.get(username);
-    if (failures && nowMs - failures.windowStart < LOGIN_WINDOW_MS && failures.count >= LOGIN_MAX_FAILURES) {
+  }
+
+  /** Record a login failure for both the per-IP bucket and the global counter. */
+  function recordFailure(ip: string, nowMs: number): void {
+    // Per-IP bucket
+    const perIp = loginFailures.get(ip);
+    const ipEntry = perIp && nowMs - perIp.windowStart < LOGIN_WINDOW_MS
+      ? { count: perIp.count + 1, windowStart: perIp.windowStart }
+      : { count: 1, windowStart: nowMs };
+    loginFailures.set(ip, ipEntry);
+
+    // Global counter — reset if window expired
+    if (nowMs - globalFailures.windowStart >= LOGIN_WINDOW_MS) {
+      globalFailures = { count: 1, windowStart: nowMs };
+    } else {
+      globalFailures = { count: globalFailures.count + 1, windowStart: globalFailures.windowStart };
+    }
+  }
+
+  /** Check whether this IP (or the global ceiling) is already rate-limited. */
+  function isRateLimited(ip: string, nowMs: number): boolean {
+    // Global ceiling check
+    if (nowMs - globalFailures.windowStart < LOGIN_WINDOW_MS && globalFailures.count >= GLOBAL_MAX_FAILURES) {
+      return true;
+    }
+    // Per-IP check
+    const perIp = loginFailures.get(ip);
+    return !!(perIp && nowMs - perIp.windowStart < LOGIN_WINDOW_MS && perIp.count >= LOGIN_MAX_FAILURES);
+  }
+
+  const app = new Hono<Vars>();
+
+  app.post("/api/login", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    const body = (await c.req.json().catch(() => ({}))) as { token?: string };
+    const nowMs = now().getTime();
+
+    sweepPerIpLoginFailures(nowMs);
+
+    const ip = clientIp(c, trustProxy);
+
+    if (isRateLimited(ip, nowMs)) {
       return c.json({ error: "too-many-attempts" }, 429);
     }
-    const account = deps.accounts.verifyLogin(username, body.password ?? "");
-    if (!account) {
-      const entry = failures && nowMs - failures.windowStart < LOGIN_WINDOW_MS
-        ? { count: failures.count + 1, windowStart: failures.windowStart }
-        : { count: 1, windowStart: nowMs };
-      loginFailures.set(username, entry);
-      return c.json({ error: "invalid-credentials" }, 401);
+
+    const r = deps.accounts.resolveLoginToken(body.token ?? "");
+    if (!r) {
+      recordFailure(ip, nowMs);
+      return c.json({ error: "invalid-token" }, 401);
     }
-    loginFailures.delete(username);
-    const token = deps.accounts.createWebSession(account.id, sessionTtlMs);
-    setCookie(c, SESSION_COOKIE, token, {
+
+    // Intentionally do NOT clear the per-IP failure bucket on success: on a shared
+    // IP (NAT), one user's success must not launder away an attacker's accumulated
+    // failures. The per-IP window expiry is the only reset path.
+    const sess = deps.accounts.createWebSession(r.account.id, r.loginTokenId, sessionTtlMs);
+    setCookie(c, SESSION_COOKIE, sess, {
       httpOnly: true, sameSite: "Lax", path: "/", maxAge: Math.floor(sessionTtlMs / 1000),
     });
-    return c.json({ username: account.username, role: account.role });
+    return c.json({ username: r.account.username });
   });
 
-  app.post("/api/register", async (c) => {
-    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
-    const body = (await c.req.json().catch(() => ({}))) as { invite?: string; username?: string; password?: string };
-    if (!body.invite || !body.username || !body.password) return c.json({ error: "missing-fields" }, 400);
-    if (!deps.accounts.validateInvite(body.invite)) return c.json({ error: "invalid-invite" }, 403);
-    if (deps.accounts.findByUsername(body.username)) return c.json({ error: "username-taken" }, 409);
-    const account = deps.accounts.createAccount(body.username, body.password, "member");
-    deps.accounts.markInviteUsed(body.invite, account.id);
-    return c.json({ username: account.username, role: account.role });
-  });
+  // Tombstone: /api/register + /api/invites removed; explicit 404 registered before
+  // the /api/* auth gate so unauthenticated calls see 404, not 401.
+  app.post("/api/register", (c) => c.json({ error: "not-found" }, 404));
+  app.post("/api/invites", (c) => c.json({ error: "not-found" }, 404));
 
   app.use("/api/*", async (c, next) => {
-    if (c.req.path === "/api/login" || c.req.path === "/api/register") return next();
+    if (c.req.path === "/api/login") return next();
     const token = getCookie(c, SESSION_COOKIE);
     const account = token ? deps.accounts.getSessionAccount(token) : null;
     if (!account) return c.json({ error: "unauthorized" }, 401);
@@ -125,7 +170,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
 
   app.get("/api/me", (c) => {
     const account = c.get("account");
-    return c.json({ username: account.username, role: account.role });
+    return c.json({ username: account.username });
   });
 
   app.get("/api/config", (c) => {
@@ -135,14 +180,6 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         maxPerSession: deps.maxMessagesPerSession ?? 2000,
       },
     });
-  });
-
-  app.post("/api/invites", (c) => {
-    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
-    const account = c.get("account");
-    if (account.role !== "admin") return c.json({ error: "admin-only" }, 403);
-    const invite = deps.accounts.createInvite(account.id, inviteTtlMs);
-    return c.json({ invite: invite.token, expiresAt: invite.expiresAt });
   });
 
   app.get("/api/instances", (c) => {
@@ -168,12 +205,32 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     return removed ? c.json({ ok: true }) : c.json({ error: "not-found" }, 404);
   });
 
+  // In-flight turns across all of the account's instances, so a refreshed web client
+  // restores live HUDs / streaming bubbles / "working" dots without waiting for finish.
+  app.get("/api/active-turns", (c) => {
+    const account = c.get("account");
+    const turns: LiveTurnSnapshotDto[] = [];
+    for (const inst of deps.instances.listByAccount(account.id)) {
+      for (const t of deps.activeTurns?.(inst.id) ?? []) turns.push(t);
+    }
+    return c.json({ turns });
+  });
+
   app.get("/api/instances/:id/sessions/:alias/messages", (c) => {
     const account = c.get("account");
     const instance = deps.instances.getOwned(c.req.param("id"), account.id);
     if (!instance) return c.json({ error: "not-found" }, 404);
-    const messages = deps.messages.listBySession(account.id, instance.id, c.req.param("alias"));
-    return c.json({ messages });
+    // Cursor pagination: `before` = oldest id the client already has (load older);
+    // `limit` is clamped to [1, 200]. Both optional — omitted = most recent page.
+    const limitRaw = Number(c.req.query("limit"));
+    const beforeRaw = Number(c.req.query("before"));
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 100;
+    const before = Number.isFinite(beforeRaw) && beforeRaw > 0 ? Math.floor(beforeRaw) : undefined;
+    const page = deps.messages.listBySession(account.id, instance.id, c.req.param("alias"), {
+      limit,
+      ...(before !== undefined ? { before } : {}),
+    });
+    return c.json(page);
   });
 
   app.post("/api/instances/:id/rpc", async (c) => {

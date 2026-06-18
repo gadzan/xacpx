@@ -55,6 +55,21 @@ test("parseStreamingChunks accumulates text and detects paragraph boundary", () 
   expect(state.hasAgentMessage).toBe(true);
 });
 
+test("rawStream keeps text verbatim in the buffer (no paragraph split/trim)", () => {
+  const state = createStreamingPromptState(false, { rawStream: true });
+
+  parseStreamingChunks(state, makeChunkLine("Hello"));
+  parseStreamingChunks(state, makeChunkLine(" World\n\n"));
+  parseStreamingChunks(state, makeChunkLine("New paragraph"));
+
+  // Nothing is split off into segments; the live consumer drains `buffer` verbatim.
+  expect(state.segments).toEqual([]);
+  expect(state.buffer).toBe("Hello World\n\nNew paragraph");
+  // finalize() returns the buffer untrimmed in raw mode.
+  parseStreamingChunks(state, makeChunkLine("  trailing  "));
+  expect(state.finalize()).toBe("Hello World\n\nNew paragraph  trailing  ");
+});
+
 test("parseStreamingChunks handles multiple paragraph boundaries", () => {
   const state = createStreamingPromptState();
 
@@ -606,6 +621,29 @@ test("empty thought chunk does not invoke onThought", () => {
   parseStreamingChunks(state, makeThoughtLine(""));
 
   expect(calls).toBe(0);
+});
+
+test("parses a plan update into onPlan with the full entry list (replace semantics)", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, { onPlan: (entries) => plans.push(entries) });
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "plan", entries: [
+      { content: "read files", status: "completed" },
+      { content: "write code", status: "in_progress", priority: "high" },
+    ] } },
+  }));
+  expect(plans).toEqual([[
+    { content: "read files", status: "completed" },
+    { content: "write code", status: "in_progress", priority: "high" },
+  ]]);
+});
+
+test("ignores a plan update with no entries array", () => {
+  let called = false;
+  const state = createStreamingPromptState(false, { onPlan: () => { called = true; } });
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: { sessionUpdate: "plan" } } }));
+  expect(called).toBe(false);
 });
 
 test("interleaved stream: thoughts reach onThought in order, agent message lands in segments, thoughts do not appear in segments or buffer", () => {

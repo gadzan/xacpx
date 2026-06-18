@@ -11,7 +11,7 @@ import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
-import { resolveAgentCommand } from "./config/resolve-agent-command";
+import { resolveRuntimeAgentCommand } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
@@ -481,7 +481,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
-      agentCommand: resolveAgentCommand(agentConfig.driver, agentConfig.command),
+      agentCommand: resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, config.transport.preferLocalAgents !== false),
       workspace: input.workspace,
       transportSession: input.workerSession,
       cwd: input.cwd,
@@ -764,8 +764,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const control = new ControlService({
     agent,
     sessions,
-    createSessionWithTransport: (internalAlias, agent, workspace) =>
-      router.createSessionWithTransport(internalAlias, agent, workspace),
+    transport,
+    createSessionWithTransport: (internalAlias, agent, workspace, model) =>
+      router.createSessionWithTransport(internalAlias, agent, workspace, model),
+    listNativeSessions: (agent, workspace) =>
+      router.listNativeSessionsForControl(agent, workspace),
+    attachNativeSessionWithTransport: (internalAlias, agent, workspace, agentSessionId, nativeMeta) =>
+      router.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId, nativeMeta),
     activeTurns,
     scheduled: scheduledService,
     orchestration,
@@ -807,6 +812,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const scheduledScheduler = new ScheduledTaskScheduler(scheduledService, {
     dispatchTask: buildScheduledDispatchTask({
       getSession: (alias) => sessions.getSession(alias),
+      resolveAliasForChat: (chatKey, alias) => sessions.resolveAliasForChat(chatKey, alias),
       resolveSession: (alias, agent, workspace, transportSession) =>
         sessions.resolveSession(alias, agent, workspace, transportSession),
       sendScheduledMessage: async (input) => {
@@ -818,6 +824,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       ...(transport.removeSession ? { removeSession: (session) => transport.removeSession!(session) } : {}),
       logger,
     }),
+    // A fired task reaches a terminal state here; tell structured consumers (the web
+    // panel) so it reloads and the run shows its Done/Failed status instead of vanishing.
+    onSettled: (task) => controlEvents.emit({ type: "scheduled-changed", chatKey: task.chat_key }),
     logger,
   });
 

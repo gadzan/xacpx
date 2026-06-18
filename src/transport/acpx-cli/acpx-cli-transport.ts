@@ -4,7 +4,7 @@ import { spawn as spawnPty } from "node-pty";
 
 import { resolveSpawnCommand } from "../../process/spawn-command";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
-import type { ToolUseEvent } from "../../channels/types.js";
+import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
 import type {
   AgentSessionListQuery,
@@ -19,7 +19,11 @@ import type {
 import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
-import { buildOverflowSummary, createQuotaGatedReplySink } from "../quota-gated-reply-sink";
+import {
+  buildOverflowSummary,
+  createQuotaGatedReplySink,
+  createVerbatimReplySink,
+} from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
 import { AcpxQueueOwnerLauncher } from "../acpx-queue-owner-launcher";
@@ -263,8 +267,11 @@ export class AcpxCliTransport implements SessionTransport {
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
     const args = this.buildPromptArgs(session, text, structuredPrompt?.filePath);
     try {
-      if (reply || options?.onSegment || options?.onToolEvent || options?.onThought) {
-        const formatToolCalls = (session.replyMode ?? "verbose") === "verbose";
+      if (reply || options?.onSegment || options?.onToolEvent || options?.onThought || options?.onPlan) {
+        const effectiveReplyMode = session.effectiveReplyMode ?? session.replyMode;
+        const formatToolCalls = (effectiveReplyMode ?? "verbose") === "verbose";
+        // replyMode "stream" → raw token streaming (one live bubble, low latency).
+        const rawStream = effectiveReplyMode === "stream";
         let toolEventMode = resolveToolEventMode(options);
         // Safety net: structured/both without an onToolEvent handler would
         // silently drop tool calls. Demote to 'text' so verbose tool calls
@@ -282,6 +289,8 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onSegment,
           options?.onToolEvent,
           options?.onThought,
+          options?.onPlan,
+          rawStream,
         );
         const baseText = getPromptText(result);
         if (!reply) {
@@ -523,14 +532,18 @@ export class AcpxCliTransport implements SessionTransport {
     onSegment?: (text: string) => void | Promise<void>,
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
+    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
+    rawStream: boolean = false,
   ): Promise<{ result: CommandResult; overflowCount: number }> {
     const hooks = this.streamingHooks;
     const doSpawn = hooks.spawnPrompt
       ?? ((cmd, spawnArgs) => spawn(cmd, spawnArgs, { stdio: ["ignore", "pipe", "pipe"] }) as unknown as PromptStreamProcess);
     const setIntervalFn = hooks.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
     const clearIntervalFn = hooks.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
-    const maxSegmentWaitMs = hooks.maxSegmentWaitMs ?? 30_000;
-    const flushCheckIntervalMs = hooks.flushCheckIntervalMs ?? 5_000;
+    // Raw streaming drains the buffer on a tight cadence (~5×/s) for low-latency token
+    // streaming; the batched paragraph path keeps the long stall-fallback window.
+    const maxSegmentWaitMs = hooks.maxSegmentWaitMs ?? (rawStream ? 200 : 30_000);
+    const flushCheckIntervalMs = hooks.flushCheckIntervalMs ?? (rawStream ? 80 : 5_000);
     const now = hooks.now ?? (() => Date.now());
 
     return await new Promise((resolve, reject) => {
@@ -545,11 +558,15 @@ export class AcpxCliTransport implements SessionTransport {
       let toolEventError: unknown;
       let thoughtChain = Promise.resolve();
       let thoughtError: unknown;
+      let planChain = Promise.resolve();
+      let planError: unknown;
       const userOnToolEvent = onToolEvent;
       const userOnThought = onThought;
+      const userOnPlan = onPlan;
 
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
+        rawStream,
         ...(userOnToolEvent
           ? {
               onToolEvent: (event) => {
@@ -574,13 +591,27 @@ export class AcpxCliTransport implements SessionTransport {
               },
             }
           : {}),
+        ...(userOnPlan
+          ? {
+              onPlan: (entries) => {
+                // Serialize handler invocations; first error wins.
+                planChain = planChain
+                  .then(() => userOnPlan(entries))
+                  .catch((error) => {
+                    planError ??= error;
+                  });
+              },
+            }
+          : {}),
       });
 
       const sink = reply
-        ? createQuotaGatedReplySink({
-            reply,
-            ...(replyContext ? { replyContext } : {}),
-          })
+        ? rawStream
+          ? createVerbatimReplySink(reply)
+          : createQuotaGatedReplySink({
+              reply,
+              ...(replyContext ? { replyContext } : {}),
+            })
         : null;
 
       const feedSegment = (segment: string) => {
@@ -596,7 +627,8 @@ export class AcpxCliTransport implements SessionTransport {
       };
 
       const flushBuffer = () => {
-        const remaining = state.buffer.trim();
+        // Raw streaming forwards the buffer verbatim; the batched path trims edges.
+        const remaining = rawStream ? state.buffer : state.buffer.trim();
         if (remaining.length > 0) {
           state.buffer = "";
           feedSegment(remaining);
@@ -646,6 +678,7 @@ export class AcpxCliTransport implements SessionTransport {
           segmentChain,
           toolEventChain,
           thoughtChain,
+          planChain,
         ]).then(() => {
           const deferred = sink?.getPendingError();
           if (deferred) {
@@ -662,6 +695,10 @@ export class AcpxCliTransport implements SessionTransport {
           }
           if (thoughtError) {
             reject(thoughtError);
+            return;
+          }
+          if (planError) {
+            reject(planError);
             return;
           }
           resolve({

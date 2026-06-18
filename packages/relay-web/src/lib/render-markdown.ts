@@ -1,6 +1,7 @@
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
 import remend from "remend";
+import { normalizeMarkdownTables } from "./normalize-markdown";
 
 // Single shared parser. html:false escapes any raw HTML in the markdown source,
 // so agent output cannot inject markup; DOMPurify is a second, defense-in-depth pass
@@ -10,6 +11,12 @@ const md = new MarkdownIt({
   linkify: true,
   breaks: true,
 });
+
+// Wrap tables in a horizontally scrollable container so a wide table scrolls within the
+// message instead of overflowing the viewport — without display:block on the <table>,
+// which would collapse its column layout into a stacked single column.
+md.renderer.rules.table_open = () => '<div class="md-table-wrap"><table>';
+md.renderer.rules.table_close = () => "</table></div>";
 
 // Force every surviving link to open safely in a new tab. Registered once at module
 // load; DOMPurify is a singleton and this app only sanitizes through this module.
@@ -32,7 +39,10 @@ export interface RenderMarkdownOptions {
 
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
-  const source = options.streaming ? remend(text) : text;
+  // Heal unterminated markup first (streaming), then run table normalization so it
+  // sees correct fence state, then parse.
+  const healed = options.streaming ? remend(text) : text;
+  const source = normalizeMarkdownTables(healed);
   const rawHtml = md.render(source);
   return DOMPurify.sanitize(rawHtml);
 }

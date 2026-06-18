@@ -11,6 +11,10 @@ const DEFAULT_DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface ScheduledTaskSchedulerDeps {
   dispatchTask: (task: ScheduledTaskRecord, abortSignal: AbortSignal) => Promise<void>;
+  // Fired after a task reaches a terminal state (executed/failed), so consumers can
+  // refresh their view — e.g. emit a `scheduled-changed` control event so the web
+  // panel reloads and the fired task shows its Done/Failed status instead of vanishing.
+  onSettled?: (task: ScheduledTaskRecord) => void;
   intervalMs?: number;
   dispatchTimeoutMs?: number;
   setIntervalFn?: (fn: () => void | Promise<void>, delay: number) => unknown;
@@ -24,6 +28,7 @@ export class ScheduledTaskScheduler {
   private readonly setIntervalFn: (fn: () => void | Promise<void>, delay: number) => unknown;
   private readonly clearIntervalFn: (timer: unknown) => void;
   private readonly dispatchTask: (task: ScheduledTaskRecord, abortSignal: AbortSignal) => Promise<void>;
+  private readonly onSettled?: (task: ScheduledTaskRecord) => void;
   private readonly logger?: AppLogger;
   private intervalHandle: unknown = null;
   private ticking = false;
@@ -33,6 +38,7 @@ export class ScheduledTaskScheduler {
     deps: ScheduledTaskSchedulerDeps,
   ) {
     this.dispatchTask = deps.dispatchTask;
+    this.onSettled = deps.onSettled;
     this.intervalMs = deps.intervalMs ?? 5000;
     this.dispatchTimeoutMs = deps.dispatchTimeoutMs ?? DEFAULT_DISPATCH_TIMEOUT_MS;
     this.setIntervalFn = deps.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
@@ -84,6 +90,7 @@ export class ScheduledTaskScheduler {
           });
           try {
             await this.service.markFailed(task.id, error);
+            this.notifySettled(task);
           } catch (markError) {
             // markFailed itself may throw if the store write fails.  Swallow so
             // one bad task's error-recording write cannot escape tick() and
@@ -101,6 +108,7 @@ export class ScheduledTaskScheduler {
         }
         try {
           await this.service.markExecuted(task.id);
+          this.notifySettled(task);
         } catch (markError) {
           // The dispatch SUCCEEDED — only the bookkeeping write failed, so the
           // task must not be recorded as failed. Leave its state alone (disk
@@ -118,6 +126,20 @@ export class ScheduledTaskScheduler {
       }
     } finally {
       this.ticking = false;
+    }
+  }
+
+  // Notify a settled task to the optional listener, isolating a throwing listener
+  // so it can never escape tick() and crash the daemon or skip later tasks.
+  private notifySettled(task: ScheduledTaskRecord): void {
+    if (!this.onSettled) return;
+    try {
+      this.onSettled(task);
+    } catch (error) {
+      void this.logger?.error("scheduled.on_settled.failed", "scheduled onSettled listener threw", {
+        taskId: task.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

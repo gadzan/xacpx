@@ -51,6 +51,9 @@ export interface ScheduledChannelMessageInput {
   sessionDescriptor?: ScheduledSessionDescriptor;
   accountId?: string;
   replyContextToken?: string;
+  // The task's scheduled execution time (ISO). Carried so structured channels
+  // (relay) can tag the fired turn with its schedule origin for the web badge.
+  executeAt?: string;
   noticeText: string;
   promptText: string;
   // Bounds the non-interactive agent turn so a wedged scheduled prompt cannot
@@ -179,4 +182,14 @@ export interface ToolUseEvent {
   status: ToolUseStatus;
   /** Set when status transitions out of "running". */
   durationMs?: number;
+}
+
+export type PlanEntryStatus = "pending" | "in_progress" | "completed";
+
+/** One entry of the agent's ACP `plan` (its live todo list). The agent re-sends the
+ *  WHOLE list on each update, so consumers REPLACE rather than append. */
+export interface PlanEntry {
+  content: string;
+  status: PlanEntryStatus;
+  priority?: "high" | "medium" | "low";
 }

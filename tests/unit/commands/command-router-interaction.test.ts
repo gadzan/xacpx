@@ -101,6 +101,43 @@ test("routes plain text to the current session", async () => {
   expect(reply.text).toContain("agent:api-fix:check this stack trace");
 });
 
+test("control-channel slash commands pass through to the agent (web is GUI-first)", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  // Session set-up uses no control metadata, so `/session new` is still handled by xacpx.
+  await router.handle("relay:acct", "/session new web --agent codex --ws backend");
+
+  // A relay-web user types an xacpx command; with channel="control" the router forwards
+  // it verbatim to the agent instead of interpreting it (the web GUI owns these actions).
+  const reply = await router.handle(
+    "relay:acct", "/status", undefined, undefined, undefined, undefined,
+    { channel: "control", chatType: "direct" },
+  );
+
+  expect(getPromptMock(transport).mock.calls.at(-1)?.[1]).toBe("/status");
+  expect(reply.text).toContain("agent:web:/status"); // agent echoed it, not the xacpx status card
+});
+
+test("non-control channels still handle xacpx slash commands", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  await router.handle("wx:user", "/session new web --agent codex --ws backend");
+  const before = getPromptMock(transport).mock.calls.length;
+
+  // `/status` from a chat channel (no GUI) is handled by xacpx, never sent to the agent.
+  const reply = await router.handle(
+    "wx:user", "/status", undefined, undefined, undefined, undefined,
+    { channel: "weixin", chatType: "direct" },
+  );
+
+  expect(getPromptMock(transport).mock.calls.length).toBe(before);
+  expect(reply.text).not.toContain("agent:web:/status");
+});
+
 test("binds the current coordinator session as MCP identity for plain prompts", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
@@ -2053,4 +2090,40 @@ test("ownerIds: scheduled dispatch turns do not clobber the route isOwner", asyn
 
   const recorded = getRecordCoordinatorRouteContextMock(orchestration).mock.calls.at(-1)?.[0];
   expect(recorded?.isOwner).toBeUndefined();
+});
+
+test("threads onPlan through the prompt path into transport.prompt options", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  let receivedOnPlan: ((entries: Array<{ content: string; status: string }>) => void | Promise<void>) | undefined;
+  transport.prompt = mock(async (_session, _text, _reply, _replyContext, options) => {
+    receivedOnPlan = options?.onPlan;
+    return { text: "agent done" };
+  });
+  const router = new CommandRouter(sessions, transport);
+  const myOnPlan = mock((_entries: Array<{ content: string; status: string }>) => {});
+
+  await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  // handle(...) positional order: reply, replyContextToken, accountId, media,
+  // metadata, abortSignal, onToolEvent, onThought, perfSpan, onPlan.
+  await router.handle(
+    "wx:user",
+    "plan this out",
+    undefined, // reply
+    undefined, // replyContextToken
+    undefined, // accountId
+    undefined, // media
+    undefined, // metadata
+    undefined, // abortSignal
+    undefined, // onToolEvent
+    undefined, // onThought
+    undefined, // perfSpan
+    myOnPlan, // onPlan
+  );
+
+  // The exact callback reached transport.prompt's options object...
+  expect(receivedOnPlan).toBe(myOnPlan);
+  // ...and invoking it propagates the plan entries end-to-end.
+  await receivedOnPlan?.([{ content: "step one", status: "in_progress" }]);
+  expect(myOnPlan.mock.calls.at(-1)?.[0]).toEqual([{ content: "step one", status: "in_progress" }]);
 });

@@ -37,6 +37,14 @@ export interface TransportConfig {
    * `0` keeps the owner alive forever. Defaults to 1800 (30 min).
    */
   queueOwnerTtlSeconds?: number;
+  /**
+   * Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback
+   * when one is on PATH (currently the unpinned-npx drivers: opencode, kilocode). This
+   * avoids a per-cold-start npm-registry fetch — faster and immune to network blips
+   * (e.g. ECONNRESET during agent init). Defaults to `true`; set `false` to always use
+   * acpx's default resolution. A per-agent `command` override still takes precedence.
+   */
+  preferLocalAgents?: boolean;
 }
 
 export type LoggingLevel = "error" | "info" | "debug";

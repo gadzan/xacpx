@@ -200,6 +200,39 @@ test("tick marks task failed on dispatch error", async () => {
   expect(state.scheduled_tasks.fail1?.last_error).toBe("channel unavailable");
 });
 
+test("onSettled fires after a task reaches a terminal state (executed and failed)", async () => {
+  const state = createEmptyState();
+  state.scheduled_tasks.ok1 = {
+    id: "ok1", chat_key: "relay:acc", session_alias: "s",
+    execute_at: "2026-05-23T09:59:00.000Z", message: "ok", status: "pending", created_at: "2026-05-23T09:00:00.000Z",
+  };
+  state.scheduled_tasks.bad1 = {
+    id: "bad1", chat_key: "relay:acc", session_alias: "s",
+    execute_at: "2026-05-23T09:59:00.000Z", message: "bad", status: "pending", created_at: "2026-05-23T09:00:00.000Z",
+  };
+  const store = new MemoryStore();
+  const service = new ScheduledTaskService(state, store, { now: () => new Date("2026-05-23T10:00:00.000Z") });
+
+  const settled: Array<{ id: string; chatKey: string }> = [];
+  const dispatchTask = mock(async (task: { id: string }) => { if (task.id === "bad1") throw new Error("boom"); });
+  const { setIntervalFn, clearIntervalFn } = createFakeSetInterval();
+  const scheduler = new ScheduledTaskScheduler(service, {
+    dispatchTask,
+    onSettled: (task) => settled.push({ id: task.id, chatKey: task.chat_key }),
+    setIntervalFn, clearIntervalFn,
+  });
+
+  await scheduler.tick();
+
+  // Both the executed and the failed task notify, carrying their chat_key so the
+  // wiring in main.ts can emit a scheduled-changed event for the web panel.
+  expect(settled).toEqual(expect.arrayContaining([
+    { id: "ok1", chatKey: "relay:acc" },
+    { id: "bad1", chatKey: "relay:acc" },
+  ]));
+  expect(settled).toHaveLength(2);
+});
+
 test("tick coalesces overlapping calls", async () => {
   const state = createEmptyState();
   state.scheduled_tasks.due1 = {

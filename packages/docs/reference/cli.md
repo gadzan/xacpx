@@ -164,18 +164,47 @@ For identity rules, `workingDirectory` semantics, the full tool list, and troubl
 
 ## Relay hub — `xacpx-relay`
 
-A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). It has three subcommands; until the relay packages are published to npm, invoke them as `node packages/relay/dist/cli.js <command>` from a repo checkout.
+A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). It has four subcommands; until the relay packages are published to npm, invoke them as `node packages/relay/dist/cli.js <command>` from a repo checkout.
 
 ```bash
-xacpx-relay init-admin --username <name> [--password <pw>] --db <path>
-xacpx-relay start --db <path> [--http-port 8787] [--ws-port 8788] [--host 0.0.0.0] [--web-root <dir>] [--history-retention-days 30]
-xacpx-relay token new --account <username> [--name <label>] [--ttl-minutes 10] --db <path>
+xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
+xacpx-relay add token [--label <note>] [--db <path>]
+xacpx-relay ls [--db <path>]
+xacpx-relay rm token <value-or-id> [--db <path>]
 ```
 
 | Command | Description |
 |---|---|
-| `init-admin` | Create the first admin account. Omitting `--password` prints a generated one **once**. |
-| `start` | Run the hub. `--web-root` must point at the built dashboard (`packages/relay-web/dist`) or no UI is served. No `stop`/`status` — use `SIGTERM`. |
-| `token new` | Mint a single-use, short-lived instance pairing token. |
+| `start` | Run the hub. `--db` defaults to `~/.xacpx-relay/relay.db` (auto-creates the directory). `--web-root` defaults to the bundled `packages/relay-web/dist` — the dashboard is served even if omitted. No `stop`/`status` — use `SIGTERM`. |
+| `add token` | Create a user and mint a login token; printed **once**. The same token is used for both the web dashboard login (paste into the "Access token" field) and the connector (`--token`). |
+| `ls` | List tokens: short id, label, created date, and number of connected instances. |
+| `rm token <value-or-id>` | Remove the user behind that token (cascades all data). |
 
-On the instance side, attach with the relay connector channel: `xacpx channel add relay --url wss://<gateway> --token <pairing-token>`. Full deployment walkthrough: [Self-Hosting the Relay Hub](/guide/relay-self-hosting).
+**Example — mint a token:**
+
+```
+$ xacpx-relay add token --label "my-instance"
+access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
+(store it now — not shown again)
+hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
+```
+
+**Connector command** — attach an instance to the hub:
+
+```bash
+xacpx channel add relay --url <host> --token <token> [--name <label>]
+```
+
+`--url` is a smart shorthand for the instance gateway (port 8788 by default) or a TLS proxy:
+
+| Input | Resolved URL |
+|---|---|
+| `relay.example.com` | `wss://relay.example.com` |
+| `1.2.3.4` | `ws://1.2.3.4:8788` |
+| `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
+| `localhost` | `ws://localhost:8788` |
+| `host:9000` | `ws://host:9000` |
+| `ws://…` / `wss://…` | as-is |
+| `http://…` / `https://…` | mapped to `ws://…` / `wss://…` |
+
+Full deployment walkthrough: [Self-Hosting the Relay Hub](/guide/relay-self-hosting).

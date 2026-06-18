@@ -9,6 +9,8 @@ interface DialogOptions {
   workspaces?: Array<{ name: string; cwd: string; description?: string }>;
   agentCatalog?: Array<{ driver: string; configured: boolean; installed: "builtin" | "yes" | "unknown" }>;
   sessions?: Array<{ alias: string }>;
+  nativeSessions?: Array<{ sessionId: string; title?: string | null; updatedAt?: string; cwd?: string }>;
+  modelSuggestions?: string[];
 }
 
 function mountDialog(opts: DialogOptions = {}) {
@@ -24,8 +26,17 @@ function mountDialog(opts: DialogOptions = {}) {
   vi.spyOn(store, "createAgent").mockResolvedValue(undefined as never);
   vi.spyOn(store, "createWorkspace").mockResolvedValue({ name: "ws", cwd: "/ws" } as never);
   vi.spyOn(store, "createSession").mockResolvedValue({ pending: false });
+  vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
+  vi.spyOn(store, "listModelSuggestions").mockResolvedValue(opts.modelSuggestions ?? []);
   const wrapper = mount(NewSessionDialog, { props: { instanceId: "i1", instanceName: "pc" } });
   return { wrapper, store };
+}
+
+// The Agent/Workspace pickers are custom SelectMenu dropdowns (button + list), not native
+// <select>s — open the trigger then click the option by its data-value.
+async function pick(wrapper: ReturnType<typeof mountDialog>["wrapper"], trigger: string, value: string) {
+  await wrapper.get(`[data-test="${trigger}"]`).trigger("click");
+  await wrapper.get(`[data-value="${value}"]`).trigger("mousedown");
 }
 
 describe("NewSessionDialog", () => {
@@ -41,7 +52,7 @@ describe("NewSessionDialog", () => {
     await flushPromises();
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex-2", "codex", "backend");
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex-2", "codex", "backend", undefined, undefined);
   });
 
   it("selecting an un-configured driver auto-creates the agent before the session", async () => {
@@ -55,11 +66,11 @@ describe("NewSessionDialog", () => {
       sessions: [],
     });
     await flushPromises();
-    await wrapper.get('[data-test="ns-agent"]').setValue("gemini");
+    await pick(wrapper, "ns-agent", "gemini");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createAgent).toHaveBeenCalledWith("i1", "gemini", "gemini");
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-gemini", "gemini", "backend");
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-gemini", "gemini", "backend", undefined, undefined);
   });
 
   it("New-path workspace mode auto-creates a workspace from the path basename", async () => {
@@ -75,10 +86,10 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createWorkspace).toHaveBeenCalledWith("i1", "demo-project", "/tmp/demo-project");
-    expect(store.createSession).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project");
+    expect(store.createSession).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project", undefined, undefined);
   });
 
-  it("an un-installed (unknown) driver is shown but disabled in the select", async () => {
+  it("an un-installed (unknown) driver is shown but disabled in the agent picker", async () => {
     const { wrapper } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "backend", cwd: "/b" }],
@@ -89,9 +100,13 @@ describe("NewSessionDialog", () => {
       sessions: [],
     });
     await flushPromises();
-    const opt = wrapper.find('option[value="qwen"]');
+    await wrapper.get('[data-test="ns-agent"]').trigger("click");
+    const opt = wrapper.find('[data-value="qwen"]');
     expect(opt.exists()).toBe(true);
-    expect(opt.attributes("disabled")).toBeDefined();
+    expect(opt.classes()).toContain("cursor-not-allowed");
+    // Clicking a disabled option must not select it.
+    await opt.trigger("mousedown");
+    expect(wrapper.find('[data-value="qwen"]').exists()).toBe(true); // menu stays open
   });
 
   it("New-path mode with an all-symbols path shows an error and does not create a session", async () => {
@@ -121,7 +136,7 @@ describe("NewSessionDialog", () => {
       sessions: [],
     });
     await flushPromises();
-    await wrapper.get('[data-test="ns-agent"]').setValue("gemini");
+    await pick(wrapper, "ns-agent", "gemini");
     await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
     await wrapper.get('[data-test="ns-ws-path"]').setValue("@@@");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
@@ -147,6 +162,114 @@ describe("NewSessionDialog", () => {
     expect(wrapper.find('[data-test="ns-pending"]').exists()).toBe(true);
     await wrapper.get('[data-test="ns-pending-close"]').trigger("click");
     expect(wrapper.emitted("created")?.[0]).toEqual(["backend-codex"]);
+  });
+
+  it("forwards a chosen model override on create", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-model"]').setValue("gpt-5.2[high]");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
+  });
+
+  it("opens the themed model dropdown and forwards a clicked suggestion", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+      modelSuggestions: ["gpt-5.2[high]", "gpt-5.2[low]"],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-model"]').trigger("focus");
+    const list = wrapper.find('[data-test="ns-model-list"]');
+    expect(list.exists()).toBe(true);
+    // "default" is always offered first, then the suggestions.
+    const items = list.findAll("li");
+    expect(items).toHaveLength(3);
+    expect(items[0].text()).toContain("default");
+    expect(items[1].text()).toBe("gpt-5.2[high]");
+    expect(items[2].text()).toBe("gpt-5.2[low]");
+    await items[1].trigger("mousedown");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
+  });
+
+  it("treats a literal \"default\" (or blank) model as the agent default — no override sent", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-model"]').setValue("  Default  ");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, undefined);
+  });
+
+  it("native source lists the agent's rollouts and attaches the chosen one by agentSessionId", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+      nativeSessions: [{ sessionId: "ses_99", title: "Prior work", updatedAt: "2026-06-10T00:00:00Z", cwd: "/b" }],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click");
+    await flushPromises();
+    // The native list is queried for the chosen agent + workspace, and the picker shows.
+    expect(store.listNativeSessions).toHaveBeenCalledWith("i1", "codex", "backend");
+    expect(wrapper.find('[data-test="ns-native"]').exists()).toBe(true);
+    // Creating now resumes the (preselected) native session via its agentSessionId.
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", "ses_99");
+  });
+
+  it("native source with no rollouts shows an empty hint and blocks create", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+      nativeSessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-native-empty"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
+    expect(store.createSession).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a native-list failure as a distinct error block with an auth hint", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    vi.mocked(store.listNativeSessions).mockRejectedValue(new Error("Authentication required"));
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click");
+    await flushPromises();
+    const err = wrapper.find('[data-test="ns-native-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("Authentication required");
+    expect(err.text()).toMatch(/isn't authenticated/i); // friendly next-step hint
+    // The plain "no sessions" empty hint must NOT show when there's a real error.
+    expect(wrapper.find('[data-test="ns-native-empty"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
   });
 
   it("shows a non-error pending notice on a create timeout and defers emit until acknowledged", async () => {

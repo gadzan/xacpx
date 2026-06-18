@@ -6,6 +6,7 @@ import { createControlEventBus, type ControlEvent } from "../../../src/control/c
 function makeDeps() {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
+  const calls: Array<{ kind: "fresh" | "native"; internalAlias: string; agent: string; workspace: string; agentSessionId?: string }> = [];
   events.subscribe((event) => seen.push(event));
   const session = {
     alias: "backend",
@@ -21,12 +22,18 @@ function makeDeps() {
       useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws/backend" }),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
     },
-    createSessionWithTransport: async (internalAlias: string, agent: string, workspace: string) => ({
-      ...session,
-      alias: internalAlias,
-      agent,
-      workspace,
-    }),
+    createSessionWithTransport: async (internalAlias: string, agent: string, workspace: string, model?: string) => {
+      calls.push({ kind: "fresh", internalAlias, agent, workspace, ...(model ? { model } : {}) });
+      return { ...session, alias: internalAlias, agent, workspace };
+    },
+    listNativeSessions: async (_agent: string, _workspace: string) => [
+      { sessionId: "ses_abc", title: "Fix login", updatedAt: "2026-06-10T00:00:00Z", cwd: "/ws/docs" },
+      { sessionId: "ses_def", title: null },
+    ],
+    attachNativeSessionWithTransport: async (internalAlias: string, agent: string, workspace: string, agentSessionId: string) => {
+      calls.push({ kind: "native", internalAlias, agent, workspace, agentSessionId });
+      return { ...session, alias: internalAlias, agent, workspace };
+    },
     activeTurns: { isActiveAnywhere: (alias: string) => alias === "backend" },
     scheduled: {
       listPending: () => [],
@@ -44,7 +51,7 @@ function makeDeps() {
     },
     events,
   };
-  return { deps, seen };
+  return { deps, seen, calls };
 }
 
 test("listSessions maps resolved sessions with running flag", () => {
@@ -63,10 +70,46 @@ test("listSessions maps resolved sessions with running flag", () => {
 });
 
 test("createSession runs the transport lifecycle and emits sessions-changed", async () => {
-  const { deps, seen } = makeDeps();
+  const { deps, seen, calls } = makeDeps();
   const control = new ControlService(deps as never);
   const created = await control.createSession("relay:acct", "docs", "codex", "/ws/docs");
   expect(created.alias).toBe("docs");
+  expect(calls).toEqual([{ kind: "fresh", internalAlias: "docs", agent: "codex", workspace: "/ws/docs" }]);
+  expect(seen).toContainEqual({ type: "sessions-changed" });
+});
+
+test("createSession forwards a model override to the fresh-create lifecycle", async () => {
+  const { deps, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  await control.createSession("relay:acct", "docs", "codex", "/ws/docs", undefined, "gpt-5.2[high]");
+  expect(calls).toEqual([{ kind: "fresh", internalAlias: "docs", agent: "codex", workspace: "/ws/docs", model: "gpt-5.2[high]" }]);
+});
+
+test("createSession ignores a model override on a native attach (resume uses the rollout's model)", async () => {
+  const { deps, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  await control.createSession("relay:acct", "resumed", "codex", "/ws/docs", "ses_abc", "gpt-5.2[high]");
+  // Native attach path receives no model — it resumes under the rollout's recorded model.
+  expect(calls).toEqual([{ kind: "native", internalAlias: "resumed", agent: "codex", workspace: "/ws/docs", agentSessionId: "ses_abc" }]);
+});
+
+test("listNativeSessions maps agent-native sessions for the web picker", async () => {
+  const { deps } = makeDeps();
+  const control = new ControlService(deps as never);
+  const sessions = await control.listNativeSessions("relay:acct", "codex", "/ws/docs");
+  expect(sessions).toEqual([
+    { sessionId: "ses_abc", title: "Fix login", updatedAt: "2026-06-10T00:00:00Z", cwd: "/ws/docs" },
+    { sessionId: "ses_def", title: null },
+  ]);
+});
+
+test("createSession with an agentSessionId resumes the native session instead of creating fresh", async () => {
+  const { deps, seen, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  const created = await control.createSession("relay:acct", "resumed", "codex", "/ws/docs", "ses_abc");
+  expect(created.alias).toBe("resumed");
+  // Routed to the native-attach path, NOT the fresh-create lifecycle.
+  expect(calls).toEqual([{ kind: "native", internalAlias: "resumed", agent: "codex", workspace: "/ws/docs", agentSessionId: "ses_abc" }]);
   expect(seen).toContainEqual({ type: "sessions-changed" });
 });
 
