@@ -64,6 +64,12 @@ export interface WorkspaceDiff {
   files: DiffFile[];
   diff: string;
   truncated: boolean;
+  /** Symbolic branch name (abbrev-ref HEAD); omitted when HEAD is detached. */
+  branch?: string;
+  /** True when HEAD is detached (no branch). */
+  detached?: boolean;
+  /** Working-tree context: its top-level root, and whether it's a linked (non-primary) worktree. */
+  worktree?: { root: string; linked: boolean };
 }
 
 export interface WorkspaceRef {
@@ -221,6 +227,32 @@ export class WorkspaceFs {
       }
     }
     const truncated = diff.length > DIFF_CAP;
-    return { workspace, files, diff: truncated ? diff.slice(0, DIFF_CAP) : diff, truncated };
+    return { workspace, files, diff: truncated ? diff.slice(0, DIFF_CAP) : diff, truncated, ...(await this.gitContext(root)) };
+  }
+
+  /** Branch + worktree context for a repo root. Best-effort: any git hiccup just
+   *  omits the fields so the diff itself still returns. */
+  private async gitContext(root: string): Promise<Pick<WorkspaceDiff, "branch" | "detached" | "worktree">> {
+    const run = async (...args: string[]): Promise<string | null> => {
+      try {
+        return (await execFileAsync("git", ["-C", root, ...args], { maxBuffer: GIT_MAX_BUFFER })).stdout.trim();
+      } catch {
+        return null;
+      }
+    };
+    const ctx: Pick<WorkspaceDiff, "branch" | "detached" | "worktree"> = {};
+    const head = await run("rev-parse", "--abbrev-ref", "HEAD");
+    if (head === "HEAD") ctx.detached = true;
+    else if (head) ctx.branch = head;
+
+    const top = await run("rev-parse", "--show-toplevel");
+    if (top) {
+      // A linked worktree's per-worktree git dir differs from the repo's common dir
+      // (e.g. <main>/.git/worktrees/<name> vs <main>/.git). The primary checkout has them equal.
+      const gitDir = await run("rev-parse", "--absolute-git-dir");
+      const commonDir = await run("rev-parse", "--path-format=absolute", "--git-common-dir");
+      ctx.worktree = { root: top, linked: !!gitDir && !!commonDir && gitDir !== commonDir };
+    }
+    return ctx;
   }
 }

@@ -134,6 +134,9 @@ export default {
     binaryNotShown: "不显示二进制文件。",
     noDiffContent: "无差异内容。",
     diffTruncated: "差异已截断",
+    detached: "分离 HEAD",
+    linked: "链接",
+    worktree: "工作树",
   },
   instance: {
     newSession: "新建会话",

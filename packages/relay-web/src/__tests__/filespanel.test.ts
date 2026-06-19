@@ -107,6 +107,34 @@ describe("FilesPanel navigation rail", () => {
     expect(spy).toHaveBeenCalled();
   });
 
+  it("shows the branch, worktree path, and a linked badge in the Changes tab git context", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws", files: [{ path: "a.ts", status: " M" }], diff: "+x\n-y\n", truncated: false,
+      branch: "feature", worktree: { root: "/Users/dev/.worktrees/feature", linked: true },
+    } as never;
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="changes-branch"]').text()).toBe("feature");
+    expect(w.find('[data-test="worktree-linked"]').exists()).toBe(true);
+    expect(w.find('[data-test="worktree-path"]').text()).toContain("/Users/dev/.worktrees/feature");
+  });
+
+  it("falls back to a detached label and hides the linked badge on the primary worktree", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws", files: [], diff: "", truncated: false,
+      detached: true, worktree: { root: "/repo", linked: false },
+    } as never;
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="changes-branch"]').text()).toBeTruthy(); // a detached label, not a branch
+    expect(w.find('[data-test="worktree-linked"]').exists()).toBe(false);
+    expect(w.find('[data-test="worktree-path"]').exists()).toBe(true);
+  });
+
   it("shows a calm empty state (not a dismiss-less error banner) for a non-git workspace's Changes tab", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();
