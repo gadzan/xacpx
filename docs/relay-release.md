@@ -60,21 +60,35 @@ git tag v0.11.0
 git push origin v0.11.0
 ```
 
-## 发布 relay 三包（暂无 workflow → 本地手动）
+## 发布 relay 三包（tag 触发，已有 CI）
 
-relay 三包目前**没有 tag 触发 workflow**（只有 core/feishu/yuanbao 有）。先本地发：
+relay 三包各有 tag 触发 workflow（`publish-relay-protocol.yml` / `publish-relay.yml` /
+`publish-channel-relay.yml`，结构与频道包一致：test + `verify:publish` + tag/版本一致性校验 +
+`npm publish`（`secrets.NPM_TOKEN`）+ GitHub release）。按拓扑顺序推 tag：
+
+```bash
+# 2. protocol 先发（确认 packages/relay-protocol/package.json version=0.1.0）
+git tag relay-protocol-v0.1.0 && git push origin relay-protocol-v0.1.0
+
+# 3. protocol 发布完成后，再发 hub 和连接器
+git tag relay-v0.1.0          && git push origin relay-v0.1.0
+git tag channel-relay-v0.1.0  && git push origin channel-relay-v0.1.0
+```
+
+每个 workflow 会校验 tag 必须精确等于 `<pkg>-v<package.json 的 version>`，对不上直接失败。
+预发布版本号（含 `-beta`/`-rc`）自动走 npm `next` dist-tag。
+
+### 本地手动发布（备用）
+
+无 CI / 本地直接发时：
 
 ```bash
 npm login                 # 需要 @ganglion scope 的发布权限
-bun run verify:publish    # 再确认一次
-bun run publish:relay-stack
+bun run verify:publish
+bun run publish:relay-stack   # publish:relay-protocol → publish:relay → publish:channel-relay
 ```
 
-`publish:relay-stack` = `publish:relay-protocol` → `publish:relay` → `publish:channel-relay`
-（均 `bun publish --access public`）。需要单独发某一个时用对应的 `publish:relay-*` 脚本。
-
-> 想要和其它包一致的 tag 触发体验，可仿照 `publish-channel-feishu.yml` 为 relay 三包各加一个
-> workflow（建议 tag 前缀 `relay-protocol-v*` / `relay-v*` / `channel-relay-v*`）。尚未添加。
+需要单独发某一个时用对应的 `publish:relay-*` 脚本。
 
 ## 发布后验证
 
@@ -98,6 +112,11 @@ xacpx channel add relay --url <host> --token <access-token>
 | `@ganglion/xacpx` | `v<X.Y.Z>` | publish-xacpx.yml |
 | `@ganglion/xacpx-channel-feishu` | `channel-feishu-v<X.Y.Z>` | publish-channel-feishu.yml |
 | `@ganglion/xacpx-channel-yuanbao` | `channel-yuanbao-v<X.Y.Z>` | publish-channel-yuanbao.yml |
-| relay 三包 | （暂无）手动 `publish:relay-stack` | — |
+| `@ganglion/xacpx-relay-protocol` | `relay-protocol-v<X.Y.Z>` | publish-relay-protocol.yml |
+| `@ganglion/xacpx-relay` | `relay-v<X.Y.Z>` | publish-relay.yml |
+| `@ganglion/xacpx-channel-relay` | `channel-relay-v<X.Y.Z>` | publish-channel-relay.yml |
 
-预发布用 npm dist-tag（如 `--tag beta`）；CI workflow 已按 tag 里的 `-beta`/`-rc` 后缀自动选 dist-tag。
+预发布走 npm `next` dist-tag；CI workflow 按 tag 里的 `-beta`/`-rc` 等后缀自动选 dist-tag。
+
+> tag 前缀互不冲突：`relay-v*` 不匹配 `relay-protocol-v*`（后者以 `relay-p` 开头），
+> `channel-relay-v*` 也独立于 `channel-feishu-v*` / `channel-yuanbao-v*`。
