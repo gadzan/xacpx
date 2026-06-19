@@ -50,7 +50,7 @@ function fmtDuration(ms?: number): string {
             class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg" @click="onHeaderClick">
       <ChevronDown v-if="open" :size="13" class="text-fg-muted" />
       <ChevronRight v-else :size="13" class="text-fg-muted" />
-      <span class="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-fg-muted"><Wrench :size="13" /> Tool steps</span>
+      <span class="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-fg-muted"><Wrench :size="13" /> {{ $t("tools.toolSteps") }}</span>
       <FueDot v-if="showFueDot" :pulsing="fue.status.value === 'unseen'" />
       <span v-else data-test="tool-count" class="font-mono text-[10.5px] text-fg-muted">{{ steps.length }}</span>
       <span data-test="tool-summary" class="ml-1 flex items-center gap-1.5 text-[10.5px] text-fg-muted">
@@ -69,8 +69,8 @@ function fmtDuration(ms?: number): string {
     </button>
     <FueCallout
       v-if="fue.status.value === 'engaging'"
-      :title="'Tool steps collapsed'"
-      :body="'Multi-step tool runs are collapsed by default to keep replies readable. Click the header to expand and inspect each step.'"
+      :title="$t('tools.collapsed')"
+      :body="$t('tools.collapsedBody')"
       :anchor="anchor"
       @dismiss="fue.dismiss()"
     />

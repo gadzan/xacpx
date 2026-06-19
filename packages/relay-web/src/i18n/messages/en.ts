@@ -212,4 +212,29 @@ export default {
     cancelScheduledBody: "It will be removed from the schedule and won't run.",
     keep: "Keep",
   },
+  login: {
+    tokenLabel: "Access token",
+    tokenPlaceholder: "Access token",
+    signIn: "Sign in",
+    signingIn: "Signing in…",
+    hintBefore: "Paste the access token from ",
+    hintAfter: ".",
+  },
+  fue: { gotIt: "Got it" },
+  tools: {
+    toolSteps: "Tool steps",
+    collapsed: "Tool steps collapsed",
+    collapsedBody: "Multi-step tool runs are collapsed by default to keep replies readable. Click the header to expand and inspect each step.",
+  },
+  plan: {
+    title: "Plan",
+    togglePlan: "Toggle plan",
+  },
+  reasoning: {
+    reasoning: "Reasoning",
+    reasoningStreaming: "Reasoning…",
+  },
+  taskPanel: {
+    noSession: "No session selected.",
+  },
 } as const;

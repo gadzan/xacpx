@@ -26,14 +26,14 @@ async function submit() {
       <div class="mb-2 flex justify-center">
         <BrandLogo />
       </div>
-      <label for="access-token" class="sr-only">Access token</label>
+      <label for="access-token" class="sr-only">{{ $t("login.tokenLabel") }}</label>
       <input id="access-token" v-model="token" type="password" autocomplete="off" aria-describedby="token-hint"
              class="w-full rounded border border-border bg-bg px-3 py-2 text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
-             placeholder="Access token" :disabled="pending" />
-      <p id="token-hint" class="text-sm text-fg-muted">Paste the access token from <code>xacpx-relay user new</code>.</p>
+             :placeholder="$t('login.tokenPlaceholder')" :disabled="pending" />
+      <p id="token-hint" class="text-sm text-fg-muted">{{ $t("login.hintBefore") }}<code>xacpx-relay user new</code>{{ $t("login.hintAfter") }}</p>
       <p v-if="auth.error" class="text-sm text-danger">{{ auth.error }}</p>
       <button class="w-full rounded bg-accent px-3 py-2 text-white hover:bg-accent-hover disabled:opacity-50" type="submit" :disabled="pending">
-        {{ pending ? "Signing in…" : "Sign in" }}
+        {{ pending ? $t("login.signingIn") : $t("login.signIn") }}
       </button>
     </form>
   </div>

@@ -18,7 +18,7 @@ const open = computed(() => localOpen.value);
       <ChevronDown v-if="open" :size="13" />
       <ChevronRight v-else :size="13" />
       <Brain :size="13" :class="streaming ? 'text-accent' : ''" />
-      <span class="text-[12px] font-medium" :class="streaming ? 'shimmer-text' : ''">{{ streaming ? "Reasoning…" : "Reasoning" }}</span>
+      <span class="text-[12px] font-medium" :class="streaming ? 'shimmer-text' : ''">{{ streaming ? $t("reasoning.reasoningStreaming") : $t("reasoning.reasoning") }}</span>
       <span v-if="streaming" data-test="reasoning-shimmer" class="ml-1 inline-block h-1.5 w-1.5 animate-pulse motion-reduce:animate-none rounded-full bg-fg-muted" aria-hidden="true" />
     </button>
     <p v-if="open" data-test="reasoning-body" class="whitespace-pre-wrap border-t border-border px-3 pb-2.5 pt-2 text-[12px] leading-relaxed text-fg-muted">{{ reasoning }}</p>

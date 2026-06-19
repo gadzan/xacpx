@@ -210,4 +210,29 @@ export default {
     cancelScheduledBody: "它将从计划中移除且不再运行。",
     keep: "保留",
   },
+  login: {
+    tokenLabel: "访问令牌",
+    tokenPlaceholder: "访问令牌",
+    signIn: "登录",
+    signingIn: "登录中…",
+    hintBefore: "粘贴来自 ",
+    hintAfter: " 的访问令牌。",
+  },
+  fue: { gotIt: "知道了" },
+  tools: {
+    toolSteps: "工具步骤",
+    collapsed: "工具步骤已折叠",
+    collapsedBody: "多步骤工具运行默认折叠，以保持回复清爽。点击标题可展开并查看每个步骤。",
+  },
+  plan: {
+    title: "计划",
+    togglePlan: "切换计划",
+  },
+  reasoning: {
+    reasoning: "推理",
+    reasoningStreaming: "推理中…",
+  },
+  taskPanel: {
+    noSession: "未选择会话。",
+  },
 };
