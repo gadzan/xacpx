@@ -34,5 +34,9 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build
-        run: bun run build
+      # Build ALL workspace packages, not just the root. Each package's own
+      # tsconfig (e.g. the relay stack's stricter noUncheckedIndexedAccess) is
+      # only compiled by its `build:*` script — `bun run build` alone misses
+      # them, so package-level type/build errors used to surface only at publish.
+      - name: Build (all packages)
+        run: bun run build:packages
