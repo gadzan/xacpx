@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createRelayRuntime, startRelayServer } from "./server.js";
 
@@ -18,13 +19,14 @@ export function defaultDbPath(): string {
 /**
  * Locates the bundled relay-web dashboard relative to the compiled cli.js.
  * Returns the path only if `index.html` is present there; otherwise undefined.
- * Defensive: returns undefined if process.argv[1] is not set.
+ *
+ * Resolves against this module's own URL (import.meta.url), NOT process.argv[1]:
+ * when invoked via the global `xacpx-relay` bin symlink, argv[1] is the symlink
+ * path (…/bin/xacpx-relay), not the real cli.js, so an argv-based path would
+ * mis-resolve. The `cliJsPath` param exists only for tests.
  */
-export function resolveBundledWebRoot(): string | undefined {
-  const argv1 = process.argv[1];
-  if (!argv1) return undefined;
-  if (!argv1.endsWith("cli.js")) return undefined;
-  const here = dirname(argv1);
+export function resolveBundledWebRoot(cliJsPath: string = fileURLToPath(import.meta.url)): string | undefined {
+  const here = dirname(cliJsPath);
   // 1. Embedded copy shipped inside the published package: build:relay copies
   //    packages/relay-web/dist into dist/relay-web (a sibling of cli.js). This is
   //    the path that exists after `npm i -g @ganglion/xacpx-relay`.
@@ -180,8 +182,10 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
 }
 
 // bin entry: run only when executed directly, not when imported by tests.
-const isMain = typeof process !== "undefined" && process.argv[1]?.endsWith("cli.js");
-if (isMain) {
+// Use import.meta.main (runtime "am I the entry?" flag) rather than sniffing
+// process.argv[1]: the global bin is a symlink (…/bin/xacpx-relay), so argv[1]
+// does not end with cli.js and the old check silently skipped the whole CLI.
+if (import.meta.main) {
   runRelayCli(process.argv.slice(2), { print: (line) => console.log(line) }).then(
     (code) => process.exit(code),
     (error) => {
