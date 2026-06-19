@@ -5,7 +5,7 @@
 ## 服务端（@ganglion/xacpx-relay）
 
 - 运行时：Node >= 22.13（node:sqlite）或 Bun >= 1.2（bun:sqlite），SqlDriver 适配层自动选择。
-- 两个端口：HTTP API（默认 8787，登录/实例/RPC 代理）+ 实例 WS 网关（默认 8788）。
+- 端口（默认单端口）：HTTP API（默认 8787，登录/实例/RPC 代理）。实例 WS 网关**默认合并到 HTTP 端口**——作为 `httpServer.on("upgrade")` 上的 noServer WebSocket upgrade，按路径路由：根 `/`（或显式 `/gateway`）= 实例网关，`/ws` = 看板扇出（两者共用同一 upgrade handler）。`--ws-port <n>` 为**可选** flag：传入则改在独立端口上跑一个专用 `WebSocketServer`（旧的双端口布局，便于单独防火墙网关）。
 - 快速开始：
   1. `xacpx-relay add token`（打印访问令牌，既用于 Web 登录也用于连接器注册；DB 默认 `~/.xacpx-relay/relay.db`，自动建目录）
   2. `xacpx-relay start`（看板自动检测内置 `packages/relay-web/dist`）
@@ -26,7 +26,7 @@
 - 安装与配对：
   ```
   xacpx plugin add @ganglion/xacpx-channel-relay
-  xacpx channel add relay --url <host> --token <access-token>   # --url 支持裸域名(wss)/IP[:端口](ws,默认 8788)
+  xacpx channel add relay --url <host> --token <access-token>   # --url 与看板同主机；裸域名(wss 根路径=合并网关)/IP[:端口](ws,默认 8787)
   xacpx restart
   ```
 - 首连用访问令牌（或传统一次性配对令牌）注册并换发长期凭证，存 `<xacpx-home>/relay/credential.json`
@@ -68,8 +68,9 @@
   - `onEvent`（instance.event）→ web 广播 `control-event`；其中 `turn-output` 分片按
     (instance, session) 累积进内存缓冲，`turn-finished` 时 flush 为一条 `out` 历史消息
     写入 `MessageStore`；instance.notice → 广播 `notice`。
-- **cookie 鉴权的 `/ws` web 扇出端点**：挂在 HTTP server 的 upgrade 上（与实例网关 `wsPort`
-  分离），校验 `xrelay_session` cookie → 账号后 `webGateway.register(accountId, ws)`。
+- **cookie 鉴权的 `/ws` web 扇出端点**：挂在 HTTP server 的 upgrade 上，按路径与实例网关分流
+  （默认单端口时实例网关合并在同一 upgrade handler 的根 `/`；传 `--ws-port` 时网关另起专用端口），
+  校验 `xrelay_session` cookie → 账号后 `webGateway.register(accountId, ws)`。
 - **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话的缓存历史。
 - **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 历史消息。
 - **command 回显历史（阶段四）**：`control.command.execute` 经 RPC 代理时，把输入文本 append 为 `in`、
