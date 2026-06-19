@@ -119,6 +119,20 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
     }
   }
 
+  // Every `bin` target must start with a `#!` shebang, or running the installed
+  // command directly (not via `node <file>`) fails with a shell syntax error.
+  const binEntries = typeof packageJson.bin === "string"
+    ? [packageJson.bin]
+    : Object.values(packageJson.bin ?? {});
+  for (const binRel of binEntries) {
+    const binPath = join(packageRoot, binRel);
+    if (!existsSync(binPath)) continue; // missing-file is already reported via requiredFiles
+    const firstLine = (await readFile(binPath, "utf8")).split("\n", 1)[0] ?? "";
+    if (!firstLine.startsWith("#!")) {
+      failures.push(`${pkg.id}: bin ${binRel} is missing a shebang (first line: ${JSON.stringify(firstLine.slice(0, 40))}). Add '#!/usr/bin/env node' to the entry source.`);
+    }
+  }
+
   if (pkg.requiredPeer && !(pkg.requiredPeer in (packageJson.peerDependencies ?? {}))) {
     failures.push(`${pkg.id}: package.json peerDependencies must include ${pkg.requiredPeer}`);
   }
