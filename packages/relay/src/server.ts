@@ -235,7 +235,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
 
   const webWss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const path = (req.url ?? "").split("?")[0];
+    const path = (req.url ?? "").split("?")[0] ?? "";
     if (path === "/ws") {
       const token = parseCookie(req.headers.cookie ?? "")["xrelay_session"];
       const account = token ? runtime.accounts.getSessionAccount(token) : null;
