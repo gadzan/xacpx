@@ -43,13 +43,13 @@ watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
       data-test="plan-toggle"
       :aria-expanded="expanded"
       aria-controls="plan-list"
-      aria-label="Toggle plan"
+      :aria-label="$t('plan.togglePlan')"
       class="mb-1 flex w-full items-center gap-1.5 text-xs font-semibold uppercase text-fg-muted hover:text-fg transition-colors"
       @click="expanded = !expanded"
     >
       <ChevronDown v-if="expanded" :size="12" class="shrink-0" />
       <ChevronRight v-else :size="12" class="shrink-0" />
-      Plan
+      {{ $t("plan.title") }}
       <span class="ml-auto font-mono tabular-nums">{{ done }}/{{ entries.length }}</span>
     </button>
     <ul v-show="expanded" id="plan-list" ref="listEl" class="max-h-48 overflow-y-auto thin-scroll space-y-0.5">

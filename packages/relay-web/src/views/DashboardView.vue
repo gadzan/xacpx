@@ -137,17 +137,17 @@ onUnmounted(() => {
       <div class="flex items-center gap-1.5">
         <button
           data-test="global-search"
-          aria-label="Search"
+          :aria-label='$t("nav.search")'
           class="group flex h-7 items-center gap-2 rounded-lg border border-border bg-bg px-2.5 text-left transition-colors hover:border-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
-          <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">Search…</span>
+          <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
           <kbd class="hidden rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="theme-toggle"
-          :aria-label="theme.mode === 'dark' ? 'Switch to light' : 'Switch to dark'"
+          :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
           class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           @click="theme.toggle()"
         >
@@ -157,7 +157,7 @@ onUnmounted(() => {
         <router-link
           to="/settings"
           data-test="settings-link"
-          aria-label="Settings"
+          :aria-label='$t("nav.settings")'
           class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <Settings :size="15" />
@@ -167,14 +167,14 @@ onUnmounted(() => {
 
     <!-- Mobile top bar: hamburger opens the instance tree, Tasks opens the task panel. -->
     <div class="flex items-center gap-2 border-b border-border bg-surface px-2 py-1.5 lg:hidden">
-      <button data-test="open-instances" aria-label="Open instances"
+      <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
       <div class="flex shrink-0 items-center gap-0.5">
-        <button data-test="open-files" aria-label="Open files" title="Files"
+        <button data-test="open-files" :aria-label='$t("nav.openFiles")' :title='$t("nav.files")'
                 class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
                 @click="openRight('files')"><FileText :size="18" /></button>
-        <button data-test="open-tasks" aria-label="Open tasks" title="Tasks"
+        <button data-test="open-tasks" :aria-label='$t("nav.openTasks")' :title='$t("nav.tasks")'
                 class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
                 @click="openRight('tasks')"><List :size="18" /></button>
       </div>
@@ -190,12 +190,12 @@ onUnmounted(() => {
            class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-[transform,width] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
            :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0' : 'lg:w-[248px]']">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
-          <span class="font-semibold uppercase tracking-wider text-fg-muted">Instances</span>
+          <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
-            <button data-test="toggle-left" aria-label="Hide sidebar" title="Hide sidebar"
+            <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
                     class="hidden h-6 w-6 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
                     @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
-            <button data-test="close-instances" aria-label="Close instances"
+            <button data-test="close-instances" :aria-label='$t("nav.closeInstances")'
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
@@ -203,7 +203,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
-      <button v-if="leftCollapsed" data-test="expand-left" aria-label="Show sidebar" title="Show sidebar"
+      <button v-if="leftCollapsed" data-test="expand-left" :aria-label='$t("nav.showSidebar")' :title='$t("nav.showSidebar")'
               class="hidden w-5 shrink-0 items-center justify-center border-r border-border bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
               @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
 
@@ -230,15 +230,15 @@ onUnmounted(() => {
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
-            <FileText :size="13" />Files
+            <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'tasks' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
-            <List :size="13" />Tasks
+            <List :size="13" />{{ $t("nav.tasks") }}
           </button>
-          <button data-test="close-tasks" aria-label="Close tasks"
+          <button data-test="close-tasks" :aria-label='$t("nav.closeTasks")'
                   class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
         <TaskPanel v-if="rightTab === 'tasks'" />

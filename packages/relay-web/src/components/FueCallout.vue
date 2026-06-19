@@ -62,7 +62,7 @@ onBeforeUnmount(() => {
           class="rounded bg-accent px-2 py-1 text-xs font-medium text-white hover:bg-accent-hover"
           @click="emit('dismiss')"
         >
-          Got it
+          {{ $t("fue.gotIt") }}
         </button>
       </div>
     </div>

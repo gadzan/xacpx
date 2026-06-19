@@ -27,7 +27,7 @@ function toneClass(kind: string): string {
     >
       <div class="flex items-start justify-between gap-2">
         <span><span class="text-xs uppercase" :class="toneClass(n.kind)">{{ n.kind }}</span><br />{{ n.text }}</span>
-        <button class="text-xs text-fg-muted hover:text-fg" aria-label="Dismiss" @click="notices.dismiss(n.id)">×</button>
+        <button class="text-xs text-fg-muted hover:text-fg" :aria-label="$t('common.dismissNotice')" @click="notices.dismiss(n.id)">×</button>
       </div>
     </div>
   </div>

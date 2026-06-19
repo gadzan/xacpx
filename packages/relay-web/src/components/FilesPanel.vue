@@ -132,7 +132,7 @@ watch(
 <template>
   <div class="flex h-full flex-col bg-surface text-sm text-fg-muted">
     <div v-if="!instanceId" class="flex flex-1 items-center justify-center p-4 text-center text-xs text-fg-muted">
-      Select a session to browse its workspace
+      {{ $t("files.selectToBrowse") }}
     </div>
     <template v-else>
       <!-- Active session's workspace (static — no picker) + Files / Changes tabs. -->
@@ -144,8 +144,8 @@ watch(
         <div class="flex shrink-0 items-center gap-1">
           <button
             data-test="refresh-files"
-            title="Refresh file list"
-            aria-label="Refresh file list"
+            :title="$t('files.refresh')"
+            :aria-label="$t('files.refresh')"
             class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
             :disabled="files.loading"
             @click="files.refresh()"
@@ -156,13 +156,13 @@ watch(
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="files.tab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="files.tab = 'files'">
-            <FileText :size="13" />Files
+            <FileText :size="13" />{{ $t("files.title") }}
           </button>
           <button data-test="tab-changes"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="files.tab === 'changes' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="files.tab = 'changes'">
-            <List :size="13" />Changes
+            <List :size="13" />{{ $t("files.changes") }}
           </button>
         </div>
       </div>
@@ -173,9 +173,9 @@ watch(
       <div v-if="files.tab === 'files'" class="min-h-0 flex-1 overflow-y-auto thin-scroll">
         <!-- search -->
         <div class="flex items-center gap-1 border-b border-border px-2 py-1">
-          <input v-model="searchInput" data-test="fs-search" placeholder="Search files by name…"
+          <input v-model="searchInput" data-test="fs-search" :placeholder="$t('files.searchPlaceholder')"
                  class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
-          <button v-if="searchInput" aria-label="Clear search" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
+          <button v-if="searchInput" :aria-label="$t('files.clearSearch')" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
         </div>
 
         <!-- search results -->
@@ -188,19 +188,19 @@ watch(
                 <span class="truncate font-sans text-[12px] text-fg-muted">{{ m }}</span>
               </button>
             </li>
-            <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">no matches</li>
+            <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
           </ul>
-          <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">showing first 200 matches</div>
+          <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
         </div>
 
         <!-- breadcrumb (hidden while searching) -->
         <div v-if="!files.query.trim()" class="flex flex-wrap items-center gap-1 border-b border-border px-2.5 py-1.5 font-mono text-[11px] text-fg-muted">
-          <button data-test="fs-up" title="Up one level" aria-label="Up one level"
+          <button data-test="fs-up" :title="$t('files.upOneLevel')" :aria-label="$t('files.upOneLevel')"
                   class="grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
                   :disabled="atRoot || files.loading" @click="upOne">
             <CornerLeftUp :size="13" />
           </button>
-          <button class="hover:text-fg" @click="files.up(-1)">{{ files.workspace ?? "root" }}</button>
+          <button class="hover:text-fg" @click="files.up(-1)">{{ files.workspace ?? $t("files.root") }}</button>
           <template v-for="(c, i) in crumbs" :key="i">
             <span>/</span><button class="hover:text-fg" @click="files.up(i)">{{ c }}</button>
           </template>
@@ -220,11 +220,11 @@ watch(
                     :class="isOpen(e.name) || entryStatus(e) ? 'text-accent font-medium' : (e.type === 'dir' ? 'text-fg font-medium' : 'text-fg-muted')">{{ e.name }}</span>
               <span v-if="entryStatus(e)" data-test="fs-status" class="w-1.5 h-1.5 shrink-0 rounded-full"
                     :class="entryStatus(e)!.dot"
-                    :title="`${entryStatus(e)!.label} — ${files.changed[entryRel(e.name)] || 'contains changes'}`" />
+                    :title="`${entryStatus(e)!.label} — ${files.changed[entryRel(e.name)] || $t('files.containsChanges')}`" />
               <span v-if="e.type === 'file' && !entryStatus(e)" class="shrink-0 font-mono text-[10.5px] text-fg-muted tabular-nums">{{ fmtSize(e.size) }}</span>
             </button>
           </li>
-          <li v-if="!files.entries.length && !files.loading" class="px-1.5 py-1 text-xs text-fg-muted">empty directory</li>
+          <li v-if="!files.entries.length && !files.loading" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.emptyDirectory") }}</li>
         </ul>
       </div>
 
@@ -232,9 +232,9 @@ watch(
       <div v-else class="min-h-0 flex-1 overflow-y-auto thin-scroll">
         <div v-if="files.diff">
           <div v-if="changesSummary" data-test="changes-summary" class="flex items-center justify-between border-b border-border px-2.5 py-2">
-            <span class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">Changes</span>
+            <span class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
             <div class="flex items-center gap-1.5 font-mono text-[10.5px] tabular-nums">
-              <span class="text-fg-muted">{{ changesSummary.fileCount }} files</span>
+              <span class="text-fg-muted">{{ changesSummary.fileCount }} {{ $t("files.filesCount") }}</span>
               <span class="text-run">+{{ changesSummary.add }}</span>
               <span class="text-danger">−{{ changesSummary.del }}</span>
             </div>
@@ -248,19 +248,19 @@ watch(
                 <span class="shrink-0 font-mono text-[10.5px] uppercase tabular-nums" :class="statusBadge(f.status).cls">{{ f.status.trim() || "··" }}</span>
               </button>
             </li>
-            <li v-if="!files.diff.files.length" class="px-1.5 py-1 text-xs text-fg-muted">no changes</li>
+            <li v-if="!files.diff.files.length" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.noChanges") }}</li>
           </ul>
         </div>
         <!-- A non-git workspace is normal here — a calm note, not an error banner. -->
         <div v-else-if="files.notGit" data-test="changes-not-git" class="flex flex-col items-center gap-1.5 p-6 text-center text-xs text-fg-muted">
           <GitBranch :size="20" class="text-fg-muted/60" />
-          <span>Not a git repository</span>
-          <span class="text-[11px] text-fg-muted/70">This workspace has no version control to show changes for.</span>
+          <span>{{ $t("files.notGitRepo") }}</span>
+          <span class="text-[11px] text-fg-muted/70">{{ $t("files.notGitRepoBody") }}</span>
         </div>
-        <div v-else-if="!files.loading" class="p-3 text-xs text-fg-muted">no diff loaded</div>
+        <div v-else-if="!files.loading" class="p-3 text-xs text-fg-muted">{{ $t("files.noDiffLoaded") }}</div>
       </div>
 
-      <div v-if="files.loading" class="border-t border-border px-3 py-1 text-xs text-fg-muted">loading…</div>
+      <div v-if="files.loading" class="border-t border-border px-3 py-1 text-xs text-fg-muted">{{ $t("files.loading") }}</div>
     </template>
   </div>
 </template>

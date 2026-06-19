@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import NewSessionDialog from "../components/NewSessionDialog.vue";
 import { useInstancesStore } from "../stores/instances";
+import { i18n } from "../i18n";
 
 interface DialogOptions {
   agents?: Array<{ name: string; driver: string }>;
@@ -275,6 +276,24 @@ describe("NewSessionDialog", () => {
     // The plain "no sessions" empty hint must NOT show when there's a real error.
     expect(wrapper.find('[data-test="ns-native-empty"]').exists()).toBe(false);
     expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("renders Chinese strings when the locale is zh-CN", async () => {
+    i18n.global.locale.value = "zh-CN";
+    try {
+      const { wrapper } = mountDialog({
+        agents: [{ name: "codex", driver: "codex" }],
+        workspaces: [{ name: "backend", cwd: "/b" }],
+        agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+        sessions: [],
+      });
+      await flushPromises();
+      const dialog = wrapper.get('[data-test="new-session-dialog"]');
+      expect(dialog.text()).toContain("新建会话");
+      expect(dialog.text()).toContain("创建");
+    } finally {
+      i18n.global.locale.value = "en";
+    }
   });
 
   it("shows a non-error pending notice on a create timeout and defers emit until acknowledged", async () => {

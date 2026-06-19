@@ -21,6 +21,7 @@ vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 import DashboardView from "../views/DashboardView.vue";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { i18n } from "../i18n";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -45,6 +46,18 @@ test("selecting a session routes it into the chat store", async () => {
   wrapper.findComponent({ name: "InstanceTree" }).vm.$emit("select", "i1", "backend");
   expect(chat.instanceId).toBe("i1");
   expect(chat.sessionAlias).toBe("backend");
+});
+
+test("nav aria-labels localize to the active locale", async () => {
+  i18n.global.locale.value = "zh-CN";
+  try {
+    const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+    await flushPromises();
+    expect(wrapper.get('[data-test="global-search"]').attributes("aria-label")).toBe("搜索");
+    expect(wrapper.get('[data-test="open-instances"]').attributes("aria-label")).toBe("打开实例");
+  } finally {
+    i18n.global.locale.value = "en";
+  }
 });
 
 test("re-pulls the snapshot on reconnect", async () => {

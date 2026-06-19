@@ -36,11 +36,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <div class="mt-5 flex justify-end gap-2">
           <button data-test="confirm-cancel" type="button"
                   class="rounded-lg px-3 py-1.5 text-[13px] font-medium text-fg-muted transition-colors hover:bg-fg/5"
-                  @click="settleConfirm(false)">{{ pending.cancelLabel ?? "Cancel" }}</button>
+                  @click="settleConfirm(false)">{{ pending.cancelLabel ?? $t("common.cancel") }}</button>
           <button data-test="confirm-ok" type="button"
                   class="rounded-lg px-3 py-1.5 text-[13px] font-semibold text-white transition-opacity hover:opacity-90"
                   :class="pending.tone === 'default' ? 'bg-accent' : 'bg-danger'"
-                  @click="settleConfirm(true)">{{ pending.confirmLabel ?? "Confirm" }}</button>
+                  @click="settleConfirm(true)">{{ pending.confirmLabel ?? $t("common.confirm") }}</button>
         </div>
       </div>
     </div>

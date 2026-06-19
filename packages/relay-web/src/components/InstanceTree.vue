@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { ChevronDown, ChevronRight, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
@@ -9,6 +10,7 @@ import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 
 const store = useInstancesStore();
 const chat = useChatStore();
+const { t } = useI18n();
 const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
 const dialogFor = ref<{ id: string; name: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
@@ -39,9 +41,9 @@ async function toggle(id: string) {
 // Deleting a session is destructive and irreversible → confirm via the popup dialog.
 async function askDelete(id: string, alias: string) {
   const ok = await confirm({
-    title: "Delete session?",
-    message: `"${alias}" will be permanently removed. This can't be undone.`,
-    confirmLabel: "Delete",
+    title: t("instance.deleteSessionTitle"),
+    message: t("instance.deleteSessionBody", { alias }),
+    confirmLabel: t("common.delete"),
     tone: "danger",
   });
   if (ok) void store.removeSession(id, alias).catch(() => {});
@@ -61,9 +63,9 @@ async function askDelete(id: string, alias: string) {
         <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
         <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
         <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
-              :title="inst.coreVersion ? `connector core ${inst.coreVersion}` : 'connector core version unknown (legacy or pre-version connector)'">{{ inst.name }}</span>
+              :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
         <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ inst.sessions.length }}</span>
-        <span v-else class="text-[10px] font-medium text-fg-muted">offline</span>
+        <span v-else class="text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
       </button>
 
       <!-- Indented session rows under an accent-able left rule. -->
@@ -92,22 +94,22 @@ async function askDelete(id: string, alias: string) {
                   class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
           </button>
           <!-- Delete: icon button → popup confirm. -->
-          <button data-test="delete-session" title="Delete session" aria-label="Delete session"
+          <button data-test="delete-session" :title="$t('instance.deleteSession')" :aria-label="$t('instance.deleteSession')"
                   class="mr-1 grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted opacity-0 transition-opacity hover:bg-danger/15 hover:text-danger group-hover:opacity-100"
                   @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" /></button>
         </div>
 
         <div v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
-             class="py-1 pl-2.5 text-[11px] text-fg-muted">loading…</div>
+             class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
         <div v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
-             class="py-1 pl-2.5 text-[11px] text-fg-muted">no sessions yet</div>
+             class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
         <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria. -->
         <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
-          <button data-test="new-session" title="New session" aria-label="New session"
+          <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
                   class="grid h-6 w-6 place-items-center rounded text-accent transition-colors hover:bg-accent/10"
                   @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
-          <button data-test="manage-instance" title="Manage instance" aria-label="Manage instance"
+          <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
                   class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
