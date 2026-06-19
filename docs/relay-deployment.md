@@ -29,7 +29,7 @@ xacpx-relay add token
 # 3. 起服务 — 自动使用同一个默认 DB，自动检测内嵌看板
 xacpx-relay start
 # 输出示例：
-#   xacpx-relay listening: http :8787 (instance gateway merged at /), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
+#   xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
 
 # 4. 实例侧接入（同一个 access token 直接用于配对，--url 指向与看板相同的域名/主机——裸域名即 wss 根路径连入合并网关）
 xacpx channel add relay --url wss://relay.example.com --token <上面的访问令牌> --name home-pc

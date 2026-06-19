@@ -182,6 +182,10 @@ On first connect the instance exchanges the access token for a long-lived per-in
 Reuse the same token on several instances (e.g. `home-pc`, `work-laptop`). They all appear under the same user in the dashboard.
 :::
 
+::: warning Upgrading from the two-port (0.1.0) layout
+The default moved to a single port. A connector that was paired against the old `8788` gateway has a `ws://<host>:8788` URL frozen in its `config.json` (the URL is normalized once, at `channel add` time), so it will keep dialing `:8788`. Re-run `xacpx channel add relay --url <host> …` (or edit the stored `url`) so it points at the merged HTTP port. Bare-**domain** connectors (`wss://host`, no port) are unaffected — they already land on the merged gateway.
+:::
+
 Back in the dashboard, the instance appears in the left column with a green dot once it is online. Select a session to chat; open the task panel (right column, or the **Tasks** button on mobile) for scheduled and orchestration tasks.
 
 ## TLS & reverse proxy {#tls-reverse-proxy}

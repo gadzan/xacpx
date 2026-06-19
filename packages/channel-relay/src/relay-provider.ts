@@ -57,7 +57,7 @@ export const relayCliProvider: ChannelCliProvider = {
     const options = (config.options ?? {}) as Record<string, unknown>;
     const url = normalizeRelayUrl(typeof options.url === "string" ? options.url : "");
     if (!url) {
-      issues.push({ kind: "missing-required-field", flag: "--url", message: "relay url — a domain (wss), or IP[:port] (ws, default :8788) is required" });
+      issues.push({ kind: "missing-required-field", flag: "--url", message: "relay url — a domain (wss), or IP[:port] (ws, default :8787) is required" });
     } else if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
       issues.push({ kind: "invalid-config", message: `url must be a domain, IP[:port], or ws(s):// address, got: ${String(options.url ?? "")}` });
     }

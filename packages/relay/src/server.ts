@@ -246,7 +246,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     // Merged gateway: connectors dial the bare host (root) or an explicit
     // `/gateway`. Auth is the gateway's own token/credential handshake, so no
     // cookie gate here. In dedicated mode `gatewayWss` is undefined → reject.
-    if (gatewayWss && (path === "/" || path === "/gateway")) {
+    if (gatewayWss && (path === "/" || path === "/gateway" || path.startsWith("/gateway/"))) {
       gatewayWss.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
       return;
     }
