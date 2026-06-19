@@ -152,8 +152,8 @@ watch(
               <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
               <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
                     class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10.5px] font-medium text-accent"
-                    :title="`Scheduled for ${fmtDateTime(schedOf(m)!.executeAt)}`">
-                <Clock :size="11" />Scheduled
+                    :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
+                <Clock :size="11" />{{ $t("chat.scheduled") }}
               </span>
               <div data-test="msg-in"
                    class="rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
@@ -162,10 +162,10 @@ watch(
               </div>
               <!-- Failed sends get a compact retry affordance on their own line below. -->
               <div v-if="m.failed" class="mt-1 flex items-center gap-2">
-                <span data-test="msg-failed" class="text-xs text-danger">Failed to send</span>
+                <span data-test="msg-failed" class="text-xs text-danger">{{ $t("chat.failedToSend") }}</span>
                 <button type="button" data-test="msg-resend"
                         class="inline-flex items-center gap-1 text-xs font-medium text-accent hover:opacity-80"
-                        title="Resend this message" @click="emit('resend', m)"><RotateCcw :size="12" />Resend</button>
+                        :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="12" />{{ $t("chat.resend") }}</button>
               </div>
             </div>
           </div>
@@ -188,8 +188,8 @@ watch(
               <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
                 <CopyButton v-if="m.text" :text="m.text" />
                 <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
-                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> Stopped</span>
-                <span v-if="m.failed" data-test="msg-failed" class="text-[11px] text-danger">failed</span>
+                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
+                <span v-if="m.failed" data-test="msg-failed" class="text-[11px] text-danger">{{ $t("chat.failed") }}</span>
               </div>
             </div>
           </div>
@@ -214,7 +214,7 @@ watch(
       class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-raised px-3 py-1 text-xs text-fg-muted shadow hover:bg-fg/5"
       @click="scrollToBottom(true)"
     >
-      ↓ Latest
+      {{ $t("chat.jumpLatest") }}
     </button>
   </div>
 </template>

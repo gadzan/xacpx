@@ -101,7 +101,7 @@ function onInput() {
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"
                 class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
-                :placeholder="busy ? 'Agent is working… (Esc to stop)' : 'Message'"
+                :placeholder='busy ? $t("chat.working") : $t("chat.message")'
                 @input="onInput"
                 @keydown="onKeydown" />
       <div class="flex items-center justify-between px-2.5 pb-2.5 pt-0.5">
@@ -112,7 +112,7 @@ function onInput() {
                   :disabled="!controls.available.length"
                   @click="modelMenuOpen = !modelMenuOpen">
             <Brain :size="14" class="text-accent" />
-            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current || "model" }}</span>
+            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current || $t("chat.model") }}</span>
             <ChevronDown v-if="controls.available.length" :size="13" />
           </button>
           <ul v-if="modelMenuOpen && controls.available.length" data-test="model-menu"
@@ -134,10 +134,10 @@ function onInput() {
         <!-- send / stop (right) -->
         <button v-if="busy" type="button" data-test="composer-stop"
                 class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-danger text-white text-[12.5px] font-semibold hover:opacity-90 transition-all"
-                @click="emit('cancel')">Stop</button>
+                @click="emit('cancel')">{{ $t("chat.stop") }}</button>
         <button v-else type="submit" data-test="composer-send" :disabled="!text.trim()"
                 class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
-          Send
+          {{ $t("chat.send") }}
           <Send :size="14" />
         </button>
       </div>

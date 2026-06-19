@@ -63,7 +63,7 @@ const verb = computed(() => {
 <template>
   <div class="flex h-full flex-1 flex-col">
     <div v-if="!chat.sessionAlias" class="flex flex-1 items-center justify-center text-fg-muted">
-      Select a session
+      {{ $t("chat.selectSession") }}
     </div>
     <template v-else>
       <!-- header -->
@@ -72,7 +72,7 @@ const verb = computed(() => {
         <div v-if="currentSession || instance" class="flex flex-wrap items-center gap-1">
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
                   class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
-                  title="Browse files"
+                  :title='$t("chat.browseFiles")'
                   @click="emit('show-files')"><Folder :size="11" class="text-warn" />{{ currentSession.workspace }}</button>
           <span v-if="instance?.name" data-test="ctx-chip-instance"
                 class="flex items-center gap-1 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="font-mono text-accent">@</span>{{ instance.name }}</span>
@@ -80,18 +80,18 @@ const verb = computed(() => {
                 class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="text-accent" />{{ currentSession.agent }}</span>
           <button v-if="files.gitSummary" data-test="git-summary"
                   class="flex items-center gap-1.5 rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
-                  title="View changes"
+                  :title='$t("chat.viewChanges")'
                   @click="files.tab = 'changes'; emit('show-files')">
             <GitBranch :size="11" class="text-warn" />
             <span v-if="files.gitSummary.branch">{{ files.gitSummary.branch }}</span>
             <span class="h-1 w-1 rounded-full bg-warn" aria-hidden="true" />
-            <span class="text-warn">{{ files.gitSummary.changedCount }} changed</span>
+            <span class="text-warn">{{ files.gitSummary.changedCount }} {{ $t("chat.changed") }}</span>
           </button>
         </div>
       </div>
       <div v-if="chat.error" data-test="chat-error" class="bg-danger/10 px-4 py-1 text-xs text-danger">
         {{ chat.error }}
-        <button class="ml-2 text-danger underline" @click="chat.error = ''">dismiss</button>
+        <button class="ml-2 text-danger underline" @click="chat.error = ''">{{ $t("common.dismiss") }}</button>
       </div>
       <MessageList :messages="chat.messages" :live-turn="chat.liveTurn"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
@@ -106,11 +106,11 @@ const verb = computed(() => {
           <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
           <span class="text-[12px] font-semibold text-run">{{ verb }}…</span>
           <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
-          <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? "tool" : "tools" }}</span>
+          <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? $t("chat.tool") : $t("chat.tools") }}</span>
           <span class="flex-1" />
           <button data-test="cancel-turn"
                   class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
-                  @click="chat.cancel"><X :size="13" />Cancel</button>
+                  @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
         </div>
         <PlanPanel v-if="chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"

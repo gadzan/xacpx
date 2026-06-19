@@ -1,6 +1,7 @@
 import { setActivePinia, createPinia } from "pinia";
 import { mount } from "@vue/test-utils";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { i18n } from "../i18n";
 
 vi.mock("../api/client", () => ({
   ApiError: class extends Error { constructor(public code: string, public status: number) { super(code); } },
@@ -13,6 +14,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 
 beforeEach(() => setActivePinia(createPinia()));
+afterEach(() => { i18n.global.locale.value = "en"; });
 
 function seedInstance() {
   const instances = useInstancesStore();
@@ -71,6 +73,12 @@ it("shows a working HUD while a live turn is active", async () => {
   await w.vm.$nextTick();
   expect(w.find('[data-test="turn-hud"]').exists()).toBe(true);
   expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
+});
+
+it("localizes the empty-state prompt when locale is zh-CN", () => {
+  i18n.global.locale.value = "zh-CN";
+  const w = mount(ChatPane); // no session selected → empty state
+  expect(w.text()).toContain("选择一个会话");
 });
 
 it("hides the HUD when no turn is active", () => {
