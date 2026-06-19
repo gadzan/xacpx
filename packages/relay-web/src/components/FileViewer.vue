@@ -38,19 +38,19 @@ function diffLineClass(line: string): string {
   <div class="flex h-full flex-1 flex-col bg-bg" data-test="file-viewer-center">
     <!-- header: back + path + meta -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
-      <button data-test="fv-back-list" aria-label="Back to file list"
+      <button data-test="fv-back-list" :aria-label="$t('files.backToList')"
               class="flex lg:hidden items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('back')"><ArrowLeft :size="14" />Files</button>
-      <button data-test="fv-back" aria-label="Back"
+              @click="emit('back')"><ArrowLeft :size="14" />{{ $t("files.title") }}</button>
+      <button data-test="fv-back" :aria-label="$t('files.back')"
               class="hidden lg:flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('close')"><ArrowLeft :size="14" />Back</button>
+              @click="emit('close')"><ArrowLeft :size="14" />{{ $t("files.back") }}</button>
       <span class="h-4 w-px bg-border" aria-hidden="true" />
       <template v-if="files.file">
         <FileText :size="14" class="shrink-0 text-accent" />
         <span class="truncate font-mono text-[12.5px] text-fg">{{ files.file.path }}</span>
         <span class="shrink-0 text-[11px] text-fg-muted">{{ fmtSize(files.file.size) }}</span>
-        <span v-if="files.file.truncated" class="shrink-0 rounded bg-warn/10 px-1 text-[10.5px] text-warn">truncated</span>
-        <span v-if="files.file.binary" class="shrink-0 rounded bg-fg/5 px-1 text-[10.5px] text-fg-muted">binary</span>
+        <span v-if="files.file.truncated" class="shrink-0 rounded bg-warn/10 px-1 text-[10.5px] text-warn">{{ $t("files.truncated") }}</span>
+        <span v-if="files.file.binary" class="shrink-0 rounded bg-fg/5 px-1 text-[10.5px] text-fg-muted">{{ $t("files.binary") }}</span>
       </template>
       <template v-else-if="files.diffPath">
         <FileDiff :size="14" class="shrink-0 text-accent" />
@@ -58,7 +58,7 @@ function diffLineClass(line: string): string {
       </template>
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <CopyButton v-if="files.file && !files.file.binary" :text="files.file.content" />
-        <button data-test="fv-close" aria-label="Close file"
+        <button data-test="fv-close" :aria-label="$t('files.closeFile')"
                 class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:hidden"
                 @click="emit('close')"><X :size="16" /></button>
       </div>
@@ -75,13 +75,13 @@ function diffLineClass(line: string): string {
           </div>
         </div>
         <pre v-else-if="!files.file.binary" class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-fg whitespace-pre">{{ files.file.content }}</pre>
-        <div v-else class="p-6 text-sm text-fg-muted">Binary file not shown.</div>
+        <div v-else class="p-6 text-sm text-fg-muted">{{ $t("files.binaryNotShown") }}</div>
       </template>
       <!-- single-file diff -->
       <template v-else-if="files.diffPath && files.diff">
         <pre v-if="files.diff.diff" data-test="fv-diff-body" class="p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre"><span v-for="(l, i) in files.diff.diff.split('\n')" :key="i" class="block" :class="diffLineClass(l)">{{ l }}</span></pre>
-        <div v-else class="p-6 text-sm text-fg-muted">No diff content.</div>
-        <div v-if="files.diff.truncated" class="px-4 py-1 text-xs text-warn">diff truncated</div>
+        <div v-else class="p-6 text-sm text-fg-muted">{{ $t("files.noDiffContent") }}</div>
+        <div v-if="files.diff.truncated" class="px-4 py-1 text-xs text-warn">{{ $t("files.diffTruncated") }}</div>
       </template>
     </div>
   </div>
