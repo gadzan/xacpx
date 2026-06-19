@@ -199,6 +199,16 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     return c.json({ token: issued.token, expiresAt: issued.expiresAt });
   });
 
+  app.patch("/api/instances/:id", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    const account = c.get("account");
+    const body = (await c.req.json().catch(() => ({}))) as { name?: string };
+    const name = (body.name ?? "").trim();
+    if (!name) return c.json({ error: "invalid-name" }, 400);
+    const ok = deps.instances.rename(c.req.param("id"), account.id, name);
+    return ok ? c.json({ ok: true }) : c.json({ error: "not-found" }, 404);
+  });
+
   app.delete("/api/instances/:id", (c) => {
     const account = c.get("account");
     const removed = deps.instances.remove(c.req.param("id"), account.id);
