@@ -7,6 +7,7 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import { Bot, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import { fmtTime, fmtDateTime } from "../lib/format";
 
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
@@ -130,13 +131,6 @@ watch(
     if (atBottom.value) void nextTick(() => scrollToBottom(false));
   },
 );
-
-// Compact local time for the per-message action/info row (e.g. "15:45").
-function fmtTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 </script>
 
 <template>
@@ -158,7 +152,7 @@ function fmtTime(iso?: string): string {
               <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
               <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
                     class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10.5px] font-medium text-accent"
-                    :title="`Scheduled for ${new Date(schedOf(m)!.executeAt).toLocaleString()}`">
+                    :title="`Scheduled for ${fmtDateTime(schedOf(m)!.executeAt)}`">
                 <Clock :size="11" />Scheduled
               </span>
               <div data-test="msg-in"

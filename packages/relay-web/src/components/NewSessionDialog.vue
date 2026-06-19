@@ -4,6 +4,7 @@ import { X, Loader2, AlertTriangle, ChevronDown } from "lucide-vue-next";
 import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
+import { fmtDateTime } from "../lib/format";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = defineProps<{ instanceId: string; instanceName: string }>();
@@ -203,7 +204,7 @@ const nativeErrorHint = computed(() => {
 function nativeLabel(s: NativeSessionDto): string {
   const title = (s.title ?? "").trim() || s.sessionId;
   const tail = s.sessionId.length > 8 ? `…${s.sessionId.slice(-8)}` : s.sessionId;
-  const when = s.updatedAt ? ` · ${new Date(s.updatedAt).toLocaleString()}` : "";
+  const when = s.updatedAt ? ` · ${fmtDateTime(s.updatedAt)}` : "";
   return `${title} (${tail})${when}`;
 }
 const nativeGroups = computed<SelectGroup[]>(() => [
