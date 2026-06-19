@@ -325,8 +325,15 @@ test("parseStartOptions: USAGE string contains --trust-proxy", () => {
   const opts = parseStartOptions(["start"]);
   expect(typeof opts.trustProxy).toBe("boolean");
   expect(typeof opts.httpPort).toBe("number");
-  expect(typeof opts.wsPort).toBe("number");
   expect(typeof opts.dbPath).toBe("string");
+});
+
+test("parseStartOptions: no --ws-port → wsPort undefined (gateway merged onto HTTP port)", () => {
+  expect(parseStartOptions(["start"]).wsPort).toBeUndefined();
+});
+
+test("parseStartOptions: explicit --ws-port → that port (legacy dedicated gateway)", () => {
+  expect(parseStartOptions(["start", "--ws-port", "8788"]).wsPort).toBe(8788);
 });
 
 // resolveBundledWebRoot reads process.argv[1], so each test stubs it and restores.

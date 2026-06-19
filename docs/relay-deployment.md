@@ -23,15 +23,15 @@ xacpx-relay add token
 # 输出示例：
 #   access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
 #   (store it now — not shown again)
-#   hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
+#   hint: use this token for web login AND: xacpx channel add relay --url wss://<host> --token <token>
 # 把该令牌交给用户：Web 登录页「Access token」字段粘贴登录；同时用来配对连接器。
 
 # 3. 起服务 — 自动使用同一个默认 DB，自动检测内嵌看板
 xacpx-relay start
 # 输出示例：
-#   xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
+#   xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
 
-# 4. 实例侧接入（同一个 access token 直接用于配对，--url 指向 8788 实例网关或其 wss:// 代理）
+# 4. 实例侧接入（同一个 access token 直接用于配对，--url 指向与看板相同的域名/主机——裸域名即 wss 根路径连入合并网关）
 xacpx channel add relay --url wss://relay.example.com --token <上面的访问令牌> --name home-pc
 xacpx restart
 ```
@@ -39,7 +39,8 @@ xacpx restart
 **默认值说明：**
 - `--db` → `~/.xacpx-relay/relay.db`（绝对路径，父目录自动创建）
 - `--web-root` → 自动检测 hub 包内嵌入的 `dist/relay-web`；几乎不需要传
-- 其他：`--host 0.0.0.0`、`--http-port 8787`、`--ws-port 8788`
+- 其他：`--host 0.0.0.0`、`--http-port 8787`
+- `--ws-port` → **可选**：省略（默认）= 实例网关合并到 HTTP 端口（连接器从根路径连入）；只有当你想把网关单独放在自己的端口上（便于单独防火墙，旧的双端口布局）时才传。
 
 只有在需要自定义 DB 路径、绑定地址、端口或反向代理时才需要传 flag。
 
@@ -50,15 +51,16 @@ xacpx restart
 xacpx-relay add token --db /var/lib/xacpx-relay/relay.db
 
 # 带全量参数启动（反向代理场景；--web-root 一般无需传，看板已内嵌）
+# 默认单端口：实例网关合并在 HTTP 端口 8787 上，无需 --ws-port。
 xacpx-relay start \
   --db /var/lib/xacpx-relay/relay.db \
-  --host 0.0.0.0 --http-port 8787 --ws-port 8788 \
+  --host 0.0.0.0 --http-port 8787 \
   --history-retention-days 30 --request-timeout-ms 120000 --trust-proxy
 ```
 
 ## 关键事实
 
-- **双端口**：8787 = HTTP API + 看板 + 看板 `/ws`；8788 = 实例网关（实例在此注册）。两者分开便于分别防火墙。生产经反代终结 TLS，实例用 `wss://`。
+- **单端口（默认）**：只暴露一个端口 8787 = HTTP API + 看板 + 看板 `/ws` + 实例网关（实例网关合并为 HTTP 端口上的 WebSocket upgrade，实例/连接器从根路径 `/` 注册）。运维只需开放一个端口、一个域名，反代单条 `reverse_proxy 127.0.0.1:8787` 即可。生产经反代终结 TLS，实例用 `wss://`。仅当你想把实例网关单独放到自己的端口上分别防火墙时，才传 `--ws-port <n>`（恢复旧的双端口布局）。
 - **`xacpx-relay` CLI 子命令**：`start` / `add token` / `ls` / `rm token <value-or-id>`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
 - **持久化**：全部在单个 SQLite 文件（`--db`）。默认 `~/.xacpx-relay/relay.db`（固定绝对路径，父目录自动创建）。备份即停机/静默期 `cp` 该文件。
 - **凭证**：访问令牌（access token）一令两用——既用于 Web 登录，也用于连接器首连（无需单独铸造配对令牌）。首连后实例换取长期凭证，写入 `<xacpx-home>/relay/credential.json`（0600），不进 `config.json`。

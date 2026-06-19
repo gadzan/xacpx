@@ -13,11 +13,16 @@ export interface RelayChannelConfig {
  * - http:// → ws://, https:// → wss:// (map scheme, keep the rest).
  * - No scheme → parse host[:port]:
  *   - Explicit numeric port → ws://<host>:<port>.
- *   - IPv4 literal, "localhost", or bracketed IPv6 → ws://<host>:8788.
+ *   - IPv4 literal, "localhost", or bracketed IPv6 → ws://<host>:8787.
  *   - Domain name → wss://<host> (production TLS, no port appended).
+ *
+ * Port 8787 is the hub's HTTP port: by default the instance gateway is merged
+ * onto it (the connector reaches it at the root path). Only when the operator
+ * runs a legacy dedicated gateway port do they pass an explicit `host:8788`.
  *
  * Note: bare unbracketed IPv6 (e.g. "::1") is not supported; use "[::1]" instead.
  */
+const DEFAULT_GATEWAY_PORT = "8787";
 export function normalizeRelayUrl(input: string): string {
   const trimmed = input.trim();
   if (!trimmed) return "";
@@ -38,7 +43,7 @@ export function normalizeRelayUrl(input: string): string {
     const ipv6 = bracketMatch[1];
     const port = bracketMatch[2];
     if (port) return `ws://[${ipv6}]:${port}`;
-    return `ws://[${ipv6}]:8788`;
+    return `ws://[${ipv6}]:${DEFAULT_GATEWAY_PORT}`;
   }
 
   // Plain host or host:port — split on last colon if followed by all digits
@@ -58,7 +63,7 @@ export function normalizeRelayUrl(input: string): string {
   // No port — decide scheme by host type
   const isIPv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
   if (isIPv4 || host === "localhost") {
-    return `ws://${host}:8788`;
+    return `ws://${host}:${DEFAULT_GATEWAY_PORT}`;
   }
 
   // Domain → wss, port 443 implicit

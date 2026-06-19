@@ -169,7 +169,12 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
 export interface StartRelayOptions {
   dbPath: string;
   httpPort: number;
-  wsPort: number;
+  /**
+   * Dedicated instance-gateway port (legacy two-port layout). Omit (default) to
+   * merge the gateway onto the HTTP port: connectors then reach it via a WS
+   * upgrade at `/` or `/gateway`, so a single port + domain serves everything.
+   */
+  wsPort?: number;
   host?: string;
   webRoot?: string;
   historyRetentionDays?: number;
@@ -180,7 +185,8 @@ export interface StartRelayOptions {
 export interface RunningRelay {
   runtime: RelayRuntime;
   httpPort: number;
-  wsPort: number;
+  /** The dedicated gateway port, or `null` when the gateway is merged onto the HTTP port. */
+  wsPort: number | null;
   close(): Promise<void>;
 }
 
@@ -213,22 +219,42 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     }
   });
 
-  const wss = new WebSocketServer({ port: options.wsPort, host });
-  await new Promise<void>((resolve) => wss.on("listening", () => resolve()));
-  wss.on("connection", (socket) => runtime.gateway.handleConnection(socket));
+  // Default (merged): the instance gateway shares the HTTP port, handled as a
+  // noServer WS upgrade alongside the dashboard's `/ws`. Passing `wsPort` opts
+  // into the legacy dedicated-port layout (e.g. to firewall the gateway apart).
+  const dedicated = options.wsPort !== undefined;
+  let wss: WebSocketServer | undefined;
+  let gatewayWss: WebSocketServer | undefined;
+  if (dedicated) {
+    wss = new WebSocketServer({ port: options.wsPort, host });
+    await new Promise<void>((resolve) => wss!.on("listening", () => resolve()));
+    wss.on("connection", (socket) => runtime.gateway.handleConnection(socket));
+  } else {
+    gatewayWss = new WebSocketServer({ noServer: true });
+  }
 
   const webWss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? "").split("?")[0];
-    if (path !== "/ws") { socket.destroy(); return; }
-    const token = parseCookie(req.headers.cookie ?? "")["xrelay_session"];
-    const account = token ? runtime.accounts.getSessionAccount(token) : null;
-    if (!account) { socket.destroy(); return; }
-    webWss.handleUpgrade(req, socket, head, (ws) => runtime.webGateway.register(account.id, ws));
+    if (path === "/ws") {
+      const token = parseCookie(req.headers.cookie ?? "")["xrelay_session"];
+      const account = token ? runtime.accounts.getSessionAccount(token) : null;
+      if (!account) { socket.destroy(); return; }
+      webWss.handleUpgrade(req, socket, head, (ws) => runtime.webGateway.register(account.id, ws));
+      return;
+    }
+    // Merged gateway: connectors dial the bare host (root) or an explicit
+    // `/gateway`. Auth is the gateway's own token/credential handshake, so no
+    // cookie gate here. In dedicated mode `gatewayWss` is undefined → reject.
+    if (gatewayWss && (path === "/" || path === "/gateway" || path.startsWith("/gateway/"))) {
+      gatewayWss.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
+      return;
+    }
+    socket.destroy();
   });
 
   const httpPort = (httpServer.address() as { port: number }).port;
-  const wsPort = (wss.address() as { port: number }).port;
+  const wsPort = wss ? (wss.address() as { port: number }).port : null;
   return {
     runtime,
     httpPort,
@@ -236,7 +262,8 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     close: async () => {
       stopMaintenance();
       await new Promise<void>((resolve) => webWss.close(() => resolve()));
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      if (gatewayWss) await new Promise<void>((resolve) => gatewayWss!.close(() => resolve()));
+      if (wss) await new Promise<void>((resolve) => wss!.close(() => resolve()));
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       runtime.close();
     },

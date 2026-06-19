@@ -10,12 +10,12 @@ This guide walks an operator from nothing to a running hub with a paired instanc
    xacpx instance A ─┐                         ┌─ browser (token login)
    xacpx instance B ─┤  WSS (dial-out)         │  HTTPS + WSS
    xacpx instance C ─┴──────────────►  RELAY HUB  ◄───────────┘
-                       :8788 instance gateway   :8787 HTTP API + web /ws
+                          :8787 HTTP API + web /ws + instance gateway
                                   │
                               relay.db (SQLite)
 ```
 
-- **Two ports.** The HTTP API and the dashboard's `/ws` fan-out share **8787**; the **instance** WebSocket gateway (where xacpx instances register) is **8788**. They are separate so you can firewall them independently.
+- **Single port (by default).** The HTTP API, the dashboard's `/ws` fan-out, and the **instance** WebSocket gateway (where xacpx instances register) all share **8787** — connectors register via a WebSocket upgrade at the root path. Pass `--ws-port` only if you want a dedicated gateway port you can firewall independently.
 - **Multi-tenant.** Every token-user only ever sees its own instances and sessions; the server stamps identity on each proxied call. Tokens, instance credentials, and web-session cookies are stored hashed.
 - **Source of truth stays on the instances.** The hub caches recent messages for the dashboard but does not own your sessions — the instances do.
 
@@ -64,13 +64,13 @@ xacpx-relay start
 ```
 access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
 (store it now — not shown again)
-hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
+hint: use this token for web login AND: xacpx channel add relay --url <host> --token <token>
 ```
 
 `start` confirms what is running:
 
 ```
-xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
+xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
 ```
 
 Open `http://<host>:8787`, paste the token into the **Access token** field, and you are in.
@@ -115,7 +115,7 @@ xacpx-relay start \
   [--web-root <dir>] \
   [--host 0.0.0.0] \
   [--http-port 8787] \
-  [--ws-port 8788] \
+  [--ws-port <n>] \
   [--history-retention-days 30] \
   [--request-timeout-ms 120000] \
   [--trust-proxy]
@@ -125,7 +125,7 @@ xacpx-relay start \
 |---|---|---|
 | `--db <path>` | `~/.xacpx-relay/relay.db` | SQLite database file. The directory is created automatically. |
 | `--http-port <n>` | `8787` | HTTP API **and** the dashboard's `/ws` fan-out. |
-| `--ws-port <n>` | `8788` | Instance gateway — where xacpx instances register. |
+| `--ws-port <n>` | _(merged)_ | Omit to merge the instance gateway onto the HTTP port (single-port default). Pass a port to run a dedicated gateway listener you can firewall separately. |
 | `--host <addr>` | `0.0.0.0` | Bind address. |
 | `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves the dashboard embedded in the package (`dist/relay-web` next to `cli.js`); only pass this to override. |
 | `--history-retention-days <n>` | `30` | Cached messages older than this are pruned hourly (also hard-capped at 2000 messages per session). |
@@ -146,11 +146,11 @@ On the machine running the xacpx instance, add the relay connector channel using
 
 ```bash
 xacpx plugin add @ganglion/xacpx-channel-relay
-xacpx channel add relay --url <host> --token <T> [--name home-pc]
+xacpx channel add relay --url relay.example.com --token <T> [--name home-pc]
 xacpx restart
 ```
 
-`xacpx plugin add` installs the connector from npm and pulls in its `@ganglion/xacpx-relay-protocol` dependency automatically. The instance's `xacpx` core must be **≥ 0.11.0** (the connector's peer requirement).
+Point `--url` at the **same host as the dashboard** — a bare domain resolves to `wss://relay.example.com`, and the merged gateway shares that host. `xacpx plugin add` installs the connector from npm and pulls in its `@ganglion/xacpx-relay-protocol` dependency automatically. The instance's `xacpx` core must be **≥ 0.11.0** (the connector's peer requirement).
 
 ::: details Pairing from a source checkout (development)
 If you run the instance from a repo checkout, the workspace already links `channel-relay` and `relay-protocol` — skip `plugin add` and run `xacpx channel add relay …` directly.
@@ -163,15 +163,15 @@ If you run the instance from a repo checkout, the workspace already links `chann
 | What you pass | Resolved to |
 |---|---|
 | `relay.example.com` (bare domain) | `wss://relay.example.com` |
-| `1.2.3.4` (IP) | `ws://1.2.3.4:8788` |
+| `1.2.3.4` (IP) | `ws://1.2.3.4:8787` |
 | `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
-| `localhost` | `ws://localhost:8788` |
+| `localhost` | `ws://localhost:8787` |
 | `host:9000` | `ws://host:9000` |
 | `ws://…` or `wss://…` | used as-is |
 | `http://…` or `https://…` | mapped to `ws://…` / `wss://…` |
 
 ::: warning IPv6
-Bare unbracketed IPv6 addresses are not supported. Use `[::1]:8788` instead.
+Bare unbracketed IPv6 addresses are not supported. Use `[::1]:8787` instead.
 :::
 
 ### How pairing works
@@ -182,30 +182,31 @@ On first connect the instance exchanges the access token for a long-lived per-in
 Reuse the same token on several instances (e.g. `home-pc`, `work-laptop`). They all appear under the same user in the dashboard.
 :::
 
+::: warning Upgrading from the two-port (0.1.0) layout
+The default moved to a single port. A connector that was paired against the old `8788` gateway has a `ws://<host>:8788` URL frozen in its `config.json` (the URL is normalized once, at `channel add` time), so it will keep dialing `:8788`. Re-run `xacpx channel add relay --url <host> …` (or edit the stored `url`) so it points at the merged HTTP port. Bare-**domain** connectors (`wss://host`, no port) are unaffected — they already land on the merged gateway.
+:::
+
 Back in the dashboard, the instance appears in the left column with a green dot once it is online. Select a session to chat; open the task panel (right column, or the **Tasks** button on mobile) for scheduled and orchestration tasks.
 
 ## TLS & reverse proxy {#tls-reverse-proxy}
 
-The hub speaks **plain** HTTP and WS. For any non-localhost deployment, terminate TLS at a reverse proxy and forward both the HTTP/web port and the instance-gateway port. Instances should then connect with `wss://`.
+The hub speaks **plain** HTTP and WS. For any non-localhost deployment, terminate TLS at a reverse proxy and forward the single HTTP port. Instances should then connect with `wss://`.
 
-The dashboard's live updates use a WebSocket upgrade on the **HTTP port**, so the proxy must allow upgrades on that route as well.
+The dashboard's live updates use a WebSocket upgrade on the **HTTP port**, so the proxy must allow upgrades on that route. The merged instance gateway rides the same port via a WebSocket upgrade at the root path, so the single proxied route covers both.
 
 ### Caddy
 
 ```text
 relay.example.com {
-    reverse_proxy 127.0.0.1:8787   # HTTP API + dashboard + dashboard /ws (Caddy proxies upgrades automatically)
-}
-
-gateway.example.com {
-    reverse_proxy 127.0.0.1:8788   # instance gateway; instances use wss://gateway.example.com
+    reverse_proxy 127.0.0.1:8787
 }
 ```
+
+Caddy auto-proxies the WebSocket upgrades for both the dashboard `/ws` and the gateway root — no extra config.
 
 ### nginx
 
 ```nginx
-# Dashboard + HTTP API (port 8787, includes the dashboard /ws upgrade)
 server {
     listen 443 ssl;
     server_name relay.example.com;
@@ -218,28 +219,18 @@ server {
         proxy_set_header Host $host;
     }
 }
-
-# Instance gateway (port 8788) — instances connect with wss://gateway.example.com
-server {
-    listen 443 ssl;
-    server_name gateway.example.com;
-    # ssl_certificate ...; ssl_certificate_key ...;
-    location / {
-        proxy_pass http://127.0.0.1:8788;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
 ```
+
+::: details Advanced: dedicated gateway port (`--ws-port`)
+If you start the hub with `xacpx-relay start --ws-port 8788`, the instance gateway gets its own port instead of riding the HTTP port. You can then add a second proxied domain (`gateway.example.com` → `8788`) and point connectors at `wss://gateway.example.com`. This is only needed if you want to firewall the gateway apart from the dashboard.
+:::
 
 ### Which ports to expose
 
 | Port | Audience | Expose publicly? |
 |---|---|---|
-| 8787 | Browsers (dashboard + API + dashboard `/ws`) | Yes, behind TLS |
-| 8788 | xacpx instances (gateway) | Yes, behind TLS |
+| 8787 | Browsers (dashboard + API + dashboard `/ws`) **and** xacpx instances (merged gateway) | Yes, behind TLS |
+| 8788 | Only if you opt into `--ws-port` — dedicated instance gateway | Yes, behind TLS |
 | — | `relay.db` | Never — it is a local file |
 
 ## Token & user management
@@ -285,7 +276,7 @@ Bind to `127.0.0.1` and let your reverse proxy face the internet. The DB and das
 | Symptom | Cause | Fix |
 |---|---|---|
 | Dashboard 404 / blank page | `start` printed `dashboard: (none)` — the embedded UI wasn't found | The dashboard ships inside `@ganglion/xacpx-relay`; reinstall the package. From a source checkout, rebuild with `bun run build:relay` (it embeds the dashboard into `dist/relay-web`). |
-| Instance never turns green | Wrong gateway URL or revoked/mistyped token | Check that `--url` resolves to the **8788** gateway (or its `wss://` proxy); re-run `add token` and re-pair if the token was revoked. |
+| Instance never turns green | Wrong gateway URL or revoked/mistyped token | Point `--url` at the **same host as the dashboard** (the merged gateway shares the HTTP port); only use a separate `:8788` host if you started the hub with `--ws-port`. Re-run `add token` and re-pair if the token was revoked. |
 | Custom `--db` not taking effect | `--db` passed inconsistently between commands | Pass the **same** `--db` path to both `add token` and `start`; the default `~/.xacpx-relay/relay.db` is a fixed absolute path so omitting `--db` consistently is safe. |
 | Live updates stall behind a proxy | Proxy not forwarding WebSocket upgrades on 8787 | Allow `Upgrade`/`Connection` headers on the dashboard route. |
 

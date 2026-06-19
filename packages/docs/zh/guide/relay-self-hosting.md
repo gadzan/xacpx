@@ -10,12 +10,12 @@
    xacpx instance A ─┐                         ┌─ browser (token login)
    xacpx instance B ─┤  WSS (dial-out)         │  HTTPS + WSS
    xacpx instance C ─┴──────────────►  RELAY HUB  ◄───────────┘
-                       :8788 instance gateway   :8787 HTTP API + web /ws
+                          :8787 HTTP API + web /ws + instance gateway
                                   │
                               relay.db (SQLite)
 ```
 
-- **两个端口。** HTTP API 与看板的 `/ws` 广播共用 **8787**；**实例** WebSocket 网关（xacpx 实例在此注册）是 **8788**。两者相互独立，便于你分别配置防火墙策略。
+- **单端口（默认）。** HTTP API、看板的 `/ws` 广播与**实例** WebSocket 网关（xacpx 实例在此注册）全部共用 **8787**——连接器通过根路径上的 WebSocket 升级完成注册。仅当你想要一个可独立配置防火墙的专用网关端口时，才传入 `--ws-port`。
 - **多租户。** 每个 token 用户永远只能看到属于自己的实例和会话；服务端会在每次代理调用上打上身份标记。令牌、实例凭据和 Web 会话 Cookie 均以哈希形式存储。
 - **数据真相源仍在实例侧。** Hub 会为看板缓存近期消息，但它并不拥有你的会话——会话归实例所有。
 
@@ -64,13 +64,13 @@ xacpx-relay start
 ```
 access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
 (store it now — not shown again)
-hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
+hint: use this token for web login AND: xacpx channel add relay --url <host> --token <token>
 ```
 
 `start` 会确认运行状态：
 
 ```
-xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
+xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path / or /gateway), db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
 ```
 
 打开 `http://<host>:8787`，将令牌粘贴到 **Access token** 输入框，即可登录。
@@ -115,7 +115,7 @@ xacpx-relay start \
   [--web-root <目录>] \
   [--host 0.0.0.0] \
   [--http-port 8787] \
-  [--ws-port 8788] \
+  [--ws-port <n>] \
   [--history-retention-days 30] \
   [--request-timeout-ms 120000] \
   [--trust-proxy]
@@ -125,7 +125,7 @@ xacpx-relay start \
 |---|---|---|
 | `--db <路径>` | `~/.xacpx-relay/relay.db` | SQLite 数据库文件。目录会自动创建。 |
 | `--http-port <n>` | `8787` | HTTP API **以及**看板的 `/ws` 广播。 |
-| `--ws-port <n>` | `8788` | 实例网关——xacpx 实例在此注册。 |
+| `--ws-port <n>` | _（已合并）_ | 省略则把实例网关合并到 HTTP 端口（单端口默认）。传入一个端口则会启动一个可单独配置防火墙的专用网关监听器。 |
 | `--host <地址>` | `0.0.0.0` | 绑定地址。 |
 | `--web-root <目录>` | _（自动检测）_ | 看板资源目录。自动解析包内嵌入的看板（`cli.js` 旁边的 `dist/relay-web`）；仅在需要覆盖时才传入。 |
 | `--history-retention-days <n>` | `30` | 超过此天数的缓存消息会被每小时清理一次（同时硬性上限为每会话 2000 条）。 |
@@ -146,11 +146,11 @@ Hub 会对每个客户端 IP 进行限速，并设有全局失败上限。在反
 
 ```bash
 xacpx plugin add @ganglion/xacpx-channel-relay
-xacpx channel add relay --url <主机地址> --token <T> [--name home-pc]
+xacpx channel add relay --url relay.example.com --token <T> [--name home-pc]
 xacpx restart
 ```
 
-`xacpx plugin add` 会从 npm 安装连接器，并自动拉取其依赖 `@ganglion/xacpx-relay-protocol`。实例侧的 `xacpx` 核心需 **≥ 0.11.0**（连接器的 peer 要求）。
+把 `--url` 指向**与看板相同的主机**——裸域名会解析为 `wss://relay.example.com`，合并后的网关与该主机共用。`xacpx plugin add` 会从 npm 安装连接器，并自动拉取其依赖 `@ganglion/xacpx-relay-protocol`。实例侧的 `xacpx` 核心需 **≥ 0.11.0**（连接器的 peer 要求）。
 
 ::: details 从源码检出目录配对（开发）
 如果你从仓库检出目录运行实例，workspace 已经链接好了 `channel-relay` 与 `relay-protocol`——跳过 `plugin add`，直接运行 `xacpx channel add relay …` 即可。
@@ -163,15 +163,15 @@ xacpx restart
 | 传入的值 | 解析结果 |
 |---|---|
 | `relay.example.com`（裸域名） | `wss://relay.example.com` |
-| `1.2.3.4`（IP） | `ws://1.2.3.4:8788` |
+| `1.2.3.4`（IP） | `ws://1.2.3.4:8787` |
 | `1.2.3.4:9000` | `ws://1.2.3.4:9000` |
-| `localhost` | `ws://localhost:8788` |
+| `localhost` | `ws://localhost:8787` |
 | `host:9000` | `ws://host:9000` |
 | `ws://…` 或 `wss://…` | 原样使用 |
 | `http://…` 或 `https://…` | 映射为 `ws://…` / `wss://…` |
 
 ::: warning IPv6
-不支持未加方括号的裸 IPv6 地址。请使用 `[::1]:8788` 格式。
+不支持未加方括号的裸 IPv6 地址。请使用 `[::1]:8787` 格式。
 :::
 
 ### 配对工作原理
@@ -182,30 +182,31 @@ xacpx restart
 可以在多台机器（如 `home-pc`、`work-laptop`）上复用同一个令牌，它们都会在看板中归属于同一个用户。
 :::
 
+::: warning 从双端口（0.1.0）布局升级
+默认已改为单端口。早先针对旧 `8788` 网关配对过的连接器，其 `config.json` 里冻结了 `ws://<host>:8788`（URL 只在 `channel add` 时规范化一次），所以它会继续连 `:8788`。请重新运行 `xacpx channel add relay --url <host> …`（或直接改存储的 `url`），让它指向合并后的 HTTP 端口。裸**域名**连接器（`wss://host`，不带端口）不受影响——它们本就落在合并网关上。
+:::
+
 回到看板，实例上线后会出现在左栏，并带有一个绿色圆点。选中某个会话即可聊天；打开任务面板（右栏，或移动端的 **Tasks** 按钮）可查看定时任务与编排任务。
 
 ## TLS 与反向代理 {#tls-reverse-proxy}
 
-Hub 只说**明文** HTTP 和 WS。对于任何非 localhost 的部署，请在反向代理处终止 TLS，并同时转发 HTTP/web 端口和实例网关端口。实例随后应使用 `wss://` 连接。
+Hub 只说**明文** HTTP 和 WS。对于任何非 localhost 的部署，请在反向代理处终止 TLS，并转发那一个 HTTP 端口。实例随后应使用 `wss://` 连接。
 
-看板的实时更新会在 **HTTP 端口**上发起 WebSocket 升级，因此代理也必须在该路由上允许升级。
+看板的实时更新会在 **HTTP 端口**上发起 WebSocket 升级，因此代理也必须在该路由上允许升级。合并后的实例网关通过根路径上的 WebSocket 升级搭乘同一端口，因此这一条被代理的路由即可同时覆盖两者。
 
 ### Caddy
 
 ```text
 relay.example.com {
-    reverse_proxy 127.0.0.1:8787   # HTTP API + dashboard + dashboard /ws (Caddy proxies upgrades automatically)
-}
-
-gateway.example.com {
-    reverse_proxy 127.0.0.1:8788   # instance gateway; instances use wss://gateway.example.com
+    reverse_proxy 127.0.0.1:8787
 }
 ```
+
+Caddy 会自动为看板的 `/ws` 和网关根路径代理 WebSocket 升级——无需额外配置。
 
 ### nginx
 
 ```nginx
-# Dashboard + HTTP API (port 8787, includes the dashboard /ws upgrade)
 server {
     listen 443 ssl;
     server_name relay.example.com;
@@ -218,28 +219,18 @@ server {
         proxy_set_header Host $host;
     }
 }
-
-# Instance gateway (port 8788) — instances connect with wss://gateway.example.com
-server {
-    listen 443 ssl;
-    server_name gateway.example.com;
-    # ssl_certificate ...; ssl_certificate_key ...;
-    location / {
-        proxy_pass http://127.0.0.1:8788;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-    }
-}
 ```
+
+::: details 进阶：专用网关端口（`--ws-port`）
+如果你用 `xacpx-relay start --ws-port 8788` 启动 Hub，实例网关会获得自己的端口，而不再搭乘 HTTP 端口。届时你可以再加一个被代理的域名（`gateway.example.com` → `8788`），并让连接器指向 `wss://gateway.example.com`。仅当你想把网关与看板分开配置防火墙时才需要这样做。
+:::
 
 ### 应该暴露哪些端口
 
 | 端口 | 面向对象 | 是否公开暴露？ |
 |---|---|---|
-| 8787 | 浏览器（看板 + API + 看板 `/ws`） | 是，需置于 TLS 之后 |
-| 8788 | xacpx 实例（网关） | 是，需置于 TLS 之后 |
+| 8787 | 浏览器（看板 + API + 看板 `/ws`）**以及** xacpx 实例（合并后的网关） | 是，需置于 TLS 之后 |
+| 8788 | 仅当你启用 `--ws-port` 时——专用实例网关 | 是，需置于 TLS 之后 |
 | — | `relay.db` | 绝不——它是一个本地文件 |
 
 ## 令牌与用户管理
@@ -285,7 +276,7 @@ WantedBy=multi-user.target
 | 现象 | 原因 | 解决办法 |
 |---|---|---|
 | 看板 404 / 空白页 | `start` 打印了 `dashboard: (none)`——没找到内嵌的看板 | 看板随 `@ganglion/xacpx-relay` 一起出厂；重装该包即可。源码检出时用 `bun run build:relay` 重建（它会把看板嵌入 `dist/relay-web`）。 |
-| 实例始终不变绿 | 网关 URL 错误、令牌被吊销或输入有误 | 确认 `--url` 能解析到 **8788** 网关（或其 `wss://` 代理）；如果令牌已被吊销，重新运行 `add token` 并重新配对。 |
+| 实例始终不变绿 | 网关 URL 错误、令牌被吊销或输入有误 | 把 `--url` 指向**与看板相同的主机**（合并后的网关与 HTTP 端口共用）；仅当你以 `--ws-port` 启动 Hub 时，才使用单独的 `:8788` 主机。如果令牌已被吊销，重新运行 `add token` 并重新配对。 |
 | 自定义 `--db` 未生效 | `--db` 在不同命令间传入不一致 | 在 `add token` 和 `start` 中传入**相同的** `--db` 路径；默认的 `~/.xacpx-relay/relay.db` 是固定的绝对路径，省略 `--db` 是安全的。 |
 | 经过代理后实时更新卡住 | 代理未在 8787 上转发 WebSocket 升级 | 在看板路由上允许 `Upgrade`/`Connection` 请求头。 |
 
