@@ -46,6 +46,29 @@ const DEFAULT_PACKAGES = [
     forbiddenPeer: "weacpx",
     expectedExportedName: "@ganglion/xacpx-channel-yuanbao",
   },
+  {
+    id: "relay-protocol",
+    dir: "packages/relay-protocol",
+    expectedName: "@ganglion/xacpx-relay-protocol",
+    requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
+  },
+  {
+    id: "relay",
+    dir: "packages/relay",
+    expectedName: "@ganglion/xacpx-relay",
+    // dist/relay-web/index.html proves the dashboard was embedded into the hub
+    // package — without it `npm i -g @ganglion/xacpx-relay` ships no web UI.
+    requiredFiles: ["dist/cli.js", "dist/relay-web/index.html", "README.md", "package.json"],
+  },
+  {
+    id: "channel-relay",
+    dir: "packages/channel-relay",
+    expectedName: "@ganglion/xacpx-channel-relay",
+    requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
+    requiredPeer: "xacpx",
+    forbiddenPeer: "weacpx",
+    expectedExportedName: "@ganglion/xacpx-channel-relay",
+  },
 ];
 
 const DEFAULT_SCAN_PATHS = [

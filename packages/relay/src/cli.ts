@@ -24,8 +24,16 @@ export function resolveBundledWebRoot(): string | undefined {
   if (!argv1) return undefined;
   if (!argv1.endsWith("cli.js")) return undefined;
   const here = dirname(argv1);
-  const candidate = resolve(here, "../../relay-web/dist");
-  return existsSync(join(candidate, "index.html")) ? candidate : undefined;
+  // 1. Embedded copy shipped inside the published package: build:relay copies
+  //    packages/relay-web/dist into dist/relay-web (a sibling of cli.js). This is
+  //    the path that exists after `npm i -g @ganglion/xacpx-relay`.
+  const embedded = resolve(here, "relay-web");
+  if (existsSync(join(embedded, "index.html"))) return embedded;
+  // 2. Monorepo sibling — running cli.js straight from source before the embed
+  //    copy step has run (e.g. `bun run build:relay` partially, or dev tooling).
+  const sibling = resolve(here, "../../relay-web/dist");
+  if (existsSync(join(sibling, "index.html"))) return sibling;
+  return undefined;
 }
 
 const USAGE = [

@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runRelayCli, parseStartOptions, defaultDbPath } from "../../../../packages/relay/src/cli";
+import { runRelayCli, parseStartOptions, defaultDbPath, resolveBundledWebRoot } from "../../../../packages/relay/src/cli";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 
 function makeIo() {
@@ -327,4 +327,41 @@ test("parseStartOptions: USAGE string contains --trust-proxy", () => {
   expect(typeof opts.httpPort).toBe("number");
   expect(typeof opts.wsPort).toBe("number");
   expect(typeof opts.dbPath).toBe("string");
+});
+
+// resolveBundledWebRoot reads process.argv[1], so each test stubs it and restores.
+function withArgv1<T>(fakeCliPath: string, fn: () => T): T {
+  const saved = process.argv[1];
+  process.argv[1] = fakeCliPath;
+  try {
+    return fn();
+  } finally {
+    process.argv[1] = saved;
+  }
+}
+
+test("resolveBundledWebRoot prefers the in-package dist/relay-web embed (published layout)", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
+  const dist = join(root, "dist");
+  mkdirSync(join(dist, "relay-web"), { recursive: true });
+  writeFileSync(join(dist, "relay-web", "index.html"), "<html></html>");
+  expect(withArgv1(join(dist, "cli.js"), resolveBundledWebRoot)).toBe(join(dist, "relay-web"));
+});
+
+test("resolveBundledWebRoot falls back to the monorepo sibling relay-web/dist", () => {
+  // Layout: <root>/packages/relay/dist/cli.js + <root>/packages/relay-web/dist/index.html
+  const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
+  const relayDist = join(root, "packages", "relay", "dist");
+  mkdirSync(relayDist, { recursive: true });
+  const sibling = join(root, "packages", "relay-web", "dist");
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(join(sibling, "index.html"), "<html></html>");
+  expect(withArgv1(join(relayDist, "cli.js"), resolveBundledWebRoot)).toBe(sibling);
+});
+
+test("resolveBundledWebRoot returns undefined when neither location has the dashboard", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
+  const dist = join(root, "dist");
+  mkdirSync(dist, { recursive: true });
+  expect(withArgv1(join(dist, "cli.js"), resolveBundledWebRoot)).toBeUndefined();
 });
