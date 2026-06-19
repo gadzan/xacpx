@@ -10,6 +10,7 @@ export default {
     delete: "Delete",
     remove: "Remove",
     dismiss: "dismiss",
+    dismissNotice: "Dismiss",
   },
   connection: {
     online: "Connected",
@@ -35,7 +36,6 @@ export default {
   settings: {
     title: "Settings",
     appearance: "Appearance",
-    theme: "Theme",
     dark: "Dark",
     light: "Light",
     language: "Language",

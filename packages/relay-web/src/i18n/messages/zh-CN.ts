@@ -8,6 +8,7 @@ export default {
     delete: "删除",
     remove: "移除",
     dismiss: "关闭",
+    dismissNotice: "关闭通知",
   },
   connection: {
     online: "已连接",
@@ -33,7 +34,6 @@ export default {
   settings: {
     title: "设置",
     appearance: "外观",
-    theme: "主题",
     dark: "深色",
     light: "浅色",
     language: "语言",

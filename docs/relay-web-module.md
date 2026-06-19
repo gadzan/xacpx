@@ -18,6 +18,17 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - Vue 3 + Vite + Pinia（状态）+ vue-router（路由）+ Tailwind CSS v3（样式）；
 - 测试：Vitest + jsdom + @vue/test-utils（`src/__tests__/*.test.ts`）。
 
+## 国际化（i18n）
+
+- 看板支持 **English + 简体中文**两种语言。基于 vue-i18n（`globalInjection`，模板里直接用 `$t(...)`）。
+- **首次自动检测**：从浏览器 `navigator.language` 解析（`zh*` → `zh-CN`，其余回退 English）；
+  用户偏好持久化在 `localStorage` 键 `relay-locale`，下次进入直接沿用。
+- **手动切换**：设置页 → Appearance → Language（内联在 `SettingsView.vue`，无独立组件），
+  切换即时生效并写回 `localStorage`。
+- **文案目录**：`src/i18n/messages/en.ts`（以 `as const` 结尾）与 `src/i18n/messages/zh-CN.ts`，
+  两份按相同 key 形状镜像。**任何新增 UI 文案必须同时加进两份目录**——
+  `src/__tests__/i18n-parity.test.ts` 会断言两份 key 集合完全一致（且无空串值），缺哪份就会失败。
+
 ## 「快照 + 事件增量」模型
 
 看板状态由两条路径维护，重连先拉快照再订阅事件：
