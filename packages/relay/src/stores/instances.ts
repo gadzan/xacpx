@@ -120,6 +120,12 @@ export class InstanceStore {
     return true;
   }
 
+  rename(instanceId: string, accountId: string, name: string): boolean {
+    if (!this.getOwned(instanceId, accountId)) return false;
+    this.db.run("UPDATE instances SET name = ? WHERE id = ?", [name, instanceId]);
+    return true;
+  }
+
   /** Deletes expired or already-used pairing tokens. Returns rows removed. */
   prunePairingTokens(now: Date): number {
     const iso = now.toISOString();

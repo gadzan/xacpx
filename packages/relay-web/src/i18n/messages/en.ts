@@ -151,6 +151,11 @@ export default {
     manageTitle: "Manage · {name}",
     close: "Close",
     dialogLoading: "Loading…",
+    nameLabel: "Name",
+    renamePlaceholder: "instance name",
+    renameSave: "Save",
+    renameSaving: "Saving…",
+    renameFailed: "rename failed",
   },
   agents: {
     title: "Agents",

@@ -216,6 +216,64 @@ test("instances: pairing token, list with online flag, account isolation, rpc st
   })).status).toBe(404);
 });
 
+test("PATCH /api/instances/:id renames an owned instance", async () => {
+  const { app, instances, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId, accountId } = instances.redeemPairingToken(token)!;
+
+  const res = await app.request(`/api/instances/${instanceId}`, {
+    method: "PATCH", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "renamed" }),
+  });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ ok: true });
+  expect(instances.getOwned(instanceId, accountId)?.name).toBe("renamed");
+});
+
+test("PATCH /api/instances/:id with an empty/whitespace name → 400 invalid-name", async () => {
+  const { app, instances, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId } = instances.redeemPairingToken(token)!;
+
+  const res = await app.request(`/api/instances/${instanceId}`, {
+    method: "PATCH", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "   " }),
+  });
+  expect(res.status).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe("invalid-name");
+});
+
+test("PATCH /api/instances/:id on a non-owned instance → 404 not-found", async () => {
+  const { app, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const res = await app.request(`/api/instances/not-mine`, {
+    method: "PATCH", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "x" }),
+  });
+  expect(res.status).toBe(404);
+  expect(((await res.json()) as { error: string }).error).toBe("not-found");
+});
+
+test("PATCH /api/instances/:id with a non-JSON content-type → 415", async () => {
+  const { app, instances, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId } = instances.redeemPairingToken(token)!;
+
+  const res = await app.request(`/api/instances/${instanceId}`, {
+    method: "PATCH", headers: { cookie, "content-type": "text/plain" }, body: JSON.stringify({ name: "renamed" }),
+  });
+  expect(res.status).toBe(415);
+});
+
 test("rpc command.execute echoes input and output into history", async () => {
   const { app, instances, gateway, messages, loginToken, login } = await makeApp();
   const { cookie } = await login(loginToken);
