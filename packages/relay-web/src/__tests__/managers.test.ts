@@ -5,9 +5,10 @@ import WorkspacesManager from "../components/WorkspacesManager.vue";
 import AgentsManager from "../components/AgentsManager.vue";
 import { useInstancesStore } from "../stores/instances";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
+import { i18n } from "../i18n";
 
 beforeEach(() => setActivePinia(createPinia()));
-afterEach(() => settleConfirm(false));
+afterEach(() => { settleConfirm(false); i18n.global.locale.value = "en"; });
 
 function seed(store: ReturnType<typeof useInstancesStore>) {
   store.instances = [{
@@ -84,4 +85,13 @@ test("AgentsManager does not remove when the confirm is cancelled", async () => 
   settleConfirm(false);
   await flushPromises();
   expect(removeAgent).not.toHaveBeenCalled();
+});
+
+test("managers render Chinese affordances when locale is zh-CN", async () => {
+  i18n.global.locale.value = "zh-CN";
+  const store = useInstancesStore(); seed(store);
+  const wm = mount(WorkspacesManager, { props: { instanceId: "i1" } });
+  expect(wm.get('[data-test="wm-create"]').text()).toBe("添加工作区");
+  const am = mount(AgentsManager, { props: { instanceId: "i1" } });
+  expect(am.get('[data-test="am-add"]').text()).toBe("添加 Agent");
 });
