@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { runRelayCli, parseStartOptions, defaultDbPath, resolveBundledWebRoot } from "../../../../packages/relay/src/cli";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
@@ -337,22 +339,14 @@ test("parseStartOptions: explicit --ws-port → that port (legacy dedicated gate
 });
 
 // resolveBundledWebRoot reads process.argv[1], so each test stubs it and restores.
-function withArgv1<T>(fakeCliPath: string, fn: () => T): T {
-  const saved = process.argv[1];
-  process.argv[1] = fakeCliPath;
-  try {
-    return fn();
-  } finally {
-    process.argv[1] = saved;
-  }
-}
-
+// resolveBundledWebRoot resolves against its own module URL by default; the
+// cliJsPath param lets these tests point it at a fixture layout.
 test("resolveBundledWebRoot prefers the in-package dist/relay-web embed (published layout)", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
   const dist = join(root, "dist");
   mkdirSync(join(dist, "relay-web"), { recursive: true });
   writeFileSync(join(dist, "relay-web", "index.html"), "<html></html>");
-  expect(withArgv1(join(dist, "cli.js"), resolveBundledWebRoot)).toBe(join(dist, "relay-web"));
+  expect(resolveBundledWebRoot(join(dist, "cli.js"))).toBe(join(dist, "relay-web"));
 });
 
 test("resolveBundledWebRoot falls back to the monorepo sibling relay-web/dist", () => {
@@ -363,12 +357,34 @@ test("resolveBundledWebRoot falls back to the monorepo sibling relay-web/dist", 
   const sibling = join(root, "packages", "relay-web", "dist");
   mkdirSync(sibling, { recursive: true });
   writeFileSync(join(sibling, "index.html"), "<html></html>");
-  expect(withArgv1(join(relayDist, "cli.js"), resolveBundledWebRoot)).toBe(sibling);
+  expect(resolveBundledWebRoot(join(relayDist, "cli.js"))).toBe(sibling);
 });
 
 test("resolveBundledWebRoot returns undefined when neither location has the dashboard", () => {
   const root = mkdtempSync(join(tmpdir(), "relay-webroot-"));
   const dist = join(root, "dist");
   mkdirSync(dist, { recursive: true });
-  expect(withArgv1(join(dist, "cli.js"), resolveBundledWebRoot)).toBeUndefined();
+  expect(resolveBundledWebRoot(join(dist, "cli.js"))).toBeUndefined();
+});
+
+// Regression for the silent `add token`: npm installs the bin as a symlink whose
+// name is NOT cli.js, so process.argv[1] is …/xacpx-relay. The old main guard
+// (`argv[1].endsWith("cli.js")`) skipped the entire CLI. Build the entry the way
+// dist is built, invoke it through a differently-named symlink, and assert it
+// actually runs (prints usage) — this fails if main-detection regresses to argv.
+test("the built cli runs when invoked via a bin-style symlink (not named cli.js)", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const cliTs = join(here, "../../../../packages/relay/src/cli.ts");
+  const dir = mkdtempSync(join(tmpdir(), "relay-bin-"));
+  const built = join(dir, "cli.js");
+  // Fully bundle (no externals) so the temp artifact runs standalone under node.
+  const build = spawnSync("bun", ["build", cliTs, "--outfile", built, "--target", "node"], { encoding: "utf8" });
+  expect(build.status).toBe(0);
+
+  const binLink = join(dir, "xacpx-relay"); // the npm-style bin name
+  symlinkSync(built, binLink);
+  const run = spawnSync("node", [binLink, "definitely-not-a-command"], { encoding: "utf8" });
+  // An unknown command prints USAGE and exits non-zero — proof the CLI body ran.
+  expect(`${run.stdout}${run.stderr}`).toContain("xacpx-relay");
+  expect(run.status).not.toBe(0);
 });
