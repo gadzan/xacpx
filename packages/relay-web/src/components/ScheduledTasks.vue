@@ -30,21 +30,21 @@ async function create() {
 
 <template>
   <div class="border-b border-border bg-surface p-3">
-    <h3 class="mb-2 text-xs font-semibold uppercase text-fg-muted">Scheduled</h3>
+    <h3 class="mb-2 text-xs font-semibold uppercase text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
     <ul class="space-y-1">
       <ScheduledTaskRow v-for="t in visible" :key="t.id" :task="t" />
-      <li v-if="tasks.scheduled.length === 0" class="text-xs text-fg-muted">No scheduled tasks.</li>
+      <li v-if="tasks.scheduled.length === 0" class="text-xs text-fg-muted">{{ $t("tasks.noScheduled") }}</li>
     </ul>
     <button v-if="overflow > 0" type="button" data-test="scheduled-view-all"
             class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-md border border-border bg-bg px-2 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-accent/10 hover:text-accent"
             @click="drawerOpen = true">
-      View all {{ tasks.scheduled.length }}
+      {{ $t("tasks.viewAll", { count: tasks.scheduled.length }) }}
       <ChevronDown :size="12" />
     </button>
     <form class="mt-2 space-y-1" @submit.prevent="create">
       <input v-model="executeAt" type="datetime-local" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg" />
-      <input v-model="message" placeholder="message" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
-      <button type="submit" class="w-full rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent-hover">Schedule</button>
+      <input v-model="message" :placeholder="$t('tasks.messagePlaceholder')" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
+      <button type="submit" class="w-full rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent-hover">{{ $t("tasks.schedule") }}</button>
     </form>
 
     <!-- "View all" drawer: the full, unbounded list of upcoming + recent runs, anchored
@@ -56,10 +56,10 @@ async function create() {
         leave-active-class="transition-opacity duration-150 ease-in motion-reduce:transition-none"
         leave-to-class="opacity-0">
         <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-black/50" @click.self="drawerOpen = false" @keydown.esc="drawerOpen = false">
-          <aside class="flex h-full w-full max-w-md flex-col border-l border-border bg-raised shadow-xl" role="dialog" aria-label="All scheduled tasks">
+          <aside class="flex h-full w-full max-w-md flex-col border-l border-border bg-raised shadow-xl" role="dialog" :aria-label="$t('tasks.allScheduled')">
             <header class="flex items-center justify-between border-b border-border px-4 py-3">
-              <h2 class="text-sm font-semibold text-fg">Scheduled · {{ tasks.scheduled.length }}</h2>
-              <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" aria-label="Close" data-test="scheduled-drawer-close" @click="drawerOpen = false"><X :size="16" /></button>
+              <h2 class="text-sm font-semibold text-fg">{{ $t("tasks.scheduledCount", { count: tasks.scheduled.length }) }}</h2>
+              <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('tasks.close')" data-test="scheduled-drawer-close" @click="drawerOpen = false"><X :size="16" /></button>
             </header>
             <ul class="flex-1 space-y-1 overflow-y-auto p-3">
               <ScheduledTaskRow v-for="t in tasks.scheduled" :key="t.id" :task="t" @view="drawerOpen = false" />
