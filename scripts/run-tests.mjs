@@ -4,6 +4,13 @@ import { buildTestPlan } from "./run-tests-lib.mjs";
 
 const root = process.argv[2] ?? "tests/unit";
 
+// Per-step wall-clock cap. A single hung test file (e.g. a leaked socket/handle
+// that never lets the process exit) otherwise wedges the whole run until the CI
+// job timeout — burning ~30min and hiding which file is at fault. Fail the step
+// here instead, naming the command, so CI fails fast and points at the culprit.
+// Declared before the first runOne() call below (const is not hoisted).
+const STEP_TIMEOUT_MS = Number(process.env.RUN_TESTS_STEP_TIMEOUT_MS ?? 180_000);
+
 // Channel-package tests import `packages/*/src`, which value-import the bare
 // specifier "weacpx/plugin-api". That resolves via the workspace-root exports
 // map to `dist/plugin-api.js`, so the bundle MUST exist before any test runs —
@@ -62,7 +69,23 @@ async function runOne(command, args) {
       ...(process.platform === "win32" ? { shell: true } : {}),
     });
 
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      console.error(`\n[run-tests] TIMEOUT after ${STEP_TIMEOUT_MS / 1000}s — killing: ${command} ${args.join(" ")}`);
+      child.kill("SIGTERM");
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 5_000).unref?.();
+    }, STEP_TIMEOUT_MS);
+    timer.unref?.();
+
     child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      // Our own timeout kill → report as a failure (don't re-raise it as the
+      // parent's signal, which would mask it as a clean/odd exit).
+      if (timedOut) {
+        resolve(1);
+        return;
+      }
       if (signal) {
         process.kill(process.pid, signal);
         return;
