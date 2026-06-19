@@ -1,0 +1,104 @@
+name: Publish @ganglion/xacpx-relay
+
+on:
+  push:
+    tags:
+      - "relay-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish (e.g. relay-v0.1.0-beta.0). Must already exist on the repo.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-relay-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build relay hub (builds + embeds the relay-web dashboard)
+        run: bun run build:relay
+
+      - name: Verify publishable artifacts
+        run: bun run verify:publish
+
+      - name: Read version
+        id: meta
+        run: |
+          VERSION="$(node -p "require('./packages/relay/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify tag matches package version
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG_NAME="${{ inputs.tag }}"
+          else
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          fi
+          EXPECTED="relay-v${{ steps.meta.outputs.version }}"
+          if [[ "$TAG_NAME" != "$EXPECTED" ]]; then
+            echo "::error::tag $TAG_NAME does not match package.json version ($EXPECTED)" >&2
+            exit 1
+          fi
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_ENV"
+
+      - name: Publish to npm
+        working-directory: packages/relay
+        run: npm publish --tag ${{ steps.meta.outputs.npm_tag }} --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$tag_name" >/dev/null 2>&1; then
+            echo "Release $tag_name already exists, skipping create"
+            exit 0
+          fi
+          TITLE="@ganglion/xacpx-relay v${{ steps.meta.outputs.version }}"
+          if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
+            gh release create "$tag_name" --title "$TITLE" --prerelease --generate-notes
+          else
+            gh release create "$tag_name" --title "$TITLE" --latest=false --generate-notes
+          fi

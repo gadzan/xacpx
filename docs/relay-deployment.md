@@ -4,33 +4,32 @@
 > **[自托管 Relay Hub](https://gadzan.github.io/xacpx/zh/guide/relay-self-hosting)**（英文版 `/guide/relay-self-hosting`）。
 > 模块内部实现见 [relay-module.md](relay-module.md) / [relay-web-module.md](relay-web-module.md)。
 
-## 现状：从源码部署
+## 安装
 
-`@ganglion/xacpx-relay` / `channel-relay` / `relay-protocol` / `relay-web` 四个包**尚未发布到 npm**（均 0.1.0）。
-当前从仓库 checkout 构建运行；发布后 `xacpx-relay` 命令与 `xacpx plugin add @ganglion/xacpx-channel-relay` 即一行安装。
+- **hub**：`npm i -g @ganglion/xacpx-relay` —— 提供 `xacpx-relay` 二进制；看板（`@ganglion/xacpx-relay-web`，private）已**内嵌在该包内**，随包出厂，无需单独安装/构建。
+- **连接器**（实例机）：`xacpx plugin add @ganglion/xacpx-channel-relay` —— 自动拉取 `@ganglion/xacpx-relay-protocol`；实例核心需 `xacpx ≥ 0.11.0`。
+- 从源码运行见文档站[自托管 Relay Hub](https://gadzan.github.io/xacpx/zh/guide/relay-self-hosting) 的「从源码运行」details；发布流程见 [relay-release.md](relay-release.md)。
 
 ## 快速上手（零参数）
 
 所有参数都有合理默认值，最简流程不需要任何 flag：
 
 ```bash
-# 1. 构建（服务端 + 看板，看板必须单独构建，未含在 build:packages 内）
-git clone https://github.com/gadzan/xacpx && cd xacpx && bun install
-bun run build:relay         # → packages/relay/dist
-bun run build:relay-web     # → packages/relay-web/dist（不构建则看板不可用）
+# 1. 安装 hub（看板已内嵌在包里，无需单独构建）
+npm i -g @ganglion/xacpx-relay
 
 # 2. 生成访问令牌 — DB 自动建在 ~/.xacpx-relay/relay.db
-node packages/relay/dist/cli.js add token
+xacpx-relay add token
 # 输出示例：
 #   access token: bBS9nN2W2MwdrdksoLTLrQeMLMah9M5flTOyEcBbIHc
 #   (store it now — not shown again)
 #   hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token <token>
 # 把该令牌交给用户：Web 登录页「Access token」字段粘贴登录；同时用来配对连接器。
 
-# 3. 起服务 — 自动使用同一个默认 DB，自动检测已构建的看板
-node packages/relay/dist/cli.js start
+# 3. 起服务 — 自动使用同一个默认 DB，自动检测内嵌看板
+xacpx-relay start
 # 输出示例：
-#   xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /…/relay-web/dist
+#   xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
 
 # 4. 实例侧接入（同一个 access token 直接用于配对，--url 指向 8788 实例网关或其 wss:// 代理）
 xacpx channel add relay --url wss://relay.example.com --token <上面的访问令牌> --name home-pc
@@ -39,7 +38,7 @@ xacpx restart
 
 **默认值说明：**
 - `--db` → `~/.xacpx-relay/relay.db`（绝对路径，父目录自动创建）
-- `--web-root` → 自动检测与 `cli.js` 同发行包的 `relay-web/dist`；如未构建则静默不启用看板
+- `--web-root` → 自动检测 hub 包内嵌入的 `dist/relay-web`；几乎不需要传
 - 其他：`--host 0.0.0.0`、`--http-port 8787`、`--ws-port 8788`
 
 只有在需要自定义 DB 路径、绑定地址、端口或反向代理时才需要传 flag。
@@ -48,12 +47,11 @@ xacpx restart
 
 ```bash
 # 自定义 DB 路径（生产环境推荐用绝对路径）
-node packages/relay/dist/cli.js add token --db /var/lib/xacpx-relay/relay.db
+xacpx-relay add token --db /var/lib/xacpx-relay/relay.db
 
-# 带全量参数启动（反向代理场景）
-node packages/relay/dist/cli.js start \
+# 带全量参数启动（反向代理场景；--web-root 一般无需传，看板已内嵌）
+xacpx-relay start \
   --db /var/lib/xacpx-relay/relay.db \
-  --web-root /opt/xacpx/packages/relay-web/dist \
   --host 0.0.0.0 --http-port 8787 --ws-port 8788 \
   --history-retention-days 30 --request-timeout-ms 120000 --trust-proxy
 ```

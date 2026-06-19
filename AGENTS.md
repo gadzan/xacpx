@@ -123,6 +123,7 @@ There are two session concepts:
 - Control API（结构化控制面，relay 等结构化消费者入口）: [`docs/control-module.md`](docs/control-module.md)
 - Relay Hub 自托管部署/运维（operator 向）: [`docs/relay-deployment.md`](docs/relay-deployment.md)（完整图文在文档站 `guide/relay-self-hosting`）
 - Relay Hub（服务端 + 连接器）: [`docs/relay-module.md`](docs/relay-module.md)
+- Relay 包发布 Runbook（维护者向：发布顺序/命令/tag 约定）: [`docs/relay-release.md`](docs/relay-release.md)
 - Relay Web 看板模块说明: [`docs/relay-web-module.md`](docs/relay-web-module.md)
 - Code Wiki (architecture map): [`docs/code-wiki.md`](docs/code-wiki.md)
 

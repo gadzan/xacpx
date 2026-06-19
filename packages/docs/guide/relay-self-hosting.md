@@ -4,10 +4,6 @@ The **relay hub** is an optional, self-hosted server that turns xacpx into a mul
 
 This guide walks an operator from nothing to a running hub with a paired instance.
 
-::: warning Pre-release: build from source
-The relay packages (`@ganglion/xacpx-relay`, `@ganglion/xacpx-channel-relay`, `@ganglion/xacpx-relay-protocol`, `@ganglion/xacpx-relay-web`) are built and audited but **not yet published to npm**. Until they are, you deploy the hub from a checkout of the repository, as shown below. Once published, the `xacpx-relay` binary and `xacpx plugin add @ganglion/xacpx-channel-relay` become one-line installs — both paths are noted.
-:::
-
 ## Architecture at a glance
 
 ```
@@ -31,19 +27,25 @@ The relay packages (`@ganglion/xacpx-relay`, `@ganglion/xacpx-channel-relay`, `@
 
 ## 1. Get the server
 
-Clone the repository and build the relay server and the dashboard:
+Install the relay hub globally. The web dashboard ships **embedded inside the package**, so this one install is everything you need — no separate dashboard build, no `--web-root`:
+
+```bash
+npm i -g @ganglion/xacpx-relay
+```
+
+This puts the `xacpx-relay` binary on your `PATH`. The bundled dashboard is auto-detected at startup; the `start` command prints its resolved path (shown below).
+
+::: details Run from source instead (development / contributing)
+Clone the repo and build the server — `build:relay` also builds the dashboard and embeds it into `packages/relay/dist/relay-web`:
 
 ```bash
 git clone https://github.com/gadzan/xacpx
 cd xacpx
-bun install && bun run build:relay && bun run build:relay-web
+bun install && bun run build:relay
 ```
 
-::: tip The dashboard build is included
-`build:relay-web` outputs `packages/relay-web/dist`. The server **auto-detects** this directory at startup — you do not need to pass `--web-root` unless you want to override it.
+The entry point is then `packages/relay/dist/cli.js` — run `node packages/relay/dist/cli.js <command>` in place of `xacpx-relay <command>` everywhere below.
 :::
-
-The server entry point is `packages/relay/dist/cli.js`. After publish this same surface is exposed as the `xacpx-relay` binary; substitute `xacpx-relay <command>` for `node packages/relay/dist/cli.js <command>` everywhere below.
 
 ## 2. Quickstart (zero flags needed)
 
@@ -51,10 +53,10 @@ Auth is entirely token-based — **no passwords, no admin accounts, no invite fl
 
 ```bash
 # Step A — create a user + token (DB auto-created at ~/.xacpx-relay/relay.db)
-node packages/relay/dist/cli.js add token
+xacpx-relay add token
 
 # Step B — start the server (uses the same default DB; dashboard auto-detected)
-node packages/relay/dist/cli.js start
+xacpx-relay start
 ```
 
 `add token` prints the token **once**:
@@ -68,7 +70,7 @@ hint: use this token for web login AND: xacpx channel add relay --url ws://<host
 `start` confirms what is running:
 
 ```
-xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /opt/xacpx/packages/relay-web/dist
+xacpx-relay listening: http :8787, instance ws :8788, db ~/.xacpx-relay/relay.db, dashboard: /usr/lib/node_modules/@ganglion/xacpx-relay/dist/relay-web
 ```
 
 Open `http://<host>:8787`, paste the token into the **Access token** field, and you are in.
@@ -80,7 +82,7 @@ The hub has exactly **4 CLI commands**; all flags are optional:
 ### `add token` — create a user + login token
 
 ```bash
-node packages/relay/dist/cli.js add token [--label <note>] [--db <path>]
+xacpx-relay add token [--label <note>] [--db <path>]
 ```
 
 Each call creates an isolated user and prints its access token once. The same token is used to:
@@ -92,7 +94,7 @@ Reuse the **same** token across multiple instances to group them under one user.
 ### `ls` — list tokens
 
 ```bash
-node packages/relay/dist/cli.js ls [--db <path>]
+xacpx-relay ls [--db <path>]
 ```
 
 Shows: short id, label, created date, number of paired instances.
@@ -100,7 +102,7 @@ Shows: short id, label, created date, number of paired instances.
 ### `rm token` — revoke a token (and its user)
 
 ```bash
-node packages/relay/dist/cli.js rm token <value-or-id> [--db <path>]
+xacpx-relay rm token <value-or-id> [--db <path>]
 ```
 
 Deletes the user behind that token and cascades to its instances, web sessions, and cached messages. Revocation kills that token's web sessions on the next request; an already-open dashboard `/ws` socket lingers until reconnect. To hard-cut all sessions: stop the hub, run `sqlite3 <db> "DELETE FROM web_sessions;"`, then restart.
@@ -108,7 +110,7 @@ Deletes the user behind that token and cascades to its instances, web sessions, 
 ### `start` — start the server
 
 ```bash
-node packages/relay/dist/cli.js start \
+xacpx-relay start \
   [--db <path>] \
   [--web-root <dir>] \
   [--host 0.0.0.0] \
@@ -125,7 +127,7 @@ node packages/relay/dist/cli.js start \
 | `--http-port <n>` | `8787` | HTTP API **and** the dashboard's `/ws` fan-out. |
 | `--ws-port <n>` | `8788` | Instance gateway — where xacpx instances register. |
 | `--host <addr>` | `0.0.0.0` | Bind address. |
-| `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves `packages/relay-web/dist` next to `cli.js`; only pass this to override. |
+| `--web-root <dir>` | _(auto-detected)_ | Dashboard assets directory. Auto-resolves the dashboard embedded in the package (`dist/relay-web` next to `cli.js`); only pass this to override. |
 | `--history-retention-days <n>` | `30` | Cached messages older than this are pruned hourly (also hard-capped at 2000 messages per session). |
 | `--request-timeout-ms <n>` | `120000` | Per-request timeout for proxied calls to instances. |
 | `--trust-proxy` | _(off)_ | Trust `X-Forwarded-For` for rate limiting. Pass this when behind a reverse proxy; **never** when directly internet-exposed (it would allow IP spoofing). |
@@ -143,14 +145,15 @@ The hub enforces a per-client-IP rate limit plus a global failure ceiling. When 
 On the machine running the xacpx instance, add the relay connector channel using the **same token** you created in step 2:
 
 ```bash
-# After publish:
 xacpx plugin add @ganglion/xacpx-channel-relay
 xacpx channel add relay --url <host> --token <T> [--name home-pc]
 xacpx restart
 ```
 
-::: details Pairing the connector before it is published to npm
-`xacpx plugin add` passes its argument straight to `npm install` / `bun add`, so a local path works — but `@ganglion/xacpx-channel-relay` depends on the (also unpublished) `@ganglion/xacpx-relay-protocol`, so a bare local install will not resolve that dependency from npm. Until the packages are released, the reliable path is to run the instance from a repo checkout where the workspace already links both packages, or to pack/link both (`relay-protocol` then `channel-relay`) into the instance's plugin home. After release, the two commands above are all you need.
+`xacpx plugin add` installs the connector from npm and pulls in its `@ganglion/xacpx-relay-protocol` dependency automatically. The instance's `xacpx` core must be **≥ 0.11.0** (the connector's peer requirement).
+
+::: details Pairing from a source checkout (development)
+If you run the instance from a repo checkout, the workspace already links `channel-relay` and `relay-protocol` — skip `plugin add` and run `xacpx channel add relay …` directly.
 :::
 
 ### `--url` shorthand rules
@@ -266,7 +269,8 @@ Description=xacpx relay hub
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node packages/relay/dist/cli.js start --host 127.0.0.1
+# Use the absolute path to the installed binary — find it with `command -v xacpx-relay`.
+ExecStart=/usr/bin/xacpx-relay start --host 127.0.0.1
 Restart=on-failure
 User=xacpx
 
@@ -280,7 +284,7 @@ Bind to `127.0.0.1` and let your reverse proxy face the internet. The DB and das
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Dashboard 404 / blank page | Bundled `packages/relay-web/dist` is missing | Run `bun run build:relay-web` in the repo checkout; the server auto-detects it. Pass `--web-root` only if you built it to a custom path. |
+| Dashboard 404 / blank page | `start` printed `dashboard: (none)` — the embedded UI wasn't found | The dashboard ships inside `@ganglion/xacpx-relay`; reinstall the package. From a source checkout, rebuild with `bun run build:relay` (it embeds the dashboard into `dist/relay-web`). |
 | Instance never turns green | Wrong gateway URL or revoked/mistyped token | Check that `--url` resolves to the **8788** gateway (or its `wss://` proxy); re-run `add token` and re-pair if the token was revoked. |
 | Custom `--db` not taking effect | `--db` passed inconsistently between commands | Pass the **same** `--db` path to both `add token` and `start`; the default `~/.xacpx-relay/relay.db` is a fixed absolute path so omitting `--db` consistently is safe. |
 | Live updates stall behind a proxy | Proxy not forwarding WebSocket upgrades on 8787 | Allow `Upgrade`/`Connection` headers on the dashboard route. |
