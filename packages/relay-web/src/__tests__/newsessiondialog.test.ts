@@ -28,7 +28,12 @@ function mountDialog(opts: DialogOptions = {}) {
   vi.spyOn(store, "createSession").mockResolvedValue({ pending: false });
   vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
   vi.spyOn(store, "listModelSuggestions").mockResolvedValue(opts.modelSuggestions ?? []);
-  const wrapper = mount(NewSessionDialog, { props: { instanceId: "i1", instanceName: "pc" } });
+  // Stub <Teleport> so the dialog renders in-place and wrapper.find() reaches it
+  // (in the app it teleports to body to escape the mobile drawer's transform).
+  const wrapper = mount(NewSessionDialog, {
+    props: { instanceId: "i1", instanceName: "pc" },
+    global: { stubs: { teleport: true } },
+  });
   return { wrapper, store };
 }
 
