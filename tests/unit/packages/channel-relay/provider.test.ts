@@ -32,9 +32,9 @@ test("buildDefaultConfig normalizes bare domain to wss://", () => {
   expect(relayCliProvider.validateConfig(config)).toEqual([]);
 });
 
-test("buildDefaultConfig normalizes IPv4 to ws:// with default port 8788", () => {
+test("buildDefaultConfig normalizes IPv4 to ws:// with default port 8787 (merged gateway)", () => {
   const config = relayCliProvider.buildDefaultConfig({ url: "1.2.3.4", token: "t" });
-  expect(config.options?.url).toBe("ws://1.2.3.4:8788");
+  expect(config.options?.url).toBe("ws://1.2.3.4:8787");
   expect(relayCliProvider.validateConfig(config)).toEqual([]);
 });
 

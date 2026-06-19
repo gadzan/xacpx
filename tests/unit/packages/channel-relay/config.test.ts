@@ -29,16 +29,16 @@ test("normalizeRelayUrl: bare domain → wss (no port)", () => {
   expect(normalizeRelayUrl("relay.example.com")).toBe("wss://relay.example.com");
 });
 
-test("normalizeRelayUrl: IPv4 literal → ws + default port 8788", () => {
-  expect(normalizeRelayUrl("1.2.3.4")).toBe("ws://1.2.3.4:8788");
+test("normalizeRelayUrl: IPv4 literal → ws + default port 8787", () => {
+  expect(normalizeRelayUrl("1.2.3.4")).toBe("ws://1.2.3.4:8787");
 });
 
 test("normalizeRelayUrl: IPv4 with explicit port → ws + that port", () => {
   expect(normalizeRelayUrl("1.2.3.4:8788")).toBe("ws://1.2.3.4:8788");
 });
 
-test("normalizeRelayUrl: localhost → ws + default port 8788", () => {
-  expect(normalizeRelayUrl("localhost")).toBe("ws://localhost:8788");
+test("normalizeRelayUrl: localhost → ws + default port 8787", () => {
+  expect(normalizeRelayUrl("localhost")).toBe("ws://localhost:8787");
 });
 
 test("normalizeRelayUrl: localhost with explicit port → ws + that port", () => {
@@ -53,8 +53,8 @@ test("normalizeRelayUrl: bracketed IPv6 with port → ws + that port", () => {
   expect(normalizeRelayUrl("[::1]:8788")).toBe("ws://[::1]:8788");
 });
 
-test("normalizeRelayUrl: bracketed IPv6 without port → ws + default port 8788", () => {
-  expect(normalizeRelayUrl("[::1]")).toBe("ws://[::1]:8788");
+test("normalizeRelayUrl: bracketed IPv6 without port → ws + default port 8787", () => {
+  expect(normalizeRelayUrl("[::1]")).toBe("ws://[::1]:8787");
 });
 
 // ── parseRelayChannelConfig ───────────────────────────────────────────────────
@@ -78,7 +78,7 @@ test("parseRelayChannelConfig normalizes bare domain to wss://", () => {
 });
 
 test("parseRelayChannelConfig normalizes IPv4 to ws:// with default port", () => {
-  expect(parseRelayChannelConfig({ url: "1.2.3.4" })).toEqual({ url: "ws://1.2.3.4:8788" });
+  expect(parseRelayChannelConfig({ url: "1.2.3.4" })).toEqual({ url: "ws://1.2.3.4:8787" });
 });
 
 test("parseRelayChannelConfig normalizes https:// to wss://", () => {

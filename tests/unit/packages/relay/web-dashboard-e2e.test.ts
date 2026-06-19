@@ -95,3 +95,44 @@ test("instance event flows to web client and is cached as history", async () => 
   controller.abort();
   await relay.close();
 });
+
+test("merged mode (no wsPort): a connector pairs over the HTTP port root and registers", async () => {
+  // Omitting wsPort merges the instance gateway onto the HTTP port.
+  const relay = await startRelayServer({ dbPath: ":memory:", httpPort: 0, host: "127.0.0.1" });
+  expect(relay.wsPort).toBeNull();
+  const base = `http://127.0.0.1:${relay.httpPort}`;
+
+  const account = relay.runtime.accounts.createAccount("admin");
+  const { token: loginToken } = relay.runtime.accounts.createLoginToken(account.id);
+  const login = await fetch(`${base}/api/login`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: loginToken }),
+  });
+  const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const tokenRes = await fetch(`${base}/api/instances/pairing-token`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+
+  const fakeControl = { listSessions: () => [], events: { subscribe: () => () => {} } };
+  const credentialPath = join(mkdtempSync(join(tmpdir(), "relay-merged-")), "credential.json");
+  const controller = new AbortController();
+  // Connector dials the HTTP port at the root path — exactly what the bare-host shorthand resolves to.
+  await new Promise<void>((resolve) => {
+    const client = new RelayClient({
+      url: `ws://127.0.0.1:${relay.httpPort}`, credentialStore: new CredentialStore(credentialPath),
+      pairingToken: token, coreVersion: "0.11.0",
+      onRequest: createControlBridge(fakeControl as never), onReady: resolve, reconnectDelaysMs: [0],
+    });
+    client.start(controller.signal);
+  });
+
+  const listRes = await fetch(`${base}/api/instances`, { headers: { cookie } });
+  const { instances } = (await listRes.json()) as { instances: Array<{ name: string; online: boolean }> };
+  expect(instances).toHaveLength(1);
+  expect(instances[0]!.name).toBe("pc");
+  expect(instances[0]!.online).toBe(true);
+
+  controller.abort();
+  await relay.close();
+});

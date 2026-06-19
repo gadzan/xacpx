@@ -38,7 +38,8 @@ export function resolveBundledWebRoot(): string | undefined {
 
 const USAGE = [
   "Usage: xacpx-relay <command>",
-  "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]",
+  "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]",
+  "             (--ws-port omitted = gateway merged onto the HTTP port; pass it only for a dedicated gateway port)",
   "  add token  [--label <note>] [--db <path>]",
   "  ls         [--db <path>]",
   "  rm token <value-or-id> [--db <path>]",
@@ -60,7 +61,8 @@ function hasFlag(args: string[], name: string): boolean {
 export interface StartOptions {
   dbPath: string;
   httpPort: number;
-  wsPort: number;
+  /** Dedicated gateway port; undefined (default) merges the gateway onto the HTTP port. */
+  wsPort: number | undefined;
   host: string | undefined;
   webRoot: string | undefined;
   historyRetentionDays: number | undefined;
@@ -78,7 +80,7 @@ export function parseStartOptions(args: string[]): StartOptions {
   return {
     dbPath,
     httpPort: Number(flag(args, "--http-port") ?? "8787"),
-    wsPort: Number(flag(args, "--ws-port") ?? "8788"),
+    wsPort: flag(args, "--ws-port") !== undefined ? Number(flag(args, "--ws-port")) : undefined,
     host: flag(args, "--host"),
     webRoot: flag(args, "--web-root"),
     historyRetentionDays: retentionDays !== undefined && !Number.isNaN(retentionDays) ? retentionDays : undefined,
@@ -97,7 +99,10 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       startOpts.webRoot = resolveBundledWebRoot();
     }
     const running = await startRelayServer(startOpts);
-    io.print(`xacpx-relay listening: http :${running.httpPort}, instance ws :${running.wsPort}, db ${startOpts.dbPath}, dashboard: ${startOpts.webRoot ?? "(none)"}`);
+    const gatewayDesc = running.wsPort !== null
+      ? `instance ws :${running.wsPort}`
+      : `instance gateway: merged on http :${running.httpPort} (path / or /gateway)`;
+    io.print(`xacpx-relay listening: http :${running.httpPort}, ${gatewayDesc}, db ${startOpts.dbPath}, dashboard: ${startOpts.webRoot ?? "(none)"}`);
     return await new Promise<number>((resolve) => {
       const shutdown = () => {
         void running.close().then(() => resolve(0));
@@ -117,7 +122,7 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       const { token } = runtime.accounts.createLoginToken(acc.id, label);
       io.print(`access token: ${token}`);
       io.print("(store it now — not shown again)");
-      io.print(`hint: use this token for web login AND: xacpx channel add relay --url ws://<host>:<ws-port> --token ${token}`);
+      io.print(`hint: use this token for web login AND: xacpx channel add relay --url <host> --token ${token}`);
       return 0;
     } finally {
       runtime.close();
