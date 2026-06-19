@@ -34,8 +34,8 @@ async function copy(): Promise<void> {
   <button
     data-test="copy-button"
     type="button"
-    aria-label="Copy"
-    :title="copied ? 'Copied' : 'Copy'"
+    :aria-label='$t("copy.copy")'
+    :title='copied ? $t("copy.copied") : $t("copy.copy")'
     class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5 hover:text-fg"
     @click.stop="copy"
   >

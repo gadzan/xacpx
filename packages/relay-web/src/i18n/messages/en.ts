@@ -36,4 +36,6 @@ export default {
     signOutTitle: "Sign out?",
     signOutBody: "You'll need to sign in again to access the dashboard.",
   },
+  copy: { copy: "Copy", copied: "Copied" },
+  palette: { placeholder: "Jump to a session…", noMatches: "no matches" },
 } as const;

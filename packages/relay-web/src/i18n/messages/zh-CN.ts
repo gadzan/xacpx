@@ -34,4 +34,6 @@ export default {
     signOutTitle: "退出登录？",
     signOutBody: "你需要重新登录才能访问看板。",
   },
+  copy: { copy: "复制", copied: "已复制" },
+  palette: { placeholder: "跳转到会话…", noMatches: "无匹配项" },
 };

@@ -70,7 +70,7 @@ onMounted(() => void nextTick(() => input.value?.focus()));
       <div class="flex items-center gap-2 border-b border-border px-4 py-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />
         <input ref="input" v-model="query" data-test="palette-input"
-               placeholder="Jump to a session…"
+               :placeholder='$t("palette.placeholder")'
                class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted outline-none"
                @input="active = 0; clampActive()" @keydown="onKeydown" />
       </div>
@@ -84,7 +84,7 @@ onMounted(() => void nextTick(() => input.value?.focus()));
             <span class="truncate text-xs text-fg-muted">{{ r.sub }}</span>
           </button>
         </li>
-        <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted">no matches</li>
+        <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
       </ul>
     </div>
   </div>
