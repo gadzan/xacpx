@@ -67,6 +67,25 @@ test("registerInstanceForAccount multiple calls create independent instances", a
   expect(listed.length).toBe(2);
 });
 
+test("rename updates the name for an owned instance", async () => {
+  const { instances, account } = await makeStores();
+  const created = instances.registerInstanceForAccount(account.id, "old-name");
+  expect(instances.rename(created.instanceId, account.id, "new name")).toBe(true);
+  expect(instances.getOwned(created.instanceId, account.id)?.name).toBe("new name");
+});
+
+test("rename of an instance owned by a different account returns false and does not change the name", async () => {
+  const { instances, account } = await makeStores();
+  const created = instances.registerInstanceForAccount(account.id, "old-name");
+  expect(instances.rename(created.instanceId, "other-account", "hijacked")).toBe(false);
+  expect(instances.getOwned(created.instanceId, account.id)?.name).toBe("old-name");
+});
+
+test("rename of a non-existent instance returns false", async () => {
+  const { instances, account } = await makeStores();
+  expect(instances.rename("ghost", account.id, "whatever")).toBe(false);
+});
+
 test("touch updates last_seen; listByAccount scopes; remove enforces ownership", async () => {
   const { instances, account, setNow } = await makeStores();
   const redeemed = instances.redeemPairingToken(

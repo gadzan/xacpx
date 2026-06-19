@@ -149,6 +149,11 @@ export default {
     manageTitle: "管理 · {name}",
     close: "关闭",
     dialogLoading: "加载中…",
+    nameLabel: "名称",
+    renamePlaceholder: "实例名称",
+    renameSave: "保存",
+    renameSaving: "保存中…",
+    renameFailed: "重命名失败",
   },
   agents: {
     title: "Agent",

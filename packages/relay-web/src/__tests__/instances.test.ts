@@ -61,6 +61,17 @@ test("applyEvent instance-status loads sessions when an instance comes online", 
   vi.restoreAllMocks();
 });
 
+test("renameInstance PATCHes the instance and updates local name", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "old", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const patch = vi.spyOn(api, "patch").mockResolvedValue({ ok: true });
+  await store.renameInstance("i1", "new");
+  expect(patch).toHaveBeenCalledWith("/api/instances/i1", { name: "new" });
+  expect(store.byId("i1")!.name).toBe("new");
+  vi.restoreAllMocks();
+});
+
 describe("createSession timeout handling", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
