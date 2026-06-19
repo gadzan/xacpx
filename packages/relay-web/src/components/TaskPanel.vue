@@ -16,9 +16,9 @@ watch(
 </script>
 
 <template>
-  <div v-if="chat.instanceId && chat.sessionAlias">
+  <div v-if="chat.instanceId && chat.sessionAlias" class="flex h-full flex-col">
     <ScheduledTasks />
-    <OrchestrationTasks />
+    <OrchestrationTasks class="min-h-0 flex-1" />
   </div>
   <div v-else class="p-4 text-sm text-fg-muted">{{ $t("taskPanel.noSession") }}</div>
 </template>

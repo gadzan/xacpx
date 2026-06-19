@@ -29,7 +29,7 @@ async function create() {
 </script>
 
 <template>
-  <div class="border-b border-border bg-surface p-3">
+  <div class="shrink-0 border-b border-border bg-surface p-3">
     <h3 class="mb-2 text-xs font-semibold uppercase text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
     <ul class="space-y-1">
       <ScheduledTaskRow v-for="t in visible" :key="t.id" :task="t" />

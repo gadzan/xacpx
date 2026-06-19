@@ -29,9 +29,9 @@ function statusClass(status: string): string {
 </script>
 
 <template>
-  <div class="bg-surface p-3">
-    <h3 class="mb-2 text-xs font-semibold uppercase text-fg-muted">{{ $t("tasks.orchestration") }}</h3>
-    <ul class="space-y-1">
+  <div class="flex min-h-0 flex-col bg-surface">
+    <h3 class="shrink-0 px-3 pt-3 pb-2 text-xs font-semibold uppercase text-fg-muted">{{ $t("tasks.orchestration") }}</h3>
+    <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto thin-scroll px-3 pb-3">
       <li v-for="t in tasks.orchestration" :key="t.taskId" class="flex items-center justify-between text-sm text-fg">
         <span class="flex min-w-0 items-center gap-1.5">
           <List :size="14" class="shrink-0 text-fg-muted" />
