@@ -281,6 +281,10 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
+  <!-- Teleport to body: the mobile instance drawer uses `transform`, which would
+       otherwise make this fixed overlay resolve against the drawer (narrow,
+       off-canvas) instead of the viewport. -->
+  <Teleport to="body">
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
     <div class="w-full max-w-md rounded-xl border border-border bg-raised shadow-xl" data-test="new-session-dialog">
       <header class="flex items-center justify-between border-b border-border px-5 py-3">
@@ -413,4 +417,5 @@ async function submit(): Promise<void> {
       </footer>
     </div>
   </div>
+  </Teleport>
 </template>
