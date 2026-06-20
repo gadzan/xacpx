@@ -22,4 +22,11 @@ describe("long-tail components i18n", () => {
     // Token input placeholder ("Access token" → 访问令牌).
     expect(w.find('input#access-token').attributes("placeholder")).toBe("访问令牌");
   });
+
+  it("points users at the real token command (xacpx-relay add token, not user new)", () => {
+    const w = mount(LoginView, { global: { plugins: [router] } });
+    const hint = w.find("#token-hint").text();
+    expect(hint).toContain("xacpx-relay add token");
+    expect(hint).not.toContain("user new");
+  });
 });

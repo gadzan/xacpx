@@ -1,5 +1,11 @@
 # Changelog
 
+## [relay 0.5.1] - 2026-06-20
+
+### Fixed
+
+- **Login screen pointed at a non-existent command:** the dashboard login hint told users to paste the access token from `xacpx-relay user new`, but the relay CLI has no such command. Corrected to `xacpx-relay add token` (the actual token command). A regression test now asserts the hint references the real command.
+
 ## [relay 0.5.0] - 2026-06-20
 
 A `@ganglion/xacpx-relay` hub release (core `@ganglion/xacpx` unchanged). The hub bundles the dashboard, so this ships the relay-web change below.
