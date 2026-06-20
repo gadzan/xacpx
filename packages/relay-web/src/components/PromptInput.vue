@@ -106,7 +106,10 @@ function onInput() {
 </script>
 
 <template>
-  <form class="relative border-t border-border px-0 py-3 lg:p-3" @submit.prevent="submit">
+  <!-- pb keeps the existing padding and adds the iOS home-indicator safe area so
+       the composer is not overlapped at the bottom of an installed PWA (env() is 0
+       on desktop / non-PWA, so the padding is unchanged there). -->
+  <form class="relative border-t border-border px-0 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:p-3 lg:pb-[calc(0.75rem+env(safe-area-inset-bottom))]" @submit.prevent="submit">
     <!-- COMPOSER — single elevated card: textarea on top, controls row below. -->
     <div class="rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
       <!-- Stays enabled while busy so you can pre-compose the next message and press

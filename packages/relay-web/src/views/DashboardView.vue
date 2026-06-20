@@ -125,7 +125,11 @@ onUnmounted(() => {
 <template>
   <div class="flex h-dvh flex-col bg-bg text-fg">
     <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
-    <header class="sticky top-0 z-30 flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 backdrop-blur-xl">
+    <!-- pt-[env(safe-area-inset-top)]: in an installed iOS PWA (viewport-fit=cover)
+         the content runs under the notch / status bar; extend the bar's surface up
+         so its controls sit below the inset instead of behind the notch. env() is 0
+         on desktop, so this is a no-op there. -->
+    <header class="sticky top-0 z-30 flex min-h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
       <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The
            sidebar collapse control lives in the sidebar's own header (and a slim edge
            handle below), not up here. -->
@@ -187,7 +191,7 @@ onUnmounted(() => {
 
       <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="left"
-           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-[transform,width] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
+           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-[transform,width] pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0' : 'lg:w-[248px]']">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
@@ -223,7 +227,7 @@ onUnmounted(() => {
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
+           class="fixed inset-y-0 right-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'">
         <div class="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2.5">
           <button data-test="right-tab-files"
