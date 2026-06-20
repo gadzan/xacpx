@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "generate-pwa-icons": "bunx @vite-pwa/assets-generator@latest --preset minimal-2023 assets/pwa-source.svg && node -e \"const f=require('node:fs');for(const n of['pwa-64x64.png','pwa-192x192.png','pwa-512x512.png','apple-touch-icon-180x180.png','favicon.ico'])f.renameSync('assets/'+n,'public/'+n);f.copyFileSync('public/pwa-512x512.png','public/maskable-icon-512x512.png');f.rmSync('assets/maskable-icon-512x512.png',{force:true});console.log('pwa icons -> public/')\"",
+    "generate-pwa-icons": "node scripts/generate-pwa-icons.mjs",
     "test": "vitest run"
   },
   "dependencies": {
