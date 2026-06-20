@@ -223,9 +223,9 @@ onUnmounted(() => {
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 w-72 max-w-[85%] shrink-0 transform overflow-y-auto border-l border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
+           class="fixed inset-y-0 right-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform lg:static lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'">
-        <div class="flex h-9 items-center gap-1 border-b border-border px-2.5">
+        <div class="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2.5">
           <button data-test="right-tab-files"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
@@ -241,8 +241,10 @@ onUnmounted(() => {
           <button data-test="close-tasks" :aria-label='$t("nav.closeTasks")'
                   class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
-        <TaskPanel v-if="rightTab === 'tasks'" />
-        <FilesPanel v-else :instance-id="chat.instanceId" />
+        <div class="min-h-0 flex-1 overflow-hidden">
+          <TaskPanel v-if="rightTab === 'tasks'" />
+          <FilesPanel v-else :instance-id="chat.instanceId" />
+        </div>
       </div>
     </div>
     <NoticeToast />

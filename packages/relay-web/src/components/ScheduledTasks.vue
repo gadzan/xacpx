@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { ChevronDown, X } from "lucide-vue-next";
+import { CalendarClock, ChevronDown, Plus, X } from "lucide-vue-next";
 import { useTasksStore } from "../stores/tasks";
 import { useChatStore } from "../stores/chat";
 import ScheduledTaskRow from "./ScheduledTaskRow.vue";
@@ -9,6 +9,8 @@ const tasks = useTasksStore();
 const chat = useChatStore();
 const executeAt = ref("");
 const message = ref("");
+// The create form is tucked behind a "+" toggle so the panel stays compact by default.
+const composerOpen = ref(false);
 
 // The right sidebar is tight, so the inline list shows only the first few tasks; the
 // rest live behind a "View all" drawer. Upcoming tasks sort first (see listRecentForChat),
@@ -25,26 +27,51 @@ async function create() {
   await tasks.createScheduled(chat.instanceId, chat.sessionAlias, iso, message.value);
   executeAt.value = "";
   message.value = "";
+  composerOpen.value = false;
 }
 </script>
 
 <template>
-  <div class="border-b border-border bg-surface p-3">
-    <h3 class="mb-2 text-xs font-semibold uppercase text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
+  <div class="shrink-0 border-b border-border bg-surface p-3">
+    <div class="mb-2 flex items-center gap-1.5">
+      <CalendarClock :size="13" class="shrink-0 text-fg-muted" />
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
+      <span v-if="tasks.scheduled.length" class="rounded-full bg-bg px-1.5 font-mono text-[10px] tabular-nums text-fg-muted">{{ tasks.scheduled.length }}</span>
+      <button type="button" data-test="scheduled-compose-toggle" :title="$t('tasks.newScheduled')" :aria-label="$t('tasks.newScheduled')"
+              class="ml-auto grid h-6 w-6 place-items-center rounded-md transition-colors hover:bg-raised hover:text-fg"
+              :class="composerOpen ? 'bg-raised text-fg' : 'text-fg-muted'"
+              @click="composerOpen = !composerOpen">
+        <Plus :size="14" class="transition-transform" :class="composerOpen ? 'rotate-45' : ''" />
+      </button>
+    </div>
+
     <ul class="space-y-1">
       <ScheduledTaskRow v-for="t in visible" :key="t.id" :task="t" />
-      <li v-if="tasks.scheduled.length === 0" class="text-xs text-fg-muted">{{ $t("tasks.noScheduled") }}</li>
+      <li v-if="tasks.scheduled.length === 0" class="rounded-md border border-dashed border-border px-2 py-2 text-center text-[11px] text-fg-muted">{{ $t("tasks.noScheduled") }}</li>
     </ul>
+
     <button v-if="overflow > 0" type="button" data-test="scheduled-view-all"
             class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-md border border-border bg-bg px-2 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-accent/10 hover:text-accent"
             @click="drawerOpen = true">
       {{ $t("tasks.viewAll", { count: tasks.scheduled.length }) }}
       <ChevronDown :size="12" />
     </button>
-    <form class="mt-2 space-y-1" @submit.prevent="create">
-      <input v-model="executeAt" type="datetime-local" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg" />
-      <input v-model="message" :placeholder="$t('tasks.messagePlaceholder')" class="w-full rounded border border-border bg-bg px-1 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
-      <button type="submit" class="w-full rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent-hover">{{ $t("tasks.schedule") }}</button>
+
+    <!-- create form: tucked behind the "+" toggle so the panel stays compact by default -->
+    <form v-if="composerOpen" data-test="scheduled-composer" class="mt-2 space-y-2 rounded-lg border border-border bg-bg p-2.5" @submit.prevent="create">
+      <label class="flex flex-col gap-1">
+        <span class="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.whenLabel") }}</span>
+        <input v-model="executeAt" type="datetime-local" class="w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
+      </label>
+      <label class="flex flex-col gap-1">
+        <span class="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.messageLabel") }}</span>
+        <input v-model="message" :placeholder="$t('tasks.messagePlaceholder')" class="w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
+      </label>
+      <div class="flex items-center gap-1.5 pt-0.5">
+        <button type="submit" :disabled="!executeAt || !message"
+                class="flex-1 rounded-md bg-accent px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">{{ $t("tasks.schedule") }}</button>
+        <button type="button" class="rounded-md border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="composerOpen = false">{{ $t("common.cancel") }}</button>
+      </div>
     </form>
 
     <!-- "View all" drawer: the full, unbounded list of upcoming + recent runs, anchored

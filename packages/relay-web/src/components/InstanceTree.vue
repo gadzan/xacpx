@@ -34,8 +34,19 @@ function isSelected(instanceId: string, alias: string): boolean {
   return chat.instanceId === instanceId && chat.sessionAlias === alias;
 }
 
-async function toggle(id: string) {
-  await store.loadSessions(id).catch(() => {});
+// Per-instance collapse state (expanded by default). The store already eager-loads
+// sessions for online instances, so this just shows/hides the already-loaded rows.
+const collapsed = ref<Set<string>>(new Set());
+function isExpanded(id: string): boolean {
+  return !collapsed.value.has(id);
+}
+function toggle(id: string) {
+  const next = new Set(collapsed.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  collapsed.value = next;
+  // Refresh on (re)expand in case the list drifted while collapsed.
+  if (isExpanded(id)) void store.loadSessions(id).catch(() => {});
 }
 
 // Deleting a session is destructive and irreversible → confirm via the popup dialog.
@@ -59,7 +70,7 @@ async function askDelete(id: string, alias: string) {
         class="group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised"
         @click="toggle(inst.id)"
       >
-        <ChevronDown v-if="inst.sessionsLoaded" :size="12" class="shrink-0 text-fg-muted" />
+        <ChevronDown v-if="isExpanded(inst.id)" :size="12" class="shrink-0 text-fg-muted" />
         <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
         <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
         <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
@@ -69,7 +80,7 @@ async function askDelete(id: string, alias: string) {
       </button>
 
       <!-- Indented session rows under an accent-able left rule. -->
-      <div class="ml-2.5 mt-px space-y-px border-l border-border pl-2.5">
+      <div v-show="isExpanded(inst.id)" class="ml-2.5 mt-px space-y-px border-l border-border pl-2.5">
         <div
           v-for="s in inst.sessions"
           :key="s.alias"
