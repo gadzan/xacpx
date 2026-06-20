@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.12.0] - 2026-06-20
+
+A relay-web dashboard wave, plus the core seam that powers a live **context-usage meter**. Released together: core `@ganglion/xacpx` 0.12.0, `@ganglion/xacpx-relay-protocol` 0.1.1, `@ganglion/xacpx-relay` 0.4.0 (the hub bundles the dashboard). The `@ganglion/xacpx-channel-relay` connector is unchanged — it forwards the new event through its existing generic passthrough.
+
+### Added
+
+- **Context-usage meter (core seam → dashboard):** the agent's ACP `usage_update` (tokens currently in context + the model's total context window) is now plumbed end to end. A new `onUsage({used,size})` transport callback is parsed from the stream and threaded through the acpx-bridge protocol, the command router/handlers, and `ControlService`, which emits a new `turn-usage` `ControlEvent` (mirrored in the relay protocol's `ControlEventDto` + web gate). The dashboard composer shows a compact per-session meter (a `%` bar next to the model chip, tiered at 75%/90%), hidden when the agent doesn't report usage (e.g. codex). Verified by a live acpx probe: claude reports it, codex does not.
+- **Dashboard internationalization (`@ganglion/xacpx-relay-web`):** full i18n with English + Simplified Chinese catalogs (vue-i18n), auto-detected from the browser with English fallback and a language switcher in Settings → Appearance. Catalog parity is enforced by a test.
+- **Rename instances from the dashboard:** a `PATCH /api/instances/:id` (ownership-gated) and a name field in the Manage-instance dialog.
+- **Git branch + worktree context in the dashboard:** `WorkspaceFs.gitDiff` now also returns the current branch (or detached state) and worktree context (root path + a linked-worktree flag); the chat header shows the branch and the Files → Changes tab shows a git-context header.
+
+### Changed
+
+- **Right-rail panels scroll internally** instead of stretching the sidebar; pinned headers (search/breadcrumb, change summary, orchestration heading) with a single scroll region each (no more double scrollbars).
+- **Sidebar/task polish:** instance rows collapse/expand correctly; the orchestration list is newest-first and capped at 10 with a "+N more" affordance; the scheduled-tasks panel was restyled (icon + count header, create form behind a toggle, dashed empty state).
+
+### Fixed
+
+- The composer no longer white-screens when a `control.session.model.get` reply is malformed — `available` is coerced to an array.
+- Header context chips stay on one line and truncate (long branch names no longer overflow the fixed-height header); the dashboard root uses `h-dvh` for a mobile-safe viewport.
+
 ## [0.11.0] - 2026-06-13
 
 The **relay hub** release: a self-hosted, multi-tenant remote-control panel for xacpx. Instances dial out over WSS to register; account-holders log in to a three-column web dashboard to cross-manage their instances' sessions — chat, scheduled tasks, and orchestration. The source of truth stays in each xacpx instance; the relay only handles accounts, routing, fan-out, and a display cache. Built and reviewed in five phases; ships the core Control API seam that the `@ganglion/xacpx-channel-relay` connector requires (`minXacpxVersion: 0.11.0`).
