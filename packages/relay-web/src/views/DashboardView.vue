@@ -129,7 +129,7 @@ onUnmounted(() => {
          the content runs under the notch / status bar; extend the bar's surface up
          so its controls sit below the inset instead of behind the notch. env() is 0
          on desktop, so this is a no-op there. -->
-    <header class="sticky top-0 z-30 flex min-h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+    <header class="sticky top-0 z-30 flex h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
       <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The
            sidebar collapse control lives in the sidebar's own header (and a slim edge
            handle below), not up here. -->

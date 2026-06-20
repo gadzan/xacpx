@@ -17,15 +17,16 @@ const dir = mkdtempSync(join(tmpdir(), "pwa-icons-"));
 cpSync("assets/pwa-source.svg", join(dir, "src.svg"));
 execSync(`bunx @vite-pwa/assets-generator@latest --preset minimal-2023 ${join(dir, "src.svg")}`, { stdio: "inherit" });
 
-for (const f of [
-  "pwa-64x64.png",
-  "pwa-192x192.png",
-  "pwa-512x512.png",
-  "apple-touch-icon-180x180.png",
-  "favicon.ico",
-]) {
+// The transparent (full-bleed) outputs + favicon are what we keep.
+for (const f of ["pwa-64x64.png", "pwa-192x192.png", "pwa-512x512.png", "favicon.ico"]) {
   renameSync(join(dir, f), join("public", f));
 }
 rmSync(dir, { recursive: true, force: true });
+
+// The preset's own apple-touch icon bakes in white padding, which iOS "Add to
+// Home Screen" renders as a white border around the tile. Derive a full-bleed
+// apple-touch by downscaling the full-bleed pwa-512 instead (sips ships with
+// macOS, where icons are regenerated).
+execSync("sips -z 180 180 public/pwa-512x512.png --out public/apple-touch-icon-180x180.png", { stdio: "inherit" });
 
 console.log("pwa icons -> public/");
