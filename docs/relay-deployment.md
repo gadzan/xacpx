@@ -67,6 +67,7 @@ xacpx-relay start \
 - **自动 GC**：每小时清理超 `--history-retention-days`（默认 30，另每会话硬上限 2000 条）的缓存消息，以及过期的 web 会话和配对令牌。
 - **RPC 超时**：`--request-timeout-ms`（默认 120000）限定网关 RPC 请求超时；agent 冷启动慢 / 长 prompt 时可调大。
 - **多租户**：账号只见自己的实例/会话；服务端盖戳身份；登录令牌和凭证一律哈希存储。
+- **看板可安装为 PWA**：看板是 PWA，可「添加到主屏 / 安装为独立窗口」并预缓存应用壳加速二次加载（实时数据仍走 `/ws`，不做离线数据）。**前提是安全上下文**：必须经反代终结 TLS 用 `https://` 访问；纯 `http://`（局域网 IP 直连）下浏览器**不会注册 Service Worker、也不显示安装入口**。模块细节见 [relay-web-module.md](relay-web-module.md) 的「PWA」段。
 
 ## 访问令牌管理
 

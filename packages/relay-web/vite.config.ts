@@ -1,9 +1,13 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import { VitePWA } from "vite-plugin-pwa";
+import { pwaOptions } from "./src/pwa-options";
 
 export default defineConfig({
-  plugins: [vue()],
+  // Installable PWA + app-shell precache. Config lives in src/pwa-options.ts so
+  // the drift test asserts against the same object the build uses.
+  plugins: [vue(), VitePWA(pwaOptions)],
   server: {
     proxy: {
       "/api": "http://127.0.0.1:8787",
