@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, CornerLeftUp, File, FileText, Folder, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
+import { ChevronRight, CornerLeftUp, File, FileText, Folder, FolderGit2, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
@@ -27,6 +27,14 @@ function upOne() {
 const activeWorkspace = computed(() => {
   const inst = props.instanceId ? instances.byId(props.instanceId) : undefined;
   return inst?.sessions.find((s) => s.alias === chat.sessionAlias)?.workspace ?? null;
+});
+
+// Git context for the Changes header: branch / detached HEAD + worktree (root path,
+// linked flag), straight off the loaded diff result. null until a diff is loaded.
+const gitCtx = computed(() => {
+  const d = files.diff;
+  if (!d) return null;
+  return { branch: d.branch, detached: d.detached === true, worktree: d.worktree };
 });
 
 // Changes summary: `N files · +X −Y`, derived (read-only) from the loaded diff.
@@ -233,12 +241,25 @@ watch(
       <!-- Changes (git status) tab: pinned summary; only the changed-files list scrolls. -->
       <div v-else class="flex min-h-0 flex-1 flex-col">
         <template v-if="files.diff">
-          <div v-if="changesSummary" data-test="changes-summary" class="flex shrink-0 items-center justify-between border-b border-border px-2.5 py-2">
-            <span class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
-            <div class="flex items-center gap-1.5 font-mono text-[10.5px] tabular-nums">
-              <span class="text-fg-muted">{{ changesSummary.fileCount }} {{ $t("files.filesCount") }}</span>
-              <span class="text-run">+{{ changesSummary.add }}</span>
-              <span class="text-danger">−{{ changesSummary.del }}</span>
+          <!-- pinned git context: branch / detached + worktree, then the change counts -->
+          <div class="shrink-0 border-b border-border">
+            <div data-test="changes-summary" class="flex items-center gap-1.5 px-2.5 pt-2" :class="gitCtx?.worktree ? 'pb-1' : 'pb-2'">
+              <GitBranch :size="12" class="shrink-0 text-accent" />
+              <span v-if="gitCtx?.branch" data-test="changes-branch" class="truncate font-mono text-[11.5px] font-medium text-fg">{{ gitCtx.branch }}</span>
+              <span v-else-if="gitCtx?.detached" data-test="changes-branch" class="truncate font-mono text-[11.5px] italic text-fg-muted">{{ $t("files.detached") }}</span>
+              <span v-else class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
+              <span v-if="gitCtx?.worktree?.linked" data-test="worktree-linked"
+                    class="shrink-0 rounded-full border border-accent/30 bg-accent/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">{{ $t("files.linked") }}</span>
+              <span class="flex-1" />
+              <div v-if="changesSummary" class="flex shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums">
+                <span class="text-fg-muted">{{ changesSummary.fileCount }} {{ $t("files.filesCount") }}</span>
+                <span class="text-run">+{{ changesSummary.add }}</span>
+                <span class="text-danger">−{{ changesSummary.del }}</span>
+              </div>
+            </div>
+            <div v-if="gitCtx?.worktree" data-test="worktree-path" class="flex items-center gap-1.5 px-2.5 pb-2 text-[10px] text-fg-muted" :title="`${$t('files.worktree')}: ${gitCtx.worktree.root}`">
+              <FolderGit2 :size="11" class="shrink-0 opacity-70" />
+              <span class="truncate font-mono" dir="rtl">{{ gitCtx.worktree.root }}</span>
             </div>
           </div>
           <ul class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-px">

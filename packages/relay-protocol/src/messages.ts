@@ -268,6 +268,12 @@ export interface FsDiffResult {
   /** Unified diff text vs HEAD (possibly truncated). */
   diff: string;
   truncated: boolean;
+  /** Symbolic branch name (abbrev-ref HEAD); omitted when HEAD is detached. */
+  branch?: string;
+  /** True when HEAD is detached (no branch). */
+  detached?: boolean;
+  /** Working-tree context: top-level root, and whether it's a linked (non-primary) worktree. */
+  worktree?: { root: string; linked: boolean };
 }
 export interface FsSearchPayload {
   workspace: string;

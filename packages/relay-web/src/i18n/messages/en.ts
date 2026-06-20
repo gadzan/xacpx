@@ -136,6 +136,9 @@ export default {
     binaryNotShown: "Binary file not shown.",
     noDiffContent: "No diff content.",
     diffTruncated: "diff truncated",
+    detached: "detached",
+    linked: "linked",
+    worktree: "worktree",
   },
   instance: {
     newSession: "New session",

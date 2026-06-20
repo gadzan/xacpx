@@ -21,6 +21,16 @@ describe("session-controls store", () => {
     expect(s.available).toEqual(["gpt-5.2[high]", "gpt-5.2[low]"]);
   });
 
+  it("loadModel coerces a malformed result to safe defaults (no array → [])", async () => {
+    // A partial/garbled connector reply (e.g. {}) must not leave `available` undefined —
+    // the composer reads `available.length` during render and would white-screen otherwise.
+    rpc.mockResolvedValueOnce({});
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    expect(s.available).toEqual([]);
+    expect(s.current).toBeUndefined();
+  });
+
   it("loadModel resets on missing instance/alias without an rpc", async () => {
     const s = useSessionControlsStore();
     await s.loadModel(null, "backend");

@@ -120,4 +120,56 @@ describe("WorkspaceFs git diff", () => {
     expect(d.diff).toContain("+two");
     rmSync(repo, { recursive: true, force: true });
   });
+
+  test("reports the branch and the (primary) worktree context", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q", "-b", "trunk");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "f.txt"), "one\n");
+    git("add", "."); git("commit", "-qm", "init");
+    const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+    const d = await gfs.gitDiff("g");
+    expect(d.branch).toBe("trunk");
+    expect(d.detached).toBeFalsy();
+    expect(d.worktree?.linked).toBe(false);
+    // The worktree root resolves to the repo (realpath, so /private prefix on macOS is fine).
+    expect(d.worktree?.root.endsWith(repo.split("/").pop()!)).toBe(true);
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("flags a detached HEAD without a branch name", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "f.txt"), "one\n");
+    git("add", "."); git("commit", "-qm", "init");
+    git("checkout", "-q", "--detach", "HEAD");
+    const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+    const d = await gfs.gitDiff("g");
+    expect(d.detached).toBe(true);
+    expect(d.branch).toBeUndefined();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("marks a linked worktree", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "f.txt"), "one\n");
+    git("add", "."); git("commit", "-qm", "init");
+    const wt = join(repo, "..", `wt-${repo.split("/").pop()}`);
+    git("worktree", "add", "-q", "-b", "feature", wt);
+    const gfs = new WorkspaceFs(() => [{ name: "wt", cwd: wt }]);
+    const d = await gfs.gitDiff("wt");
+    expect(d.branch).toBe("feature");
+    expect(d.worktree?.linked).toBe(true);
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(wt, { recursive: true, force: true });
+  });
 });

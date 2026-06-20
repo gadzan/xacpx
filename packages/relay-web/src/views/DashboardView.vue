@@ -123,7 +123,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-screen flex-col bg-bg text-fg">
+  <div class="flex h-dvh flex-col bg-bg text-fg">
     <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
     <header class="sticky top-0 z-30 flex h-11 shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 backdrop-blur-xl">
       <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The

@@ -24,8 +24,10 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     try {
       const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: alias });
       if (isErrorPayload(r)) { reset(); return; }
-      current.value = r.current;
-      available.value = r.available;
+      current.value = typeof r.current === "string" ? r.current : undefined;
+      // Never trust the wire to hand back an array — a malformed/partial result must
+      // not blow up the composer's `available.length` reads (white-screens the input).
+      available.value = Array.isArray(r.available) ? r.available : [];
     } catch {
       reset();
     } finally {
