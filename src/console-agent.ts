@@ -22,6 +22,7 @@ interface RouterLike {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
+    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
   ): Promise<ChatResponse>;
   clearSession?: (chatKey: string) => Promise<void>;
 }
@@ -67,6 +68,7 @@ export class ConsoleAgent implements WechatAgent {
       request.onThought,
       request.perfSpan,
       request.onPlan,
+      request.onUsage,
     );
   }
 

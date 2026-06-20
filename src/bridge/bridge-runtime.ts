@@ -26,7 +26,8 @@ type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
   | { type: "prompt.tool_event"; event: ToolUseEvent }
   | { type: "prompt.thought"; text: string }
-  | { type: "prompt.plan"; entries: PlanEntry[] };
+  | { type: "prompt.plan"; entries: PlanEntry[] }
+  | { type: "prompt.usage"; used: number; size: number };
 
 export class EnsureSessionFailedError extends Error {
   readonly kind: "missing_optional_dep" | "generic";
@@ -816,6 +817,9 @@ export async function runStreamingPrompt(
         : {}),
       ...(onEvent
         ? { onPlan: (entries) => onEvent({ type: "prompt.plan", entries }) }
+        : {}),
+      ...(onEvent
+        ? { onUsage: (usage) => onEvent({ type: "prompt.usage", used: usage.used, size: usage.size }) }
         : {}),
     });
     let lastReplyAt = now();

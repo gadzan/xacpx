@@ -480,6 +480,15 @@ export class ControlService {
             entries,
           });
         },
+        onUsage: (usage) => {
+          this.deps.events.emit({
+            type: "turn-usage",
+            chatKey: params.chatKey,
+            sessionAlias: params.sessionAlias,
+            used: usage.used,
+            size: usage.size,
+          });
+        },
       });
       if (response.text) {
         emitChunk(response.text);

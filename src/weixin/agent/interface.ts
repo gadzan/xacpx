@@ -53,6 +53,8 @@ export interface ChatRequest {
   onThought?: (chunk: string) => void | Promise<void>;
   /** Structured plan/todo side-channel; see PromptOptions.onPlan. */
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
+  /** Context-usage side-channel; see PromptOptions.onUsage. */
+  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
   /**
    * Optional per-turn performance tracing span. When `logging.perf.enabled` is
    * true, the channel handler attaches a `PerfSpan` so downstream layers can

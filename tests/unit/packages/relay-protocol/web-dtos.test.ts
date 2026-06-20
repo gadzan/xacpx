@@ -100,6 +100,17 @@ test("parseWebServerEvent accepts a plan control event", () => {
   })).not.toBeNull();
 });
 
+test("parseWebServerEvent accepts a turn-usage control event and rejects malformed ones", () => {
+  // The gate (CONTROL_EVENT_TYPES + validControlEvent) must let well-formed usage through…
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 34606, size: 200000 },
+  })).not.toBeNull();
+  // …and reject non-numeric or missing used/size, or it would crash the meter's math.
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1 } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: "x", size: 200000 } })).toBeNull();
+});
+
 test("parseWebServerEvent rejects a plan event without entries", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

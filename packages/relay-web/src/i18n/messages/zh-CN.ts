@@ -70,6 +70,7 @@ export default {
     working: "Agent 正在工作…（按 Esc 停止）",
     message: "消息",
     jumpLatest: "↓ 最新",
+    contextUsage: "上下文：{used} / {size} tokens",
   },
   session: {
     newSession: "新建会话",

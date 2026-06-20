@@ -141,6 +141,7 @@ export class CommandRouter {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
+    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
   ): Promise<RouterResponse> {
     const startedAt = Date.now();
     let command = parseCommand(input);
@@ -389,6 +390,7 @@ export class CommandRouter {
               perfSpan,
               metadata,
               onPlan,
+              onUsage,
             );
           }
           if (metadata?.scheduledSessionAlias) {
@@ -411,6 +413,7 @@ export class CommandRouter {
               perfSpan,
               metadata,
               onPlan,
+              onUsage,
             );
           }
           return await handlePrompt(
@@ -427,6 +430,7 @@ export class CommandRouter {
             perfSpan,
             metadata,
             onPlan,
+            onUsage,
           );
         }
       }
@@ -641,8 +645,8 @@ export class CommandRouter {
       setModelTransportSession: (session, modelId) => this.setModelTransportSession(session, modelId),
       getModelTransportSession: (session) => this.getModelTransportSession(session),
       cancelTransportSession: (session) => this.cancelTransportSession(session),
-      promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride, onPlan) =>
-        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan),
+      promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride, onPlan, onUsage) =>
+        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan, onUsage),
     };
   }
 
@@ -872,6 +876,7 @@ export class CommandRouter {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
+    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
   ) {
     session.mcpCoordinatorSession ??= stableCoordinatorSession(session.transportSession);
     // `done` closes the race window between prompt resolving and the abort
@@ -939,6 +944,7 @@ export class CommandRouter {
           ...(onToolEvent ? { onToolEvent } : {}),
           ...(onThought ? { onThought } : {}),
           ...(onPlan ? { onPlan } : {}),
+          ...(onUsage ? { onUsage } : {}),
         }),
       );
     } catch (error) {

@@ -20,6 +20,7 @@ export interface StreamingPromptState {
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
+  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
   finalize: () => string;
 }
 
@@ -39,6 +40,9 @@ interface StreamEvent {
       rawInput?: unknown;
       rawOutput?: unknown;
       entries?: unknown;
+      // ACP `usage_update`: tokens currently in context + total context window.
+      used?: number;
+      size?: number;
     };
   };
 }
@@ -51,6 +55,7 @@ export type CreateStreamingPromptStateOptions =
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
       onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
+      onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
     };
 
 export function createStreamingPromptState(
@@ -61,6 +66,7 @@ export function createStreamingPromptState(
   let onToolEvent: ((event: ToolUseEvent) => void | Promise<void>) | undefined;
   let onThought: ((chunk: string) => void | Promise<void>) | undefined;
   let onPlan: ((entries: PlanEntry[]) => void | Promise<void>) | undefined;
+  let onUsage: ((usage: { used: number; size: number }) => void | Promise<void>) | undefined;
   let rawStream = false;
 
   if (options === undefined) {
@@ -74,6 +80,7 @@ export function createStreamingPromptState(
     onToolEvent = options.onToolEvent;
     onThought = options.onThought;
     onPlan = options.onPlan;
+    onUsage = options.onUsage;
     rawStream = options.rawStream ?? false;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
@@ -93,6 +100,7 @@ export function createStreamingPromptState(
     onToolEvent,
     onThought,
     onPlan,
+    onUsage,
     finalize(): string {
       if (this.pendingLine.trim().length > 0) {
         parseStreamingChunks(this, this.pendingLine);
@@ -175,6 +183,16 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
           !!x && typeof x === "object" && typeof (x as PlanEntry).content === "string" && typeof (x as PlanEntry).status === "string")
       : [];
     if (entries.length > 0) void state.onPlan?.(entries);
+    return;
+  }
+
+  if (update.sessionUpdate === "usage_update") {
+    // Context-usage meter: `used` = tokens currently in context, `size` = the model's
+    // total context window. Replace-latest scalar (agents may re-report mid-turn, e.g.
+    // a default window then the model's real one). Drop a malformed/zero-window frame.
+    const used = typeof update.used === "number" && Number.isFinite(update.used) ? update.used : undefined;
+    const size = typeof update.size === "number" && Number.isFinite(update.size) ? update.size : undefined;
+    if (used !== undefined && size !== undefined && size > 0) void state.onUsage?.({ used, size });
     return;
   }
 

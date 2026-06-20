@@ -125,6 +125,13 @@ export interface PromptOptions {
    */
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   /**
+   * Context-usage side-channel: the agent's ACP `usage_update` — `used` tokens
+   * currently in context and `size`, the model's total context window. Replace-latest
+   * scalar (re-sent during a turn). Optional — only agents that report it fire this
+   * (e.g. claude does, codex does not), and text channels omit the handler.
+   */
+  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
+  /**
    * How tool_call / tool_call_update events are surfaced for this prompt.
    *
    * - "text" (default when no handler): legacy emoji-prefixed segments in the reply stream.

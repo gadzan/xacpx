@@ -152,6 +152,7 @@ export interface SessionInteractionOps {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
+    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
   ) => Promise<{ text: string }>;
 }
 
