@@ -58,3 +58,42 @@ test("set-reply-mode accepts a trailing --no-restart flag like the other mutatin
   expect(code).toBe(0);
   expect(getStored().channels.find((c: any) => c.id === "feishu").replyMode).toBe("stream");
 });
+
+test("channel rm clears the removed channel's stored credentials by default", async () => {
+  const { deps, out, getStored } = makeDeps([
+    { id: "weixin", type: "weixin", enabled: true },
+    { id: "relay", type: "relay", enabled: true },
+  ]);
+  const cleared: any[] = [];
+  deps.clearChannelCredentials = async (ch: any) => { cleared.push(ch); };
+  const code = await handleChannelCli(["rm", "relay"], deps);
+  expect(code).toBe(0);
+  expect(getStored().channels.map((c: any) => c.id)).toEqual(["weixin"]);
+  expect(cleared.map((c) => c.id)).toEqual(["relay"]);
+  expect(out.join("\n")).toContain("存储凭证");
+});
+
+test("channel rm --keep-credentials leaves stored credentials in place", async () => {
+  const { deps, out } = makeDeps([
+    { id: "weixin", type: "weixin", enabled: true },
+    { id: "relay", type: "relay", enabled: true },
+  ]);
+  let called = false;
+  deps.clearChannelCredentials = async () => { called = true; };
+  const code = await handleChannelCli(["rm", "relay", "--keep-credentials"], deps);
+  expect(code).toBe(0);
+  expect(called).toBe(false);
+  expect(out.join("\n")).toContain("已保留");
+});
+
+test("channel rm still succeeds and reports when credential cleanup throws", async () => {
+  const { deps, out, getStored } = makeDeps([
+    { id: "weixin", type: "weixin", enabled: true },
+    { id: "relay", type: "relay", enabled: true },
+  ]);
+  deps.clearChannelCredentials = async () => { throw new Error("boom"); };
+  const code = await handleChannelCli(["rm", "relay"], deps);
+  expect(code).toBe(0); // channel still removed
+  expect(getStored().channels.map((c: any) => c.id)).toEqual(["weixin"]);
+  expect(out.join("\n")).toContain("boom");
+});
