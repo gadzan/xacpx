@@ -11,7 +11,7 @@ export const pwaOptions: Partial<VitePWAOptions> = {
   registerType: "autoUpdate",
   // We register explicitly in main.ts so registration order is predictable.
   injectRegister: false,
-  includeAssets: ["favicon.ico", "apple-touch-icon-180x180.png"],
+  includeAssets: ["favicon.ico", "icon.svg", "mask-icon.svg", "apple-touch-icon-180x180.png"],
   manifest: {
     name: "xacpx relay",
     short_name: "xacpx",
@@ -24,18 +24,15 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     orientation: "any",
     start_url: "/",
     scope: "/",
-    // Keep "any" and "maskable" as SEPARATE entries (not a combined
-    // "any maskable"). iOS treats a maskable icon as adaptive and shrinks it
-    // into the safe zone with a light margin — which showed as a white border on
-    // the Home Screen icon. With a plain "any" icon present, iOS (and the
-    // apple-touch link) use the full-bleed tile edge-to-edge, while Android /
-    // desktop launchers still get the maskable variant. The tile is full-bleed
-    // with the X inside the safe zone, so the same PNG serves both purposes.
+    // Only "any" (default) icons — no maskable. A maskable icon makes iOS treat
+    // the tile as adaptive and shrink it into the safe zone with a light margin,
+    // which showed up as a white border on the Home Screen icon. The icons are
+    // already opaque, full-bleed tiles, so every launcher renders them
+    // edge-to-edge (this mirrors how the HAPI PWA ships icons).
     icons: [
       { src: "pwa-64x64.png", sizes: "64x64", type: "image/png" },
       { src: "pwa-192x192.png", sizes: "192x192", type: "image/png" },
       { src: "pwa-512x512.png", sizes: "512x512", type: "image/png" },
-      { src: "pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
   },
   workbox: {
