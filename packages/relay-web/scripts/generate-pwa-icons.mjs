@@ -6,7 +6,7 @@
 //
 // The generator emits the "transparent" icons with a thin transparent edge
 // margin, which iOS composites onto white (a white border around the Home
-// Screen icon). flatten-icons.py composites every pixel onto the brand dark so
+// Screen icon). flatten-icons.mjs composites every pixel onto the brand dark so
 // the tile is a true full-bleed square. apple-touch is then downscaled from the
 // flattened pwa-512 (opaque, no transparency for iOS to letterbox).
 import { execSync } from "node:child_process";
@@ -28,7 +28,7 @@ rmSync(dir, { recursive: true, force: true });
 
 // Flatten the transparent edge margin onto #0E1116 so every icon is a hard,
 // opaque, full-bleed square (no white border on iOS / desktop).
-execSync("python3 scripts/flatten-icons.py public/pwa-64x64.png public/pwa-192x192.png public/pwa-512x512.png", { stdio: "inherit" });
+execSync("node scripts/flatten-icons.mjs public/pwa-64x64.png public/pwa-192x192.png public/pwa-512x512.png", { stdio: "inherit" });
 
 // apple-touch: opaque full-bleed, downscaled from the now-opaque pwa-512.
 execSync("sips -z 180 180 public/pwa-512x512.png --out public/apple-touch-icon-180x180.png", { stdio: "inherit" });
