@@ -35,6 +35,8 @@ xacpx ch show feishu
 
 当前限制：同一种频道类型只能配置一个实例，所以频道 `id` 必须等于 `type`，例如 `weixin`、`feishu`、`yuanbao`。
 
+`channel rm <type>` 在删除频道的同时会**清除该频道的存储凭证**（例如 relay 实例凭证 `~/.xacpx/relay/credential.json`，或微信登录态），这样以后重新添加会干净地重新配对/登录，而不是悄悄复用一份遗留的旧凭证。若只想删配置、保留已存凭证（例如临时禁用某频道又不想重新认证），加 `--keep-credentials`。
+
 ---
 
 ## 微信频道

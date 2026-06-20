@@ -21,6 +21,9 @@ export const channelCli: ChannelCliMessages = {
   // removeChannel
   cannotRemoveLastEnabled: "Cannot remove the last enabled channel.",
   channelRemoved: (id) => `Channel ${id} removed`,
+  channelCredentialsCleared: (id) => `Removed stored credentials for channel ${id}`,
+  channelCredentialsClearFailed: (id, error) => `Channel ${id} removed, but clearing its stored credentials failed: ${error}`,
+  channelCredentialsKept: (id) => `Kept stored credentials for channel ${id} (--keep-credentials)`,
 
   // setChannelEnabled
   cannotDisableLastEnabled: "Cannot disable the last enabled channel.",

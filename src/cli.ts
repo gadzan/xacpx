@@ -1151,6 +1151,14 @@ async function createChannelCliDeps(input: {
       return { state: "stopped" as const };
     },
     restartDaemon: async () => await restartDaemonCli(controller, input.print),
+    clearChannelCredentials: async (channel) => {
+      // Reuse the runtime's declared destructive-removal hook so credential
+      // cleanup stays owned by each channel/plugin (relay clears its instance
+      // credential; weixin clears its login). Plugins are already loaded for the
+      // channel CLI path, so the factory resolves.
+      const { createMessageChannel } = await import("./channels/create-channel.js");
+      createMessageChannel(channel.type, channel).logout();
+    },
   };
   return { ...base, ...input.overrides };
 }

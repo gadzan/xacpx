@@ -14,6 +14,12 @@ A `@ganglion/xacpx-relay` release polishing the installable dashboard for iOS / 
 - SVG favicon (`icon.svg`) and a Safari pinned-tab `mask-icon.svg`.
 - A cross-platform icon-regeneration tool (`scripts/finalize-icons.mjs`, `node:zlib` only — no Python or macOS `sips`).
 
+## [0.12.1] - 2026-06-21
+
+### Fixed
+
+- **`xacpx channel rm <type>` now clears the channel's stored credentials.** Previously it only removed the config entry and left credentials behind — for the relay connector this orphaned `~/.xacpx/relay/credential.json`, so after the hub's database was reset the connector kept presenting the dead credential (`unknown instance or bad credential`) and the dashboard showed no instances, with no CLI path to clear it. `channel rm` now invokes the runtime's destructive `logout()` hook (relay clears its credential; WeChat clears its login) so a later re-add re-pairs cleanly. Pass `--keep-credentials` to remove only the config entry.
+
 ## [relay 0.5.1] - 2026-06-20
 
 ### Fixed

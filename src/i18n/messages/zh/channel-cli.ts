@@ -21,6 +21,9 @@ export const channelCli: ChannelCliMessages = {
   // removeChannel
   cannotRemoveLastEnabled: "不能删除最后一个启用的频道。",
   channelRemoved: (id) => `频道 ${id} 已删除`,
+  channelCredentialsCleared: (id) => `已移除频道 ${id} 的存储凭证`,
+  channelCredentialsClearFailed: (id, error) => `频道 ${id} 已删除，但清除其存储凭证失败：${error}`,
+  channelCredentialsKept: (id) => `已保留频道 ${id} 的存储凭证（--keep-credentials）`,
 
   // setChannelEnabled
   cannotDisableLastEnabled: "不能禁用最后一个启用的频道。",

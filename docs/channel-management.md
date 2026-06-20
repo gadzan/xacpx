@@ -35,6 +35,8 @@ xacpx ch show feishu
 
 Current limitation: only one instance can be configured per channel type, so the channel `id` must equal its `type`, for example `weixin`, `feishu`, `yuanbao`.
 
+`channel rm <type>` also clears that channel's **stored credentials** (e.g. the relay instance credential at `~/.xacpx/relay/credential.json`, or the WeChat login), so a later re-add re-pairs/re-logs-in cleanly instead of silently reusing an orphaned credential. Pass `--keep-credentials` to remove only the config entry and leave the stored credential in place (e.g. when temporarily disabling a channel without re-authenticating).
+
 ---
 
 ## WeChat Channel
