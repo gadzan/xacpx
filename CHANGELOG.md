@@ -1,5 +1,19 @@
 # Changelog
 
+## [relay 0.5.2] - 2026-06-21
+
+A `@ganglion/xacpx-relay` release polishing the installable dashboard for iOS / mobile (the hub bundles the dashboard; core `@ganglion/xacpx` is unchanged).
+
+### Fixed
+
+- **iOS safe-area (notch / home indicator):** installed as a standalone PWA the dashboard ran edge-to-edge, so the top bar sat behind the notch and the composer behind the home indicator. The top bar, the mobile drawers, and the composer now respect `env(safe-area-inset-*)`, and the top bar keeps a full-height control row below the inset. The mobile viewport also gains `interactive-widget=resizes-content` so the keyboard resizes the layout instead of overlaying the composer.
+- **Home Screen icon white border:** the generated icons carried a thin transparent edge margin that iOS composited onto white. Icons are now flattened to opaque, full-bleed brand tiles (declared `any`, not maskable — a maskable icon makes iOS shrink the tile into the safe zone), with a full-bleed `apple-touch-icon`.
+
+### Added
+
+- SVG favicon (`icon.svg`) and a Safari pinned-tab `mask-icon.svg`.
+- A cross-platform icon-regeneration tool (`scripts/finalize-icons.mjs`, `node:zlib` only — no Python or macOS `sips`).
+
 ## [0.12.1] - 2026-06-21
 
 ### Fixed

@@ -21,7 +21,7 @@ async function submit() {
 </script>
 
 <template>
-  <div class="flex h-screen items-center justify-center bg-bg">
+  <div class="flex h-dvh items-center justify-center bg-bg">
     <form class="w-80 space-y-3 rounded-lg border border-border bg-surface p-6 shadow-xl" @submit.prevent="submit">
       <div class="mb-2 flex justify-center">
         <BrandLogo />

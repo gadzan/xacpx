@@ -32,21 +32,26 @@ describe("PWA configuration", () => {
   it("ships every manifest icon as a committed file in public/", () => {
     const manifest = pwaOptions.manifest;
     const icons = manifest ? manifest.icons ?? [] : [];
-    expect(icons.length).toBeGreaterThanOrEqual(4);
+    expect(icons.length).toBeGreaterThanOrEqual(3);
     for (const icon of icons) {
       expect(existsSync(resolve(pkgRoot, "public", icon.src))).toBe(true);
     }
-    // The maskable variant must be present and tagged so installs get a
-    // full-bleed icon instead of a letterboxed one.
-    expect(icons.some((i) => i.purpose === "maskable")).toBe(true);
+    // No maskable icons: iOS treats maskable as adaptive and shrinks the tile
+    // into the safe zone, leaving a white Home Screen border. The opaque
+    // full-bleed icons render edge-to-edge as plain "any" icons instead.
+    const purposeTokens = (p: (typeof icons)[number]["purpose"]): string[] =>
+      Array.isArray(p) ? p : typeof p === "string" ? p.split(" ") : [];
+    expect(icons.every((i) => !purposeTokens(i.purpose).includes("maskable"))).toBe(true);
   });
 
-  it("keeps apple-touch-icon and favicon for iOS / legacy installs", () => {
+  it("keeps apple-touch, favicon, and the SVG / Safari mask icons", () => {
     for (const asset of pwaOptions.includeAssets ?? []) {
       expect(existsSync(resolve(pkgRoot, "public", asset as string))).toBe(true);
     }
     expect(existsSync(resolve(pkgRoot, "public/apple-touch-icon-180x180.png"))).toBe(true);
     expect(existsSync(resolve(pkgRoot, "public/favicon.ico"))).toBe(true);
+    expect(existsSync(resolve(pkgRoot, "public/icon.svg"))).toBe(true);
+    expect(existsSync(resolve(pkgRoot, "public/mask-icon.svg"))).toBe(true);
   });
 
   // Behavioral guard against the GENERATED service worker — only runs when a
