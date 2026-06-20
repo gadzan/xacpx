@@ -12,7 +12,11 @@
       <stop offset="1" stop-color="#69D689" />
     </linearGradient>
   </defs>
-  <rect width="24" height="24" fill="#0E1116" />
+  <!-- The fill bleeds past the 0..24 viewBox on every side so the rasterizer
+       leaves NO antialiased transparent margin at the canvas edge — otherwise
+       iOS composites that thin transparent border onto white on the Home Screen
+       icon. -->
+  <rect x="-3" y="-3" width="30" height="30" fill="#0E1116" />
   <path d="M7.5 7.5 L16.5 16.5 M16.5 7.5 L7.5 16.5" stroke="url(#xacpxBrand)"
         stroke-width="3" stroke-linecap="round" fill="none" />
 </svg>
