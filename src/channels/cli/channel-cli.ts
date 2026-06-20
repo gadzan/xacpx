@@ -19,6 +19,14 @@ export interface ChannelCliDeps extends ChannelCliIo {
   saveChannels: (channels: ChannelRuntimeConfig[]) => Promise<void>;
   getDaemonStatus: () => Promise<DaemonStatusForChannelCli>;
   restartDaemon: () => Promise<number>;
+  /**
+   * Optional: clears a channel's stored credentials via the runtime's
+   * destructive `logout()` hook (e.g. the relay instance credential at
+   * ~/.xacpx/relay/credential.json). Invoked by `channel rm` unless
+   * `--keep-credentials`. Absent in some test harnesses, where rm stays
+   * config-only.
+   */
+  clearChannelCredentials?: (channel: ChannelRuntimeConfig) => Promise<void>;
 }
 
 export async function handleChannelCli(args: string[], deps: ChannelCliDeps): Promise<number | null> {
@@ -332,6 +340,7 @@ async function removeChannel(type: string, rawArgs: string[], deps: ChannelCliDe
     deps.print(restartFlags.message);
     return 1;
   }
+  const keepCredentials = restartFlags.rest.includes("--keep-credentials");
   const config = await deps.loadConfig();
   ensureChannelsArray(config);
   const channel = findChannel(config.channels, type);
@@ -346,6 +355,20 @@ async function removeChannel(type: string, rawArgs: string[], deps: ChannelCliDe
   config.channels = config.channels.filter((entry) => entry.id !== channel.id);
   await deps.saveChannels(config.channels);
   deps.print(t().channelCli.channelRemoved(channel.id));
+  // Removing a channel also clears its stored credentials (e.g. the relay
+  // instance credential) so a later re-add re-pairs cleanly instead of reusing
+  // an orphaned credential. --keep-credentials opts out (e.g. temporarily
+  // removing a channel without dropping its login).
+  if (keepCredentials) {
+    deps.print(t().channelCli.channelCredentialsKept(channel.id));
+  } else if (deps.clearChannelCredentials) {
+    try {
+      await deps.clearChannelCredentials(channel);
+      deps.print(t().channelCli.channelCredentialsCleared(channel.id));
+    } catch (error) {
+      deps.print(t().channelCli.channelCredentialsClearFailed(channel.id, error instanceof Error ? error.message : String(error)));
+    }
+  }
   return await maybeRestartAfterMutation(restartFlags.restart, deps);
 }
 
