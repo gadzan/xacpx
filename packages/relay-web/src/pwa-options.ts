@@ -24,16 +24,14 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     orientation: "any",
     start_url: "/",
     scope: "/",
+    // The brand tile is full-bleed with the X inside the maskable safe zone, so
+    // each icon is declared "any maskable": desktop launchers render it
+    // edge-to-edge (no white padding around a centered square) and circular
+    // home-screen masks never clip the mark.
     icons: [
-      { src: "pwa-64x64.png", sizes: "64x64", type: "image/png" },
-      { src: "pwa-192x192.png", sizes: "192x192", type: "image/png" },
-      { src: "pwa-512x512.png", sizes: "512x512", type: "image/png" },
-      {
-        src: "maskable-icon-512x512.png",
-        sizes: "512x512",
-        type: "image/png",
-        purpose: "maskable",
-      },
+      { src: "pwa-64x64.png", sizes: "64x64", type: "image/png", purpose: "any maskable" },
+      { src: "pwa-192x192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
+      { src: "pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
     ],
   },
   workbox: {

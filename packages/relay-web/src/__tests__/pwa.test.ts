@@ -32,13 +32,15 @@ describe("PWA configuration", () => {
   it("ships every manifest icon as a committed file in public/", () => {
     const manifest = pwaOptions.manifest;
     const icons = manifest ? manifest.icons ?? [] : [];
-    expect(icons.length).toBeGreaterThanOrEqual(4);
+    expect(icons.length).toBeGreaterThanOrEqual(3);
     for (const icon of icons) {
       expect(existsSync(resolve(pkgRoot, "public", icon.src))).toBe(true);
     }
-    // The maskable variant must be present and tagged so installs get a
-    // full-bleed icon instead of a letterboxed one.
-    expect(icons.some((i) => i.purpose === "maskable")).toBe(true);
+    // At least one icon must advertise the maskable purpose so launchers fill
+    // the tile edge-to-edge instead of letterboxing a centered square on white.
+    const purposeTokens = (p: (typeof icons)[number]["purpose"]): string[] =>
+      Array.isArray(p) ? p : typeof p === "string" ? p.split(" ") : [];
+    expect(icons.some((i) => purposeTokens(i.purpose).includes("maskable"))).toBe(true);
   });
 
   it("keeps apple-touch-icon and favicon for iOS / legacy installs", () => {

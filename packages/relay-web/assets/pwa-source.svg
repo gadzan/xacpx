@@ -1,16 +1,18 @@
 <svg width="512" height="512" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
   <!-- PWA icon source: full-bleed dark tile plus the xacpx blue/green "X" mark.
-       Full-bleed (no transparency) so it works as a maskable icon; the OS
-       rounds the corners for home-screen / apple-touch. Kept in sync with
+       Full-bleed (no transparency) and the mark sits inside the maskable safe
+       zone (centered 80% circle), so ONE icon works for both "any" and
+       "maskable" purposes: desktop launchers fill the tile (no white padding)
+       and circular home-screen masks never clip the X. Kept in sync with
        src/components/BrandLogo.vue. Regenerate PNGs in public/ with the
        generate-pwa-icons npm script (see packages/relay-web/package.json). -->
   <defs>
-    <linearGradient id="xacpxBrand" x1="6.5" y1="6.5" x2="17.5" y2="17.5" gradientUnits="userSpaceOnUse">
+    <linearGradient id="xacpxBrand" x1="7.5" y1="7.5" x2="16.5" y2="16.5" gradientUnits="userSpaceOnUse">
       <stop stop-color="#4F9BF5" />
       <stop offset="1" stop-color="#69D689" />
     </linearGradient>
   </defs>
   <rect width="24" height="24" fill="#0E1116" />
-  <path d="M6.8 6.8 L17.2 17.2 M17.2 6.8 L6.8 17.2" stroke="url(#xacpxBrand)"
-        stroke-width="3.2" stroke-linecap="round" fill="none" />
+  <path d="M7.5 7.5 L16.5 16.5 M16.5 7.5 L7.5 16.5" stroke="url(#xacpxBrand)"
+        stroke-width="3" stroke-linecap="round" fill="none" />
 </svg>
