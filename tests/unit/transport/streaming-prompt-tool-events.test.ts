@@ -182,3 +182,18 @@ test("buildToolUseEvent 透传 locations/rawOutput/content/rawInput", () => {
     rawOutput,
   }));
 });
+
+test("usage_update fires onUsage with the latest used/size, ignoring malformed frames", () => {
+  const seen: { used: number; size: number }[] = [];
+  const state = createStreamingPromptState(false, { onUsage: (u) => seen.push(u) });
+  const usage = (used: unknown, size: unknown) =>
+    JSON.stringify({ method: "session/update", params: { update: { sessionUpdate: "usage_update", used, size } } });
+  parseStreamingChunks(state, usage(34606, 200000));
+  parseStreamingChunks(state, usage(34612, 1000000)); // model corrects the window mid-turn
+  parseStreamingChunks(state, usage(40000, 0));       // zero window — dropped
+  parseStreamingChunks(state, usage("nope", 200000)); // non-numeric — dropped
+  expect(seen).toEqual([
+    { used: 34606, size: 200000 },
+    { used: 34612, size: 1000000 },
+  ]);
+});

@@ -148,6 +148,8 @@ export type ControlEventDto =
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
+  // Context-usage meter: `used` tokens in context, `size` total context window. Replace-latest.
+  | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
   | { type: "scheduled-changed"; chatKey: string }

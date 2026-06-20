@@ -1,15 +1,27 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
-import { Brain, Check, ChevronDown, Send } from "lucide-vue-next";
+import { computed, nextTick, ref, watch } from "vue";
+import { Brain, Check, ChevronDown, Gauge, Send } from "lucide-vue-next";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
+import { useChatStore } from "../stores/chat";
 
 const props = defineProps<{ busy?: boolean; draftKey?: string; instanceId?: string | null; sessionAlias?: string | null }>();
 const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
 
 const composer = useComposerStore();
 const controls = useSessionControlsStore();
+const chat = useChatStore();
+
+// Context-usage meter (ACP usage_update) for the current session. Null when the agent
+// doesn't report it (e.g. codex) or the window is unknown — the chip then hides.
+const context = computed(() => {
+  const u = chat.sessionUsage;
+  if (!u || u.size <= 0) return null;
+  const pct = Math.min(100, Math.round((u.used / u.size) * 100));
+  const tone = pct >= 90 ? "danger" : pct >= 75 ? "warn" : "accent";
+  return { used: u.used, size: u.size, pct, tone };
+});
 
 // Load the session's model for the composer chip whenever the session changes.
 const modelMenuOpen = ref(false);
@@ -128,6 +140,19 @@ function onInput() {
             </li>
           </ul>
           <span v-if="controls.error" data-test="model-error" class="text-xs text-danger">{{ controls.error }}</span>
+          <!-- context-usage meter: sits to the right of the model chip -->
+          <span v-if="context" data-test="context-meter"
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap pl-0.5"
+                :title="$t('chat.contextUsage', { used: context.used.toLocaleString(), size: context.size.toLocaleString() })">
+            <Gauge :size="13" class="shrink-0"
+                   :class="context.tone === 'danger' ? 'text-danger' : context.tone === 'warn' ? 'text-warn' : 'text-accent'" />
+            <span class="relative h-1 w-8 shrink-0 overflow-hidden rounded-full bg-border">
+              <span class="absolute inset-y-0 left-0 rounded-full"
+                    :class="context.tone === 'danger' ? 'bg-danger' : context.tone === 'warn' ? 'bg-warn' : 'bg-accent'"
+                    :style="{ width: context.pct + '%' }" />
+            </span>
+            <span class="shrink-0 text-[11.5px] font-medium tabular-nums text-fg-muted">{{ context.pct }}%</span>
+          </span>
         </div>
         <span v-else />
 

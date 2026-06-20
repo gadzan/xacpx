@@ -26,6 +26,7 @@ export type BridgeEvent =
   | { type: "prompt.tool_event"; event: ToolUseEvent }
   | { type: "prompt.thought"; text: string }
   | { type: "prompt.plan"; entries: PlanEntry[] }
+  | { type: "prompt.usage"; used: number; size: number }
   | { type: "session.progress"; stage: EnsureSessionProgressStage }
   | { type: "session.note"; text: string };
 
@@ -117,6 +118,12 @@ export class AcpxBridgeClient {
         pending.onEvent?.({
           type: "prompt.plan",
           entries: message.entries,
+        });
+      } else if (message.event === "prompt.usage") {
+        pending.onEvent?.({
+          type: "prompt.usage",
+          used: message.used,
+          size: message.size,
         });
       } else if (message.event === "session.progress") {
         pending.onEvent?.({

@@ -3,6 +3,7 @@ import {
   encodeBridgePromptSegmentEvent,
   encodeBridgePromptThoughtEvent,
   encodeBridgePromptToolEvent,
+  encodeBridgePromptUsageEvent,
   encodeBridgeSessionNoteEvent,
   encodeBridgeSessionProgressEvent,
   type BridgeMethod,
@@ -221,6 +222,13 @@ export class BridgeServer {
               id: requestId,
               event: "prompt.plan",
               entries: event.entries,
+            }));
+          } else if (event.type === "prompt.usage") {
+            writeLine?.(encodeBridgePromptUsageEvent({
+              id: requestId,
+              event: "prompt.usage",
+              used: event.used,
+              size: event.size,
             }));
           }
         });

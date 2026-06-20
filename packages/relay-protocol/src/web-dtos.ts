@@ -56,6 +56,7 @@ const CONTROL_EVENT_TYPES = new Set([
   "tool-event",
   "turn-thought",
   "plan",
+  "turn-usage",
   "turn-finished",
   "sessions-changed",
   "scheduled-changed",
@@ -125,6 +126,8 @@ function validControlEvent(e: unknown): boolean {
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
   if (c.type === "plan")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
+  if (c.type === "turn-usage")
+    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
   return true; // sessions-changed / orchestration-changed carry no extra required fields

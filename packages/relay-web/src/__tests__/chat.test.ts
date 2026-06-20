@@ -61,6 +61,26 @@ test("a scheduled turn-started for an unselected session does not pollute the op
   expect(store.messages.some((m) => m.text === "do thing")).toBe(false);
 });
 
+test("turn-usage updates sessionUsage (REPLACE) and survives turn-finished", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "relay:a1", sessionAlias: "backend", used: 34606, size: 200000 } } as never);
+  expect(store.sessionUsage).toEqual({ used: 34606, size: 200000 });
+  // The model corrects the window mid-turn → latest wins.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "relay:a1", sessionAlias: "backend", used: 34612, size: 1000000 } } as never);
+  expect(store.sessionUsage).toEqual({ used: 34612, size: 1000000 });
+  // Persists past turn-finished (session-scoped, decoupled from the live turn).
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true } });
+  expect(store.sessionUsage).toEqual({ used: 34612, size: 1000000 });
+});
+
+test("turn-usage for an unselected session does not leak into sessionUsage", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "relay:a1", sessionAlias: "other", used: 1, size: 2 } } as never);
+  expect(store.sessionUsage).toBeNull();
+});
+
 test("requestScrollToScheduled bumps a nonce-keyed scroll request", () => {
   const store = useChatStore();
   expect(store.scrollRequest).toBeNull();

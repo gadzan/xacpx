@@ -72,6 +72,7 @@ export default {
     working: "Agent is working… (Esc to stop)",
     message: "Message",
     jumpLatest: "↓ Latest",
+    contextUsage: "Context: {used} / {size} tokens",
   },
   session: {
     newSession: "New session",
