@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.5.0] - 2026-06-20
+
+A `@ganglion/xacpx-relay` hub release (core `@ganglion/xacpx` unchanged). The hub bundles the dashboard, so this ships the relay-web change below.
+
+### Added
+
+- **The dashboard is now an installable PWA (`@ganglion/xacpx-relay-web`):** a web app manifest, brand icon set (blue/green "X", including a purpose-built maskable variant), and a Workbox service worker registered from `main.ts`. You can install the dashboard to the home screen / as a standalone window, and the app shell (JS/CSS/fonts/icons) is precached for instant repeat loads. It's a WS-backed live console, so the scope is installability + fast loads, **not offline data** — live data still needs the WS reconnect. The service worker uses `autoUpdate` (new versions activate on the next navigation) and a `navigateFallback` denylist so it never shadows the hub's `/api` / `/ws` routes.
+
+  > **Operator note:** service workers and installability require a **secure context** — terminate TLS at your reverse proxy and serve the hub over `https://`. Plain `http://` (LAN IP) will not register the service worker or offer installation. See [docs/relay-deployment.md](docs/relay-deployment.md).
+
 ## [0.12.0] - 2026-06-20
 
 A relay-web dashboard wave, plus the core seam that powers a live **context-usage meter**. Released together: core `@ganglion/xacpx` 0.12.0, `@ganglion/xacpx-relay-protocol` 0.1.1, `@ganglion/xacpx-relay` 0.4.0 (the hub bundles the dashboard). The `@ganglion/xacpx-channel-relay` connector is unchanged — it forwards the new event through its existing generic passthrough.
