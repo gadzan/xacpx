@@ -158,6 +158,19 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **构建**：仓库根 `bun run build:relay-web`（先 build relay-protocol 再 vite build）；
 - **测试**：仓库根 `bun run test:web`（Vitest）。
 
+## PWA（可安装 + 应用壳缓存）
+
+看板是可安装的 PWA：支持「添加到主屏 / 安装为独立窗口」，并对应用壳（JS/CSS/字体/图标/`index.html`）做 Service Worker 预缓存以加速二次加载。它是 **WS 实时控制台**，所以 PWA 的目标是「可安装 + 秒开」，**不做离线数据**——断网时壳能开，但实时数据仍需 WS 重连。
+
+- **实现**：`vite-plugin-pwa`（`generateSW` + Workbox），配置见 `packages/relay-web/vite.config.ts`：
+  - `registerType: "autoUpdate"`——新版本由 SW 后台拉取，下次导航/刷新静默生效，无更新弹窗；
+  - `navigateFallback: "/index.html"` 配 `navigateFallbackDenylist: [/^\/api/, /^\/ws/]`——SPA 路由走缓存 index，但**绝不影响 hub 的 `/api`、`/ws`**；
+  - SW 在 `src/main.ts` 通过 `virtual:pwa-register` 的 `registerSW({ immediate: true })` 显式注册（`injectRegister: false`）；`devOptions.enabled: false`，`vite dev` 不起 SW（避免开发期缓存困扰）。
+- **图标**：源文件 `assets/pwa-source.svg`（暗底满铺 + 品牌蓝绿 X，与 `BrandLogo.vue` 同步），生成的 PNG 提交在 `public/`（`pwa-64/192/512`、满铺 `maskable-icon-512x512`、`apple-touch-icon-180x180`、`favicon.ico`）。重新生成：`bun run --cwd packages/relay-web generate-pwa-icons`（用 `bunx @vite-pwa/assets-generator`，故 CI 构建不依赖 sharp）。
+- **打包链路**：`vite build` 把 `sw.js`/`workbox-*.js`/`manifest.webmanifest`/图标都输出到 `dist/`，再由 `bundle:relay-web` 整体拷进 `relay/dist/relay-web`；hub 的 hono `serveStatic` 在根作用域服务（`manifest.webmanifest` 命中 hono mime → `application/manifest+json`，`sw.js` 默认作用域 `/`）。
+- **部署前提（关键）**：Service Worker / 安装能力要求 **安全上下文**——`https://` 或 `localhost`。自托管 hub 走纯 `http://`（局域网 IP）时 SW 不会注册、也不可安装；需在反向代理上挂 TLS。详见 [relay-deployment.md](relay-deployment.md)。
+- **漂移守护**：`src/__tests__/pwa.test.ts` 校验 manifest 引用的每个图标都在 `public/` 存在、`autoUpdate` 与 `/api`·`/ws` denylist 未被删。
+
 ## 阶段六：Turn 状态展示（turn-status display）
 
 ### `LiveTurn` 模型与 store getters（packages/relay-web/src/stores/chat.ts）

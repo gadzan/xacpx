@@ -1,5 +1,6 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
+import { registerSW } from "virtual:pwa-register";
 import App from "./App.vue";
 import { router } from "./router";
 import { i18n } from "./i18n";
@@ -17,3 +18,8 @@ const app = createApp(App).use(createPinia()).use(router).use(i18n);
 // i18n before mount (mirrors how the theme store applies on construction).
 useLocaleStore();
 app.mount("#app");
+
+// Register the service worker (autoUpdate: silently activates the new shell on
+// the next navigation). No-ops in dev and where service workers are unsupported
+// or the page is not in a secure context (HTTP over LAN).
+registerSW({ immediate: true });
