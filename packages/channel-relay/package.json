@@ -1,9 +1,14 @@
 {
   "name": "@ganglion/xacpx-channel-relay",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Relay hub connector channel plugin for xacpx.",
   "license": "MIT",
-  "keywords": ["xacpx", "relay", "channel", "plugin"],
+  "keywords": [
+    "xacpx",
+    "relay",
+    "channel",
+    "plugin"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gadzan/xacpx.git",
@@ -18,14 +23,21 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "peerDependencies": {
     "xacpx": ">=0.11.0-0"
   },
   "peerDependenciesMeta": {
-    "xacpx": { "optional": true }
+    "xacpx": {
+      "optional": true
+    }
   },
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@ganglion/xacpx-relay-protocol": "^0.1.0",
     "ws": "^8.20.0"

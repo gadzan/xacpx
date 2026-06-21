@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.13.0] - 2026-06-21
+
+Adds **session archive** and turns `/session rm` into a **real delete** across every channel. The relay dashboard, protocol, and connector are wired to match — see the `relay` / `relay-protocol` / `channel-relay` entries below.
+
+### Added
+
+- **`/session archive <alias>`** hides a session from the active list without deleting it. Archived sessions are skipped in listings and **auto-restore the moment you send them a prompt** ("restore-on-message"), so archiving is a soft, reversible declutter. Archiving is refused while the session has a running turn.
+- **`/session rm <alias>` now performs a real delete.** Previously it only dropped the logical (xacpx-side) session and left the underlying acpx session and its on-disk record/stream files behind. It now closes the acpx session, deletes the acpx record + event-stream files (best-effort), and purges the session's orchestration references. This flows through both transports (acpx-cli and the bridge subprocess).
+- Session info / control surfaces now expose an `archived` flag.
+
+### Fixed
+
+- **`transport.preferLocalAgents` was a silent no-op.** The loader validated the flag but never copied it into the runtime config, so `preferLocalAgents: false` had no effect and a host with a native agent CLI (e.g. `opencode`) installed always resolved to the local command. The loader now threads it through.
+
+## [relay 0.6.0] - 2026-06-21
+
+A `@ganglion/xacpx-relay` release (the hub bundles the dashboard `@ganglion/xacpx-relay-web`; core is the `0.13.0` entry above). Brings session archive & delete to the dashboard.
+
+### Added
+
+- **Archive & delete sessions from the dashboard.** A per-session overflow menu plus mobile swipe actions (swipe left to archive, right to delete). Archived sessions are greyed out and sunk to the bottom of the list; archiving shows an undo toast; both actions are disabled while offline. Delete maps to the new core real-delete, and archive/unarchive round-trip through the hub.
+
+## [relay-protocol 0.1.2] - 2026-06-21
+
+### Added
+
+- `sessions.archive` / `sessions.unarchive` request messages and an `archived` field on `SessionDto`, so connectors and the dashboard can drive and reflect session archive state. Additive and backward-compatible — consumers on `^0.1.0` pick this up automatically.
+
+## [channel-relay 0.2.1] - 2026-06-21
+
+### Added
+
+- The relay connector now dispatches `sessions.archive` / `sessions.unarchive` (and the real-delete path) to the core `ControlService`, so the dashboard's archive/delete actions reach the session.
+
 ## [relay 0.5.2] - 2026-06-21
 
 A `@ganglion/xacpx-relay` release polishing the installable dashboard for iOS / mobile (the hub bundles the dashboard; core `@ganglion/xacpx` is unchanged).

@@ -1,9 +1,13 @@
 {
   "name": "@ganglion/xacpx-relay",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Self-hosted relay hub for xacpx: instance gateway, accounts, and web API.",
   "license": "MIT",
-  "keywords": ["xacpx", "relay", "hub"],
+  "keywords": [
+    "xacpx",
+    "relay",
+    "hub"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gadzan/xacpx.git",
@@ -11,10 +15,19 @@
   },
   "type": "module",
   "main": "./dist/cli.js",
-  "bin": { "xacpx-relay": "./dist/cli.js" },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=22.13.0" },
-  "publishConfig": { "access": "public" },
+  "bin": {
+    "xacpx-relay": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@ganglion/xacpx-relay-protocol": "^0.1.0",
     "@hono/node-server": "^1.13.0",
