@@ -26,37 +26,59 @@ A single transport session can be shared by multiple logical aliases
 (`countAliasesSharingTransport`, `session-service.ts:483`). Any history-destroying
 delete must guard against nuking a transport session another alias still uses.
 
-## acpx primitives (already present)
+## Approach decision (revised)
 
-- `acpx sessions close <name>` — kills the agent process, marks the record
-  `closed`, **keeps history**, resumable. Exposed today as
+During brainstorming, "real delete of history" was scoped as **Route A** — add a
+focused `sessions rm` to acpx — on the mistaken premise that acpx was ours to change.
+**acpx is a third-party dependency**, so Route A is off the table. We use **Route B**:
+xacpx performs the history delete itself, with no acpx source change, using acpx's
+existing CLI to close the session, then deleting acpx's on-disk record files directly.
+
+This is an **incremental** use of coupling xacpx already has: it already reads acpx's
+session store at `~/.acpx/sessions/index.json` (`acpx-session-index.ts`,
+`native-session-history.ts`) and resolves `acpxRecordId` via `acpx sessions show`
+(`acpx-cli-transport.ts readSessionRecord`). No new dependency surface; no acpx release.
+
+## acpx primitives (already present — used as-is)
+
+- `acpx sessions close <name>` — kills the agent process + queue owner, marks the
+  record `closed`, **keeps history**, resumable. Exposed today as
   `transport.removeSession` (`acpx-cli-transport.ts:400`, bridge mirror). This is
-  the archive primitive.
-- `acpx sessions prune` — bulk delete of closed records by date. Not usable for a
-  single session (no id/name filter).
-- **Missing:** a focused single-session hard delete. Added in Module 1.
+  the archive primitive AND the first step of delete (clean process shutdown).
+- `acpx sessions show <name>` — resolves a session's `acpxRecordId` (already used by
+  `readSessionRecord`). Used by delete to find the on-disk files.
+- `acpx sessions prune` — bulk delete of closed records by date; not usable for a
+  single session. **Not used** by this feature.
+- acpx has **no** single-session hard-delete command, so xacpx deletes the files.
+
+## acpx on-disk layout (the only acpx internals delete touches)
+
+- Sessions dir: `~/.acpx/sessions/`. Record file: `<encodeURIComponent(acpxRecordId)>.json`.
+- Event-stream artifacts: `<safeId>.stream.ndjson`, `<safeId>.stream.lock`, `<safeId>.stream.*`.
+- `index.json` lists records; acpx tolerates a stale entry whose file is gone (it
+  skips unreadable records and self-heals the index on the next `sessions` operation),
+  so xacpx does not need to rewrite the index after deleting a record file.
 
 ## Semantics
 
-| Action      | acpx layer            | xacpx logical layer                         | process     | history          |
-|-------------|-----------------------|---------------------------------------------|-------------|------------------|
-| **Archive** | `sessions close`      | set `archived=true`, keep logical session   | close now   | keep             |
-| **Restore** | `sessions ensure` (resume) | clear `archived` (implicit on next prompt) | restart     | reuse            |
-| **Delete**  | `sessions rm` (new)   | delete logical session + prune chat-context refs | close   | delete\*         |
+| Action      | acpx interaction              | xacpx logical layer                         | process     | history          |
+|-------------|-------------------------------|---------------------------------------------|-------------|------------------|
+| **Archive** | `sessions close`              | set `archived=true`, keep logical session   | close now   | keep             |
+| **Restore** | `sessions ensure` (resume)    | clear `archived` (implicit on next prompt)  | restart     | reuse            |
+| **Delete**  | `sessions close` + file unlink | delete logical session + prune chat-context refs | close  | delete\*         |
 
 \* History is deleted only when no other logical alias shares the transport session
 (`countAliasesSharingTransport(transportSession, excludeAlias) === 0`). Otherwise the
 delete removes only the logical alias and leaves the shared transport session intact.
 
-## Module 1 — acpx: `sessions rm <name>`
+## Module 1 — xacpx acpx-session-files helper
 
-New focused command on the per-agent `sessions` group (alongside `list` / `ensure`
-/ `new` / `close` / `prune`). Behavior: resolve the record by name → kill the
-process if running (reuse `closeSession`'s kill path) → delete the record file and
-its associated artifacts (event-log, lock), reusing the per-record file cleanup that
-`pruneSessions` already performs, applied to a single record. Idempotent: a missing
-session is a no-op success (so xacpx's delete is safe to retry). Requires releasing
-acpx and bumping xacpx's bundled `acpx` dependency.
+New module `src/transport/acpx-session-files.ts`: `deleteAcpxSessionFiles({ acpxRecordId,
+sessionsDir? })` — computes `safeId = encodeURIComponent(acpxRecordId)` and best-effort
+unlinks `<safeId>.json` plus the `<safeId>.stream.*` artifacts under the sessions dir
+(default `~/.acpx/sessions`, overridable for tests, mirroring `native-session-history.ts`).
+Idempotent: missing files are a no-op. This is the only place that encodes acpx's
+on-disk record naming, kept in one small, testable unit.
 
 ## Module 2 — transport layer
 
@@ -64,9 +86,13 @@ acpx and bumping xacpx's bundled `acpx` dependency.
   semantics unchanged. Existing callers (`session-reset-handler.ts:95`,
   `session-handler.ts:671`, `main.ts:657`, `scheduled-dispatch.ts:92`) keep their
   current close semantics.
-- **New** `transport.deleteSession?(session): Promise<void>` = `acpx sessions rm
-  <name>` — used by real delete. Optional on the interface; both transports
-  (`acpx-cli`, `acpx-bridge` + bridge protocol/runtime) implement it.
+- **New** `transport.deleteSession?(session): Promise<void>` — real delete. Steps:
+  resolve `acpxRecordId` via the existing `readSessionRecord` (idempotent: a missing
+  acpx session is a no-op success) → `acpx sessions close` (clean process + queue-owner
+  shutdown so nothing holds the files) → `deleteAcpxSessionFiles({ acpxRecordId })`.
+  Optional on the interface; both transports (`acpx-cli`, `acpx-bridge` + bridge
+  protocol/runtime) implement it. The bridge runtime delegates to the underlying
+  acpx-cli transport's `deleteSession`.
 
 ## Module 3 — core `SessionService`
 
@@ -138,8 +164,10 @@ Logical session record gains `archived?: boolean` and `archived_at?: string`
   `unarchiveSession` (clears flag, no process op), redefined `removeSession` with the
   shared-transport guard (deletes history only when unshared), restore-clears-archived
   on prompt.
-- acpx: `sessions rm` handler (kills running, deletes record + artifacts, idempotent on
-  missing).
+- `acpx-session-files.ts`: `deleteAcpxSessionFiles` unlinks record + stream artifacts
+  by `acpxRecordId` (using a temp `sessionsDir`), idempotent on missing files.
+- transport `deleteSession`: resolves acpxRecordId → close → deletes files; missing
+  acpx session is a no-op (mocked `readSessionRecord`/`runCommand`).
 - `control-service`: `archiveSession` wiring; `removeSession` real-delete path.
 - relay-protocol: `archive-session` DTO + `archived` field validation / allow-list.
 - relay-web: swipe + overflow-menu triggers, greyed-and-sunk archived rows, offline

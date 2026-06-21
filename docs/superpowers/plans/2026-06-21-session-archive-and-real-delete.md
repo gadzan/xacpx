@@ -4,330 +4,193 @@
 
 **Goal:** Make session deletion a real delete (acpx history gone, same-name re-create starts fresh) and add session archive (process closed now, row greyed + sunk to bottom, restored by sending a message) across all channels + the relay-web dashboard.
 
-**Architecture:** acpx gains a focused `sessions rm` (single-record hard delete). The xacpx transport gains `deleteSession` (= `acpx sessions rm`); archive reuses the existing `removeSession` (= `acpx sessions close`). Orchestration (shared-transport guard, cancel, transport teardown) lives in `CommandRouter` and is shared by the chat `/session` handlers and the web `ControlService`. The logical session gains an `archived` flag, cleared on the next `useSession` (which every prompt calls). relay-web adds a desktop ⋯ menu + mobile swipe, greys + sinks archived rows, and an undo toast.
+**Architecture:** acpx is a third-party dependency and is NOT modified. The xacpx transport gains `deleteSession`, which closes the session via acpx's existing `sessions close` then deletes acpx's on-disk record files directly (Route B); archive reuses the existing `removeSession` (= `acpx sessions close`). Orchestration (shared-transport guard, cancel, transport teardown) lives in `CommandRouter` and is shared by the chat `/session` handlers and the web `ControlService`. The logical session gains an `archived` flag, cleared on the next `useSession` (which every prompt calls). relay-web adds a desktop ⋯ menu + mobile swipe, greys + sinks archived rows, and an undo toast.
 
 **Tech Stack:** TypeScript, Node, Bun (build/test), Vue 3 + Pinia + Tailwind (relay-web), Vitest, acpx (sibling repo at `../acpx`).
 
 **Companion spec:** `docs/superpowers/specs/2026-06-21-session-archive-and-real-delete-design.md`
 
-**Two repos:** Phase 1 tasks run in `/Users/maijiazhen/Projects/acpx`. Phases 2–5 run in `/Users/maijiazhen/Projects/weacpx-github`. Phase 2 depends on Phase 1 being released and the xacpx bundled `acpx` dep bumped; during development of Phases 2–5 the new acpx can be linked locally.
+**Single repo:** all tasks run in `/Users/maijiazhen/Projects/weacpx-github`. acpx is a third-party dependency and is **not** modified (see Phase 1 rationale).
 
 **Git hygiene (every task):** never `git add -A`/`git add .`; stage only the exact files named in the task. Never stage `bun.lock`, `dist/`, `node_modules` unless the task says so. Each task is its own commit.
 
 ---
 
-## Phase 1 — acpx: `sessions rm` (repo: `/Users/maijiazhen/Projects/acpx`)
+## Phase 1 — xacpx real-delete mechanism (Route B; no acpx changes)
 
-### Task 1: Single-record hard-delete helper in the repository
+> **Why Route B:** acpx is a third-party dependency, not ours to modify. acpx has no
+> single-session hard-delete command, so xacpx closes the session via acpx's existing
+> CLI and then deletes acpx's on-disk record files directly. This reuses coupling xacpx
+> already has (`acpx-session-index.ts` / `native-session-history.ts` read
+> `~/.acpx/sessions`; transports resolve `acpxRecordId` via `acpx sessions show`).
+> (An earlier draft's Tasks 4–5 added an acpx `sessions rm` command — removed.)
+
+### Task 1: `acpx-session-files.ts` — delete a session's on-disk files
 
 **Files:**
-- Modify: `src/session/persistence/repository.ts` (add an exported `deleteSessionRecord`; helpers `pruneSessionFiles`/`unlinkCountingBytes`/`isSessionStreamFile` already live here)
-- Modify: `src/session/persistence.ts` (re-export `deleteSessionRecord`)
-- Test: `src/session/persistence/repository.delete-session.test.ts` (new)
+- Create: `src/transport/acpx-session-files.ts`
+- Test: `tests/unit/transport/acpx-session-files.test.ts` (new)
 
-The existing `pruneSessionFiles(record, sessionDir, dirEntries, includeHistory)` already deletes a single record's files. We expose a name-agnostic, id-based single-record delete that kills a running pid (reusing `closeSession`'s kill loop) then removes files.
+The only unit that encodes acpx's on-disk record naming. Mirrors acpx's own
+`pruneSessionFiles` (`safeId = encodeURIComponent(acpxRecordId)`; record `<safeId>.json`
++ stream artifacts `<safeId>.stream.ndjson` / `.stream.lock` / `.stream.*`). Sessions
+dir defaults to `~/.acpx/sessions`, overridable for tests (same pattern as
+`native-session-history.ts`).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// src/session/persistence/repository.delete-session.test.ts
-import { describe, it, expect, beforeEach } from "vitest";
+// tests/unit/transport/acpx-session-files.test.ts
+import { describe, it, expect } from "vitest";
 import { promises as fs } from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import { writeSessionRecord, deleteSessionRecord } from "./repository.js";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { deleteAcpxSessionFiles } from "../../../src/transport/acpx-session-files";
 
-const sessionDir = path.join(os.homedir(), ".acpx", "sessions");
-
-async function seedRecord(id: string): Promise<string> {
-  await fs.mkdir(sessionDir, { recursive: true });
-  const file = path.join(sessionDir, `${encodeURIComponent(id)}.json`);
-  const record = {
-    acpxRecordId: id, acpSessionId: id, agentCommand: "test-agent", cwd: "/tmp/x",
-    name: "demo", closed: true, createdAt: "2020-01-01T00:00:00.000Z",
-    lastUsedAt: "2020-01-01T00:00:00.000Z", messages: [],
-  };
-  await writeSessionRecord(record as never);
-  return file;
+async function tempSessionsDir(): Promise<string> {
+  return await mkdtemp(join(tmpdir(), "acpx-sessions-"));
 }
 
-describe("deleteSessionRecord", () => {
-  it("removes the record json and reports bytes freed", async () => {
-    const id = `del-test-${process.pid}-a`;
-    const file = await seedRecord(id);
-    expect(await fs.stat(file).then(() => true).catch(() => false)).toBe(true);
-    const result = await deleteSessionRecord(id);
-    expect(result.bytesFreed).toBeGreaterThan(0);
-    expect(await fs.stat(file).then(() => true).catch(() => false)).toBe(false);
+describe("deleteAcpxSessionFiles", () => {
+  it("removes the record json and its stream artifacts", async () => {
+    const dir = await tempSessionsDir();
+    const id = "ws:demo";
+    const safe = encodeURIComponent(id);
+    await writeFile(join(dir, `${safe}.json`), "{}");
+    await writeFile(join(dir, `${safe}.stream.ndjson`), "");
+    await writeFile(join(dir, `${safe}.stream.lock`), "");
+    await deleteAcpxSessionFiles({ acpxRecordId: id, sessionsDir: dir });
+    const left = await fs.readdir(dir);
+    expect(left).toHaveLength(0);
   });
 
-  it("is idempotent for a missing record (no throw, zero bytes)", async () => {
-    const result = await deleteSessionRecord(`del-test-${process.pid}-missing`);
-    expect(result.bytesFreed).toBe(0);
+  it("is idempotent when nothing exists", async () => {
+    const dir = await tempSessionsDir();
+    await expect(deleteAcpxSessionFiles({ acpxRecordId: "ws:none", sessionsDir: dir })).resolves.toBeUndefined();
+  });
+
+  it("only deletes the target session's files, not siblings", async () => {
+    const dir = await tempSessionsDir();
+    await writeFile(join(dir, `${encodeURIComponent("ws:keep")}.json`), "{}");
+    await writeFile(join(dir, `${encodeURIComponent("ws:gone")}.json`), "{}");
+    await deleteAcpxSessionFiles({ acpxRecordId: "ws:gone", sessionsDir: dir });
+    const left = await fs.readdir(dir);
+    expect(left).toEqual([`${encodeURIComponent("ws:keep")}.json`]);
   });
 });
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd /Users/maijiazhen/Projects/acpx && npx vitest run src/session/persistence/repository.delete-session.test.ts`
-Expected: FAIL — `deleteSessionRecord` is not exported.
+Run: `npx vitest run tests/unit/transport/acpx-session-files.test.ts`
+Expected: FAIL — module missing.
 
-- [ ] **Step 3: Implement `deleteSessionRecord`**
-
-Add to `src/session/persistence/repository.ts` (after `closeSession`, near line 461 — it must be in the same module as the private `pruneSessionFiles`/`killSignalCandidates`/`resolveSessionRecord`/`sessionBaseDir`):
+- [ ] **Step 3: Implement the helper**
 
 ```ts
-/**
- * Hard-delete a single session record by id: kill a running pid (best-effort),
- * then remove its on-disk files (record json + event-stream artifacts).
- * Idempotent: a missing record resolves to { bytesFreed: 0 } without throwing.
- */
-export async function deleteSessionRecord(
-  id: string,
-  options: { includeHistory?: boolean } = {},
-): Promise<{ bytesFreed: number }> {
-  const includeHistory = options.includeHistory !== false; // default true: a real delete wipes history
-  let record: SessionRecord;
+// src/transport/acpx-session-files.ts
+import { readdir, stat, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+export interface DeleteAcpxSessionFilesOptions {
+  acpxRecordId: string;
+  /** Override for the acpx sessions dir (tests). Defaults to `<home>/.acpx/sessions`. */
+  sessionsDir?: string;
+}
+
+/** Best-effort delete of a single acpx session's on-disk files: the record json and
+ *  its event-stream artifacts. Mirrors acpx's own per-record file layout
+ *  (`<encodeURIComponent(acpxRecordId)>.json` + `<safeId>.stream.*`). Idempotent —
+ *  missing files are ignored. acpx tolerates the now-stale index entry and self-heals
+ *  it on its next `sessions` operation, so we do not rewrite index.json. */
+export async function deleteAcpxSessionFiles(options: DeleteAcpxSessionFilesOptions): Promise<void> {
+  const dir = options.sessionsDir ?? join(homedir(), ".acpx", "sessions");
+  const safeId = encodeURIComponent(options.acpxRecordId);
+
+  await unlink(join(dir, `${safeId}.json`)).catch(() => undefined);
+
+  let entries: string[];
   try {
-    record = await resolveSessionRecord(id);
+    entries = await readdir(dir);
   } catch {
-    return { bytesFreed: 0 };
+    return; // dir gone → nothing more to remove
   }
-
-  if (record.pid) {
-    for (const signal of killSignalCandidates(record.lastAgentExitSignal ?? undefined)) {
-      try {
-        process.kill(record.pid, signal);
-      } catch {
-        // ignore — process already gone
-      }
-    }
+  const streamFiles = entries.filter(
+    (name) => name === `${safeId}.stream.ndjson` || name === `${safeId}.stream.lock` || name.startsWith(`${safeId}.stream.`),
+  );
+  for (const name of streamFiles) {
+    await unlink(join(dir, name)).catch(() => undefined);
   }
-
-  const sessionDir = sessionBaseDir();
-  let dirEntries: string[] = [];
-  if (includeHistory) {
-    try {
-      dirEntries = await fs.readdir(sessionDir);
-    } catch {
-      // ignore
-    }
-  }
-  const bytesFreed = await pruneSessionFiles(record, sessionDir, dirEntries, includeHistory);
-
-  await rebuildSessionIndex(sessionDir).catch(() => {
-    // best-effort cache rebuild
-  });
-  return { bytesFreed };
 }
 ```
 
-Then re-export it from `src/session/persistence.ts` — add `deleteSessionRecord,` to the existing `export { ... } from "./persistence/repository.js"` block (the one currently listing `closeSession`, `pruneSessions`, etc.).
+(`stat` import is unused — drop it; left here only as a reminder that no byte-counting is needed, unlike acpx's prune. Keep the import list to exactly what's used: `readdir`, `unlink`.)
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `cd /Users/maijiazhen/Projects/acpx && npx vitest run src/session/persistence/repository.delete-session.test.ts`
-Expected: PASS (2 tests).
+Run: `npx vitest run tests/unit/transport/acpx-session-files.test.ts && npx tsc --noEmit`
+Expected: PASS (3 tests) + clean typecheck (no unused imports).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/maijiazhen/Projects/acpx
-git add src/session/persistence/repository.ts src/session/persistence.ts src/session/persistence/repository.delete-session.test.ts
-git commit -m "feat(sessions): add deleteSessionRecord single-record hard delete"
+git add src/transport/acpx-session-files.ts tests/unit/transport/acpx-session-files.test.ts
+git commit -m "feat(transport): add deleteAcpxSessionFiles (single-session on-disk cleanup)"
 ```
 
 ---
 
-### Task 2: `acpx <agent> sessions rm [name]` command + handler
-
-**Files:**
-- Modify: `src/cli/command-handlers.ts` (add `handleSessionsRm`)
-- Modify: `src/cli/command-registration.ts` (register `rm` subcommand)
-- Test: `src/cli/sessions-rm.test.ts` (new)
-
-`rm` mirrors `close`: resolve the record by cwd+name (but `includeClosed: true` so an already-closed/archived session can be deleted), then `deleteSessionRecord(record.acpxRecordId)`.
-
-- [ ] **Step 1: Write the failing test**
-
-```ts
-// src/cli/sessions-rm.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-vi.mock("../session/persistence.js", async (orig) => {
-  const actual = await orig<typeof import("../session/persistence.js")>();
-  return { ...actual };
-});
-
-import { handleSessionsRm } from "./command-handlers.js";
-
-describe("handleSessionsRm", () => {
-  it("throws a scoped not-found error when no matching session exists", async () => {
-    const fakeCommand = { optsWithGlobals: () => ({}), parent: null } as never;
-    await expect(
-      handleSessionsRm("nonexistent-agent-xyz", "no-such-session", fakeCommand, { agents: {} } as never),
-    ).rejects.toThrow();
-  });
-});
-```
-
-- [ ] **Step 2: Run it to verify it fails**
-
-Run: `cd /Users/maijiazhen/Projects/acpx && npx vitest run src/cli/sessions-rm.test.ts`
-Expected: FAIL — `handleSessionsRm` is not exported.
-
-- [ ] **Step 3: Implement `handleSessionsRm`**
-
-Add to `src/cli/command-handlers.ts` (next to `handleSessionsClose`, ~line 776). Mirror `handleSessionsClose`, swapping `closeSession` for `deleteSessionRecord` and passing `includeClosed: true` to `findSession`:
-
-```ts
-export async function handleSessionsRm(
-  explicitAgentName: string | undefined,
-  sessionName: string | undefined,
-  command: Command,
-  config: ResolvedAcpxConfig,
-): Promise<void> {
-  const globalFlags = resolveGlobalFlags(command, config);
-  const agent = resolveAgentInvocation(explicitAgentName, globalFlags, config);
-  const { deleteSessionRecord } = await loadSessionModule();
-
-  const record = await findSession({
-    agentCommand: agent.agentCommand,
-    cwd: agent.cwd,
-    name: sessionName,
-    includeClosed: true,
-  });
-
-  if (!record) {
-    throw new Error(missingScopedSessionMessage(agent, sessionName));
-  }
-
-  await deleteSessionRecord(record.acpxRecordId);
-}
-```
-
-`findSession`, `loadSessionModule`, `resolveGlobalFlags`, `resolveAgentInvocation`, `missingScopedSessionMessage` are already imported/defined in this file (used by `handleSessionsClose`). Confirm `deleteSessionRecord` is exposed by `loadSessionModule()` — `loadSessionModule` dynamically imports `../session/persistence.js`, which now re-exports it (Task 1).
-
-- [ ] **Step 4: Register the subcommand**
-
-In `src/cli/command-registration.ts`, immediately after the `close` subcommand block (~line 129), add (and import `handleSessionsRm` alongside `handleSessionsClose` at the top of the file):
-
-```ts
-  sessionsCommand
-    .command("rm")
-    .description("Delete a session and its history (irreversible)")
-    .argument("[name]", "Session name", parseSessionName)
-    .action(async function (this: Command, name?: string) {
-      await handleSessionsRm(explicitAgentName, name, this, config);
-    });
-```
-
-- [ ] **Step 5: Run the test + typecheck**
-
-Run: `cd /Users/maijiazhen/Projects/acpx && npx vitest run src/cli/sessions-rm.test.ts && npx tsc --noEmit`
-Expected: PASS + clean typecheck.
-
-- [ ] **Step 6: Manual smoke (optional but recommended)**
-
-```bash
-cd /Users/maijiazhen/Projects/acpx && npm run build
-# create + delete a throwaway codex/claude session in a temp dir, then:
-node dist/cli.js <agent> sessions rm demo
-node dist/cli.js <agent> sessions list   # demo should be gone
-```
-
-- [ ] **Step 7: Commit**
-
-```bash
-cd /Users/maijiazhen/Projects/acpx
-git add src/cli/command-handlers.ts src/cli/command-registration.ts src/cli/sessions-rm.test.ts
-git commit -m "feat(cli): add 'sessions rm' to delete a single session + history"
-```
-
----
-
-### Task 3: acpx CHANGELOG + version bump + release
-
-**Files:**
-- Modify: `CHANGELOG.md` (Unreleased → Changes)
-- Modify: `package.json` (version bump)
-
-- [ ] **Step 1: Add CHANGELOG entry**
-
-Under `## Unreleased` → `### Changes` in `/Users/maijiazhen/Projects/acpx/CHANGELOG.md`:
-
-```markdown
-- CLI/sessions: add `sessions rm [name]` to hard-delete a single session and its history (kills the process if running). Complements `close` (keeps history) and `prune` (bulk by date).
-```
-
-- [ ] **Step 2: Bump version**
-
-In `package.json`, bump `"version"` from `0.10.0` to `0.11.0` (new feature, minor).
-
-- [ ] **Step 3: Full test + build**
-
-Run: `cd /Users/maijiazhen/Projects/acpx && npm test && npm run build`
-Expected: all pass.
-
-- [ ] **Step 4: Commit + release**
-
-```bash
-cd /Users/maijiazhen/Projects/acpx
-git add CHANGELOG.md package.json
-git commit -m "chore: release acpx 0.11.0 (sessions rm)"
-```
-
-Then follow the acpx repo's normal publish flow (tag + npm publish). **Record the published version** — Phase 2 Task 4b bumps xacpx's bundled `acpx` dependency to `^0.11.0`.
-
----
-
-## Phase 2 — xacpx transport (repo: `/Users/maijiazhen/Projects/weacpx-github`)
-
-### Task 4: `SessionTransport.deleteSession` + acpx-cli implementation
+### Task 2: `SessionTransport.deleteSession` + acpx-cli implementation
 
 **Files:**
 - Modify: `src/transport/types.ts` (interface)
 - Modify: `src/transport/acpx-cli/acpx-cli-transport.ts` (impl)
 - Test: `tests/unit/transport/acpx-cli-delete-session.test.ts` (new)
 
-- [ ] **Step 1: Write the failing test**
+`deleteSession` = resolve `acpxRecordId` via the existing private `readSessionRecord`
+→ `acpx sessions close` (clean process + queue-owner shutdown) → `deleteAcpxSessionFiles`.
+A missing acpx session is a no-op success.
 
-Mirror the existing acpx-cli transport tests (find them with `ls tests/unit/transport/`). The test asserts `deleteSession` runs `acpx ... sessions rm <name>` and tolerates a missing session.
+- [ ] **Step 1: Write the failing test**
 
 ```ts
 // tests/unit/transport/acpx-cli-delete-session.test.ts
 import { describe, it, expect, vi } from "vitest";
 import { AcpxCliTransport } from "../../../src/transport/acpx-cli/acpx-cli-transport";
+import * as files from "../../../src/transport/acpx-session-files";
 
 function makeSession() {
   return { alias: "a", agent: "codex", workspace: "w", transportSession: "w:a", cwd: "/tmp/w" } as never;
 }
 
 describe("AcpxCliTransport.deleteSession", () => {
-  it("invokes `sessions rm <transportSession>`", async () => {
+  it("closes the session then deletes its files by acpxRecordId", async () => {
     const transport = new AcpxCliTransport({ command: "acpx" } as never);
-    const run = vi
-      .spyOn(transport as never, "runCommand")
-      .mockResolvedValue({ code: 0, stdout: "", stderr: "" } as never);
+    vi.spyOn(transport as never, "readSessionRecord").mockResolvedValue({ acpxRecordId: "rec-123" } as never);
+    const remove = vi.spyOn(transport, "removeSession").mockResolvedValue();
+    const del = vi.spyOn(files, "deleteAcpxSessionFiles").mockResolvedValue();
     await transport.deleteSession(makeSession());
-    const args = (run.mock.calls[0] as unknown[])[1] as string[];
-    expect(args).toContain("sessions");
-    expect(args).toContain("rm");
-    expect(args).toContain("w:a");
+    expect(remove).toHaveBeenCalled();              // closed first
+    expect(del).toHaveBeenCalledWith(expect.objectContaining({ acpxRecordId: "rec-123" }));
   });
 
-  it("treats a missing acpx session as success", async () => {
+  it("is a no-op when the acpx session cannot be resolved (already gone)", async () => {
     const transport = new AcpxCliTransport({ command: "acpx" } as never);
-    vi.spyOn(transport as never, "runCommand").mockResolvedValue({
-      code: 1, stdout: "", stderr: "no session found for cwd",
-    } as never);
+    vi.spyOn(transport as never, "readSessionRecord").mockRejectedValue(new Error("no session"));
+    const del = vi.spyOn(files, "deleteAcpxSessionFiles").mockResolvedValue();
     await expect(transport.deleteSession(makeSession())).resolves.toBeUndefined();
+    expect(del).not.toHaveBeenCalled();
   });
 });
 ```
 
-> Note: match the real `AcpxCliTransport` constructor signature from `src/transport/acpx-cli/acpx-cli-transport.ts` (look at an existing test in `tests/unit/transport/` for the exact construction; adjust `makeSession`/constructor accordingly).
+> Match the real `AcpxCliTransport` constructor + `readSessionRecord` shape from
+> `src/transport/acpx-cli/acpx-cli-transport.ts` (read an existing test in
+> `tests/unit/transport/` for exact construction; `readSessionRecord` returns
+> `{ acpxRecordId: string; agentSessionId?: string }`). Adjust the spy target if
+> `readSessionRecord` is private (spy via `as never`).
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -340,39 +203,40 @@ In `src/transport/types.ts`, add below `removeSession?` (line 169):
 
 ```ts
   /**
-   * Hard-delete the transport session AND its history (`acpx sessions rm`).
-   * Distinct from removeSession (= `acpx sessions close`, which keeps history for
-   * resume). Optional: transports that can't delete omit it. Treats a missing
-   * acpx session as success (idempotent).
+   * Hard-delete the transport session AND its on-disk history: close the acpx
+   * process, then delete acpx's record files. Distinct from removeSession (=
+   * `acpx sessions close`, which keeps history for resume). Optional: transports
+   * that can't delete omit it. A missing acpx session is a no-op (idempotent).
    */
   deleteSession?(session: ResolvedSession): Promise<void>;
 ```
 
 - [ ] **Step 4: Implement in acpx-cli**
 
-In `src/transport/acpx-cli/acpx-cli-transport.ts`, add next to `removeSession` (~line 400), mirroring it but with `rm`:
+In `src/transport/acpx-cli/acpx-cli-transport.ts`, import the helper at the top:
+
+```ts
+import { deleteAcpxSessionFiles } from "../acpx-session-files.js";
+```
+
+Add the method next to `removeSession` (~line 400):
 
 ```ts
   async deleteSession(session: ResolvedSession): Promise<void> {
-    const result = await this.runCommand(this.command, this.buildArgs(session, [
-      "sessions",
-      "rm",
-      session.transportSession,
-    ]));
-    if (result.code === 0) {
-      return;
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(session));
+    } catch {
+      return; // acpx session already gone → nothing to delete
     }
-    if (isMissingAcpxSessionError(result.stderr, result.stdout)) {
-      return;
-    }
-    const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-    throw new Error(detail);
+    // Close first so no live process / queue owner holds the files, then unlink.
+    await this.removeSession(session);
+    await deleteAcpxSessionFiles({ acpxRecordId });
   }
 ```
 
-- [ ] **Step 4b: Bump the bundled acpx dependency**
-
-In `package.json`, bump the `acpx` dependency to the version published in Task 3 (`^0.11.0`). Run `npm install --package-lock-only` (with `npm_config_registry=https://registry.npmjs.org/`) to sync `package-lock.json`. Do NOT stage `bun.lock`.
+> Confirm `readSessionRecord` returns `{ acpxRecordId }` (it does, ~line 441) and that
+> `removeSession` is the `acpx sessions close` method (it is, ~line 400).
 
 - [ ] **Step 5: Run the test + typecheck**
 
@@ -382,19 +246,19 @@ Expected: PASS + clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/transport/types.ts src/transport/acpx-cli/acpx-cli-transport.ts tests/unit/transport/acpx-cli-delete-session.test.ts package.json package-lock.json
-git commit -m "feat(transport): add deleteSession (acpx sessions rm) + bump acpx 0.11.0"
+git add src/transport/types.ts src/transport/acpx-cli/acpx-cli-transport.ts tests/unit/transport/acpx-cli-delete-session.test.ts
+git commit -m "feat(transport): deleteSession (close + delete acpx record files)"
 ```
 
 ---
 
-### Task 5: Bridge transport `deleteSession`
+### Task 3: Bridge transport `deleteSession`
 
 **Files:**
 - Modify: `src/transport/acpx-bridge/acpx-bridge-protocol.ts` (add `"deleteSession"` to `BridgeMethod`)
 - Modify: `src/transport/acpx-bridge/acpx-bridge-transport.ts` (client method)
 - Modify: `src/bridge/bridge-server.ts` (dispatch case)
-- Modify: `src/bridge/bridge-runtime.ts` (runtime method calling the underlying acpx-cli transport's `deleteSession`)
+- Modify: `src/bridge/bridge-runtime.ts` (runtime method → underlying acpx-cli `deleteSession`)
 - Test: `tests/unit/bridge/bridge-delete-session.test.ts` (new)
 
 - [ ] **Step 1: Write the failing test**
@@ -419,7 +283,8 @@ describe("bridge deleteSession", () => {
 });
 ```
 
-> Adjust constructor/handler names to match the real `BridgeServer` (read `src/bridge/bridge-server.ts:274` area where `removeSession` is dispatched).
+> Adjust constructor/handler names to match the real `BridgeServer` (read
+> `src/bridge/bridge-server.ts` where `removeSession` is dispatched, ~line 274).
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -460,7 +325,6 @@ git add src/transport/acpx-bridge/acpx-bridge-protocol.ts src/transport/acpx-bri
 git commit -m "feat(bridge): wire deleteSession through bridge protocol/server/runtime"
 ```
 
----
 
 ## Phase 3 — core: archived flag + orchestration + control wiring
 
@@ -1472,6 +1336,6 @@ Per [[reference_sandbox_connector_from_plugin_home]]: rebuild + reinstall the co
 
 ## Self-Review notes (addressed)
 
-- **Spec coverage:** Module 1 → Tasks 1–3; Module 2 → Tasks 4–5 (deleteSession) + archive reuse of removeSession (Task 7); Module 3 → Tasks 6–8; Module 4 → Tasks 9–11; Module 5 → Tasks 12–15. Restore-on-message → Task 6 (`useSession` clear). Smart shared-transport guard → Task 7. Offline-disable → Task 13. Undo → Task 15. Sunk+greyed → Task 13.
-- **Type consistency:** `deleteSession` (transport), `deleteSessionRecord` (acpx repo), `setArchived` (SessionService), `archiveSessionWithTransport`/`removeSessionWithTransport`/`unarchiveSession` (router + control deps), `archived` (LogicalSession + ControlSessionInfo + SessionDto), `MSG.sessionsArchive`/`sessionsUnarchive` + `SessionsArchivePayload`/`SessionsUnarchivePayload` (protocol), `control.sessions.archive`/`.unarchive` (RPC strings), `archiveSession`/`unarchiveSession` (web store + control-service) — used consistently across tasks.
-- **Sequencing:** Phase 1 → release acpx → Phase 2 (bump dep). Phase 3 before Task 9 (so the `SessionDto.archived` required-field change has its core/web builders updated in the same merge). Task 13 leaves a temporary `showUndoToast` no-op removed in Task 15.
+- **Spec coverage:** Module 1 (acpx-session-files) → Task 1; Module 2 (transport deleteSession) → Tasks 2–3 + archive reuse of removeSession (Task 7); Module 3 → Tasks 6–8; Module 4 → Tasks 9–11; Module 5 → Tasks 12–15. Restore-on-message → Task 6 (`useSession` clear). Smart shared-transport guard → Task 7. Offline-disable → Task 13. Undo → Task 15. Sunk+greyed → Task 13.
+- **Type consistency:** `deleteAcpxSessionFiles` (acpx-session-files), `deleteSession` (transport), `setArchived` (SessionService), `archiveSessionWithTransport`/`removeSessionWithTransport`/`unarchiveSession` (router + control deps), `archived` (LogicalSession + ControlSessionInfo + SessionDto), `MSG.sessionsArchive`/`sessionsUnarchive` + `SessionsArchivePayload`/`SessionsUnarchivePayload` (protocol), `control.sessions.archive`/`.unarchive` (RPC strings), `archiveSession`/`unarchiveSession` (web store + control-service) — used consistently across tasks.
+- **Sequencing:** Phase 1 (transport `deleteSession` via Route B file deletion — no acpx changes) → Phase 3 before Task 9 (so the `SessionDto.archived` required-field change has its core/web builders updated in the same merge). Task 13 leaves a temporary `showUndoToast` no-op removed in Task 15.
