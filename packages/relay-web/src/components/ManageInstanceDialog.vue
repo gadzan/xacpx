@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { X } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
@@ -10,6 +10,8 @@ const props = defineProps<{ instanceId: string; instanceName: string }>();
 const emit = defineEmits<{ close: [] }>();
 const store = useInstancesStore();
 const { t } = useI18n();
+
+const coreVersion = computed(() => store.byId(props.instanceId)?.coreVersion ?? null);
 
 const loading = ref(true);
 
@@ -66,6 +68,12 @@ onMounted(async () => {
             <button data-test="rename-save" class="shrink-0 rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
                     :disabled="renaming || !name.trim()" @click="saveName">{{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}</button>
           </div>
+        </section>
+        <section class="space-y-1">
+          <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.versionLabel") }}</h3>
+          <p class="text-sm text-fg-muted" data-test="instance-version">
+            {{ coreVersion ? $t("instance.coreVersion", { version: coreVersion }) : $t("instance.coreVersionUnknown") }}
+          </p>
         </section>
         <WorkspacesManager :instance-id="instanceId" />
         <AgentsManager :instance-id="instanceId" />

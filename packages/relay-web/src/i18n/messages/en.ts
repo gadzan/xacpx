@@ -153,6 +153,7 @@ export default {
     sessionArchivedToast: "Archived \"{alias}\"",
     undo: "Undo",
     manage: "Manage instance",
+    versionLabel: "Instance version",
     coreVersion: "connector core {version}",
     coreVersionUnknown: "connector core version unknown (legacy or pre-version connector)",
     offline: "offline",

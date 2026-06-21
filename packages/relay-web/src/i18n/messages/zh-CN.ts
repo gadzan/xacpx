@@ -151,6 +151,7 @@ export default {
     sessionArchivedToast: "已归档「{alias}」",
     undo: "撤销",
     manage: "管理实例",
+    versionLabel: "实例版本",
     coreVersion: "连接器内核 {version}",
     coreVersionUnknown: "连接器内核版本未知（旧版或无版本信息的连接器）",
     offline: "离线",
