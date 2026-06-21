@@ -60,6 +60,11 @@ export interface ResolvedSession {
    * persisted state by alias) does not apply.
    */
   transient?: boolean;
+  /**
+   * True when the user archived this session (process closed, greyed out in the
+   * web dashboard). Surfaced to the control/web path via ControlSessionInfo.
+   */
+  archived?: boolean;
 }
 
 export interface AgentSession {

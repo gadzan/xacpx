@@ -29,6 +29,7 @@ export interface ControlSessionInfo {
   workspace: string;
   transportSession: string;
   running: boolean;
+  archived: boolean;
 }
 
 export interface ControlAgentInfo {
@@ -63,6 +64,11 @@ export interface ControlServiceDeps {
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
   createSessionWithTransport: (internalAlias: string, agent: string, workspace: string, model?: string) => Promise<ResolvedSession>;
+  // Full-lifecycle session teardown/archival, wired to CommandRouter in main.ts so the
+  // web path shares the chat path's shared-transport guard + acpx teardown.
+  removeSessionWithTransport: (internalAlias: string) => Promise<{ wasActive: boolean }>;
+  archiveSessionWithTransport: (internalAlias: string) => Promise<void>;
+  unarchiveSession: (internalAlias: string) => Promise<void>;
   // List the agent-native sessions for an agent + workspace (web native-attach picker).
   listNativeSessions: (agent: string, workspace: string) => Promise<AgentSession[]>;
   // Bind a new logical session to an EXISTING agent-native session (resume), the web
@@ -200,6 +206,7 @@ export class ControlService {
         workspace: session.workspace,
         transportSession: session.transportSession,
         running: this.deps.activeTurns.isActiveAnywhere(session.alias),
+        archived: session.archived === true,
       }));
   }
 
@@ -258,14 +265,27 @@ export class ControlService {
       workspace: session.workspace,
       transportSession: session.transportSession,
       running: false,
+      archived: false,
     };
   }
 
   async removeSession(chatKey: string, alias: string): Promise<{ wasActive: boolean }> {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
-    const result = await this.deps.sessions.removeSession(internalAlias);
+    const result = await this.deps.removeSessionWithTransport(internalAlias);
     this.deps.events.emit({ type: "sessions-changed" });
     return result;
+  }
+
+  async archiveSession(chatKey: string, alias: string): Promise<void> {
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+    await this.deps.archiveSessionWithTransport(internalAlias);
+    this.deps.events.emit({ type: "sessions-changed" });
+  }
+
+  async unarchiveSession(chatKey: string, alias: string): Promise<void> {
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+    await this.deps.unarchiveSession(internalAlias);
+    this.deps.events.emit({ type: "sessions-changed" });
   }
 
   listAgents(): ControlAgentInfo[] {
