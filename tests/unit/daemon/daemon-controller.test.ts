@@ -204,10 +204,17 @@ test("start creates the pid file with owner-only permissions", async () => {
   if (process.platform === "win32") return;
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   const statusStore = new DaemonStatusStore(join(dir, "status.json"));
+  // This test only asserts the pid-file mode; startup timing is incidental. Drive a
+  // virtual clock (advanced deterministically per poll, well under the startup
+  // timeout) so the real wall-clock cost of the status write below can never trip a
+  // spurious "did not report ready" timeout — that was the source of a CI flake.
+  let now = 0;
   const controller = createController(dir, {
+    now: () => now,
     isProcessRunning: (pid) => pid === 13579,
     spawnDetached: async () => 13579,
     onStartupPoll: async () => {
+      now += 1;
       await statusStore.save({
         pid: 13579,
         started_at: "2026-03-26T00:00:00.000Z",
