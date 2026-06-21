@@ -255,6 +255,11 @@ export class SessionService {
         previousCurrent && previousCurrent !== internalAlias ? previousCurrent : prevCtx?.previous_session;
 
       session.last_used_at = new Date().toISOString();
+      // Sending a message to (or selecting) an archived session restores it.
+      if (session.archived) {
+        delete session.archived;
+        delete session.archived_at;
+      }
       // Spread the previous context so unread background_results (and any other
       // per-chat state) survive the switch; only current/previous change.
       const nextCtx: ChatContextState = { ...prevCtx, current_session: internalAlias };
@@ -492,6 +497,23 @@ export class SessionService {
       count += 1;
     }
     return count;
+  }
+
+  async setArchived(alias: string, archived: boolean): Promise<void> {
+    await this.mutate(async () => {
+      const session = this.state.sessions[alias];
+      if (!session) {
+        throw new Error(`session "${alias}" does not exist`);
+      }
+      if (archived) {
+        session.archived = true;
+        session.archived_at = new Date(this.now()).toISOString();
+      } else {
+        delete session.archived;
+        delete session.archived_at;
+      }
+      await this.persist();
+    });
   }
 
   async removeSession(alias: string): Promise<{ wasActive: boolean }> {
