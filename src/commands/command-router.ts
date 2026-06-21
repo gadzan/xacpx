@@ -573,8 +573,29 @@ export class CommandRouter {
     if (!session) {
       throw new Error(`session "${internalAlias}" does not exist`);
     }
+    // Both delete entry points (this web/control path and chat `handleSessionRemove`)
+    // MUST enforce the orchestration blocking-task guard + reference purge, or a
+    // coordinator session with in-flight delegated tasks can be irreversibly wiped.
+    if (this.orchestration) {
+      const blocking = await this.orchestration.listSessionBlockingTasks(session.transportSession);
+      if (blocking.length > 0) {
+        throw new Error(`session "${internalAlias}" has ${blocking.length} blocking task(s); cancel them before deleting`);
+      }
+    }
     const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
     const { wasActive } = await this.sessions.removeSession(internalAlias);
+
+    if (this.orchestration) {
+      try {
+        await this.orchestration.purgeSessionReferences(session.transportSession);
+      } catch (error) {
+        await this.logger.error("session.orchestration_purge_failed", "failed to purge orchestration references after web remove", {
+          alias: internalAlias,
+          transportSession: session.transportSession,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     let transportTornDown = false;
     let transportTeardownWarning: string | undefined;
@@ -605,6 +626,11 @@ export class CommandRouter {
     const session = await this.sessions.getSession(internalAlias);
     if (!session) {
       throw new Error(`session "${internalAlias}" does not exist`);
+    }
+    // Archiving cancels+closes acpx; refuse while a turn is in flight so we don't
+    // race (and silently abort) the running prompt.
+    if (this.activeTurns?.isActiveAnywhere(internalAlias)) {
+      throw new Error(`session "${internalAlias}" has a running turn; stop it before archiving`);
     }
     const shared = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias) > 0;
     if (!shared) {

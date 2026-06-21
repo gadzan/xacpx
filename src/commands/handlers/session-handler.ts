@@ -738,6 +738,13 @@ async function promptWithSession(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
 ): Promise<RouterResponse> {
+  // Restore-on-message: a real prompt to an archived session un-archives it (mirrors
+  // useSession on the web path, which the chat prompt path bypasses). The guard avoids
+  // a needless persist on every normal prompt. `session.alias` is the internal alias,
+  // the same key `setArchived` expects.
+  if (session.archived) {
+    await context.sessions.setArchived(session.alias, false);
+  }
   const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
   // Ensure the session carries the resolved value so downstream transports
   // see "verbose" instead of undefined and format tool-call progress correctly.

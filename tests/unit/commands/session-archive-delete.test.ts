@@ -90,6 +90,94 @@ test("archiveSessionWithTransport keeps a shared process running", async () => {
   expect((sessions.setArchived as ReturnType<typeof mock>).mock.calls.length).toBe(1);
 });
 
+function makeOrchestration(overrides: {
+  blocking: unknown[];
+}) {
+  return {
+    listSessionBlockingTasks: mock(async (_transportSession: string) => overrides.blocking),
+    purgeSessionReferences: mock(async (_transportSession: string) => {}),
+  };
+}
+
+function makeActiveTurns(active: boolean) {
+  return {
+    isActiveAnywhere: mock((_alias: string) => active),
+  };
+}
+
+test("removeSessionWithTransport throws and deletes nothing when orchestration reports blocking tasks", async () => {
+  const sessions = makeSessions({ sharedCount: 0 });
+  const transport = makeTransport();
+  const orchestration = makeOrchestration({ blocking: [{ taskId: "t1" }] });
+  const router = new CommandRouter(
+    sessions,
+    transport,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    orchestration as never,
+  );
+
+  await expect(router.removeSessionWithTransport("backend:demo")).rejects.toThrow(/blocking task/);
+
+  expect((orchestration.listSessionBlockingTasks as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect((sessions.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((transport.deleteSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((orchestration.purgeSessionReferences as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
+test("removeSessionWithTransport purges orchestration references after a successful unshared delete", async () => {
+  const sessions = makeSessions({ sharedCount: 0 });
+  const transport = makeTransport();
+  const orchestration = makeOrchestration({ blocking: [] });
+  const router = new CommandRouter(
+    sessions,
+    transport,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    orchestration as never,
+  );
+
+  const result = await router.removeSessionWithTransport("backend:demo");
+
+  expect((sessions.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect((transport.deleteSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  const purge = orchestration.purgeSessionReferences as ReturnType<typeof mock>;
+  expect(purge.mock.calls.length).toBe(1);
+  expect(purge.mock.calls[0]).toEqual(["backend:demo"]);
+  expect(result.transportTornDown).toBe(true);
+});
+
+test("archiveSessionWithTransport throws and touches nothing when a turn is active", async () => {
+  const sessions = makeSessions({ sharedCount: 0 });
+  const transport = makeTransport();
+  const activeTurns = makeActiveTurns(true);
+  const router = new CommandRouter(
+    sessions,
+    transport,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    activeTurns as never,
+  );
+
+  await expect(router.archiveSessionWithTransport("backend:demo")).rejects.toThrow(/running turn/);
+
+  expect((activeTurns.isActiveAnywhere as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect((transport.cancel as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((sessions.setArchived as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
 test("unarchiveSession flips the archived flag with no transport action", async () => {
   const sessions = makeSessions({ sharedCount: 0 });
   const transport = makeTransport();
