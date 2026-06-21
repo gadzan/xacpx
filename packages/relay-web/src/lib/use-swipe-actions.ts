@@ -14,16 +14,20 @@ export function useSwipeActions(opts: SwipeActionsOptions) {
   const offset = ref(0);
   let startX = 0, startY = 0, active = false;
 
-  function onPointerdown(e: { clientX: number; clientY: number }) {
+  // Keys MUST be bare DOM event names (`pointerdown`, not `onPointerdown`): the row
+  // binds these via `v-on="handlers"`, and Vue's object-`v-on` re-applies the `on`
+  // prefix itself. An `onPointerdown` key would be re-prefixed to a dead event and
+  // the swipe would silently never fire.
+  function pointerdown(e: { clientX: number; clientY: number }) {
     active = true; startX = e.clientX; startY = e.clientY; offset.value = 0;
   }
-  function onPointermove(e: { clientX: number; clientY: number }) {
+  function pointermove(e: { clientX: number; clientY: number }) {
     if (!active) return;
     const dx = e.clientX - startX, dy = e.clientY - startY;
     if (Math.abs(dy) > Math.abs(dx)) { active = false; offset.value = 0; return; }
     offset.value = dx;
   }
-  function onPointerup(e: { clientX: number; clientY: number }) {
+  function pointerup(e: { clientX: number; clientY: number }) {
     if (!active) return;
     active = false;
     const dx = e.clientX - startX, dy = e.clientY - startY;
@@ -33,5 +37,5 @@ export function useSwipeActions(opts: SwipeActionsOptions) {
     else if (dx >= threshold) opts.onSwipeRight();
   }
 
-  return { offset, handlers: { onPointerdown, onPointermove, onPointerup } };
+  return { offset, handlers: { pointerdown, pointermove, pointerup } };
 }

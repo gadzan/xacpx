@@ -159,7 +159,11 @@ const rowSwipes = computed(() => {
             <button data-test="session-menu" :aria-label="$t('common.more')"
                     class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
                     @click.stop="openMenuFor = openMenuFor === `${inst.id}:${s.alias}` ? null : `${inst.id}:${s.alias}`"><MoreHorizontal :size="13" /></button>
-            <div v-if="openMenuFor === `${inst.id}:${s.alias}`" class="absolute right-0 z-20 mt-1 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
+            <!-- `@mousedown.stop`: the document-level mousedown listener nulls openMenuFor,
+                 which would unmount this menu in the microtask BEFORE the item's click
+                 fires (mousedown → Vue flush → mouseup → click on a detached node), so
+                 archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
+            <div v-if="openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop class="absolute right-0 z-20 mt-1 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
               <button v-if="!s.archived" data-test="action-archive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Archive :size="12" />{{ $t("instance.archiveSession") }}</button>
               <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
             </div>
