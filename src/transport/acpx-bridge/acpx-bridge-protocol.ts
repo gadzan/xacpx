@@ -15,6 +15,7 @@ export type BridgeMethod =
   | "getSessionModel"
   | "cancel"
   | "removeSession"
+  | "deleteSession"
   | "getAgentSessionId";
 
 export interface BridgeRequest {

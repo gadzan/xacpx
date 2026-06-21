@@ -14,6 +14,7 @@ import { deriveParentPackageName } from "../recovery/discover-parent-package-pat
 import { AcpxQueueOwnerLauncher } from "../transport/acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../transport/permission-mode-flag";
 import { runAgentSessionList } from "../transport/agent-session-list";
+import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
 import type {
   EnsureSessionProgress,
   MissingOptionalDepErrorData,
@@ -622,6 +623,24 @@ export class BridgeRuntime {
       return {};
     }
     throw new Error(result.stderr || result.stdout || "sessions close failed");
+  }
+
+  async deleteSession(input: {
+    agent: string;
+    agentCommand?: string;
+    cwd: string;
+    name: string;
+  }): Promise<Record<string, never>> {
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(input));
+    } catch {
+      return {}; // acpx session already gone → nothing to delete
+    }
+    // Close first so no live process / queue owner holds the files, then unlink.
+    await this.removeSession(input);
+    await deleteAcpxSessionFiles({ acpxRecordId });
+    return {};
   }
 
   async shutdown(): Promise<Record<string, never>> {

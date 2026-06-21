@@ -255,6 +255,10 @@ export class AcpxBridgeTransport implements SessionTransport {
     await this.client.request("removeSession", this.toParams(session));
   }
 
+  async deleteSession(session: ResolvedSession): Promise<void> {
+    await this.client.request("deleteSession", this.toParams(session));
+  }
+
   async getAgentSessionId(session: ResolvedSession): Promise<string | undefined> {
     const result = await this.client.request<{ agentSessionId?: string }>(
       "getAgentSessionId",
