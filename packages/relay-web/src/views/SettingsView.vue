@@ -113,7 +113,7 @@ async function onLogout() {
       <p class="text-sm text-fg-muted" data-test="relay-version">
         {{ $t("settings.relayVersion", { version: relay?.current ?? "—" }) }}
       </p>
-      <p v-if="relay?.updateAvailable" class="mt-1 text-sm text-accent" data-test="relay-update">
+      <p v-if="relay?.latest && relay.updateAvailable" class="mt-1 text-sm text-accent" data-test="relay-update">
         {{ $t("settings.relayUpdateAvailable", { latest: relay?.latest }) }}
       </p>
     </section>
