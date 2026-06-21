@@ -30,6 +30,7 @@ import { AcpxQueueOwnerLauncher } from "../acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../permission-mode-flag";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
+import { deleteAcpxSessionFiles } from "../acpx-session-files";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -411,6 +412,18 @@ export class AcpxCliTransport implements SessionTransport {
     }
     const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
     throw new Error(detail);
+  }
+
+  async deleteSession(session: ResolvedSession): Promise<void> {
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(session));
+    } catch {
+      return; // acpx session already gone → nothing to delete
+    }
+    // Close first so no live process / queue owner holds the files, then unlink.
+    await this.removeSession(session);
+    await deleteAcpxSessionFiles({ acpxRecordId });
   }
 
   async hasSession(session: ResolvedSession): Promise<boolean> {

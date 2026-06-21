@@ -168,6 +168,13 @@ export interface SessionTransport {
   resumeAgentSession?(session: ResolvedSession, agentSessionId: string): Promise<void>;
   removeSession?(session: ResolvedSession): Promise<void>;
   /**
+   * Hard-delete the transport session AND its on-disk history: close the acpx
+   * process, then delete acpx's record files. Distinct from removeSession (=
+   * `acpx sessions close`, which keeps history for resume). Optional: transports
+   * that can't delete omit it. A missing acpx session is a no-op (idempotent).
+   */
+  deleteSession?(session: ResolvedSession): Promise<void>;
+  /**
    * Read the underlying agent-native session id for an existing transport
    * session. Used by `/clear` to keep a native session native: the fresh
    * post-clear session is itself backed by a new agent rollout, and this
