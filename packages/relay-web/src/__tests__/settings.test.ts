@@ -22,7 +22,10 @@ describe("SettingsView", () => {
   beforeEach(() => { setActivePinia(createPinia()); get.mockReset(); post.mockReset(); push.mockReset(); });
 
   it("loads and shows the retention policy", async () => {
-    get.mockResolvedValueOnce({ historyRetention: { days: 30, maxPerSession: 2000 } });
+    get.mockImplementation((url: string) =>
+      url === "/api/version"
+        ? Promise.resolve({ current: "0.6.0", latest: null, updateAvailable: false })
+        : Promise.resolve({ historyRetention: { days: 30, maxPerSession: 2000 } }));
     const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
     await flushPromises();
     expect(get).toHaveBeenCalledWith("/api/config");
@@ -30,7 +33,10 @@ describe("SettingsView", () => {
   });
 
   it("invite section does not exist for any user", async () => {
-    get.mockResolvedValueOnce({ historyRetention: { days: 30, maxPerSession: 2000 } });
+    get.mockImplementation((url: string) =>
+      url === "/api/version"
+        ? Promise.resolve({ current: "0.6.0", latest: null, updateAvailable: false })
+        : Promise.resolve({ historyRetention: { days: 30, maxPerSession: 2000 } }));
     const auth = useAuthStore();
     auth.account = { username: "m" };
     const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
@@ -40,7 +46,10 @@ describe("SettingsView", () => {
   });
 
   it("generates a pairing token and shows the install command", async () => {
-    get.mockResolvedValueOnce({ historyRetention: { days: 30, maxPerSession: 2000 } });
+    get.mockImplementation((url: string) =>
+      url === "/api/version"
+        ? Promise.resolve({ current: "0.6.0", latest: null, updateAvailable: false })
+        : Promise.resolve({ historyRetention: { days: 30, maxPerSession: 2000 } }));
     post.mockResolvedValueOnce({ token: "PAIR9", expiresAt: "2030-01-01T00:00:00Z" });
     const auth = useAuthStore();
     auth.account = { username: "a" };
@@ -54,7 +63,10 @@ describe("SettingsView", () => {
   });
 
   it("signs out from the Account section (logout now lives in Settings, not the sidebar)", async () => {
-    get.mockResolvedValueOnce({ historyRetention: { days: 30, maxPerSession: 2000 } });
+    get.mockImplementation((url: string) =>
+      url === "/api/version"
+        ? Promise.resolve({ current: "0.6.0", latest: null, updateAvailable: false })
+        : Promise.resolve({ historyRetention: { days: 30, maxPerSession: 2000 } }));
     const auth = useAuthStore();
     auth.logout = vi.fn().mockResolvedValue(undefined);
     const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
@@ -63,5 +75,27 @@ describe("SettingsView", () => {
     await flushPromises();
     expect(auth.logout).toHaveBeenCalled();
     expect(push).toHaveBeenCalledWith({ name: "login" });
+  });
+
+  it("shows the relay version from /api/version", async () => {
+    get.mockImplementation((url: string) =>
+      url === "/api/version"
+        ? Promise.resolve({ current: "0.6.0", latest: null, updateAvailable: false })
+        : Promise.resolve({ historyRetention: { days: 30, maxPerSession: 2000 } }));
+    const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
+    await flushPromises();
+    expect(get).toHaveBeenCalledWith("/api/version");
+    expect(w.get('[data-test="relay-version"]').text()).toContain("0.6.0");
+    expect(w.find('[data-test="relay-update"]').exists()).toBe(false);
+  });
+
+  it("shows an update hint when a newer relay is available", async () => {
+    get.mockImplementation((url: string) =>
+      url === "/api/version"
+        ? Promise.resolve({ current: "0.6.0", latest: "0.7.0", updateAvailable: true })
+        : Promise.resolve({ historyRetention: { days: 30, maxPerSession: 2000 } }));
+    const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
+    await flushPromises();
+    expect(w.get('[data-test="relay-update"]').text()).toContain("0.7.0");
   });
 });
