@@ -174,6 +174,16 @@ export const useInstancesStore = defineStore("instances", () => {
     await loadSessions(instanceId);
   }
 
+  async function archiveSession(instanceId: string, alias: string): Promise<void> {
+    await api.rpc(instanceId, "control.sessions.archive", { alias });
+    await loadSessions(instanceId);
+  }
+
+  async function unarchiveSession(instanceId: string, alias: string): Promise<void> {
+    await api.rpc(instanceId, "control.sessions.unarchive", { alias });
+    await loadSessions(instanceId);
+  }
+
   // The instance name lives solely in the relay DB (not on the connector), so this
   // is a plain relay HTTP PATCH — no control RPC. On success we mutate the local
   // view so the sidebar/dialog reflect the new name without a full reload.
@@ -201,5 +211,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, listNativeSessions, listModelSuggestions, removeSession, renameInstance, applyEvent, byId };
+  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameInstance, applyEvent, byId };
 });
