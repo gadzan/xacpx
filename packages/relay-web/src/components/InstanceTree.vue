@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Archive, ChevronDown, ChevronRight, MoreHorizontal, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { confirm } from "../lib/use-confirm";
+import { useSwipeActions } from "../lib/use-swipe-actions";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 
@@ -80,6 +81,24 @@ async function askDelete(id: string, alias: string) {
   });
   if (ok) void store.removeSession(id, alias).catch(() => {});
 }
+
+// Mobile-native second path: swipe a row left → archive, right → delete (mirrors the
+// desktop ⋯ menu). Handlers are built per visible row of online instances and keyed by
+// `${instanceId}:${alias}`, so the template binds a stable set instead of recreating
+// closures on every render. Offline instances are excluded (mirrors the action gate).
+const rowSwipes = computed(() => {
+  const map: Record<string, ReturnType<typeof useSwipeActions>["handlers"]> = {};
+  for (const inst of store.instances) {
+    if (!inst.online) continue;
+    for (const s of inst.sessions) {
+      map[`${inst.id}:${s.alias}`] = useSwipeActions({
+        onSwipeLeft: () => { void onArchive(inst.id, s.alias); },
+        onSwipeRight: () => { askDelete(inst.id, s.alias); },
+      }).handlers;
+    }
+  }
+  return map;
+});
 </script>
 
 <template>
@@ -106,8 +125,9 @@ async function askDelete(id: string, alias: string) {
           v-for="s in orderedSessions(inst.sessions)"
           :key="s.alias"
           data-test="session-row"
-          class="group relative flex items-center rounded-md transition-colors"
+          class="group relative flex items-center rounded-md transition-colors touch-pan-y"
           :class="isSelected(inst.id, s.alias) ? 'bg-accent/10' : 'hover:bg-raised'"
+          v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
         >
           <!-- Selected row: left accent bar. -->
           <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
