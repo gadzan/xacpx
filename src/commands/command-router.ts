@@ -553,6 +553,79 @@ export class CommandRouter {
     }
   }
 
+  /** Real delete: logical removal + acpx history delete, guarded so a transport
+   *  session shared by another alias is left intact. */
+  async removeSessionWithTransport(internalAlias: string): Promise<{
+    wasActive: boolean;
+    sharedAliasCount: number;
+    transportTornDown: boolean;
+    transportTeardownWarning?: string;
+  }> {
+    const session = await this.sessions.getSession(internalAlias);
+    if (!session) {
+      throw new Error(`session "${internalAlias}" does not exist`);
+    }
+    const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
+    const { wasActive } = await this.sessions.removeSession(internalAlias);
+
+    let transportTornDown = false;
+    let transportTeardownWarning: string | undefined;
+    if (sharedAliasCount === 0 && this.transport.deleteSession) {
+      try {
+        await this.transport.deleteSession(session);
+        transportTornDown = true;
+      } catch (error) {
+        transportTeardownWarning = error instanceof Error ? error.message : String(error);
+        await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
+          alias: internalAlias,
+          transportSession: session.transportSession,
+          message: transportTeardownWarning,
+        });
+      }
+    }
+    return {
+      wasActive,
+      sharedAliasCount,
+      transportTornDown,
+      ...(transportTeardownWarning ? { transportTeardownWarning } : {}),
+    };
+  }
+
+  /** Archive: close the acpx process (keep history) when no other alias shares the
+   *  transport, then flag the logical session archived. */
+  async archiveSessionWithTransport(internalAlias: string): Promise<void> {
+    const session = await this.sessions.getSession(internalAlias);
+    if (!session) {
+      throw new Error(`session "${internalAlias}" does not exist`);
+    }
+    const shared = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias) > 0;
+    if (!shared) {
+      try {
+        await this.transport.cancel(session);
+      } catch {
+        /* best-effort */
+      }
+      if (this.transport.removeSession) {
+        try {
+          await this.transport.removeSession(session);
+        } catch (error) {
+          await this.logger.error("session.archive_close_failed", "failed to close acpx session on archive", {
+            alias: internalAlias,
+            transportSession: session.transportSession,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+    await this.sessions.setArchived(internalAlias, true);
+  }
+
+  /** Explicit un-archive (web undo / manual). No process action — it resumes on the
+   *  next message via useSession. */
+  async unarchiveSession(internalAlias: string): Promise<void> {
+    await this.sessions.setArchived(internalAlias, false);
+  }
+
   /**
    * List the agent-native (acpx-owned) sessions for a given agent + workspace, for the
    * web "attach a native session" picker. Resolves the workspace's cwd from config and

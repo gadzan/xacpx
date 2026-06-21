@@ -30,7 +30,7 @@ import {
   getMarkTaskInjectionFailedMock,
   getDirectCancelTaskMock,
   getPromptMock,
-  getRemoveSessionMock,
+  getDeleteSessionMock,
   getRequestDelegateMock,
   getSetModeMock,
 } from "./command-router-test-support";
@@ -1588,9 +1588,9 @@ test("tears down the transport session when removing a logical session", async (
   const reply = await router.handle("wx:user", "/session rm main");
 
   expect(reply.text).toContain("已删除会话「main」");
-  const removeMock = getRemoveSessionMock(transport);
-  expect(removeMock.mock.calls).toHaveLength(1);
-  expect(removeMock.mock.calls[0]?.[0]).toMatchObject({
+  const deleteMock = getDeleteSessionMock(transport);
+  expect(deleteMock.mock.calls).toHaveLength(1);
+  expect(deleteMock.mock.calls[0]?.[0]).toMatchObject({
     alias: "main",
     transportSession: "backend:main",
   });
@@ -1601,7 +1601,7 @@ test("still removes the logical session and warns when transport teardown fails"
   const config = createConfig();
   const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
-  getRemoveSessionMock(transport).mockImplementationOnce(async () => {
+  getDeleteSessionMock(transport).mockImplementationOnce(async () => {
     throw new Error("backend unreachable");
   });
   const router = new CommandRouter(sessions, transport, config);
@@ -1628,7 +1628,7 @@ test("skips transport teardown when another logical session shares the same tran
 
   expect(reply.text).toContain("已删除会话「main」");
   expect(reply.text).toContain("仍被其他 1 个会话引用，未关闭");
-  expect(getRemoveSessionMock(transport).mock.calls).toHaveLength(0);
+  expect(getDeleteSessionMock(transport).mock.calls).toHaveLength(0);
   expect(await sessions.getSession("mirror")).not.toBeNull();
 });
 
@@ -1645,8 +1645,8 @@ test("still tears down transport after the last shared alias is removed", async 
 
   expect(reply.text).toContain("已删除会话「mirror」");
   expect(reply.text).not.toContain("仍被其他");
-  expect(getRemoveSessionMock(transport).mock.calls).toHaveLength(1);
-  expect(getRemoveSessionMock(transport).mock.calls[0]?.[0]).toMatchObject({
+  expect(getDeleteSessionMock(transport).mock.calls).toHaveLength(1);
+  expect(getDeleteSessionMock(transport).mock.calls[0]?.[0]).toMatchObject({
     alias: "mirror",
     transportSession: "backend:shared",
   });
@@ -1669,7 +1669,7 @@ test("still removes the logical session and warns when orchestration purge fails
   expect(reply.text).toContain("清理任务编排引用失败");
   expect(reply.text).toContain("state store offline");
   expect(await sessions.getSession("main")).toBeNull();
-  expect(getRemoveSessionMock(transport).mock.calls).toHaveLength(1);
+  expect(getDeleteSessionMock(transport).mock.calls).toHaveLength(1);
 });
 
 test("refuses to remove a session that has active orchestration tasks", async () => {

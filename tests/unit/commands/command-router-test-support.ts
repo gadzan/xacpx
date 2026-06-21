@@ -163,6 +163,7 @@ export function createTransport(): SessionTransport {
     listAgentSessions: mock(async () => ({ source: "agent" as const, sessions: [] })),
     resumeAgentSession: mock(async (_session: ResolvedSession, _agentSessionId: string) => {}),
     removeSession: mock(async (_session: ResolvedSession) => {}),
+    deleteSession: mock(async (_session: ResolvedSession) => {}),
     updatePermissionPolicy: mock(async (_policy) => {}),
   };
 }
@@ -856,6 +857,10 @@ export function getUpdatePermissionPolicyMock(transport: SessionTransport) {
 
 export function getRemoveSessionMock(transport: SessionTransport) {
   return transport.removeSession as ReturnType<typeof mock>;
+}
+
+export function getDeleteSessionMock(transport: SessionTransport) {
+  return transport.deleteSession as ReturnType<typeof mock>;
 }
 
 export function getRequestDelegateMock(orchestration: ReturnType<typeof createOrchestrationService>) {

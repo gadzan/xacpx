@@ -666,9 +666,9 @@ export async function handleSessionRemove(
 
   let transportTeardownWarning: string | undefined;
   const shouldTeardownTransport = sharedAliasCount === 0;
-  if (shouldTeardownTransport && context.transport.removeSession) {
+  if (shouldTeardownTransport && context.transport.deleteSession) {
     try {
-      await context.transport.removeSession(session);
+      await context.transport.deleteSession(session);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       transportTeardownWarning = message;
