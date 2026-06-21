@@ -335,6 +335,7 @@ export function parseConfig(
         ? { sessionInitTimeoutMs: transport.sessionInitTimeoutMs }
         : {}),
       ...(typeof transport.permissionPolicy === "string" ? { permissionPolicy: transport.permissionPolicy } : {}),
+      ...(typeof transport.preferLocalAgents === "boolean" ? { preferLocalAgents: transport.preferLocalAgents } : {}),
       type: transportType,
       permissionMode,
       nonInteractivePermissions,

@@ -30,10 +30,11 @@ describe("InstanceTree session management", () => {
 
   it("opens a popup confirm and deletes only after confirming", async () => {
     const store = useInstancesStore();
-    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    // Clicking the trash opens the global confirm, but does NOT delete yet.
+    // Open the overflow menu, then click Delete: opens the global confirm but does NOT delete yet.
+    await w.find('[data-test="session-menu"]').trigger("click");
     await w.find('[data-test="delete-session"]').trigger("click");
     expect(remove).not.toHaveBeenCalled();
     expect(useConfirmState().value?.title).toBe("Delete session?");
@@ -45,9 +46,10 @@ describe("InstanceTree session management", () => {
 
   it("does not delete when the confirm is cancelled", async () => {
     const store = useInstancesStore();
-    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("click");
     await w.find('[data-test="delete-session"]').trigger("click");
     settleConfirm(false);
     await flushPromises();
@@ -56,14 +58,14 @@ describe("InstanceTree session management", () => {
 
   it("mounts with an empty chat store and shows no attention dot for idle sessions", () => {
     const store = useInstancesStore();
-    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     expect(w.find('[data-test="attention-dot"]').exists()).toBe(false);
   });
 
   it("renders a working dot when the chat store reports a live turn", () => {
     const instances = useInstancesStore();
-    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const chat = useChatStore();
     chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
@@ -74,7 +76,7 @@ describe("InstanceTree session management", () => {
 
   it("renders an unread dot for a finished, unviewed session", () => {
     const instances = useInstancesStore();
-    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const chat = useChatStore();
     chat.select("i1", "other"); // not viewing backend
     chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
@@ -99,7 +101,7 @@ describe("InstanceTree session management", () => {
 
   it("renders an elapsed badge for a working session", () => {
     const instances = useInstancesStore();
-    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const chat = useChatStore();
     chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
@@ -110,8 +112,27 @@ describe("InstanceTree session management", () => {
 
   it("shows no elapsed badge for an idle session", () => {
     const store = useInstancesStore();
-    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false }])] as never;
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     expect(w.find('[data-test="session-elapsed"]').exists()).toBe(false);
+  });
+
+  it("greys archived sessions and sinks them to the bottom of the group", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "active", agent: "claude", workspace: "home", transportSession: "t1", running: false, archived: false },
+      { alias: "arch", agent: "codex", workspace: "home", transportSession: "t2", running: false, archived: true },
+    ])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const rows = w.findAll('[data-test="session-row"]');
+    expect(rows[rows.length - 1].text()).toContain("arch"); // archived sunk to bottom
+    expect(w.find('[data-test="archived-badge"]').exists()).toBe(true);
+  });
+
+  it("hides row actions when the instance is offline", () => {
+    const store = useInstancesStore();
+    store.instances = [{ ...instance([{ alias: "a", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }]), online: false }] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="session-actions"]').exists()).toBe(false);
   });
 });

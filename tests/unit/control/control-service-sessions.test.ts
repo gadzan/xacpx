@@ -22,6 +22,9 @@ function makeDeps() {
       useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws/backend" }),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
     },
+    removeSessionWithTransport: async (_internalAlias: string) => ({ wasActive: true }),
+    archiveSessionWithTransport: async (_internalAlias: string) => {},
+    unarchiveSession: async (_internalAlias: string) => {},
     createSessionWithTransport: async (internalAlias: string, agent: string, workspace: string, model?: string) => {
       calls.push({ kind: "fresh", internalAlias, agent, workspace, ...(model ? { model } : {}) });
       return { ...session, alias: internalAlias, agent, workspace };
@@ -65,6 +68,7 @@ test("listSessions maps resolved sessions with running flag", () => {
       workspace: "/ws/backend",
       transportSession: "xacpx-backend",
       running: true,
+      archived: false,
     },
   ]);
 });

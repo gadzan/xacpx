@@ -14,6 +14,7 @@ import { deriveParentPackageName } from "../recovery/discover-parent-package-pat
 import { AcpxQueueOwnerLauncher } from "../transport/acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../transport/permission-mode-flag";
 import { runAgentSessionList } from "../transport/agent-session-list";
+import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
 import type {
   EnsureSessionProgress,
   MissingOptionalDepErrorData,
@@ -483,7 +484,9 @@ export class BridgeRuntime {
         acpxRecordId = parsed.id;
       }
       const agentSessionId = typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
-      if (acpxRecordId) {
+      // Guard the parsed id with the same format check the parse-failure fallback
+      // applies, so a malformed/empty id from acpx never flows into file deletion.
+      if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
         return { acpxRecordId, agentSessionId };
       }
     } catch {
@@ -622,6 +625,27 @@ export class BridgeRuntime {
       return {};
     }
     throw new Error(result.stderr || result.stdout || "sessions close failed");
+  }
+
+  async deleteSession(input: {
+    agent: string;
+    agentCommand?: string;
+    cwd: string;
+    name: string;
+  }): Promise<Record<string, never>> {
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(input));
+    } catch {
+      return {}; // acpx session already gone → nothing to delete
+    }
+    // Close the acpx session (best-effort), then unlink its on-disk files. close
+    // returning does NOT mean the backing process exited — acpx keeps a warm
+    // queue-owner alive via --ttl. See deleteAcpxSessionFiles for the residual
+    // orphan-stream-file risk this leaves (notably on Windows).
+    await this.removeSession(input);
+    await deleteAcpxSessionFiles({ acpxRecordId });
+    return {};
   }
 
   async shutdown(): Promise<Record<string, never>> {

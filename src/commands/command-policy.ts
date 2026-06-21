@@ -145,6 +145,7 @@ export function authorizeCommandForChat(command: ParsedCommand, metadata?: ChatR
 const COMMAND_KIND_TO_LABEL: Record<string, string> = {
   "session.reset": "/clear",
   "session.rm": "/session rm",
+  "session.archive": "/session archive",
   "session.tail": "/session tail",
   "replymode.set": "/replymode",
   "replymode.reset": "/replymode reset",

@@ -34,6 +34,10 @@ export interface LogicalSession {
   /** Per-session LLM model override (e.g. `gpt-5.2[high]`); falls back to the agent config default. */
   model?: string;
   reply_mode?: "stream" | "final" | "verbose";
+  /** True when the user archived this session: process closed, row greyed + sunk.
+   *  Cleared on the next useSession (restore-on-message). */
+  archived?: boolean;
+  archived_at?: string;
   created_at: string;
   last_used_at: string;
 }

@@ -12,6 +12,8 @@ export const MSG = {
   sessionsCreate: "control.sessions.create",
   sessionsNativeList: "control.sessions.native.list",
   sessionsRemove: "control.sessions.remove",
+  sessionsArchive: "control.sessions.archive",
+  sessionsUnarchive: "control.sessions.unarchive",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
   workspacesCreate: "control.workspaces.create",
@@ -129,6 +131,14 @@ export interface SessionsRemovePayload {
 }
 export interface SessionsRemoveResult {
   wasActive: boolean;
+}
+export interface SessionsArchivePayload {
+  chatKey: string;
+  alias: string;
+}
+export interface SessionsUnarchivePayload {
+  chatKey: string;
+  alias: string;
 }
 export interface AgentsListResult {
   agents: AgentDto[];

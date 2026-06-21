@@ -146,6 +146,47 @@ test("loads an explicit transport.queueOwnerTtlSeconds (including 0 = forever)",
   await rm(dir, { recursive: true, force: true });
 });
 
+test("threads an explicit transport.preferLocalAgents through to the runtime config", async () => {
+  // Regression: the loader validated preferLocalAgents but dropped it from the
+  // returned transport object, so `preferLocalAgents: false` was a no-op and a
+  // host with a native CLI installed always resolved to the local command.
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
+  const path = join(dir, "config.json");
+
+  await writeFile(
+    path,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx", preferLocalAgents: false },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+
+  const config = await loadConfig(path);
+  expect(config.transport.preferLocalAgents).toBe(false);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("leaves transport.preferLocalAgents undefined when omitted (defaults to preferring local)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
+  const path = join(dir, "config.json");
+
+  await writeFile(
+    path,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+
+  const config = await loadConfig(path);
+  expect(config.transport.preferLocalAgents).toBeUndefined();
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("rejects a negative transport.queueOwnerTtlSeconds", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
   const path = join(dir, "config.json");

@@ -25,6 +25,8 @@ import {
   type SessionsListPayload,
   type SessionsNativeListPayload,
   type SessionsRemovePayload,
+  type SessionsArchivePayload,
+  type SessionsUnarchivePayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
 } from "@ganglion/xacpx-relay-protocol";
@@ -92,6 +94,16 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     case MSG.sessionsRemove: {
       const input = payload as SessionsRemovePayload;
       return await control.removeSession(input.chatKey, input.alias);
+    }
+    case MSG.sessionsArchive: {
+      const input = payload as SessionsArchivePayload;
+      await control.archiveSession(input.chatKey, input.alias);
+      return {};
+    }
+    case MSG.sessionsUnarchive: {
+      const input = payload as SessionsUnarchivePayload;
+      await control.unarchiveSession(input.chatKey, input.alias);
+      return {};
     }
     case MSG.agentsList:
       return { agents: control.listAgents() };

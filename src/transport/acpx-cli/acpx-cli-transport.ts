@@ -30,6 +30,7 @@ import { AcpxQueueOwnerLauncher } from "../acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../permission-mode-flag";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
+import { deleteAcpxSessionFiles } from "../acpx-session-files";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -413,6 +414,21 @@ export class AcpxCliTransport implements SessionTransport {
     throw new Error(detail);
   }
 
+  async deleteSession(session: ResolvedSession): Promise<void> {
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(session));
+    } catch {
+      return; // acpx session already gone → nothing to delete
+    }
+    // Close the acpx session (best-effort), then unlink its on-disk files. close
+    // returning does NOT mean the backing process exited — acpx keeps a warm
+    // queue-owner alive via --ttl. See deleteAcpxSessionFiles for the residual
+    // orphan-stream-file risk this leaves (notably on Windows).
+    await this.removeSession(session);
+    await deleteAcpxSessionFiles({ acpxRecordId });
+  }
+
   async hasSession(session: ResolvedSession): Promise<boolean> {
     const result = await this.runCommand(this.command, this.buildArgs(session, [
       "sessions",
@@ -456,7 +472,9 @@ export class AcpxCliTransport implements SessionTransport {
           ? parsed.id
           : undefined;
       const agentSessionId = typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
-      if (acpxRecordId) {
+      // Guard the parsed id with the same format check the parse-failure fallback
+      // applies, so a malformed/empty id from acpx never flows into file deletion.
+      if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
         return { acpxRecordId, agentSessionId };
       }
     } catch {

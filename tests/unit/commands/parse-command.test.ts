@@ -357,6 +357,10 @@ test("rejects /session tail when N is invalid", () => {
   });
 });
 
+test("parses /session archive <alias>", () => {
+  expect(parseCommand("/session archive backend")).toEqual({ kind: "session.archive", alias: "backend" });
+});
+
 test("parses orchestration delegate commands", () => {
   expect(parseCommand("/delegate claude 审查当前方案")).toEqual({
     kind: "delegate.request",

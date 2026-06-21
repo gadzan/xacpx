@@ -84,6 +84,23 @@ test("stores recovered transport agent command after session creation", async ()
   });
 });
 
+test("a plain chat prompt un-archives the resolved session (restore-on-message)", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  const internalAlias = sessions.peekCurrentSessionAlias("wx:user")!;
+  await sessions.setArchived(internalAlias, true);
+  expect(sessions.getResolvedSessionByInternalAlias(internalAlias)?.archived).toBe(true);
+
+  await router.handle("wx:user", "hello there", async () => {});
+
+  expect(sessions.getResolvedSessionByInternalAlias(internalAlias)?.archived).toBe(false);
+  // The prompt still ran after the un-archive.
+  expect(getPromptMock(transport).mock.calls.length).toBeGreaterThan(0);
+});
+
 test("rejects session creation when acpx reports success but the named session is still missing", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();

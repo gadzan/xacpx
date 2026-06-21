@@ -666,9 +666,9 @@ export async function handleSessionRemove(
 
   let transportTeardownWarning: string | undefined;
   const shouldTeardownTransport = sharedAliasCount === 0;
-  if (shouldTeardownTransport && context.transport.removeSession) {
+  if (shouldTeardownTransport && context.transport.deleteSession) {
     try {
-      await context.transport.removeSession(session);
+      await context.transport.deleteSession(session);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       transportTeardownWarning = message;
@@ -706,6 +706,21 @@ export async function handleSessionRemove(
   return { text: lines.join("\n") };
 }
 
+export async function handleSessionArchive(
+  context: SessionHandlerContext,
+  chatKey: string,
+  alias: string,
+  archive: (internalAlias: string) => Promise<void>,
+): Promise<RouterResponse> {
+  const internalAlias = await context.sessions.resolveAliasForChat(chatKey, alias);
+  const session = await context.sessions.getSession(internalAlias);
+  if (!session) {
+    return { text: t().session.sessionNotFound(alias) };
+  }
+  await archive(internalAlias);
+  return { text: t().session.sessionArchived(alias) };
+}
+
 async function promptWithSession(
   context: SessionHandlerContext,
   session: ResolvedSession,
@@ -723,6 +738,13 @@ async function promptWithSession(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
 ): Promise<RouterResponse> {
+  // Restore-on-message: a real prompt to an archived session un-archives it (mirrors
+  // useSession on the web path, which the chat prompt path bypasses). The guard avoids
+  // a needless persist on every normal prompt. `session.alias` is the internal alias,
+  // the same key `setArchived` expects.
+  if (session.archived) {
+    await context.sessions.setArchived(session.alias, false);
+  }
   const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
   // Ensure the session carries the resolved value so downstream transports
   // see "verbose" instead of undefined and format tool-call progress correctly.

@@ -60,6 +60,11 @@ export interface ResolvedSession {
    * persisted state by alias) does not apply.
    */
   transient?: boolean;
+  /**
+   * True when the user archived this session (process closed, greyed out in the
+   * web dashboard). Surfaced to the control/web path via ControlSessionInfo.
+   */
+  archived?: boolean;
 }
 
 export interface AgentSession {
@@ -167,6 +172,13 @@ export interface SessionTransport {
   listAgentSessions?(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined>;
   resumeAgentSession?(session: ResolvedSession, agentSessionId: string): Promise<void>;
   removeSession?(session: ResolvedSession): Promise<void>;
+  /**
+   * Hard-delete the transport session AND its on-disk history: close the acpx
+   * process, then delete acpx's record files. Distinct from removeSession (=
+   * `acpx sessions close`, which keeps history for resume). Optional: transports
+   * that can't delete omit it. A missing acpx session is a no-op (idempotent).
+   */
+  deleteSession?(session: ResolvedSession): Promise<void>;
   /**
    * Read the underlying agent-native session id for an existing transport
    * session. Used by `/clear` to keep a native session native: the fresh

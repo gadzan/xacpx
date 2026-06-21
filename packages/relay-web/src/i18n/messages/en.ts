@@ -8,6 +8,7 @@ export default {
     ok: "OK",
     back: "← Back",
     delete: "Delete",
+    more: "More",
     remove: "Remove",
     dismiss: "dismiss",
     dismissNotice: "Dismiss",
@@ -144,6 +145,10 @@ export default {
   instance: {
     newSession: "New session",
     deleteSession: "Delete session",
+    archiveSession: "Archive session",
+    sessionArchivedBadge: "archived",
+    sessionArchivedToast: "Archived \"{alias}\"",
+    undo: "Undo",
     manage: "Manage instance",
     coreVersion: "connector core {version}",
     coreVersionUnknown: "connector core version unknown (legacy or pre-version connector)",

@@ -72,6 +72,7 @@ export interface SessionMessages {
   sessionBlockedByTasks: (alias: string, count: number) => string;
   sessionBlockedByTasksHint: string;
   sessionRemoved: (alias: string) => string;
+  sessionArchived: (alias: string) => string;
   sessionRemovedWasActive: string;
   sessionRemovedWasActivePromoted: (alias: string) => string;
   sessionTransportShared: (transportSession: string, count: number) => string;

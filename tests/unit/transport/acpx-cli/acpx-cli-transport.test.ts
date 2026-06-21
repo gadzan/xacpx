@@ -1921,7 +1921,7 @@ test("onThought: only the first handler error is surfaced", async () => {
 test("getAgentSessionId returns the agentSessionId from sessions show", async () => {
   const run = mock(async () => ({
     code: 0,
-    stdout: JSON.stringify({ acpxRecordId: "rec-1", agentSessionId: "agent-xyz" }),
+    stdout: JSON.stringify({ acpxRecordId: "acpx-rec-1", agentSessionId: "agent-xyz" }),
     stderr: "",
   }));
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -1936,7 +1936,7 @@ test("getAgentSessionId returns the agentSessionId from sessions show", async ()
 test("getAgentSessionId returns undefined when the record has no agentSessionId", async () => {
   const run = mock(async () => ({
     code: 0,
-    stdout: JSON.stringify({ acpxRecordId: "rec-1" }),
+    stdout: JSON.stringify({ acpxRecordId: "acpx-rec-1" }),
     stderr: "",
   }));
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));

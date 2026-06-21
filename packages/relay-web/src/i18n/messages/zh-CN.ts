@@ -6,6 +6,7 @@ export default {
     ok: "确定",
     back: "← 返回",
     delete: "删除",
+    more: "更多",
     remove: "移除",
     dismiss: "关闭",
     dismissNotice: "关闭通知",
@@ -142,6 +143,10 @@ export default {
   instance: {
     newSession: "新建会话",
     deleteSession: "删除会话",
+    archiveSession: "归档会话",
+    sessionArchivedBadge: "已归档",
+    sessionArchivedToast: "已归档「{alias}」",
+    undo: "撤销",
     manage: "管理实例",
     coreVersion: "连接器内核 {version}",
     coreVersionUnknown: "连接器内核版本未知（旧版或无版本信息的连接器）",

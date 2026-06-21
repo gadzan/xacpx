@@ -31,6 +31,7 @@ import {
   handleSessionAttach,
   handleSessionNew,
   handleSessionRemove,
+  handleSessionArchive,
   handleSessionReset,
   handleSessionTail,
   handleSessions,
@@ -289,6 +290,13 @@ export class CommandRouter {
           return await handleSessionTail(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.lines);
         case "session.rm":
           return await handleSessionRemove(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.alias);
+        case "session.archive":
+          return await handleSessionArchive(
+            this.createSessionHandlerContext(undefined, perfSpan),
+            chatKey,
+            command.alias,
+            (internalAlias) => this.archiveSessionWithTransport(internalAlias),
+          );
         case "groups":
           return await handleGroupList(this.createHandlerContext(), chatKey, command.filter);
         case "group.new":
@@ -551,6 +559,105 @@ export class CommandRouter {
     } finally {
       await release();
     }
+  }
+
+  /** Real delete: logical removal + acpx history delete, guarded so a transport
+   *  session shared by another alias is left intact. */
+  async removeSessionWithTransport(internalAlias: string): Promise<{
+    wasActive: boolean;
+    sharedAliasCount: number;
+    transportTornDown: boolean;
+    transportTeardownWarning?: string;
+  }> {
+    const session = await this.sessions.getSession(internalAlias);
+    if (!session) {
+      throw new Error(`session "${internalAlias}" does not exist`);
+    }
+    // Both delete entry points (this web/control path and chat `handleSessionRemove`)
+    // MUST enforce the orchestration blocking-task guard + reference purge, or a
+    // coordinator session with in-flight delegated tasks can be irreversibly wiped.
+    if (this.orchestration) {
+      const blocking = await this.orchestration.listSessionBlockingTasks(session.transportSession);
+      if (blocking.length > 0) {
+        throw new Error(`session "${internalAlias}" has ${blocking.length} blocking task(s); cancel them before deleting`);
+      }
+    }
+    const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
+    const { wasActive } = await this.sessions.removeSession(internalAlias);
+
+    if (this.orchestration) {
+      try {
+        await this.orchestration.purgeSessionReferences(session.transportSession);
+      } catch (error) {
+        await this.logger.error("session.orchestration_purge_failed", "failed to purge orchestration references after web remove", {
+          alias: internalAlias,
+          transportSession: session.transportSession,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let transportTornDown = false;
+    let transportTeardownWarning: string | undefined;
+    if (sharedAliasCount === 0 && this.transport.deleteSession) {
+      try {
+        await this.transport.deleteSession(session);
+        transportTornDown = true;
+      } catch (error) {
+        transportTeardownWarning = error instanceof Error ? error.message : String(error);
+        await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
+          alias: internalAlias,
+          transportSession: session.transportSession,
+          message: transportTeardownWarning,
+        });
+      }
+    }
+    return {
+      wasActive,
+      sharedAliasCount,
+      transportTornDown,
+      ...(transportTeardownWarning ? { transportTeardownWarning } : {}),
+    };
+  }
+
+  /** Archive: close the acpx process (keep history) when no other alias shares the
+   *  transport, then flag the logical session archived. */
+  async archiveSessionWithTransport(internalAlias: string): Promise<void> {
+    const session = await this.sessions.getSession(internalAlias);
+    if (!session) {
+      throw new Error(`session "${internalAlias}" does not exist`);
+    }
+    // Archiving cancels+closes acpx; refuse while a turn is in flight so we don't
+    // race (and silently abort) the running prompt.
+    if (this.activeTurns?.isActiveAnywhere(internalAlias)) {
+      throw new Error(`session "${internalAlias}" has a running turn; stop it before archiving`);
+    }
+    const shared = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias) > 0;
+    if (!shared) {
+      try {
+        await this.transport.cancel(session);
+      } catch {
+        /* best-effort */
+      }
+      if (this.transport.removeSession) {
+        try {
+          await this.transport.removeSession(session);
+        } catch (error) {
+          await this.logger.error("session.archive_close_failed", "failed to close acpx session on archive", {
+            alias: internalAlias,
+            transportSession: session.transportSession,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+    await this.sessions.setArchived(internalAlias, true);
+  }
+
+  /** Explicit un-archive (web undo / manual). No process action — it resumes on the
+   *  next message via useSession. */
+  async unarchiveSession(internalAlias: string): Promise<void> {
+    await this.sessions.setArchived(internalAlias, false);
   }
 
   /**
