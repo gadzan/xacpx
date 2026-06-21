@@ -5,6 +5,7 @@ export interface SessionDto {
   workspace: string;
   transportSession: string;
   running: boolean;
+  archived: boolean;
 }
 
 /** Wire DTO for a configured agent on an instance. */
