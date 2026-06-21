@@ -421,7 +421,10 @@ export class AcpxCliTransport implements SessionTransport {
     } catch {
       return; // acpx session already gone → nothing to delete
     }
-    // Close first so no live process / queue owner holds the files, then unlink.
+    // Close the acpx session (best-effort), then unlink its on-disk files. close
+    // returning does NOT mean the backing process exited — acpx keeps a warm
+    // queue-owner alive via --ttl. See deleteAcpxSessionFiles for the residual
+    // orphan-stream-file risk this leaves (notably on Windows).
     await this.removeSession(session);
     await deleteAcpxSessionFiles({ acpxRecordId });
   }
@@ -469,7 +472,9 @@ export class AcpxCliTransport implements SessionTransport {
           ? parsed.id
           : undefined;
       const agentSessionId = typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
-      if (acpxRecordId) {
+      // Guard the parsed id with the same format check the parse-failure fallback
+      // applies, so a malformed/empty id from acpx never flows into file deletion.
+      if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
         return { acpxRecordId, agentSessionId };
       }
     } catch {

@@ -951,7 +951,7 @@ test("bridge runtime retries native session listing without --filter-cwd when un
 test("getAgentSessionId returns the agentSessionId from sessions show", async () => {
   const run = async (_command: string, _args: string[]) => ({
     code: 0,
-    stdout: JSON.stringify({ acpxRecordId: "rec-1", agentSessionId: "agent-xyz" }),
+    stdout: JSON.stringify({ acpxRecordId: "acpx-rec-1", agentSessionId: "agent-xyz" }),
     stderr: "",
   });
   const runtime = new BridgeRuntime("acpx", run);
@@ -969,7 +969,7 @@ test("getAgentSessionId returns the agentSessionId from sessions show", async ()
 test("getAgentSessionId returns undefined agentSessionId when absent", async () => {
   const run = async (_command: string, _args: string[]) => ({
     code: 0,
-    stdout: JSON.stringify({ acpxRecordId: "rec-1" }),
+    stdout: JSON.stringify({ acpxRecordId: "acpx-rec-1" }),
     stderr: "",
   });
   const runtime = new BridgeRuntime("acpx", run);
