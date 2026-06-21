@@ -478,6 +478,17 @@ test("createRelayRuntime trustProxy:false (default) — XFF header is ignored, s
   }
 });
 
+test("GET /api/version default path reports current-only without throwing", async () => {
+  const { app, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const res = await app.request("/api/version", { headers: { cookie } });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { current: string; latest: string | null; updateAvailable: boolean };
+  expect(typeof body.current).toBe("string");
+  expect(body.latest).toBeNull();
+  expect(body.updateAvailable).toBe(false);
+});
+
 test("GET /api/version returns the injected update check (auth required)", async () => {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
