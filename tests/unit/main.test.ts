@@ -159,7 +159,11 @@ test("external coordinator delegation sees agents added after daemon startup", a
   await writeFile(
     configPath,
     JSON.stringify({
-      transport: { type: "acpx-cli", command: "acpx" },
+      // preferLocalAgents:false keeps agentCommand resolution deterministic across
+      // hosts — without it, a machine with the `opencode` CLI installed resolves to
+      // "opencode acp" and the agentCommand:undefined assertions below fail (passes
+      // in CI, fails locally).
+      transport: { type: "acpx-cli", command: "acpx", preferLocalAgents: false },
       agents: {
         codex: { driver: "codex" },
         opencode: { driver: "opencode" },
