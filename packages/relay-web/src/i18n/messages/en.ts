@@ -147,6 +147,8 @@ export default {
     deleteSession: "Delete session",
     archiveSession: "Archive session",
     sessionArchivedBadge: "archived",
+    sessionArchivedToast: "Archived \"{alias}\"",
+    undo: "Undo",
     manage: "Manage instance",
     coreVersion: "connector core {version}",
     coreVersionUnknown: "connector core version unknown (legacy or pre-version connector)",

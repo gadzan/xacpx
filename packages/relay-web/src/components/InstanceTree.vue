@@ -5,6 +5,7 @@ import { Archive, ChevronDown, ChevronRight, MoreHorizontal, Plus, Settings2, Tr
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { confirm } from "../lib/use-confirm";
+import { showActionToast } from "../lib/use-action-toast";
 import { useSwipeActions } from "../lib/use-swipe-actions";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
@@ -67,8 +68,13 @@ async function onArchive(id: string, alias: string) {
   await store.archiveSession(id, alias).catch(() => {});
   showUndoToast(id, alias);
 }
-// TEMPORARY no-op — the real undo toast lands in a later task.
-function showUndoToast(_id: string, _alias: string) { /* replaced by the undo-toast task */ }
+function showUndoToast(id: string, alias: string) {
+  showActionToast({
+    message: t("instance.sessionArchivedToast", { alias }),
+    actionLabel: t("instance.undo"),
+    action: () => { void store.unarchiveSession(id, alias).catch(() => {}); },
+  });
+}
 
 // Deleting a session is destructive and irreversible → confirm via the popup dialog.
 async function askDelete(id: string, alias: string) {
