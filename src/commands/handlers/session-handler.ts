@@ -706,6 +706,21 @@ export async function handleSessionRemove(
   return { text: lines.join("\n") };
 }
 
+export async function handleSessionArchive(
+  context: SessionHandlerContext,
+  chatKey: string,
+  alias: string,
+  archive: (internalAlias: string) => Promise<void>,
+): Promise<RouterResponse> {
+  const internalAlias = await context.sessions.resolveAliasForChat(chatKey, alias);
+  const session = await context.sessions.getSession(internalAlias);
+  if (!session) {
+    return { text: t().session.sessionNotFound(alias) };
+  }
+  await archive(internalAlias);
+  return { text: t().session.sessionArchived(alias) };
+}
+
 async function promptWithSession(
   context: SessionHandlerContext,
   session: ResolvedSession,

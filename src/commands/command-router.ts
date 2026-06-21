@@ -31,6 +31,7 @@ import {
   handleSessionAttach,
   handleSessionNew,
   handleSessionRemove,
+  handleSessionArchive,
   handleSessionReset,
   handleSessionTail,
   handleSessions,
@@ -289,6 +290,13 @@ export class CommandRouter {
           return await handleSessionTail(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.lines);
         case "session.rm":
           return await handleSessionRemove(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.alias);
+        case "session.archive":
+          return await handleSessionArchive(
+            this.createSessionHandlerContext(undefined, perfSpan),
+            chatKey,
+            command.alias,
+            (internalAlias) => this.archiveSessionWithTransport(internalAlias),
+          );
         case "groups":
           return await handleGroupList(this.createHandlerContext(), chatKey, command.filter);
         case "group.new":

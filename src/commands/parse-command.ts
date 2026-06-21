@@ -35,6 +35,7 @@ export type ParsedCommand =
   | { kind: "session.reset" }
   | { kind: "session.tail"; lines?: number }
   | { kind: "session.rm"; alias: string }
+  | { kind: "session.archive"; alias: string }
   | { kind: "delegate.request"; targetAgent: string; role?: string; groupId?: string; task: string }
   | { kind: "groups"; filter?: GroupListFilter }
   | { kind: "group.new"; title: string }
@@ -145,6 +146,9 @@ export function parseCommand(input: string): ParsedCommand {
   }
   if (command === "/session" && parts[1] === "rm" && parts[2] && parts.length === 3) {
     return { kind: "session.rm", alias: parts[2] };
+  }
+  if (command === "/session" && parts[1] === "archive" && parts[2] && parts.length === 3) {
+    return { kind: "session.archive", alias: parts[2] };
   }
   if (command === "/ssn") {
     if (parts.length === 1) {
@@ -431,7 +435,7 @@ export function parseCommand(input: string): ParsedCommand {
     }
   }
 
-  if (command === "/session" && parts[1] && parts[1] !== "new" && parts[1] !== "attach" && parts[1] !== "reset" && parts[1] !== "rm") {
+  if (command === "/session" && parts[1] && parts[1] !== "new" && parts[1] !== "attach" && parts[1] !== "reset" && parts[1] !== "rm" && parts[1] !== "archive") {
     const shortcutTarget = readSessionShortcutTarget(parts, 2);
     if (shortcutTarget) {
       return { kind: "session.shortcut", agent: parts[1], ...shortcutTarget };

@@ -88,6 +88,7 @@ export const session: SessionMessages = {
   sessionBlockedByTasksHint:
     "Use /tasks to list tasks, or /task cancel <id> to cancel one.",
   sessionRemoved: (alias) => `Session "${alias}" removed.`,
+  sessionArchived: (alias) => `Archived session "${alias}". Send a message to restore it.`,
   sessionRemovedWasActive:
     "This was the active session. Its chat context has been cleared.",
   sessionRemovedWasActivePromoted: (alias) =>

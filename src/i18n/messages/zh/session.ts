@@ -82,6 +82,7 @@ export const session: SessionMessages = {
     `会话「${alias}」下还有 ${count} 个未结束的任务，请先取消或等待完成。`,
   sessionBlockedByTasksHint: "使用 /tasks 查看任务列表，或 /task cancel <id> 取消任务。",
   sessionRemoved: (alias) => `已删除会话「${alias}」。`,
+  sessionArchived: (alias) => `已归档会话「${alias}」。发送消息即可恢复。`,
   sessionRemovedWasActive: "该会话是当前活跃会话，已自动清除相关聊天上下文。",
   sessionRemovedWasActivePromoted: (alias) =>
     `该会话是当前活跃会话，已切换回上一个会话「${alias}」。`,
