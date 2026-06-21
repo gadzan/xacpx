@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.7.0] - 2026-06-22
+
+A `@ganglion/xacpx-relay` release (the hub bundles the dashboard; core is unchanged).
+
+### Added
+
+- **Relay version in Settings.** The Settings page now shows the running hub version and, when a newer `@ganglion/xacpx-relay` is published, an "update available" hint pointing at `xacpx-relay update`. Backed by a new auth-gated `GET /api/version` whose npm lookup is cached (~1h) and failure-tolerant, so the page never blocks on npm.
+- **Instance version in the Manage dialog.** The manage-instance dialog shows the connector's reported xacpx core version (falling back to an "unknown" note for pre-version connectors).
+- **`xacpx-relay update [--check]`.** Self-updates the hub package via npm (or bun when `PACKAGE_MANAGER=bun`); `--check` reports current vs latest without installing.
+
 ## [0.13.0] - 2026-06-21
 
 Adds **session archive** and turns `/session rm` into a **real delete** across every channel. The relay dashboard, protocol, and connector are wired to match — see the `relay` / `relay-protocol` / `channel-relay` entries below.
