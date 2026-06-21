@@ -8,6 +8,7 @@ import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
 import { clientIp } from "./client-ip.js";
+import { readRelayVersion, type UpdateCheck } from "../version.js";
 
 export interface GatewayForApp {
   isOnline(instanceId: string): boolean;
@@ -26,6 +27,9 @@ export interface AppDeps {
   pairingTtlMs?: number;
   historyRetentionDays?: number;
   maxMessagesPerSession?: number;
+  /** Returns the hub's current version + whether a newer one is published. Injected
+   *  by server.ts (cached). When omitted, /api/version reports current-only. */
+  checkUpdate?: () => Promise<UpdateCheck>;
   trustProxy?: boolean;
   now?: () => Date;
 }
@@ -180,6 +184,12 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         maxPerSession: deps.maxMessagesPerSession ?? 2000,
       },
     });
+  });
+
+  app.get("/api/version", async (c) => {
+    const check = deps.checkUpdate
+      ?? (async (): Promise<UpdateCheck> => ({ current: readRelayVersion(), latest: null, updateAvailable: false }));
+    return c.json(await check());
   });
 
   app.get("/api/instances", (c) => {
