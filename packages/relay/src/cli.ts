@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createRelayRuntime, startRelayServer } from "./server.js";
+import { handleRelayUpdate } from "./cli-update.js";
 
 export interface RelayCliIo {
   print(line: string): void;
@@ -46,6 +47,7 @@ const USAGE = [
   "  add token  [--label <note>] [--db <path>]",
   "  ls         [--db <path>]",
   "  rm token <value-or-id> [--db <path>]",
+  "  update     [--check]   (self-update @ganglion/xacpx-relay; --check only reports)",
   "",
   "  Defaults: --db ~/.xacpx-relay/relay.db   --web-root auto-detects the bundled dashboard",
 ].join("\n");
@@ -175,6 +177,11 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
     } finally {
       runtime.close();
     }
+  }
+
+  // update [--check]
+  if (args[0] === "update") {
+    return await handleRelayUpdate(args.slice(1), { print: io.print });
   }
 
   io.print(USAGE);

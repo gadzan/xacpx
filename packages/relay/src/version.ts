@@ -25,7 +25,12 @@ export function readRelayVersion(moduleUrl: string = import.meta.url): string {
 }
 
 export async function getLatestNpmVersion(packageName: string): Promise<string | null> {
-  const result = await runCapture("npm", ["view", packageName, "version", "--json"], { timeoutMs: 8000 });
+  let result: { code: number; stdout: string; stderr: string };
+  try {
+    result = await runCapture("npm", ["view", packageName, "version", "--json"], { timeoutMs: 8000 });
+  } catch {
+    return null;
+  }
   if (result.code !== 0) return null;
   const raw = result.stdout.trim();
   if (!raw) return null;
