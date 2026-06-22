@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.14.0] - 2026-06-22
+
+Brings **message attachments** (images & files) and **agent slash-command** awareness through the core, plus richer usage telemetry. Pairs with the `relay` / `relay-protocol` / `channel-relay` releases below.
+
+### Added
+
+- **Attachment uploads.** A new `UploadStore` writes attachment bytes into a sandboxed per-upload temp dir under `~/.xacpx/runtime/uploads/`, with a 10 MiB size cap and a 24h TTL that is now swept hourly (not only at startup). The `control.uploadFile` RPC saves bytes and returns a reference that `control.prompt` forwards as prompt media into `agent.chat`.
+- **Usage cost & token breakdown.** The transport parses acpx `usage_update` frames for cost and token breakdown and threads them through the router and bridge, so consumers (e.g. the relay dashboard) can render a cost/usage meter.
+- **Agent available-commands.** The transport parses acpx `available_commands_update` frames and threads the per-session slash-command catalog through the router and bridge.
+- Bundled **acpx 0.11.0** (the source of the usage cost/breakdown frames).
+
+### Fixed
+
+- **Prompt media is constrained to the upload sandbox.** `control.prompt` media refs whose resolved `filePath` escapes the `UploadStore` root are dropped, so a caller cannot point the agent at an arbitrary absolute path (defense-in-depth around the two-phase upload). The store is only touched when a turn actually carries media.
+- `UploadStore.save` rejects oversized payloads before decoding the base64 into memory.
+
+## [relay 0.8.0] - 2026-06-22
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard; core is the `0.14.0` entry above). Brings message attachments and a richer dashboard. Supersedes the unreleased 0.7.0 (version surfaces — see entry below), which it includes.
+
+### Added
+
+- **Message attachments in the dashboard.** Attach images & files from the composer (attach button, paste, drag-and-drop), with client-side image downscaling for previews, pending chips, and inline rendering of sent attachments. Metadata + preview are persisted so attachments re-display in history.
+- **Usage cost & token-breakdown popover** on the dashboard usage meter.
+- **Agent slash-command autocomplete** in the composer, backed by per-session command catalogs.
+- **Tabbed instance-manage dialog** with bounded lists, a filter, a collapsible add-form, and accessibility (tablist roles, roving tabindex, arrow-key navigation).
+- **Swipe-to-reveal session-row actions** (archive / delete) that follow the finger, with taller rows.
+
+### Changed
+
+- Working-status word cycling slowed from ~4s to ~10s.
+
+### Fixed
+
+- **Pre-buffer upload guard.** `/api/instances/:id/rpc` rejects oversized bodies by `Content-Length` before reading/parsing them into memory (closes an authenticated memory-pressure DoS); the precise per-upload decoded-size check still bounds uploads.
+- **Bounded attachment persistence.** Persisted attachments are capped at 5/message, `filename`/`mimeType` are truncated, and `previewUrl` is capped & validated (closes a storage-bloat DoS).
+- **Chat-scoped `session archive` / `unarchive` RPCs** (previously crashed with an undefined chatKey).
+- Dashboard fixes: attachment-rejection feedback, the ⋯ menu no longer clipped by the swipe overflow, notch safe-area on the Settings route, and EXIF-aware attachment thumbnails.
+
+(Also includes the **0.7.0** version surfaces — relay version + update hint in Settings, instance version in the Manage dialog, `GET /api/version`, and `xacpx-relay update [--check]` — see the [relay 0.7.0] entry below.)
+
+## [relay-protocol 0.1.3] - 2026-06-22
+
+Additive wire-protocol types; backward compatible, so existing `^0.1.0` consumers are unaffected.
+
+### Added
+
+- `control.upload` message + attachment ref/metadata types.
+- Usage cost & token-breakdown carried over the wire.
+- Agent available-commands carried over the wire (with hardened web-side validation and empty-list clears).
+
+## [channel-relay 0.3.0] - 2026-06-22
+
+A `@ganglion/xacpx-channel-relay` connector release.
+
+### Added
+
+- Dispatch `control.upload` to `ControlService.uploadFile`, and carry usage cost/breakdown + agent available-commands across the connector bridge.
+
 ## [relay 0.7.0] - 2026-06-22
 
 A `@ganglion/xacpx-relay` release (the hub bundles the dashboard; core is unchanged).
