@@ -59,6 +59,14 @@ function requireJson(contentType: string | undefined): boolean {
   return (contentType ?? "").toLowerCase().includes("application/json");
 }
 
+/** Accept a persisted attachment preview only if it's a small image data URL. */
+function safePreviewUrl(v: unknown): string | undefined {
+  if (typeof v === "string" && v.startsWith("data:image/") && v.length <= 256 * 1024) {
+    return v;
+  }
+  return undefined;
+}
+
 type Vars = { Variables: { account: AccountRow } };
 
 export function createApp(deps: AppDeps): Hono<Vars> {
@@ -282,14 +290,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       if (body.type === MSG.prompt || body.type === MSG.commandExecute) {
         const p = payload as { sessionAlias?: string; text?: string; media?: import("@ganglion/xacpx-relay-protocol").PromptAttachmentRef[] };
         if (p.sessionAlias && p.text !== undefined) {
-          const attachments = (p.media ?? []).map((m) => ({
-            id: m.id,
-            filename: m.fileName,
-            mimeType: m.mimeType,
-            size: m.size,
-            kind: m.kind,
-            ...(m.previewUrl ? { previewUrl: m.previewUrl } : {}),
-          }));
+          const attachments = (p.media ?? []).map((m) => {
+            const previewUrl = safePreviewUrl(m.previewUrl);
+            return {
+              id: m.id,
+              filename: m.fileName,
+              mimeType: m.mimeType,
+              size: m.size,
+              kind: m.kind,
+              ...(previewUrl ? { previewUrl } : {}),
+            };
+          });
           deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments);
         }
       }
