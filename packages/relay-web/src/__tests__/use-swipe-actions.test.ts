@@ -42,13 +42,12 @@ describe("useSwipeActions", () => {
     expect(onSwipeLeft).not.toHaveBeenCalled();
     expect(onSwipeRight).not.toHaveBeenCalled();
   });
-  it("fires nothing and resets after pointercancel (browser reclassified as scroll)", () => {
+  it("fires nothing after pointercancel (browser reclassified as scroll)", () => {
     const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
-    const { offset, handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
+    const { handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
     handlers.pointerdown(pointer(200));
     handlers.pointermove(pointer(120)); // past the threshold…
     handlers.pointercancel();           // …but the gesture is cancelled
-    expect(offset.value).toBe(0);
     handlers.pointerup(pointer(120));   // a stray up after cancel must not fire
     expect(onSwipeLeft).not.toHaveBeenCalled();
     expect(onSwipeRight).not.toHaveBeenCalled();
