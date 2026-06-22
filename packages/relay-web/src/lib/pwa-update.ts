@@ -58,13 +58,17 @@ export function schedulePwaUpdateChecks(
 
   const timer = setIntervalFn(check, intervalMs);
 
+  // The visibility listener is only attached when a document exists, so `doc` is
+  // always defined inside the handler.
+  if (!doc) return () => clearIntervalFn(timer);
+  const visibleDoc = doc;
   const onVisible = () => {
-    if (!doc || doc.visibilityState === "visible") check();
+    if (visibleDoc.visibilityState === "visible") check();
   };
-  doc?.addEventListener("visibilitychange", onVisible);
+  visibleDoc.addEventListener("visibilitychange", onVisible);
 
   return () => {
     clearIntervalFn(timer);
-    doc?.removeEventListener("visibilitychange", onVisible);
+    visibleDoc.removeEventListener("visibilitychange", onVisible);
   };
 }

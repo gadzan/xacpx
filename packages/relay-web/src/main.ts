@@ -29,6 +29,8 @@ app.mount("#app");
 registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
+    // Intentionally not torn down: the update schedule should live for the whole
+    // page lifetime. onRegisteredSW fires once per registration, so it doesn't stack.
     schedulePwaUpdateChecks(registration);
   },
 });
