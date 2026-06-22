@@ -160,7 +160,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (event.type === "prompt.usage") {
         const onUsage = options?.onUsage;
         if (onUsage) {
-          const usage = { used: event.used, size: event.size };
+          const usage = { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) };
           // Serialize handler invocations; first error wins.
           usageChain = usageChain
             .then(() => onUsage(usage))

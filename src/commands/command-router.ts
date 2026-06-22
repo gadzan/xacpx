@@ -4,7 +4,7 @@ import type { AppConfig, TransportConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
 import { createNoopAppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
-import type { PromptMediaInput, ReplyQuotaContext, SessionTransport } from "../transport/types";
+import type { PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
 import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
 import type { PerfSpan } from "../perf/perf-tracer";
@@ -142,7 +142,7 @@ export class CommandRouter {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
+    onUsage?: (usage: PromptUsage) => void | Promise<void>,
   ): Promise<RouterResponse> {
     const startedAt = Date.now();
     let command = parseCommand(input);
@@ -983,7 +983,7 @@ export class CommandRouter {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
+    onUsage?: (usage: PromptUsage) => void | Promise<void>,
   ) {
     session.mcpCoordinatorSession ??= stableCoordinatorSession(session.transportSession);
     // `done` closes the race window between prompt resolving and the abort

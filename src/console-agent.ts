@@ -5,6 +5,7 @@ import { createNoopAppLogger } from "./logging/app-logger";
 import { normalizeMediaArray } from "./channels/media-types.js";
 import { isKnownXacpxCommandText } from "./commands/command-list";
 import type { PlanEntry, ToolUseEvent } from "./channels/types.js";
+import type { PromptUsage } from "./transport/types";
 import type { PerfSpan } from "./perf/perf-tracer";
 import { t } from "./i18n/index.js";
 
@@ -22,7 +23,7 @@ interface RouterLike {
     onThought?: (chunk: string) => void | Promise<void>,
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-    onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
+    onUsage?: (usage: PromptUsage) => void | Promise<void>,
   ): Promise<ChatResponse>;
   clearSession?: (chatKey: string) => Promise<void>;
 }

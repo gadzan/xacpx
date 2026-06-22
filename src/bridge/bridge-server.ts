@@ -231,6 +231,8 @@ export class BridgeServer {
               event: "prompt.usage",
               used: event.used,
               size: event.size,
+              ...(event.cost ? { cost: event.cost } : {}),
+              ...(event.breakdown ? { breakdown: event.breakdown } : {}),
             }));
           }
         });

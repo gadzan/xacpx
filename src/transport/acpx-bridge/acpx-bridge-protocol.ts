@@ -1,4 +1,5 @@
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
+import type { UsageBreakdown, UsageCost } from "../types";
 
 export type BridgeMethod =
   | "ping"
@@ -86,6 +87,8 @@ export interface BridgePromptUsageEvent {
   event: "prompt.usage";
   used: number;
   size: number;
+  cost?: UsageCost;
+  breakdown?: UsageBreakdown;
 }
 
 export interface BridgeSessionProgressEvent {
