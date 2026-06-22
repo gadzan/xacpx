@@ -360,9 +360,14 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       const path = c.req.path;
       if (path.startsWith("/api") || path.startsWith("/ws")) return;
       if (!c.res.ok) return;
+      // Only fingerprinted build assets are immutable. Gate on content-type, not
+      // just the path: a request for a missing /assets/<hash> falls through to the
+      // SPA fallback and returns the index.html shell (text/html) with 200 — that
+      // must stay no-cache, never get stamped immutable under an asset URL.
+      const isHtml = (c.res.headers.get("content-type") ?? "").includes("text/html");
       c.header(
         "Cache-Control",
-        path.startsWith("/assets/")
+        !isHtml && path.startsWith("/assets/")
           ? "public, max-age=31536000, immutable"
           : "no-cache",
       );
