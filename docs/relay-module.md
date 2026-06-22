@@ -82,6 +82,7 @@
 
 - **`GET /api/config`（authed）**：返回 `{ historyRetention: { days, maxPerSession } }` 供设置页展示；
   历史保留是服务端配置（只读），v1 不在 Web 端可改。
+- **`GET /api/version`（authed）**：返回 `{ current, latest, updateAvailable }` 供设置页展示 hub 版本与「有可用更新」提示。`current` 读自 hub 自身的 `package.json`（`readRelayVersion`）；`latest` 经 `npm view @ganglion/xacpx-relay version` 查询，结果缓存 ~1h 且失败/超时容错（失败时返回 `latest:null`、`updateAvailable:false`，绝不阻塞设置页）。版本读取、npm 查询、语义化比较与缓存检查器集中在 `packages/relay/src/version.ts`，由本端点与 `xacpx-relay update` CLI 共用。
 - **维护子系统 `src/maintenance.ts`**：`runMaintenance(stores, opts)` 跑一遍清理，
   `startMaintenanceLoop(...)` 每小时一次（`setInterval` 并 `unref`，不挡进程退出）：
   - 按账龄裁剪 `messages`（`--history-retention-days`，默认 30 天）+ 每会话硬上限

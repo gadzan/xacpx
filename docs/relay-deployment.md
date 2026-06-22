@@ -61,7 +61,8 @@ xacpx-relay start \
 ## 关键事实
 
 - **单端口（默认）**：只暴露一个端口 8787 = HTTP API + 看板 + 看板 `/ws` + 实例网关（实例网关合并为 HTTP 端口上的 WebSocket upgrade，实例/连接器从根路径 `/` 注册）。运维只需开放一个端口、一个域名，反代单条 `reverse_proxy 127.0.0.1:8787` 即可。生产经反代终结 TLS，实例用 `wss://`。仅当你想把实例网关单独放到自己的端口上分别防火墙时，才传 `--ws-port <n>`（恢复旧的双端口布局）。
-- **`xacpx-relay` CLI 子命令**：`start` / `add token` / `ls` / `rm token <value-or-id>`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
+- **`xacpx-relay` CLI 子命令**：`start` / `add token` / `ls` / `rm token <value-or-id>` / `update [--check]`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
+- **`xacpx-relay update`**：自更新 hub 包（`npm i -g @ganglion/xacpx-relay@latest`；`PACKAGE_MANAGER=bun` 时改用 `bun add -g`）。`--check` 只比对当前与 npm 最新版本、打印结果而不安装。当前运行版本与「有可用更新」提示也会显示在看板设置页（见 [relay-module.md](relay-module.md) 的 `GET /api/version`）。更新后需自行重启 hub 进程（systemd/pm2/Docker 重启即可）。
 - **持久化**：全部在单个 SQLite 文件（`--db`）。默认 `~/.xacpx-relay/relay.db`（固定绝对路径，父目录自动创建）。备份即停机/静默期 `cp` 该文件。
 - **凭证**：访问令牌（access token）一令两用——既用于 Web 登录，也用于连接器首连（无需单独铸造配对令牌）。首连后实例换取长期凭证，写入 `<xacpx-home>/relay/credential.json`（0600），不进 `config.json`。
 - **自动 GC**：每小时清理超 `--history-retention-days`（默认 30，另每会话硬上限 2000 条）的缓存消息，以及过期的 web 会话和配对令牌。
