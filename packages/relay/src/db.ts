@@ -114,8 +114,15 @@ export function initSchema(db: SqlDriver): void {
       direction TEXT NOT NULL CHECK (direction IN ('in','out')),
       text TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      structured TEXT
+      structured TEXT,
+      attachments TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
   `);
+
+  // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).
+  const messageCols = db.all<{ name: string }>("PRAGMA table_info(messages)");
+  if (!messageCols.some((c) => c.name === "attachments")) {
+    db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
+  }
 }

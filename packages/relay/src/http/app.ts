@@ -270,13 +270,28 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       };
     }
     try {
+      if (body.type === MSG.upload) {
+        const up = payload as { content?: string };
+        const approxBytes = up.content ? Math.floor((up.content.length * 3) / 4) : 0;
+        if (approxBytes > 10 * 1024 * 1024) return c.json({ error: "file-too-large" }, 413);
+      }
       // Persist the inbound user message BEFORE awaiting the turn: sendRequest
       // resolves only after the agent's turn-finished event has already
       // persisted the "out" message, so appending "in" afterwards would give it
       // a higher autoincrement id and flip the history order.
       if (body.type === MSG.prompt || body.type === MSG.commandExecute) {
-        const p = payload as { sessionAlias?: string; text?: string };
-        if (p.sessionAlias && p.text) deps.messages.append(instance.id, p.sessionAlias, "in", p.text);
+        const p = payload as { sessionAlias?: string; text?: string; media?: import("@ganglion/xacpx-relay-protocol").PromptAttachmentRef[] };
+        if (p.sessionAlias && p.text !== undefined) {
+          const attachments = (p.media ?? []).map((m) => ({
+            id: m.id,
+            filename: m.fileName,
+            mimeType: m.mimeType,
+            size: m.size,
+            kind: m.kind,
+            ...(m.previewUrl ? { previewUrl: m.previewUrl } : {}),
+          }));
+          deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments);
+        }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
       if (body.type === MSG.commandExecute) {

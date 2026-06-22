@@ -32,6 +32,16 @@ test("append without structured yields no structured field", async () => {
   db.close();
 });
 
+test("persists and returns attachment metadata on inbound messages", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  const atts = [{ id: "u-1", filename: "shot.png", mimeType: "image/png", size: 3, kind: "image" as const, previewUrl: "data:image/png;base64,AAAA" }];
+  store.append("i1", "main", "in", "look", undefined, atts);
+  const page = store.listBySession("a1", "i1", "main");
+  expect(page.messages.at(-1)?.attachments).toEqual(atts);
+  db.close();
+});
+
 test("listBySession paginates oldest-first with a `before` cursor and hasMore", async () => {
   const db = await seeded();
   const store = new MessageStore(db);
