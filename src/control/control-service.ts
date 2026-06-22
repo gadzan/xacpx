@@ -535,6 +535,14 @@ export class ControlService {
             ...(usage.breakdown ? { breakdown: usage.breakdown } : {}),
           });
         },
+        onCommands: (commands) => {
+          this.deps.events.emit({
+            type: "agent-commands",
+            chatKey: params.chatKey,
+            sessionAlias: params.sessionAlias,
+            commands,
+          });
+        },
       });
       if (response.text) {
         emitChunk(response.text);

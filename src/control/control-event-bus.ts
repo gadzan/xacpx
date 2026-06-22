@@ -1,6 +1,6 @@
 import type { AppLogger } from "../logging/app-logger";
 import type { ToolUseEvent, PlanEntry } from "../channels/types";
-import type { UsageBreakdown, UsageCost } from "../transport/types";
+import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import type { NativeHistoryMessage } from "../transport/native-session-history";
 
 export interface ScheduledOrigin {
@@ -18,6 +18,8 @@ export type ControlEvent =
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntry[] }
   // Context-usage meter: `used` tokens in context, `size` total context window. Replace-latest.
   | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number; cost?: UsageCost; breakdown?: UsageBreakdown }
+  // Agent-advertised slash commands (e.g. /compact). Session-scoped, replace-latest.
+  | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommand[] }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
   | { type: "scheduled-changed"; chatKey: string }
