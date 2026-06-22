@@ -3,6 +3,8 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
+import { useComposerStore } from "../stores/composer";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
@@ -13,6 +15,24 @@ const emit = defineEmits<{ (e: "show-files"): void }>();
 const chat = useChatStore();
 const instances = useInstancesStore();
 const files = useFilesStore();
+const composer = useComposerStore();
+
+function onSend(text: string, media: PromptAttachmentRef[] = []) {
+  void chat.send(text, media);
+}
+
+// Bind the composer to the active instance so file uploads target the right daemon.
+watch(() => chat.instanceId, (id) => { if (id) composer.bindInstance(id); }, { immediate: true });
+
+// Clear staged attachments whenever the active session OR instance changes: `pending`
+// is a single global array, so leftover chips from one target would otherwise attach to
+// the next. Watch both identifiers and drop the staged files on any switch.
+watch(
+  () => [chat.instanceId, chat.sessionAlias] as const,
+  ([id, alias], prev) => {
+    if (prev && (id !== prev[0] || alias !== prev[1])) composer.clearAttachments();
+  },
+);
 
 // Context for the header chips: the current session's workspace/agent plus the
 // instance name. Branch comes from the read-only git summary (undefined until the
@@ -46,7 +66,7 @@ const elapsed = computed(() => {
 const runningTools = computed(() => chat.liveToolSteps.filter((t) => t.status === "running").length);
 
 // Whimsical near-synonyms cycled through while a turn runs (à la Claude Code / HAPI's
-// "vibing messages"). Purely cosmetic; reuses the 1Hz clock, rotating every ~4s on a
+// "vibing messages"). Purely cosmetic; reuses the 1Hz clock, rotating every ~10s on a
 // calm interval rather than re-rolling every frame. "Working" stays first for t≈0.
 const VERBS = [
   "Working", "Thinking", "Pondering", "Cogitating", "Reasoning", "Computing",
@@ -56,7 +76,7 @@ const VERBS = [
 const verb = computed(() => {
   if (!chat.liveTurn) return VERBS[0];
   const s = Math.max(0, Math.floor((nowMs.value - chat.liveTurn.startedAt) / 1000));
-  return VERBS[Math.floor(s / 4) % VERBS.length];
+  return VERBS[Math.floor(s / 10) % VERBS.length];
 });
 </script>
 
@@ -116,7 +136,7 @@ const verb = computed(() => {
         <PlanPanel v-if="chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                     @send="chat.send" @cancel="chat.cancel" />
+                     @send="onSend" @cancel="chat.cancel" />
       </div>
     </template>
   </div>

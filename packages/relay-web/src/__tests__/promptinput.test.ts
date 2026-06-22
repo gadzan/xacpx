@@ -26,7 +26,7 @@ describe("PromptInput composer", () => {
     const ta = w.find("textarea");
     await ta.setValue("/status");
     await ta.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["/status"]);
+    expect(w.emitted("send")?.[0]).toEqual(["/status", []]);
   });
 
   it("Enter sends a plain message and records it in history for ↑ recall", async () => {
@@ -34,7 +34,7 @@ describe("PromptInput composer", () => {
     const ta = w.find("textarea");
     await ta.setValue("hello there");
     await ta.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["hello there"]);
+    expect(w.emitted("send")?.[0]).toEqual(["hello there", []]);
     expect((ta.element as HTMLTextAreaElement).value).toBe(""); // cleared
     // Caret at start of an empty field → ArrowUp recalls the last sent line.
     await ta.trigger("keydown", { key: "ArrowUp" });
@@ -57,6 +57,60 @@ describe("PromptInput composer", () => {
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("");
     await w.setProps({ draftKey: "k1" }); // back → restored
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("half-typed");
+  });
+
+  it("typing / shows agent-command autocomplete and Enter completes without sending", async () => {
+    const { useChatStore } = await import("../stores/chat");
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+      commands: [{ name: "compact", description: "Compact the conversation" }, { name: "clear" }],
+    } } as never);
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("/co");
+    await w.vm.$nextTick();
+    const items = w.findAll('[data-test="cmd-item"]');
+    expect(items.length).toBe(1); // only /compact matches "/co"
+    expect(items[0].text()).toContain("/compact");
+    // Enter completes the command (and does NOT submit the turn).
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+    expect((ta.element as HTMLTextAreaElement).value).toBe("/compact ");
+    expect(w.emitted("send")).toBeFalsy();
+  });
+
+  it("closes the agent-command menu once the token is no longer a bare /word", async () => {
+    const { useChatStore } = await import("../stores/chat");
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+      commands: [{ name: "compact" }],
+    } } as never);
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("/co");
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="cmd-menu"]').exists()).toBe(true);
+    // A space ends the command token → menu closes and Enter submits verbatim.
+    await ta.setValue("/compact now");
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="cmd-menu"]').exists()).toBe(false);
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.[0]).toEqual(["/compact now", []]);
+  });
+
+  it("disables the send button while an upload is in flight (no silent dead click)", async () => {
+    const { useComposerStore } = await import("../stores/composer");
+    const composer = useComposerStore();
+    const w = mount(PromptInput);
+    await w.find("textarea").setValue("ready to go"); // would normally enable Send
+    expect((w.get('[data-test="composer-send"]').element as HTMLButtonElement).disabled).toBe(false);
+    composer.uploading = true;
+    await w.vm.$nextTick();
+    expect((w.get('[data-test="composer-send"]').element as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("inserts text from a composer store request targeting this session", async () => {

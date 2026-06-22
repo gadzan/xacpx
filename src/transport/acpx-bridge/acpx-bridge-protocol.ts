@@ -1,4 +1,5 @@
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
+import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
 
 export type BridgeMethod =
   | "ping"
@@ -86,6 +87,14 @@ export interface BridgePromptUsageEvent {
   event: "prompt.usage";
   used: number;
   size: number;
+  cost?: UsageCost;
+  breakdown?: UsageBreakdown;
+}
+
+export interface BridgePromptCommandsEvent {
+  id: string;
+  event: "prompt.commands";
+  commands: AgentCommand[];
 }
 
 export interface BridgeSessionProgressEvent {
@@ -108,6 +117,7 @@ export type BridgeMessage<TResult = unknown> =
   | BridgePromptThoughtEvent
   | BridgePromptPlanEvent
   | BridgePromptUsageEvent
+  | BridgePromptCommandsEvent
   | BridgeSessionProgressEvent
   | BridgeSessionNoteEvent;
 export type BridgeResponse<TResult = unknown> = BridgeSuccessResponse<TResult> | BridgeErrorResponse;
@@ -133,6 +143,10 @@ export function encodeBridgePromptPlanEvent(event: BridgePromptPlanEvent): strin
 }
 
 export function encodeBridgePromptUsageEvent(event: BridgePromptUsageEvent): string {
+  return `${JSON.stringify(event)}\n`;
+}
+
+export function encodeBridgePromptCommandsEvent(event: BridgePromptCommandsEvent): string {
   return `${JSON.stringify(event)}\n`;
 }
 

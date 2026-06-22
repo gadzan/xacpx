@@ -140,6 +140,27 @@ export interface PlanEntryDto {
   priority?: "high" | "medium" | "low";
 }
 
+/** Cumulative session cost the agent reported (mirror of src UsageCost). Both optional. */
+export interface UsageCostDto {
+  amount?: number;
+  currency?: string;
+}
+/** An agent-advertised slash command (mirror of src AgentCommand). */
+export interface AgentCommandDto {
+  name: string;
+  description?: string;
+  hasInput?: boolean;
+}
+/** Per-turn token breakdown (mirror of src UsageBreakdown). All fields optional. */
+export interface UsageBreakdownDto {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  thoughtTokens?: number;
+  totalTokens?: number;
+}
+
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
@@ -150,7 +171,10 @@ export type ControlEventDto =
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
   // Context-usage meter: `used` tokens in context, `size` total context window. Replace-latest.
-  | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number }
+  // `cost`/`breakdown` are optional extras (acpx ≥0.11.0); absent for adapters that don't report them.
+  | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }
+  // Agent-advertised slash commands (e.g. /compact). Session-scoped, replace-latest.
+  | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommandDto[] }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
   | { type: "scheduled-changed"; chatKey: string }

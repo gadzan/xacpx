@@ -88,6 +88,8 @@ export class AcpxBridgeTransport implements SessionTransport {
     let planChain = Promise.resolve();
     let usageError: unknown;
     let usageChain = Promise.resolve();
+    let commandsError: unknown;
+    let commandsChain = Promise.resolve();
     let toolEventMode = resolveToolEventMode(options);
     // Safety net: structured/both without an onToolEvent handler would
     // silently drop tool calls. Demote to 'text' so verbose tool calls
@@ -160,12 +162,24 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (event.type === "prompt.usage") {
         const onUsage = options?.onUsage;
         if (onUsage) {
-          const usage = { used: event.used, size: event.size };
+          const usage = { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) };
           // Serialize handler invocations; first error wins.
           usageChain = usageChain
             .then(() => onUsage(usage))
             .catch((error) => {
               usageError ??= error;
+            });
+        }
+        return;
+      }
+      if (event.type === "prompt.commands") {
+        const onCommands = options?.onCommands;
+        if (onCommands) {
+          const commands = event.commands;
+          commandsChain = commandsChain
+            .then(() => onCommands(commands))
+            .catch((error) => {
+              commandsError ??= error;
             });
         }
         return;
@@ -176,6 +190,7 @@ export class AcpxBridgeTransport implements SessionTransport {
     await thoughtChain;
     await planChain;
     await usageChain;
+    await commandsChain;
     if (sink) {
       const { overflowCount } = sink.finalize();
       // Drain in-flight reply() promises and propagate any QuotaDeferredError
@@ -208,6 +223,9 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (usageError) {
         throw usageError;
       }
+      if (commandsError) {
+        throw commandsError;
+      }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }
     if (segmentError) {
@@ -224,6 +242,9 @@ export class AcpxBridgeTransport implements SessionTransport {
     }
     if (usageError) {
       throw usageError;
+    }
+    if (commandsError) {
+      throw commandsError;
     }
     return result;
   }

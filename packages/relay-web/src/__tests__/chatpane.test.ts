@@ -12,6 +12,7 @@ import ChatPane from "../components/ChatPane.vue";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
+import { useComposerStore } from "../stores/composer";
 
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => { i18n.global.locale.value = "en"; });
@@ -88,7 +89,29 @@ it("hides the HUD when no turn is active", () => {
   expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
 });
 
-it("cycles the working verb every ~4s while the turn runs", async () => {
+it("clears staged attachments when switching session so they don't leak to the next target", async () => {
+  seedInstance();
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "frontend", agent: "codex", workspace: "gaia" }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  const composer = useComposerStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  // Stage a chip on the current session.
+  composer.pending.push({ id: "p1", filename: "a.png", mimeType: "image/png", size: 3, kind: "image", status: "ready" });
+  expect(composer.pending).toHaveLength(1);
+  // Switch to a different session on the same instance → staged chips drop.
+  chat.select("i1", "frontend");
+  await w.vm.$nextTick();
+  expect(composer.pending).toHaveLength(0);
+});
+
+it("cycles the working verb every ~10s while the turn runs", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
   const chat = useChatStore();
@@ -97,7 +120,10 @@ it("cycles the working verb every ~4s while the turn runs", async () => {
   const w = mount(ChatPane);
   await w.vm.$nextTick();
   expect(w.find('[data-test="turn-hud"]').text()).toContain("Working"); // bucket 0
-  vi.advanceTimersByTime(5000); // 5s → bucket 1, also drives the 1Hz clock
+  vi.advanceTimersByTime(5000); // 5s → still bucket 0 on the calm ~10s cadence
+  await w.vm.$nextTick();
+  expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
+  vi.advanceTimersByTime(6000); // 11s total → bucket 1, also drives the 1Hz clock
   await w.vm.$nextTick();
   const t = w.find('[data-test="turn-hud"]').text();
   expect(t).not.toContain("Working");

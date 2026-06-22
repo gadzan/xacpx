@@ -5,6 +5,39 @@ import type { ToolEventMode } from "./tool-event-mode.js";
 
 export type { ToolEventMode } from "./tool-event-mode.js";
 
+/** Cumulative session cost the agent reported (ACP `usage_update.cost`). Both optional. */
+export interface UsageCost {
+  amount?: number;
+  currency?: string;
+}
+/**
+ * Per-turn token breakdown from ACP `usage_update._meta.usage` (Claude reports it;
+ * codex may omit). All fields optional — treat missing as "unknown", not zero.
+ */
+export interface UsageBreakdown {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  thoughtTokens?: number;
+  totalTokens?: number;
+}
+/** Context-usage side-channel payload: window fill plus optional cost & token breakdown. */
+export interface PromptUsage {
+  used: number;
+  size: number;
+  cost?: UsageCost;
+  breakdown?: UsageBreakdown;
+}
+
+/** An agent-advertised slash command (ACP `available_commands_update`). */
+export interface AgentCommand {
+  name: string;
+  description?: string;
+  /** Whether the command accepts an argument (ACP advertised a non-null `input`). */
+  hasInput?: boolean;
+}
+
 export interface ReplyQuotaContext {
   chatKey: string;
   quota: QuotaManager;
@@ -135,7 +168,12 @@ export interface PromptOptions {
    * scalar (re-sent during a turn). Optional — only agents that report it fire this
    * (e.g. claude does, codex does not), and text channels omit the handler.
    */
-  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
+  onUsage?: (usage: PromptUsage) => void | Promise<void>;
+  /**
+   * Agent-advertised slash commands (ACP `available_commands_update`). Replace-latest
+   * list, re-sent when the agent updates it. Optional — not every adapter advertises.
+   */
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>;
   /**
    * How tool_call / tool_call_update events are surfaced for this prompt.
    *

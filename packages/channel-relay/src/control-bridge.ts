@@ -27,6 +27,7 @@ import {
   type SessionsRemovePayload,
   type SessionsArchivePayload,
   type SessionsUnarchivePayload,
+  type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
 } from "@ganglion/xacpx-relay-protocol";
@@ -210,6 +211,13 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       if (!input.sessionAlias || !input.modelId) return errorPayload("bad-request", "sessionAlias and modelId are required");
       await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
       return { ok: true };
+    }
+    case MSG.upload: {
+      const input = payload as UploadPayload;
+      if (!input.filename || !input.content || !input.mimeType) {
+        return errorPayload("bad-request", "filename, content and mimeType are required");
+      }
+      return await control.uploadFile(input);
     }
     default:
       return errorPayload("unknown-type", `unsupported rpc type: ${envelope.type}`);

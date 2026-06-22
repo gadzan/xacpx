@@ -25,4 +25,11 @@ export const api = {
   /** Proxy a control RPC to an instance via the relay. */
   rpc: <T>(instanceId: string, type: string, payload: unknown = {}) =>
     request<{ result: T }>("POST", `/api/instances/${instanceId}/rpc`, { type, payload }).then((r) => r.result),
+  /** Upload a file to the instance daemon; returns its absolute on-host path. */
+  upload: (instanceId: string, payload: { filename: string; content: string; mimeType: string }) =>
+    request<{ result: import("@ganglion/xacpx-relay-protocol").UploadResult }>(
+      "POST",
+      `/api/instances/${instanceId}/rpc`,
+      { type: "control.upload", payload },
+    ).then((r) => r.result),
 };

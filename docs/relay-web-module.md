@@ -242,6 +242,57 @@ export interface LiveTurn {
 - 历史 `out` 消息：若 `m.structured?.toolSteps?.length` 则在 markdown 下方插入 `<ToolCallPanel>`；若 `m.structured?.reasoning` 则插入 `<ReasoningPanel :default-open="false">`（折叠）。
 - 实时流气泡：若 `liveTurn?.toolSteps.length` 则插入 `<ToolCallPanel>`（实时展开）；若 `liveTurn?.reasoning` 则插入 `<ReasoningPanel>`（`defaultOpen` 不传，默认展开）。
 
+## 消息附件（图片 / 文件上传）
+
+用户可在 `PromptInput.vue` 随 prompt 一并发送图片或文件；附件经 `control.upload` RPC
+上传到 daemon，再随 `control.prompt` 的 `media` 字段转发给 agent。
+
+### 触发方式
+
+1. **附件按钮**：输入框左侧的 `📎` 按钮打开系统文件选择器（`<input type="file" multiple>`）。
+2. **剪贴板粘贴**：在输入框聚焦状态下按 `Ctrl/Cmd+V`，若剪贴板含图片文件则自动读取。
+3. **拖放**：将文件拖入输入框区域即可附加；非文件拖放（如文本）不受影响。
+
+### 限制
+
+- 单次最多 **5 个文件**；超出时忽略多余文件并提示。
+- 每个文件最大 **10 MB**；超大文件在客户端侧拒绝，不上传（relay hub 亦有同步 413 守卫）。
+
+### 待发 chips
+
+选中的文件在输入框上方以"附件 chip"形式排列，可单独移除；
+发送成功或取消后自动清空。
+
+### 图片预处理（客户端降采样）
+
+类型为 `image/*` 的文件在上传前由 `Canvas` 降缩：长边超过 **512 px** 时按比例缩小，
+再以 JPEG 格式编码，得到 base64 `previewUrl`。此 preview 随 `PromptAttachmentRef` 传给
+relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文件不做预处理，
+`previewUrl` 字段省略。
+
+### 发送流程
+
+1. 选文件后，每个文件单独调用 `control.upload`（`UploadPayload`），
+   daemon 返回 `UploadResult`（含服务器绝对路径 `path`）。
+2. 构造 `PromptAttachmentRef[]` 并附在 `control.prompt` 的 `media` 字段内发送。
+3. Hub 将 `attachments`（`AttachmentMetadata[]`）持久化到消息记录。
+
+### 渲染
+
+- **`MessageAttachments.vue`**：
+  - 图片（`kind: "image"`）显示缩略图（来自持久化的 `previewUrl`，点击可放大）。
+  - 非图片文件（`kind: "file"`）显示文件卡片（文件名 + 大小）。
+- **`MessageList.vue`**：每条消息若含 `attachments`，在气泡下方插入 `<MessageAttachments>`。
+- **历史重显**：页面刷新后，附件从服务端持久化的 `MessageRecordDto.attachments` 中恢复，
+  图片缩略图和文件卡片均可再次显示。
+
+### 相关文件
+
+- `packages/relay-web/src/components/PromptInput.vue` — 上传触发 + chip UI
+- `packages/relay-web/src/components/MessageAttachments.vue` — 附件渲染
+- `packages/relay-web/src/components/MessageList.vue` — 附件在消息气泡下插入
+- `packages/relay-web/src/stores/chat.ts` — 发送时调用 upload + 附件随 media 字段传出
+
 ## 阶段范围边界
 
 - **阶段三**交付登录 + 实例/会话树 + 对话流。
@@ -250,4 +301,5 @@ export interface LiveTurn {
 - **阶段五**审计修复：API 客户端始终带 JSON content-type（对齐服务端 CSRF 415 守卫）、重连重拉快照 +
   重连定时器清理、聊天错误横幅 + 回合失败浮现 + 失败消息样式 + 切换会话清错 + 乐观失败标记、
   取消在途回合（`control.prompt.cancel`）、左栏实例树会话创建/删除 UI。
+- **阶段七**消息附件：`PromptInput` 附件入口 + `MessageAttachments` 渲染 + 客户端 512px 降采样持久 preview（见上节）。
 - 历史保留策略为服务端配置（`--history-retention-days`），v1 在 Web 端只读、不可编辑（见 docs/relay-module.md）。

@@ -74,11 +74,40 @@ test("turn-usage updates sessionUsage (REPLACE) and survives turn-finished", () 
   expect(store.sessionUsage).toEqual({ used: 34612, size: 1000000 });
 });
 
+test("turn-usage retains cost and breakdown for the selected session", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-usage", chatKey: "relay:a1", sessionAlias: "backend", used: 1000, size: 200000,
+    cost: { amount: 0.42, currency: "USD" }, breakdown: { inputTokens: 800, totalTokens: 920 },
+  } } as never);
+  expect(store.sessionUsage).toEqual({
+    used: 1000, size: 200000,
+    cost: { amount: 0.42, currency: "USD" }, breakdown: { inputTokens: 800, totalTokens: 920 },
+  });
+});
+
 test("turn-usage for an unselected session does not leak into sessionUsage", () => {
   const store = useChatStore();
   store.select("i1", "backend");
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "relay:a1", sessionAlias: "other", used: 1, size: 2 } } as never);
   expect(store.sessionUsage).toBeNull();
+});
+
+test("agent-commands populate sessionCommands for the selected session", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+    commands: [{ name: "compact", description: "Compact" }, { name: "run", hasInput: true }],
+  } } as never);
+  expect(store.sessionCommands).toEqual([{ name: "compact", description: "Compact" }, { name: "run", hasInput: true }]);
+});
+
+test("sessionCommands is empty for a session that advertised none", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  expect(store.sessionCommands).toEqual([]);
 });
 
 test("requestScrollToScheduled bumps a nonce-keyed scroll request", () => {
@@ -379,7 +408,7 @@ test("PromptInput emits send with trimmed text and clears", async () => {
   const wrapper = mount(PromptInput);
   await wrapper.find("textarea").setValue("  do it  ");
   await wrapper.find("form").trigger("submit.prevent");
-  expect(wrapper.emitted("send")?.[0]).toEqual(["do it"]);
+  expect(wrapper.emitted("send")?.[0]).toEqual(["do it", []]);
   expect((wrapper.find("textarea").element as HTMLTextAreaElement).value).toBe("");
 });
 

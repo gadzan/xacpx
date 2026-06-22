@@ -216,6 +216,30 @@ test("instances: pairing token, list with online flag, account isolation, rpc st
   })).status).toBe(404);
 });
 
+test("session archive/unarchive RPCs are chat-scoped (chatKey stamped, else the connector crashes)", async () => {
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+
+  // archive/unarchive resolve the alias within the caller's chat scope, so the hub
+  // MUST stamp chatKey just like create/list/remove. Without it the connector calls
+  // getChannelIdFromChatKey(undefined) and throws "reading 'split'".
+  for (const type of [MSG.sessionsArchive, MSG.sessionsUnarchive]) {
+    rpcCalls.length = 0;
+    const res = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+      method: "POST", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ type, payload: { alias: "s" } }),
+    });
+    expect(res.status).toBe(200);
+    const stamped = rpcCalls[0]?.payload as { chatKey?: string };
+    expect(stamped.chatKey).toBe(`relay:${redeemed.accountId}`);
+  }
+});
+
 test("PATCH /api/instances/:id renames an owned instance", async () => {
   const { app, instances, loginToken, login } = await makeApp();
   const { cookie } = await login(loginToken);
@@ -317,6 +341,60 @@ test("rpc prompt persists the inbound message before the turn's out message (his
   expect(res.status).toBe(200);
   const cached = messages.listBySession(accountId, instanceId, "s");
   expect(cached.messages.map((m) => [m.direction, m.text])).toEqual([["in", "hi"], ["out", "agent reply"]]);
+});
+
+test("rpc prompt persists a valid small image previewUrl on the attachment", async () => {
+  const { app, instances, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId, accountId } = instances.redeemPairingToken(token)!;
+
+  const previewUrl = "data:image/png;base64,abc";
+  const media = [{ id: "a1", filePath: "/tmp/a1.png", fileName: "a1.png", mimeType: "image/png", kind: "image", size: 12, previewUrl }];
+  const res = await app.request(`/api/instances/${instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "s", text: "hi", media } }),
+  });
+  expect(res.status).toBe(200);
+
+  const { messages: msgs } = (await app.request(`/api/instances/${instanceId}/sessions/s/messages`, { headers: { cookie } }).then((r) => r.json())) as { messages: Array<{ direction: string; attachments?: Array<{ id: string; previewUrl?: string }> }> };
+  void accountId;
+  const inbound = msgs.find((m) => m.direction === "in")!;
+  expect(inbound.attachments?.[0]?.id).toBe("a1");
+  expect(inbound.attachments?.[0]?.previewUrl).toBe(previewUrl);
+});
+
+test("rpc prompt strips an oversized or non-image previewUrl but still stores the attachment", async () => {
+  const { app, instances, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId } = instances.redeemPairingToken(token)!;
+
+  const oversized = "data:image/png;base64," + "x".repeat(256 * 1024); // > 256*1024 chars
+  const evil = "http://evil.com/track.png";
+  const media = [
+    { id: "big", filePath: "/tmp/big.png", fileName: "big.png", mimeType: "image/png", kind: "image", size: 99, previewUrl: oversized },
+    { id: "evil", filePath: "/tmp/evil.png", fileName: "evil.png", mimeType: "image/png", kind: "image", size: 33, previewUrl: evil },
+  ];
+  const res = await app.request(`/api/instances/${instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "s", text: "hi", media } }),
+  });
+  expect(res.status).toBe(200);
+
+  const { messages: msgs } = (await app.request(`/api/instances/${instanceId}/sessions/s/messages`, { headers: { cookie } }).then((r) => r.json())) as { messages: Array<{ direction: string; attachments?: Array<{ id: string; previewUrl?: string }> }> };
+  const inbound = msgs.find((m) => m.direction === "in")!;
+  const byId = Object.fromEntries((inbound.attachments ?? []).map((a) => [a.id, a]));
+  expect(byId.big).toBeDefined();
+  expect(byId.big?.previewUrl).toBeUndefined();
+  expect(byId.evil).toBeDefined();
+  expect(byId.evil?.previewUrl).toBeUndefined();
 });
 
 test("GET /api/config returns the retention policy from deps", async () => {

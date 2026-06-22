@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -20,6 +20,9 @@ export function loadPersistedSelection(): { instanceId: string; alias: string } 
 }
 
 export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error";
+
+/** Per-session context usage: window fill plus optional cost & token breakdown. */
+export type SessionUsage = { used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto };
 
 /** One transcript entry, kept in arrival order so text / reasoning / tool calls
  *  render inline exactly as the agent produced them (mirrors the hub's persistence). */
@@ -73,7 +76,10 @@ export const useChatStore = defineStore("chat", () => {
   // Context-usage meter per session (latest `turn-usage`): `used` tokens in context +
   // `size` total window. Session-scoped like `plans` so it persists across turns (REPLACE
   // semantics). Absent for agents that don't report usage (e.g. codex) — the meter hides.
-  const usage = ref<Record<string, { used: number; size: number }>>({});
+  const usage = ref<Record<string, SessionUsage>>({});
+  // Agent-advertised slash commands per session (latest `agent-commands`). Session-scoped
+  // like plans/usage (REPLACE), persists across turns. Empty for agents that don't advertise.
+  const agentCommands = ref<Record<string, AgentCommandDto[]>>({});
   // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
   // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
   const unread = ref<Set<string>>(new Set());
@@ -108,8 +114,11 @@ export const useChatStore = defineStore("chat", () => {
   const sessionPlan = computed<PlanEntryDto[] | null>(() =>
     selectedKey.value ? plans.value[selectedKey.value] ?? null : null,
   );
-  const sessionUsage = computed<{ used: number; size: number } | null>(() =>
+  const sessionUsage = computed<SessionUsage | null>(() =>
     selectedKey.value ? usage.value[selectedKey.value] ?? null : null,
+  );
+  const sessionCommands = computed<AgentCommandDto[]>(() =>
+    selectedKey.value ? agentCommands.value[selectedKey.value] ?? [] : [],
   );
   const streaming = computed(() => (liveTurn.value ? textOf(liveTurn.value.parts) : ""));
   const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
@@ -282,7 +291,10 @@ export const useChatStore = defineStore("chat", () => {
       plans.value[bufKey(event.instanceId, e.sessionAlias)] = e.entries;
     } else if (e.type === "turn-usage") {
       // Latest context-usage for the session (REPLACE). Like plans, persists across turns.
-      usage.value[bufKey(event.instanceId, e.sessionAlias)] = { used: e.used, size: e.size };
+      usage.value[bufKey(event.instanceId, e.sessionAlias)] = { used: e.used, size: e.size, ...(e.cost ? { cost: e.cost } : {}), ...(e.breakdown ? { breakdown: e.breakdown } : {}) };
+    } else if (e.type === "agent-commands") {
+      // Latest agent slash-command list for the session (REPLACE). Drives composer "/" hints.
+      agentCommands.value[bufKey(event.instanceId, e.sessionAlias)] = e.commands;
     } else if (e.type === "session-history") {
       // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
@@ -307,11 +319,20 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function send(text: string): Promise<void> {
+  async function send(text: string, attachments: PromptAttachmentRef[] = []): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
     error.value = "";
     sending.value = true;
-    const optimistic: ChatMessage = { instanceId: instanceId.value, sessionAlias: sessionAlias.value, direction: "in", text, createdAt: new Date().toISOString() };
+    const optimistic: ChatMessage = {
+      instanceId: instanceId.value,
+      sessionAlias: sessionAlias.value,
+      direction: "in",
+      text,
+      createdAt: new Date().toISOString(),
+      ...(attachments.length > 0
+        ? { attachments: attachments.map((a): AttachmentMetadata => ({ id: a.id, filename: a.fileName, mimeType: a.mimeType, size: a.size, kind: a.kind, ...(a.previewUrl ? { previewUrl: a.previewUrl } : {}) })) }
+        : {}),
+    };
     messages.value.push(optimistic);
     try {
       // The web dashboard is GUI-first: every message — including `/`-prefixed text —
@@ -319,7 +340,11 @@ export const useChatStore = defineStore("chat", () => {
       // not handled here; the console forwards control-channel `/` text to the agent
       // verbatim (see command-router passthrough). Only WeChat/Feishu, which lack a
       // GUI, still rely on xacpx command handling.
-      const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", { sessionAlias: sessionAlias.value, text });
+      const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", {
+        sessionAlias: sessionAlias.value,
+        text,
+        ...(attachments.length > 0 ? { media: attachments } : {}),
+      });
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";
         optimistic.failed = true;
@@ -361,5 +386,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });

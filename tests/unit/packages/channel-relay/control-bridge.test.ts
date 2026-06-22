@@ -182,6 +182,22 @@ test("agents.remove and workspaces.remove return ok", async () => {
   expect(removed).toEqual(["a:gemini", "w:ws1"]);
 });
 
+test("control.upload dispatches to uploadFile and returns UploadResult", async () => {
+  const uploadResult = { id: "u1", path: "/tmp/u1.png", filename: "photo.png", mimeType: "image/png", size: 1024 };
+  const { control } = makeFakeControl({
+    uploadFile: async (input: unknown) => uploadResult,
+  });
+  const bridge = createControlBridge(control as never);
+
+  // happy path: all fields present → returns UploadResult
+  expect(await dispatch(bridge, req(MSG.upload, { filename: "photo.png", content: "abc123", mimeType: "image/png" }))).toEqual(uploadResult);
+
+  // bad-request: missing mimeType
+  expect(await dispatch(bridge, req(MSG.upload, { filename: "photo.png", content: "abc123" }))).toEqual({
+    error: { code: "bad-request", message: "filename, content and mimeType are required" },
+  });
+});
+
 test("unknown type and thrown errors become error payloads", async () => {
   const { control } = makeFakeControl();
   const broken = { ...control, listSessions: () => { throw new Error("boom"); } };

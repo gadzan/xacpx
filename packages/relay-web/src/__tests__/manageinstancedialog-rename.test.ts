@@ -62,6 +62,43 @@ test("renders the Save affordance in Chinese when locale is zh-CN", async () => 
   expect(w.get('[data-test="rename-save"]').text()).toBe("保存");
 });
 
+test("tabs switch between the general and agents panes", async () => {
+  const { w } = mountDialog();
+  await flushPromises();
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(true); // general is default
+  await w.get('[data-test="tab-agents"]').trigger("click");
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(false); // general pane unmounted
+  await w.get('[data-test="tab-general"]').trigger("click");
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(true);
+});
+
+test("the active pane is a labelled tabpanel and arrow keys move tab selection", async () => {
+  const { w } = mountDialog();
+  await flushPromises();
+  // The default (general) pane is a tabpanel labelled by its tab.
+  const panel = w.get("#tabpanel-general");
+  expect(panel.attributes("role")).toBe("tabpanel");
+  expect(panel.attributes("aria-labelledby")).toBe("tab-general");
+  expect(w.get('[data-test="tab-general"]').attributes("aria-controls")).toBe("tabpanel-general");
+  // Roving tabindex: only the selected tab is in the tab order.
+  expect(w.get('[data-test="tab-general"]').attributes("tabindex")).toBe("0");
+  expect(w.get('[data-test="tab-workspaces"]').attributes("tabindex")).toBe("-1");
+  // ArrowRight on the tablist advances selection to the next tab.
+  await w.get('[role="tablist"]').trigger("keydown", { key: "ArrowRight" });
+  expect(w.get('[data-test="tab-workspaces"]').attributes("aria-selected")).toBe("true");
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(false); // general pane unmounted
+  // ArrowLeft wraps back to general.
+  await w.get('[role="tablist"]').trigger("keydown", { key: "ArrowLeft" });
+  expect(w.get('[data-test="tab-general"]').attributes("aria-selected")).toBe("true");
+});
+
+test("Escape closes the dialog", async () => {
+  const { w } = mountDialog();
+  await flushPromises();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  expect(w.emitted("close")).toBeTruthy();
+});
+
 test("shows the instance version row from the store's coreVersion", async () => {
   const store = useInstancesStore();
   store.instances = [{

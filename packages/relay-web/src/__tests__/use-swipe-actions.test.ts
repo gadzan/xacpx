@@ -11,45 +11,49 @@ describe("useSwipeActions", () => {
   // Handler keys must be bare DOM event names so `v-on="handlers"` binds real
   // pointer events (Vue re-applies the `on` prefix); an `onPointerdown` key would
   // bind a dead event and the swipe would silently never fire. See InstanceTree's
-  // "binds swipe handlers to real pointer events" regression test for the wiring.
+  // swipe regression tests for the wiring.
   it("exposes bare pointer-event handler keys", () => {
-    const { handlers } = useSwipeActions({ onSwipeLeft: vi.fn(), onSwipeRight: vi.fn() });
+    const { handlers } = useSwipeActions({});
     expect(Object.keys(handlers).sort()).toEqual(["pointercancel", "pointerdown", "pointermove", "pointerup"]);
   });
-  it("fires onSwipeLeft past the threshold", () => {
-    const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
-    const { handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
+  it("reports a live delta during a horizontal drag, then ends with the final delta", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const { handlers } = useSwipeActions({ onMove, onEnd });
     handlers.pointerdown(pointer(200));
-    handlers.pointermove(pointer(120));
+    handlers.pointermove(pointer(160)); // dx -40 → horizontal
+    handlers.pointermove(pointer(120)); // dx -80
+    expect(onMove).toHaveBeenNthCalledWith(1, -40);
+    expect(onMove).toHaveBeenNthCalledWith(2, -80);
     handlers.pointerup(pointer(120));
-    expect(onSwipeLeft).toHaveBeenCalled();
-    expect(onSwipeRight).not.toHaveBeenCalled();
+    expect(onEnd).toHaveBeenCalledWith(-80);
   });
-  it("fires onSwipeRight past the threshold", () => {
-    const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
-    const { handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
-    handlers.pointerdown(pointer(100));
-    handlers.pointermove(pointer(200));
-    handlers.pointerup(pointer(200));
-    expect(onSwipeRight).toHaveBeenCalled();
+  it("yields to vertical scroll: no move, ends with 0", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const { handlers } = useSwipeActions({ onMove, onEnd });
+    handlers.pointerdown(pointer(200, 200));
+    handlers.pointermove(pointer(196, 260)); // vertical-dominant
+    expect(onMove).not.toHaveBeenCalled();
+    expect(onEnd).toHaveBeenCalledWith(0);
+    handlers.pointerup(pointer(196, 260)); // stray up after yield must not re-fire
+    expect(onEnd).toHaveBeenCalledTimes(1);
   });
-  it("ignores sub-threshold and vertical-dominant moves", () => {
-    const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
-    const { handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
+  it("a sub-intent tap never starts a drag (no move, ends with 0)", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const { handlers } = useSwipeActions({ onMove, onEnd });
     handlers.pointerdown(pointer(200));
-    handlers.pointermove(pointer(180));
-    handlers.pointerup(pointer(180));
-    expect(onSwipeLeft).not.toHaveBeenCalled();
-    expect(onSwipeRight).not.toHaveBeenCalled();
+    handlers.pointermove(pointer(198)); // 2px < intent
+    handlers.pointerup(pointer(198));
+    expect(onMove).not.toHaveBeenCalled();
+    expect(onEnd).toHaveBeenCalledWith(0);
   });
-  it("fires nothing after pointercancel (browser reclassified as scroll)", () => {
-    const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
-    const { handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
+  it("ends with 0 on pointercancel and a stray up does not re-fire", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const { handlers } = useSwipeActions({ onMove, onEnd });
     handlers.pointerdown(pointer(200));
-    handlers.pointermove(pointer(120)); // past the threshold…
-    handlers.pointercancel();           // …but the gesture is cancelled
-    handlers.pointerup(pointer(120));   // a stray up after cancel must not fire
-    expect(onSwipeLeft).not.toHaveBeenCalled();
-    expect(onSwipeRight).not.toHaveBeenCalled();
+    handlers.pointermove(pointer(120)); // horizontal drag…
+    handlers.pointercancel();           // …but the browser reclassified it as scroll
+    handlers.pointerup(pointer(120));   // stray up after cancel must not re-fire
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledWith(0);
   });
 });

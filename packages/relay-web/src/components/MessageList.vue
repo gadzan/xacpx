@@ -7,6 +7,7 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import { Bot, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
@@ -159,6 +160,7 @@ watch(
                    class="rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
                    :class="m.failed ? 'ring-1 ring-danger' : ''">
                 <p class="whitespace-pre-wrap text-[14px] leading-relaxed text-fg">{{ m.text }}</p>
+                <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
               </div>
               <!-- Failed sends get a compact retry affordance on their own line below. -->
               <div v-if="m.failed" class="mt-1 flex items-center gap-2">

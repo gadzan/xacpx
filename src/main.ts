@@ -51,6 +51,7 @@ import { renderTaskHeartbeat, renderTaskProgress } from "./formatting/render-tex
 import { QuotaManager } from "./weixin/messaging/quota-manager";
 import { createControlEventBus } from "./control/control-event-bus";
 import { ControlService } from "./control/control-service";
+import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 
 export interface RuntimePaths {
@@ -761,6 +762,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   );
   const agent = new ConsoleAgent(router, logger);
   const controlEvents = createControlEventBus(logger);
+  const uploadStore = new UploadStore();
+  void uploadStore.cleanup(); // best-effort startup sweep of expired uploads
+  // A long-lived daemon never re-sweeps on the startup pass alone, so expired uploads
+  // would accumulate forever despite the 24h TTL. Re-run hourly; cleared on dispose.
+  const uploadCleanupInterval = setInterval(
+    () => void uploadStore.cleanup().catch(() => {}),
+    60 * 60 * 1000,
+  );
   const control = new ControlService({
     agent,
     sessions,
@@ -811,6 +820,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         replaceRuntimeConfig(config, updated);
       },
     },
+    uploadStore,
   });
   const scheduledScheduler = new ScheduledTaskScheduler(scheduledService, {
     dispatchTask: buildScheduledDispatchTask({
@@ -891,6 +901,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     dispose: async () => {
       scheduledScheduler.stop();
+      clearInterval(uploadCleanupInterval);
       if (progressHeartbeatInterval !== undefined) {
         clearInterval(progressHeartbeatInterval);
       }

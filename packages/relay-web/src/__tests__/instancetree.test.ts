@@ -80,33 +80,60 @@ describe("InstanceTree session management", () => {
     w.unmount();
   });
 
+  // Regression: the ⋯ dropdown must render OUTSIDE the swipe clip layer, else the
+  // swipe's `overflow-hidden` clips it to the row's height (the menu appeared trapped
+  // inside the row). Assert the open menu is a child of the row but NOT inside the
+  // (overflow-hidden) swipe track.
+  it("renders the ⋯ dropdown outside the swipe clip layer (not clipped to the row)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("mousedown");
+    await w.find('[data-test="session-menu"]').trigger("click");
+    const menu = w.find('[data-test="delete-session"]').element;
+    expect(menu).toBeTruthy();
+    // Inside the row…
+    expect(menu.closest('[data-test="session-row"]')).not.toBeNull();
+    // …but NOT inside the overflow-hidden swipe track (which would clip it).
+    expect(menu.closest('[data-test="swipe-track"]')).toBeNull();
+    w.unmount();
+  });
+
   // Regression: the row must wire the swipe composable to real pointer events. A
-  // left swipe past the threshold archives. Catches the `onPointerdown`-vs-`pointerdown`
-  // key bug that made `v-on="handlers"` bind dead events.
-  it("binds swipe handlers to real pointer events (left swipe archives)", async () => {
+  // right→left swipe REVEALS the action blocks (it must NOT execute anything on its
+  // own); tapping the revealed archive block then archives. Catches the
+  // `onPointerdown`-vs-`pointerdown` key bug that made `v-on="handlers"` bind dead events.
+  it("right→left swipe reveals actions; tapping archive archives (no execute on swipe)", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const archive = vi.spyOn(store, "archiveSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    const row = w.find('[data-test="session-row"]');
-    await row.trigger("pointerdown", { clientX: 200, clientY: 0 });
-    await row.trigger("pointermove", { clientX: 120, clientY: 0 });
-    await row.trigger("pointerup", { clientX: 120, clientY: 0 });
+    const track = w.find('[data-test="swipe-track"]');
+    await track.trigger("pointerdown", { clientX: 200, clientY: 0 });
+    await track.trigger("pointermove", { clientX: 120, clientY: 0 });
+    await track.trigger("pointerup", { clientX: 120, clientY: 0 });
+    await flushPromises();
+    // The swipe alone reveals — it does not archive.
+    expect(archive).not.toHaveBeenCalled();
+    await w.find('[data-test="swipe-archive"]').trigger("click");
     await flushPromises();
     expect(archive).toHaveBeenCalledWith("i1", "backend");
   });
 
-  // Symmetric to the left-swipe case: a right swipe past the threshold opens the
-  // destructive delete confirm (it must NOT delete until confirmed).
-  it("binds swipe handlers to real pointer events (right swipe asks to delete)", async () => {
+  // The revealed delete block opens the destructive confirm only on tap — never on the
+  // swipe itself, and never deletes until confirmed.
+  it("tapping the revealed delete block asks to delete (not on swipe)", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    const row = w.find('[data-test="session-row"]');
-    await row.trigger("pointerdown", { clientX: 100, clientY: 0 });
-    await row.trigger("pointermove", { clientX: 200, clientY: 0 });
-    await row.trigger("pointerup", { clientX: 200, clientY: 0 });
+    const track = w.find('[data-test="swipe-track"]');
+    await track.trigger("pointerdown", { clientX: 200, clientY: 0 });
+    await track.trigger("pointermove", { clientX: 120, clientY: 0 });
+    await track.trigger("pointerup", { clientX: 120, clientY: 0 });
+    await flushPromises();
+    expect(useConfirmState().value).toBeFalsy(); // swipe alone opens nothing
+    await w.find('[data-test="swipe-delete"]').trigger("click");
     await flushPromises();
     expect(useConfirmState().value?.title).toBe("Delete session?");
     expect(remove).not.toHaveBeenCalled();

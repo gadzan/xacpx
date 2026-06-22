@@ -35,15 +35,12 @@ if (buildCode !== 0) {
 
 // relay/channel-relay tests import "@ganglion/xacpx-relay-protocol", which the
 // workspace link resolves to packages/relay-protocol/dist — build it up front
-// for the same order-independence reason as plugin-api above.
-const protocolBuildCode = await runOne("bun", [
-  "build",
-  "./packages/relay-protocol/src/index.ts",
-  "--outdir",
-  "./packages/relay-protocol/dist",
-  "--target",
-  "node",
-]);
+// for the same order-independence reason as plugin-api above. Use the full
+// build:relay-protocol script (NOT a bare `bun build`): bun build emits only
+// index.js, so type-only exports (interfaces like PromptAttachmentRef vanish in
+// JS) are invisible to tsc and the typecheck step fails with "no exported
+// member". The script's `tsc -p` emits the .d.ts the typecheck needs.
+const protocolBuildCode = await runOne("bun", ["run", "build:relay-protocol"]);
 if (protocolBuildCode !== 0) {
   process.exit(protocolBuildCode ?? 1);
 }

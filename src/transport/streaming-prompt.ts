@@ -1,4 +1,5 @@
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
+import type { AgentCommand, PromptUsage, UsageBreakdown, UsageCost } from "./types.js";
 import { resolveToolEventMode } from "./tool-event-mode.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
@@ -20,7 +21,8 @@ export interface StreamingPromptState {
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
-  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
+  onUsage?: (usage: PromptUsage) => void | Promise<void>;
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>;
   finalize: () => string;
 }
 
@@ -43,6 +45,11 @@ interface StreamEvent {
       // ACP `usage_update`: tokens currently in context + total context window.
       used?: number;
       size?: number;
+      // ACP `usage_update` extras (acpx ≥0.11.0): cumulative cost + per-turn token breakdown.
+      cost?: unknown;
+      _meta?: { usage?: unknown };
+      // ACP `available_commands_update`: agent-advertised slash commands.
+      availableCommands?: unknown;
     };
   };
 }
@@ -55,7 +62,8 @@ export type CreateStreamingPromptStateOptions =
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
       onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
-      onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
+      onUsage?: (usage: PromptUsage) => void | Promise<void>;
+      onCommands?: (commands: AgentCommand[]) => void | Promise<void>;
     };
 
 export function createStreamingPromptState(
@@ -66,7 +74,8 @@ export function createStreamingPromptState(
   let onToolEvent: ((event: ToolUseEvent) => void | Promise<void>) | undefined;
   let onThought: ((chunk: string) => void | Promise<void>) | undefined;
   let onPlan: ((entries: PlanEntry[]) => void | Promise<void>) | undefined;
-  let onUsage: ((usage: { used: number; size: number }) => void | Promise<void>) | undefined;
+  let onUsage: ((usage: PromptUsage) => void | Promise<void>) | undefined;
+  let onCommands: ((commands: AgentCommand[]) => void | Promise<void>) | undefined;
   let rawStream = false;
 
   if (options === undefined) {
@@ -81,6 +90,7 @@ export function createStreamingPromptState(
     onThought = options.onThought;
     onPlan = options.onPlan;
     onUsage = options.onUsage;
+    onCommands = options.onCommands;
     rawStream = options.rawStream ?? false;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
@@ -101,6 +111,7 @@ export function createStreamingPromptState(
     onThought,
     onPlan,
     onUsage,
+    onCommands,
     finalize(): string {
       if (this.pendingLine.trim().length > 0) {
         parseStreamingChunks(this, this.pendingLine);
@@ -192,7 +203,21 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
     // a default window then the model's real one). Drop a malformed/zero-window frame.
     const used = typeof update.used === "number" && Number.isFinite(update.used) ? update.used : undefined;
     const size = typeof update.size === "number" && Number.isFinite(update.size) ? update.size : undefined;
-    if (used !== undefined && size !== undefined && size > 0) void state.onUsage?.({ used, size });
+    if (used !== undefined && size !== undefined && size > 0) {
+      const cost = normalizeUsageCost(update.cost);
+      const breakdown = normalizeUsageBreakdown(update._meta?.usage);
+      void state.onUsage?.({ used, size, ...(cost ? { cost } : {}), ...(breakdown ? { breakdown } : {}) });
+    }
+    return;
+  }
+
+  if (update.sessionUpdate === "available_commands_update") {
+    // Agent-advertised slash commands (e.g. /compact). Full list each time (REPLACE).
+    // Emit on any explicit list — including an empty one, which is a legitimate "clear"
+    // (the agent dropped its commands); skip only malformed frames with no array.
+    if (Array.isArray(update.availableCommands)) {
+      void state.onCommands?.(normalizeAgentCommands(update.availableCommands));
+    }
     return;
   }
 
@@ -383,6 +408,58 @@ function readFirstStringArray(record: Record<string, unknown>, keys: readonly st
     }
   }
   return undefined;
+}
+
+const USAGE_BREAKDOWN_FIELDS: ReadonlyArray<readonly [keyof UsageBreakdown, readonly string[]]> = [
+  ["inputTokens", ["inputTokens", "input_tokens"]],
+  ["outputTokens", ["outputTokens", "output_tokens"]],
+  ["cachedReadTokens", ["cachedReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"]],
+  ["cachedWriteTokens", ["cachedWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens"]],
+  ["thoughtTokens", ["thoughtTokens", "thought_tokens"]],
+  ["totalTokens", ["totalTokens", "total_tokens"]],
+];
+
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function firstFiniteNumber(record: Record<string, unknown>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const n = asFiniteNumber(record[key]);
+    if (n !== undefined) return n;
+  }
+  return undefined;
+}
+
+function normalizeUsageBreakdown(value: unknown): UsageBreakdown | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: UsageBreakdown = {};
+  for (const [key, aliases] of USAGE_BREAKDOWN_FIELDS) {
+    const n = firstFiniteNumber(value, aliases);
+    if (n !== undefined) out[key] = n;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function normalizeUsageCost(value: unknown): UsageCost | undefined {
+  if (!isRecord(value)) return undefined;
+  const amount = asFiniteNumber(value.amount);
+  const currency = readString(value, "currency");
+  if (amount === undefined && !currency) return undefined;
+  return { ...(amount !== undefined ? { amount } : {}), ...(currency ? { currency } : {}) };
+}
+
+function normalizeAgentCommands(value: unknown): AgentCommand[] {
+  if (!Array.isArray(value)) return [];
+  const out: AgentCommand[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const name = readString(entry, "name");
+    if (!name) continue;
+    const description = readString(entry, "description");
+    out.push({ name, ...(description ? { description } : {}), hasInput: entry.input != null });
+  }
+  return out;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

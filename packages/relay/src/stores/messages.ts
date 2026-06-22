@@ -1,4 +1,4 @@
-import type { MessageDirection, MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
+import type { AttachmentMetadata, MessageDirection, MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
 
 import type { SqlDriver } from "../db.js";
 
@@ -12,6 +12,7 @@ interface MessageRow {
   text: string;
   created_at: string;
   structured: string | null;
+  attachments: string | null;
 }
 
 export interface MessagePage {
@@ -23,10 +24,25 @@ export interface MessagePage {
 export class MessageStore {
   constructor(private readonly db: SqlDriver, private readonly now: () => Date = () => new Date()) {}
 
-  append(instanceId: string, sessionAlias: string, direction: MessageDirection, text: string, structured?: StructuredTurn): void {
+  append(
+    instanceId: string,
+    sessionAlias: string,
+    direction: MessageDirection,
+    text: string,
+    structured?: StructuredTurn,
+    attachments?: AttachmentMetadata[],
+  ): void {
     this.db.run(
-      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured) VALUES (?,?,?,?,?,?)",
-      [instanceId, sessionAlias, direction, text, this.now().toISOString(), structured ? JSON.stringify(structured) : null],
+      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments) VALUES (?,?,?,?,?,?,?)",
+      [
+        instanceId,
+        sessionAlias,
+        direction,
+        text,
+        this.now().toISOString(),
+        structured ? JSON.stringify(structured) : null,
+        attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
+      ],
     );
   }
 
@@ -46,7 +62,7 @@ export class MessageStore {
     const before = opts.before ?? null;
     // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
          AND (? IS NULL OR m.id < ?)
@@ -65,6 +81,7 @@ export class MessageStore {
         text: r.text,
         createdAt: r.created_at,
         ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
+        ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
       })),
     };
   }
