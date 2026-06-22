@@ -22,6 +22,8 @@ import type { ControlEventBus, ScheduledOrigin } from "./control-event-bus";
 import { readNativeSessionHistory, type NativeHistoryMessage } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
 import { WorkspaceFs, type DirListing, type FileContent, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type { UploadStore } from "./upload-store.js";
 
 export interface ControlSessionInfo {
   alias: string;
@@ -98,6 +100,7 @@ export interface ControlServiceDeps {
     create(name: string, cwd: string, description?: string): Promise<ControlWorkspaceInfo>;
     remove(name: string): Promise<void>;
   };
+  uploadStore: UploadStore;
 }
 
 export interface ControlPromptInput {
@@ -107,6 +110,7 @@ export interface ControlPromptInput {
   accountId?: string;
   senderId: string;
   isOwner?: boolean;
+  media?: PromptAttachmentRef[];
 }
 
 export interface ControlPromptResult {
@@ -162,6 +166,10 @@ export class ControlService {
 
   searchWorkspace(workspace: string, query: string): Promise<SearchResult> {
     return this.workspaceFs.search(workspace, query);
+  }
+
+  async uploadFile(input: { filename: string; content: string; mimeType: string }): Promise<{ id: string; path: string; filename: string; mimeType: string; size: number }> {
+    return this.deps.uploadStore.save(input.filename, input.content, input.mimeType);
   }
 
   /** Read a session's current model and the agent-advertised available ids. */
@@ -369,6 +377,7 @@ export class ControlService {
       senderId: input.senderId,
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
+      ...(input.media !== undefined ? { media: input.media } : {}),
     });
   }
 
@@ -400,6 +409,7 @@ export class ControlService {
     abortSignal?: AbortSignal;
     // Extra fields stamped onto turn-started for scheduled-origin turns.
     turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin };
+    media?: PromptAttachmentRef[];
   }): Promise<ControlPromptResult> {
     const key = turnKey(params.chatKey, params.sessionAlias);
     const existing = this.inFlight.get(key);
@@ -466,6 +476,19 @@ export class ControlService {
       });
       emittedChunk = true;
     };
+    const chatMedia = (params.media ?? []).map((ref) => ({
+      kind: ref.kind,
+      filePath: ref.filePath,
+      mimeType: ref.mimeType,
+      ...(ref.fileName ? { fileName: ref.fileName } : {}),
+      sizeBytes: ref.size,
+      source: {
+        channelId: "relay",
+        accountId: params.accountId ?? "control",
+        chatKey: params.chatKey,
+        messageId: ref.id,
+      },
+    }));
     try {
       const response = await this.deps.agent.chat({
         accountId: params.accountId ?? "control",
@@ -473,6 +496,7 @@ export class ControlService {
         text: params.text,
         metadata: buildControlMetadata(params.senderId, params.isOwner),
         abortSignal: controller.signal,
+        ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {
           emitChunk(chunk);
         },
