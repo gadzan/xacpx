@@ -15,7 +15,25 @@ const coreVersion = computed(() => store.byId(props.instanceId)?.coreVersion ?? 
 
 const loading = ref(true);
 type Tab = "general" | "workspaces" | "agents";
+const TABS = ["general", "workspaces", "agents"] as const;
 const tab = ref<Tab>("general");
+
+// Roving-tabindex arrow-key navigation across the tablist (Left/Right wrap, Home/End
+// jump to the ends). Moving selection also moves focus to the newly selected tab.
+function onTabKeydown(e: KeyboardEvent): void {
+  const idx = TABS.indexOf(tab.value);
+  let next = idx;
+  if (e.key === "ArrowRight") next = (idx + 1) % TABS.length;
+  else if (e.key === "ArrowLeft") next = (idx - 1 + TABS.length) % TABS.length;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = TABS.length - 1;
+  else return;
+  e.preventDefault();
+  tab.value = TABS[next];
+  void nextTick(() => {
+    dialogEl.value?.querySelector<HTMLElement>(`#tab-${TABS[next]}`)?.focus();
+  });
+}
 
 // Seed the editable name from the prop. The dialog header binds to this local ref
 // (not the static prop) so the title updates live the moment a rename succeeds.
@@ -89,9 +107,10 @@ onBeforeUnmount(() => {
       <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("instance.dialogLoading") }}</div>
       <template v-else>
         <!-- Tab strip: General / Workspaces / Agents — Agents is always one click away. -->
-        <nav class="flex shrink-0 gap-1 border-b border-border px-3 pt-2" role="tablist">
+        <nav class="flex shrink-0 gap-1 border-b border-border px-3 pt-2" role="tablist" @keydown="onTabKeydown">
           <button v-for="tb in (['general','workspaces','agents'] as const)" :key="tb"
-                  :data-test="`tab-${tb}`" role="tab" :aria-selected="tab === tb"
+                  :id="`tab-${tb}`" :data-test="`tab-${tb}`" role="tab" :aria-selected="tab === tb"
+                  :aria-controls="`tabpanel-${tb}`" :tabindex="tab === tb ? 0 : -1"
                   class="rounded-t px-3 py-1.5 text-sm font-medium transition-colors"
                   :class="tab === tb ? 'border-b-2 border-accent text-fg' : 'text-fg-muted hover:text-fg'"
                   @click="tab = tb">
@@ -99,7 +118,7 @@ onBeforeUnmount(() => {
           </button>
         </nav>
         <div class="flex-1 overflow-y-auto p-5">
-          <div v-if="tab === 'general'" class="space-y-6">
+          <div v-if="tab === 'general'" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" class="space-y-6">
             <section class="space-y-3">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.nameLabel") }}</h3>
               <p v-if="renameError" data-test="rename-error" class="rounded bg-danger/10 px-3 py-2 text-sm text-danger">{{ renameError }}</p>
@@ -118,8 +137,8 @@ onBeforeUnmount(() => {
               </p>
             </section>
           </div>
-          <div v-else-if="tab === 'workspaces'"><WorkspacesManager :instance-id="instanceId" /></div>
-          <div v-else-if="tab === 'agents'"><AgentsManager :instance-id="instanceId" /></div>
+          <div v-else-if="tab === 'workspaces'" id="tabpanel-workspaces" role="tabpanel" aria-labelledby="tab-workspaces"><WorkspacesManager :instance-id="instanceId" /></div>
+          <div v-else-if="tab === 'agents'" id="tabpanel-agents" role="tabpanel" aria-labelledby="tab-agents"><AgentsManager :instance-id="instanceId" /></div>
         </div>
       </template>
     </div>

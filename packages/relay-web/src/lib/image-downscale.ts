@@ -1,7 +1,7 @@
 /** Returns a downscaled data URL (≤ maxPx on the long edge) for images, or undefined for non-images. */
 export async function downscaleImage(file: File, maxPx = 512): Promise<string | undefined> {
   if (!file.type.startsWith("image/")) return undefined;
-  const bitmap = await createImageBitmap(file).catch(() => null);
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => null);
   if (!bitmap) return undefined;
   const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
   const w = Math.max(1, Math.round(bitmap.width * scale));

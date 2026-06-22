@@ -284,7 +284,7 @@ function onInput() {
           <button v-if="busy" type="button" data-test="composer-stop"
                   class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-danger text-white text-[12.5px] font-semibold hover:opacity-90 transition-all"
                   @click="emit('cancel')">{{ $t("chat.stop") }}</button>
-          <button v-else type="submit" data-test="composer-send" :disabled="!text.trim() && !composer.pending.filter(p => p.status === 'ready').length"
+          <button v-else type="submit" data-test="composer-send" :disabled="composer.uploading || (!text.trim() && !composer.pending.filter(p => p.status === 'ready').length)"
                   class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
             {{ $t("chat.send") }}
             <Send :size="14" />

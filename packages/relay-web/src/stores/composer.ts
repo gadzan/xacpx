@@ -39,7 +39,11 @@ export const useComposerStore = defineStore("composer", () => {
   }
 
   async function addFiles(files: File[]): Promise<void> {
-    if (!instanceId) return;
+    // Capture the target instance once at the start: an in-flight batch must keep
+    // uploading to the instance it began with, even if bindInstance() switches the
+    // active instance mid-flight (session/instance switch while files are queued).
+    const targetInstanceId = instanceId;
+    if (!targetInstanceId) return;
     rejection.value = null;
     uploading.value = true;
     for (const file of files) {
@@ -60,7 +64,7 @@ export const useComposerStore = defineStore("composer", () => {
         const previewUrl = await downscaleImage(file);
         if (previewUrl) entry.previewUrl = previewUrl;
         const content = await fileToBase64(file);
-        const res = await api.upload(instanceId, { filename: file.name, content, mimeType: entry.mimeType });
+        const res = await api.upload(targetInstanceId, { filename: file.name, content, mimeType: entry.mimeType });
         entry.filePath = res.path;
         entry.id = res.id;
         entry.size = res.size;

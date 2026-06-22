@@ -102,6 +102,17 @@ describe("PromptInput composer", () => {
     expect(w.emitted("send")?.[0]).toEqual(["/compact now", []]);
   });
 
+  it("disables the send button while an upload is in flight (no silent dead click)", async () => {
+    const { useComposerStore } = await import("../stores/composer");
+    const composer = useComposerStore();
+    const w = mount(PromptInput);
+    await w.find("textarea").setValue("ready to go"); // would normally enable Send
+    expect((w.get('[data-test="composer-send"]').element as HTMLButtonElement).disabled).toBe(false);
+    composer.uploading = true;
+    await w.vm.$nextTick();
+    expect((w.get('[data-test="composer-send"]').element as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("inserts text from a composer store request targeting this session", async () => {
     const { useComposerStore } = await import("../stores/composer");
     const composer = useComposerStore();
