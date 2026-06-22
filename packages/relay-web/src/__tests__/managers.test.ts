@@ -26,6 +26,7 @@ test("WorkspacesManager creates a workspace", async () => {
   const store = useInstancesStore(); seed(store);
   const createWorkspace = vi.spyOn(store, "createWorkspace").mockResolvedValue(undefined as never);
   const w = mount(WorkspacesManager, { props: { instanceId: "i1" } });
+  await w.get('[data-test="wm-add-toggle"]').trigger("click");
   await w.get('[data-test="wm-name"]').setValue("frontend");
   await w.get('[data-test="wm-path"]').setValue("/f");
   await w.get('[data-test="wm-create"]').trigger("click");
@@ -47,6 +48,7 @@ test("WorkspacesManager resets its inputs after a successful create", async () =
   const store = useInstancesStore(); seed(store);
   vi.spyOn(store, "createWorkspace").mockResolvedValue(undefined as never);
   const w = mount(WorkspacesManager, { props: { instanceId: "i1" } });
+  await w.get('[data-test="wm-add-toggle"]').trigger("click");
   await w.get('[data-test="wm-name"]').setValue("frontend");
   await w.get('[data-test="wm-path"]').setValue("/f");
   await w.get('[data-test="wm-desc"]').setValue("the frontend");
@@ -61,6 +63,7 @@ test("AgentsManager adds an agent from the catalog driver picker", async () => {
   const store = useInstancesStore(); seed(store);
   const createAgent = vi.spyOn(store, "createAgent").mockResolvedValue(undefined as never);
   const w = mount(AgentsManager, { props: { instanceId: "i1" } });
+  await w.get('[data-test="am-add-toggle"]').trigger("click");
   await w.get('[data-test="am-driver"]').setValue("gemini");
   await w.get('[data-test="am-add"]').trigger("click");
   expect(createAgent).toHaveBeenCalledWith("i1", "gemini", "gemini");
@@ -91,7 +94,7 @@ test("managers render Chinese affordances when locale is zh-CN", async () => {
   i18n.global.locale.value = "zh-CN";
   const store = useInstancesStore(); seed(store);
   const wm = mount(WorkspacesManager, { props: { instanceId: "i1" } });
-  expect(wm.get('[data-test="wm-create"]').text()).toBe("添加工作区");
+  expect(wm.get('[data-test="wm-add-toggle"]').text()).toBe("添加工作区");
   const am = mount(AgentsManager, { props: { instanceId: "i1" } });
-  expect(am.get('[data-test="am-add"]').text()).toBe("添加 Agent");
+  expect(am.get('[data-test="am-add-toggle"]').text()).toBe("添加 Agent");
 });

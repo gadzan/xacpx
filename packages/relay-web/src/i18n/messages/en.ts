@@ -12,6 +12,9 @@ export default {
     remove: "Remove",
     dismiss: "dismiss",
     dismissNotice: "Dismiss",
+    add: "Add",
+    filter: "Filter…",
+    noMatch: "No match",
   },
   connection: {
     online: "Connected",
@@ -178,6 +181,7 @@ export default {
     manageTitle: "Manage · {name}",
     close: "Close",
     dialogLoading: "Loading…",
+    tabGeneral: "General",
     nameLabel: "Name",
     renamePlaceholder: "instance name",
     renameSave: "Save",

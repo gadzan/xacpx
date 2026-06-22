@@ -62,6 +62,23 @@ test("renders the Save affordance in Chinese when locale is zh-CN", async () => 
   expect(w.get('[data-test="rename-save"]').text()).toBe("保存");
 });
 
+test("tabs switch between the general and agents panes", async () => {
+  const { w } = mountDialog();
+  await flushPromises();
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(true); // general is default
+  await w.get('[data-test="tab-agents"]').trigger("click");
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(false); // general pane unmounted
+  await w.get('[data-test="tab-general"]').trigger("click");
+  expect(w.find('[data-test="rename-name"]').exists()).toBe(true);
+});
+
+test("Escape closes the dialog", async () => {
+  const { w } = mountDialog();
+  await flushPromises();
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  expect(w.emitted("close")).toBeTruthy();
+});
+
 test("shows the instance version row from the store's coreVersion", async () => {
   const store = useInstancesStore();
   store.instances = [{

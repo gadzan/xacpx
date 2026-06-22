@@ -10,6 +10,9 @@ export default {
     remove: "移除",
     dismiss: "关闭",
     dismissNotice: "关闭通知",
+    add: "添加",
+    filter: "筛选…",
+    noMatch: "无匹配",
   },
   connection: {
     online: "已连接",
@@ -174,6 +177,7 @@ export default {
     deleteSessionTitle: "删除会话？",
     deleteSessionBody: "“{alias}” 将被永久删除，此操作无法撤销。",
     manageTitle: "管理 · {name}",
+    tabGeneral: "常规",
     close: "关闭",
     dialogLoading: "加载中…",
     nameLabel: "名称",
