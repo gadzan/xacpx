@@ -42,8 +42,12 @@ export async function getLatestNpmVersion(packageName: string): Promise<string |
   }
 }
 
-/** True when `candidate` >= compare numerically on major.minor.patch; a prerelease
- *  ranks below the same release (so a staging prerelease never trips "update available"). */
+/** True when `candidate` is strictly newer than `current` (equal versions → false).
+ *  Compares numerically on major.minor.patch; a prerelease ranks below the same
+ *  release, so a staging prerelease of the current version never trips "update
+ *  available". Prerelease *identifiers* are not ordered among themselves (any two
+ *  prereleases of the same release compare equal) — fine here because we compare
+ *  against npm's stable `latest`, not prereleases. */
 export function isNewer(candidate: string, current: string): boolean {
   return compareSemver(candidate, current) > 0;
 }
