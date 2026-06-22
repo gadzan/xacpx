@@ -481,19 +481,26 @@ export class ControlService {
     // Defense-in-depth: the two-phase upload sandbox is meant to be the only source of
     // attachment bytes (the web flow echoes back the path control.upload returned, which
     // lives under the sandbox root). Drop any media ref whose resolved filePath escapes
-    // that root so a caller cannot point the agent at an arbitrary absolute path.
-    const uploadRoot = path.resolve(this.deps.uploadStore.root);
+    // that root so a caller cannot point the agent at an arbitrary absolute path. Only
+    // touch the upload store when a turn actually carries media — a plain prompt turn
+    // has no attachments and must not depend on the store being present.
     const incomingMedia = params.media ?? [];
-    const sandboxedMedia = incomingMedia.filter((ref) => {
-      const resolved = path.resolve(ref.filePath);
-      return resolved === uploadRoot || resolved.startsWith(uploadRoot + path.sep);
-    });
-    const droppedMedia = incomingMedia.length - sandboxedMedia.length;
-    if (droppedMedia > 0) {
-      console.warn(
-        `[control] dropped ${droppedMedia} media ref(s) with filePath outside the upload sandbox`,
-      );
-    }
+    const sandboxedMedia = incomingMedia.length
+      ? (() => {
+          const uploadRoot = path.resolve(this.deps.uploadStore.root);
+          const kept = incomingMedia.filter((ref) => {
+            const resolved = path.resolve(ref.filePath);
+            return resolved === uploadRoot || resolved.startsWith(uploadRoot + path.sep);
+          });
+          const dropped = incomingMedia.length - kept.length;
+          if (dropped > 0) {
+            console.warn(
+              `[control] dropped ${dropped} media ref(s) with filePath outside the upload sandbox`,
+            );
+          }
+          return kept;
+        })()
+      : incomingMedia;
     const chatMedia = sandboxedMedia.map((ref) => ({
       kind: ref.kind,
       filePath: ref.filePath,
