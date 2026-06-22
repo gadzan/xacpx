@@ -94,6 +94,22 @@ test("turn-usage for an unselected session does not leak into sessionUsage", () 
   expect(store.sessionUsage).toBeNull();
 });
 
+test("agent-commands populate sessionCommands for the selected session", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+    commands: [{ name: "compact", description: "Compact" }, { name: "run", hasInput: true }],
+  } } as never);
+  expect(store.sessionCommands).toEqual([{ name: "compact", description: "Compact" }, { name: "run", hasInput: true }]);
+});
+
+test("sessionCommands is empty for a session that advertised none", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  expect(store.sessionCommands).toEqual([]);
+});
+
 test("requestScrollToScheduled bumps a nonce-keyed scroll request", () => {
   const store = useChatStore();
   expect(store.scrollRequest).toBeNull();

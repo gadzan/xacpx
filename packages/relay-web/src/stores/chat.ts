@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -77,6 +77,9 @@ export const useChatStore = defineStore("chat", () => {
   // `size` total window. Session-scoped like `plans` so it persists across turns (REPLACE
   // semantics). Absent for agents that don't report usage (e.g. codex) — the meter hides.
   const usage = ref<Record<string, SessionUsage>>({});
+  // Agent-advertised slash commands per session (latest `agent-commands`). Session-scoped
+  // like plans/usage (REPLACE), persists across turns. Empty for agents that don't advertise.
+  const agentCommands = ref<Record<string, AgentCommandDto[]>>({});
   // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
   // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
   const unread = ref<Set<string>>(new Set());
@@ -113,6 +116,9 @@ export const useChatStore = defineStore("chat", () => {
   );
   const sessionUsage = computed<SessionUsage | null>(() =>
     selectedKey.value ? usage.value[selectedKey.value] ?? null : null,
+  );
+  const sessionCommands = computed<AgentCommandDto[]>(() =>
+    selectedKey.value ? agentCommands.value[selectedKey.value] ?? [] : [],
   );
   const streaming = computed(() => (liveTurn.value ? textOf(liveTurn.value.parts) : ""));
   const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
@@ -286,6 +292,9 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "turn-usage") {
       // Latest context-usage for the session (REPLACE). Like plans, persists across turns.
       usage.value[bufKey(event.instanceId, e.sessionAlias)] = { used: e.used, size: e.size, ...(e.cost ? { cost: e.cost } : {}), ...(e.breakdown ? { breakdown: e.breakdown } : {}) };
+    } else if (e.type === "agent-commands") {
+      // Latest agent slash-command list for the session (REPLACE). Drives composer "/" hints.
+      agentCommands.value[bufKey(event.instanceId, e.sessionAlias)] = e.commands;
     } else if (e.type === "session-history") {
       // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
@@ -377,5 +386,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });
