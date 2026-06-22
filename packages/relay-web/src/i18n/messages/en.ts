@@ -77,7 +77,7 @@ export default {
     message: "Message",
     jumpLatest: "↓ Latest",
     contextUsage: "Context: {used} / {size} tokens",
-    attach: { add: "Attach file", remove: "Remove" },
+    attach: { add: "Attach file", remove: "Remove", tooMany: "Up to 5 files per message", tooLarge: "{name} is too large (max 10MB)" },
   },
   session: {
     newSession: "New session",

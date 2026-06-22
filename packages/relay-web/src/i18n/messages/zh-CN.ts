@@ -75,7 +75,7 @@ export default {
     message: "消息",
     jumpLatest: "↓ 最新",
     contextUsage: "上下文：{used} / {size} tokens",
-    attach: { add: "添加附件", remove: "移除" },
+    attach: { add: "添加附件", remove: "移除", tooMany: "每条消息最多 5 个文件", tooLarge: "{name} 太大（最大 10MB）" },
   },
   session: {
     newSession: "新建会话",

@@ -30,6 +30,7 @@ export const useComposerStore = defineStore("composer", () => {
 
   const pending = ref<PendingAttachment[]>([]);
   const uploading = ref(false);
+  const rejection = ref<{ reason: "too-many" | "too-large"; filename: string } | null>(null);
   let instanceId = "";
   let localSeq = 0;
 
@@ -39,10 +40,11 @@ export const useComposerStore = defineStore("composer", () => {
 
   async function addFiles(files: File[]): Promise<void> {
     if (!instanceId) return;
+    rejection.value = null;
     uploading.value = true;
     for (const file of files) {
-      if (pending.value.length >= MAX_ATTACHMENTS) break;
-      if (file.size > MAX_BYTES) continue;
+      if (pending.value.length >= MAX_ATTACHMENTS) { rejection.value = { reason: "too-many", filename: file.name }; break; }
+      if (file.size > MAX_BYTES) { rejection.value = { reason: "too-large", filename: file.name }; continue; }
       const localId = `local-${++localSeq}`;
       const kind: "image" | "file" = file.type.startsWith("image/") ? "image" : "file";
       const entry: PendingAttachment = {
@@ -72,11 +74,13 @@ export const useComposerStore = defineStore("composer", () => {
 
   function removeAttachment(id: string): void {
     pending.value = pending.value.filter((p) => p.id !== id);
+    rejection.value = null;
   }
 
   function clearAttachments(): void {
     pending.value = [];
+    rejection.value = null;
   }
 
-  return { insertRequest, requestInsert, pending, uploading, bindInstance, addFiles, removeAttachment, clearAttachments };
+  return { insertRequest, requestInsert, pending, uploading, rejection, bindInstance, addFiles, removeAttachment, clearAttachments };
 });

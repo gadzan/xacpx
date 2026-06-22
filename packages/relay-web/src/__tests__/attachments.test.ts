@@ -41,6 +41,26 @@ test("addFiles rejects beyond the 5-attachment cap", async () => {
   expect(composer.pending).toHaveLength(5);
 });
 
+test("sets rejection.reason=too-many when 6 files are added", async () => {
+  upload.mockResolvedValue({ id: "u", path: "/p", filename: "f", mimeType: "text/plain", size: 1 });
+  const composer = useComposerStore();
+  composer.bindInstance("i1");
+  const mk = (n: string) => new File([new Uint8Array([1])], n, { type: "text/plain" });
+  await composer.addFiles([mk("1"), mk("2"), mk("3"), mk("4"), mk("5"), mk("6")]);
+  expect(composer.rejection?.reason).toBe("too-many");
+  expect(composer.rejection?.filename).toBe("6");
+});
+
+test("sets rejection.reason=too-large when a file exceeds 10MB", async () => {
+  const composer = useComposerStore();
+  composer.bindInstance("i1");
+  const file = new File([new Uint8Array(1)], "big.png", { type: "image/png" });
+  Object.defineProperty(file, "size", { value: 11 * 1024 * 1024 });
+  await composer.addFiles([file]);
+  expect(composer.rejection?.reason).toBe("too-large");
+  expect(composer.rejection?.filename).toBe("big.png");
+});
+
 test("chat.send forwards ready attachments as media refs", async () => {
   rpc.mockResolvedValue({ ok: true });
   const chat = useChatStore();

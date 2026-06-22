@@ -164,6 +164,10 @@ function onInput() {
                   @click="composer.removeAttachment(p.id)"><X :size="12" /></button>
         </div>
       </div>
+      <!-- Inline feedback when an attachment is rejected (cap or size limit). -->
+      <span v-if="composer.rejection" data-test="attach-rejected" class="block px-3 pt-2 text-xs text-danger">
+        {{ composer.rejection.reason === 'too-many' ? $t('chat.attach.tooMany') : $t('chat.attach.tooLarge', { name: composer.rejection.filename }) }}
+      </span>
       <!-- Stays enabled while busy so you can pre-compose the next message and press
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"
