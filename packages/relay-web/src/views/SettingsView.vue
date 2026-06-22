@@ -46,7 +46,10 @@ async function onLogout() {
 </script>
 
 <template>
-  <div class="mx-auto max-w-2xl p-6">
+  <!-- Standalone full-screen route (no shared safe-area header like the dashboard has),
+       so apply the notch/home-indicator insets here. body is already bg-bg, so the area
+       behind the notch stays dark. -->
+  <div class="mx-auto max-w-2xl px-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-[calc(1.5rem+env(safe-area-inset-top))]">
     <header class="mb-6 flex items-center justify-between">
       <h1 class="text-lg font-semibold text-fg">{{ $t("settings.title") }}</h1>
       <router-link to="/" class="text-sm text-fg-muted hover:underline">{{ $t("common.back") }}</router-link>
