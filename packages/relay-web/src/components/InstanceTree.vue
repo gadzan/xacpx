@@ -64,14 +64,30 @@ const openMenuFor = ref<string | null>(null);
 // Single ref ⇒ opening one row auto-closes any other. Swipe right→left reveals;
 // tapping a block executes; tapping the row body or anywhere outside closes.
 const openSwipeFor = ref<string | null>(null);
+// Live drag: the row currently being dragged + its raw horizontal delta, so the row
+// follows the finger 1:1 (transition is off while dragging, on for the snap release).
+const draggingKey = ref<string | null>(null);
+const dragDx = ref(0);
 function onDocPointerDown() { openMenuFor.value = null; openSwipeFor.value = null; }
 onMounted(() => document.addEventListener("mousedown", onDocPointerDown));
 onUnmounted(() => document.removeEventListener("mousedown", onDocPointerDown));
 
-// Px the row shifts left to reveal its blocks: 64px per visible block (delete always,
-// archive only when the session isn't already archived).
+// Px the row shifts left to reveal its blocks: one 56px block per visible action
+// (delete always, archive only when the session isn't already archived).
 function revealPx(s: { archived?: boolean }): number {
-  return s.archived ? 64 : 128;
+  return s.archived ? 56 : 112;
+}
+// translateX for a row: follow the finger while dragging (clamped to the reveal
+// range), else snap to fully open / closed.
+function rowTransform(instanceId: string, s: { alias: string; archived?: boolean }): string {
+  const key = `${instanceId}:${s.alias}`;
+  const reveal = revealPx(s);
+  if (draggingKey.value === key) {
+    const base = openSwipeFor.value === key ? -reveal : 0;
+    const x = Math.max(-reveal, Math.min(0, base + dragDx.value));
+    return `translateX(${x}px)`;
+  }
+  return openSwipeFor.value === key ? `translateX(-${reveal}px)` : "translateX(0)";
 }
 // Tapping the row body: if its blocks are open, the tap just closes them (iOS-style);
 // otherwise it selects the session.
@@ -119,9 +135,17 @@ const rowSwipes = computed(() => {
     if (!inst.online) continue;
     for (const s of inst.sessions) {
       const key = `${inst.id}:${s.alias}`;
+      const reveal = revealPx(s);
       map[key] = useSwipeActions({
-        onSwipeLeft: () => { openMenuFor.value = null; openSwipeFor.value = key; },
-        onSwipeRight: () => { if (openSwipeFor.value === key) openSwipeFor.value = null; },
+        onMove: (dx) => { openMenuFor.value = null; draggingKey.value = key; dragDx.value = dx; },
+        onEnd: (dx) => {
+          // Snap open if the row ended past the halfway point, else closed.
+          const base = openSwipeFor.value === key ? -reveal : 0;
+          const finalX = Math.max(-reveal, Math.min(0, base + dx));
+          openSwipeFor.value = finalX <= -reveal / 2 ? key : null;
+          draggingKey.value = null;
+          dragDx.value = 0;
+        },
       }).handlers;
     }
   }
@@ -160,8 +184,9 @@ const rowSwipes = computed(() => {
                `overflow-hidden` on the parent clips them away when closed. -->
           <div
             data-test="swipe-track"
-            class="flex touch-pan-y transition-transform duration-200 ease-out"
-            :style="openSwipeFor === `${inst.id}:${s.alias}` ? { transform: `translateX(-${revealPx(s)}px)` } : {}"
+            class="flex touch-pan-y ease-out"
+            :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-200'"
+            :style="{ transform: rowTransform(inst.id, s) }"
             v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
           >
             <!-- Foreground row content (spans the full row width). -->
@@ -204,12 +229,12 @@ const rowSwipes = computed(() => {
             <!-- Swipe-revealed action blocks (touch). Sit just past the right edge; the
                  `@click.stop` prevents the row tap from also firing. -->
             <template v-if="inst.online">
-              <button v-if="!s.archived" data-test="swipe-archive" :aria-label="$t('instance.archiveSession')"
-                      class="flex w-16 shrink-0 flex-col items-center justify-center gap-0.5 bg-warn text-[10px] font-medium text-white"
-                      @click.stop="onArchive(inst.id, s.alias)"><Archive :size="15" />{{ $t("instance.archive") }}</button>
-              <button data-test="swipe-delete" :aria-label="$t('common.delete')"
-                      class="flex w-16 shrink-0 flex-col items-center justify-center gap-0.5 bg-danger text-[10px] font-medium text-white"
-                      @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="15" />{{ $t("common.delete") }}</button>
+              <button v-if="!s.archived" data-test="swipe-archive" :aria-label="$t('instance.archiveSession')" :title="$t('instance.archiveSession')"
+                      class="flex w-14 shrink-0 items-center justify-center bg-warn text-white transition-colors hover:bg-warn/90"
+                      @click.stop="onArchive(inst.id, s.alias)"><Archive :size="16" /></button>
+              <button data-test="swipe-delete" :aria-label="$t('common.delete')" :title="$t('common.delete')"
+                      class="flex w-14 shrink-0 items-center justify-center bg-danger text-white transition-colors hover:bg-danger/90"
+                      @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="16" /></button>
             </template>
           </div>
         </div>
