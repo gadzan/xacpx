@@ -70,6 +70,19 @@ function safePreviewUrl(v: unknown): string | undefined {
   return undefined;
 }
 
+// Coarse pre-buffer ceiling for /rpc bodies: a 10MB upload as base64 inside a JSON
+// envelope is ~13.33MB; 16MB leaves headroom for envelope overhead.
+const RPC_MAX_BODY_BYTES = 16 * 1024 * 1024;
+// Design spec caps attachments at ≤5 per message; bound persisted string fields too
+// so arbitrarily long filename/mimeType can't bloat storage.
+const MAX_PERSISTED_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_FIELD_LEN = 256;
+
+/** Truncate a persisted attachment string field to a bounded length. */
+function boundField<T extends string | undefined>(v: T): T {
+  return (typeof v === "string" ? v.slice(0, MAX_ATTACHMENT_FIELD_LEN) : v) as T;
+}
+
 type Vars = { Variables: { account: AccountRow } };
 
 export function createApp(deps: AppDeps): Hono<Vars> {
@@ -269,6 +282,15 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const account = c.get("account");
     const instance = deps.instances.getOwned(c.req.param("id"), account.id);
     if (!instance) return c.json({ error: "not-found" }, 404);
+    // Coarse pre-buffer guard for ALL rpc types: reject by Content-Length before we
+    // read+JSON-parse the whole body into memory. Ceiling accommodates a 10MB upload
+    // encoded as base64 inside a JSON envelope (10MB → ~13.33MB base64 + overhead).
+    // Missing/unparseable Content-Length falls through — the precise MSG.upload
+    // decoded-size check below still bounds uploads.
+    const contentLength = Number(c.req.header("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > RPC_MAX_BODY_BYTES) {
+      return c.json({ error: "payload-too-large" }, 413);
+    }
     const body = (await c.req.json().catch(() => ({}))) as { type?: string; payload?: unknown };
     if (!body.type || !body.type.startsWith("control.")) return c.json({ error: "invalid-rpc-type" }, 400);
     let payload = body.payload ?? {};
@@ -293,12 +315,15 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       if (body.type === MSG.prompt || body.type === MSG.commandExecute) {
         const p = payload as { sessionAlias?: string; text?: string; media?: import("@ganglion/xacpx-relay-protocol").PromptAttachmentRef[] };
         if (p.sessionAlias && p.text !== undefined) {
-          const attachments = (p.media ?? []).map((m) => {
+          // Cap count (≤5 per spec) and bound string fields so a malicious client
+          // can't bloat storage. Only affects what's persisted; the forwarded turn
+          // payload (sendRequest below) keeps the original media untouched.
+          const attachments = (p.media ?? []).slice(0, MAX_PERSISTED_ATTACHMENTS).map((m) => {
             const previewUrl = safePreviewUrl(m.previewUrl);
             return {
               id: m.id,
-              filename: m.fileName,
-              mimeType: m.mimeType,
+              filename: boundField(m.fileName),
+              mimeType: boundField(m.mimeType),
               size: m.size,
               kind: m.kind,
               ...(previewUrl ? { previewUrl } : {}),
