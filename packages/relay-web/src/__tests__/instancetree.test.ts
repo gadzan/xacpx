@@ -56,6 +56,65 @@ describe("InstanceTree session management", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
+  // Regression: the menu item must survive the real mousedown→click sequence. A
+  // document-level mousedown listener nulls openMenuFor; if that unmounts the menu
+  // before click, archive/delete silently no-op (the prior bug). `trigger("click")`
+  // alone never reproduced it because it skips mousedown.
+  // NOTE: `attachTo: document.body` is load-bearing — the document mousedown listener
+  // only sees the event when the node is in the real DOM; without it this test goes
+  // green against the buggy code. `w.unmount()` removes the node + listener after.
+  it("archives via the overflow menu through a real mousedown+click sequence", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const archive = vi.spyOn(store, "archiveSession").mockResolvedValue();
+    const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("mousedown");
+    await w.find('[data-test="session-menu"]').trigger("click");
+    const item = w.find('[data-test="action-archive"]');
+    expect(item.exists()).toBe(true);
+    await item.trigger("mousedown"); // bubbles to the document listener…
+    expect(w.find('[data-test="action-archive"]').exists()).toBe(true); // …but the menu stays mounted
+    await item.trigger("click");
+    await flushPromises();
+    expect(archive).toHaveBeenCalledWith("i1", "backend");
+    w.unmount();
+  });
+
+  // Regression: the row must wire the swipe composable to real pointer events. A
+  // left swipe past the threshold archives. Catches the `onPointerdown`-vs-`pointerdown`
+  // key bug that made `v-on="handlers"` bind dead events.
+  it("binds swipe handlers to real pointer events (left swipe archives)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const archive = vi.spyOn(store, "archiveSession").mockResolvedValue();
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const row = w.find('[data-test="session-row"]');
+    await row.trigger("pointerdown", { clientX: 200, clientY: 0 });
+    await row.trigger("pointermove", { clientX: 120, clientY: 0 });
+    await row.trigger("pointerup", { clientX: 120, clientY: 0 });
+    await flushPromises();
+    expect(archive).toHaveBeenCalledWith("i1", "backend");
+  });
+
+  // Symmetric to the left-swipe case: a right swipe past the threshold opens the
+  // destructive delete confirm (it must NOT delete until confirmed).
+  it("binds swipe handlers to real pointer events (right swipe asks to delete)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const remove = vi.spyOn(store, "removeSession").mockResolvedValue();
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const row = w.find('[data-test="session-row"]');
+    await row.trigger("pointerdown", { clientX: 100, clientY: 0 });
+    await row.trigger("pointermove", { clientX: 200, clientY: 0 });
+    await row.trigger("pointerup", { clientX: 200, clientY: 0 });
+    await flushPromises();
+    expect(useConfirmState().value?.title).toBe("Delete session?");
+    expect(remove).not.toHaveBeenCalled();
+    settleConfirm(true);
+    await flushPromises();
+    expect(remove).toHaveBeenCalledWith("i1", "backend");
+  });
+
   it("mounts with an empty chat store and shows no attention dot for idle sessions", () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
