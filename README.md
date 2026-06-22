@@ -519,18 +519,26 @@ For more filtering, aliases, and troubleshooting, see [docs/native-sessions.md](
 
 If you run several xacpx instances and want to drive them all from one browser dashboard, you can self-host the **relay hub**. Each instance dials out to the hub over WebSocket and registers; you log in to a multi-tenant web dashboard and manage every instance's sessions — chat, scheduled tasks, and orchestration — from one place. Streaming agent replies render as markdown, and the layout works on mobile.
 
-> Status: the relay packages are built and audited but **not yet published to npm**, so today you deploy from a source checkout. See the full guide for the exact steps.
+The hub ships as an npm package (`@ganglion/xacpx-relay`) with the dashboard **bundled in** — no separate build. It serves everything on a single port (HTTP API + dashboard + the instance WebSocket gateway), and authentication is a single **access token** used for both web login and connector pairing.
 
 ```bash
-# Build the hub server + dashboard from a repo checkout
-git clone https://github.com/gadzan/xacpx && cd xacpx && bun install
-bun run build:relay && bun run build:relay-web
+# 1. On the hub host: install (dashboard is bundled — nothing else to build)
+npm i -g @ganglion/xacpx-relay
 
-# Create the first admin, then start (point --web-root at the built dashboard)
-node packages/relay/dist/cli.js init-admin --username admin --db /var/lib/xacpx-relay/relay.db
-node packages/relay/dist/cli.js start --db /var/lib/xacpx-relay/relay.db \
-  --web-root packages/relay-web/dist --host 0.0.0.0
+# 2. Mint an access token (DB auto-created at ~/.xacpx-relay/relay.db)
+xacpx-relay add token
+#   → prints the token once; use it to log into the dashboard AND to pair connectors
+
+# 3. Start the hub (defaults: --host 0.0.0.0 --http-port 8787, dashboard auto-detected)
+xacpx-relay start
+
+# 4. On each instance host: add the connector channel and point it at the hub
+xacpx plugin add @ganglion/xacpx-channel-relay   # requires xacpx >= 0.11.0
+xacpx channel add relay --url wss://relay.example.com --token <access-token> --name my-box
+xacpx restart
 ```
+
+In production, terminate TLS at a reverse proxy in front of the single port and have instances dial `wss://`. There's no `stop`/`status` subcommand — manage the process with systemd/pm2/Docker (`Ctrl-C`/`SIGTERM` to stop); update with `xacpx-relay update`.
 
 Full walkthrough — pairing instances, TLS/reverse-proxy, systemd, backups, troubleshooting: **[Self-Hosting the Relay Hub](https://gadzan.github.io/xacpx/guide/relay-self-hosting)** (or [docs/relay-deployment.md](./docs/relay-deployment.md) for the terse runbook).
 
