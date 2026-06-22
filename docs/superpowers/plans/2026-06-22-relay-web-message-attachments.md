@@ -18,7 +18,7 @@
 - **`control.upload` is NOT chat-scoped** — it must NOT be added to `CHAT_SCOPED_TYPES` (no `chatKey`/`senderId` injection), matching `control.fs.*`.
 - **relay-protocol builds with tsc + bun then asserts** — after changing it run `bun run build:relay-protocol` and confirm `assert:relay-protocol` passes (guards the "empty barrel" tree-shake bug).
 - **Core media path is already wired** — do NOT modify `src/transport/**`, `src/console-agent.ts`, `src/commands/**`, or `prompt-media.ts`. The only core change is in `src/control/`.
-- **Tests:** relay-web `bun run --cwd packages/relay-web test`; core/connector `npm test` (typecheck + unit). Verify relay-web tests file-by-file, never whole-dir `bun test`.
+- **Tests:** core/hub/connector unit tests use the **`bun:test`** API (`import { ... } from "bun:test"`) and live under `tests/unit/...` (NOT inside the package dirs). Run a single file with `bun test <path/to/file.test.ts>` (one file = one process, safe). Run the full isolated suite with `npm run test:unit` (`node ./scripts/run-tests.mjs tests/unit`, each file in its own process). NEVER run a whole directory via `bun test tests/unit/<dir>` — single-process state leak gives false failures. relay-web uses **vitest** (`bun run --cwd packages/relay-web test [-- <filter>]`); typecheck relay-web with `bun run --cwd packages/relay-web build` (runs `vue-tsc --noEmit` first).
 
 ---
 
@@ -165,7 +165,7 @@ Create `tests/unit/control/upload-store.test.ts`:
 import { mkdtemp, readFile, stat, utimes, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 import { UploadStore } from "../../../src/control/upload-store";
 
@@ -233,7 +233,7 @@ describe("UploadStore", () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `bun run --cwd . vitest run tests/unit/control/upload-store.test.ts` (or `npx vitest run tests/unit/control/upload-store.test.ts`)
+Run: `bun test tests/unit/control/upload-store.test.ts`
 Expected: FAIL with "Cannot find module '../../../src/control/upload-store'".
 
 - [ ] **Step 3: Implement UploadStore**
@@ -343,7 +343,7 @@ export class UploadStore {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `npx vitest run tests/unit/control/upload-store.test.ts`
+Run: `bun test tests/unit/control/upload-store.test.ts`
 Expected: PASS (5 tests).
 
 - [ ] **Step 5: Simplify the directory-creation (remove the dead mkdtemp probe)**
@@ -359,7 +359,7 @@ Replace the two-line probe with a single clear `mkdir`. In `src/control/upload-s
 
 - [ ] **Step 6: Re-run the test**
 
-Run: `npx vitest run tests/unit/control/upload-store.test.ts`
+Run: `bun test tests/unit/control/upload-store.test.ts`
 Expected: PASS (5 tests).
 
 - [ ] **Step 7: Commit**
@@ -392,20 +392,20 @@ Create `tests/unit/control/control-service-media.test.ts`. This test uses a fake
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
 import { UploadStore } from "../../../src/control/upload-store";
 
 // Minimal deps stub — only what prompt()/uploadFile touch in this test.
-function buildService(chatSpy: ReturnType<typeof vi.fn>, uploadStore: UploadStore) {
+function buildService(chatSpy: ReturnType<typeof mock>, uploadStore: UploadStore) {
   const deps = {
     agent: { chat: chatSpy },
-    sessions: { resolve: vi.fn(async () => ({ alias: "main", agent: "claude", workspace: "ws", transportSession: "t", cwd: "/tmp" })) },
-    events: { emit: vi.fn() },
+    sessions: { resolve: mock(async () => ({ alias: "main", agent: "claude", workspace: "ws", transportSession: "t", cwd: "/tmp" })) },
+    events: { emit: mock(() => {}) },
     workspaces: { list: () => [] },
     uploadStore,
-    // ...any other deps your ControlService requires can be added as vi.fn() stubs
+    // ...any other deps your ControlService requires can be added as mock(() => {}) stubs
   } as unknown as ConstructorParameters<typeof ControlService>[0];
   return new ControlService(deps);
 }
@@ -414,7 +414,7 @@ describe("ControlService media", () => {
   it("uploadFile writes bytes and returns an absolute daemon path", async () => {
     const root = await mkdtemp(join(tmpdir(), "cs-upload-"));
     const store = new UploadStore({ rootDir: root });
-    const svc = buildService(vi.fn(), store);
+    const svc = buildService(mock(() => {}), store);
 
     const res = await svc.uploadFile({ filename: "shot.png", content: Buffer.from("PNG").toString("base64"), mimeType: "image/png" });
     expect(res.path.startsWith(root)).toBe(true);
@@ -423,7 +423,7 @@ describe("ControlService media", () => {
   });
 
   it("prompt() forwards media refs to agent.chat as ChannelMediaAttachment[]", async () => {
-    const chat = vi.fn(async () => ({ text: "ok" }));
+    const chat = mock(async () => ({ text: "ok" }));
     const root = await mkdtemp(join(tmpdir(), "cs-upload-"));
     const svc = buildService(chat, new UploadStore({ rootDir: root }));
 
@@ -437,7 +437,7 @@ describe("ControlService media", () => {
     });
 
     expect(chat).toHaveBeenCalledTimes(1);
-    const arg = chat.mock.calls[0][0];
+    const arg = (chat.mock.calls[0] as unknown[])[0] as { media: Array<Record<string, unknown> & { source: { channelId: string } }> };
     expect(Array.isArray(arg.media)).toBe(true);
     expect(arg.media[0]).toMatchObject({
       kind: "image",
@@ -450,11 +450,11 @@ describe("ControlService media", () => {
 });
 ```
 
-> If `ControlService`'s constructor requires additional non-optional deps, add them as `vi.fn()` stubs in `buildService` — do not change production types to satisfy the test. Inspect `ControlServiceDeps` (`src/control/control-service.ts` ~54-101) and stub each field minimally.
+> If `ControlService`'s constructor requires additional non-optional deps, add them as `mock(() => {})` stubs in `buildService` — do not change production types to satisfy the test. Inspect `ControlServiceDeps` (`src/control/control-service.ts` ~54-101) and stub each field minimally. NOTE: `prompt()` runs the full turn through `executeTurn`, which resolves a session and may need more deps stubbed than shown (e.g. session resolution, transport). If wiring a real turn proves heavy, narrow the second test to assert the media-mapping helper directly — but prefer the integration-style test above; add stubs as the compiler/runtime demands.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `npx vitest run tests/unit/control/control-service-media.test.ts`
+Run: `bun test tests/unit/control/control-service-media.test.ts`
 Expected: FAIL — `uploadFile` is not a function / `media` not forwarded.
 
 - [ ] **Step 3: Add `uploadStore` to ControlServiceDeps and the `uploadFile` method**
@@ -549,7 +549,7 @@ and add to the `agent.chat({...})` object literal:
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `npx vitest run tests/unit/control/control-service-media.test.ts`
+Run: `bun test tests/unit/control/control-service-media.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Wire UploadStore into the runtime + startup cleanup**
@@ -584,7 +584,7 @@ git commit -m "feat(control): uploadFile RPC method + forward prompt media into 
 
 **Files:**
 - Modify: `packages/channel-relay/src/control-bridge.ts` (dispatch switch ~79-217)
-- Modify (test): add or extend the connector's control-bridge test if one exists (grep `dispatchControlRequest` under `packages/channel-relay/**/__tests__` or `tests`)
+- Modify (test): `tests/unit/packages/channel-relay/control-bridge.test.ts` (existing, `bun:test`; imports `createControlBridge` from `packages/channel-relay/src/control-bridge`)
 
 **Interfaces:**
 - Consumes: `MSG.upload`, `UploadPayload` from Task 1; `ControlService.uploadFile` from Task 3.
@@ -613,9 +613,9 @@ Add `UploadPayload` to the existing `@ganglion/xacpx-relay-protocol` import in t
 Run: `npx tsc --noEmit`
 Expected: PASS.
 
-- [ ] **Step 4: (If a control-bridge test exists) add a dispatch test**
+- [ ] **Step 4: Add a dispatch test for control.upload**
 
-If `packages/channel-relay` has a test that calls `dispatchControlRequest` with a fake `ControlService`, add a case asserting `MSG.upload` calls `control.uploadFile` and bad input returns an `errorPayload`. Mirror the existing `fsList` test exactly. If no such test exists, skip this step (coverage lives in Task 3 + Task 8 e2e).
+In `tests/unit/packages/channel-relay/control-bridge.test.ts` (`bun:test`), add a test that drives a `control.upload` request through the bridge with a fake `ControlService` whose `uploadFile` returns a known `UploadResult`, and assert the bridge returns it. Inspect the existing tests in that file first to see how requests are dispatched (e.g. how `fsList`/`prompt` cases are exercised and how the fake control service is constructed) and mirror that exact harness. Also assert that a missing-field payload returns an `errorPayload` (`{ error: "bad-request", ... }`). Run: `bun test tests/unit/packages/channel-relay/control-bridge.test.ts` — expect PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -632,7 +632,7 @@ git commit -m "feat(connector): dispatch control.upload to ControlService.upload
 - Modify: `packages/relay/src/db.ts` (messages table ~110-119; add `attachments` column + idempotent guard)
 - Modify: `packages/relay/src/stores/messages.ts` (`append` ~26-31; `listBySession` map ~60-69)
 - Modify: `packages/relay/src/http/app.ts` (RPC endpoint persist ~277-280; optional upload size guard ~262)
-- Modify (test): `packages/relay/**` message store test (grep `MessageStore` under relay tests)
+- Modify (test): `tests/unit/packages/relay/stores-messages.test.ts` (existing, `bun:test`, has a `seeded()` DB fixture); optionally `tests/unit/packages/relay/db.test.ts` for the column
 
 **Interfaces:**
 - Consumes: `AttachmentMetadata`, `PromptAttachmentRef`, `MSG.upload` from Task 1.
@@ -672,11 +672,11 @@ Then, at the END of `initSchema` (after the CREATE blocks), add an idempotent gu
 
 - [ ] **Step 2: Write the failing store test**
 
-In the existing relay message-store test file (or create `packages/relay/src/stores/messages.test.ts`), add:
+In `tests/unit/packages/relay/stores-messages.test.ts` (`bun:test`), add a test that mirrors the file's existing setup. Read the top of the file first to reuse its DB fixture (it has a `seeded()` helper that creates a driver via `createSqlDriver`/`initSchema` and inserts an account+instance so the `listBySession` JOIN matches). Then add:
 
 ```typescript
-it("persists and returns attachment metadata on inbound messages", () => {
-  // `db` and `store` setup mirrors the existing tests in this file.
+test("persists and returns attachment metadata on inbound messages", async () => {
+  const { store } = await seeded(); // use whatever the existing helper returns; match its account/instance ids below
   const atts = [{ id: "u-1", filename: "shot.png", mimeType: "image/png", size: 3, kind: "image" as const, previewUrl: "data:image/png;base64,AAAA" }];
   store.append("i1", "main", "in", "look", undefined, atts);
   const page = store.listBySession("acc1", "i1", "main");
@@ -684,11 +684,11 @@ it("persists and returns attachment metadata on inbound messages", () => {
 });
 ```
 
-> Reuse this file's existing `beforeEach` DB/account/instance fixture. If the fixture inserts an account+instance, do the same so the JOIN in `listBySession` matches.
+> Replace `"acc1"`/`"i1"` with the exact account/instance ids the existing `seeded()` fixture inserts (read the file). The point is: append with attachments → listBySession returns them.
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `bun run --cwd packages/relay test -- messages` (match the package's test runner; if it uses `vitest run`, filter by file)
+Run: `bun test tests/unit/packages/relay/stores-messages.test.ts`
 Expected: FAIL — `append` ignores the 6th arg / `attachments` undefined on result.
 
 - [ ] **Step 4: Extend `append` and `listBySession`**
@@ -745,7 +745,7 @@ Add `attachments: string | null;` to `interface MessageRow`.
 
 - [ ] **Step 5: Run the store test to verify it passes**
 
-Run: `bun run --cwd packages/relay test -- messages`
+Run: `bun test tests/unit/packages/relay/stores-messages.test.ts`
 Expected: PASS.
 
 - [ ] **Step 6: Persist attachments from the prompt payload + re-validate size in the hub**
@@ -781,10 +781,16 @@ Then add a server-side base64 size guard for `control.upload` (defense in depth,
       }
 ```
 
-- [ ] **Step 7: Typecheck + run hub tests**
+- [ ] **Step 7: Typecheck + run hub tests (each file in its own process)**
 
-Run: `npx tsc --noEmit && bun run --cwd packages/relay test`
-Expected: PASS.
+Run each separately (multiple files in one `bun test` process can leak module state → false failures):
+```bash
+npx tsc --noEmit
+bun test tests/unit/packages/relay/stores-messages.test.ts
+bun test tests/unit/packages/relay/db.test.ts
+bun test tests/unit/packages/relay/http-app.test.ts
+```
+Expected: all PASS.
 
 - [ ] **Step 8: Commit**
 
@@ -1056,8 +1062,8 @@ Expected: PASS (3 tests).
 
 - [ ] **Step 8: Run the full relay-web suite + typecheck**
 
-Run: `bun run --cwd packages/relay-web test && npx vue-tsc --noEmit -p packages/relay-web/tsconfig.json`
-Expected: PASS (existing 150+ tests + new ones; types clean).
+Run: `bun run --cwd packages/relay-web test && bun run --cwd packages/relay-web build`
+Expected: PASS (existing 150+ tests + new ones; `build` runs `vue-tsc --noEmit` first, so types are checked, then vite builds).
 
 - [ ] **Step 9: Commit**
 
@@ -1298,8 +1304,8 @@ Chinese:
 
 - [ ] **Step 9: Run the full relay-web suite + typecheck**
 
-Run: `bun run --cwd packages/relay-web test && npx vue-tsc --noEmit -p packages/relay-web/tsconfig.json`
-Expected: PASS.
+Run: `bun run --cwd packages/relay-web test && bun run --cwd packages/relay-web build`
+Expected: PASS (`build` runs `vue-tsc --noEmit` first).
 
 - [ ] **Step 10: Commit**
 
@@ -1325,9 +1331,8 @@ Run:
 bun run build:relay-protocol
 bun run build
 npx tsc --noEmit
-npm test
-bun run --cwd packages/relay test
-bun run --cwd packages/relay-web test
+npm test                              # run-tests.mjs: core + hub + connector + protocol, each file isolated
+bun run --cwd packages/relay-web test # relay-web vitest (NOT covered by npm test)
 ```
 Expected: all PASS.
 
