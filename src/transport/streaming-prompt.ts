@@ -213,8 +213,11 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
 
   if (update.sessionUpdate === "available_commands_update") {
     // Agent-advertised slash commands (e.g. /compact). Full list each time (REPLACE).
-    const commands = normalizeAgentCommands(update.availableCommands);
-    if (commands.length > 0) void state.onCommands?.(commands);
+    // Emit on any explicit list — including an empty one, which is a legitimate "clear"
+    // (the agent dropped its commands); skip only malformed frames with no array.
+    if (Array.isArray(update.availableCommands)) {
+      void state.onCommands?.(normalizeAgentCommands(update.availableCommands));
+    }
     return;
   }
 

@@ -119,6 +119,10 @@ test("parseWebServerEvent accepts an agent-commands control event and rejects ma
   // commands must be an array, or the composer autocomplete has nothing iterable.
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "agent-commands", chatKey: "k", sessionAlias: "a" } })).toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "agent-commands", chatKey: "k", sessionAlias: "a", commands: "x" } })).toBeNull();
+  // an empty list is valid (a legitimate "clear")…
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "agent-commands", chatKey: "k", sessionAlias: "a", commands: [] } })).not.toBeNull();
+  // …but a nameless entry is rejected so the composer's `c.name` access can't crash.
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "agent-commands", chatKey: "k", sessionAlias: "a", commands: [{ description: "no name" }] } })).toBeNull();
 });
 
 test("parseWebServerEvent rejects a plan event without entries", () => {

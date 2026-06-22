@@ -161,7 +161,7 @@ function onKeydown(e: KeyboardEvent) {
   if (cmdMenuOpen.value && cmdMatches.value.length > 0) {
     if (e.key === "ArrowDown") { cmdActiveIdx.value = (cmdActiveIdx.value + 1) % cmdMatches.value.length; e.preventDefault(); return; }
     if (e.key === "ArrowUp") { cmdActiveIdx.value = (cmdActiveIdx.value - 1 + cmdMatches.value.length) % cmdMatches.value.length; e.preventDefault(); return; }
-    if (e.key === "Enter" || e.key === "Tab") { pickCommand(cmdMatches.value[cmdActiveIdx.value].name); e.preventDefault(); return; }
+    if (e.key === "Enter" || e.key === "Tab") { const c = cmdMatches.value[cmdActiveIdx.value]; if (c) pickCommand(c.name); e.preventDefault(); return; }
     if (e.key === "Escape") { cmdMenuOpen.value = false; e.preventDefault(); return; }
   }
   if (e.key === "Escape") {
@@ -208,15 +208,15 @@ function onInput() {
         {{ composer.rejection.reason === 'too-many' ? $t('chat.attach.tooMany') : $t('chat.attach.tooLarge', { name: composer.rejection.filename }) }}
       </span>
       <!-- Agent slash-command autocomplete -->
-      <ul v-if="cmdMenuOpen" data-test="cmd-menu"
+      <ul v-if="cmdMenuOpen && cmdMatches.length" data-test="cmd-menu" role="listbox"
           class="mx-2.5 mt-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2">
         <li v-for="(c, i) in cmdMatches" :key="c.name"
-            data-test="cmd-item"
+            data-test="cmd-item" role="option" :aria-selected="i === cmdActiveIdx"
             class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
             :class="i === cmdActiveIdx ? 'bg-accent/10' : ''"
             @mousedown.prevent="pickCommand(c.name)"
             @mouseenter="cmdActiveIdx = i">
-          <span class="font-medium text-fg">/{{ c.name }}</span>
+          <span class="shrink-0 font-medium text-fg">/{{ c.name }}</span>
           <span v-if="c.description" class="truncate text-fg-muted">{{ c.description }}</span>
         </li>
       </ul>

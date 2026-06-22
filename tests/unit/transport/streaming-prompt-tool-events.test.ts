@@ -258,3 +258,23 @@ test("available_commands_update surfaces agent slash commands", () => {
     { name: "run", hasInput: true },
   ]]);
 });
+
+test("available_commands_update with an empty list emits a clear", () => {
+  const seen: unknown[] = [];
+  const state = createStreamingPromptState(false, { onCommands: (c) => { seen.push(c); } });
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "available_commands_update", availableCommands: [] } },
+  }));
+  expect(seen).toEqual([[]]); // explicit clear propagates, so a stale list doesn't linger
+});
+
+test("available_commands_update with no array is ignored", () => {
+  const seen: unknown[] = [];
+  const state = createStreamingPromptState(false, { onCommands: (c) => { seen.push(c); } });
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "available_commands_update" } },
+  }));
+  expect(seen).toEqual([]);
+});

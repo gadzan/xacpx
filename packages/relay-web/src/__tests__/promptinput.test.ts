@@ -81,6 +81,27 @@ describe("PromptInput composer", () => {
     expect(w.emitted("send")).toBeFalsy();
   });
 
+  it("closes the agent-command menu once the token is no longer a bare /word", async () => {
+    const { useChatStore } = await import("../stores/chat");
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+      commands: [{ name: "compact" }],
+    } } as never);
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("/co");
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="cmd-menu"]').exists()).toBe(true);
+    // A space ends the command token → menu closes and Enter submits verbatim.
+    await ta.setValue("/compact now");
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="cmd-menu"]').exists()).toBe(false);
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.[0]).toEqual(["/compact now", []]);
+  });
+
   it("inserts text from a composer store request targeting this session", async () => {
     const { useComposerStore } = await import("../stores/composer");
     const composer = useComposerStore();

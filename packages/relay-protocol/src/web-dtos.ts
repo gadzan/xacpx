@@ -141,7 +141,9 @@ function validControlEvent(e: unknown): boolean {
   if (c.type === "turn-usage")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
   if (c.type === "agent-commands")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands);
+    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+      && Array.isArray(c.commands)
+      && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
   return true; // sessions-changed / orchestration-changed carry no extra required fields
