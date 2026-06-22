@@ -148,6 +148,7 @@ export default {
     newSession: "新建会话",
     deleteSession: "删除会话",
     archiveSession: "归档会话",
+    archive: "归档",
     sessionArchivedBadge: "已归档",
     sessionArchivedToast: "已归档「{alias}」",
     undo: "撤销",

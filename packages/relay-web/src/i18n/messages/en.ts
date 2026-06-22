@@ -150,6 +150,7 @@ export default {
     newSession: "New session",
     deleteSession: "Delete session",
     archiveSession: "Archive session",
+    archive: "Archive",
     sessionArchivedBadge: "archived",
     sessionArchivedToast: "Archived \"{alias}\"",
     undo: "Undo",
