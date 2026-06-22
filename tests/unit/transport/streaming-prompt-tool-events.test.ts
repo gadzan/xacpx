@@ -197,3 +197,44 @@ test("usage_update fires onUsage with the latest used/size, ignoring malformed f
     { used: 34612, size: 1000000 },
   ]);
 });
+
+test("usage_update surfaces cost and token breakdown", () => {
+  const seen: unknown[] = [];
+  const state = createStreamingPromptState(false, { onUsage: (u) => { seen.push(u); } });
+  parseStreamingChunks(
+    state,
+    JSON.stringify({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "usage_update",
+          used: 1000,
+          size: 200000,
+          cost: { amount: 0.42, currency: "USD" },
+          _meta: { usage: { input_tokens: 800, output_tokens: 120, cache_read_input_tokens: 5000, total_tokens: 920 } },
+        },
+      },
+    }),
+  );
+  expect(seen).toEqual([
+    {
+      used: 1000,
+      size: 200000,
+      cost: { amount: 0.42, currency: "USD" },
+      breakdown: { inputTokens: 800, outputTokens: 120, cachedReadTokens: 5000, totalTokens: 920 },
+    },
+  ]);
+});
+
+test("usage_update without extras stays a bare used/size payload", () => {
+  const seen: unknown[] = [];
+  const state = createStreamingPromptState(false, { onUsage: (u) => { seen.push(u); } });
+  parseStreamingChunks(
+    state,
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 10, size: 100 } },
+    }),
+  );
+  expect(seen).toEqual([{ used: 10, size: 100 }]);
+});
