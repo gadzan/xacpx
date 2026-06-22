@@ -4,6 +4,7 @@ import {
   encodeBridgePromptThoughtEvent,
   encodeBridgePromptToolEvent,
   encodeBridgePromptUsageEvent,
+  encodeBridgePromptCommandsEvent,
   encodeBridgeSessionNoteEvent,
   encodeBridgeSessionProgressEvent,
   type BridgeMethod,
@@ -233,6 +234,12 @@ export class BridgeServer {
               size: event.size,
               ...(event.cost ? { cost: event.cost } : {}),
               ...(event.breakdown ? { breakdown: event.breakdown } : {}),
+            }));
+          } else if (event.type === "prompt.commands") {
+            writeLine?.(encodeBridgePromptCommandsEvent({
+              id: requestId,
+              event: "prompt.commands",
+              commands: event.commands,
             }));
           }
         });

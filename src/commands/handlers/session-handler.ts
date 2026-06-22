@@ -5,7 +5,7 @@ import type {
   SessionLifecycleOps,
   SessionRenderRecoveryOps,
 } from "../router-types";
-import type { PromptMediaInput, PromptUsage, ResolvedSession } from "../../transport/types";
+import type { AgentCommand, PromptMediaInput, PromptUsage, ResolvedSession } from "../../transport/types";
 import type { ReplyMode } from "../../config/types";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { PerfSpan } from "../../perf/perf-tracer";
@@ -737,6 +737,7 @@ async function promptWithSession(
   metadata?: ChatRequestMetadata,
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   // Restore-on-message: a real prompt to an archived session un-archives it (mirrors
   // useSession on the web path, which the chat prompt path bypasses). The guard avoids
@@ -802,6 +803,7 @@ async function promptWithSession(
       perfSpan,
       onPlan,
       onUsage,
+      onCommands,
     );
     if (claimHumanReply) {
       try {
@@ -848,13 +850,14 @@ export async function handlePromptWithSession(
   metadata?: ChatRequestMetadata,
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   try {
-    return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage);
+    return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {
-      return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage);
+      return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
     }
     return context.recovery.renderTransportError(session, error);
   }
@@ -875,6 +878,7 @@ export async function handlePrompt(
   metadata?: ChatRequestMetadata,
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   const session = metadata?.boundSessionAlias
     ? context.sessions.getResolvedSessionByInternalAlias(metadata.boundSessionAlias)
@@ -883,7 +887,7 @@ export async function handlePrompt(
     return { text: t().session.noCurrent };
   }
 
-  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage);
+  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
 }
 
 function toCoordinatorRouteChatMetadata(

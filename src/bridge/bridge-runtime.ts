@@ -7,7 +7,7 @@ import type { NonInteractivePermissions, PermissionMode, WechatReplyMode } from 
 import { resolveSpawnCommand } from "../process/spawn-command";
 import { terminateProcessTree } from "../process/terminate-process-tree";
 import { getPromptText } from "../transport/prompt-output";
-import type { UsageBreakdown, UsageCost } from "../transport/types";
+import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import { createStructuredPromptFile } from "../transport/prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../transport/streaming-prompt";
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
@@ -29,7 +29,8 @@ type BridgePromptStreamEvent =
   | { type: "prompt.tool_event"; event: ToolUseEvent }
   | { type: "prompt.thought"; text: string }
   | { type: "prompt.plan"; entries: PlanEntry[] }
-  | { type: "prompt.usage"; used: number; size: number; cost?: UsageCost; breakdown?: UsageBreakdown };
+  | { type: "prompt.usage"; used: number; size: number; cost?: UsageCost; breakdown?: UsageBreakdown }
+  | { type: "prompt.commands"; commands: AgentCommand[] };
 
 export class EnsureSessionFailedError extends Error {
   readonly kind: "missing_optional_dep" | "generic";
@@ -845,6 +846,9 @@ export async function runStreamingPrompt(
         : {}),
       ...(onEvent
         ? { onUsage: (usage) => onEvent({ type: "prompt.usage", used: usage.used, size: usage.size, ...(usage.cost ? { cost: usage.cost } : {}), ...(usage.breakdown ? { breakdown: usage.breakdown } : {}) }) }
+        : {}),
+      ...(onEvent
+        ? { onCommands: (commands) => onEvent({ type: "prompt.commands", commands }) }
         : {}),
     });
     let lastReplyAt = now();

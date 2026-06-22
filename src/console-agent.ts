@@ -5,7 +5,7 @@ import { createNoopAppLogger } from "./logging/app-logger";
 import { normalizeMediaArray } from "./channels/media-types.js";
 import { isKnownXacpxCommandText } from "./commands/command-list";
 import type { PlanEntry, ToolUseEvent } from "./channels/types.js";
-import type { PromptUsage } from "./transport/types";
+import type { AgentCommand, PromptUsage } from "./transport/types";
 import type { PerfSpan } from "./perf/perf-tracer";
 import { t } from "./i18n/index.js";
 
@@ -24,6 +24,7 @@ interface RouterLike {
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
+    onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
   ): Promise<ChatResponse>;
   clearSession?: (chatKey: string) => Promise<void>;
 }
@@ -70,6 +71,7 @@ export class ConsoleAgent implements WechatAgent {
       request.perfSpan,
       request.onPlan,
       request.onUsage,
+      request.onCommands,
     );
   }
 

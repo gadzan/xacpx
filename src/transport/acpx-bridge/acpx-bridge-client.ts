@@ -13,7 +13,7 @@ import { PromptCommandError } from "../prompt-output";
 import { MissingOptionalDepError } from "../../recovery/errors";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
-import type { UsageBreakdown, UsageCost } from "../types";
+import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
 import { getLocale } from "../../i18n";
 import { resolveDefaultXacpxCommand } from "../acpx-queue-owner-launcher";
 
@@ -28,6 +28,7 @@ export type BridgeEvent =
   | { type: "prompt.thought"; text: string }
   | { type: "prompt.plan"; entries: PlanEntry[] }
   | { type: "prompt.usage"; used: number; size: number; cost?: UsageCost; breakdown?: UsageBreakdown }
+  | { type: "prompt.commands"; commands: AgentCommand[] }
   | { type: "session.progress"; stage: EnsureSessionProgressStage }
   | { type: "session.note"; text: string };
 
@@ -127,6 +128,11 @@ export class AcpxBridgeClient {
           size: message.size,
           ...(message.cost ? { cost: message.cost } : {}),
           ...(message.breakdown ? { breakdown: message.breakdown } : {}),
+        });
+      } else if (message.event === "prompt.commands") {
+        pending.onEvent?.({
+          type: "prompt.commands",
+          commands: message.commands,
         });
       } else if (message.event === "session.progress") {
         pending.onEvent?.({

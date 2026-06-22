@@ -3,7 +3,7 @@ import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
 import type { OrchestrationService } from "../orchestration/orchestration-service";
 import type { SessionService } from "../sessions/session-service";
-import type { PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
+import type { AgentCommand, PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { PerfSpan } from "../perf/perf-tracer";
@@ -153,6 +153,7 @@ export interface SessionInteractionOps {
     perfSpan?: PerfSpan,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
+    onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
   ) => Promise<{ text: string }>;
 }
 
