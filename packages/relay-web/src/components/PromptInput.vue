@@ -49,6 +49,28 @@ const text = ref(loadDraft(props.draftKey ?? ""));
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 
+// Agent slash-command autocomplete: when the composer holds a single `/`-token, offer the
+// session's advertised commands. Selecting one inserts `/name `; it then sends as a normal
+// prompt (the agent interprets it). No commands / no match → no menu, composer unchanged.
+const cmdMenuOpen = ref(false);
+const cmdActiveIdx = ref(0);
+const cmdQuery = computed(() => {
+  const v = text.value;
+  if (!v.startsWith("/") || v.includes("\n") || v.slice(1).includes(" ")) return null;
+  return v.slice(1).toLowerCase();
+});
+const cmdMatches = computed(() => {
+  const q = cmdQuery.value;
+  if (q === null) return [];
+  return chat.sessionCommands.filter((c) => c.name.toLowerCase().startsWith(q)).slice(0, 8);
+});
+watch(cmdMatches, (m) => { cmdMenuOpen.value = m.length > 0; cmdActiveIdx.value = 0; });
+function pickCommand(name: string) {
+  text.value = `/${name} `;
+  cmdMenuOpen.value = false;
+  void nextTick(() => textarea.value?.focus());
+}
+
 function openPicker() {
   fileInput.value?.click();
 }
@@ -135,6 +157,13 @@ function onKeydown(e: KeyboardEvent) {
   // IME guard: never intercept keys mid-composition (CJK input) — Enter here confirms
   // the candidate, it must not submit. `isComposing` covers all input engines.
   if (e.isComposing) return;
+  // Command autocomplete takes the arrow/enter/tab/esc keys while its menu is open.
+  if (cmdMenuOpen.value && cmdMatches.value.length > 0) {
+    if (e.key === "ArrowDown") { cmdActiveIdx.value = (cmdActiveIdx.value + 1) % cmdMatches.value.length; e.preventDefault(); return; }
+    if (e.key === "ArrowUp") { cmdActiveIdx.value = (cmdActiveIdx.value - 1 + cmdMatches.value.length) % cmdMatches.value.length; e.preventDefault(); return; }
+    if (e.key === "Enter" || e.key === "Tab") { pickCommand(cmdMatches.value[cmdActiveIdx.value].name); e.preventDefault(); return; }
+    if (e.key === "Escape") { cmdMenuOpen.value = false; e.preventDefault(); return; }
+  }
   if (e.key === "Escape") {
     if (props.busy) { emit("cancel"); e.preventDefault(); }
     return;
@@ -178,6 +207,19 @@ function onInput() {
       <span v-if="composer.rejection" data-test="attach-rejected" class="block px-3 pt-2 text-xs text-danger">
         {{ composer.rejection.reason === 'too-many' ? $t('chat.attach.tooMany') : $t('chat.attach.tooLarge', { name: composer.rejection.filename }) }}
       </span>
+      <!-- Agent slash-command autocomplete -->
+      <ul v-if="cmdMenuOpen" data-test="cmd-menu"
+          class="mx-2.5 mt-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2">
+        <li v-for="(c, i) in cmdMatches" :key="c.name"
+            data-test="cmd-item"
+            class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
+            :class="i === cmdActiveIdx ? 'bg-accent/10' : ''"
+            @mousedown.prevent="pickCommand(c.name)"
+            @mouseenter="cmdActiveIdx = i">
+          <span class="font-medium text-fg">/{{ c.name }}</span>
+          <span v-if="c.description" class="truncate text-fg-muted">{{ c.description }}</span>
+        </li>
+      </ul>
       <!-- Stays enabled while busy so you can pre-compose the next message and press
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"

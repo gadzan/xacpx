@@ -59,6 +59,28 @@ describe("PromptInput composer", () => {
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("half-typed");
   });
 
+  it("typing / shows agent-command autocomplete and Enter completes without sending", async () => {
+    const { useChatStore } = await import("../stores/chat");
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+      commands: [{ name: "compact", description: "Compact the conversation" }, { name: "clear" }],
+    } } as never);
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("/co");
+    await w.vm.$nextTick();
+    const items = w.findAll('[data-test="cmd-item"]');
+    expect(items.length).toBe(1); // only /compact matches "/co"
+    expect(items[0].text()).toContain("/compact");
+    // Enter completes the command (and does NOT submit the turn).
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+    expect((ta.element as HTMLTextAreaElement).value).toBe("/compact ");
+    expect(w.emitted("send")).toBeFalsy();
+  });
+
   it("inserts text from a composer store request targeting this session", async () => {
     const { useComposerStore } = await import("../stores/composer");
     const composer = useComposerStore();
