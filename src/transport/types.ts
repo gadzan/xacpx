@@ -30,6 +30,14 @@ export interface PromptUsage {
   breakdown?: UsageBreakdown;
 }
 
+/** An agent-advertised slash command (ACP `available_commands_update`). */
+export interface AgentCommand {
+  name: string;
+  description?: string;
+  /** Whether the command accepts an argument (ACP advertised a non-null `input`). */
+  hasInput?: boolean;
+}
+
 export interface ReplyQuotaContext {
   chatKey: string;
   quota: QuotaManager;
@@ -161,6 +169,11 @@ export interface PromptOptions {
    * (e.g. claude does, codex does not), and text channels omit the handler.
    */
   onUsage?: (usage: PromptUsage) => void | Promise<void>;
+  /**
+   * Agent-advertised slash commands (ACP `available_commands_update`). Replace-latest
+   * list, re-sent when the agent updates it. Optional — not every adapter advertises.
+   */
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>;
   /**
    * How tool_call / tool_call_update events are surfaced for this prompt.
    *

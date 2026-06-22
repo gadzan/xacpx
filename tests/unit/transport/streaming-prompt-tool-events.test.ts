@@ -238,3 +238,23 @@ test("usage_update without extras stays a bare used/size payload", () => {
   );
   expect(seen).toEqual([{ used: 10, size: 100 }]);
 });
+
+test("available_commands_update surfaces agent slash commands", () => {
+  const seen: unknown[] = [];
+  const state = createStreamingPromptState(false, { onCommands: (c) => { seen.push(c); } });
+  parseStreamingChunks(
+    state,
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "available_commands_update", availableCommands: [
+        { name: "compact", description: "Compact the conversation" },
+        { name: "run", input: { hint: "args" } },
+        { description: "no name — dropped" },
+      ] } },
+    }),
+  );
+  expect(seen).toEqual([[
+    { name: "compact", description: "Compact the conversation", hasInput: false },
+    { name: "run", hasInput: true },
+  ]]);
+});

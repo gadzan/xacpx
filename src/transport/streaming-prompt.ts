@@ -1,5 +1,5 @@
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
-import type { PromptUsage, UsageBreakdown, UsageCost } from "./types.js";
+import type { AgentCommand, PromptUsage, UsageBreakdown, UsageCost } from "./types.js";
 import { resolveToolEventMode } from "./tool-event-mode.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
@@ -22,6 +22,7 @@ export interface StreamingPromptState {
   onThought?: (chunk: string) => void | Promise<void>;
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   onUsage?: (usage: PromptUsage) => void | Promise<void>;
+  onCommands?: (commands: AgentCommand[]) => void | Promise<void>;
   finalize: () => string;
 }
 
@@ -47,6 +48,8 @@ interface StreamEvent {
       // ACP `usage_update` extras (acpx ≥0.11.0): cumulative cost + per-turn token breakdown.
       cost?: unknown;
       _meta?: { usage?: unknown };
+      // ACP `available_commands_update`: agent-advertised slash commands.
+      availableCommands?: unknown;
     };
   };
 }
@@ -60,6 +63,7 @@ export type CreateStreamingPromptStateOptions =
       onThought?: (chunk: string) => void | Promise<void>;
       onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
       onUsage?: (usage: PromptUsage) => void | Promise<void>;
+      onCommands?: (commands: AgentCommand[]) => void | Promise<void>;
     };
 
 export function createStreamingPromptState(
@@ -71,6 +75,7 @@ export function createStreamingPromptState(
   let onThought: ((chunk: string) => void | Promise<void>) | undefined;
   let onPlan: ((entries: PlanEntry[]) => void | Promise<void>) | undefined;
   let onUsage: ((usage: PromptUsage) => void | Promise<void>) | undefined;
+  let onCommands: ((commands: AgentCommand[]) => void | Promise<void>) | undefined;
   let rawStream = false;
 
   if (options === undefined) {
@@ -85,6 +90,7 @@ export function createStreamingPromptState(
     onThought = options.onThought;
     onPlan = options.onPlan;
     onUsage = options.onUsage;
+    onCommands = options.onCommands;
     rawStream = options.rawStream ?? false;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
@@ -105,6 +111,7 @@ export function createStreamingPromptState(
     onThought,
     onPlan,
     onUsage,
+    onCommands,
     finalize(): string {
       if (this.pendingLine.trim().length > 0) {
         parseStreamingChunks(this, this.pendingLine);
@@ -201,6 +208,13 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
       const breakdown = normalizeUsageBreakdown(update._meta?.usage);
       void state.onUsage?.({ used, size, ...(cost ? { cost } : {}), ...(breakdown ? { breakdown } : {}) });
     }
+    return;
+  }
+
+  if (update.sessionUpdate === "available_commands_update") {
+    // Agent-advertised slash commands (e.g. /compact). Full list each time (REPLACE).
+    const commands = normalizeAgentCommands(update.availableCommands);
+    if (commands.length > 0) void state.onCommands?.(commands);
     return;
   }
 
@@ -430,6 +444,19 @@ function normalizeUsageCost(value: unknown): UsageCost | undefined {
   const currency = readString(value, "currency");
   if (amount === undefined && !currency) return undefined;
   return { ...(amount !== undefined ? { amount } : {}), ...(currency ? { currency } : {}) };
+}
+
+function normalizeAgentCommands(value: unknown): AgentCommand[] {
+  if (!Array.isArray(value)) return [];
+  const out: AgentCommand[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const name = readString(entry, "name");
+    if (!name) continue;
+    const description = readString(entry, "description");
+    out.push({ name, ...(description ? { description } : {}), hasInput: entry.input != null });
+  }
+  return out;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
