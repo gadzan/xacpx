@@ -34,6 +34,7 @@ export const MSG = {
   fsRead: "control.fs.read",
   fsDiff: "control.fs.diff",
   fsSearch: "control.fs.search",
+  upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
 } as const;
@@ -173,12 +174,42 @@ export interface WorkspacesRemovePayload {
 export interface OkResult {
   ok: true;
 }
+export interface PromptAttachmentRef {
+  /** Stable id from the upload step; used as a message id for the channel media source. */
+  id: string;
+  /** Absolute path on the daemon host (returned by control.upload). */
+  filePath: string;
+  fileName: string;
+  mimeType: string;
+  kind: "image" | "file";
+  size: number;
+  /** Downscaled data URL for images; carried so the hub can persist a preview. Omitted for files. */
+  previewUrl?: string;
+}
+
+export interface UploadPayload {
+  filename: string;
+  /** base64-encoded file bytes (no data-URL prefix). */
+  content: string;
+  mimeType: string;
+}
+
+export interface UploadResult {
+  id: string;
+  /** Absolute path on the daemon host where the bytes were written. */
+  path: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface PromptPayload {
   chatKey: string;
   sessionAlias: string;
   text: string;
   senderId: string;
   isOwner?: boolean;
+  media?: PromptAttachmentRef[];
 }
 export interface PromptResult {
   ok: boolean;

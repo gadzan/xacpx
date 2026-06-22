@@ -7,6 +7,16 @@ export const WEB_EVENT_TYPE = "web.event";
 
 export type MessageDirection = "in" | "out";
 
+export interface AttachmentMetadata {
+  id: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  kind: "image" | "file";
+  /** Downscaled data URL for images; omitted for files. */
+  previewUrl?: string;
+}
+
 /** A cached chat line echoed to the web client. */
 export interface MessageRecordDto {
   /** Monotonic row id from the hub store. Present on persisted rows (used as the
@@ -22,6 +32,7 @@ export interface MessageRecordDto {
    *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
    *  `reasoning` are a flat fallback for older rows that predate `parts`. */
   structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto };
+  attachments?: AttachmentMetadata[];
 }
 
 /** A snapshot of a turn still in flight on an instance, handed to a (re)connecting
