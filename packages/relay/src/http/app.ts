@@ -349,6 +349,24 @@ export function createApp(deps: AppDeps): Hono<Vars> {
 
   if (deps.webRoot) {
     const root = deps.webRoot;
+    // Cache policy for the bundled dashboard: content-hashed build assets under
+    // /assets/ are immutable and cached for a year, while the app shell (index.html,
+    // the service worker, the manifest) must always be revalidated so a deploy is
+    // picked up immediately instead of being served stale from the browser's HTTP
+    // cache. Without this, `serveStatic` sets no Cache-Control and the browser
+    // heuristically caches the shell + sw.js, delaying PWA updates.
+    app.use("/*", async (c, next) => {
+      await next();
+      const path = c.req.path;
+      if (path.startsWith("/api") || path.startsWith("/ws")) return;
+      if (!c.res.ok) return;
+      c.header(
+        "Cache-Control",
+        path.startsWith("/assets/")
+          ? "public, max-age=31536000, immutable"
+          : "no-cache",
+      );
+    });
     app.use("/*", serveStatic({ root }));
     app.get("/*", serveStatic({ path: "index.html", root })); // SPA fallback
   }
