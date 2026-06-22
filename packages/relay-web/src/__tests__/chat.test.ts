@@ -74,6 +74,19 @@ test("turn-usage updates sessionUsage (REPLACE) and survives turn-finished", () 
   expect(store.sessionUsage).toEqual({ used: 34612, size: 1000000 });
 });
 
+test("turn-usage retains cost and breakdown for the selected session", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-usage", chatKey: "relay:a1", sessionAlias: "backend", used: 1000, size: 200000,
+    cost: { amount: 0.42, currency: "USD" }, breakdown: { inputTokens: 800, totalTokens: 920 },
+  } } as never);
+  expect(store.sessionUsage).toEqual({
+    used: 1000, size: 200000,
+    cost: { amount: 0.42, currency: "USD" }, breakdown: { inputTokens: 800, totalTokens: 920 },
+  });
+});
+
 test("turn-usage for an unselected session does not leak into sessionUsage", () => {
   const store = useChatStore();
   store.select("i1", "backend");

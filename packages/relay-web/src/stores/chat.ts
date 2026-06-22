@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -20,6 +20,9 @@ export function loadPersistedSelection(): { instanceId: string; alias: string } 
 }
 
 export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error";
+
+/** Per-session context usage: window fill plus optional cost & token breakdown. */
+export type SessionUsage = { used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto };
 
 /** One transcript entry, kept in arrival order so text / reasoning / tool calls
  *  render inline exactly as the agent produced them (mirrors the hub's persistence). */
@@ -73,7 +76,7 @@ export const useChatStore = defineStore("chat", () => {
   // Context-usage meter per session (latest `turn-usage`): `used` tokens in context +
   // `size` total window. Session-scoped like `plans` so it persists across turns (REPLACE
   // semantics). Absent for agents that don't report usage (e.g. codex) — the meter hides.
-  const usage = ref<Record<string, { used: number; size: number }>>({});
+  const usage = ref<Record<string, SessionUsage>>({});
   // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
   // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
   const unread = ref<Set<string>>(new Set());
@@ -108,7 +111,7 @@ export const useChatStore = defineStore("chat", () => {
   const sessionPlan = computed<PlanEntryDto[] | null>(() =>
     selectedKey.value ? plans.value[selectedKey.value] ?? null : null,
   );
-  const sessionUsage = computed<{ used: number; size: number } | null>(() =>
+  const sessionUsage = computed<SessionUsage | null>(() =>
     selectedKey.value ? usage.value[selectedKey.value] ?? null : null,
   );
   const streaming = computed(() => (liveTurn.value ? textOf(liveTurn.value.parts) : ""));
@@ -282,7 +285,7 @@ export const useChatStore = defineStore("chat", () => {
       plans.value[bufKey(event.instanceId, e.sessionAlias)] = e.entries;
     } else if (e.type === "turn-usage") {
       // Latest context-usage for the session (REPLACE). Like plans, persists across turns.
-      usage.value[bufKey(event.instanceId, e.sessionAlias)] = { used: e.used, size: e.size };
+      usage.value[bufKey(event.instanceId, e.sessionAlias)] = { used: e.used, size: e.size, ...(e.cost ? { cost: e.cost } : {}), ...(e.breakdown ? { breakdown: e.breakdown } : {}) };
     } else if (e.type === "session-history") {
       // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
