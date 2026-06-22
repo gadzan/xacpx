@@ -75,6 +75,7 @@ export default {
     message: "消息",
     jumpLatest: "↓ 最新",
     contextUsage: "上下文：{used} / {size} tokens",
+    attach: { add: "添加附件", remove: "移除" },
   },
   session: {
     newSession: "新建会话",

@@ -3,6 +3,8 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
+import { useComposerStore } from "../stores/composer";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
@@ -13,6 +15,14 @@ const emit = defineEmits<{ (e: "show-files"): void }>();
 const chat = useChatStore();
 const instances = useInstancesStore();
 const files = useFilesStore();
+const composer = useComposerStore();
+
+function onSend(text: string, media: PromptAttachmentRef[] = []) {
+  void chat.send(text, media);
+}
+
+// Bind the composer to the active instance so file uploads target the right daemon.
+watch(() => chat.instanceId, (id) => { if (id) composer.bindInstance(id); }, { immediate: true });
 
 // Context for the header chips: the current session's workspace/agent plus the
 // instance name. Branch comes from the read-only git summary (undefined until the
@@ -116,7 +126,7 @@ const verb = computed(() => {
         <PlanPanel v-if="chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                     @send="chat.send" @cancel="chat.cancel" />
+                     @send="onSend" @cancel="chat.cancel" />
       </div>
     </template>
   </div>

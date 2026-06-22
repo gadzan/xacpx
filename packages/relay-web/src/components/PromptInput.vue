@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { Brain, Check, ChevronDown, Gauge, Send } from "lucide-vue-next";
+import { Brain, Check, ChevronDown, Gauge, Paperclip, Send, X } from "lucide-vue-next";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
 
 const props = defineProps<{ busy?: boolean; draftKey?: string; instanceId?: string | null; sessionAlias?: string | null }>();
-const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
+const emit = defineEmits<{ send: [text: string, media: PromptAttachmentRef[]]; cancel: [] }>();
 
 const composer = useComposerStore();
 const controls = useSessionControlsStore();
@@ -36,6 +37,30 @@ async function pickModel(id: string) {
 }
 const text = ref(loadDraft(props.draftKey ?? ""));
 const textarea = ref<HTMLTextAreaElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
+
+function openPicker() {
+  fileInput.value?.click();
+}
+async function onFilesPicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  if (input.files) await composer.addFiles(Array.from(input.files));
+  input.value = "";
+}
+async function onPaste(e: ClipboardEvent) {
+  const files = Array.from(e.clipboardData?.files ?? []);
+  if (files.length > 0) {
+    e.preventDefault();
+    await composer.addFiles(files);
+  }
+}
+async function onDrop(e: DragEvent) {
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (files.length > 0) {
+    e.preventDefault();
+    await composer.addFiles(files);
+  }
+}
 
 // Persist the draft per session and restore on switch: when the key changes, stash the
 // current text under the previous key, then load the incoming session's draft.
@@ -64,10 +89,22 @@ let historyIdx = -1; // -1 = editing a fresh line
 
 function submit() {
   if (props.busy) return;
+  if (composer.uploading) return;
   const value = text.value.trim();
-  if (!value) return;
-  emit("send", value);
-  if (history.value[history.value.length - 1] !== value) history.value.push(value);
+  const ready = composer.pending.filter((p) => p.status === "ready");
+  if (!value && ready.length === 0) return;
+  const media: PromptAttachmentRef[] = ready.map((p) => ({
+    id: p.id,
+    filePath: p.filePath as string,
+    fileName: p.filename,
+    mimeType: p.mimeType,
+    kind: p.kind,
+    size: p.size,
+    ...(p.previewUrl ? { previewUrl: p.previewUrl } : {}),
+  }));
+  emit("send", value, media);
+  composer.clearAttachments();
+  if (value && history.value[history.value.length - 1] !== value) history.value.push(value);
   historyIdx = -1;
   text.value = "";
 }
@@ -109,16 +146,32 @@ function onInput() {
   <!-- pb keeps the existing padding and adds the iOS home-indicator safe area so
        the composer is not overlapped at the bottom of an installed PWA (env() is 0
        on desktop / non-PWA, so the padding is unchanged there). -->
-  <form class="relative border-t border-border px-0 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:p-3 lg:pb-[calc(0.75rem+env(safe-area-inset-bottom))]" @submit.prevent="submit">
+  <form class="relative border-t border-border px-0 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:p-3 lg:pb-[calc(0.75rem+env(safe-area-inset-bottom))]" @submit.prevent="submit"
+        @drop.prevent="onDrop" @dragover.prevent>
+    <!-- hidden file picker -->
+    <input ref="fileInput" type="file" multiple class="hidden" data-test="attach-input" @change="onFilesPicked" />
     <!-- COMPOSER — single elevated card: textarea on top, controls row below. -->
     <div class="rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
+      <!-- Pending attachment chips -->
+      <div v-if="composer.pending.length" class="flex flex-wrap gap-2 px-2.5 pt-2.5 pb-1">
+        <div v-for="p in composer.pending" :key="p.id"
+             class="flex items-center gap-1.5 rounded-md border border-border bg-raised px-2 py-1 text-[12px]">
+          <img v-if="p.previewUrl" :src="p.previewUrl" class="h-6 w-6 rounded object-cover" :alt="p.filename" />
+          <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
+          <span v-if="p.status === 'uploading'" class="text-fg-muted">…</span>
+          <span v-else-if="p.status === 'error'" class="text-danger font-semibold">!</span>
+          <button type="button" :title="$t('chat.attach.remove')" class="text-fg-muted hover:text-fg transition-colors"
+                  @click="composer.removeAttachment(p.id)"><X :size="12" /></button>
+        </div>
+      </div>
       <!-- Stays enabled while busy so you can pre-compose the next message and press
            Esc to stop; submit() itself no-ops while busy. -->
       <textarea ref="textarea" v-model="text" rows="2"
                 class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
                 :placeholder='busy ? $t("chat.working") : $t("chat.message")'
                 @input="onInput"
-                @keydown="onKeydown" />
+                @keydown="onKeydown"
+                @paste="onPaste" />
       <div class="flex items-center justify-between px-2.5 pb-2.5 pt-0.5">
         <!-- model chip (left) -->
         <div v-if="instanceId && sessionAlias" class="relative flex items-center gap-2">
@@ -160,14 +213,22 @@ function onInput() {
         <span v-else />
 
         <!-- send / stop (right) -->
-        <button v-if="busy" type="button" data-test="composer-stop"
-                class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-danger text-white text-[12.5px] font-semibold hover:opacity-90 transition-all"
-                @click="emit('cancel')">{{ $t("chat.stop") }}</button>
-        <button v-else type="submit" data-test="composer-send" :disabled="!text.trim()"
-                class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
-          {{ $t("chat.send") }}
-          <Send :size="14" />
-        </button>
+        <div class="flex items-center gap-1.5">
+          <!-- attach button -->
+          <button type="button" data-test="attach-btn" :title="$t('chat.attach.add')"
+                  class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors"
+                  @click="openPicker">
+            <Paperclip :size="15" />
+          </button>
+          <button v-if="busy" type="button" data-test="composer-stop"
+                  class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-danger text-white text-[12.5px] font-semibold hover:opacity-90 transition-all"
+                  @click="emit('cancel')">{{ $t("chat.stop") }}</button>
+          <button v-else type="submit" data-test="composer-send" :disabled="!text.trim() && !composer.pending.filter(p => p.status === 'ready').length"
+                  class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
+            {{ $t("chat.send") }}
+            <Send :size="14" />
+          </button>
+        </div>
       </div>
     </div>
   </form>

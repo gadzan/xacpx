@@ -379,7 +379,7 @@ test("PromptInput emits send with trimmed text and clears", async () => {
   const wrapper = mount(PromptInput);
   await wrapper.find("textarea").setValue("  do it  ");
   await wrapper.find("form").trigger("submit.prevent");
-  expect(wrapper.emitted("send")?.[0]).toEqual(["do it"]);
+  expect(wrapper.emitted("send")?.[0]).toEqual(["do it", []]);
   expect((wrapper.find("textarea").element as HTMLTextAreaElement).value).toBe("");
 });
 

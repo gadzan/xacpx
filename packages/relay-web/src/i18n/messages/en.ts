@@ -77,6 +77,7 @@ export default {
     message: "Message",
     jumpLatest: "↓ Latest",
     contextUsage: "Context: {used} / {size} tokens",
+    attach: { add: "Attach file", remove: "Remove" },
   },
   session: {
     newSession: "New session",

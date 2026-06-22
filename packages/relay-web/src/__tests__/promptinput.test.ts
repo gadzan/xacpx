@@ -26,7 +26,7 @@ describe("PromptInput composer", () => {
     const ta = w.find("textarea");
     await ta.setValue("/status");
     await ta.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["/status"]);
+    expect(w.emitted("send")?.[0]).toEqual(["/status", []]);
   });
 
   it("Enter sends a plain message and records it in history for ↑ recall", async () => {
@@ -34,7 +34,7 @@ describe("PromptInput composer", () => {
     const ta = w.find("textarea");
     await ta.setValue("hello there");
     await ta.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["hello there"]);
+    expect(w.emitted("send")?.[0]).toEqual(["hello there", []]);
     expect((ta.element as HTMLTextAreaElement).value).toBe(""); // cleared
     // Caret at start of an empty field → ArrowUp recalls the last sent line.
     await ta.trigger("keydown", { key: "ArrowUp" });
