@@ -531,6 +531,8 @@ export class ControlService {
             sessionAlias: params.sessionAlias,
             used: usage.used,
             size: usage.size,
+            ...(usage.cost ? { cost: usage.cost } : {}),
+            ...(usage.breakdown ? { breakdown: usage.breakdown } : {}),
           });
         },
       });

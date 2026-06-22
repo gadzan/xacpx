@@ -5,7 +5,7 @@ import type {
   SessionLifecycleOps,
   SessionRenderRecoveryOps,
 } from "../router-types";
-import type { PromptMediaInput, ResolvedSession } from "../../transport/types";
+import type { PromptMediaInput, PromptUsage, ResolvedSession } from "../../transport/types";
 import type { ReplyMode } from "../../config/types";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { PerfSpan } from "../../perf/perf-tracer";
@@ -736,7 +736,7 @@ async function promptWithSession(
   perfSpan?: PerfSpan,
   metadata?: ChatRequestMetadata,
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
+  onUsage?: (usage: PromptUsage) => void | Promise<void>,
 ): Promise<RouterResponse> {
   // Restore-on-message: a real prompt to an archived session un-archives it (mirrors
   // useSession on the web path, which the chat prompt path bypasses). The guard avoids
@@ -847,7 +847,7 @@ export async function handlePromptWithSession(
   perfSpan?: PerfSpan,
   metadata?: ChatRequestMetadata,
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
+  onUsage?: (usage: PromptUsage) => void | Promise<void>,
 ): Promise<RouterResponse> {
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage);
@@ -874,7 +874,7 @@ export async function handlePrompt(
   perfSpan?: PerfSpan,
   metadata?: ChatRequestMetadata,
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>,
+  onUsage?: (usage: PromptUsage) => void | Promise<void>,
 ): Promise<RouterResponse> {
   const session = metadata?.boundSessionAlias
     ? context.sessions.getResolvedSessionByInternalAlias(metadata.boundSessionAlias)

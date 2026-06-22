@@ -1,5 +1,6 @@
 import type { ChannelMediaAttachment, OutboundChannelMedia } from "../../channels/media-types.js";
 import type { PlanEntry, ScheduledSessionDescriptor, ToolUseEvent } from "../../channels/types.js";
+import type { PromptUsage } from "../../transport/types.js";
 import type { PerfSpan } from "../../perf/perf-tracer.js";
 
 /**
@@ -54,7 +55,7 @@ export interface ChatRequest {
   /** Structured plan/todo side-channel; see PromptOptions.onPlan. */
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
   /** Context-usage side-channel; see PromptOptions.onUsage. */
-  onUsage?: (usage: { used: number; size: number }) => void | Promise<void>;
+  onUsage?: (usage: PromptUsage) => void | Promise<void>;
   /**
    * Optional per-turn performance tracing span. When `logging.perf.enabled` is
    * true, the channel handler attaches a `PerfSpan` so downstream layers can
