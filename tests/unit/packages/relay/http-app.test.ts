@@ -477,3 +477,39 @@ test("createRelayRuntime trustProxy:false (default) — XFF header is ignored, s
     runtime.close();
   }
 });
+
+test("GET /api/version default path reports current-only without throwing", async () => {
+  const { app, loginToken, login } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const res = await app.request("/api/version", { headers: { cookie } });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { current: string; latest: string | null; updateAvailable: boolean };
+  expect(typeof body.current).toBe("string");
+  expect(body.latest).toBeNull();
+  expect(body.updateAvailable).toBe(false);
+});
+
+test("GET /api/version returns the injected update check (auth required)", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const instances = new InstanceStore(db);
+  const admin = accounts.createAccount("admin");
+  const { token } = accounts.createLoginToken(admin.id, "test");
+  const messages = new MessageStore(db);
+  const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
+  const app = createApp({
+    accounts, instances, gateway, messages,
+    checkUpdate: async () => ({ current: "0.6.0", latest: "0.7.0", updateAvailable: true }),
+  });
+  // unauthenticated → 401
+  expect((await app.request("/api/version")).status).toBe(401);
+  // authenticated → the injected payload
+  const login = await app.request("/api/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
+  });
+  const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const res = await app.request("/api/version", { headers: { cookie } });
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ current: "0.6.0", latest: "0.7.0", updateAvailable: true });
+});

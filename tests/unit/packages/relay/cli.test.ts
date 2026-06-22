@@ -372,6 +372,28 @@ test("resolveBundledWebRoot returns undefined when neither location has the dash
 // (`argv[1].endsWith("cli.js")`) skipped the entire CLI. Build the entry the way
 // dist is built, invoke it through a differently-named symlink, and assert it
 // actually runs (prints usage) — this fails if main-detection regresses to argv.
+test("update --check prints current and latest without installing", async () => {
+  const io = makeIo();
+  // Force the npm lookup to fail fast so --check reports 'unknown' deterministically,
+  // exercising the dispatch wiring (the behavior itself is covered in cli-update.test.ts).
+  const prev = process.env.PATH;
+  process.env.PATH = "";
+  try {
+    const code = await runRelayCli(["update", "--check"], io);
+    expect(code).toBe(0);
+    expect(io.lines.join("\n").toLowerCase()).toContain("current:");
+  } finally {
+    process.env.PATH = prev;
+  }
+});
+
+test("unknown command prints usage including the update line", async () => {
+  const io = makeIo();
+  const code = await runRelayCli(["bogus"], io);
+  expect(code).toBe(1);
+  expect(io.lines.join("\n")).toContain("update");
+});
+
 test("the built cli runs when invoked via a bin-style symlink (not named cli.js)", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const cliTs = join(here, "../../../../packages/relay/src/cli.ts");

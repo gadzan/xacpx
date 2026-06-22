@@ -19,12 +19,16 @@ const localeLabels: Record<string, string> = { en: "English", "zh-CN": "中文" 
 const retention = ref<{ days: number; maxPerSession: number } | null>(null);
 const pairing = ref("");
 const pairingName = ref("");
+const relay = ref<{ current: string; latest: string | null; updateAvailable: boolean } | null>(null);
 
 onMounted(async () => {
   try {
     const cfg = await api.get<{ historyRetention: { days: number; maxPerSession: number } }>("/api/config");
     retention.value = cfg.historyRetention;
   } catch { /* leave null; UI shows a dash */ }
+  try {
+    relay.value = await api.get<{ current: string; latest: string | null; updateAvailable: boolean }>("/api/version");
+  } catch { /* leave null; relay section shows a dash */ }
 });
 
 async function genPairing() {
@@ -104,6 +108,16 @@ async function onLogout() {
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.retentionTitle") }}</h2>
       <p class="text-sm text-fg-muted" data-test="retention-body">
         {{ $t("settings.retentionBody", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
+      </p>
+    </section>
+
+    <section class="mb-8">
+      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.relayTitle") }}</h2>
+      <p class="text-sm text-fg-muted" data-test="relay-version">
+        {{ $t("settings.relayVersion", { version: relay?.current ?? "—" }) }}
+      </p>
+      <p v-if="relay?.latest && relay.updateAvailable" class="mt-1 text-sm text-accent" data-test="relay-update">
+        {{ $t("settings.relayUpdateAvailable", { latest: relay?.latest }) }}
       </p>
     </section>
 

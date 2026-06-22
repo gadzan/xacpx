@@ -61,3 +61,33 @@ test("renders the Save affordance in Chinese when locale is zh-CN", async () => 
   await flushPromises();
   expect(w.get('[data-test="rename-save"]').text()).toBe("保存");
 });
+
+test("shows the instance version row from the store's coreVersion", async () => {
+  const store = useInstancesStore();
+  store.instances = [{
+    id: "i1", name: "old", online: true, lastSeenAt: null, coreVersion: "0.13.0",
+    sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [],
+  }];
+  vi.spyOn(store, "loadFormOptions").mockResolvedValue(undefined as never);
+  const w = mount(ManageInstanceDialog, {
+    props: { instanceId: "i1", instanceName: "old" },
+    global: { stubs: { WorkspacesManager: true, AgentsManager: true, Teleport: true } },
+  });
+  await flushPromises();
+  expect(w.get('[data-test="instance-version"]').text()).toContain("0.13.0");
+});
+
+test("shows the unknown-version fallback when coreVersion is null", async () => {
+  const store = useInstancesStore();
+  store.instances = [{
+    id: "i1", name: "old", online: true, lastSeenAt: null, coreVersion: null,
+    sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [],
+  }];
+  vi.spyOn(store, "loadFormOptions").mockResolvedValue(undefined as never);
+  const w = mount(ManageInstanceDialog, {
+    props: { instanceId: "i1", instanceName: "old" },
+    global: { stubs: { WorkspacesManager: true, AgentsManager: true, Teleport: true } },
+  });
+  await flushPromises();
+  expect(w.get('[data-test="instance-version"]').text().length).toBeGreaterThan(0);
+});

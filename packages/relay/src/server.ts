@@ -14,6 +14,7 @@ import { MessageStore } from "./stores/messages.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { createApp } from "./http/app.js";
+import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
 import { startMaintenanceLoop } from "./maintenance.js";
 
 const MAX_MESSAGES_PER_SESSION = 2000;
@@ -162,6 +163,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
     activeTurns: listActiveTurns,
     trustProxy: options.trustProxy,
+    checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
   });
   return { db, accounts, instances, messages, gateway, webGateway, app, close: () => db.close() };
 }
