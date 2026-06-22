@@ -13,6 +13,24 @@ test("isNewer compares semver; a prerelease ranks below the same release", () =>
   expect(isNewer("0.7.0", "0.7.0-rc.1")).toBe(true);
 });
 
+test("isNewer returns false when either version is unparseable (e.g. 'unknown')", () => {
+  // readRelayVersion falls back to "unknown" if it can't read package.json. Comparing
+  // that as 0.0.0 would flag every published release as newer and falsely prompt.
+  expect(isNewer("0.7.0", "unknown")).toBe(false);
+  expect(isNewer("unknown", "0.6.0")).toBe(false);
+  expect(isNewer("", "0.6.0")).toBe(false);
+});
+
+test("update checker does not flag an update when the current version is unknown", async () => {
+  const check = createRelayUpdateChecker({
+    current: "unknown",
+    getLatest: async () => "0.7.0",
+    now: () => 0,
+    ttlMs: 1000,
+  });
+  expect(await check()).toEqual({ current: "unknown", latest: "0.7.0", updateAvailable: false });
+});
+
 test("update checker reports updateAvailable and caches the latest lookup", async () => {
   let calls = 0;
   let clock = 0;

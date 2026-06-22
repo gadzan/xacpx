@@ -49,17 +49,23 @@ export async function getLatestNpmVersion(packageName: string): Promise<string |
  *  prereleases of the same release compare equal) — fine here because we compare
  *  against npm's stable `latest`, not prereleases. */
 export function isNewer(candidate: string, current: string): boolean {
+  // If either version is unparseable — notably when readRelayVersion fell back to
+  // "unknown" because it couldn't read package.json — don't claim an update. Treating
+  // an unparseable `current` as 0.0.0 would flag every published release as newer and
+  // falsely show "update available".
+  if (!parseSemver(candidate) || !parseSemver(current)) return false;
   return compareSemver(candidate, current) > 0;
 }
 
+function parseSemver(value: string): { nums: number[]; prerelease: boolean } | null {
+  const match = /^\s*v?(\d+)\.(\d+)\.(\d+)(-[^\s]*)?/.exec(value);
+  if (!match) return null;
+  return { nums: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: Boolean(match[4]) };
+}
+
 function compareSemver(a: string, b: string): number {
-  const parse = (value: string): { nums: number[]; prerelease: boolean } => {
-    const match = /^\s*v?(\d+)\.(\d+)\.(\d+)(-[^\s]*)?/.exec(value);
-    if (!match) return { nums: [0, 0, 0], prerelease: false };
-    return { nums: [Number(match[1]), Number(match[2]), Number(match[3])], prerelease: Boolean(match[4]) };
-  };
-  const left = parse(a);
-  const right = parse(b);
+  const left = parseSemver(a) ?? { nums: [0, 0, 0], prerelease: false };
+  const right = parseSemver(b) ?? { nums: [0, 0, 0], prerelease: false };
   for (let i = 0; i < 3; i += 1) {
     if (left.nums[i]! !== right.nums[i]!) return left.nums[i]! < right.nums[i]! ? -1 : 1;
   }
