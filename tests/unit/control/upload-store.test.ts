@@ -41,6 +41,24 @@ describe("UploadStore", () => {
     );
   });
 
+  it("rejects an oversized base64 string before decoding it", async () => {
+    const root = await freshRoot();
+    const maxBytes = 8;
+    const store = new UploadStore({ rootDir: root, maxBytes });
+    // A base64 string longer than the pre-decode threshold is rejected without ever
+    // allocating the decoded buffer (the string itself stays tiny relative to a 10MB+
+    // payload, but exceeds the cheap length bound).
+    const threshold = Math.ceil((maxBytes * 4) / 3) + 4;
+    const oversized = "A".repeat(threshold + 1);
+    await expect(store.save("big.bin", oversized, "application/octet-stream")).rejects.toThrow("file-too-large");
+  });
+
+  it("exposes the configured rootDir via root", async () => {
+    const root = await freshRoot();
+    const store = new UploadStore({ rootDir: root });
+    expect(store.root).toBe(root);
+  });
+
   it("rejects empty content", async () => {
     const root = await freshRoot();
     const store = new UploadStore({ rootDir: root });

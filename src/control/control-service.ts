@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type { Agent as ChatAgent, ChatRequestMetadata } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
@@ -476,7 +478,23 @@ export class ControlService {
       });
       emittedChunk = true;
     };
-    const chatMedia = (params.media ?? []).map((ref) => ({
+    // Defense-in-depth: the two-phase upload sandbox is meant to be the only source of
+    // attachment bytes (the web flow echoes back the path control.upload returned, which
+    // lives under the sandbox root). Drop any media ref whose resolved filePath escapes
+    // that root so a caller cannot point the agent at an arbitrary absolute path.
+    const uploadRoot = path.resolve(this.deps.uploadStore.root);
+    const incomingMedia = params.media ?? [];
+    const sandboxedMedia = incomingMedia.filter((ref) => {
+      const resolved = path.resolve(ref.filePath);
+      return resolved === uploadRoot || resolved.startsWith(uploadRoot + path.sep);
+    });
+    const droppedMedia = incomingMedia.length - sandboxedMedia.length;
+    if (droppedMedia > 0) {
+      console.warn(
+        `[control] dropped ${droppedMedia} media ref(s) with filePath outside the upload sandbox`,
+      );
+    }
+    const chatMedia = sandboxedMedia.map((ref) => ({
       kind: ref.kind,
       filePath: ref.filePath,
       mimeType: ref.mimeType,

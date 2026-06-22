@@ -47,7 +47,17 @@ export class UploadStore {
     this.now = opts.now ?? (() => new Date());
   }
 
+  /** Sandbox root all uploads are written under. Callers may use this to verify a
+   *  media filePath actually originated from a control.upload (defense-in-depth). */
+  get root(): string {
+    return this.rootDir;
+  }
+
   async save(filename: string, base64: string, mimeType: string): Promise<SavedUpload> {
+    // Pre-decode size guard: a base64 string encodes ceil(n/3)*4 chars per n bytes,
+    // so reject obvious oversized payloads before materializing them into memory.
+    if (base64.length > Math.ceil((this.maxBytes * 4) / 3) + 4) throw new Error("file-too-large");
+
     const bytes = Buffer.from(base64, "base64");
     if (bytes.byteLength === 0) throw new Error("empty-file");
     if (bytes.byteLength > this.maxBytes) throw new Error("file-too-large");

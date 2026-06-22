@@ -65,6 +65,9 @@ describe("ControlService media", () => {
     const chat = mock(async () => ({ text: "ok" }));
     const root = await mkdtemp(join(tmpdir(), "cs-upload-"));
     const svc = buildService(chat, new UploadStore({ rootDir: root }));
+    // Mirror the real web flow: the path echoed back is the one control.upload returned,
+    // which lives under the sandbox root.
+    const inSandbox = join(root, "u-1", "shot.png");
 
     await svc.prompt({
       chatKey: "relay:a1",
@@ -72,7 +75,7 @@ describe("ControlService media", () => {
       text: "look at this",
       senderId: "a1",
       isOwner: true,
-      media: [{ id: "u-1", filePath: "/tmp/u-1/shot.png", fileName: "shot.png", mimeType: "image/png", kind: "image", size: 3 }],
+      media: [{ id: "u-1", filePath: inSandbox, fileName: "shot.png", mimeType: "image/png", kind: "image", size: 3 }],
     });
 
     expect(chat).toHaveBeenCalledTimes(1);
@@ -80,10 +83,36 @@ describe("ControlService media", () => {
     expect(Array.isArray(arg.media)).toBe(true);
     expect(arg.media[0]).toMatchObject({
       kind: "image",
-      filePath: "/tmp/u-1/shot.png",
+      filePath: inSandbox,
       mimeType: "image/png",
       fileName: "shot.png",
     });
     expect(arg.media[0].source.channelId).toBe("relay");
+  });
+
+  it("prompt() drops media refs whose filePath escapes the upload sandbox", async () => {
+    const chat = mock(async () => ({ text: "ok" }));
+    const root = await mkdtemp(join(tmpdir(), "cs-upload-"));
+    const svc = buildService(chat, new UploadStore({ rootDir: root }));
+    const inSandbox = join(root, "u-2", "ok.png");
+
+    await svc.prompt({
+      chatKey: "relay:a1",
+      sessionAlias: "main",
+      text: "look at this",
+      senderId: "a1",
+      isOwner: true,
+      media: [
+        // Out-of-sandbox absolute path — must be dropped.
+        { id: "u-evil", filePath: "/etc/passwd", fileName: "passwd", mimeType: "text/plain", kind: "file", size: 3 },
+        // Legitimate in-sandbox path — must pass through.
+        { id: "u-2", filePath: inSandbox, fileName: "ok.png", mimeType: "image/png", kind: "image", size: 3 },
+      ],
+    });
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    const arg = (chat.mock.calls[0] as unknown[])[0] as { media: Array<Record<string, unknown>> };
+    expect(arg.media.length).toBe(1);
+    expect(arg.media[0]).toMatchObject({ kind: "image", filePath: inSandbox });
   });
 });
