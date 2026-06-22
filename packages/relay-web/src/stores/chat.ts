@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -307,11 +307,20 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function send(text: string): Promise<void> {
+  async function send(text: string, attachments: PromptAttachmentRef[] = []): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
     error.value = "";
     sending.value = true;
-    const optimistic: ChatMessage = { instanceId: instanceId.value, sessionAlias: sessionAlias.value, direction: "in", text, createdAt: new Date().toISOString() };
+    const optimistic: ChatMessage = {
+      instanceId: instanceId.value,
+      sessionAlias: sessionAlias.value,
+      direction: "in",
+      text,
+      createdAt: new Date().toISOString(),
+      ...(attachments.length > 0
+        ? { attachments: attachments.map((a): AttachmentMetadata => ({ id: a.id, filename: a.fileName, mimeType: a.mimeType, size: a.size, kind: a.kind, ...(a.previewUrl ? { previewUrl: a.previewUrl } : {}) })) }
+        : {}),
+    };
     messages.value.push(optimistic);
     try {
       // The web dashboard is GUI-first: every message — including `/`-prefixed text —
@@ -319,7 +328,11 @@ export const useChatStore = defineStore("chat", () => {
       // not handled here; the console forwards control-channel `/` text to the agent
       // verbatim (see command-router passthrough). Only WeChat/Feishu, which lack a
       // GUI, still rely on xacpx command handling.
-      const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", { sessionAlias: sessionAlias.value, text });
+      const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", {
+        sessionAlias: sessionAlias.value,
+        text,
+        ...(attachments.length > 0 ? { media: attachments } : {}),
+      });
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";
         optimistic.failed = true;
