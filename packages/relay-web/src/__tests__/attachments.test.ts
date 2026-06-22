@@ -41,7 +41,7 @@ test("addFiles rejects beyond the 5-attachment cap", async () => {
   expect(composer.pending).toHaveLength(5);
 });
 
-test("chat.send forwards ready attachments as media refs and clears them", async () => {
+test("chat.send forwards ready attachments as media refs", async () => {
   rpc.mockResolvedValue({ ok: true });
   const chat = useChatStore();
   chat.select("i1", "main");

@@ -39,6 +39,7 @@ export const useComposerStore = defineStore("composer", () => {
 
   async function addFiles(files: File[]): Promise<void> {
     if (!instanceId) return;
+    uploading.value = true;
     for (const file of files) {
       if (pending.value.length >= MAX_ATTACHMENTS) break;
       if (file.size > MAX_BYTES) continue;
@@ -53,7 +54,6 @@ export const useComposerStore = defineStore("composer", () => {
         status: "uploading",
       };
       pending.value.push(entry);
-      uploading.value = true;
       try {
         const previewUrl = await downscaleImage(file);
         if (previewUrl) entry.previewUrl = previewUrl;
