@@ -14,7 +14,7 @@ describe("useSwipeActions", () => {
   // "binds swipe handlers to real pointer events" regression test for the wiring.
   it("exposes bare pointer-event handler keys", () => {
     const { handlers } = useSwipeActions({ onSwipeLeft: vi.fn(), onSwipeRight: vi.fn() });
-    expect(Object.keys(handlers).sort()).toEqual(["pointerdown", "pointermove", "pointerup"]);
+    expect(Object.keys(handlers).sort()).toEqual(["pointercancel", "pointerdown", "pointermove", "pointerup"]);
   });
   it("fires onSwipeLeft past the threshold", () => {
     const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
@@ -39,6 +39,17 @@ describe("useSwipeActions", () => {
     handlers.pointerdown(pointer(200));
     handlers.pointermove(pointer(180));
     handlers.pointerup(pointer(180));
+    expect(onSwipeLeft).not.toHaveBeenCalled();
+    expect(onSwipeRight).not.toHaveBeenCalled();
+  });
+  it("fires nothing and resets after pointercancel (browser reclassified as scroll)", () => {
+    const onSwipeLeft = vi.fn(), onSwipeRight = vi.fn();
+    const { offset, handlers } = useSwipeActions({ onSwipeLeft, onSwipeRight, threshold: 60 });
+    handlers.pointerdown(pointer(200));
+    handlers.pointermove(pointer(120)); // past the threshold…
+    handlers.pointercancel();           // …but the gesture is cancelled
+    expect(offset.value).toBe(0);
+    handlers.pointerup(pointer(120));   // a stray up after cancel must not fire
     expect(onSwipeLeft).not.toHaveBeenCalled();
     expect(onSwipeRight).not.toHaveBeenCalled();
   });

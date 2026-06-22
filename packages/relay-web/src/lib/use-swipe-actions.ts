@@ -36,6 +36,12 @@ export function useSwipeActions(opts: SwipeActionsOptions) {
     if (dx <= -threshold) opts.onSwipeLeft();
     else if (dx >= threshold) opts.onSwipeRight();
   }
+  // The browser fires `pointercancel` (and no `pointerup`) when it reclassifies the
+  // drag as a scroll/gesture. Reset so a cancelled gesture never fires an action and
+  // never leaves a stale `offset` hanging.
+  function pointercancel() {
+    active = false; offset.value = 0;
+  }
 
-  return { offset, handlers: { pointerdown, pointermove, pointerup } };
+  return { offset, handlers: { pointerdown, pointermove, pointerup, pointercancel } };
 }
