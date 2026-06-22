@@ -51,6 +51,9 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   // `relay:<accountId>` channel scope that prompt/list resolve against, else a
   // freshly created session is unreachable by a subsequent prompt.
   MSG.sessionsList, MSG.sessionsCreate, MSG.sessionsNativeList, MSG.sessionsRemove,
+  // Archive/unarchive resolve the alias within the caller's chat scope too; without
+  // the stamp the connector calls getChannelIdFromChatKey(undefined) and throws.
+  MSG.sessionsArchive, MSG.sessionsUnarchive,
   // Model get/set resolve the session within the caller's chat scope.
   MSG.sessionModelGet, MSG.sessionModelSet,
 ]);
