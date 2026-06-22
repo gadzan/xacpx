@@ -80,6 +80,25 @@ describe("InstanceTree session management", () => {
     w.unmount();
   });
 
+  // Regression: the ⋯ dropdown must render OUTSIDE the swipe clip layer, else the
+  // swipe's `overflow-hidden` clips it to the row's height (the menu appeared trapped
+  // inside the row). Assert the open menu is a child of the row but NOT inside the
+  // (overflow-hidden) swipe track.
+  it("renders the ⋯ dropdown outside the swipe clip layer (not clipped to the row)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("mousedown");
+    await w.find('[data-test="session-menu"]').trigger("click");
+    const menu = w.find('[data-test="delete-session"]').element;
+    expect(menu).toBeTruthy();
+    // Inside the row…
+    expect(menu.closest('[data-test="session-row"]')).not.toBeNull();
+    // …but NOT inside the overflow-hidden swipe track (which would clip it).
+    expect(menu.closest('[data-test="swipe-track"]')).toBeNull();
+    w.unmount();
+  });
+
   // Regression: the row must wire the swipe composable to real pointer events. A
   // right→left swipe REVEALS the action blocks (it must NOT execute anything on its
   // own); tapping the revealed archive block then archives. Catches the
