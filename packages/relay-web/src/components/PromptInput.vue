@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { Brain, Check, ChevronDown, Gauge, Paperclip, Send, X } from "lucide-vue-next";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
+import UsagePopover from "./UsagePopover.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
@@ -21,8 +22,17 @@ const context = computed(() => {
   if (!u || u.size <= 0) return null;
   const pct = Math.min(100, Math.round((u.used / u.size) * 100));
   const tone = pct >= 90 ? "danger" : pct >= 75 ? "warn" : "accent";
-  return { used: u.used, size: u.size, pct, tone };
+  return { used: u.used, size: u.size, pct, tone, cost: u.cost, breakdown: u.breakdown };
 });
+
+// Click the meter to open a popover with the cost & per-turn token breakdown.
+const usageOpen = ref(false);
+const usageAnchor = ref<{ top: number; left: number; width: number; height: number } | null>(null);
+function toggleUsage(e: MouseEvent) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  usageAnchor.value = { top: r.top, left: r.left, width: r.width, height: r.height };
+  usageOpen.value = !usageOpen.value;
+}
 
 // Load the session's model for the composer chip whenever the session changes.
 const modelMenuOpen = ref(false);
@@ -200,10 +210,11 @@ function onInput() {
             </li>
           </ul>
           <span v-if="controls.error" data-test="model-error" class="text-xs text-danger">{{ controls.error }}</span>
-          <!-- context-usage meter: sits to the right of the model chip -->
-          <span v-if="context" data-test="context-meter"
-                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap pl-0.5"
-                :title="$t('chat.contextUsage', { used: context.used.toLocaleString(), size: context.size.toLocaleString() })">
+          <!-- context-usage meter: click to open the cost / token-breakdown popover -->
+          <button v-if="context" type="button" data-test="context-meter"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded pl-0.5 hover:opacity-80"
+                  :title="$t('chat.contextUsage', { used: context.used.toLocaleString(), size: context.size.toLocaleString() })"
+                  @click="toggleUsage">
             <Gauge :size="13" class="shrink-0"
                    :class="context.tone === 'danger' ? 'text-danger' : context.tone === 'warn' ? 'text-warn' : 'text-accent'" />
             <span class="relative h-1 w-8 shrink-0 overflow-hidden rounded-full bg-border">
@@ -212,7 +223,11 @@ function onInput() {
                     :style="{ width: context.pct + '%' }" />
             </span>
             <span class="shrink-0 text-[11.5px] font-medium tabular-nums text-fg-muted">{{ context.pct }}%</span>
-          </span>
+          </button>
+          <UsagePopover v-if="context && usageOpen"
+                        :used="context.used" :size="context.size" :pct="context.pct"
+                        :cost="context.cost" :breakdown="context.breakdown" :anchor="usageAnchor"
+                        @dismiss="usageOpen = false" />
         </div>
         <span v-else />
 

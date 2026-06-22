@@ -75,6 +75,18 @@ export default {
     message: "消息",
     jumpLatest: "↓ 最新",
     contextUsage: "上下文：{used} / {size} tokens",
+    usage: {
+      contextWindow: "上下文窗口",
+      tokens: "Tokens（本会话）",
+      input: "输入",
+      output: "输出",
+      cacheRead: "缓存读取",
+      cacheWrite: "缓存写入",
+      thinking: "思考",
+      total: "合计",
+      cost: "费用",
+      cumulative: "累计",
+    },
     attach: { add: "添加附件", remove: "移除", tooMany: "每条消息最多 5 个文件", tooLarge: "{name} 太大（最大 10MB）" },
   },
   session: {

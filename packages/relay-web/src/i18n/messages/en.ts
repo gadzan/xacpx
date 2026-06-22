@@ -77,6 +77,18 @@ export default {
     message: "Message",
     jumpLatest: "↓ Latest",
     contextUsage: "Context: {used} / {size} tokens",
+    usage: {
+      contextWindow: "Context window",
+      tokens: "Tokens (this session)",
+      input: "Input",
+      output: "Output",
+      cacheRead: "Cache read",
+      cacheWrite: "Cache write",
+      thinking: "Thinking",
+      total: "Total",
+      cost: "Cost",
+      cumulative: "Cumulative",
+    },
     attach: { add: "Attach file", remove: "Remove", tooMany: "Up to 5 files per message", tooLarge: "{name} is too large (max 10MB)" },
   },
   session: {
