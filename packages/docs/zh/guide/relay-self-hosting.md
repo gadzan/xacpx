@@ -276,7 +276,7 @@ WantedBy=multi-user.target
 如果你已经在用 [pm2](https://pm2.keymetrics.io/) 托管 Node 服务，它同样能管好 Hub——`xacpx-relay` 自身没有 `stop`/`status`，交给进程管理器负责重启和开机自启最合适。
 
 ```bash
-pm2 start xacpx-relay --name xacpx-relay -- start --host 127.0.0.1
+pm2 start xacpx-relay --name xacpx-relay -- start
 
 pm2 save        # 固化当前进程列表
 pm2 startup     # 打印一条一次性命令，执行后即开机自启
@@ -291,13 +291,13 @@ module.exports = {
   apps: [{
     name: "xacpx-relay",
     script: "xacpx-relay",
-    args: "start --host 127.0.0.1",
+    args: "start",
     autorestart: true,
   }],
 };
 ```
 
-`--host 127.0.0.1` 让 Hub 不直接对外，与 systemd 示例一致。DB（`~/.xacpx-relay/relay.db`）会自动检测——仅在需要非默认路径时才加 `--db`。若想让限速使用 `X-Forwarded-For` 里的真实客户端 IP，再加 `--trust-proxy`（见 [TLS 与反向代理](#tls-reverse-proxy)）。`xacpx-relay update` 之后执行 `pm2 restart xacpx-relay` 加载新版本。
+默认即可用。需要更安全的部署时，再往 `start` 后追加：`--host 127.0.0.1` 让 Hub 不直接对外（置于反向代理之后）、`--db <path>` 自定义数据库路径，或 `--trust-proxy` 让限速使用 `X-Forwarded-For` 里的真实客户端 IP（见 [TLS 与反向代理](#tls-reverse-proxy)）。`xacpx-relay update` 之后执行 `pm2 restart xacpx-relay` 加载新版本。
 
 ## 常见问题排查
 

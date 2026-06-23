@@ -276,7 +276,7 @@ Bind to `127.0.0.1` and let your reverse proxy face the internet. The DB and das
 If you already run Node services under [pm2](https://pm2.keymetrics.io/), it supervises the hub just as well — `xacpx-relay` has no `stop`/`status` of its own, so a process manager handles restarts and boot-time startup.
 
 ```bash
-pm2 start xacpx-relay --name xacpx-relay -- start --host 127.0.0.1
+pm2 start xacpx-relay --name xacpx-relay -- start
 
 pm2 save        # persist the process list
 pm2 startup     # prints a one-time command to enable boot-time startup
@@ -291,13 +291,13 @@ module.exports = {
   apps: [{
     name: "xacpx-relay",
     script: "xacpx-relay",
-    args: "start --host 127.0.0.1",
+    args: "start",
     autorestart: true,
   }],
 };
 ```
 
-`--host 127.0.0.1` keeps the hub off the public interface, same as the systemd example. The DB (`~/.xacpx-relay/relay.db`) is auto-detected — only add `--db` for a non-default path. Add `--trust-proxy` if you want rate limiting to use the real client IP from `X-Forwarded-For` (see [TLS & reverse proxy](#tls-reverse-proxy)). After `xacpx-relay update`, run `pm2 restart xacpx-relay` to load the new version.
+The defaults work out of the box. For a hardened setup, append flags to `start`: `--host 127.0.0.1` to keep the hub off the public interface (behind your reverse proxy), `--db <path>` for a non-default database, or `--trust-proxy` so rate limiting uses the real client IP from `X-Forwarded-For` (see [TLS & reverse proxy](#tls-reverse-proxy)). After `xacpx-relay update`, run `pm2 restart xacpx-relay` to load the new version.
 
 ## Troubleshooting
 
