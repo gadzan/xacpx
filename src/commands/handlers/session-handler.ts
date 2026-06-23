@@ -745,17 +745,16 @@ async function promptWithSession(
   // the same key `setArchived` expects.
   if (session.archived) {
     await context.sessions.setArchived(session.alias, false);
-    // Archiving an unshared session cancels + closes its acpx session
-    // (archiveSessionWithTransport). acpx excludes closed records from name lookup,
-    // so checkTransportSession reports the session missing and the next
-    // transport.prompt would throw "No acpx session found" (wrongly telling the user
-    // to re-run /session new). Recreate it here before prompting, but only when it's
-    // actually gone — the shared-transport case (archive left the acpx session
-    // intact) stays promptable and must not be recreated. Concurrent re-prompts to
-    // one session are already serialized by the per-session turn lane, so no extra
-    // lock is needed here. NOTE: ensureSession starts a FRESH acpx session (acpx
-    // can't resume a closed record by name), so the restored conversation resumes
-    // with empty agent context — history is not carried over.
+    // Archive keeps the acpx session alive (archiveSessionWithTransport only
+    // cancels), so checkTransportSession normally reports it present here and the
+    // prompt resumes the existing conversation with full history. This recreate is a
+    // safety net for the cases where the acpx session really is gone — a session
+    // archived under the old close-on-archive behavior, a manual `sessions close`,
+    // or an acpx crash — where the next transport.prompt would otherwise throw
+    // "No acpx session found" and wrongly tell the user to re-run /session new. Only
+    // recreate when actually missing (a recreated session starts fresh, no history).
+    // Concurrent re-prompts to one session are already serialized by the per-session
+    // turn lane, so no extra lock is needed here.
     if (!(await context.lifecycle.checkTransportSession(session))) {
       await context.lifecycle.ensureTransportSession(session, reply, perfSpan);
     }

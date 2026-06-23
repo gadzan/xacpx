@@ -62,7 +62,7 @@ test("removeSessionWithTransport leaves the shared transport intact", async () =
   expect(result.sharedAliasCount).toBe(1);
 });
 
-test("archiveSessionWithTransport closes the unshared process then flags archived", async () => {
+test("archiveSessionWithTransport cancels the in-flight turn but KEEPS the acpx session resumable", async () => {
   const sessions = makeSessions({ sharedCount: 0 });
   const transport = makeTransport();
   const router = new CommandRouter(sessions, transport);
@@ -70,7 +70,10 @@ test("archiveSessionWithTransport closes the unshared process then flags archive
   await router.archiveSessionWithTransport("backend:demo");
 
   expect((transport.cancel as ReturnType<typeof mock>).mock.calls.length).toBe(1);
-  expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  // Must NOT close: closing marks the acpx record `closed`, making it unresumable
+  // and losing history on the next prompt. The session stays alive so re-prompting
+  // resumes the same conversation.
+  expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   const setArchived = sessions.setArchived as ReturnType<typeof mock>;
   expect(setArchived.mock.calls.length).toBe(1);
   expect(setArchived.mock.calls[0]).toEqual(["backend:demo", true]);
