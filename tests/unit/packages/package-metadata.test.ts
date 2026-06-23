@@ -16,10 +16,10 @@ test("root package publishes as xacpx and exposes plugin-api", () => {
   });
 });
 
-test("root package version is 0.14.1", () => {
+test("root package version is 0.15.0", () => {
   const pkg = readJson("package.json");
 
-  expect(pkg.version).toBe("0.14.1");
+  expect(pkg.version).toBe("0.15.0");
 });
 
 test("first-party channel plugins peer depend on xacpx", () => {

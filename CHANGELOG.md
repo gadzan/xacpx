@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0] - 2026-06-23
+
+A core (`@ganglion/xacpx`) release fixing session archive/restore so re-prompting an archived session continues the same conversation. No `relay` / `relay-protocol` / `channel-relay` changes (the dashboard's resizable right panel from this cycle ships in an upcoming `relay` release).
+
+### Changed
+
+- **Archiving a session now keeps it resumable.** Archiving previously ran `acpx sessions close` on the unshared transport, which marks the acpx record `closed`; acpx excludes closed records from name lookup, so a restored session could only be recreated fresh — losing all agent context and history. Archive now only cancels any in-flight turn and leaves the acpx session alive, so re-prompting (from the dashboard or WeChat) resumes the same conversation with full context + history, repeatably (archive → restore → archive → restore). The warm queue-owner process is no longer freed instantly on archive; it idles out via acpx's TTL exactly like any other inactive session (acpx has no "free the process but keep the record resumable" primitive, so resumability is preferred over instant reclamation).
+
+### Fixed
+
+- **Re-prompting an archived session no longer errors with "session unavailable / re-run /session new".** Restore-on-message un-archived the logical session but never recreated the transport session that archive had torn down, so the next prompt threw "No acpx session found". The chat path now recreates a genuinely-missing transport session before prompting (only when actually gone, so a live shared transport is never disturbed); combined with the archive change above, the normal path resumes the existing session instead. A recreated session starts fresh; sessions archived under the previous close-on-archive build lose their prior history on first restore.
+
 ## [relay 0.9.1] - 2026-06-23
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Delivers the dashboard half of the workspace-propagation fix and drops blank reasoning blocks. Pairs with core `0.14.1` and `relay-protocol` `0.1.4`.
