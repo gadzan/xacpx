@@ -186,3 +186,41 @@ test("the sidebar header toggle collapses the instances column, and the edge han
   expect(left.classes()).toContain("lg:w-[248px]");
   expect(wrapper.find('[data-test="expand-left"]').exists()).toBe(false);
 });
+
+test("edge-swipe right from the left edge opens the instances drawer (mobile)", async () => {
+  const realWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true });
+  try {
+    const wrapper = mountDash();
+    await flushPromises();
+    const left = wrapper.find('[data-drawer="left"]');
+    expect(left.classes()).toContain("-translate-x-full");
+
+    await wrapper.trigger("touchstart", { touches: [{ clientX: 6, clientY: 200 }] });
+    await wrapper.trigger("touchend", { changedTouches: [{ clientX: 110, clientY: 208 }] });
+
+    expect(left.classes()).toContain("translate-x-0");
+    expect(left.classes()).not.toContain("-translate-x-full");
+  } finally {
+    Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
+  }
+});
+
+test("edge-swipe left from the right edge opens the tasks/files drawer (mobile)", async () => {
+  const realWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true });
+  try {
+    const wrapper = mountDash();
+    await flushPromises();
+    const right = wrapper.find('[data-drawer="right"]');
+    expect(right.classes()).toContain("translate-x-full");
+
+    await wrapper.trigger("touchstart", { touches: [{ clientX: 494, clientY: 200 }] });
+    await wrapper.trigger("touchend", { changedTouches: [{ clientX: 380, clientY: 206 }] });
+
+    expect(right.classes()).toContain("translate-x-0");
+    expect(right.classes()).not.toContain("translate-x-full");
+  } finally {
+    Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
+  }
+});

@@ -18,6 +18,7 @@ import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
+import { createEdgeSwipe } from "../lib/edge-swipe";
 import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
 
 const theme = useThemeStore();
@@ -42,6 +43,22 @@ function openRight(tab: "tasks" | "files") {
   rightTab.value = tab;
   rightOpen.value = true;
 }
+
+// Mobile edge-swipe drawers: from the left edge swipe right to open instances,
+// from the right edge swipe left to open tasks/files; when a drawer is open a
+// swipe back toward its edge closes it. Inert on lg+ (static columns).
+const swipe = createEdgeSwipe({
+  // < 1024px = the Tailwind `lg` boundary at which the drawers stop being
+  // off-canvas. innerWidth ≥ the CSS viewport width (it includes a classic
+  // scrollbar), so we never disable while the layout is still off-canvas.
+  isEnabled: () => typeof window !== "undefined" && window.innerWidth < 1024,
+  isLeftOpen: () => leftOpen.value,
+  isRightOpen: () => rightOpen.value,
+  openLeft: () => { leftOpen.value = true; },
+  openRight: () => { rightOpen.value = true; }, // keeps the last-used right tab
+  closeLeft: () => { leftOpen.value = false; },
+  closeRight: () => { rightOpen.value = false; },
+});
 // Mobile: "Back" from the file viewer returns to the FILE LIST (reopen the Files drawer),
 // not the conversation. Clearing the open file reverts the center to ChatPane underneath.
 function backToFileList() {
@@ -124,7 +141,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-dvh flex-col bg-bg text-fg">
+  <div class="flex h-dvh flex-col bg-bg text-fg"
+       @touchstart.passive="swipe.onTouchStart"
+       @touchend.passive="swipe.onTouchEnd"
+       @touchcancel.passive="swipe.onTouchCancel">
     <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
     <!-- pt-[env(safe-area-inset-top)]: in an installed iOS PWA (viewport-fit=cover)
          the content runs under the notch / status bar; extend the bar's surface up
