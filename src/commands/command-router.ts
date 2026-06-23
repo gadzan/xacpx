@@ -624,8 +624,10 @@ export class CommandRouter {
     };
   }
 
-  /** Archive: close the acpx process (keep history) when no other alias shares the
-   *  transport, then flag the logical session archived. */
+  /** Archive: cancel any in-flight turn (when no other alias shares the transport)
+   *  but keep the acpx session alive and resumable, then flag the logical session
+   *  archived. Re-prompting later resumes the same conversation with full history;
+   *  the warm process idles out via acpx's TTL like any inactive session. */
   async archiveSessionWithTransport(internalAlias: string): Promise<void> {
     const session = await this.sessions.getSession(internalAlias);
     if (!session) {
