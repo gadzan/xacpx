@@ -93,6 +93,62 @@ test("handlePrompt falls back to getCurrentSession when metadata has no boundSes
   expect(calls.filter((c) => c.startsWith("getByInternal:"))).toHaveLength(0);
 });
 
+function makeArchivedRestoreContext(order: string[], transportExists: boolean) {
+  const archivedSession = {
+    alias: "relay:agent-claude",
+    agent: "claude",
+    workspace: "agent",
+    transportSession: "agent:relay:agent-claude",
+    archived: true,
+  } as any;
+  return {
+    sessions: {
+      getCurrentSession: async (_chatKey: string) => archivedSession,
+      setArchived: async (alias: string, archived: boolean) => {
+        order.push(`setArchived:${alias}:${archived}`);
+      },
+    },
+    orchestration: undefined,
+    config: undefined,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    lifecycle: {
+      checkTransportSession: async () => { order.push("check"); return transportExists; },
+      ensureTransportSession: async () => { order.push("ensure"); },
+    },
+    interaction: {
+      promptTransportSession: async () => { order.push("prompt"); return { text: "ok" }; },
+    },
+    recovery: {},
+  } as any;
+}
+
+test("re-prompting an archived session recreates the torn-down transport before prompting", async () => {
+  // Archiving an unshared session closes its acpx session. Restore-on-message must
+  // recreate it, else transport.prompt throws "No acpx session found" and the user
+  // is wrongly told to re-run /session new (the reported bug).
+  const order: string[] = [];
+  const res = await handlePrompt(makeArchivedRestoreContext(order, /*transportExists*/ false), "relay:agent-claude:u", "hi");
+  expect(res.text).toBe("ok");
+  expect(order).toEqual([
+    "setArchived:relay:agent-claude:false",
+    "check",
+    "ensure",
+    "prompt",
+  ]);
+});
+
+test("re-prompting an archived session whose transport survived (shared) does not re-create it", async () => {
+  const order: string[] = [];
+  const res = await handlePrompt(makeArchivedRestoreContext(order, /*transportExists*/ true), "relay:agent-claude:u", "hi");
+  expect(res.text).toBe("ok");
+  // checkTransportSession reports it still exists → no ensure, just prompt.
+  expect(order).toEqual([
+    "setArchived:relay:agent-claude:false",
+    "check",
+    "prompt",
+  ]);
+});
+
 test("switching to a session with a stored background result appends it", async () => {
   const context = {
     sessions: {
