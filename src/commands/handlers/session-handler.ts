@@ -743,19 +743,24 @@ async function promptWithSession(
   // useSession on the web path, which the chat prompt path bypasses). The guard avoids
   // a needless persist on every normal prompt. `session.alias` is the internal alias,
   // the same key `setArchived` expects.
+  // NOTE: this branch only runs when the session still carries `archived` at prompt
+  // time — i.e. the WeChat/chat path, which reaches handlePrompt directly. The
+  // web/control path calls sessions.useSession() first (ControlService.executeTurn),
+  // and useSession clears `archived`, so this branch is skipped there. That's fine
+  // post-#72: archive keeps the acpx session alive, so the web path's transport.prompt
+  // resumes the existing conversation without needing recreation.
   if (session.archived) {
     await context.sessions.setArchived(session.alias, false);
-    // Archiving an unshared session cancels + closes its acpx session
-    // (archiveSessionWithTransport). acpx excludes closed records from name lookup,
-    // so checkTransportSession reports the session missing and the next
-    // transport.prompt would throw "No acpx session found" (wrongly telling the user
-    // to re-run /session new). Recreate it here before prompting, but only when it's
-    // actually gone — the shared-transport case (archive left the acpx session
-    // intact) stays promptable and must not be recreated. Concurrent re-prompts to
-    // one session are already serialized by the per-session turn lane, so no extra
-    // lock is needed here. NOTE: ensureSession starts a FRESH acpx session (acpx
-    // can't resume a closed record by name), so the restored conversation resumes
-    // with empty agent context — history is not carried over.
+    // Archive keeps the acpx session alive (archiveSessionWithTransport only
+    // cancels), so checkTransportSession normally reports it present and the prompt
+    // resumes the existing conversation with full history. The recreate is a safety
+    // net for the chat path when the acpx session really is gone (a session archived
+    // under the old close-on-archive build, a manual `sessions close`, or an acpx
+    // crash) — otherwise transport.prompt throws "No acpx session found". A recreated
+    // session starts fresh (no history). The web path doesn't reach this recreate, so
+    // a genuinely-missing session there surfaces the transport error instead; that
+    // only affects pre-#72 closed sessions (a transient migration edge). Concurrent
+    // re-prompts to one session are already serialized by the per-session turn lane.
     if (!(await context.lifecycle.checkTransportSession(session))) {
       await context.lifecycle.ensureTransportSession(session, reply, perfSpan);
     }

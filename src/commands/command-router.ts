@@ -624,15 +624,19 @@ export class CommandRouter {
     };
   }
 
-  /** Archive: close the acpx process (keep history) when no other alias shares the
-   *  transport, then flag the logical session archived. */
+  /** Archive: cancel any in-flight turn (when no other alias shares the transport)
+   *  but keep the acpx session alive and resumable, then flag the logical session
+   *  archived. Re-prompting later resumes the same conversation with full history;
+   *  the warm process idles out via acpx's TTL like any inactive session. */
   async archiveSessionWithTransport(internalAlias: string): Promise<void> {
     const session = await this.sessions.getSession(internalAlias);
     if (!session) {
       throw new Error(`session "${internalAlias}" does not exist`);
     }
-    // Archiving cancels+closes acpx; refuse while a turn is in flight so we don't
-    // race (and silently abort) the running prompt.
+    // Archiving cancels any in-flight turn but deliberately KEEPS the acpx session
+    // alive, so re-prompting later resumes the same conversation with full agent
+    // context + history. Refuse while a turn is in flight so we don't race (and
+    // silently abort) the running prompt.
     if (this.activeTurns?.isActiveAnywhere(internalAlias)) {
       throw new Error(`session "${internalAlias}" has a running turn; stop it before archiving`);
     }
@@ -643,17 +647,13 @@ export class CommandRouter {
       } catch {
         /* best-effort */
       }
-      if (this.transport.removeSession) {
-        try {
-          await this.transport.removeSession(session);
-        } catch (error) {
-          await this.logger.error("session.archive_close_failed", "failed to close acpx session on archive", {
-            alias: internalAlias,
-            transportSession: session.transportSession,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // NOTE: we intentionally do NOT close the acpx session here. `sessions close`
+      // marks the record `closed`, which acpx excludes from name lookup — the
+      // session then becomes unresumable and the next prompt would start fresh,
+      // losing history (that fallback still lives in the restore-on-message branch
+      // for genuinely-missing sessions). Leaving it open keeps the conversation
+      // resumable on the next message; its warm queue-owner process idles out via
+      // acpx's TTL exactly like any other inactive session.
     }
     await this.sessions.setArchived(internalAlias, true);
   }
