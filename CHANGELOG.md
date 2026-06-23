@@ -1,5 +1,18 @@
 # Changelog
 
+## [relay 0.9.0] - 2026-06-23
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases. Brings a redesigned login, mobile edge-swipe drawers, and timely PWA updates.
+
+### Added
+
+- **Redesigned login.** The token-entry screen is now a terminal-window card: a `xacpx-relay add token` command line with a copy button, a show/hide token field, and a bracketed-prompt sign-in action, with a brand glow and a green focus ring.
+- **Mobile edge-swipe drawers.** On the dashboard, swipe right from the left screen edge to open the instances drawer and swipe left from the right edge to open the tasks/files drawer; when a drawer is open, swipe back across the backdrop to close it. Gated to the mobile layout and guarded against vertical-scroll and multi-touch misfires.
+
+### Fixed
+
+- **Timely PWA updates.** The dashboard now polls for a new service worker (every 60s and on tab focus) and `skipWaiting` activates it immediately, so a deploy reaches open clients without a manual hard refresh. The hub also serves hashed `/assets/*` as `immutable` and the app shell as `no-cache`, so the shell is always revalidated while fingerprinted assets stay cacheable.
+
 ## [0.14.0] - 2026-06-22
 
 Brings **message attachments** (images & files) and **agent slash-command** awareness through the core, plus richer usage telemetry. Pairs with the `relay` / `relay-protocol` / `channel-relay` releases below.
