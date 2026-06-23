@@ -19,6 +19,7 @@ import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
+import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
 
 const theme = useThemeStore();
@@ -71,6 +72,54 @@ function backToFileList() {
 const leftCollapsed = ref(localStorage.getItem("xacpx.leftCollapsed") === "1");
 watch(leftCollapsed, (v) => localStorage.setItem("xacpx.leftCollapsed", v ? "1" : "0"));
 
+// Desktop-only: drag the right panel's left edge to resize it. Mobile keeps the
+// fixed-width off-canvas drawer, so `isDesktop` gates both the handle and the
+// inline width (an inline width would otherwise override the mobile `w-72`).
+const RIGHT_MIN = 240;
+const RIGHT_MAX = 560;
+const RIGHT_DEFAULT = 296;
+const RIGHT_VIEWPORT_FRACTION = 0.5;
+// `matchMedia` is absent in some test/embedded runtimes; treat its absence as
+// "not desktop" so the resize handle and inline width simply don't engage.
+function queryDesktop(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(min-width: 1024px)").matches;
+}
+const isDesktop = ref(queryDesktop());
+const rightWidth = ref(clampPanelWidth(
+  Number(localStorage.getItem("xacpx.rightWidth")) || RIGHT_DEFAULT,
+  RIGHT_MIN, RIGHT_MAX,
+  typeof window !== "undefined" ? window.innerWidth : undefined, RIGHT_VIEWPORT_FRACTION));
+const rightDragging = ref(false);
+watch(rightWidth, (v) => localStorage.setItem("xacpx.rightWidth", String(v)));
+
+const rightResize = createPanelResize({
+  side: "right",
+  getWidth: () => rightWidth.value,
+  setWidth: (w) => { rightWidth.value = w; },
+  min: RIGHT_MIN,
+  max: RIGHT_MAX,
+  maxViewportFraction: RIGHT_VIEWPORT_FRACTION,
+  isEnabled: () => isDesktop.value,
+  // Lock the cursor + suppress text selection for the whole document while
+  // dragging, so a fast drag that outruns the thin handle still feels solid.
+  onDragStart: () => {
+    rightDragging.value = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  },
+  onDragEnd: () => {
+    rightDragging.value = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  },
+});
+
+let desktopMql: MediaQueryList | null = null;
+function onDesktopChange(e: MediaQueryListEvent | MediaQueryList) {
+  isDesktop.value = e.matches;
+}
+
 // A file/diff opened from the rail takes over the center column (FileViewer); Back
 // returns to the conversation. On mobile, opening one also closes the right drawer so
 // the viewer is actually visible.
@@ -116,6 +165,11 @@ function onStatus(online: boolean) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onGlobalKey);
+  if (typeof window.matchMedia === "function") {
+    desktopMql = window.matchMedia("(min-width: 1024px)");
+    isDesktop.value = desktopMql.matches;
+    desktopMql.addEventListener("change", onDesktopChange);
+  }
   await instances.loadInstances();
   disconnect = connectEvents((event) => {
     instances.applyEvent(event);
@@ -136,6 +190,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onGlobalKey);
+  desktopMql?.removeEventListener("change", onDesktopChange);
   disconnect?.();
 });
 </script>
@@ -246,10 +301,23 @@ onUnmounted(() => {
         <FileViewer v-if="viewingFile" class="absolute inset-0 z-10" @back="backToFileList" @close="closeFileViewer" />
       </div>
 
-      <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. -->
+      <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. On desktop its
+           width is the user-dragged `rightWidth` (inline style overrides lg:w-[296px],
+           which stays as a no-JS fallback); on mobile no inline width is set so the
+           fixed `w-72` drawer width applies. -->
       <div data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
-           :class="rightOpen ? 'translate-x-0' : 'translate-x-full'">
+           class="fixed inset-y-0 right-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
+           :style="isDesktop ? { width: rightWidth + 'px' } : undefined">
+        <!-- Resize handle: a thin grab strip on the panel's left edge (desktop only).
+             touch-none keeps a touch on it from scrolling; it's hidden < lg anyway.
+             Pointer-only enhancement over the no-JS lg:w-[296px] fallback, so it's
+             aria-hidden (no keyboard/value semantics to honor); the title gives a
+             sighted hover hint. -->
+        <div data-test="right-resize" aria-hidden="true" :title='$t("nav.resizePanel")'
+             class="absolute inset-y-0 left-0 z-20 hidden w-1.5 cursor-col-resize touch-none select-none transition-colors lg:block"
+             :class="rightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
+             @pointerdown.prevent="rightResize.onPointerDown" />
         <div class="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2.5">
           <button data-test="right-tab-files"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"

@@ -36,6 +36,7 @@ export default {
     closeTasks: "Close tasks",
     hideSidebar: "Hide sidebar",
     showSidebar: "Show sidebar",
+    resizePanel: "Drag to resize panel",
   },
   settings: {
     title: "Settings",

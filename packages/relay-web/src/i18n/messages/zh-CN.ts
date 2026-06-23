@@ -34,6 +34,7 @@ export default {
     closeTasks: "关闭任务",
     hideSidebar: "隐藏侧栏",
     showSidebar: "显示侧栏",
+    resizePanel: "拖动调整面板宽度",
   },
   settings: {
     title: "设置",
