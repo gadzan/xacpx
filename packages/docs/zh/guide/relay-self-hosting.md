@@ -271,6 +271,34 @@ WantedBy=multi-user.target
 
 绑定到 `127.0.0.1`，让你的反向代理面向公网。DB 和看板会从默认位置自动检测；仅在需要非默认路径时才添加 `--db`。
 
+## 在 pm2 下运行（示例）
+
+如果你已经在用 [pm2](https://pm2.keymetrics.io/) 托管 Node 服务，它同样能管好 Hub——`xacpx-relay` 自身没有 `stop`/`status`，交给进程管理器负责重启和开机自启最合适。
+
+```bash
+pm2 start xacpx-relay --name xacpx-relay -- start
+
+pm2 save        # 固化当前进程列表
+pm2 startup     # 打印一条一次性命令，执行后即开机自启
+```
+
+pm2 会从 `PATH` 解析 `xacpx-relay` 并把绝对路径存进 dump，重启后也能恢复；万一 pm2 找不到（非标准安装），改传 `command -v xacpx-relay` 的绝对路径即可。
+
+或用 ecosystem 文件固定参数（`pm2 start ecosystem.config.js`）：
+
+```js
+module.exports = {
+  apps: [{
+    name: "xacpx-relay",
+    script: "xacpx-relay",
+    args: "start",
+    autorestart: true,
+  }],
+};
+```
+
+默认即可用。需要更安全的部署时，再往 `start` 后追加：`--host 127.0.0.1` 让 Hub 不直接对外（置于反向代理之后）、`--db <path>` 自定义数据库路径，或 `--trust-proxy` 让限速使用 `X-Forwarded-For` 里的真实客户端 IP（见 [TLS 与反向代理](#tls-reverse-proxy)）。`xacpx-relay update` 之后执行 `pm2 restart xacpx-relay` 加载新版本。
+
 ## 常见问题排查
 
 | 现象 | 原因 | 解决办法 |

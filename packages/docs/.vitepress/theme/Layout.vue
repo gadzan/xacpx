@@ -15,6 +15,7 @@ import BridgeShowcase from './components/BridgeShowcase.vue';
 import ChatDemoSection from './components/ChatDemoSection.vue';
 import ArchitectureSection from './components/ArchitectureSection.vue';
 import CapabilitiesSection from './components/CapabilitiesSection.vue';
+import RelaySection from './components/RelaySection.vue';
 
 const { Layout } = DefaultTheme;
 const { lang, frontmatter } = useData();
@@ -67,6 +68,7 @@ onUnmounted(() => applyHomeTheme(false));
       <ChatDemoSection />
     </template>
     <template #home-features-after>
+      <RelaySection />
       <ArchitectureSection />
       <CapabilitiesSection />
     </template>

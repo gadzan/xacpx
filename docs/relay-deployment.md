@@ -101,6 +101,68 @@ xacpx-relay start --db /var/lib/xacpx-relay/relay.db --trust-proxy ...
 
 不经反代直接暴露时**不要**传该标志，否则客户端可伪造 `X-Forwarded-For` 绕过限流。
 
+## Caddy 反向代理（最简配置）
+
+hub 默认单端口（HTTP API + 看板 + 看板 `/ws` + 实例网关全部合并在 8787），所以 Caddy 只需一条 `reverse_proxy` 就能覆盖全部流量。Caddy v2 自动签发并续期 TLS 证书，并**透明转发 WebSocket**（实例网关的 `wss://` 与看板 `/ws` 都无需额外配置）。
+
+`/etc/caddy/Caddyfile`：
+
+```caddyfile
+relay.example.com {
+	reverse_proxy 127.0.0.1:8787
+}
+```
+
+```bash
+caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy   # 用 Caddy 服务托管时
+```
+
+配套要点：
+
+- hub 在反代后方，启动须带 `--trust-proxy`，限流才按真实客户端 IP 统计。Caddy 默认会写 `X-Forwarded-For`，无需额外指令。
+- 实例侧 `--url` 指向同一域名的 `wss://` 根路径：`xacpx channel add relay --url wss://relay.example.com --token <token> --name <name>`。
+- Caddy 走 `https://` 即满足 PWA 的安全上下文要求，看板可「安装到主屏」。纯 `http://` 不会注册 Service Worker。
+- Caddy `reverse_proxy` 默认无请求体大小限制、对 WebSocket 长连接也不主动超时，看板的图片上传与长连接开箱可用；如需限制再按需加 `request_body max_size`。
+
+## 进程托管（pm2）
+
+`xacpx-relay` 没有 `stop`/`status` 子命令（用 `Ctrl-C`/`SIGTERM` 退出），适合交给 pm2 托管常驻、开机自启、崩溃重拉。
+
+```bash
+# 启动并命名为 xacpx-relay（-- 之后是传给 xacpx-relay 的参数）
+pm2 start xacpx-relay --name xacpx-relay -- start
+
+# 固化当前进程列表 + 生成开机自启脚本（按提示执行它打印的 sudo 命令）
+pm2 save
+pm2 startup
+
+# 常用运维
+pm2 logs xacpx-relay        # 看日志
+pm2 restart xacpx-relay     # 改完配置 / xacpx-relay update 之后重启
+pm2 stop xacpx-relay        # 停止
+```
+
+pm2 会从 `PATH` 解析 `xacpx-relay` 并把绝对路径存进 dump，重启后也能恢复；万一 pm2 找不到（非标准安装），改传 `command -v xacpx-relay` 的绝对路径即可。
+
+也可以用 ecosystem 文件固定参数，`pm2 start ecosystem.config.js`：
+
+```js
+// ecosystem.config.js
+module.exports = {
+  apps: [{
+    name: "xacpx-relay",
+    script: "xacpx-relay",
+    args: "start",
+    autorestart: true,
+  }],
+};
+```
+
+升级流程：`xacpx-relay update`（或 `xacpx-relay update --check` 先比对版本）→ `pm2 restart xacpx-relay` 让新版本生效。
+
+> **进阶（默认即可用，不必加）**：默认 DB（`~/.xacpx-relay/relay.db`）和默认绑定（`0.0.0.0:8787`）开箱即用。仅在需要时才往 `start` 后追加参数：`--db <path>` 自定义 DB 路径（见「端到端（自定义路径示例）」）、`--host 127.0.0.1` 仅绑定本地、`--trust-proxy` 让限速按反代转发的真实客户端 IP 统计（见「反向代理与限流」）。
+
 ## 强制全员重登录
 
 停止 hub，在 DB 中清空 web 会话，然后重启：
