@@ -276,29 +276,28 @@ WantedBy=multi-user.target
 如果你已经在用 [pm2](https://pm2.keymetrics.io/) 托管 Node 服务，它同样能管好 Hub——`xacpx-relay` 自身没有 `stop`/`status`，交给进程管理器负责重启和开机自启最合适。
 
 ```bash
-# 使用二进制的绝对路径（用 `command -v xacpx-relay` 查出来）。
-pm2 start "$(command -v xacpx-relay)" --name relay -- \
-  start --host 127.0.0.1 --trust-proxy
+pm2 start xacpx-relay --name xacpx-relay -- start --host 127.0.0.1 --trust-proxy
 
 pm2 save        # 固化当前进程列表
 pm2 startup     # 打印一条一次性命令，执行后即开机自启
 ```
 
+pm2 会从 `PATH` 解析 `xacpx-relay` 并把绝对路径存进 dump，重启后也能恢复；万一 pm2 找不到（非标准安装），改传 `command -v xacpx-relay` 的绝对路径即可。
+
 或用 ecosystem 文件固定参数（`pm2 start ecosystem.config.js`）：
 
 ```js
-// ecosystem.config.js —— 把 script 改成你 `command -v xacpx-relay` 的路径
 module.exports = {
   apps: [{
-    name: "relay",
-    script: "/usr/bin/xacpx-relay",
+    name: "xacpx-relay",
+    script: "xacpx-relay",
     args: "start --host 127.0.0.1 --trust-proxy",
     autorestart: true,
   }],
 };
 ```
 
-与 systemd 一样绑定到 `127.0.0.1` 置于反向代理之后，并传 `--trust-proxy` 让限速看到真实客户端 IP。`xacpx-relay update` 之后执行 `pm2 restart relay` 加载新版本。
+与 systemd 一样绑定到 `127.0.0.1` 置于反向代理之后，并传 `--trust-proxy` 让限速看到真实客户端 IP。`xacpx-relay update` 之后执行 `pm2 restart xacpx-relay` 加载新版本。
 
 ## 常见问题排查
 

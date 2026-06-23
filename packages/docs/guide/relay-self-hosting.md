@@ -276,29 +276,28 @@ Bind to `127.0.0.1` and let your reverse proxy face the internet. The DB and das
 If you already run Node services under [pm2](https://pm2.keymetrics.io/), it supervises the hub just as well — `xacpx-relay` has no `stop`/`status` of its own, so a process manager handles restarts and boot-time startup.
 
 ```bash
-# Use the absolute path to the binary (find it with `command -v xacpx-relay`).
-pm2 start "$(command -v xacpx-relay)" --name relay -- \
-  start --host 127.0.0.1 --trust-proxy
+pm2 start xacpx-relay --name xacpx-relay -- start --host 127.0.0.1 --trust-proxy
 
 pm2 save        # persist the process list
 pm2 startup     # prints a one-time command to enable boot-time startup
 ```
 
+pm2 resolves `xacpx-relay` from your `PATH` and stores its absolute path, so the saved process survives reboots. If pm2 can't find it (non-standard install), pass the full path from `command -v xacpx-relay` instead.
+
 Or pin the arguments in an ecosystem file (`pm2 start ecosystem.config.js`):
 
 ```js
-// ecosystem.config.js — set script to your `command -v xacpx-relay` path
 module.exports = {
   apps: [{
-    name: "relay",
-    script: "/usr/bin/xacpx-relay",
+    name: "xacpx-relay",
+    script: "xacpx-relay",
     args: "start --host 127.0.0.1 --trust-proxy",
     autorestart: true,
   }],
 };
 ```
 
-Bind to `127.0.0.1` behind your reverse proxy (same as systemd) and pass `--trust-proxy` so rate limiting sees the real client IP. After `xacpx-relay update`, run `pm2 restart relay` to load the new version.
+Bind to `127.0.0.1` behind your reverse proxy (same as systemd) and pass `--trust-proxy` so rate limiting sees the real client IP. After `xacpx-relay update`, run `pm2 restart xacpx-relay` to load the new version.
 
 ## Troubleshooting
 

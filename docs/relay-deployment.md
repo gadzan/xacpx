@@ -130,19 +130,20 @@ sudo systemctl reload caddy   # 用 Caddy 服务托管时
 `xacpx-relay` 没有 `stop`/`status` 子命令（用 `Ctrl-C`/`SIGTERM` 退出），适合交给 pm2 托管常驻、开机自启、崩溃重拉。
 
 ```bash
-# 启动并命名为 relay（-- 之后是传给 xacpx-relay 的参数）
-pm2 start "$(which xacpx-relay)" --name relay -- \
-  start --db /var/lib/xacpx-relay/relay.db --trust-proxy
+# 启动并命名为 xacpx-relay（-- 之后是传给 xacpx-relay 的参数）
+pm2 start xacpx-relay --name xacpx-relay -- start --db /var/lib/xacpx-relay/relay.db --trust-proxy
 
 # 固化当前进程列表 + 生成开机自启脚本（按提示执行它打印的 sudo 命令）
 pm2 save
 pm2 startup
 
 # 常用运维
-pm2 logs relay          # 看日志
-pm2 restart relay       # 改完配置 / xacpx-relay update 之后重启
-pm2 stop relay          # 停止
+pm2 logs xacpx-relay        # 看日志
+pm2 restart xacpx-relay     # 改完配置 / xacpx-relay update 之后重启
+pm2 stop xacpx-relay        # 停止
 ```
+
+pm2 会从 `PATH` 解析 `xacpx-relay` 并把绝对路径存进 dump，重启后也能恢复；万一 pm2 找不到（非标准安装），改传 `command -v xacpx-relay` 的绝对路径即可。
 
 也可以用 ecosystem 文件固定参数，`pm2 start ecosystem.config.js`：
 
@@ -150,16 +151,15 @@ pm2 stop relay          # 停止
 // ecosystem.config.js
 module.exports = {
   apps: [{
-    name: "relay",
-    // 用 `which xacpx-relay` 的输出替换成绝对路径（全局 bin 在 PATH 里的真实位置）
-    script: "/usr/local/bin/xacpx-relay",
+    name: "xacpx-relay",
+    script: "xacpx-relay",
     args: "start --db /var/lib/xacpx-relay/relay.db --trust-proxy",
     autorestart: true,
   }],
 };
 ```
 
-升级流程：`xacpx-relay update`（或 `xacpx-relay update --check` 先比对版本）→ `pm2 restart relay` 让新版本生效。
+升级流程：`xacpx-relay update`（或 `xacpx-relay update --check` 先比对版本）→ `pm2 restart xacpx-relay` 让新版本生效。
 
 ## 强制全员重登录
 
