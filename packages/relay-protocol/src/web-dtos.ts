@@ -71,6 +71,7 @@ const CONTROL_EVENT_TYPES = new Set([
   "agent-commands",
   "turn-finished",
   "sessions-changed",
+  "workspaces-changed",
   "scheduled-changed",
   "orchestration-changed",
 ]);
@@ -146,7 +147,7 @@ function validControlEvent(e: unknown): boolean {
       && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
-  return true; // sessions-changed / orchestration-changed carry no extra required fields
+  return true; // sessions-changed / workspaces-changed / orchestration-changed carry no extra fields
 }
 
 const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);

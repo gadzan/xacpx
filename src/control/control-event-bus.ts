@@ -22,6 +22,10 @@ export type ControlEvent =
   | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommand[] }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
+  // The set of configured workspaces changed (e.g. a separate `xacpx workspace add`
+  // CLI process edited config.json, or a `/config` mutation). Carries no payload;
+  // structured consumers re-fetch the workspace list.
+  | { type: "workspaces-changed" }
   | { type: "scheduled-changed"; chatKey: string }
   // Recovered prior conversation for a freshly-attached native session, so the hub can
   // seed it into history. `sessionAlias` is the display alias the web loads history by.

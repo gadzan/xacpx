@@ -15,7 +15,7 @@ const isLast = (i: number): boolean => props.streaming === true && i === props.p
 <template>
   <div class="space-y-2.5">
     <template v-for="(p, i) in parts" :key="i">
-      <ReasoningPanel v-if="p.type === 'reasoning'" :reasoning="p.text" :streaming="isLast(i)" :default-open="false" />
+      <ReasoningPanel v-if="p.type === 'reasoning' && p.text.trim()" :reasoning="p.text" :streaming="isLast(i)" :default-open="false" />
       <ToolStepCard v-else-if="p.type === 'tool'" :step="p.step" />
       <StreamMarkdown v-else :text="p.text" :streaming="isLast(i)"
                       class="text-[14px] leading-relaxed text-fg" :class="isLast(i) ? 'caret' : ''" />

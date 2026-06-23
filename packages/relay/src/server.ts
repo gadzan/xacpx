@@ -81,8 +81,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   };
   const pushReasoningPart = (a: TurnAccumulator, chunk: string) => {
     const last = a.parts[a.parts.length - 1];
-    if (last?.type === "reasoning") last.text = (last.text + chunk).slice(0, REASONING_CAP);
-    else a.parts.push({ type: "reasoning", text: chunk.slice(0, REASONING_CAP) });
+    if (last?.type === "reasoning") { last.text = (last.text + chunk).slice(0, REASONING_CAP); return; }
+    // Don't open a reasoning part on a blank chunk: some models stream empty/whitespace
+    // thought deltas, which would persist as an empty reasoning block in replayed history.
+    if (!chunk.trim()) return;
+    a.parts.push({ type: "reasoning", text: chunk.slice(0, REASONING_CAP) });
   };
   const pushToolPart = (a: TurnAccumulator, step: ToolStepDto) => {
     const i = a.parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
@@ -133,10 +136,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           turnBuffers.delete(k);
           if (!a) return;
           const steps = [...a.steps.values()];
-          const hasStructured = steps.length > 0 || a.reasoning.length > 0;
+          // Treat whitespace-only reasoning as absent: it would otherwise persist as an
+          // empty `structured.reasoning` and render as a blank reasoning panel in history.
+          const hasReasoning = a.reasoning.trim().length > 0;
+          const hasStructured = steps.length > 0 || hasReasoning;
           if (a.text || hasStructured) {
             const structured = hasStructured
-              ? { toolSteps: steps, ...(a.reasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
+              ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
               : undefined;
             messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
           }

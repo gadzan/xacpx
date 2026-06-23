@@ -237,7 +237,9 @@ function historyMessagesToRows(
     const reasoningChunks: string[] = [];
     for (const p of m.parts ?? []) {
       if (p.kind === "text") parts!.push({ type: "text", text: p.text });
-      else if (p.kind === "reasoning") { parts!.push({ type: "reasoning", text: p.text }); reasoningChunks.push(p.text); }
+      // Skip blank reasoning parts so an imported native session never seeds an empty
+      // reasoning block (same invariant the live-turn path enforces in relay/server.ts).
+      else if (p.kind === "reasoning") { if (!p.text.trim()) continue; parts!.push({ type: "reasoning", text: p.text }); reasoningChunks.push(p.text); }
       else if (p.kind === "tool") { const step = toolUseEventToStepDto(p.tool); parts!.push({ type: "tool", step }); toolSteps!.push(step); }
     }
     const hasStructured = toolSteps!.length > 0 || reasoningChunks.length > 0 || parts!.length > 0;

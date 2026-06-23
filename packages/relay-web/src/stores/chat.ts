@@ -44,8 +44,15 @@ function appendText(parts: TurnPart[], chunk: string): void {
 }
 function appendReasoning(parts: TurnPart[], chunk: string): void {
   const last = parts[parts.length - 1];
-  if (last?.type === "reasoning") last.text += chunk;
-  else parts.push({ type: "reasoning", text: chunk });
+  if (last?.type === "reasoning") {
+    // Block already open: append verbatim so internal whitespace/newlines survive.
+    last.text += chunk;
+    return;
+  }
+  // Don't OPEN a reasoning block on a blank chunk — some models (e.g. glm-5.2) emit
+  // empty/whitespace thought deltas, which otherwise render as an empty "推理" panel.
+  if (!chunk.trim()) return;
+  parts.push({ type: "reasoning", text: chunk });
 }
 function upsertTool(parts: TurnPart[], step: ToolStepDto): void {
   const i = parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
