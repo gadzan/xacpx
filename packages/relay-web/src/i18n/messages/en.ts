@@ -252,12 +252,14 @@ export default {
     keep: "Keep",
   },
   login: {
+    window: "login",
     tokenLabel: "Access token",
-    tokenPlaceholder: "Access token",
+    tokenPlaceholder: "paste token…",
+    runHint: "Run this on the host to mint a token, then paste it below.",
     signIn: "Sign in",
     signingIn: "Signing in…",
-    hintBefore: "Paste the access token from ",
-    hintAfter: ".",
+    copyCommand: "Copy command",
+    toggleVisibility: "Show or hide token",
   },
   fue: { gotIt: "Got it" },
   tools: {

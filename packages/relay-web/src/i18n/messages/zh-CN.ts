@@ -250,12 +250,14 @@ export default {
     keep: "保留",
   },
   login: {
+    window: "login",
     tokenLabel: "访问令牌",
-    tokenPlaceholder: "访问令牌",
+    tokenPlaceholder: "粘贴 token…",
+    runHint: "在主机上运行以生成 token，然后粘贴到下面。",
     signIn: "登录",
     signingIn: "登录中…",
-    hintBefore: "粘贴来自 ",
-    hintAfter: " 的访问令牌。",
+    copyCommand: "复制命令",
+    toggleVisibility: "显示或隐藏 token",
   },
   fue: { gotIt: "知道了" },
   tools: {

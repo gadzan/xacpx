@@ -19,14 +19,15 @@ describe("long-tail components i18n", () => {
     const w = mount(LoginView, { global: { plugins: [router] } });
     // Sign-in button label ("Sign in" → 登录).
     expect(w.find('button[type="submit"]').text()).toContain("登录");
-    // Token input placeholder ("Access token" → 访问令牌).
-    expect(w.find('input#access-token').attributes("placeholder")).toBe("访问令牌");
+    // Token input placeholder ("paste token…" → 粘贴 token…).
+    expect(w.find("input#access-token").attributes("placeholder")).toBe("粘贴 token…");
   });
 
   it("points users at the real token command (xacpx-relay add token, not user new)", () => {
     const w = mount(LoginView, { global: { plugins: [router] } });
-    const hint = w.find("#token-hint").text();
-    expect(hint).toContain("xacpx-relay add token");
-    expect(hint).not.toContain("user new");
+    // The mint command is shown verbatim in the terminal command line.
+    const text = w.find('[data-test="login-window"]').text();
+    expect(text).toContain("xacpx-relay add token");
+    expect(text).not.toContain("user new");
   });
 });
