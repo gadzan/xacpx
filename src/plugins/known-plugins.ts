@@ -22,6 +22,12 @@ const KNOWN_PLUGIN_TEMPLATES: ReadonlyArray<KnownPluginTemplate> = [
     descriptionKey: "pluginChannelYuanbao",
     official: true,
   },
+  {
+    packageName: "@ganglion/xacpx-channel-relay",
+    channels: ["relay"],
+    descriptionKey: "pluginChannelRelay",
+    official: true,
+  },
 ];
 
 function resolveDescription(key: keyof ReturnType<typeof t>["misc"]): string {
