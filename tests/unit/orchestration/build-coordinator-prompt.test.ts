@@ -426,3 +426,43 @@ test("truncates prompt when sections exceed maxPromptLength", async () => {
   expect(result.promptText.length).toBeLessThanOrEqual(1000);
   expect(result.promptText).toContain("...");
 });
+
+test("sends the user's message verbatim (no label) when there is no orchestration context", async () => {
+  // Regression: an ordinary session (no pending results, blockers, or active package)
+  // must NOT get every message prefixed with the "user's latest message" label — that
+  // label only exists to separate the message from injected orchestration context.
+  const result = await buildCoordinatorPrompt({
+    orchestration: {
+      listPendingCoordinatorResults: async () => [],
+    },
+    coordinatorSession: "backend:main",
+    userText: "帮我看看这个函数",
+  });
+
+  expect(result.promptText).toBe("帮我看看这个函数");
+  expect(result.promptText).not.toContain(t().coordinatorPrompt.userMessageLabel);
+  expect(result.taskIds).toEqual([]);
+  expect(result.groupIds).toEqual([]);
+});
+
+test("still labels the user's message when pending results precede it", async () => {
+  const result = await buildCoordinatorPrompt({
+    orchestration: {
+      listPendingCoordinatorResults: async () => [
+        {
+          taskId: "task-1",
+          status: "succeeded",
+          summary: "done",
+          resultText: "result body",
+          createdAt: "2026-04-13T00:00:00.000Z",
+          updatedAt: "2026-04-13T00:00:00.000Z",
+        },
+      ],
+    },
+    coordinatorSession: "backend:main",
+    userText: "继续",
+  });
+
+  expect(result.promptText).toContain(t().coordinatorPrompt.userMessageLabel + "\n继续");
+  expect(result.taskIds).toEqual(["task-1"]);
+});

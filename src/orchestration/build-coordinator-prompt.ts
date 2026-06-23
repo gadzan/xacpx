@@ -262,7 +262,17 @@ export async function buildCoordinatorPrompt(input: {
   }
 
   if (input.userText) {
-    sections.push([t().coordinatorPrompt.userMessageLabel, input.userText].join("\n"));
+    // Only label the user's message when orchestration context precedes it (pending
+    // results, blockers, an active human-question package), so the agent can tell the
+    // injected context apart from the actual message. In an ordinary session with no
+    // such context — including a plain native session — send the text verbatim rather
+    // than prefixing every single message with the label.
+    const hasOrchestrationContext = sections.length > 0;
+    sections.push(
+      hasOrchestrationContext
+        ? [t().coordinatorPrompt.userMessageLabel, input.userText].join("\n")
+        : input.userText,
+    );
   }
 
   const claimHumanReply =
