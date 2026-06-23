@@ -41,6 +41,15 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     // shadow the relay hub's API / WebSocket endpoints.
     navigateFallback: "/index.html",
     navigateFallbackDenylist: [/^\/api/, /^\/ws/],
+    // skipWaiting + clientsClaim are BOTH required for the autoUpdate flow to
+    // actually reload an open tab: vite-plugin-pwa's autoUpdate registerSW only
+    // reloads on the new worker's `activated` event, and a freshly-installed
+    // worker stays in "waiting" (never activating for an open tab) unless it
+    // calls skipWaiting() on install. We set injectRegister:false, which
+    // suppresses the plugin's automatic skipWaiting injection, so we must set it
+    // here ourselves — otherwise the periodic update check (see lib/pwa-update.ts)
+    // would download the new build but never reload to it.
+    skipWaiting: true,
     clientsClaim: true,
     // Bundled font weights + main chunk can exceed the 2 MiB default.
     maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,

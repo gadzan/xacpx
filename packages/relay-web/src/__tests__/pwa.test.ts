@@ -15,6 +15,15 @@ describe("PWA configuration", () => {
     expect(pwaOptions.injectRegister).toBe(false);
   });
 
+  it("forces skipWaiting + clientsClaim so an open tab actually reloads to a new build", () => {
+    // injectRegister:false suppresses the plugin's automatic skipWaiting, and the
+    // autoUpdate registerSW only reloads on the worker's `activated` event. Without
+    // skipWaiting the new worker stays in "waiting" forever for an open tab, so the
+    // periodic update check (lib/pwa-update.ts) would download but never reload.
+    expect(pwaOptions.workbox?.skipWaiting).toBe(true);
+    expect(pwaOptions.workbox?.clientsClaim).toBe(true);
+  });
+
   it("never lets the service worker shadow the relay API / WebSocket", () => {
     const denylist = pwaOptions.workbox?.navigateFallbackDenylist ?? [];
     // Behavioral: the actual regexes must match the hub's backend routes so the
@@ -62,5 +71,17 @@ describe("PWA configuration", () => {
     expect(sw).toContain("denylist");
     expect(sw).toMatch(/\/\^\\\/api\//);
     expect(sw).toMatch(/\/\^\\\/ws\//);
+  });
+
+  // Guards against the autoUpdate "downloads but never reloads" regression. With
+  // skipWaiting:true, generateSW emits an UNCONDITIONAL install-time
+  // `self.skipWaiting(), <wb>.clientsClaim()` bootstrap (and drops the passive
+  // SKIP_WAITING message handler). Without it the worker would only skipWaiting in
+  // response to a message the autoUpdate path never sends — installing but never
+  // activating for an open tab. Match the unconditional form so the message-gated
+  // `..."SKIP_WAITING"===e.data.type&&self.skipWaiting()` form can't satisfy it.
+  it.skipIf(!existsSync(swPath))("emits a service worker that skips waiting on install", () => {
+    const sw = readFileSync(swPath, "utf8");
+    expect(sw).toMatch(/self\.skipWaiting\(\)\s*,\s*\w+\.clientsClaim\(\)/);
   });
 });
