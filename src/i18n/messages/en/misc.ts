@@ -10,6 +10,7 @@ export const misc: MiscMessages = {
   // plugins/known-plugins: channel descriptions
   pluginChannelFeishu: "Feishu channel",
   pluginChannelYuanbao: "Tencent Yuanbao channel",
+  pluginChannelRelay: "Relay hub connector (drive this instance from a self-hosted relay hub)",
   pluginChannelInstallHint: (channelType: string, packageName: string) =>
     `Channel ${channelType} requires a plugin: xacpx plugin add ${packageName}`,
 

@@ -1252,6 +1252,7 @@ export interface MiscMessages {
   // plugins/known-plugins: channel descriptions
   pluginChannelFeishu: string;
   pluginChannelYuanbao: string;
+  pluginChannelRelay: string;
   pluginChannelInstallHint: (channelType: string, packageName: string) => string;
 
   // doctor/orchestration-health: suggestions
