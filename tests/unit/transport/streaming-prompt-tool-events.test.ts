@@ -327,3 +327,38 @@ test("a bare tool_call_update (only toolCallId) re-emits the accumulated call", 
   expect(last.toolName).toBe("grep");
   expect(last.rawInput).toEqual({ pattern: "TODO" });
 });
+
+test("interleaved frames for two toolCallIds keep separate accumulators", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  // Two tools in flight at once; a frame for one must not pollute the other's state.
+  send({ sessionUpdate: "tool_call", toolCallId: "a", kind: "read", title: "Read a.ts", rawInput: { path: "a.ts" }, status: "pending" });
+  send({ sessionUpdate: "tool_call", toolCallId: "b", kind: "search", title: "grep", rawInput: { pattern: "TODO" }, status: "pending" });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "a", status: "completed" }); // partial: only status
+  send({ sessionUpdate: "tool_call_update", toolCallId: "b", status: "completed" }); // partial: only status
+
+  const lastA = [...events].reverse().find((e) => e.toolCallId === "a")!;
+  const lastB = [...events].reverse().find((e) => e.toolCallId === "b")!;
+  expect(lastA).toMatchObject({ toolCallId: "a", kind: "read", toolName: "Read a.ts", status: "success" });
+  expect(lastB).toMatchObject({ toolCallId: "b", kind: "search", toolName: "grep", status: "success" });
+});
+
+test("a search whose terminal frame carries only status keeps its kind/title/query", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({ sessionUpdate: "tool_call", toolCallId: "s1", kind: "search", title: "grep", content: [], rawInput: {}, status: "pending" });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "s1", kind: "search", title: 'grep "TODO" src/', rawInput: { pattern: "TODO", path: "src/" } });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "s1", status: "completed", rawOutput: { matches: 3 } });
+
+  const last = events.at(-1)!;
+  expect(last.kind).toBe("search");
+  expect(last.toolName).toBe('grep "TODO" src/');
+  expect(last.rawInput).toEqual({ pattern: "TODO", path: "src/" });
+  expect(last.status).toBe("success");
+});
