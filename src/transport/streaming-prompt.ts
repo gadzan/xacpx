@@ -11,6 +11,12 @@ export interface StreamingPromptState {
   pendingLine: string;
   formatToolCalls: boolean;
   emittedToolCallIds: Set<string>;
+  // ACP `tool_call_update` frames are PARTIAL: each carries only the fields that
+  // changed, keyed by toolCallId. In particular the terminal (completed/failed)
+  // frame typically omits kind/title/content and only sets status + rawOutput. We
+  // accumulate the merged state per toolCallId so the structured event always
+  // reflects the full call (rich title + diff), not just the last sparse frame.
+  toolCalls: Map<string, MergedToolUpdate>;
   toolEventMode: ToolEventMode;
   // Raw streaming (replyMode "stream"): the consumer renders one live bubble that
   // concatenates chunks verbatim, so we DON'T split on paragraph boundaries or trim.
@@ -105,6 +111,7 @@ export function createStreamingPromptState(
     pendingLine: "",
     formatToolCalls,
     emittedToolCallIds: new Set(),
+    toolCalls: new Map(),
     toolEventMode,
     rawStream,
     onToolEvent,
@@ -168,7 +175,12 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
     // it into text. The transport-level resolveToolEventMode normally prevents
     // this state.
     if (wantsStructured && state.onToolEvent) {
-      const toolEvent = buildToolUseEvent(update);
+      // Merge partial ACP updates per toolCallId so the terminal frame (which omits
+      // kind/title/content) doesn't erase the rich in-progress frame's title + diff.
+      const merged = update.toolCallId
+        ? mergeToolCallUpdate(state, update.toolCallId, update)
+        : update;
+      const toolEvent = buildToolUseEvent(merged);
       if (toolEvent) void state.onToolEvent(toolEvent);
     }
 
@@ -286,6 +298,40 @@ function formatToolCallEvent(update: NonNullable<StreamEvent["params"]>["update"
   const summaryText = inputSummary && inputSummary !== title ? `: ${truncateToolDisplay(inputSummary)}` : "";
   const statusText = status ? ` (${status})` : "";
   return `${emoji} ${title}${statusText}${summaryText}`;
+}
+
+/** Accumulated raw tool-call fields across partial ACP `tool_call_update` frames. */
+export type MergedToolUpdate = NonNullable<NonNullable<StreamEvent["params"]>["update"]>;
+
+/** True for values that carry no information and so must NOT clobber a prior value:
+ *  undefined/null, blank strings, and empty objects/arrays. acpx's initial `tool_call`
+ *  frame ships empty `content: []` / `rawInput: {}`, and a terminal frame omits fields
+ *  entirely — neither should erase data a richer in-progress frame already supplied. */
+function isEmptyToolField(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "string") return v.trim().length === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return Object.keys(v as object).length === 0;
+  return false;
+}
+
+/** Merge a partial update into the per-toolCallId accumulator (present, non-empty
+ *  fields override; absent/empty fields keep the prior value) and return the merged
+ *  view. ACP `tool_call_update` semantics: a frame carries only what changed. */
+function mergeToolCallUpdate(
+  state: StreamingPromptState,
+  toolCallId: string,
+  update: MergedToolUpdate,
+): MergedToolUpdate {
+  const prev = state.toolCalls.get(toolCallId) ?? ({ toolCallId } as MergedToolUpdate);
+  const merged: MergedToolUpdate = { ...prev };
+  for (const key of ["kind", "title", "rawInput", "content", "rawOutput", "locations", "status"] as const) {
+    const next = (update as Record<string, unknown>)[key];
+    if (!isEmptyToolField(next)) (merged as Record<string, unknown>)[key] = next;
+  }
+  merged.toolCallId = toolCallId;
+  state.toolCalls.set(toolCallId, merged);
+  return merged;
 }
 
 function buildToolUseEvent(update: NonNullable<StreamEvent["params"]>["update"]): ToolUseEvent | null {
