@@ -1,5 +1,14 @@
 # Changelog
 
+## [relay 0.9.1] - 2026-06-23
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Delivers the dashboard half of the workspace-propagation fix and drops blank reasoning blocks. Pairs with core `0.14.1` and `relay-protocol` `0.1.4`.
+
+### Fixed
+
+- **Workspaces added from the terminal appear in the dashboard without a manual refresh.** The dashboard now handles the new `workspaces-changed` control event (emitted by core ≥0.14.1 when `xacpx workspace add` / `/config` changes the workspace set) and re-fetches the workspace list. Backed by a new `workspaces-changed` variant in `relay-protocol` `0.1.4`, whitelisted in the web event validator.
+- **Blank reasoning panels no longer render.** Some models (e.g. glm-5.2) stream empty / whitespace-only thought deltas; the dashboard no longer opens an empty reasoning ("推理") block for them — across the live, persisted, and native-history-import paths — while internal whitespace between real chunks is preserved.
+
 ## [0.14.1] - 2026-06-23
 
 A core (`@ganglion/xacpx`) patch release: four fixes validated against a live relay instance. No `relay` / `relay-protocol` / `channel-relay` changes.
