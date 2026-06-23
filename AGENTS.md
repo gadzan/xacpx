@@ -114,8 +114,10 @@ There are two session concepts:
 
 ### Docs to rely on (don’t reverse-engineer from code first)
 
+- Terminal CLI reference (the full `xacpx …` command surface): [`docs/cli-reference.md`](docs/cli-reference.md)
 - Configuration schema and defaults: [`docs/config-reference.md`](docs/config-reference.md)
 - WeChat command surface: [`docs/commands.md`](docs/commands.md)
+- User-facing FAQ (`/ss new` failures, `/mode <id>`): [`docs/faq.md`](docs/faq.md)
 - Daemon subsystem notes: [`docs/daemon-module.md`](docs/daemon-module.md)
 - Commands module notes: [`docs/commands-module.md`](docs/commands-module.md)
 - MCP integration (external coordinators): [`docs/external-mcp.md`](docs/external-mcp.md)
