@@ -61,6 +61,19 @@ test("applyEvent instance-status loads sessions when an instance comes online", 
   vi.restoreAllMocks();
 });
 
+test("applyEvent workspaces-changed re-fetches the instance's workspace list", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ workspaces: [{ name: "backend", cwd: "/srv/api" }] });
+  // Simulates `xacpx workspace add` on the instance: the daemon emits workspaces-changed.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "workspaces-changed" } });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(rpc).toHaveBeenCalledWith("i1", "control.workspaces.list");
+  expect(store.byId("i1")!.workspaces).toEqual([{ name: "backend", cwd: "/srv/api" }]);
+  vi.restoreAllMocks();
+});
+
 test("renameInstance PATCHes the instance and updates local name", async () => {
   const store = useInstancesStore();
   store.instances = [{ id: "i1", name: "old", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];

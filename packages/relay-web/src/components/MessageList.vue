@@ -183,7 +183,7 @@ watch(
               <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
               <template v-else>
                 <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
-                <ReasoningPanel v-if="m.structured?.reasoning" :reasoning="m.structured.reasoning" :default-open="false" />
+                <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
                 <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
               </template>
               <!-- Dedicated action/info row for this record: copy + time + status, on its own line. -->

@@ -177,6 +177,9 @@ export type ControlEventDto =
   | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommandDto[] }
   | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
   | { type: "sessions-changed" }
+  // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
+  // re-fetches the workspace list. No payload.
+  | { type: "workspaces-changed" }
   | { type: "scheduled-changed"; chatKey: string }
   // Recovered prior conversation for a freshly-attached native session; the hub seeds
   // these rows into the session's history so the dashboard isn't blank.

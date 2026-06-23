@@ -53,6 +53,7 @@ import { createControlEventBus } from "./control/control-event-bus";
 import { ControlService } from "./control/control-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
+import { startConfigWatcher } from "./config/config-watcher";
 
 export interface RuntimePaths {
   configPath: string;
@@ -811,6 +812,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       create: async (name, cwd, description) => {
         const updated = await configStore.upsertWorkspace(name, cwd, description);
         replaceRuntimeConfig(config, updated);
+        // Push to every web client (the caller updates optimistically; peers need this).
+        // The config watcher won't double-fire: it diffs against in-memory config, which
+        // replaceRuntimeConfig already refreshed above, so its later event is a no-op.
+        controlEvents.emit({ type: "workspaces-changed" });
         // The persisted values equal the inputs; build the DTO from them directly
         // (avoids an unchecked index read of the freshly-written workspaces map).
         return { name, cwd, ...(description ? { description } : {}) };
@@ -818,10 +823,49 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       remove: async (name) => {
         const updated = await configStore.removeWorkspace(name);
         replaceRuntimeConfig(config, updated);
+        controlEvents.emit({ type: "workspaces-changed" });
       },
     },
     uploadStore,
   });
+
+  // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`
+  // (and `agent add`, `/config` from another process) run as separate CLI processes:
+  // they only write config.json and can't reach this daemon's in-memory config, so the
+  // control API — and thus the relay web panel — would serve a stale list until restart.
+  // Reload on file change; when the workspace set actually changed, tell structured
+  // consumers so they re-fetch. The whole config (agents included) is refreshed in
+  // memory either way, so a manual web refresh also reflects out-of-band agent edits.
+  // A collision-free signature of the workspace set (JSON of sorted name/cwd/description
+  // tuples), used to decide whether a config reload actually changed workspaces.
+  const workspaceSignature = (cfg: AppConfig): string =>
+    JSON.stringify(
+      Object.keys(cfg.workspaces)
+        .sort()
+        .map((name) => {
+          const ws = cfg.workspaces[name]!;
+          return [name, ws.cwd, ws.description ?? ""];
+        }),
+    );
+  const configWatcher = startConfigWatcher({
+    configPath: paths.configPath,
+    logger,
+    onChange: () => {
+      const before = workspaceSignature(config);
+      void reloadRuntimeConfig()
+        .then(() => {
+          if (workspaceSignature(config) !== before) {
+            controlEvents.emit({ type: "workspaces-changed" });
+          }
+        })
+        .catch((error) => {
+          void logger.error("config.reload_failed", "failed to reload config after file change", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    },
+  });
+
   const scheduledScheduler = new ScheduledTaskScheduler(scheduledService, {
     dispatchTask: buildScheduledDispatchTask({
       getSession: (alias) => sessions.getSession(alias),
@@ -901,6 +945,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     dispose: async () => {
       scheduledScheduler.stop();
+      configWatcher.close();
       clearInterval(uploadCleanupInterval);
       if (progressHeartbeatInterval !== undefined) {
         clearInterval(progressHeartbeatInterval);

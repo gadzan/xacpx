@@ -523,3 +523,30 @@ test("a cancelled turn on an unviewed session does NOT mark unread", () => {
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "frontend", ok: false, cancelled: true } } as never);
   expect(store.sessionAttention("i1", "frontend")).toBe("idle");
 });
+
+test("blank thought chunks never open an empty reasoning block", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const ev = (event: unknown) => store.applyEvent({ kind: "control-event", instanceId: "i1", event } as never);
+  ev({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  // Some models (e.g. glm-5.2) stream empty / whitespace-only thought deltas.
+  ev({ type: "turn-thought", chatKey: "relay:a1", sessionAlias: "backend", chunk: "" });
+  ev({ type: "turn-thought", chatKey: "relay:a1", sessionAlias: "backend", chunk: "   \n" });
+  ev({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "hi" });
+  ev({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  const m = store.messages.at(-1)!;
+  expect(m.structured?.reasoning).toBeUndefined();
+  expect((m.structured?.parts ?? []).some((p) => p.type === "reasoning")).toBe(false);
+});
+
+test("whitespace between non-blank reasoning chunks is preserved", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const ev = (event: unknown) => store.applyEvent({ kind: "control-event", instanceId: "i1", event } as never);
+  ev({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  ev({ type: "turn-thought", chatKey: "relay:a1", sessionAlias: "backend", chunk: "line1" });
+  ev({ type: "turn-thought", chatKey: "relay:a1", sessionAlias: "backend", chunk: "\n\n" });
+  ev({ type: "turn-thought", chatKey: "relay:a1", sessionAlias: "backend", chunk: "line2" });
+  ev({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  expect(store.messages.at(-1)!.structured?.reasoning).toBe("line1\n\nline2");
+});
