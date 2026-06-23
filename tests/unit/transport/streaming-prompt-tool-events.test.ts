@@ -278,3 +278,87 @@ test("available_commands_update with no array is ignored", () => {
   }));
   expect(seen).toEqual([]);
 });
+
+test("partial ACP tool_call_update frames merge per toolCallId (terminal frame must not erase title/diff)", () => {
+  // Reproduces acpx's real Claude Code edit sequence: a pending frame with empty
+  // payload, an in-progress frame carrying the rich title + diff content, then a
+  // terminal frame that only sets status + rawOutput (no kind/title/content). Before
+  // merging, the terminal frame clobbered the step into a generic kind:"other"
+  // "Tool" with no diff. The final emitted event must retain the edit title + diff.
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({ sessionUpdate: "tool_call", toolCallId: "e1", kind: "edit", title: "Edit", content: [], rawInput: {}, locations: [], status: "pending" });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "e1",
+    kind: "edit",
+    title: "Edit skills/preflight.js",
+    content: [{ type: "diff", path: "skills/preflight.js", oldText: "const a = 1;", newText: "const a = 2;" }],
+    rawInput: { file_path: "skills/preflight.js", old_string: "const a = 1;", new_string: "const a = 2;" },
+    locations: [{ path: "skills/preflight.js" }],
+  });
+  // Terminal frame: ACP partial update — only status + rawOutput, no kind/title/content.
+  send({ sessionUpdate: "tool_call_update", toolCallId: "e1", rawOutput: { ok: true }, status: "completed" });
+
+  const last = events.at(-1)!;
+  expect(last.status).toBe("success");
+  expect(last.kind).toBe("edit"); // not clobbered to "other"
+  expect(last.toolName).toBe("Edit skills/preflight.js"); // rich title preserved
+  // The diff content from the in-progress frame survives the terminal frame.
+  expect(last.content).toEqual([
+    { type: "diff", path: "skills/preflight.js", oldText: "const a = 1;", newText: "const a = 2;" },
+  ]);
+  expect(last.rawOutput).toEqual({ ok: true });
+});
+
+test("a bare tool_call_update (only toolCallId) re-emits the accumulated call", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({ sessionUpdate: "tool_call", toolCallId: "s1", kind: "search", title: "grep", rawInput: { pattern: "TODO" }, status: "pending" });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "s1" }); // bare keep-alive frame
+  const last = events.at(-1)!;
+  expect(last.kind).toBe("search");
+  expect(last.toolName).toBe("grep");
+  expect(last.rawInput).toEqual({ pattern: "TODO" });
+});
+
+test("interleaved frames for two toolCallIds keep separate accumulators", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  // Two tools in flight at once; a frame for one must not pollute the other's state.
+  send({ sessionUpdate: "tool_call", toolCallId: "a", kind: "read", title: "Read a.ts", rawInput: { path: "a.ts" }, status: "pending" });
+  send({ sessionUpdate: "tool_call", toolCallId: "b", kind: "search", title: "grep", rawInput: { pattern: "TODO" }, status: "pending" });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "a", status: "completed" }); // partial: only status
+  send({ sessionUpdate: "tool_call_update", toolCallId: "b", status: "completed" }); // partial: only status
+
+  const lastA = [...events].reverse().find((e) => e.toolCallId === "a")!;
+  const lastB = [...events].reverse().find((e) => e.toolCallId === "b")!;
+  expect(lastA).toMatchObject({ toolCallId: "a", kind: "read", toolName: "Read a.ts", status: "success" });
+  expect(lastB).toMatchObject({ toolCallId: "b", kind: "search", toolName: "grep", status: "success" });
+});
+
+test("a search whose terminal frame carries only status keeps its kind/title/query", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({ sessionUpdate: "tool_call", toolCallId: "s1", kind: "search", title: "grep", content: [], rawInput: {}, status: "pending" });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "s1", kind: "search", title: 'grep "TODO" src/', rawInput: { pattern: "TODO", path: "src/" } });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "s1", status: "completed", rawOutput: { matches: 3 } });
+
+  const last = events.at(-1)!;
+  expect(last.kind).toBe("search");
+  expect(last.toolName).toBe('grep "TODO" src/');
+  expect(last.rawInput).toEqual({ pattern: "TODO", path: "src/" });
+  expect(last.status).toBe("success");
+});
