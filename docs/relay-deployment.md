@@ -131,7 +131,7 @@ sudo systemctl reload caddy   # 用 Caddy 服务托管时
 
 ```bash
 # 启动并命名为 xacpx-relay（-- 之后是传给 xacpx-relay 的参数）
-pm2 start xacpx-relay --name xacpx-relay -- start --db /var/lib/xacpx-relay/relay.db --trust-proxy
+pm2 start xacpx-relay --name xacpx-relay -- start
 
 # 固化当前进程列表 + 生成开机自启脚本（按提示执行它打印的 sudo 命令）
 pm2 save
@@ -153,13 +153,15 @@ module.exports = {
   apps: [{
     name: "xacpx-relay",
     script: "xacpx-relay",
-    args: "start --db /var/lib/xacpx-relay/relay.db --trust-proxy",
+    args: "start",
     autorestart: true,
   }],
 };
 ```
 
 升级流程：`xacpx-relay update`（或 `xacpx-relay update --check` 先比对版本）→ `pm2 restart xacpx-relay` 让新版本生效。
+
+> **进阶（默认即可用，不必加）**：默认 DB（`~/.xacpx-relay/relay.db`）和默认绑定（`0.0.0.0:8787`）开箱即用。仅在需要时才往 `start` 后追加参数：`--db <path>` 自定义 DB 路径（见「端到端（自定义路径示例）」）、`--host 127.0.0.1` 仅绑定本地、`--trust-proxy` 让限速按反代转发的真实客户端 IP 统计（见「反向代理与限流」）。
 
 ## 强制全员重登录
 
