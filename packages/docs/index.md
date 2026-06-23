@@ -19,6 +19,11 @@ features:
     details: Start sessions, switch context, send prompts, and cancel work — all from a message thread.
     link: /guide/getting-started
     linkText: Get started
+  - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>'
+    title: Web dashboard
+    details: Self-host the relay hub and drive every instance's sessions — chat, scheduled tasks, orchestration — from one multi-tenant browser dashboard.
+    link: /guide/relay-self-hosting
+    linkText: Self-host the hub
   - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
     title: acpx transport bridge
     details: Run agents through the direct acpx CLI transport or the isolated JSON bridge subprocess.
@@ -85,9 +90,16 @@ xacpx ships with WeChat as the built-in default channel. Additional channels are
 
 Third-party channels follow the same plugin interface. Install a channel plugin with `xacpx plugin add <package>`, configure it with `xacpx channel add <name>`, then restart the daemon.
 
+## Web dashboard (relay hub)
+
+Chat is not the only way to drive xacpx. If you run several instances, self-host the **relay hub** — an npm package (`@ganglion/xacpx-relay`) with a web dashboard bundled in. Each instance dials into the hub over WebSocket and registers; you log in to a multi-tenant dashboard and manage every instance's sessions — chat, scheduled tasks, and orchestration — from one place. Agent replies render as live markdown, and the dashboard installs as a PWA on mobile. A single access token serves both web login and connector pairing.
+
+See [Self-Hosting the Relay Hub](/guide/relay-self-hosting) for the full walkthrough.
+
 ## Next steps
 
 - [Getting Started](/guide/getting-started) — install xacpx, log in, and run your first session
 - [Command Reference](/reference/commands) — full listing of chat commands (`/ss`, `/use`, `/cancel`, and more)
+- [Self-Hosting the Relay Hub](/guide/relay-self-hosting) — run the multi-tenant web dashboard for several instances
 - [Configuration](/reference/configuration) — config file fields, transport options, and workspace/agent registration
 - [Plugin Development](/plugins/development) — build your own channel plugin

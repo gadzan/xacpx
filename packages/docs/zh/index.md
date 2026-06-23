@@ -19,6 +19,11 @@ features:
     details: 在消息对话框中即可创建会话、切换上下文、发送提示词、取消任务，一气呵成。
     link: /zh/guide/getting-started
     linkText: 快速开始
+  - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>'
+    title: 网页看板
+    details: 自托管 relay hub，在一个多租户浏览器看板里遥控所有实例的会话——聊天、定时任务、编排。
+    link: /zh/guide/relay-self-hosting
+    linkText: 自托管 hub
   - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
     title: acpx 传输桥接
     details: 通过直连 acpx CLI 传输或隔离的 JSON 桥接子进程来运行 Agent。
@@ -85,9 +90,16 @@ xacpx 内置微信作为默认频道。其他频道以官方插件包形式分�
 
 第三方频道遵循相同的插件接口。使用 `xacpx plugin add <package>` 安装频道插件，使用 `xacpx channel add <name>` 配置，然后重启守护进程。
 
+## 网页看板（relay hub）
+
+聊天并不是驱动 xacpx 的唯一方式。如果你跑了多个实例，可以自托管 **relay hub**——一个内置网页看板的 npm 包（`@ganglion/xacpx-relay`）。每个实例通过 WebSocket 拨入 hub 并注册；你登录一个多租户看板，在一个地方管理所有实例的会话——聊天、定时任务、编排。Agent 回复以实时 markdown 渲染，看板可作为 PWA 安装到移动端。登录与连接器配对共用同一个 access token。
+
+完整流程见 [自托管 Relay Hub](/zh/guide/relay-self-hosting)。
+
 ## 下一步
 
 - [快速开始](/zh/guide/getting-started) — 安装 xacpx、登录并运行第一个会话
 - [命令参考](/zh/reference/commands) — 聊天命令完整列表（`/ss`、`/use`、`/cancel` 等）
+- [自托管 Relay Hub](/zh/guide/relay-self-hosting) — 为多个实例运行多租户网页看板
 - [配置说明](/zh/reference/configuration) — 配置文件字段、传输选项以及工作区和 Agent 注册
 - [插件开发](/zh/plugins/development) — 构建你自己的频道插件
