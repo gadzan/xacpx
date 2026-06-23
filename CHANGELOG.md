@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.14.1] - 2026-06-23
+
+A core (`@ganglion/xacpx`) patch release: four fixes validated against a live relay instance. No `relay` / `relay-protocol` / `channel-relay` changes.
+
+### Fixed
+
+- **Tool blocks show the operation and its diff again.** ACP `tool_call_update` frames are *partial* — each carries only the fields that changed, and the terminal (completed) frame sets just `status` + `rawOutput`, omitting `kind`/`title`/`content`. The structured tool-event path built a standalone event per frame, so downstream (last-write-wins by `toolCallId`) the sparse terminal frame clobbered the rich one, leaving a generic `Tool` / `other` step with no title and no diff in the dashboard. The transport now accumulates merged tool-call state per `toolCallId` (present, non-empty fields override; absent/empty fields keep the prior value), so the edit title and diff survive. The legacy inline-text rendering (weixin/yuanbao verbose) is untouched, and Feishu cards are unchanged.
+- **The coordinator no longer prefixes every message with a "latest user message" label.** `buildCoordinatorPrompt` runs on every turn and unconditionally labelled the user's text; in a plain session with no orchestration context this leaked as `用户最新消息：` on every message. The label is now added only when orchestration context (pending results, blockers, an active human-question package) precedes it; otherwise the message is sent verbatim.
+- **Terminal `xacpx workspace add` reaches a running daemon.** `workspace add` is a separate CLI process that only writes `config.json`; the daemon held a stale in-memory copy, so the control API (and thus the relay dashboard) served the old workspace list until a restart. The daemon now watches the config file's directory (safe across the atomic temp+rename write) and reloads on change, emitting a `workspaces-changed` control event when the workspace set actually changes. (The dashboard's auto-refresh on that event also needs an upcoming `relay` release; until then a manual refresh reflects the change immediately once the daemon has reloaded.)
+- **`xacpx channel add relay` is discoverable.** The relay connector (`@ganglion/xacpx-channel-relay`) is now listed by `xacpx plugin known`, and adding the `relay` channel without the plugin installed prints the exact `xacpx plugin add …` command instead of a bare "unknown channel type" error.
+
 ## [relay 0.9.0] - 2026-06-23
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases. Brings a redesigned login, mobile edge-swipe drawers, and timely PWA updates.
