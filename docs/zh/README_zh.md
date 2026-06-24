@@ -1,5 +1,7 @@
 # xacpx
 
+![xacpx_banner.png](/xacpx_banner.png)
+
 > 用微信、飞书或元宝远程驱动 Codex、Claude Code 等 acpx 会话。
 
 [![npm](https://img.shields.io/npm/v/@ganglion/xacpx?style=flat-square)](https://www.npmjs.com/package/@ganglion/xacpx)
@@ -12,8 +14,6 @@
 ## 这是什么
 
 `xacpx` 是一个可以通过微信、飞书或元宝直接控制 Codex / Claude Code / Gemini / OpenCode 等 ACP Agent 的工具。它把聊天消息通过 `acpx` 连接到 Agent CLI 会话上，让你直接在手机里：
-
-[![xacpx.png](https://s41.ax1x.com/2026/06/05/pmZXIv6.png)](https://imgchr.com/i/pmZXIv6)
 
 - 新建和切换会话
 - 让 Agent 继续在指定项目目录里工作
