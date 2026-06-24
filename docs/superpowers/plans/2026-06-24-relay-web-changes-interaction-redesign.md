@@ -900,7 +900,10 @@ In `packages/relay-web/src/components/FileViewer.vue`, replace the `<script setu
 import { computed, ref, watch } from "vue";
 import { ArrowLeft, FileText, FileDiff, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
-import { highlightToHtml, resolveLang } from "../lib/shiki";
+// NOTE: ../lib/shiki is imported DYNAMICALLY inside the highlight callback below — never
+// statically — so the Shiki core + JS engine stay out of FileViewer's (eagerly-loaded)
+// chunk and the entry bundle, per the lazy-load size constraint. parseUnifiedDiff is a
+// tiny pure module, so a static import is fine.
 import { parseUnifiedDiff } from "../lib/unified-diff";
 import CopyButton from "./CopyButton.vue";
 
@@ -931,12 +934,15 @@ watch(
     if (!files.file || binary || content === undefined) return;
     if (fileLines.value.length > LINE_GUTTER_LIMIT) return; // plain fallback for huge files
     const code = content;
-    const lang = resolveLang(path);
     hlTimer = setTimeout(() => {
-      void highlightToHtml(code, lang).then((html) => {
+      // Dynamic import keeps Shiki out of this component's chunk; loaded only when a
+      // highlight actually runs. vi.mock("../lib/shiki") in tests intercepts this too.
+      void (async () => {
+        const { resolveLang, highlightToHtml } = await import("../lib/shiki");
+        const html = await highlightToHtml(code, resolveLang(path));
         // ignore a stale result if the file changed while we were highlighting
         if (files.file?.content === code) fileHtml.value = html;
-      });
+      })();
     }, 150);
   },
   { immediate: true },
@@ -992,10 +998,13 @@ In `FileViewer.vue`, replace the `<!-- body -->` section (lines 67-86 — from `
 Run: `npx vitest run src/__tests__/fileviewer.test.ts`
 Expected: PASS (all FileViewer tests, including the rewritten highlight + structured-diff tests).
 
-- [ ] **Step 6: Full relay-web test + typecheck + build**
+- [ ] **Step 6: Full relay-web test + typecheck + build + SIZE GATE**
 
-Run: `npx vitest run && bun run build`
-Expected: all relay-web tests pass; `bun run build` (which runs `vue-tsc --noEmit` then `vite build`) reports no type errors and builds with Shiki in a lazy chunk (re-confirm it's not in the entry chunk).
+Run: `npx vitest run && bun run build && ls -lh dist/assets/*.js | sort -k5 -h | tail -25`
+Expected: all relay-web tests pass; `bun run build` (runs `vue-tsc --noEmit` then `vite build`) reports no type errors. This is the **real size gate** (Task 3's was a no-op because nothing imported shiki yet). Now that FileViewer dynamically `import()`s `../lib/shiki`, confirm:
+  - Shiki appears in **its own lazy chunk(s)** (filenames containing `shiki` / lang ids), NOT folded into the entry `index-*.js`.
+  - The entry chunk did not balloon (compare to the ~72 KB gz baseline recorded in Task 3).
+Record the largest Shiki chunk size (raw + gz if shown) in the commit message. **Gate:** first-open Shiki chunk(s) total under ~200 KB gzip. If Shiki landed in the entry chunk, or the gate is badly blown, report DONE_WITH_CONCERNS — do not silently proceed.
 
 - [ ] **Step 7: Commit**
 
