@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.9.5] - 2026-06-25
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Mobile/PWA layout fixes. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
+
+### Fixed
+
+- **The scheduled-task time field no longer overflows its container on iOS.** Mobile Safari gives `<input type="datetime-local">` an intrinsic minimum content width that ignores `width: 100%`, so the 时间 field spilled past the composer's rounded border. `-webkit-appearance` is now reset for date/time inputs — scoped to iOS Safari via `@supports (-webkit-touch-callout: none)` so the desktop native picker chrome is untouched — plus `min-width: 0` so the field honors its container.
+- **File viewer wastes less horizontal space on narrow screens.** The Shiki line-number gutter, code indent, and block padding together pushed code ~4.25rem off the left edge — ~18% of a phone's width. The gutter (2.75→2.25rem), indent (3.25→2.75rem), and padding (1→0.75rem) are tightened; 4-digit line numbers (up to the 5000-line highlight limit) still fit.
+- **File viewer back button no longer wraps to two lines.** With a long file path open, the Back button (文件 / 返回) had no width floor and got squeezed until its label wrapped vertically. It now keeps its width (`shrink-0` + `whitespace-nowrap`).
+
 ## [relay 0.9.4] - 2026-06-24
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Dashboard polish. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
