@@ -111,7 +111,7 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
 }
 .shiki {
   margin: 0;
-  padding: 0.75rem 1rem;
+  padding: 0.75rem;
   overflow-x: auto;
   font-size: 12.5px;
   line-height: 1.6;
@@ -120,9 +120,11 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
   display: grid;
   counter-reset: shiki-ln;
 }
+/* Line-number gutter: keep it tight so code isn't pushed far from the left edge on
+   narrow (mobile) viewports. Width fits up to 4 digits (LINE_GUTTER_LIMIT = 5000). */
 .shiki code .line {
   position: relative;
-  padding-left: 3.25rem;
+  padding-left: 2.75rem;
   min-height: 1.6em;
 }
 .shiki code .line::before {
@@ -130,8 +132,22 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
   content: counter(shiki-ln);
   position: absolute;
   left: 0;
-  width: 2.75rem;
+  width: 2.25rem;
   text-align: right;
   opacity: 0.45;
   user-select: none;
+}
+
+/* iOS Safari gives <input type="datetime-local"> an intrinsic min content width
+   that overflows a width:100% flex parent (the scheduled-task composer). Resetting
+   -webkit-appearance lets width:100% take effect. Scoped to iOS Safari via the
+   iOS-only -webkit-touch-callout feature so desktop keeps its native picker chrome. */
+@supports (-webkit-touch-callout: none) {
+  input[type="datetime-local"],
+  input[type="date"],
+  input[type="time"] {
+    -webkit-appearance: none;
+    appearance: none;
+    min-width: 0;
+  }
 }
