@@ -65,6 +65,42 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   ]);
 });
 
+function makeControlWithArchived(archived: boolean) {
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  events.subscribe((event) => seen.push(event));
+  const control = new ControlService({
+    agent: { chat: async () => ({ text: "ok" }) },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      createSession: async () => { throw new Error("unused"); },
+      removeSession: async () => ({ wasActive: false }),
+      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) => `relay:${alias}`,
+      getSession: async () => ({ alias: "relay:backend", agent: "claude", workspace: "/ws", archived }),
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+  } as never);
+  return { control, seen };
+}
+
+test("prompting an archived session emits sessions-changed so the dashboard drops the stale badge", async () => {
+  // useSession un-archives on message but emits nothing; without this the sidebar keeps
+  // showing the "archived" badge until an unrelated refresh.
+  const { control, seen } = makeControlWithArchived(true);
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  expect(seen.some((e) => e.type === "sessions-changed")).toBe(true);
+});
+
+test("prompting a non-archived session does NOT emit sessions-changed (no needless refresh)", async () => {
+  const { control, seen } = makeControlWithArchived(false);
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  expect(seen.some((e) => e.type === "sessions-changed")).toBe(false);
+});
+
 test("multi-paragraph reply: each segment after the first restores the \\n\\n break", async () => {
   // Regression: the transport strips paragraph boundaries when splitting into
   // trimmed segments. Concatenating bare segments ran paragraphs together; the
