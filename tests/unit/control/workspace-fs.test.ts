@@ -172,4 +172,35 @@ describe("WorkspaceFs git diff", () => {
     rmSync(repo, { recursive: true, force: true });
     rmSync(wt, { recursive: true, force: true });
   });
+
+  test("returns non-ASCII filenames unescaped (quotePath off + -z)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "首页.txt"), "hi\n"); // untracked, non-ASCII name
+    const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+    const d = await gfs.gitDiff("g");
+    expect(d.files.some((f) => f.path === "首页.txt" && f.status.includes("?"))).toBe(true);
+    // The old plain --porcelain would have produced an octal-escaped, quoted path.
+    expect(d.files.every((f) => !f.path.includes("\\"))).toBe(true);
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("lists only the new path for a staged rename", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "old.txt"), "one\n");
+    git("add", "."); git("commit", "-qm", "init");
+    git("mv", "old.txt", "新名.txt");
+    const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+    const d = await gfs.gitDiff("g");
+    expect(d.files.some((f) => f.path === "新名.txt" && f.status[0] === "R")).toBe(true);
+    expect(d.files.some((f) => f.path === "old.txt")).toBe(false); // original path is consumed, not listed
+    rmSync(repo, { recursive: true, force: true });
+  });
 });
