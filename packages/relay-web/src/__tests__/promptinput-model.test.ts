@@ -29,14 +29,17 @@ it("renders the model chip with the current model and lets you switch", async ()
 
   const chip = w.find('[data-test="model-chip"]');
   expect(chip.exists()).toBe(true);
-  expect(chip.text()).toContain("gpt-5.2[high]");
+  // Display normalizes the bracketed reasoning-effort suffix to model/effort (display only).
+  expect(chip.text()).toContain("gpt-5.2/high");
+  expect(chip.text()).not.toContain("gpt-5.2[high]");
 
   await chip.trigger("click");
   const options = w.findAll('[data-test="model-option"]');
   expect(options.length).toBe(2);
+  expect(options[1].text()).toContain("gpt-5.2/low"); // option label is normalized too
 
   rpc.mockResolvedValueOnce({ ok: true });
-  // pick the second option (gpt-5.2[low])
+  // ...but selecting still sends the RAW agent-advertised id, not the normalized label.
   await options[1].trigger("click");
   await flush();
   expect(rpc).toHaveBeenLastCalledWith("i1", "control.session.model.set", { sessionAlias: "backend", modelId: "gpt-5.2[low]" });

@@ -7,6 +7,7 @@ import UsagePopover from "./UsagePopover.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
+import { formatModelLabel } from "../lib/model-label";
 
 const props = defineProps<{ busy?: boolean; draftKey?: string; instanceId?: string | null; sessionAlias?: string | null }>();
 const emit = defineEmits<{ send: [text: string, media: PromptAttachmentRef[]]; cancel: [] }>();
@@ -236,7 +237,7 @@ function onInput() {
                   :disabled="!controls.available.length"
                   @click="modelMenuOpen = !modelMenuOpen">
             <Brain :size="14" class="text-accent" />
-            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current || $t("chat.model") }}</span>
+            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current ? formatModelLabel(controls.current) : $t("chat.model") }}</span>
             <ChevronDown v-if="controls.available.length" :size="13" />
           </button>
           <ul v-if="modelMenuOpen && controls.available.length" data-test="model-menu"
@@ -246,7 +247,7 @@ function onInput() {
                       class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
                       :class="m === controls.current ? 'bg-accent/10 text-accent' : 'hover:bg-fg/10 text-fg-muted'"
                       @click="pickModel(m)">
-                <span class="font-mono">{{ m }}</span>
+                <span class="font-mono">{{ formatModelLabel(m) }}</span>
                 <Check v-if="m === controls.current" :size="14" class="ml-auto" />
               </button>
             </li>

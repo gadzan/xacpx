@@ -94,10 +94,10 @@ const verb = computed(() => {
                   class="flex min-w-0 max-w-[10rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title='$t("chat.browseFiles")'
                   @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span class="min-w-0 truncate">{{ currentSession.workspace }}</span></button>
-          <span v-if="instance?.name" data-test="ctx-chip-instance"
-                class="flex min-w-0 max-w-[9rem] items-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="shrink-0 font-mono text-accent">@</span><span class="min-w-0 truncate">{{ instance.name }}</span></span>
-          <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
-                class="flex min-w-0 max-w-[9rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span class="min-w-0 truncate">{{ currentSession.agent }}</span></span>
+          <span v-if="instance?.name" data-test="ctx-chip-instance" :title="instance.name"
+                class="flex shrink-0 min-w-0 max-w-[9rem] items-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="shrink-0 font-mono text-accent">@</span><span class="min-w-0 truncate">{{ instance.name }}</span></span>
+          <span v-if="currentSession?.agent" data-test="ctx-chip-agent" :title="currentSession.agent"
+                class="flex shrink-0 min-w-0 max-w-[9rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span class="min-w-0 truncate">{{ currentSession.agent }}</span></span>
           <button v-if="files.gitSummary" data-test="git-summary"
                   class="flex min-w-0 max-w-[13rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title="files.gitSummary.branch || $t('chat.viewChanges')"
