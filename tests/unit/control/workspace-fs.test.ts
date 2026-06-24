@@ -203,4 +203,20 @@ describe("WorkspaceFs git diff", () => {
     expect(d.files.some((f) => f.path === "old.txt")).toBe(false); // original path is consumed, not listed
     rmSync(repo, { recursive: true, force: true });
   });
+
+  test("synthesizes an all-additions diff for an untracked file", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "seed.txt"), "x\n");
+    git("add", "."); git("commit", "-qm", "init");
+    writeFileSync(join(repo, "untracked.txt"), "alpha\nbeta\n"); // never added
+    const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+    const d = await gfs.gitDiff("g", "untracked.txt");
+    expect(d.diff).toContain("+alpha");
+    expect(d.diff).toContain("+beta");
+    rmSync(repo, { recursive: true, force: true });
+  });
 });

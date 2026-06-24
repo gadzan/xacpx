@@ -235,6 +235,23 @@ export class WorkspaceFs {
         diff = "";
       }
     }
+
+    // Untracked files never appear in `git diff [HEAD]`. For a single requested file with
+    // no tracked diff, synthesize an all-additions diff vs /dev/null so the viewer shows it.
+    // `git diff --no-index` exits 1 ("differences found") → execFile rejects with the diff on stdout.
+    if (rel && !diff) {
+      try {
+        diff = (await execFileAsync(
+          "git",
+          ["-C", root, "-c", "core.quotePath=false", "diff", "--no-index", "--", "/dev/null", rel],
+          { maxBuffer: GIT_MAX_BUFFER },
+        )).stdout;
+      } catch (e) {
+        const out = (e as { stdout?: string }).stdout;
+        if (typeof out === "string") diff = out;
+      }
+    }
+
     const truncated = diff.length > DIFF_CAP;
     return { workspace, files, diff: truncated ? diff.slice(0, DIFF_CAP) : diff, truncated, ...(await this.gitContext(root)) };
   }
