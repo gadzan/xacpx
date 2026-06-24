@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { ArrowLeft, FileText, FileDiff, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
+// NOTE: ../lib/shiki is imported DYNAMICALLY inside the highlight callback below — never
+// statically — so the Shiki core + JS engine stay out of FileViewer's (eagerly-loaded)
+// chunk and the entry bundle, per the lazy-load size constraint. parseUnifiedDiff is a
+// tiny pure module, so a static import is fine.
+import { parseUnifiedDiff } from "../lib/unified-diff";
 import CopyButton from "./CopyButton.vue";
 
 // Roomy file/diff viewer that takes over the center column (the chat area) so file
@@ -10,8 +15,8 @@ import CopyButton from "./CopyButton.vue";
 const emit = defineEmits<{ back: []; close: [] }>();
 const files = useFilesStore();
 
-// Above this many lines we drop the per-line gutter and render a plain <pre> so a huge
-// file doesn't emit tens of thousands of DOM nodes.
+// Above this many lines we skip Shiki and render a plain <pre> so a huge file doesn't
+// stall the highlighter or emit an enormous DOM.
 const LINE_GUTTER_LIMIT = 5000;
 const fileLines = computed(() => {
   const f = files.file;
@@ -19,18 +24,40 @@ const fileLines = computed(() => {
   return f.content.split("\n");
 });
 
+// Highlighted file HTML (Shiki). Empty until the first highlight resolves; while empty we
+// render a plain <pre> fallback. Debounced 150ms (cheap protection against rapid refreshes).
+const fileHtml = ref("");
+let hlTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => [files.file?.path, files.file?.content, files.file?.binary] as const,
+  ([path, content, binary]) => {
+    if (hlTimer) clearTimeout(hlTimer);
+    fileHtml.value = "";
+    if (!files.file || binary || content === undefined) return;
+    if (fileLines.value.length > LINE_GUTTER_LIMIT) return; // plain fallback for huge files
+    const code = content;
+    hlTimer = setTimeout(() => {
+      // Dynamic import keeps Shiki out of this component's chunk; loaded only when a
+      // highlight actually runs. vi.mock("../lib/shiki") in tests intercepts this too.
+      void (async () => {
+        const { resolveLang, highlightToHtml } = await import("../lib/shiki");
+        const html = await highlightToHtml(code, resolveLang(path));
+        // ignore a stale result if the file changed while we were highlighting
+        if (files.file?.content === code) fileHtml.value = html;
+      })();
+    }, 150);
+  },
+  { immediate: true },
+);
+
+// Structured rows for the single-file diff (HAPI-style tinted rows; not syntax-highlighted).
+const parsedDiff = computed(() => (files.diff?.diff ? parseUnifiedDiff(files.diff.diff) : null));
+
 function fmtSize(n?: number): string {
   if (n === undefined) return "";
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-function diffLineClass(line: string): string {
-  if (line.startsWith("+") && !line.startsWith("+++")) return "text-run";
-  if (line.startsWith("-") && !line.startsWith("---")) return "text-danger";
-  if (line.startsWith("@@")) return "text-info";
-  if (line.startsWith("diff ") || line.startsWith("index ")) return "text-fg-muted";
-  return "text-fg-muted";
 }
 </script>
 
@@ -68,18 +95,24 @@ function diffLineClass(line: string): string {
     <div class="min-h-0 flex-1 overflow-auto thin-scroll">
       <!-- file content -->
       <template v-if="files.file">
-        <div v-if="!files.file.binary && fileLines.length <= LINE_GUTTER_LIMIT" data-test="fv-file-body" class="font-mono text-[12.5px] leading-relaxed">
-          <div v-for="(l, i) in fileLines" :key="i" data-test="fv-line" class="flex">
-            <span class="sticky left-0 w-14 shrink-0 select-none border-r border-border bg-surface px-3 text-right text-fg-muted tabular-nums">{{ i + 1 }}</span>
-            <span class="whitespace-pre px-4 text-fg">{{ l || " " }}</span>
-          </div>
+        <div v-if="!files.file.binary && fileLines.length <= LINE_GUTTER_LIMIT" data-test="fv-file-body">
+          <div v-if="fileHtml" v-html="fileHtml"></div>
+          <pre v-else class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-fg whitespace-pre">{{ files.file.content }}</pre>
         </div>
-        <pre v-else-if="!files.file.binary" class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-fg whitespace-pre">{{ files.file.content }}</pre>
+        <pre v-else-if="!files.file.binary" data-test="fv-file-body" class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-fg whitespace-pre">{{ files.file.content }}</pre>
         <div v-else class="p-6 text-sm text-fg-muted">{{ $t("files.binaryNotShown") }}</div>
       </template>
-      <!-- single-file diff -->
+      <!-- single-file diff: structured tinted rows with dual line numbers (no syntax highlight) -->
       <template v-else-if="files.diffPath && files.diff">
-        <pre v-if="files.diff.diff" data-test="fv-diff-body" class="p-4 font-mono text-[12.5px] leading-relaxed whitespace-pre"><span v-for="(l, i) in files.diff.diff.split('\n')" :key="i" class="block" :class="diffLineClass(l)">{{ l }}</span></pre>
+        <div v-if="parsedDiff && parsedDiff.rows.length" data-test="fv-diff-body" class="font-mono text-[12.5px] leading-relaxed">
+          <div v-for="(r, i) in parsedDiff.rows" :key="i" data-test="fv-diff-row" class="flex"
+               :class="r.type === 'add' ? 'bg-run/10' : r.type === 'del' ? 'bg-danger/10' : r.type === 'hunk' ? 'bg-info/5' : ''">
+            <span class="sticky left-0 w-12 shrink-0 select-none border-r border-border bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.oldNo ?? "" }}</span>
+            <span class="w-12 shrink-0 select-none border-r border-border bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.newNo ?? "" }}</span>
+            <span class="w-4 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger' : 'text-fg-muted/40'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
+            <span class="whitespace-pre px-2" :class="r.type === 'hunk' ? 'text-info' : 'text-fg'">{{ r.text }}</span>
+          </div>
+        </div>
         <div v-else class="p-6 text-sm text-fg-muted">{{ $t("files.noDiffContent") }}</div>
         <div v-if="files.diff.truncated" class="px-4 py-1 text-xs text-warn">{{ $t("files.diffTruncated") }}</div>
       </template>

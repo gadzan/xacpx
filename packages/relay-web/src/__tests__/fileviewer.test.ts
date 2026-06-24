@@ -1,6 +1,14 @@
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises } from "@vue/test-utils";
+
+vi.mock("../lib/shiki", () => ({
+  resolveLang: () => "text",
+  // deterministic stand-in so jsdom never loads the real engine
+  highlightToHtml: (code: string) => Promise.resolve(`<pre class="shiki"><code><span class="line">${code}</span></code></pre>`),
+}));
+
 import FileViewer from "../components/FileViewer.vue";
 import { useFilesStore } from "../stores/files";
 
@@ -12,16 +20,23 @@ beforeEach(() => {
 });
 
 describe("FileViewer", () => {
-  it("renders a numbered gutter with one row per line", async () => {
+  it("renders the file content and upgrades it to highlighted HTML", async () => {
+    vi.useFakeTimers();
     const w = mount(FileViewer, { global: { plugins: [pinia] } });
     const files = useFilesStore();
     files.file = { workspace: "ws", path: "src/a.ts", content: "one\ntwo\nthree", size: 13, truncated: false, binary: false };
     await w.vm.$nextTick();
-    const lines = w.findAll('[data-test="fv-line"]');
-    expect(lines.length).toBe(3);
-    expect(lines[0].text()).toContain("1");
-    expect(lines[0].text()).toContain("one");
-    expect(lines[2].text()).toContain("three");
+    // immediate plain fallback shows the content before highlighting resolves
+    const body = w.find('[data-test="fv-file-body"]');
+    expect(body.exists()).toBe(true);
+    expect(body.text()).toContain("one");
+    expect(body.text()).toContain("three");
+    // after the 150ms debounce + async highlight, Shiki HTML replaces the fallback
+    vi.advanceTimersByTime(200);
+    await flushPromises();
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="fv-file-body"]').html()).toContain("shiki");
+    vi.useRealTimers();
   });
 
   it("offers a copy button that copies the file content", async () => {
@@ -71,7 +86,7 @@ describe("FileViewer", () => {
     expect(w.emitted("close")).toBeTruthy();
   });
 
-  it("renders a single-file diff when a diff path is selected", async () => {
+  it("renders a single-file diff as structured rows", async () => {
     const w = mount(FileViewer, { global: { plugins: [pinia] } });
     const files = useFilesStore();
     files.diffPath = "src/a.ts";
@@ -79,6 +94,10 @@ describe("FileViewer", () => {
     await w.vm.$nextTick();
     const body = w.find('[data-test="fv-diff-body"]');
     expect(body.exists()).toBe(true);
+    const rows = w.findAll('[data-test="fv-diff-row"]');
+    // hunk header + one del + one add
+    expect(rows.length).toBe(3);
+    expect(body.text()).toContain("old");
     expect(body.text()).toContain("new");
   });
 });

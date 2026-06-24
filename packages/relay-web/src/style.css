@@ -94,3 +94,40 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot, .shimmer-text, .caret::after { animation: none !important; }
 }
+
+/* Shiki syntax highlighting — dual theme via CSS vars, line numbers via counters. */
+.shiki,
+.shiki span {
+  background-color: transparent !important;
+  color: var(--shiki-light);
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+.shiki {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.shiki code {
+  display: grid;
+  counter-reset: shiki-ln;
+}
+.shiki code .line {
+  position: relative;
+  padding-left: 3.25rem;
+  min-height: 1.6em;
+}
+.shiki code .line::before {
+  counter-increment: shiki-ln;
+  content: counter(shiki-ln);
+  position: absolute;
+  left: 0;
+  width: 2.75rem;
+  text-align: right;
+  opacity: 0.45;
+  user-select: none;
+}

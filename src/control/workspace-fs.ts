@@ -197,16 +197,25 @@ export class WorkspaceFs {
       throw new Error("not-a-git-repo");
     }
 
-    // Changed-file list (includes untracked as "??").
+    // Changed-file list (includes untracked as "??"). Use -z so non-ASCII paths come
+    // through raw (never octal-escaped/quoted) and -c core.quotePath=false to be doubly sure;
+    // otherwise a quoted path would mismatch the path we hand back to git for a single-file diff.
     const files: DiffFile[] = [];
     try {
-      const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"], { maxBuffer: GIT_MAX_BUFFER });
-      for (const line of stdout.split("\n")) {
-        if (!line) continue;
-        const status = line.slice(0, 2);
-        let path = line.slice(3);
-        const arrow = path.indexOf(" -> "); // renamed: "old -> new"
-        if (arrow >= 0) path = path.slice(arrow + 4);
+      const { stdout } = await execFileAsync(
+        "git",
+        ["-C", root, "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
+        { maxBuffer: GIT_MAX_BUFFER },
+      );
+      const fields = stdout.split("\0");
+      for (let i = 0; i < fields.length; i++) {
+        const field = fields[i];
+        if (!field) continue;
+        const status = field.slice(0, 2);
+        const path = field.slice(3);
+        // In -z output a rename/copy emits the NEW path in this field, then the ORIGINAL
+        // path as the next NUL-separated field (verified: `R  new\0old\0`). Consume & drop it.
+        if (status[0] === "R" || status[0] === "C") i++;
         files.push({ path, status });
       }
     } catch {
@@ -226,6 +235,23 @@ export class WorkspaceFs {
         diff = "";
       }
     }
+
+    // Untracked files never appear in `git diff [HEAD]`. For a single requested file with
+    // no tracked diff, synthesize an all-additions diff vs /dev/null so the viewer shows it.
+    // `git diff --no-index` exits 1 ("differences found") → execFile rejects with the diff on stdout.
+    if (rel && !diff) {
+      try {
+        diff = (await execFileAsync(
+          "git",
+          ["-C", root, "-c", "core.quotePath=false", "diff", "--no-index", "--", "/dev/null", rel],
+          { maxBuffer: GIT_MAX_BUFFER },
+        )).stdout;
+      } catch (e) {
+        const out = (e as { stdout?: string }).stdout;
+        if (typeof out === "string") diff = out;
+      }
+    }
+
     const truncated = diff.length > DIFF_CAP;
     return { workspace, files, diff: truncated ? diff.slice(0, DIFF_CAP) : diff, truncated, ...(await this.gitContext(root)) };
   }
