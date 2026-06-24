@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1] - 2026-06-23
+
+A core (`@ganglion/xacpx`) patch release. No `relay` / `relay-protocol` / `channel-relay` changes.
+
+### Fixed
+
+- **The dashboard's "archived" badge clears when a message restores the session.** Sending a message to an archived session restores it server-side (the `archived` flag is cleared), but that happened via `useSession`, which emits no event — so the relay sidebar kept showing a stale "archived" badge on the row until an unrelated refresh. The control layer now detects the restore-on-message transition and emits a `sessions-changed` event (only when the session was actually archived), which the dashboard already handles by re-fetching the session list. The explicit unarchive (undo) action was unaffected; only the restore-on-message path missed the event.
+
 ## [relay 0.9.2] - 2026-06-23
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Ships the resizable dashboard right panel. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
