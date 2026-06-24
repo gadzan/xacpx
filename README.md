@@ -1,5 +1,7 @@
 # xacpx
 
+![xacpx.png](xacpx_banner.png)
+
 > Remotely drive Codex, Claude Code, and other acpx sessions from WeChat, Feishu, or Yuanbao.
 
 [![npm](https://img.shields.io/npm/v/@ganglion/xacpx?style=flat-square)](https://www.npmjs.com/package/@ganglion/xacpx)
@@ -12,8 +14,6 @@ English · **[中文](./docs/zh/README_zh.md)**
 ## What is this
 
 `xacpx` is a tool that lets you control ACP agents such as Codex / Claude Code / Gemini / OpenCode directly from WeChat, Feishu, or Yuanbao. It connects chat messages to your agent CLI sessions through `acpx`, so you can, right from your phone:
-
-[![xacpx.png](https://s41.ax1x.com/2026/06/05/pmZXIv6.png)](https://imgchr.com/i/pmZXIv6)
 
 - Create and switch between sessions
 - Have the agent keep working in a specific project directory
