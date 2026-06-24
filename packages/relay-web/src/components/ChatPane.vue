@@ -89,24 +89,27 @@ const verb = computed(() => {
       <!-- header -->
       <div class="shrink-0 flex min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
         <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ chat.sessionAlias }}</h1>
-        <div v-if="currentSession || instance" class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
+             stay fully readable instead of truncating — title tooltips don't work on touch.
+             Each chip is shrink-0 (natural width); the strip overflows and scrolls. -->
+        <div v-if="currentSession || instance" class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto no-scrollbar">
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
-                  class="flex min-w-0 max-w-[10rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title='$t("chat.browseFiles")'
-                  @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span class="min-w-0 truncate">{{ currentSession.workspace }}</span></button>
+                  @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span>{{ currentSession.workspace }}</span></button>
           <span v-if="instance?.name" data-test="ctx-chip-instance"
-                class="flex min-w-0 max-w-[9rem] items-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="shrink-0 font-mono text-accent">@</span><span class="min-w-0 truncate">{{ instance.name }}</span></span>
+                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
           <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
-                class="flex min-w-0 max-w-[9rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span class="min-w-0 truncate">{{ currentSession.agent }}</span></span>
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
           <button v-if="files.gitSummary" data-test="git-summary"
-                  class="flex min-w-0 max-w-[13rem] items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title="files.gitSummary.branch || $t('chat.viewChanges')"
                   @click="files.tab = 'changes'; emit('show-files')">
             <GitBranch :size="11" class="shrink-0 text-warn" />
-            <span v-if="files.gitSummary.branch" class="min-w-0 truncate font-mono">{{ files.gitSummary.branch }}</span>
-            <span v-else-if="files.gitSummary.detached" class="shrink-0 italic">{{ $t("files.detached") }}</span>
+            <span v-if="files.gitSummary.branch" class="font-mono">{{ files.gitSummary.branch }}</span>
+            <span v-else-if="files.gitSummary.detached" class="italic">{{ $t("files.detached") }}</span>
             <span class="h-1 w-1 shrink-0 rounded-full bg-warn" aria-hidden="true" />
-            <span class="shrink-0 text-warn">{{ files.gitSummary.changedCount }} {{ $t("chat.changed") }}</span>
+            <span class="text-warn">{{ files.gitSummary.changedCount }} {{ $t("chat.changed") }}</span>
           </button>
         </div>
       </div>

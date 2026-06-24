@@ -91,6 +91,10 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
 .thin-scroll::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
 .thin-scroll::-webkit-scrollbar-track { background: transparent; }
 
+/* Scrollable strip with no visible scrollbar (e.g. the header chip row — swipe on touch). */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot, .shimmer-text, .caret::after { animation: none !important; }
 }

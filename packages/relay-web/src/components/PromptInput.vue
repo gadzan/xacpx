@@ -7,6 +7,7 @@ import UsagePopover from "./UsagePopover.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
+import { formatModelLabel } from "../lib/model-label";
 
 const props = defineProps<{ busy?: boolean; draftKey?: string; instanceId?: string | null; sessionAlias?: string | null }>();
 const emit = defineEmits<{ send: [text: string, media: PromptAttachmentRef[]]; cancel: [] }>();
@@ -182,10 +183,10 @@ function onInput() {
 </script>
 
 <template>
-  <!-- The iOS home-indicator safe area is handled by the parent composer wrapper (ChatPane)
-       via max(1rem, env(safe-area-inset-bottom)); the form keeps plain symmetric padding here.
-       Applying the inset in both places double-padded the PWA bottom (looked too tall). -->
-  <form class="relative border-t border-border px-0 py-3 lg:p-3" @submit.prevent="submit"
+  <!-- No bottom padding on the form: the parent composer wrapper (ChatPane) owns the bottom
+       spacing via max(1rem, env(safe-area-inset-bottom)), so the composer sits flush above the
+       iOS home indicator (like native input bars) instead of leaving an extra gap below it. -->
+  <form class="relative border-t border-border px-0 pt-3 lg:px-3 lg:pt-3" @submit.prevent="submit"
         @drop.prevent="onDrop" @dragover.prevent>
     <!-- hidden file picker -->
     <input ref="fileInput" type="file" multiple class="hidden" data-test="attach-input" @change="onFilesPicked" />
@@ -236,7 +237,7 @@ function onInput() {
                   :disabled="!controls.available.length"
                   @click="modelMenuOpen = !modelMenuOpen">
             <Brain :size="14" class="text-accent" />
-            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current || $t("chat.model") }}</span>
+            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current ? formatModelLabel(controls.current) : $t("chat.model") }}</span>
             <ChevronDown v-if="controls.available.length" :size="13" />
           </button>
           <ul v-if="modelMenuOpen && controls.available.length" data-test="model-menu"
@@ -246,7 +247,7 @@ function onInput() {
                       class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
                       :class="m === controls.current ? 'bg-accent/10 text-accent' : 'hover:bg-fg/10 text-fg-muted'"
                       @click="pickModel(m)">
-                <span class="font-mono">{{ m }}</span>
+                <span class="font-mono">{{ formatModelLabel(m) }}</span>
                 <Check v-if="m === controls.current" :size="14" class="ml-auto" />
               </button>
             </li>
