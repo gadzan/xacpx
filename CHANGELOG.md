@@ -1,5 +1,13 @@
 # Changelog
 
+## [relay 0.9.2] - 2026-06-23
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Ships the resizable dashboard right panel. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
+
+### Added
+
+- **Resizable right panel (desktop).** Drag the left edge of the tasks/files panel to set its width; the choice persists across reloads. Width is clamped to a sensible range and capped to half the viewport so it can't crowd out the conversation. Desktop only — on mobile the panel stays the fixed-width off-canvas drawer, and the drag handle is inert.
+
 ## [0.15.0] - 2026-06-23
 
 A core (`@ganglion/xacpx`) release fixing session archive/restore so re-prompting an archived session continues the same conversation. No `relay` / `relay-protocol` / `channel-relay` changes (the dashboard's resizable right panel from this cycle ships in an upcoming `relay` release).
