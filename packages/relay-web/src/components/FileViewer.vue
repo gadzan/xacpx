@@ -66,11 +66,11 @@ function fmtSize(n?: number): string {
     <!-- header: back + path + meta -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
       <button data-test="fv-back-list" :aria-label="$t('files.backToList')"
-              class="flex lg:hidden items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('back')"><ArrowLeft :size="14" />{{ $t("files.title") }}</button>
+              class="flex lg:hidden shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="emit('back')"><ArrowLeft :size="14" class="shrink-0" />{{ $t("files.title") }}</button>
       <button data-test="fv-back" :aria-label="$t('files.back')"
-              class="hidden lg:flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('close')"><ArrowLeft :size="14" />{{ $t("files.back") }}</button>
+              class="hidden lg:flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="emit('close')"><ArrowLeft :size="14" class="shrink-0" />{{ $t("files.back") }}</button>
       <span class="h-4 w-px bg-border" aria-hidden="true" />
       <template v-if="files.file">
         <FileText :size="14" class="shrink-0 text-accent" />

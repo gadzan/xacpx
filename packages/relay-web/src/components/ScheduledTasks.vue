@@ -61,7 +61,7 @@ async function create() {
     <form v-if="composerOpen" data-test="scheduled-composer" class="mt-2 space-y-2 rounded-lg border border-border bg-bg p-2.5" @submit.prevent="create">
       <label class="flex flex-col gap-1">
         <span class="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.whenLabel") }}</span>
-        <input v-model="executeAt" type="datetime-local" class="w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
+        <input v-model="executeAt" type="datetime-local" class="w-full min-w-0 rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
       </label>
       <label class="flex flex-col gap-1">
         <span class="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.messageLabel") }}</span>
