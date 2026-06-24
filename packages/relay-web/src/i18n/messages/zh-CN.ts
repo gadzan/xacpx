@@ -140,6 +140,8 @@ export default {
     refresh: "刷新文件列表",
     upOneLevel: "上一级",
     changes: "改动",
+    staged: "暂存",
+    untracked: "未跟踪",
     clearSearch: "清除搜索",
     showingFirstMatches: "仅显示前 200 条匹配项",
     root: "根目录",

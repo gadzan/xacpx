@@ -5,6 +5,7 @@ import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { groupChanges, splitPath } from "../lib/change-groups";
 
 // Navigation-only file rail: a file tree (Files) and a changed-files list (Changes).
 // Opening a file or a single-file diff shows it full-width in the center column (see
@@ -49,6 +50,35 @@ const changesSummary = computed(() => {
   }
   return { fileCount: d.files.length, add, del };
 });
+
+// Three-way grouping of the changed-files list (Staged / Changes / Untracked). Empty groups hide.
+const changeSections = computed(() => {
+  const g = groupChanges(files.diff?.files ?? []);
+  return [
+    { key: "staged", items: g.staged },
+    { key: "changes", items: g.changes },
+    { key: "untracked", items: g.untracked },
+  ].filter((s) => s.items.length);
+});
+
+// Per-group collapse state, persisted (sibling of the xacpx.* prefs).
+const COLLAPSE_KEY = "xacpx.changes.collapsed";
+const collapsed = ref<Record<string, boolean>>(loadCollapsed());
+function loadCollapsed(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? "{}") as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
+function toggleGroup(key: string): void {
+  collapsed.value = { ...collapsed.value, [key]: !collapsed.value[key] };
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed.value));
+  } catch {
+    /* private mode / quota — collapse just won't persist */
+  }
+}
 
 // Debounced file-name search.
 const searchInput = ref("");
@@ -262,17 +292,30 @@ watch(
               <span class="truncate font-mono" dir="rtl">{{ gitCtx.worktree.root }}</span>
             </div>
           </div>
-          <ul class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-px">
-            <li v-for="f in files.diff.files" :key="f.path">
-              <button data-test="diff-file" class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
-                      :class="files.diffPath === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
-                <FileText :size="12" class="shrink-0" :class="files.diffPath === f.path ? 'text-accent' : 'text-fg-muted'" />
-                <span class="flex-1 truncate font-mono text-[11px]" :class="files.diffPath === f.path ? 'text-accent' : 'text-fg'">{{ f.path }}</span>
-                <span class="shrink-0 font-mono text-[10.5px] uppercase tabular-nums" :class="statusBadge(f.status).cls">{{ f.status.trim() || "··" }}</span>
+          <div class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-2">
+            <div v-for="s in changeSections" :key="s.key" data-test="change-group">
+              <button class="flex w-full items-center gap-1.5 px-1 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted transition-colors hover:text-fg"
+                      @click="toggleGroup(s.key)">
+                <ChevronRight :size="11" class="shrink-0 transition-transform" :class="collapsed[s.key] ? '' : 'rotate-90'" />
+                <span>{{ $t(`files.${s.key}`) }}</span>
+                <span class="text-fg-muted/60">{{ s.items.length }}</span>
               </button>
-            </li>
-            <li v-if="!files.diff.files.length" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.noChanges") }}</li>
-          </ul>
+              <ul v-show="!collapsed[s.key]" class="space-y-px pt-0.5">
+                <li v-for="f in s.items" :key="f.path">
+                  <button data-test="diff-file" :title="f.path"
+                          class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
+                          :class="files.diffPath === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
+                    <span class="w-3 shrink-0 text-center font-mono text-[10.5px] uppercase" :class="statusBadge(f.status).cls">{{ statusBadge(f.status).label }}</span>
+                    <span class="flex min-w-0 flex-1 items-baseline truncate font-mono text-[11px]">
+                      <span v-if="splitPath(f.path).dir" class="truncate text-fg-muted/70">{{ splitPath(f.path).dir }}</span>
+                      <span class="shrink-0" :class="files.diffPath === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <div v-if="!changeSections.length" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.noChanges") }}</div>
+          </div>
         </template>
         <!-- A non-git workspace is normal here — a calm note, not an error banner. -->
         <div v-else-if="files.notGit" data-test="changes-not-git" class="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 p-6 text-center text-xs text-fg-muted">

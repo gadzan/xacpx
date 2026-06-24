@@ -145,4 +145,28 @@ describe("FilesPanel navigation rail", () => {
     // The sticky, undismissable error banner must NOT be used for this expected state.
     expect(w.find('[data-test="files-error"]').exists()).toBe(false);
   });
+
+  it("groups changed files into Staged / Changes / Untracked with full-path tooltips", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws",
+      files: [
+        { path: "src/staged.ts", status: "M " },
+        { path: "src/work.ts", status: " M" },
+        { path: "notes/草稿.md", status: "??" },
+      ],
+      diff: "",
+      truncated: false,
+    } as never;
+    await w.vm.$nextTick();
+    const groups = w.findAll('[data-test="change-group"]');
+    expect(groups.length).toBe(3); // staged, changes, untracked all non-empty
+    const rows = w.findAll('[data-test="diff-file"]');
+    // the untracked CJK path renders raw and carries a full-path tooltip
+    const cjk = rows.find((r) => r.attributes("title") === "notes/草稿.md");
+    expect(cjk).toBeTruthy();
+    expect(cjk!.text()).toContain("草稿.md");
+  });
 });

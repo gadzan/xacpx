@@ -142,6 +142,8 @@ export default {
     refresh: "Refresh file list",
     upOneLevel: "Up one level",
     changes: "Changes",
+    staged: "Staged",
+    untracked: "Untracked",
     clearSearch: "Clear search",
     showingFirstMatches: "showing first 200 matches",
     root: "root",
