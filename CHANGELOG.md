@@ -1,5 +1,21 @@
 # Changelog
 
+## [relay 0.9.3] - 2026-06-24
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Reworks the dashboard's "Changes" panel and file/diff viewer. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
+
+### Fixed
+
+- **Non-ASCII filenames in the Changes panel are no longer garbled, and clicking them works.** The control layer listed git status with plain `git status --porcelain`, which octal-escapes and quotes non-ASCII paths (e.g. `"\351\246\226…"`); that escaped string was sent to the dashboard, so the file list showed garbage and the single-file diff lookup (`git diff -- <path>`) matched nothing → a "not found"/empty diff. Git status is now read with `-c core.quotePath=false … --porcelain -z` and parsed on NUL, so paths like `src/首页.ts` round-trip verbatim. This also repairs the Files-tab status badges, which keyed off the same path map.
+- **Untracked files now show their contents as a diff.** `git diff [HEAD]` ignores untracked files, so clicking one in the Changes panel showed an empty diff. Untracked single-file diffs are now synthesized via `git diff --no-index` so they render as all-additions.
+- **The composer no longer leaves an oversized gap above the iOS home indicator in the installed PWA.** The home-indicator safe-area inset was applied on both the composer wrapper and the form, stacking into ~62px of bottom space; it's now applied once via `max(1rem, env(safe-area-inset-bottom))` on the wrapper (~46px on a notch PWA; desktop spacing unchanged).
+
+### Added
+
+- **The Changes panel groups files into Staged / Changes / Untracked** (collapsible, state persisted), with a status glyph, a muted directory prefix + basename, and a full-path tooltip so long paths are no longer truncated without recourse.
+- **Syntax-highlighted file viewer.** Viewing a file now renders with Shiki (lazy-loaded, JavaScript regex engine — no WASM, dual light/dark themes via CSS variables), with a plain fallback for very large files. The highlighter ships as a lazy chunk, so the initial dashboard bundle is unchanged.
+- **Structured diff viewer.** Single-file diffs render as tinted rows with separate old/new line-number columns, a +/- gutter, and hunk separators (diffs are intentionally not syntax-highlighted), replacing the previous flat colored `<pre>`.
+
 ## [0.15.1] - 2026-06-23
 
 A core (`@ganglion/xacpx`) patch release. No `relay` / `relay-protocol` / `channel-relay` changes.
