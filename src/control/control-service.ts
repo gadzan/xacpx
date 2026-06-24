@@ -440,12 +440,26 @@ export class ControlService {
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     this.inFlight.set(key, { controller, settled });
+    // Sending to an archived session restores it (useSession clears `archived`), but
+    // useSession emits no event — so detect the transition here and emit
+    // `sessions-changed` after, otherwise the dashboard keeps showing a stale
+    // "archived" badge on the row until the next unrelated refresh.
+    let wasArchived = false;
+    try {
+      const internalAlias = await this.deps.sessions.resolveAliasForChat(params.chatKey, params.sessionAlias);
+      wasArchived = (await this.deps.sessions.getSession(internalAlias))?.archived === true;
+    } catch {
+      /* best-effort: a detection failure just means no badge refresh */
+    }
     try {
       await this.deps.sessions.useSession(params.chatKey, params.sessionAlias);
     } catch (error) {
       this.inFlight.delete(key);
       resolveSettled();
       return { ok: false, errorMessage: toErrorMessage(error) };
+    }
+    if (wasArchived) {
+      this.deps.events.emit({ type: "sessions-changed" });
     }
     this.deps.events.emit({
       type: "turn-started",
