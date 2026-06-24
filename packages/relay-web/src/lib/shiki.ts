@@ -6,7 +6,9 @@ const THEMES = [
   import("@shikijs/themes/github-light"),
   import("@shikijs/themes/github-dark"),
 ];
-// Hand-picked common languages. Each is a separate dynamic import → one lazy chunk on first use.
+// Hand-picked common languages. Each is a separate code-split chunk; all are fetched in
+// parallel when THIS module is first imported (the import() exprs evaluate at module load),
+// not per-language on demand. The whole module is itself loaded lazily via dynamic import().
 const LANGS = [
   import("@shikijs/langs/shellscript"),
   import("@shikijs/langs/json"),
