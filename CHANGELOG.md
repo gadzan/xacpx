@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.9.4] - 2026-06-24
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Dashboard polish. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
+
+### Fixed
+
+- **Header context chips stay readable under long branch names.** The chip row truncated every chip proportionally, so a long branch name could starve the agent chip down to a single letter (`codex` → `c…`). The strip now scrolls horizontally (chips at full width, hidden scrollbar) so long workspace/branch names are fully readable via swipe — `title` tooltips don't fire on touch.
+- **Consistent model + reasoning-effort label.** The composer's model chip is normalized for display so a known reasoning-effort suffix always reads as `model/effort` (e.g. `gpt-5.5[high]` → `gpt-5.5/high`), regardless of which adapter version advertised it. Display only — the exact agent-advertised id is still sent on selection, and non-effort bracket variants (e.g. `claude-opus-4-8[1m]`) are left untouched.
+- **Composer sits flush above the iOS home indicator in the installed PWA.** Following the `0.9.3` de-stacking fix, the composer still floated an extra ~12px above the home-indicator safe area; that padding is removed so the composer sits flush at the safe-area top like native input bars.
+
 ## [relay 0.9.3] - 2026-06-24
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Reworks the dashboard's "Changes" panel and file/diff viewer. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
