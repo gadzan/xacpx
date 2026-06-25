@@ -1,4 +1,5 @@
 import { isSamePath, isWindowsLikePath, normalizePath } from "../util/path.js";
+import { filterSubagentSessions } from "./codex-subagent-filter.js";
 import type { AgentSessionListResult } from "./types";
 
 export function isUnknownFilterCwdOption(output: string): boolean {
@@ -23,11 +24,15 @@ export interface AgentSessionListCommandResult {
  *   2. If the agent doesn't advertise `sessionCapabilities.list`, return
  *      `undefined` so callers can fall back to xacpx logical sessions.
  *   3. Otherwise parse + validate the JSON payload.
+ *   4. If `isSubagentSession` is provided (callers pass it only for agents whose
+ *      session list can leak subagent threads, e.g. Codex), drop the flagged
+ *      sessions. Fail-open — see codex-subagent-filter.
  */
 export async function runAgentSessionList(options: {
   filterCwd?: string;
   runList: (includeFilterCwd: boolean) => Promise<AgentSessionListCommandResult>;
   formatError: (result: AgentSessionListCommandResult) => string;
+  isSubagentSession?: (sessionId: string) => boolean;
 }): Promise<AgentSessionListResult | undefined> {
   let result = await options.runList(true);
   let filterLocally = false;
@@ -44,7 +49,11 @@ export async function runAgentSessionList(options: {
     throw new Error(options.formatError(result));
   }
 
-  return parseAgentSessionListOutput(result.stdout, filterLocally ? options.filterCwd : undefined);
+  const parsed = parseAgentSessionListOutput(result.stdout, filterLocally ? options.filterCwd : undefined);
+  if (parsed && options.isSubagentSession) {
+    return filterSubagentSessions(parsed, options.isSubagentSession);
+  }
+  return parsed;
 }
 
 export function parseAgentSessionListOutput(stdout: string, filterCwd?: string): AgentSessionListResult | undefined {
