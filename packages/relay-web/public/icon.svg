@@ -1,13 +1,11 @@
-<svg width="32" height="32" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-  <!-- SVG favicon: dark rounded tile + the xacpx blue/green "X" (kept in sync
-       with assets/pwa-source.svg / BrandLogo.vue). -->
-  <defs>
-    <linearGradient id="xacpxFavicon" x1="7" y1="7" x2="17" y2="17" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#4F9BF5" />
-      <stop offset="1" stop-color="#69D689" />
-    </linearGradient>
-  </defs>
-  <rect width="24" height="24" rx="5" fill="#0E1116" />
-  <path d="M7.5 7.5 L16.5 16.5 M16.5 7.5 L7.5 16.5" stroke="url(#xacpxFavicon)"
-        stroke-width="2.6" stroke-linecap="round" fill="none" />
+<svg width="32" height="32" viewBox="0 0 140 140" xmlns="http://www.w3.org/2000/svg">
+  <!-- SVG favicon: dark rounded tile + the xacpx X mark (green ∨ over two blue legs).
+       Kept in sync with assets/pwa-source.svg / src/components/BrandLogo.vue. -->
+  <rect width="140" height="140" rx="30" fill="#0E1116" />
+  <g transform="translate(70 70) scale(0.82) translate(-70 -50.5)"
+     stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M40 20 L54.5 34.5 A22 22 0 0 0 85.5 34.5 L100 20" stroke="#69D689" />
+    <path d="M53 68 L40 81" stroke="#4F9BF5" />
+    <path d="M87 68 L100 81" stroke="#4F9BF5" />
+  </g>
 </svg>

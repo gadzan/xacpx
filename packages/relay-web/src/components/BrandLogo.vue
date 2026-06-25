@@ -1,19 +1,18 @@
 <script setup lang="ts">
-// Inline brand mark: a rounded geometric "X" stroked with the xacpx blue→green
-// gradient, followed by the "XACPX HUB" lockup. Gradient is used ONLY here.
+// Inline brand mark: the xacpx "X" as four rounded capsules — a green ∨ (arc-bottom
+// chevron) over two splayed blue legs — followed by the "XACPX HUB" lockup. Uses the
+// brand green/blue solids (#69D689 / #4F9BF5). Kept in sync with public/icon.svg,
+// public/mask-icon.svg and assets/pwa-source.svg.
 </script>
 
 <template>
   <div class="flex items-center gap-2 select-none">
-    <svg data-test="brand-x" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="xacpxBrand" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#4F9BF5" />
-          <stop offset="1" stop-color="#69D689" />
-        </linearGradient>
-      </defs>
-      <path d="M5 5 L19 19 M19 5 L5 19" stroke="url(#xacpxBrand)" stroke-width="3.2"
-            stroke-linecap="round" />
+    <svg data-test="brand-x" width="22" height="22" viewBox="28.5 9 83 83" fill="none" aria-hidden="true">
+      <g stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M40 20 L54.5 34.5 A22 22 0 0 0 85.5 34.5 L100 20" stroke="#69D689" />
+        <path d="M53 68 L40 81" stroke="#4F9BF5" />
+        <path d="M87 68 L100 81" stroke="#4F9BF5" />
+      </g>
     </svg>
     <span class="text-[15px] font-semibold tracking-tight text-fg">XACPX</span>
     <span class="text-fg-muted text-xs font-medium tracking-wide">HUB</span>
