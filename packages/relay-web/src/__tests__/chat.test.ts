@@ -182,6 +182,25 @@ test("loadActiveTurns fetches the in-flight snapshot and seeds it", async () => 
   expect(store.streaming).toBe("live");
 });
 
+test("loadActiveTurns seeds the per-session usage meter so the context bar survives a refresh", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    turns: [],
+    usage: [{ instanceId: "i1", sessionAlias: "backend", used: 1200, size: 8000, cost: { totalUsd: 0.5 } }],
+  }), { status: 200 })));
+  const store = useChatStore();
+  await store.loadActiveTurns();
+  store.select("i1", "backend");
+  expect(store.sessionUsage).toEqual({ used: 1200, size: 8000, cost: { totalUsd: 0.5 } });
+});
+
+test("loadActiveTurns tolerates a snapshot without a usage field (older hub)", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ turns: [] }), { status: 200 })));
+  const store = useChatStore();
+  await store.loadActiveTurns();
+  store.select("i1", "backend");
+  expect(store.sessionUsage).toBeNull();
+});
+
 test("loadHistory records hasMore; loadOlder prepends the older page and updates the cursor", async () => {
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (path: string) => {

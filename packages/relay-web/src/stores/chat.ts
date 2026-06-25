@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -250,9 +250,18 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** Seed the per-session context-usage meter from the hub's snapshot (after a
+   *  refresh/reconnect), so the usage bar reappears without waiting for the next turn. */
+  function seedUsage(snapshots: SessionUsageSnapshotDto[]): void {
+    for (const u of snapshots) {
+      usage.value[bufKey(u.instanceId, u.sessionAlias)] = { used: u.used, size: u.size, ...(u.cost ? { cost: u.cost } : {}), ...(u.breakdown ? { breakdown: u.breakdown } : {}) };
+    }
+  }
+
   async function loadActiveTurns(): Promise<void> {
-    const { turns } = await api.get<{ turns: LiveTurnSnapshotDto[] }>("/api/active-turns");
+    const { turns, usage: usageSnapshot } = await api.get<{ turns: LiveTurnSnapshotDto[]; usage?: SessionUsageSnapshotDto[] }>("/api/active-turns");
     seedActiveTurns(turns);
+    if (usageSnapshot) seedUsage(usageSnapshot);
   }
 
   function applyEvent(event: WebServerEvent): void {

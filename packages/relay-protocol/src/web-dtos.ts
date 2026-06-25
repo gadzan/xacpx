@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto } from "./dtos.js";
+import type { ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import type { InstanceNoticePayload } from "./messages.js";
 
 /** Envelope `type` for every relay→web push. */
@@ -46,6 +46,18 @@ export interface LiveTurnSnapshotDto {
   status: "working" | "streaming";
   /** Epoch ms the turn began on the hub, so the elapsed-time HUD stays accurate. */
   startedAt: number;
+}
+
+/** The latest context-usage meter retained per session, handed to a (re)connecting web
+ *  client so the context-usage bar survives a page refresh. Mirrors the `turn-usage`
+ *  control event (replace-latest); absent for agents/sessions that never reported usage. */
+export interface SessionUsageSnapshotDto {
+  instanceId: string;
+  sessionAlias: string;
+  used: number;
+  size: number;
+  cost?: UsageCostDto;
+  breakdown?: UsageBreakdownDto;
 }
 
 /** Server→web push payloads (tagged with the originating instance). */

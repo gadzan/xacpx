@@ -58,24 +58,34 @@ test("instance event flows to web client and is cached as history", async () => 
   // instance emits a streamed turn (turn-started opens the accumulator)
   listeners.forEach((l) => l({ type: "turn-started", chatKey: "relay:x", sessionAlias: "backend" }));
   listeners.forEach((l) => l({ type: "turn-output", chatKey: "relay:x", sessionAlias: "backend", chunk: "done" }));
+  // Context-usage meter: retained per session (replace-latest), must survive turn-finished.
+  listeners.forEach((l) => l({ type: "turn-usage", chatKey: "relay:x", sessionAlias: "backend", used: 1200, size: 8000 }));
   await new Promise((r) => setTimeout(r, 50));
 
   // Mid-turn (before turn-finished): the in-flight snapshot is exposed so a refreshed
   // web client can rebuild the live view instead of losing the running task.
   const activeRes = await fetch(`${base}/api/active-turns`, { headers: { cookie } });
-  const { turns } = (await activeRes.json()) as { turns: Array<{ instanceId: string; sessionAlias: string; status: string; parts: Array<{ type: string; text?: string }> }> };
+  const { turns, usage } = (await activeRes.json()) as {
+    turns: Array<{ instanceId: string; sessionAlias: string; status: string; parts: Array<{ type: string; text?: string }> }>;
+    usage: Array<{ instanceId: string; sessionAlias: string; used: number; size: number }>;
+  };
   expect(turns).toHaveLength(1);
   expect(turns[0]!.sessionAlias).toBe("backend");
   expect(turns[0]!.instanceId).toBe(instId0);
   expect(turns[0]!.status).toBe("streaming");
   expect(turns[0]!.parts).toEqual([{ type: "text", text: "done" }]);
+  // The usage meter is exposed in the same snapshot so a refresh restores the bar.
+  expect(usage).toEqual([{ instanceId: instId0, sessionAlias: "backend", used: 1200, size: 8000 }]);
 
   listeners.forEach((l) => l({ type: "turn-finished", chatKey: "relay:x", sessionAlias: "backend", ok: true }));
   await new Promise((r) => setTimeout(r, 200));
 
-  // After the turn settles, the snapshot is empty (it flushed to persisted history).
+  // After the turn settles, the turn snapshot is empty (flushed to history) — but the
+  // usage meter is session-scoped and PERSISTS, so the context bar survives a refresh.
   const activeAfter = await fetch(`${base}/api/active-turns`, { headers: { cookie } });
-  expect(((await activeAfter.json()) as { turns: unknown[] }).turns).toHaveLength(0);
+  const afterJson = (await activeAfter.json()) as { turns: unknown[]; usage: Array<{ sessionAlias: string; used: number }> };
+  expect(afterJson.turns).toHaveLength(0);
+  expect(afterJson.usage).toEqual([{ instanceId: instId0, sessionAlias: "backend", used: 1200, size: 8000 }]);
 
   const kinds = events
     .map((raw) => { const d = decodeEnvelope(raw); return d.ok ? parseWebServerEvent(d.envelope) : null; })

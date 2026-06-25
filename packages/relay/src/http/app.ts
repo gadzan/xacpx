@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
 
-import { MSG, type LiveTurnSnapshotDto } from "@ganglion/xacpx-relay-protocol";
+import { MSG, type LiveTurnSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
@@ -22,6 +22,8 @@ export interface AppDeps {
   messages: MessageStore;
   /** Snapshot the in-flight turns for an instance (for the active-turns endpoint). */
   activeTurns?: (instanceId: string) => LiveTurnSnapshotDto[];
+  /** Snapshot the latest per-session context-usage for an instance (for the active-turns endpoint). */
+  sessionUsage?: (instanceId: string) => SessionUsageSnapshotDto[];
   webRoot?: string;
   sessionTtlMs?: number;
   pairingTtlMs?: number;
@@ -254,10 +256,12 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   app.get("/api/active-turns", (c) => {
     const account = c.get("account");
     const turns: LiveTurnSnapshotDto[] = [];
+    const usage: SessionUsageSnapshotDto[] = [];
     for (const inst of deps.instances.listByAccount(account.id)) {
       for (const t of deps.activeTurns?.(inst.id) ?? []) turns.push(t);
+      for (const u of deps.sessionUsage?.(inst.id) ?? []) usage.push(u);
     }
-    return c.json({ turns });
+    return c.json({ turns, usage });
   });
 
   app.get("/api/instances/:id/sessions/:alias/messages", (c) => {

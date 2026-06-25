@@ -4,7 +4,8 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope, type ToolStepDto, type TurnPartDto,
+  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -55,6 +56,21 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+  // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
+  // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
+  // client can restore the usage bar after a refresh (see GET /api/active-turns). Cleared
+  // when the instance goes offline. Absent for agents/sessions that never report usage.
+  interface UsageSnapshot { used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }
+  const sessionUsage = new Map<string, UsageSnapshot>();
+  const listSessionUsage = (instanceId: string): SessionUsageSnapshotDto[] => {
+    const prefix = `${instanceId}\0`;
+    const out: SessionUsageSnapshotDto[] = [];
+    for (const [k, u] of sessionUsage) {
+      if (!k.startsWith(prefix)) continue;
+      out.push({ instanceId, sessionAlias: k.slice(prefix.length), used: u.used, size: u.size, ...(u.cost ? { cost: u.cost } : {}), ...(u.breakdown ? { breakdown: u.breakdown } : {}) });
+    }
+    return out;
+  };
   // Snapshot the in-flight turns for one instance so a (re)connecting web client can
   // rebuild the live view after a refresh (see GET /api/active-turns). `parts` is the
   // live array — fine to hand out by reference since the route serializes it at once.
@@ -101,6 +117,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       if (!online) {
         const prefix = `${instanceId}\0`;
         for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
+        for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
       }
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
     },
@@ -146,6 +163,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               : undefined;
             messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
           }
+        } else if (event.type === "turn-usage") {
+          // Retain the latest usage per session (replace) so a refreshed web client can
+          // restore the context-usage bar from the active-turns snapshot. Already
+          // broadcast above; this is the persistence the snapshot reads back.
+          sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
         } else if (event.type === "session-history") {
           // Seed a freshly-attached native session's recovered prior conversation into
           // history (one-time). Guard against re-seeding an already-populated session so a
@@ -168,6 +190,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     historyRetentionDays: options.historyRetentionDays ?? 30,
     maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
     activeTurns: listActiveTurns,
+    sessionUsage: listSessionUsage,
     trustProxy: options.trustProxy,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
   });
