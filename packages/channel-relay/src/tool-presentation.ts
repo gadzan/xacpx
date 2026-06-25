@@ -87,6 +87,11 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   // acpx may emit a scalar (bare string/number) rawOutput; rec() yields {} for those,
   // so keep the scalar form as a last-resort text fallback below.
   const rawOutputText = asString(event.rawOutput);
+  // Codex routes execute/search/read all through a terminal: the tool_call content is
+  // [{type:"terminal",…}] (no inline text) and the result lands in
+  // rawOutput.formatted_output (with exit status in rawOutput.exit_code) rather than
+  // stdout/text or a content block. Treat formatted_output as a first-class output text.
+  const terminalOut = asString(output.formatted_output);
   const pc = parsedCmd0(input);
   const fallbackTitle = event.summary ?? event.toolName;
   // On failure, surface the agent/tool error message so the web can show it in red.
@@ -94,7 +99,7 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   // block, or the generic output field.
   const errMsg =
     event.status === "error"
-      ? asString(output.error) ?? asString(output.message) ?? textFromBlocks(blocks) ?? asString(output.output) ?? asString(output.text) ?? rawOutputText
+      ? asString(output.error) ?? asString(output.message) ?? textFromBlocks(blocks) ?? asString(output.output) ?? asString(output.text) ?? terminalOut ?? rawOutputText
       : undefined;
   const base: Omit<ToolStepDto, "title" | "detail"> = {
     toolCallId: event.toolCallId,
@@ -119,22 +124,22 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   if (event.kind === "read") {
     const path = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event) ?? fallbackTitle;
     const lines = readLines(input);
-    const preview = textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
+    const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     const detail: ToolDetailDto = { type: "read", path, ...(lines ? { lines } : {}), ...(preview ? { preview: cap(preview) } : {}) };
     return { ...base, title: path, detail };
   }
 
   if (event.kind === "execute") {
     const command = asString(input.command) ?? asString(input.cmd) ?? asString(pc?.cmd) ?? fallbackTitle;
-    const out = asString(output.stdout) ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
-    const exitCode = typeof output.exitCode === "number" ? output.exitCode : undefined;
+    const out = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
+    const exitCode = typeof output.exitCode === "number" ? output.exitCode : typeof output.exit_code === "number" ? output.exit_code : undefined;
     const detail: ToolDetailDto = { type: "command", command, ...(out ? { output: cap(out) } : {}), ...(exitCode !== undefined ? { exitCode } : {}) };
     return { ...base, title: command, detail };
   }
 
   if (event.kind === "search") {
     const query = asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd) ?? fallbackTitle;
-    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? asString(output.text) ?? rawOutputText;
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     const detail: ToolDetailDto = { type: "search", query, ...(out ? { output: cap(out) } : {}) };
     return { ...base, title: query, detail };
   }
@@ -144,6 +149,6 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
   }
 
-  const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? asString(output.text) ?? rawOutputText;
+  const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
   return { ...base, title: fallbackTitle, detail: { type: "fields", fields: primitiveFields(input), ...(out ? { output: cap(out) } : {}) } };
 }
