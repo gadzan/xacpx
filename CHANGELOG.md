@@ -1,5 +1,21 @@
 # Changelog
 
+## [channel-relay 0.3.1] - 2026-06-25
+
+A `@ganglion/xacpx-channel-relay` connector release.
+
+### Fixed
+
+- **Codex search/command/read tool steps now show their output in the dashboard.** Codex (codex-acp) routes execute/search/read through a terminal: the `tool_call` content is a bare `[{type:"terminal",…}]` block (no inline text) and the result lands in `rawOutput.formatted_output` (with exit status in `rawOutput.exit_code`), not `stdout`/`text` or a content block. The presentation mapper only checked `stdout`/`text`/content blocks, so every Codex terminal-backed step rendered its title with an empty body — only `edit` steps (which carry a `diff` block) showed detail. `formatted_output` is now a first-class output source across execute/search/read/generic/error, and `exit_code` is read alongside `exitCode`. Other agents (stdout/text/content-block shapes) and `edit` diffs are unchanged.
+
+## [relay 0.9.6] - 2026-06-25
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are released separately.
+
+### Fixed
+
+- **Session-row swipe no longer sticks after a desktop mouse drag.** On a wide/desktop layout, dragging a session row left with the mouse and releasing left the row stuck mid-drag — the gesture could miss its `pointerup` (released outside the row), and a mouse could start the swipe at all even though it's a touch affordance. The InstanceTree session-row swipe is now restricted to touch/pen pointers, and `useSwipeActions` hardens the pointer lifecycle (sets/releases pointer capture and ends the gesture on a `buttons===0` fallback) so a missed `pointerup` still terminates cleanly.
+
 ## [relay 0.9.5] - 2026-06-25
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Mobile/PWA layout fixes. Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
