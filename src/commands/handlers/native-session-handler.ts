@@ -18,6 +18,8 @@ interface NativeTarget {
   agent: string;
   agentDisplayName: string;
   agentCommand?: string;
+  /** Resolved acpx driver for `agent` (e.g. a `my-codex` agent has driver `codex`). */
+  driver?: string;
   workspace: string;
   workspaceLabel: string;
   cwd: string;
@@ -43,6 +45,31 @@ interface NativeCandidateEntry {
 
 const NATIVE_SESSION_CACHE_TTL_MS = 10 * 60 * 1000;
 
+// Upper bound on how many fully-filtered (empty) pages we'll skip past before giving
+// up, so a long run of filtered-out sessions can't turn into an unbounded fetch loop.
+const MAX_EMPTY_PAGE_ADVANCE = 25;
+
+/**
+ * Fetch the first page that still has sessions after transport-side filtering.
+ *
+ * The transport may filter a whole page (e.g. a page of only Codex subagent threads)
+ * down to empty while real sessions remain behind `nextCursor`. Without this, the
+ * caller would report "no sessions" while results sit one page on. We follow the
+ * cursor past empty pages, bounded by {@link MAX_EMPTY_PAGE_ADVANCE}. Exported for tests.
+ */
+export async function listFirstNonEmptyPage(
+  listAgentSessions: (query: AgentSessionListQuery) => Promise<AgentSessionListResult | undefined>,
+  query: AgentSessionListQuery,
+): Promise<AgentSessionListResult | undefined> {
+  let result = await listAgentSessions(query);
+  let guard = 0;
+  while (result && result.sessions.length === 0 && result.nextCursor && guard < MAX_EMPTY_PAGE_ADVANCE) {
+    guard++;
+    result = await listAgentSessions({ ...query, cursor: result.nextCursor });
+  }
+  return result;
+}
+
 export async function handleNativeSessionList(
   context: CommandRouterContext & { lifecycle: SessionLifecycleOps },
   chatKey: string,
@@ -61,6 +88,7 @@ export async function handleNativeSessionList(
   const query: AgentSessionListQuery = {
     agent: target.agent,
     agentCommand: target.agentCommand,
+    ...(target.driver ? { driver: target.driver } : {}),
     cwd: target.cwd,
     ...(input.cursor ? { cursor: input.cursor } : {}),
     ...(input.all ? {} : { filterCwd: target.cwd }),
@@ -68,7 +96,7 @@ export async function handleNativeSessionList(
 
   let result: AgentSessionListResult | undefined;
   try {
-    result = await listAgentSessions(query);
+    result = await listFirstNonEmptyPage(listAgentSessions, query);
   } catch (error) {
     return { text: renderNativeListError(target, error) };
   }
@@ -231,6 +259,7 @@ async function resolveNativeTarget(
     agent,
     agentDisplayName: displayAgentName(agent),
     agentCommand: resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, context.config?.transport.preferLocalAgents !== false),
+    driver: agentConfig.driver,
     workspace: workspaceResolution.workspace,
     workspaceLabel: workspaceResolution.workspaceLabel,
     cwd: workspaceResolution.cwd,

@@ -37,6 +37,20 @@ test("sessionMetaLineIsSubagent: false for missing source, non-subagent object, 
   expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: ["subagent"] } }))).toBe(false);
 });
 
+test("sessionMetaLineIsSubagent: true for non-thread_spawn subagent variants carrying parent_thread_id", () => {
+  // review/compact/… are sibling variants of thread_spawn under `subagent`.
+  expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: { subagent: { review: { parent_thread_id: "p" } } } } }))).toBe(true);
+});
+
+test("sessionMetaLineIsSubagent: fail-open false on subagent format drift (no positive structure)", () => {
+  // Drift shapes must NOT be treated as subagents — fail-open keeps the session visible.
+  expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: { subagent: null } } }))).toBe(false);
+  expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: { subagent: "x" } } }))).toBe(false);
+  expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: { subagent: {} } } }))).toBe(false);
+  expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: { subagent: { thread_spawn: {} } } } }))).toBe(false);
+  expect(sessionMetaLineIsSubagent(JSON.stringify({ payload: { source: { subagent: { thread_spawn: { parent_thread_id: 123 } } } } }))).toBe(false);
+});
+
 test("sessionMetaLineIsSubagent: false (fail-open) for malformed/empty input", () => {
   expect(sessionMetaLineIsSubagent(undefined)).toBe(false);
   expect(sessionMetaLineIsSubagent("")).toBe(false);

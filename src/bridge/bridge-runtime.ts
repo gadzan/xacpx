@@ -171,6 +171,7 @@ export class BridgeRuntime {
   async listAgentSessions(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
     cwd: string;
     cursor?: string;
     filterCwd?: string;
@@ -188,7 +189,8 @@ export class BridgeRuntime {
       },
       formatError: (result) => result.stderr || result.stdout || `sessions list failed with exit code ${result.code}`,
       // Codex's session list leaks native subagent threads; hide them (fail-open).
-      isSubagentSession: input.agent === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
+      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
+      isSubagentSession: (input.driver ?? input.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
     });
   }
 

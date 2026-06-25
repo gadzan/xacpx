@@ -39,6 +39,29 @@ export function resolveCodexHome(env: NodeJS.ProcessEnv = process.env): string {
   return fromEnv ? fromEnv : join(homedir(), ".codex");
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * True iff a Codex rollout `session_meta` `source` positively identifies a subagent
+ * thread. A real subagent source is `{ subagent: { <variant>: { parent_thread_id: string, … } } }`
+ * (the variant is `thread_spawn` for spawned subagents; review/compact/… are siblings).
+ *
+ * We require that full shape rather than just a `subagent` key, so format drift
+ * (`{ subagent: null }`, `{ subagent: {} }`, `{ subagent: "x" }`) stays **fail-open**
+ * (not recognized as a subagent → session kept visible).
+ */
+function isSubagentSource(source: unknown): boolean {
+  if (!isPlainObject(source) || !Object.hasOwn(source, "subagent")) return false;
+  const subagent = source.subagent;
+  if (!isPlainObject(subagent)) return false;
+  // Any variant object that carries a string parent_thread_id confirms a spawned subagent.
+  return Object.values(subagent).some(
+    (variant) => isPlainObject(variant) && typeof variant.parent_thread_id === "string",
+  );
+}
+
 /**
  * True iff a rollout's first `session_meta` line marks it as a subagent thread.
  * Pure: returns false for undefined/malformed input or a non-subagent source.
@@ -52,8 +75,7 @@ export function sessionMetaLineIsSubagent(line: string | undefined): boolean {
     return false;
   }
   const payload = (parsed as { payload?: unknown })?.payload;
-  const source = (payload as { source?: unknown })?.source;
-  return !!source && typeof source === "object" && !Array.isArray(source) && "subagent" in source;
+  return isSubagentSource((payload as { source?: unknown })?.source);
 }
 
 /** Reads rollout files; injectable so the predicate is unit-testable without a real FS. */

@@ -233,7 +233,8 @@ export class AcpxCliTransport implements SessionTransport {
       },
       formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
       // Codex's session list leaks native subagent threads; hide them (fail-open).
-      isSubagentSession: query.agent === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
+      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
+      isSubagentSession: (query.driver ?? query.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
     });
   }
 
