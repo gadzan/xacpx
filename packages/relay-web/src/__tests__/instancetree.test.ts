@@ -120,6 +120,18 @@ describe("InstanceTree session management", () => {
     expect(archive).toHaveBeenCalledWith("i1", "backend");
   });
 
+  it("ignores desktop mouse drags for the touch swipe actions", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const track = w.find('[data-test="swipe-track"]');
+    await track.trigger("pointerdown", { clientX: 200, clientY: 0, pointerType: "mouse", buttons: 1 });
+    await track.trigger("pointermove", { clientX: 80, clientY: 0, pointerType: "mouse", buttons: 1 });
+    await track.trigger("pointerup", { clientX: 80, clientY: 0, pointerType: "mouse", buttons: 0 });
+    await flushPromises();
+    expect(track.attributes("style")).toContain("translateX(0)");
+  });
+
   // The revealed delete block opens the destructive confirm only on tap — never on the
   // swipe itself, and never deletes until confirmed.
   it("tapping the revealed delete block asks to delete (not on swipe)", async () => {

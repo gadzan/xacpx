@@ -27,6 +27,38 @@ describe("useSwipeActions", () => {
     handlers.pointerup(pointer(120));
     expect(onEnd).toHaveBeenCalledWith(-80);
   });
+  it("captures the pointer during a drag so release outside the row still ends it", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const target = { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() };
+    const { handlers } = useSwipeActions({ onMove, onEnd });
+    handlers.pointerdown({ ...pointer(200), pointerId: 7, currentTarget: target, buttons: 1 });
+    expect(target.setPointerCapture).toHaveBeenCalledWith(7);
+    handlers.pointermove({ ...pointer(120), buttons: 1 });
+    handlers.pointerup({ ...pointer(120), pointerId: 7, buttons: 0 });
+    expect(onMove).toHaveBeenCalledWith(-80);
+    expect(onEnd).toHaveBeenCalledWith(-80);
+    expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
+  });
+  it("ends a mouse drag if pointerup was missed and buttons is already 0", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const { handlers } = useSwipeActions({ onMove, onEnd });
+    handlers.pointerdown({ ...pointer(200), buttons: 1 });
+    handlers.pointermove({ ...pointer(140), buttons: 1 });
+    handlers.pointermove({ ...pointer(110), buttons: 0 });
+    handlers.pointerup({ ...pointer(110), buttons: 0 }); // stray up must not re-fire
+    expect(onMove).toHaveBeenCalledWith(-60);
+    expect(onEnd).toHaveBeenCalledTimes(1);
+    expect(onEnd).toHaveBeenCalledWith(-90);
+  });
+  it("ignores pointer types outside the configured allow-list", () => {
+    const onMove = vi.fn(), onEnd = vi.fn();
+    const { handlers } = useSwipeActions({ pointerTypes: ["touch", "pen"], onMove, onEnd });
+    handlers.pointerdown({ ...pointer(200), pointerType: "mouse", buttons: 1 });
+    handlers.pointermove({ ...pointer(120), pointerType: "mouse", buttons: 1 });
+    handlers.pointerup({ ...pointer(120), pointerType: "mouse", buttons: 0 });
+    expect(onMove).not.toHaveBeenCalled();
+    expect(onEnd).not.toHaveBeenCalled();
+  });
   it("yields to vertical scroll: no move, ends with 0", () => {
     const onMove = vi.fn(), onEnd = vi.fn();
     const { handlers } = useSwipeActions({ onMove, onEnd });

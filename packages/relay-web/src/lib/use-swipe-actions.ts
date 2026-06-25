@@ -10,6 +10,21 @@ export interface SwipeActionsOptions {
   /** Px of movement before the gesture commits to an axis (default 4). Below this
    *  a tap stays a tap and never starts a drag. */
   intent?: number;
+  /** Optional PointerEvent.pointerType allow-list. Missing pointerType is allowed
+   *  so unit tests and synthetic callers can keep feeding plain coordinate objects. */
+  pointerTypes?: string[];
+}
+
+interface SwipePointerEvent {
+  clientX: number;
+  clientY: number;
+  buttons?: number;
+  pointerId?: number;
+  pointerType?: string;
+  currentTarget?: {
+    setPointerCapture?: (pointerId: number) => void;
+    releasePointerCapture?: (pointerId: number) => void;
+  } | null;
 }
 
 /** Interactive horizontal-swipe detector for a list row. Reports a live delta so
@@ -19,17 +34,59 @@ export function useSwipeActions(opts: SwipeActionsOptions) {
   const intent = opts.intent ?? 4;
   let startX = 0, startY = 0;
   let dragging = false, decided = false, horizontal = false;
+  let pointerId: number | null = null;
+  let captureTarget: SwipePointerEvent["currentTarget"] = null;
+
+  function capturePointer(e: SwipePointerEvent) {
+    pointerId = typeof e.pointerId === "number" ? e.pointerId : null;
+    captureTarget = e.currentTarget ?? null;
+    if (pointerId === null) return;
+    try {
+      captureTarget?.setPointerCapture?.(pointerId);
+    } catch {
+      // Best effort only: tests/jsdom and some synthetic events do not support capture.
+    }
+  }
+
+  function releasePointer() {
+    if (pointerId === null) return;
+    try {
+      captureTarget?.releasePointerCapture?.(pointerId);
+    } catch {
+      // The browser may already have released capture after pointerup/cancel.
+    } finally {
+      pointerId = null;
+      captureTarget = null;
+    }
+  }
+
+  function end(dx: number) {
+    if (!dragging) return;
+    dragging = false;
+    decided = false;
+    horizontal = false;
+    releasePointer();
+    opts.onEnd?.(dx);
+  }
 
   // Keys MUST be bare DOM event names (`pointerdown`, not `onPointerdown`): the row
   // binds these via `v-on="handlers"`, and Vue's object-`v-on` re-applies the `on`
   // prefix itself. An `onPointerdown` key would be re-prefixed to a dead event and
   // the swipe would silently never fire.
-  function pointerdown(e: { clientX: number; clientY: number }) {
+  function pointerdown(e: SwipePointerEvent) {
+    if (e.pointerType && opts.pointerTypes && !opts.pointerTypes.includes(e.pointerType)) return;
     startX = e.clientX; startY = e.clientY;
     dragging = true; decided = false; horizontal = false;
+    capturePointer(e);
   }
-  function pointermove(e: { clientX: number; clientY: number }) {
+  function pointermove(e: SwipePointerEvent) {
     if (!dragging) return;
+    if (e.buttons === 0) {
+      // Mouse fallback: if pointerup was missed (e.g. released outside the row and
+      // capture was unavailable), the next hover/move must still terminate the drag.
+      end(horizontal ? e.clientX - startX : 0);
+      return;
+    }
     const dx = e.clientX - startX, dy = e.clientY - startY;
     if (!decided) {
       if (Math.abs(dx) < intent && Math.abs(dy) < intent) return; // still a tap
@@ -38,23 +95,18 @@ export function useSwipeActions(opts: SwipeActionsOptions) {
     }
     if (!horizontal) {
       // Vertical-dominant → yield to the scroll container and end the gesture.
-      dragging = false;
-      opts.onEnd?.(0);
+      end(0);
       return;
     }
     opts.onMove?.(dx);
   }
-  function pointerup(e: { clientX: number; clientY: number }) {
-    if (!dragging) return;
-    dragging = false;
-    opts.onEnd?.(horizontal ? e.clientX - startX : 0);
+  function pointerup(e: SwipePointerEvent) {
+    end(horizontal ? e.clientX - startX : 0);
   }
   // The browser fires `pointercancel` (and no `pointerup`) when it reclassifies the
   // drag as a scroll/gesture. End cleanly so a row is never left mid-drag.
   function pointercancel() {
-    if (!dragging) return;
-    dragging = false;
-    opts.onEnd?.(0);
+    end(0);
   }
 
   return { handlers: { pointerdown, pointermove, pointerup, pointercancel } };
