@@ -36,6 +36,25 @@ test("retries without --filter-cwd and filters locally when acpx rejects the opt
   expect(result).toEqual({ source: "agent", sessions: [{ sessionId: "thread-1", cwd: "/repo" }] });
 });
 
+test("drops sessions flagged by isSubagentSession after parsing", async () => {
+  const result = await runAgentSessionList({
+    runList: async () =>
+      ok(
+        JSON.stringify({
+          source: "agent",
+          sessions: [
+            { sessionId: "real", cwd: "/repo" },
+            { sessionId: "sub", cwd: "/repo" },
+          ],
+        }),
+      ),
+    formatError: () => "should not be called",
+    isSubagentSession: (id) => id === "sub",
+  });
+
+  expect(result).toEqual({ source: "agent", sessions: [{ sessionId: "real", cwd: "/repo" }] });
+});
+
 test("returns undefined when the agent does not advertise sessionCapabilities.list", async () => {
   const result = await runAgentSessionList({
     runList: async () => fail("Agent command does not advertise sessionCapabilities.list"),

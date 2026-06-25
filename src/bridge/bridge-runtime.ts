@@ -15,6 +15,7 @@ import { deriveParentPackageName } from "../recovery/discover-parent-package-pat
 import { AcpxQueueOwnerLauncher } from "../transport/acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../transport/permission-mode-flag";
 import { runAgentSessionList } from "../transport/agent-session-list";
+import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
 import type {
   EnsureSessionProgress,
@@ -170,6 +171,7 @@ export class BridgeRuntime {
   async listAgentSessions(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
     cwd: string;
     cursor?: string;
     filterCwd?: string;
@@ -186,6 +188,9 @@ export class BridgeRuntime {
         return await this.run(spec.command, spec.args);
       },
       formatError: (result) => result.stderr || result.stdout || `sessions list failed with exit code ${result.code}`,
+      // Codex's session list leaks native subagent threads; hide them (fail-open).
+      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
+      isSubagentSession: (input.driver ?? input.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
     });
   }
 

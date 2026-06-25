@@ -156,6 +156,7 @@ export class BridgeServer {
         return await this.runtime.listAgentSessions({
           agent: requireString(params, "agent"),
           agentCommand: asOptionalString(params.agentCommand),
+          driver: asOptionalString(params.driver),
           cwd: requireString(params, "cwd"),
           cursor: asOptionalString(params.cursor),
           filterCwd: asOptionalString(params.filterCwd),

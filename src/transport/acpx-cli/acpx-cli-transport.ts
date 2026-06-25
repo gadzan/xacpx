@@ -30,6 +30,7 @@ import { AcpxQueueOwnerLauncher } from "../acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../permission-mode-flag";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
+import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
 
 interface AcpxCliTransportOptions {
@@ -231,6 +232,9 @@ export class AcpxCliTransport implements SessionTransport {
         });
       },
       formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
+      // Codex's session list leaks native subagent threads; hide them (fail-open).
+      // Gate on driver so custom-named codex agents (driver "codex") are covered too.
+      isSubagentSession: (query.driver ?? query.agent) === CODEX_AGENT_NAME ? codexSubagentPredicate() : undefined,
     });
   }
 

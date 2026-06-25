@@ -111,6 +111,8 @@ export interface AgentSession {
 export interface AgentSessionListQuery {
   agent: string;
   agentCommand?: string;
+  /** Resolved acpx driver for `agent` (e.g. a custom `my-codex` agent has driver `codex`). Used to gate driver-specific list filtering. */
+  driver?: string;
   cwd: string;
   cursor?: string;
   filterCwd?: string;
