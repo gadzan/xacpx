@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -258,10 +258,20 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** Seed the per-session agent command list from the hub's snapshot (after a
+   *  refresh/reconnect), so the composer's "/" hints reappear without waiting for the
+   *  agent to re-advertise (which it typically only does at session start). */
+  function seedCommands(snapshots: SessionCommandsSnapshotDto[]): void {
+    for (const s of snapshots) {
+      agentCommands.value[bufKey(s.instanceId, s.sessionAlias)] = s.commands;
+    }
+  }
+
   async function loadActiveTurns(): Promise<void> {
-    const { turns, usage: usageSnapshot } = await api.get<{ turns: LiveTurnSnapshotDto[]; usage?: SessionUsageSnapshotDto[] }>("/api/active-turns");
+    const { turns, usage: usageSnapshot, commands: commandsSnapshot } = await api.get<{ turns: LiveTurnSnapshotDto[]; usage?: SessionUsageSnapshotDto[]; commands?: SessionCommandsSnapshotDto[] }>("/api/active-turns");
     seedActiveTurns(turns);
     if (usageSnapshot) seedUsage(usageSnapshot);
+    if (commandsSnapshot) seedCommands(commandsSnapshot);
   }
 
   function applyEvent(event: WebServerEvent): void {

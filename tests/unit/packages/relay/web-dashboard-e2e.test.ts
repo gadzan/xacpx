@@ -60,14 +60,18 @@ test("instance event flows to web client and is cached as history", async () => 
   listeners.forEach((l) => l({ type: "turn-output", chatKey: "relay:x", sessionAlias: "backend", chunk: "done" }));
   // Context-usage meter: retained per session (replace-latest), must survive turn-finished.
   listeners.forEach((l) => l({ type: "turn-usage", chatKey: "relay:x", sessionAlias: "backend", used: 1200, size: 8000 }));
+  // Agent-advertised slash commands: also retained per session (replace-latest), so the
+  // composer's "/" hints survive a refresh (agents typically advertise once at start).
+  listeners.forEach((l) => l({ type: "agent-commands", chatKey: "relay:x", sessionAlias: "backend", commands: [{ name: "compact", description: "Compact" }] }));
   await new Promise((r) => setTimeout(r, 50));
 
   // Mid-turn (before turn-finished): the in-flight snapshot is exposed so a refreshed
   // web client can rebuild the live view instead of losing the running task.
   const activeRes = await fetch(`${base}/api/active-turns`, { headers: { cookie } });
-  const { turns, usage } = (await activeRes.json()) as {
+  const { turns, usage, commands } = (await activeRes.json()) as {
     turns: Array<{ instanceId: string; sessionAlias: string; status: string; parts: Array<{ type: string; text?: string }> }>;
     usage: Array<{ instanceId: string; sessionAlias: string; used: number; size: number }>;
+    commands: Array<{ instanceId: string; sessionAlias: string; commands: Array<{ name: string; description?: string }> }>;
   };
   expect(turns).toHaveLength(1);
   expect(turns[0]!.sessionAlias).toBe("backend");
@@ -76,6 +80,8 @@ test("instance event flows to web client and is cached as history", async () => 
   expect(turns[0]!.parts).toEqual([{ type: "text", text: "done" }]);
   // The usage meter is exposed in the same snapshot so a refresh restores the bar.
   expect(usage).toEqual([{ instanceId: instId0, sessionAlias: "backend", used: 1200, size: 8000 }]);
+  // The advertised command list rides along too so a refresh restores the "/" hints.
+  expect(commands).toEqual([{ instanceId: instId0, sessionAlias: "backend", commands: [{ name: "compact", description: "Compact" }] }]);
 
   listeners.forEach((l) => l({ type: "turn-finished", chatKey: "relay:x", sessionAlias: "backend", ok: true }));
   await new Promise((r) => setTimeout(r, 200));
@@ -83,9 +89,11 @@ test("instance event flows to web client and is cached as history", async () => 
   // After the turn settles, the turn snapshot is empty (flushed to history) — but the
   // usage meter is session-scoped and PERSISTS, so the context bar survives a refresh.
   const activeAfter = await fetch(`${base}/api/active-turns`, { headers: { cookie } });
-  const afterJson = (await activeAfter.json()) as { turns: unknown[]; usage: Array<{ sessionAlias: string; used: number }> };
+  const afterJson = (await activeAfter.json()) as { turns: unknown[]; usage: Array<{ sessionAlias: string; used: number }>; commands: Array<{ sessionAlias: string; commands: Array<{ name: string }> }> };
   expect(afterJson.turns).toHaveLength(0);
   expect(afterJson.usage).toEqual([{ instanceId: instId0, sessionAlias: "backend", used: 1200, size: 8000 }]);
+  // Like the usage meter, the advertised command list is session-scoped and PERSISTS.
+  expect(afterJson.commands).toEqual([{ instanceId: instId0, sessionAlias: "backend", commands: [{ name: "compact", description: "Compact" }] }]);
 
   const kinds = events
     .map((raw) => { const d = decodeEnvelope(raw); return d.ok ? parseWebServerEvent(d.envelope) : null; })
