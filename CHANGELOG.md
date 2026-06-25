@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.15.2] - 2026-06-25
+
+A `@ganglion/xacpx` (core) release.
+
+### Fixed
+
+- **Codex subagent threads no longer leak into the native session list.** Codex's native `spawn_agent` runs subagents as their own threads, which show up in `acpx codex sessions list` next to real user sessions — they fork the parent's cwd (so the cwd filter doesn't exclude them) and acpx's list JSON drops the `parentThreadId`/source that would tell them apart. The transport now resolves each listed session against Codex's rollout store (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) and hides threads whose `session_meta.source` is a subagent, gated to the codex driver (covers custom-named agents). Fail-open: any missing/unreadable/unparseable rollout leaves the session visible, so a Codex format change degrades to "shows a phantom session", never "hides a real one". The native-session handler also follows `nextCursor` past fully-filtered pages so a page of only subagents doesn't surface as "no sessions found".
+
+## [relay 0.9.7] - 2026-06-25
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are released separately.
+
+### Added
+
+- **New XACPX brand logo.** The dashboard mark is now the XACPX "X" — a green arc-bottom chevron over two splayed blue legs — replacing the gradient-stroke X. Applied across the header wordmark, the SVG favicon, the Safari pinned-tab mask, and the regenerated PWA / Apple-touch icon set.
+
+### Fixed
+
+- **Context-usage meter survives a page refresh.** The usage bar was driven only by live `turn-usage` events held in the web store's memory, so a refresh cleared it until the next turn. The hub now retains the latest usage per session (replace-latest, surviving turn-finished, cleared when the instance goes offline) and serves it in the `GET /api/active-turns` reconnect snapshot; the dashboard seeds the meter from that snapshot on load.
+
 ## [channel-relay 0.3.1] - 2026-06-25
 
 A `@ganglion/xacpx-channel-relay` connector release.
