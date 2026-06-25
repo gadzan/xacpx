@@ -22,6 +22,40 @@ test("execute reads command + stdout + exit code", () => {
   expect(step.detail).toEqual({ type: "command", command: "npm test", output: "12 passed", exitCode: 0 });
 });
 
+test("execute reads Codex terminal result (formatted_output + exit_code)", () => {
+  // Codex runs the command in a terminal: content is a bare terminal block with no
+  // text, and the result lands in rawOutput.formatted_output / exit_code (snake_case).
+  const step = toolUseEventToStepDto({
+    toolCallId: "tc1", toolName: "shell", kind: "execute", status: "success",
+    summary: "git status --short",
+    content: [{ type: "terminal", terminalId: "tc1" }],
+    rawInput: { command: "git status --short", cwd: "/repo" },
+    rawOutput: { formatted_output: " M src/a.ts\n?? b.ts", exit_code: 0 },
+  });
+  expect(step.title).toBe("git status --short");
+  expect(step.detail).toEqual({ type: "command", command: "git status --short", output: " M src/a.ts\n?? b.ts", exitCode: 0 });
+});
+
+test("search shows Codex terminal output even with empty rawInput", () => {
+  // Codex search frames carry no rawInput/content; the query is only in the title,
+  // and the matches arrive in rawOutput.formatted_output.
+  const step = toolUseEventToStepDto({
+    toolCallId: "tc2", toolName: "shell", kind: "search", status: "success",
+    summary: "Search for 'session' in relay-web",
+    rawOutput: { formatted_output: "a.ts:1:session\nb.ts:9:session", exit_code: 0 },
+  });
+  expect(step.detail).toEqual({ type: "search", query: "Search for 'session' in relay-web", output: "a.ts:1:session\nb.ts:9:session" });
+});
+
+test("read (list) shows Codex terminal output as the preview", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "tc3", toolName: "shell", kind: "read", status: "success",
+    summary: "List files in 'relay-web'",
+    rawOutput: { formatted_output: "src/main.ts\nsrc/App.vue", exit_code: 0 },
+  });
+  expect(step.detail).toMatchObject({ type: "read", path: "List files in 'relay-web'", preview: "src/main.ts\nsrc/App.vue" });
+});
+
 test("read derives path from file_path and a content array preview", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t3", toolName: "Read", kind: "read", status: "success",

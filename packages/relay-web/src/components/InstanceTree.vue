@@ -137,6 +137,7 @@ const rowSwipes = computed(() => {
       const key = `${inst.id}:${s.alias}`;
       const reveal = revealPx(s);
       map[key] = useSwipeActions({
+        pointerTypes: ["touch", "pen"],
         onMove: (dx) => { openMenuFor.value = null; draggingKey.value = key; dragDx.value = dx; },
         onEnd: (dx) => {
           // Snap open if the row ended past the halfway point, else closed.
