@@ -13,8 +13,8 @@ export const pwaOptions: Partial<VitePWAOptions> = {
   injectRegister: false,
   includeAssets: ["favicon.ico", "icon.svg", "mask-icon.svg", "apple-touch-icon-180x180.png"],
   manifest: {
-    name: "xacpx relay",
-    short_name: "xacpx",
+    name: "XACPX HUB",
+    short_name: "XACPX",
     description:
       "Self-hosted relay dashboard for xacpx — remote-control acpx sessions.",
     lang: "en",

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Inline brand mark: a rounded geometric "X" stroked with the xacpx blue→green
-// gradient, followed by the "xacpx · relay" lockup. Gradient is used ONLY here.
+// gradient, followed by the "XACPX HUB" lockup. Gradient is used ONLY here.
 </script>
 
 <template>
@@ -15,7 +15,7 @@
       <path d="M5 5 L19 19 M19 5 L5 19" stroke="url(#xacpxBrand)" stroke-width="3.2"
             stroke-linecap="round" />
     </svg>
-    <span class="text-[15px] font-semibold tracking-tight text-fg">xacpx</span>
-    <span class="text-fg-muted text-xs">· relay</span>
+    <span class="text-[15px] font-semibold tracking-tight text-fg">XACPX</span>
+    <span class="text-fg-muted text-xs font-medium tracking-wide">HUB</span>
   </div>
 </template>
