@@ -686,6 +686,7 @@ export class CommandRouter {
     const result = await listAgentSessions({
       agent,
       ...(agentCommand ? { agentCommand } : {}),
+      ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
       cwd: workspaceConfig.cwd,
       filterCwd: workspaceConfig.cwd,
     });
