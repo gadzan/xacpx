@@ -1,6 +1,9 @@
-<svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<svg width="16" height="16" viewBox="28.5 9 83 83" xmlns="http://www.w3.org/2000/svg">
   <!-- Safari pinned-tab mask icon: single-layer, 100% black, transparent
        background. Safari recolors it via the rel="mask-icon" color attribute. -->
-  <path d="M7.5 7.5 L16.5 16.5 M16.5 7.5 L7.5 16.5" stroke="#000000"
-        stroke-width="2.8" stroke-linecap="round" fill="none" />
+  <g stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke="#000000">
+    <path d="M40 20 L54.5 34.5 A22 22 0 0 0 85.5 34.5 L100 20" />
+    <path d="M53 68 L40 81" />
+    <path d="M87 68 L100 81" />
+  </g>
 </svg>
