@@ -187,18 +187,19 @@ describe("FilesPanel navigation rail", () => {
     await flushPromises();
 
     const files = useFilesStore();
-    // Changes tab already active with a diff loaded — so the tab watcher's `!files.diff`
-    // guard would NOT fire on its own; only the session-switch path should reload.
     files.tab = "changes";
     files.diff = { workspace: "backend", files: [], diff: "", truncated: false } as never;
     await flushPromises();
 
+    // Spy installed after any initial load, so a call here can only come from the
+    // session-switch path (the tab watcher keys on `files.tab`, which doesn't change).
     const loadDiff = vi.spyOn(files, "loadDiff").mockResolvedValue();
     // Switch to a session in a different workspace while the Changes tab stays active.
     chat.sessionAlias = "s2";
     await flushPromises();
 
-    expect(loadDiff).toHaveBeenCalled();
+    // Loaded exactly once via this path — guards against an accidental double-load.
+    expect(loadDiff).toHaveBeenCalledTimes(1);
   });
 
   it("does not auto-load the diff on a session switch when the Files tab is active", async () => {
