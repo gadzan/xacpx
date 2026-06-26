@@ -1,5 +1,20 @@
 # Changelog
 
+## [relay 0.9.8] - 2026-06-26
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
+
+### Added
+
+- **Agent brand icons in the dashboard.** The chat assistant avatar and the sidebar session-list badge now show each agent's brand mark by acpx driver (codex / claude / gemini / copilot / cursor / qwen / kimi / opencode / …) via `@lobehub/icons-static-svg`, replacing the generic robot avatar and the text agent badge — the latter saves horizontal space in the session list. Drivers with no brand mark fall back to the generic glyph; the agent name stays available on hover. The instance's configured agents are now fetched alongside its session list (previously only when a create/manage dialog opened), so the icons resolve in the normal login → browse → chat flow.
+
+### Fixed
+
+- **Composer `/` command hints survive a page refresh.** Agents advertise their slash commands (e.g. Codex's `/compact`) once at session start via the ACP `available_commands_update` frame. The hub broadcast this live but didn't retain it, so a refresh emptied the composer's `/` autocomplete until the next advertisement. The hub now retains the latest command list per session (replace-latest, cleared when the instance goes offline) and serves it in the `GET /api/active-turns` reconnect snapshot; the dashboard seeds the hints from that snapshot on load — mirroring the context-usage retention added in 0.9.7.
+- **Slash-command menu floats above the composer instead of growing it.** The autocomplete list rendered in normal flow inside the composer card, so opening it pushed the textarea down. It is now anchored above the input.
+- **The Changes tab auto-loads the diff when switching sessions.** With the right-rail Changes tab active, switching sessions cleared the loaded diff but left the "no diff loaded" placeholder until a manual refresh — the diff only reloaded when the tab value changed, which a same-tab session switch doesn't trigger. Switching sessions while the Changes tab is active now reloads the diff for the new workspace automatically.
+- **New-Session model picker no longer seeds suggestions from a mismatched adapter (dashboard portion of #84).** The picker reuses a same-agent + workspace session's advertised model ids, but different adapter versions of one agent advertise ids in incompatible formats (e.g. codex `gpt-5.5[high]` vs `gpt-5.5/high`), so reusing across adapters could propose an id the new session's adapter rejects. The picker now reuses suggestions only when the live candidate sessions share one adapter (archived ones ignored), suppressing them to a free-text default when adapters visibly diverge. It reads a new `SessionDto.agentCommand` field that the **core** side of #84 populates — until a core release ships that field it is absent and the gate is inert (current behavior); the transport's drop-the-rejected-`--model` fallback remains the actual guarantee a bad pick can't break session creation.
+
 ## [0.15.2] - 2026-06-25
 
 A `@ganglion/xacpx` (core) release.
