@@ -30,6 +30,31 @@ test("loadSessions caches sessions under the instance", async () => {
   expect(store.instances[0]?.sessions.map((s) => s.alias)).toEqual(["backend"]);
 });
 
+test("loadSessions also loads the instance's agents so driver→icon mapping works in the normal flow", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.agents.list") return { agents: [{ name: "my-codex", driver: "codex" }] } as never;
+    return { sessions: [{ alias: "backend", agent: "my-codex", workspace: "/w", transportSession: "t", running: false }] } as never;
+  });
+  await store.loadSessions("i1");
+  expect(rpc).toHaveBeenCalledWith("i1", "control.agents.list");
+  expect(store.byId("i1")!.agents).toEqual([{ name: "my-codex", driver: "codex" }]);
+  vi.restoreAllMocks();
+});
+
+test("loadSessions skips the agents fetch once agents are already loaded", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [] } as never);
+  await store.loadSessions("i1");
+  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list");
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.agents.list");
+  vi.restoreAllMocks();
+});
+
 test("loadInstances eagerly loads sessions for online instances", async () => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
     const url = typeof input === "string" ? input : String(input);

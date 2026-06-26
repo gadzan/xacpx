@@ -9,10 +9,18 @@ import { showActionToast } from "../lib/use-action-toast";
 import { useSwipeActions } from "../lib/use-swipe-actions";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
+import AgentIcon from "./AgentIcon.vue";
+import type { InstanceView } from "../stores/instances";
 
 const store = useInstancesStore();
 const chat = useChatStore();
 const { t } = useI18n();
+
+// A session row carries the agent NAME; the brand glyph keys on its driver. Resolve via the
+// instance's configured agents (AgentDto maps name→driver). Undefined → AgentIcon falls back.
+function driverFor(inst: InstanceView, agentName: string): string | undefined {
+  return inst.agents.find((a) => a.name === agentName)?.driver;
+}
 const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
 const dialogFor = ref<{ id: string; name: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
@@ -209,8 +217,10 @@ const rowSwipes = computed(() => {
                 <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
                 <span class="truncate text-[12.5px] font-medium"
                       :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ s.alias }}</span>
-                <span class="shrink-0 rounded px-1 py-px font-mono text-[9.5px]"
-                      :class="isSelected(inst.id, s.alias) ? 'bg-accent/15 text-accent' : 'bg-bg text-fg-muted'">{{ s.agent }}</span>
+                <!-- Agent shown as its brand glyph (driver icon) instead of a text badge to
+                     save horizontal space; the agent name stays available on hover. -->
+                <AgentIcon :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
+                           :class="s.archived ? 'opacity-60' : ''" />
                 <span v-if="s.archived" data-test="archived-badge" class="shrink-0 rounded bg-bg px-1 py-px text-[9px] text-fg-muted">{{ $t("instance.sessionArchivedBadge") }}</span>
                 <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
                       class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>

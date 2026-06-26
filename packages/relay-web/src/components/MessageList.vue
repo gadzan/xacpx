@@ -6,11 +6,12 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { Bot, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import { CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
@@ -173,8 +174,8 @@ watch(
           </div>
           <!-- ASSISTANT row -->
           <div v-else class="cv-row group flex gap-2.5">
-            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
-              <Bot :size="13" class="text-accent" />
+            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-lg border border-border bg-surface">
+              <AgentIcon :driver="driver" :size="15" />
             </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger' : ''">
@@ -199,8 +200,8 @@ watch(
 
         <!-- live streaming assistant row -->
         <div v-if="liveTurn && liveTurn.parts.length" class="flex gap-2.5">
-          <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-lg border border-border bg-surface">
-            <Bot :size="13" class="text-accent" />
+          <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-lg border border-border bg-surface">
+            <AgentIcon :driver="driver" :size="15" />
           </div>
           <div data-test="msg-streaming" class="min-w-0 flex-1">
             <TurnParts :parts="liveTurn.parts" :streaming="true" />

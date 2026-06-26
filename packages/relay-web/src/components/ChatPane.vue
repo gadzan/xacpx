@@ -41,6 +41,12 @@ const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceI
 const currentSession = computed(() =>
   instance.value?.sessions.find((s) => s.alias === chat.sessionAlias),
 );
+// The session's acpx driver (codex/claude/…), resolved from the instance's configured
+// agents (session carries the agent NAME; AgentDto maps name→driver). Drives the
+// assistant avatar glyph. Undefined until agents load → AgentIcon shows its fallback.
+const currentDriver = computed(() =>
+  instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
+);
 
 // Keep a read-only git summary loaded for the current session's workspace so the
 // header chip reflects changes without the user opening the Files panel first.
@@ -117,7 +123,7 @@ const verb = computed(() => {
         {{ chat.error }}
         <button class="ml-2 text-danger underline" @click="chat.error = ''">{{ $t("common.dismiss") }}</button>
       </div>
-      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn"
+      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
