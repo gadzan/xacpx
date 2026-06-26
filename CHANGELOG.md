@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.3] - 2026-06-26
+
+A `@ganglion/xacpx` (core) release.
+
+### Fixed
+
+- **Session creation tolerates a `--model` the agent's adapter doesn't advertise (#84).** Different agent adapters format model ids differently — the two codex-acp adapters disagree on the reasoning-effort suffix (`gpt-5.5[high]` vs `gpt-5.5/high`) — so a model id valid under one adapter is rejected by another, and acpx hard-failed session creation when a `--model` (or a replayed saved model) wasn't advertised. The acpx-cli and bridge transports now recognize that specific not-advertised-model error and retry creation **without** the model, falling back to the adapter's default, so a stale / cross-adapter / mistyped model override can never make a session uncreatable. The control service also records each session's resolved adapter command on `SessionDto.agentCommand`, which the relay dashboard uses to avoid seeding a new session's model picker from a session running a different adapter (the dashboard side shipped in relay 0.9.8).
+
 ## [relay 0.9.8] - 2026-06-26
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
