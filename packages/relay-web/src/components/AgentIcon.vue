@@ -21,6 +21,8 @@ const px = computed(() => `${props.size}px`);
     data-test="agent-icon"
     :data-driver="driver || ''"
     :title="title"
+    role="img"
+    :aria-label="title || driver || undefined"
     class="inline-grid shrink-0 place-items-center [&>svg]:h-full [&>svg]:w-full"
     :style="{ width: px, height: px }"
   >

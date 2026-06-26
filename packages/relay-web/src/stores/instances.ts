@@ -55,11 +55,24 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function loadSessions(instanceId: string): Promise<void> {
-    const { sessions } = await api.rpc<{ sessions: SessionDto[] }>(instanceId, "control.sessions.list");
+    // Pull the configured agents alongside the session list (once) so the sidebar and chat
+    // can map each session's agent NAME → driver for the brand icon. Agents otherwise only
+    // load when a create/manage dialog opens (loadFormOptions), so in the normal
+    // login→browse→chat flow inst.agents would stay empty and every icon would fall back to
+    // the generic glyph. Tolerant + fire-alongside: an agents failure must never block the
+    // session list, and it self-heals on the next loadSessions since `agents` stays empty.
+    const needAgents = (byId(instanceId)?.agents.length ?? 0) === 0;
+    const [{ sessions }, agentsRes] = await Promise.all([
+      api.rpc<{ sessions: SessionDto[] }>(instanceId, "control.sessions.list"),
+      needAgents
+        ? api.rpc<{ agents: AgentDto[] }>(instanceId, "control.agents.list").catch(() => null)
+        : Promise.resolve(null),
+    ]);
     const inst = byId(instanceId);
     if (inst) {
       inst.sessions = sessions;
       inst.sessionsLoaded = true;
+      if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
     }
   }
 
