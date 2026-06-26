@@ -4,8 +4,8 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
-  type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
+  MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -71,6 +71,21 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     }
     return out;
   };
+  // Latest agent-advertised slash commands per (instance, session). Like sessionUsage this
+  // is session-scoped (replace-latest) so a (re)connecting web client can restore the
+  // composer's "/" command hints after a refresh (see GET /api/active-turns). Agents
+  // typically advertise once at session start, so without this the hints vanish on reload.
+  // Cleared when the instance goes offline. Absent for sessions that advertised none.
+  const sessionCommands = new Map<string, AgentCommandDto[]>();
+  const listSessionCommands = (instanceId: string): SessionCommandsSnapshotDto[] => {
+    const prefix = `${instanceId}\0`;
+    const out: SessionCommandsSnapshotDto[] = [];
+    for (const [k, commands] of sessionCommands) {
+      if (!k.startsWith(prefix)) continue;
+      out.push({ instanceId, sessionAlias: k.slice(prefix.length), commands });
+    }
+    return out;
+  };
   // Snapshot the in-flight turns for one instance so a (re)connecting web client can
   // rebuild the live view after a refresh (see GET /api/active-turns). `parts` is the
   // live array — fine to hand out by reference since the route serializes it at once.
@@ -118,6 +133,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const prefix = `${instanceId}\0`;
         for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
         for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
+        for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
       }
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
     },
@@ -168,6 +184,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           // restore the context-usage bar from the active-turns snapshot. Already
           // broadcast above; this is the persistence the snapshot reads back.
           sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
+        } else if (event.type === "agent-commands") {
+          // Retain the latest advertised command list per session (replace) so a refreshed
+          // web client can restore the composer's "/" hints from the active-turns snapshot.
+          // Already broadcast above; this is the persistence the snapshot reads back.
+          sessionCommands.set(key(instanceId, event.sessionAlias), event.commands);
         } else if (event.type === "session-history") {
           // Seed a freshly-attached native session's recovered prior conversation into
           // history (one-time). Guard against re-seeding an already-populated session so a
@@ -191,6 +212,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
     activeTurns: listActiveTurns,
     sessionUsage: listSessionUsage,
+    sessionCommands: listSessionCommands,
     trustProxy: options.trustProxy,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
   });

@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import type { InstanceNoticePayload } from "./messages.js";
 
 /** Envelope `type` for every relay→web push. */
@@ -58,6 +58,16 @@ export interface SessionUsageSnapshotDto {
   size: number;
   cost?: UsageCostDto;
   breakdown?: UsageBreakdownDto;
+}
+
+/** The latest agent-advertised slash commands retained per session, handed to a
+ *  (re)connecting web client so the composer's "/" command hints survive a page
+ *  refresh. Mirrors the `agent-commands` control event (replace-latest); absent for
+ *  agents/sessions that never advertised any. */
+export interface SessionCommandsSnapshotDto {
+  instanceId: string;
+  sessionAlias: string;
+  commands: AgentCommandDto[];
 }
 
 /** Server→web push payloads (tagged with the originating instance). */

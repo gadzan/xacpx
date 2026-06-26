@@ -190,8 +190,10 @@ function onInput() {
         @drop.prevent="onDrop" @dragover.prevent>
     <!-- hidden file picker -->
     <input ref="fileInput" type="file" multiple class="hidden" data-test="attach-input" @change="onFilesPicked" />
-    <!-- COMPOSER — single elevated card: textarea on top, controls row below. -->
-    <div class="rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
+    <!-- COMPOSER — single elevated card: textarea on top, controls row below.
+         `relative` so the slash-command menu can float above the card (bottom-full)
+         instead of pushing the textarea down. -->
+    <div class="relative rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
       <!-- Pending attachment chips -->
       <div v-if="composer.pending.length" class="flex flex-wrap gap-2 px-2.5 pt-2.5 pb-1">
         <div v-for="p in composer.pending" :key="p.id"
@@ -208,9 +210,10 @@ function onInput() {
       <span v-if="composer.rejection" data-test="attach-rejected" class="block px-3 pt-2 text-xs text-danger">
         {{ composer.rejection.reason === 'too-many' ? $t('chat.attach.tooMany') : $t('chat.attach.tooLarge', { name: composer.rejection.filename }) }}
       </span>
-      <!-- Agent slash-command autocomplete -->
+      <!-- Agent slash-command autocomplete: floats above the composer card (bottom-full)
+           so it never grows the input box; pinned to the card's horizontal edges. -->
       <ul v-if="cmdMenuOpen && cmdMatches.length" data-test="cmd-menu" role="listbox"
-          class="mx-2.5 mt-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2">
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2">
         <li v-for="(c, i) in cmdMatches" :key="c.name"
             data-test="cmd-item" role="option" :aria-selected="i === cmdActiveIdx"
             class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
