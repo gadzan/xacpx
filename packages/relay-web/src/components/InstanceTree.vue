@@ -129,7 +129,19 @@ async function askDelete(id: string, alias: string) {
     confirmLabel: t("common.delete"),
     tone: "danger",
   });
-  if (ok) void store.removeSession(id, alias).catch(() => {});
+  if (!ok) return;
+  // Deleting the session you're viewing drops the view back to the empty "no session"
+  // state rather than leaving a stale, now-broken selection pointed at it.
+  const wasActive = isSelected(id, alias);
+  void store.removeSession(id, alias).catch(() => {});
+  if (wasActive) chat.clearSelection();
+}
+
+// A freshly created session is what the user wants to be in — switch to it immediately.
+function onSessionCreated(alias: string) {
+  const id = dialogFor.value?.id;
+  dialogFor.value = null;
+  if (id) emit("select", id, alias);
 }
 
 // Touch second path: swipe a row right→left to REVEAL its archive/delete blocks (tap a
@@ -275,7 +287,7 @@ const rowSwipes = computed(() => {
     </div>
 
     <NewSessionDialog v-if="dialogFor" :instance-id="dialogFor.id" :instance-name="dialogFor.name"
-                      @close="dialogFor = null" @created="dialogFor = null" />
+                      @close="dialogFor = null" @created="onSessionCreated" />
     <ManageInstanceDialog v-if="manageFor" :instance-id="manageFor.id" :instance-name="manageFor.name"
                           @close="manageFor = null" />
   </nav>
