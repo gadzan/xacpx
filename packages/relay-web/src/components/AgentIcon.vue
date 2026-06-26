@@ -15,8 +15,10 @@ const px = computed(() => `${props.size}px`);
 </script>
 
 <template>
-  <!-- The wrapper fixes the box; the inner SVG (which ships with its own width/height) is
-       forced to fill it so every brand mark lands at the same size. -->
+  <!-- The wrapper fixes the box; the brand SVG (which ships at its own 1em size) is forced
+       to fill the box so every mark lands at the same size, centered. The fill rule must
+       sit on the element the <svg> is a DIRECT child of — for a v-html brand icon that's
+       the inner span, not this wrapper. -->
   <span
     data-test="agent-icon"
     :data-driver="driver || ''"
@@ -26,7 +28,7 @@ const px = computed(() => `${props.size}px`);
     class="inline-grid shrink-0 place-items-center [&>svg]:h-full [&>svg]:w-full"
     :style="{ width: px, height: px }"
   >
-    <span v-if="svg" class="grid h-full w-full place-items-center" v-html="svg" />
+    <span v-if="svg" class="grid h-full w-full place-items-center [&>svg]:block [&>svg]:h-full [&>svg]:w-full" v-html="svg" />
     <Bot v-else :size="size" class="text-fg-muted" />
   </span>
 </template>
