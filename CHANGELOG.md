@@ -1,5 +1,21 @@
 # Changelog
 
+## [relay 0.9.9] - 2026-06-26
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
+
+### Added
+
+- **Optimistic background session creation.** Creating a session blocks on a cold agent start (often 10–40s), and the New-Session dialog used to await that RPC behind a disabled "Creating…" button — a frozen modal with no progress and no way out. The dialog now inserts a "creating" row and closes immediately while creation runs in the background; the view switches straight to the new session and shows a booting pane (spinner, "Starting <agent>… Ns" live clock, "first start can take 10–40s" reassurance, and a Cancel), and the sidebar row carries a spinner glyph. On success the real session row swaps in; a gateway timeout (504) leaves the booting row until `sessions-changed` lands; a hard failure flips the pane to a dismissible error. Creating a session also now switches to it immediately (previously the dialog only closed).
+
+### Fixed
+
+- **Duplicate session aliases no longer fail silently.** Typing an alias that collides with an existing session now shows an "alias already exists" error in the dialog up front (before any agent/workspace side effects) and keeps the dialog open, instead of firing a doomed create RPC whose rejection was swallowed while the UI switched onto the wrong (existing) session.
+- **Deleting the active session clears the view.** Deleting the session you're viewing now drops back to the empty "no session" state instead of leaving a stale selection pointed at a session that no longer exists. Deleting a non-active session leaves the current selection untouched.
+- **A failed tool no longer prints its error twice.** A failed command echoes its stderr in the tool card's output body (with a nonzero exit and a red border); the separate red error banner repeated the same text. The banner is now suppressed when the error is already visible in the detail body, and still shown when it isn't (e.g. a diff/write failure).
+- **The agent brand icon is centered in its box.** The `@lobehub` brand SVGs ship at a `1em` intrinsic size and the fill rule sat on the wrong wrapper, so the mark rendered off-center (most visible on the chat avatar). It now fills and centers its box deterministically.
+- **Chat error banner and failed-send styling.** The chat error banner is now a contained rounded card with an icon and a scrollable body (so a long message — e.g. a not-advertised-model list with every available model — no longer floods the pane as an unbounded red wall) and an icon dismiss button. A failed user send drops the harsh full red ring for a soft danger-tinted bubble, an alert icon on "Failed to send", and a clear pill "Resend" button.
+
 ## [0.15.3] - 2026-06-26
 
 A `@ganglion/xacpx` (core) release.
