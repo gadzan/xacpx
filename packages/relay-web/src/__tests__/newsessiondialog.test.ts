@@ -28,7 +28,8 @@ function mountDialog(opts: DialogOptions = {}) {
   vi.spyOn(store, "createWorkspace").mockResolvedValue({ name: "ws", cwd: "/ws" } as never);
   vi.spyOn(store, "createSession").mockResolvedValue({ pending: false });
   // The dialog submits via the optimistic background path, not createSession directly.
-  vi.spyOn(store, "beginSessionCreation").mockImplementation(() => {});
+  // Returns true (alias accepted); duplicate-alias handling is covered by its own test.
+  vi.spyOn(store, "beginSessionCreation").mockReturnValue(true);
   vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
   vi.spyOn(store, "listModelSuggestions").mockResolvedValue(opts.modelSuggestions ?? []);
   // Stub <Teleport> so the dialog renders in-place and wrapper.find() reaches it
@@ -49,6 +50,43 @@ async function pick(wrapper: ReturnType<typeof mountDialog>["wrapper"], trigger:
 
 describe("NewSessionDialog", () => {
   beforeEach(() => setActivePinia(createPinia()));
+
+  it("rejects a user-typed alias that collides with an existing session — no create, stays open", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [{ alias: "backend" }],
+    });
+    const createAgent = vi.spyOn(store, "createAgent");
+    await flushPromises();
+    await wrapper.get('[data-test="ns-alias"]').setValue("backend"); // collides with existing
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-error"]').text()).toContain("already exists");
+    // No optimistic create kicked off, no side effects, and the dialog stays open.
+    expect(store.beginSessionCreation).not.toHaveBeenCalled();
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(wrapper.emitted("created")).toBeFalsy();
+    expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
+  it("surfaces a duplicate detected as a race (beginSessionCreation returns false)", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    vi.mocked(store.beginSessionCreation).mockReturnValue(false); // alias taken between guard and call
+    await flushPromises();
+    await wrapper.get('[data-test="ns-alias"]').setValue("backend");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-error"]').text()).toContain("already exists");
+    expect(wrapper.emitted("created")).toBeFalsy();
+    expect(wrapper.emitted("close")).toBeFalsy();
+  });
 
   it("blank alias is auto-generated from workspace + agent and de-duped", async () => {
     const { wrapper, store } = mountDialog({

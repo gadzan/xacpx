@@ -63,6 +63,24 @@ describe("optimistic session creation", () => {
     expect(row.createError).toBeUndefined();
   });
 
+  it("returns false and starts no RPC when the alias is already taken", () => {
+    const store = useInstancesStore();
+    store.instances = [inst([{ alias: "backend", agent: "codex", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const rpc = vi.spyOn(api, "rpc");
+    const ok = store.beginSessionCreation("i1", "backend", "codex", "home");
+    expect(ok).toBe(false);
+    // No optimistic row added, no doomed create RPC fired (its rejection would be swallowed).
+    expect(store.byId("i1")!.sessions).toHaveLength(1);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("returns true when the alias is free", () => {
+    const store = useInstancesStore();
+    store.instances = [inst()] as never;
+    vi.spyOn(api, "rpc").mockReturnValue(new Promise(() => {}) as never);
+    expect(store.beginSessionCreation("i1", "fresh", "codex", "home")).toBe(true);
+  });
+
   it("cancelSessionCreation drops a booting/failed row but spares a materialised one", () => {
     const store = useInstancesStore();
     store.instances = [inst([

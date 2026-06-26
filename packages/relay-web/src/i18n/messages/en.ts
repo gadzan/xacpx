@@ -132,6 +132,7 @@ export default {
     thisAgent: "This agent",
     pickNativeAndAlias: "pick a native session and a valid alias",
     couldNotDeriveName: "could not derive a valid name — please enter an alias or a normal path",
+    aliasTaken: "A session named “{alias}” already exists — pick a different alias.",
     createFailed: "create failed",
   },
   files: {

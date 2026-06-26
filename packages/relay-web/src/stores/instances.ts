@@ -173,14 +173,18 @@ export const useInstancesStore = defineStore("instances", () => {
   // up. On success `loadSessions` (inside createSession) swaps in the real row; on a
   // 504 the optimistic row simply persists until `sessions-changed` lands; a hard
   // failure flips the row to an error the booting pane shows.
-  function beginSessionCreation(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): void {
+  // Returns false WITHOUT starting creation when the alias is already taken (or the
+  // instance is gone): firing the create RPC anyway would only get rejected as a
+  // duplicate, and that rejection would land on the pre-existing row (creating=false)
+  // and be swallowed — leaving the user no failure signal. The caller surfaces the
+  // false return as a duplicate-alias error instead.
+  function beginSessionCreation(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): boolean {
     const inst = byId(instanceId);
-    if (inst && !inst.sessions.some((s) => s.alias === alias)) {
-      inst.sessions = [
-        { alias, agent, workspace, transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now() },
-        ...inst.sessions,
-      ];
-    }
+    if (!inst || inst.sessions.some((s) => s.alias === alias)) return false;
+    inst.sessions = [
+      { alias, agent, workspace, transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now() },
+      ...inst.sessions,
+    ];
     void createSession(instanceId, alias, agent, workspace, agentSessionId, model).catch((e) => {
       const row = byId(instanceId)?.sessions.find((s) => s.alias === alias);
       if (row?.creating) {
@@ -188,6 +192,7 @@ export const useInstancesStore = defineStore("instances", () => {
         row.createError = e instanceof Error ? e.message : "create failed";
       }
     });
+    return true;
   }
 
   // Drop an optimistic row the user dismissed (still creating, or failed). Guarded so a

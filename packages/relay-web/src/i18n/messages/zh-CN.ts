@@ -130,6 +130,7 @@ export default {
     thisAgent: "此 Agent",
     pickNativeAndAlias: "请选择一个原生会话并填写有效的别名",
     couldNotDeriveName: "无法推导出有效的名称——请输入别名或一个正常的路径",
+    aliasTaken: "已存在名为「{alias}」的会话，请换一个别名。",
     createFailed: "创建失败",
   },
   files: {

@@ -236,9 +236,17 @@ async function submit(): Promise<void> {
         error.value = t("session.pickNativeAndAlias");
         return;
       }
+      if (existingAliases.includes(finalAlias)) {
+        error.value = t("session.aliasTaken", { alias: finalAlias });
+        return;
+      }
       // Optimistic: switch to the new session right away; creation runs in the
       // background (a cold agent start can block for 10–40s — see beginSessionCreation).
-      store.beginSessionCreation(props.instanceId, finalAlias, agentName, workspaceName, nativeSel.value);
+      // A false return means the alias was taken (e.g. a race) — surface it, don't switch.
+      if (!store.beginSessionCreation(props.instanceId, finalAlias, agentName, workspaceName, nativeSel.value)) {
+        error.value = t("session.aliasTaken", { alias: finalAlias });
+        return;
+      }
       emit("created", finalAlias);
       emit("close");
       return;
@@ -258,6 +266,12 @@ async function submit(): Promise<void> {
       error.value = t("session.couldNotDeriveName");
       return;
     }
+    // 2b) reject a user-typed alias that collides with an existing session BEFORE any
+    //     side effects (agent/workspace creation). A generated alias is already de-duped.
+    if (existingAliases.includes(finalAlias)) {
+      error.value = t("session.aliasTaken", { alias: finalAlias });
+      return;
+    }
     // 3) auto-create the config agent if an un-configured driver was picked
     if (!configuredNames.value.has(agentName)) {
       await store.createAgent(props.instanceId, agentName, agentName);
@@ -270,7 +284,12 @@ async function submit(): Promise<void> {
     //    A blank or "default" model means "use the agent's default" — send nothing.
     const modelOverride = model.value.trim();
     const modelArg = modelOverride && modelOverride.toLowerCase() !== "default" ? modelOverride : undefined;
-    store.beginSessionCreation(props.instanceId, finalAlias, agentName, workspaceName, undefined, modelArg);
+    // A false return means the alias was taken between the guard above and now (race) —
+    // surface it rather than emitting/closing onto the wrong (existing) session.
+    if (!store.beginSessionCreation(props.instanceId, finalAlias, agentName, workspaceName, undefined, modelArg)) {
+      error.value = t("session.aliasTaken", { alias: finalAlias });
+      return;
+    }
     emit("created", finalAlias);
     emit("close");
   } catch (e) {
