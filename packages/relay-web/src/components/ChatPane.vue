@@ -8,7 +8,7 @@ import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
-import { Bot, Folder, GitBranch, X } from "lucide-vue-next";
+import { AlertTriangle, Bot, Folder, GitBranch, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
@@ -119,9 +119,12 @@ const verb = computed(() => {
           </button>
         </div>
       </div>
-      <div v-if="chat.error" data-test="chat-error" class="bg-danger/10 px-4 py-1 text-xs text-danger">
-        {{ chat.error }}
-        <button class="ml-2 text-danger underline" @click="chat.error = ''">{{ $t("common.dismiss") }}</button>
+      <div v-if="chat.error" data-test="chat-error"
+           class="mx-3 mt-2 flex items-start gap-2 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-danger">
+        <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
+        <p class="min-w-0 flex-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed">{{ chat.error }}</p>
+        <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-md p-1 text-danger/70 transition-colors hover:bg-danger/15 hover:text-danger"
+                :title="$t('common.dismissNotice')" @click="chat.error = ''"><X :size="14" /></button>
       </div>
       <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
