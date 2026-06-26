@@ -11,6 +11,7 @@ import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types
 import { createStructuredPromptFile } from "../transport/prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../transport/streaming-prompt";
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
+import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher } from "../transport/acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../transport/permission-mode-flag";
@@ -278,6 +279,34 @@ export class BridgeRuntime {
   }
 
   async ensureSession(
+    input: BridgeSessionInput,
+    onProgress?: (progress: EnsureSessionProgress) => void,
+  ): Promise<Record<string, never>> {
+    try {
+      return await this.attemptEnsureSession(input, onProgress);
+    } catch (error) {
+      // Different agent adapters advertise model ids in different formats (e.g. the two
+      // codex adapters disagree: `gpt-5.5[high]` vs `gpt-5.5/high`), so a model valid for
+      // one adapter is rejected by another and acpx hard-fails session creation. A stale /
+      // cross-adapter / mistyped model override must never make a session uncreatable —
+      // drop it and retry once, falling back to the agent adapter's default model.
+      const requestedModel = input.model?.trim();
+      if (
+        requestedModel &&
+        error instanceof EnsureSessionFailedError &&
+        isModelNotAdvertisedError(error.message)
+      ) {
+        onProgress?.({
+          kind: "note",
+          text: `agent did not advertise model "${requestedModel}"; retrying with the agent's default model`,
+        });
+        return await this.attemptEnsureSession({ ...input, model: undefined }, onProgress);
+      }
+      throw error;
+    }
+  }
+
+  private async attemptEnsureSession(
     input: BridgeSessionInput,
     onProgress?: (progress: EnsureSessionProgress) => void,
   ): Promise<Record<string, never>> {

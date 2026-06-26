@@ -34,6 +34,11 @@ export interface ControlSessionInfo {
   transportSession: string;
   running: boolean;
   archived: boolean;
+  /** The agent adapter command this session runs (acpx-recorded, or the agent's resolved
+   *  default). Surfaced so the web can avoid seeding a new session's model picker from a
+   *  session on a different adapter version (whose advertised model ids may be in an
+   *  incompatible format). Omitted when unknown. */
+  agentCommand?: string;
 }
 
 export interface ControlAgentInfo {
@@ -217,6 +222,7 @@ export class ControlService {
         transportSession: session.transportSession,
         running: this.deps.activeTurns.isActiveAnywhere(session.alias),
         archived: session.archived === true,
+        ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
       }));
   }
 

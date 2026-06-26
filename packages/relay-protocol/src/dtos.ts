@@ -6,6 +6,12 @@ export interface SessionDto {
   transportSession: string;
   running: boolean;
   archived: boolean;
+  /** The agent adapter command this session actually runs (acpx-recorded, or the agent's
+   *  resolved default). Lets the web avoid seeding a new session's model picker from a
+   *  session running a different adapter version — those advertise model ids in
+   *  incompatible formats (e.g. codex `gpt-5.5[high]` vs `gpt-5.5/high`). Omitted when
+   *  unknown. */
+  agentCommand?: string;
 }
 
 /** Wire DTO for a configured agent on an instance. */

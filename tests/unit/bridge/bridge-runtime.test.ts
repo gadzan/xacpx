@@ -670,6 +670,54 @@ test("ensureSession falls back to generic kind when stderr does not match", asyn
   expect((caught as { kind?: string }).kind).toBe("generic");
 });
 
+test("ensureSession retries without --model when the agent does not advertise the requested model", async () => {
+  const calls: string[][] = [];
+  const modelRejection = {
+    code: 1,
+    stdout: "",
+    stderr:
+      '[acpx] initialized protocol version 1\nCannot apply --model "gpt-5.5/high": the ACP agent did not advertise that model. Available models: gpt-5.5[high].',
+  };
+  // First attempt carries --model and is rejected at every step; the model-less retry
+  // succeeds at the `ensure` step.
+  const runner = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("--model")) return modelRejection;
+    return { code: 0, stdout: "ok", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", runner, runner);
+  const notes: string[] = [];
+  await expect(
+    runtime.ensureSession(
+      { agent: "codex", cwd: "/repo", name: "demo", model: "gpt-5.5/high" },
+      (progress) => {
+        if (typeof progress === "object" && progress.kind === "note") notes.push(progress.text);
+      },
+    ),
+  ).resolves.toEqual({});
+
+  // The first attempt actually tried the requested model...
+  expect(calls.some((a) => a.includes("--model"))).toBe(true);
+  // ...and a later attempt dropped it to fall back to the agent default.
+  expect(calls.some((a) => a.includes("ensure") && !a.includes("--model"))).toBe(true);
+  // The fallback is surfaced to the user with the offending model id.
+  expect(notes.join(" ")).toContain("gpt-5.5/high");
+});
+
+test("ensureSession does not retry for failures unrelated to the model", async () => {
+  let attempts = 0;
+  const runner = async () => {
+    attempts += 1;
+    return { code: 1, stdout: "", stderr: "unrelated boom" };
+  };
+  const runtime = new BridgeRuntime("acpx", runner, runner);
+  await expect(
+    runtime.ensureSession({ agent: "codex", cwd: "/repo", name: "demo", model: "gpt-5.5[high]" }),
+  ).rejects.toThrow("unrelated boom");
+  // ensure + show + new from a single attempt — no second (model-less) attempt.
+  expect(attempts).toBe(3);
+});
+
 // ── toolEventMode wiring tests ───────────────────────────────────────────────
 
 function makeSpawnPrompt(dataHandler: { current?: (chunk: string) => void }, closeHandler: { current?: (code: number | null) => void }) {

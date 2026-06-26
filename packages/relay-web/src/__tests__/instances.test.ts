@@ -220,6 +220,72 @@ describe("agent catalog + management actions", () => {
   });
 });
 
+describe("listModelSuggestions adapter-consensus gate", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function seedSessions(sessions: unknown[]) {
+    const store = useInstancesStore();
+    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: sessions as never, sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
+    return store;
+  }
+
+  test("reuses a single same-agent+workspace session's advertised models", async () => {
+    const store = seedSessions([
+      { alias: "a", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false, agentCommand: "npx codex-acp@new" },
+    ]);
+    const { api } = await import("../api/client");
+    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]", "gpt-5.5[low]"] });
+    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]", "gpt-5.5[low]"]);
+    vi.restoreAllMocks();
+  });
+
+  test("suppresses suggestions when same-agent sessions run different adapters", async () => {
+    const store = seedSessions([
+      { alias: "old", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false, agentCommand: "npx @zed-industries/codex-acp@0.10.0" },
+      { alias: "new", agent: "codex", workspace: "w", transportSession: "t2", running: true, archived: false, agentCommand: "npx @agentclientprotocol/codex-acp@^0.0.44" },
+    ]);
+    const { api } = await import("../api/client");
+    const rpc = vi.spyOn(api, "rpc");
+    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual([]);
+    // Ambiguous adapter → never query a live session for its (wrong-adapter) models.
+    expect(rpc).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  test("reuses when same-agent sessions share one adapter", async () => {
+    const store = seedSessions([
+      { alias: "a", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false, agentCommand: "npx codex-acp@new" },
+      { alias: "b", agent: "codex", workspace: "w", transportSession: "t2", running: false, archived: false, agentCommand: "npx codex-acp@new" },
+    ]);
+    const { api } = await import("../api/client");
+    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]"] });
+    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]"]);
+    vi.restoreAllMocks();
+  });
+
+  test("ignores archived sessions when judging adapter consensus", async () => {
+    const store = seedSessions([
+      { alias: "live", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false, agentCommand: "npx codex-acp@new" },
+      { alias: "old", agent: "codex", workspace: "w", transportSession: "t2", running: false, archived: true, agentCommand: "npx @zed-industries/codex-acp@0.10.0" },
+    ]);
+    const { api } = await import("../api/client");
+    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]"] });
+    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]"]);
+    vi.restoreAllMocks();
+  });
+
+  test("reuses when adapter is unknown on all sessions (legacy state, no field)", async () => {
+    const store = seedSessions([
+      { alias: "a", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false },
+      { alias: "b", agent: "codex", workspace: "w", transportSession: "t2", running: false, archived: false },
+    ]);
+    const { api } = await import("../api/client");
+    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]"] });
+    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]"]);
+    vi.restoreAllMocks();
+  });
+});
+
 import { mount } from "@vue/test-utils";
 import InstanceTree from "../components/InstanceTree.vue";
 
