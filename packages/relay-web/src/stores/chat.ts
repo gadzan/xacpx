@@ -10,6 +10,9 @@ const SELECTION_KEY = "xrelay.selectedSession";
 function persistSelection(instanceId: string, alias: string): void {
   try { localStorage.setItem(SELECTION_KEY, JSON.stringify({ instanceId, alias })); } catch { /* storage may be blocked */ }
 }
+function clearPersistedSelection(): void {
+  try { localStorage.removeItem(SELECTION_KEY); } catch { /* storage may be blocked */ }
+}
 export function loadPersistedSelection(): { instanceId: string; alias: string } | null {
   try {
     const raw = localStorage.getItem(SELECTION_KEY);
@@ -200,6 +203,18 @@ export const useChatStore = defineStore("chat", () => {
       next.delete(k);
       unread.value = next;
     }
+  }
+
+  /** Drop the active selection back to the empty "no session" state — used when the
+   *  selected session is deleted out from under the view. */
+  function clearSelection(): void {
+    instanceId.value = null;
+    sessionAlias.value = null;
+    clearPersistedSelection();
+    messages.value = [];
+    error.value = "";
+    hasMoreOlder.value = false;
+    loadingOlder.value = false;
   }
 
   async function loadHistory(): Promise<void> {
@@ -412,5 +427,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
 });

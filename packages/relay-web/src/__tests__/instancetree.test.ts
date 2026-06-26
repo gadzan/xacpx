@@ -56,6 +56,60 @@ describe("InstanceTree session management", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
+  it("clears the chat selection when the deleted session is the active one", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    vi.spyOn(store, "removeSession").mockResolvedValue();
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("click");
+    await w.find('[data-test="delete-session"]').trigger("click");
+    settleConfirm(true);
+    await flushPromises();
+    expect(chat.instanceId).toBeNull();
+    expect(chat.sessionAlias).toBeNull();
+  });
+
+  it("keeps the selection when deleting a session other than the active one", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false },
+      { alias: "frontend", agent: "claude", workspace: "home", transportSession: "t2", running: false, archived: false },
+    ])] as never;
+    vi.spyOn(store, "removeSession").mockResolvedValue();
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    // Open the second row's menu and delete it.
+    await w.findAll('[data-test="session-menu"]')[1]!.trigger("click");
+    await w.find('[data-test="delete-session"]').trigger("click");
+    settleConfirm(true);
+    await flushPromises();
+    expect(chat.instanceId).toBe("i1");
+    expect(chat.sessionAlias).toBe("backend");
+  });
+
+  it("shows a spinner on an optimistic 'creating' session row", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "", running: false, archived: false, creating: true }])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="session-creating"]').exists()).toBe(true);
+  });
+
+  it("selects the freshly created session when the dialog reports it", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance()] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="new-session"]').trigger("click");
+    const dialog = w.findComponent({ name: "NewSessionDialog" });
+    dialog.vm.$emit("created", "fresh");
+    await w.vm.$nextTick();
+    expect(w.emitted("select")).toEqual([["i1", "fresh"]]);
+    // The dialog closes after creation.
+    expect(w.findComponent({ name: "NewSessionDialog" }).exists()).toBe(false);
+  });
+
   // Regression: the menu item must survive the real mousedown→click sequence. A
   // document-level mousedown listener nulls openMenuFor; if that unmounts the menu
   // before click, archive/delete silently no-op (the prior bug). `trigger("click")`

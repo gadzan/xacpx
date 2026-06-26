@@ -19,6 +19,19 @@ function unwrap<T>(result: T | { error: { code: string; message: string } }): T 
   return result;
 }
 
+// A session as the dashboard tracks it: the wire DTO plus web-only fields for an
+// OPTIMISTIC row — one inserted the instant the user hits Create, before the
+// (slow, cold-agent-start) create RPC resolves. The real row from `loadSessions`
+// replaces it on success; these extras are absent on every server-sourced row.
+export type SessionRow = SessionDto & {
+  /** The create RPC for this row is still in flight (cold agent start). */
+  creating?: boolean;
+  /** Epoch ms when creation began — drives the "starting… Ns" elapsed display. */
+  creatingSince?: number;
+  /** Background creation failed; message surfaced in the booting pane. */
+  createError?: string;
+};
+
 export interface InstanceView {
   id: string;
   name: string;
@@ -28,7 +41,7 @@ export interface InstanceView {
   // connectors that predate version reporting). Surfaced so operators can spot a
   // version-skewed connector before its missing features fail with `unknown-type`.
   coreVersion?: string | null;
-  sessions: SessionDto[];
+  sessions: SessionRow[];
   // Distinguishes "sessions never fetched" from "fetched and genuinely empty" so the
   // sidebar only shows the "no sessions yet" empty row once a list has actually loaded.
   sessionsLoaded: boolean;
@@ -153,6 +166,43 @@ export const useInstancesStore = defineStore("instances", () => {
     return { pending: false };
   }
 
+  // Optimistic create: insert a "creating" row and switch to it IMMEDIATELY, then run
+  // the (slow) create RPC in the background. A cold agent start blocks `createSession`
+  // for 10–40s; awaiting it before closing the dialog traps the user in a frozen modal.
+  // Instead the booting row lets them watch progress (or navigate away) while it spins
+  // up. On success `loadSessions` (inside createSession) swaps in the real row; on a
+  // 504 the optimistic row simply persists until `sessions-changed` lands; a hard
+  // failure flips the row to an error the booting pane shows.
+  // Returns false WITHOUT starting creation when the alias is already taken (or the
+  // instance is gone): firing the create RPC anyway would only get rejected as a
+  // duplicate, and that rejection would land on the pre-existing row (creating=false)
+  // and be swallowed — leaving the user no failure signal. The caller surfaces the
+  // false return as a duplicate-alias error instead.
+  function beginSessionCreation(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): boolean {
+    const inst = byId(instanceId);
+    if (!inst || inst.sessions.some((s) => s.alias === alias)) return false;
+    inst.sessions = [
+      { alias, agent, workspace, transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now() },
+      ...inst.sessions,
+    ];
+    void createSession(instanceId, alias, agent, workspace, agentSessionId, model).catch((e) => {
+      const row = byId(instanceId)?.sessions.find((s) => s.alias === alias);
+      if (row?.creating) {
+        row.creating = false;
+        row.createError = e instanceof Error ? e.message : "create failed";
+      }
+    });
+    return true;
+  }
+
+  // Drop an optimistic row the user dismissed (still creating, or failed). Guarded so a
+  // real session that has since materialised (creating/createError cleared) is never
+  // removed — if the RPC actually succeeded, the genuine row stays in the list.
+  function cancelSessionCreation(instanceId: string, alias: string): void {
+    const inst = byId(instanceId);
+    if (inst) inst.sessions = inst.sessions.filter((s) => !(s.alias === alias && (s.creating || s.createError)));
+  }
+
   // The agent-native (acpx-owned) sessions available to attach for a given agent +
   // workspace — the source list for the add-session dialog's "native" picker.
   async function listNativeSessions(instanceId: string, agent: string, workspace: string): Promise<NativeSessionDto[]> {
@@ -242,5 +292,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameInstance, applyEvent, byId };
+  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameInstance, applyEvent, byId };
 });

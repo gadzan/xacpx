@@ -40,6 +40,17 @@ test("streaming turn output accumulates then commits on finish", () => {
   expect(store.messages.at(-1)).toMatchObject({ direction: "out", text: "hello" });
 });
 
+test("clearSelection drops the active session, transcript and persisted selection", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  expect(localStorage.getItem("xrelay.selectedSession")).toContain("backend");
+  store.clearSelection();
+  expect(store.instanceId).toBeNull();
+  expect(store.sessionAlias).toBeNull();
+  expect(store.messages).toEqual([]);
+  expect(localStorage.getItem("xrelay.selectedSession")).toBeNull();
+});
+
 test("a scheduled turn-started surfaces its prompt as a badged inbound message (selected session)", () => {
   const store = useChatStore();
   store.select("i1", "backend");

@@ -31,6 +31,12 @@ describe("AgentIcon", () => {
     expect(w.html()).toContain("<svg");
     // The generic Bot fallback (an <svg> with the lucide class) must not appear.
     expect(w.find(".lucide-bot").exists()).toBe(false);
+    // The brand SVG ships at its own 1em size; the inner wrapper (its direct parent) must
+    // carry the fill rule so it fills + centers the box. Without it the icon sits off-centre.
+    const inner = w.find('[data-test="agent-icon"] > span');
+    expect(inner.exists()).toBe(true);
+    expect(inner.classes()).toContain("[&>svg]:h-full");
+    expect(inner.classes()).toContain("[&>svg]:w-full");
   });
 
   it("falls back to the generic icon for an unknown driver", () => {

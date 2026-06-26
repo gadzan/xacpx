@@ -104,7 +104,9 @@ export default {
     selectWorkspace: "选择一个工作区",
     selectNative: "选择一个原生会话",
     close: "关闭",
-    creating: "会话正在创建，稍后会出现在列表中…",
+    starting: "正在启动 {agent}…",
+    startingHint: "首次启动通常需要 10–40 秒，属正常现象——启动期间你可以继续浏览其它会话。",
+    startFailed: "会话启动失败",
     loadingOptions: "加载选项中…",
     source: "来源",
     sessionAlias: "会话别名",
@@ -128,6 +130,7 @@ export default {
     thisAgent: "此 Agent",
     pickNativeAndAlias: "请选择一个原生会话并填写有效的别名",
     couldNotDeriveName: "无法推导出有效的名称——请输入别名或一个正常的路径",
+    aliasTaken: "已存在名为「{alias}」的会话，请换一个别名。",
     createFailed: "创建失败",
   },
   files: {

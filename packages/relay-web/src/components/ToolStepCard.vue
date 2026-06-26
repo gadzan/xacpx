@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
@@ -10,6 +10,30 @@ const props = defineProps<{ step: ToolStepDto }>();
 // Detail is shown inline by default (the user wants to see what write/read/exec did
 // without an extra click); the header still toggles it for long transcripts.
 const open = ref(true);
+
+// The text the detail body already prints below (so we don't repeat it in the banner).
+const detailOutput = computed(() => {
+  const d = props.step.detail;
+  if (!d) return "";
+  if (d.type === "command" || d.type === "search" || d.type === "fields") return d.output ?? "";
+  if (d.type === "read") return d.preview ?? "";
+  if (d.type === "text") return d.text ?? "";
+  return "";
+});
+
+// Show the red error banner only when the failure isn't ALREADY visible in the detail
+// body. A failed command echoes its stderr in its output (plus a nonzero exit and a red
+// border), so a banner there just prints the same text twice. The error is capped with a
+// "…(truncated)" marker the output won't carry, so compare against the pre-marker prefix.
+const showErrorBanner = computed(() => {
+  if (props.step.status !== "error") return false;
+  const err = props.step.error?.trim();
+  if (!err) return false;
+  const mark = err.indexOf("…(truncated)");
+  const needle = (mark >= 0 ? err.slice(0, mark) : err).trim();
+  if (!needle) return true;
+  return !detailOutput.value.includes(needle);
+});
 
 function fmtDuration(ms?: number): string {
   if (ms === undefined) return "";
@@ -35,7 +59,7 @@ function fmtDuration(ms?: number): string {
       </span>
     </button>
     <div v-if="open" class="border-t border-border px-3 pb-2.5 pt-2">
-      <div v-if="step.status === 'error' && step.error" data-test="tool-step-error"
+      <div v-if="showErrorBanner" data-test="tool-step-error"
            class="mb-1.5 flex items-start gap-1.5 rounded bg-danger/10 px-2 py-1.5 text-danger">
         <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
         <span class="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">{{ step.error }}</span>

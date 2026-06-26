@@ -106,7 +106,9 @@ export default {
     selectWorkspace: "Select a workspace",
     selectNative: "Select a native session",
     close: "Close",
-    creating: "Session is being created and will appear in the list shortly…",
+    starting: "Starting {agent}…",
+    startingHint: "The first start can take 10–40s. This is normal — you can keep browsing while it spins up.",
+    startFailed: "Couldn't start the session",
     loadingOptions: "Loading options…",
     source: "Source",
     sessionAlias: "Session alias",
@@ -130,6 +132,7 @@ export default {
     thisAgent: "This agent",
     pickNativeAndAlias: "pick a native session and a valid alias",
     couldNotDeriveName: "could not derive a valid name — please enter an alias or a normal path",
+    aliasTaken: "A session named “{alias}” already exists — pick a different alias.",
     createFailed: "create failed",
   },
   files: {

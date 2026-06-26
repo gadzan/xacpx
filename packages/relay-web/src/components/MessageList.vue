@@ -6,7 +6,7 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
@@ -158,17 +158,18 @@ watch(
                 <Clock :size="11" />{{ $t("chat.scheduled") }}
               </span>
               <div data-test="msg-in"
-                   class="rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2"
-                   :class="m.failed ? 'ring-1 ring-danger' : ''">
+                   class="rounded-2xl rounded-tr-md border px-3.5 py-2"
+                   :class="m.failed ? 'border-danger/30 bg-danger/5' : 'border-accent/15 bg-accent/10'">
                 <p class="whitespace-pre-wrap text-[14px] leading-relaxed text-fg">{{ m.text }}</p>
                 <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
               </div>
               <!-- Failed sends get a compact retry affordance on their own line below. -->
-              <div v-if="m.failed" class="mt-1 flex items-center gap-2">
-                <span data-test="msg-failed" class="text-xs text-danger">{{ $t("chat.failedToSend") }}</span>
+              <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
+                <span data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] font-medium text-danger">
+                  <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
                 <button type="button" data-test="msg-resend"
-                        class="inline-flex items-center gap-1 text-xs font-medium text-accent hover:opacity-80"
-                        :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="12" />{{ $t("chat.resend") }}</button>
+                        class="inline-flex items-center gap-1 rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
+                        :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
               </div>
             </div>
           </div>
@@ -178,7 +179,7 @@ watch(
               <AgentIcon :driver="driver" :size="15" />
             </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
-                 :class="m.failed ? 'rounded-lg ring-1 ring-danger' : ''">
+                 :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
               <!-- Ordered transcript (text / reasoning / tools inline). -->
               <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" />
               <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
@@ -192,7 +193,7 @@ watch(
                 <CopyButton v-if="m.text" :text="m.text" />
                 <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
-                <span v-if="m.failed" data-test="msg-failed" class="text-[11px] text-danger">{{ $t("chat.failed") }}</span>
+                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
               </div>
             </div>
           </div>

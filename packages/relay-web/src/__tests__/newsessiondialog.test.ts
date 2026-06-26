@@ -27,6 +27,9 @@ function mountDialog(opts: DialogOptions = {}) {
   vi.spyOn(store, "createAgent").mockResolvedValue(undefined as never);
   vi.spyOn(store, "createWorkspace").mockResolvedValue({ name: "ws", cwd: "/ws" } as never);
   vi.spyOn(store, "createSession").mockResolvedValue({ pending: false });
+  // The dialog submits via the optimistic background path, not createSession directly.
+  // Returns true (alias accepted); duplicate-alias handling is covered by its own test.
+  vi.spyOn(store, "beginSessionCreation").mockReturnValue(true);
   vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
   vi.spyOn(store, "listModelSuggestions").mockResolvedValue(opts.modelSuggestions ?? []);
   // Stub <Teleport> so the dialog renders in-place and wrapper.find() reaches it
@@ -48,6 +51,43 @@ async function pick(wrapper: ReturnType<typeof mountDialog>["wrapper"], trigger:
 describe("NewSessionDialog", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it("rejects a user-typed alias that collides with an existing session — no create, stays open", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [{ alias: "backend" }],
+    });
+    const createAgent = vi.spyOn(store, "createAgent");
+    await flushPromises();
+    await wrapper.get('[data-test="ns-alias"]').setValue("backend"); // collides with existing
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-error"]').text()).toContain("already exists");
+    // No optimistic create kicked off, no side effects, and the dialog stays open.
+    expect(store.beginSessionCreation).not.toHaveBeenCalled();
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(wrapper.emitted("created")).toBeFalsy();
+    expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
+  it("surfaces a duplicate detected as a race (beginSessionCreation returns false)", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    vi.mocked(store.beginSessionCreation).mockReturnValue(false); // alias taken between guard and call
+    await flushPromises();
+    await wrapper.get('[data-test="ns-alias"]').setValue("backend");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-error"]').text()).toContain("already exists");
+    expect(wrapper.emitted("created")).toBeFalsy();
+    expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
   it("blank alias is auto-generated from workspace + agent and de-duped", async () => {
     const { wrapper, store } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
@@ -58,7 +98,7 @@ describe("NewSessionDialog", () => {
     await flushPromises();
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex-2", "codex", "backend", undefined, undefined);
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex-2", "codex", "backend", undefined, undefined);
   });
 
   it("selecting an un-configured driver auto-creates the agent before the session", async () => {
@@ -76,7 +116,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createAgent).toHaveBeenCalledWith("i1", "gemini", "gemini");
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-gemini", "gemini", "backend", undefined, undefined);
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-gemini", "gemini", "backend", undefined, undefined);
   });
 
   it("New-path workspace mode auto-creates a workspace from the path basename", async () => {
@@ -92,7 +132,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.createWorkspace).toHaveBeenCalledWith("i1", "demo-project", "/tmp/demo-project");
-    expect(store.createSession).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project", undefined, undefined);
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "demo-project-codex", "codex", "demo-project", undefined, undefined);
   });
 
   it("an un-installed (unknown) driver is shown but disabled in the agent picker", async () => {
@@ -128,7 +168,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-test="ns-error"]').exists()).toBe(true);
-    expect(store.createSession).not.toHaveBeenCalled();
+    expect(store.beginSessionCreation).not.toHaveBeenCalled();
   });
 
   it("does not create an agent when an all-symbols path yields an empty name (guard precedes createAgent)", async () => {
@@ -150,24 +190,25 @@ describe("NewSessionDialog", () => {
     expect(wrapper.find('[data-test="ns-error"]').exists()).toBe(true);
     expect(store.createAgent).not.toHaveBeenCalled();
     expect(store.createWorkspace).not.toHaveBeenCalled();
-    expect(store.createSession).not.toHaveBeenCalled();
+    expect(store.beginSessionCreation).not.toHaveBeenCalled();
   });
 
-  it("emits the resolved auto-generated alias on pending-close when alias was blank", async () => {
+  it("emits the resolved auto-generated alias immediately on create when alias was blank", async () => {
     const { wrapper, store } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "backend", cwd: "/b" }],
       agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
       sessions: [],
     });
-    vi.mocked(store.createSession).mockResolvedValue({ pending: true });
     await flushPromises();
     // leave alias blank → auto-generated "backend-codex"
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-test="ns-pending"]').exists()).toBe(true);
-    await wrapper.get('[data-test="ns-pending-close"]').trigger("click");
+    // Optimistic: creation kicks off in the background and the dialog emits + closes at
+    // once — no blocking in-dialog pending notice.
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, undefined);
     expect(wrapper.emitted("created")?.[0]).toEqual(["backend-codex"]);
+    expect(wrapper.emitted("close")).toBeTruthy();
   });
 
   it("forwards a chosen model override on create", async () => {
@@ -181,7 +222,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-model"]').setValue("gpt-5.2[high]");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
   });
 
   it("opens the themed model dropdown and forwards a clicked suggestion", async () => {
@@ -205,7 +246,7 @@ describe("NewSessionDialog", () => {
     await items[1].trigger("mousedown");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");
   });
 
   it("treats a literal \"default\" (or blank) model as the agent default — no override sent", async () => {
@@ -219,7 +260,7 @@ describe("NewSessionDialog", () => {
     await wrapper.get('[data-test="ns-model"]').setValue("  Default  ");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, undefined);
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, undefined);
   });
 
   it("native source lists the agent's rollouts and attaches the chosen one by agentSessionId", async () => {
@@ -239,7 +280,7 @@ describe("NewSessionDialog", () => {
     // Creating now resumes the (preselected) native session via its agentSessionId.
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(store.createSession).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", "ses_99");
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", "ses_99");
   });
 
   it("native source with no rollouts shows an empty hint and blocks create", async () => {
@@ -255,7 +296,7 @@ describe("NewSessionDialog", () => {
     await flushPromises();
     expect(wrapper.find('[data-test="ns-native-empty"]').exists()).toBe(true);
     expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
-    expect(store.createSession).not.toHaveBeenCalled();
+    expect(store.beginSessionCreation).not.toHaveBeenCalled();
   });
 
   it("surfaces a native-list failure as a distinct error block with an auth hint", async () => {
@@ -296,23 +337,21 @@ describe("NewSessionDialog", () => {
     }
   });
 
-  it("shows a non-error pending notice on a create timeout and defers emit until acknowledged", async () => {
+  it("closes optimistically on create — emits created+close without blocking on the slow RPC", async () => {
     const { wrapper, store } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "backend", cwd: "/b" }],
       agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
       sessions: [],
     });
-    vi.mocked(store.createSession).mockResolvedValue({ pending: true });
     await flushPromises();
     await wrapper.get('[data-test="ns-alias"]').setValue("backend");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
-    expect(wrapper.find('[data-test="ns-pending"]').exists()).toBe(true);
+    // No in-dialog pending notice — the dialog hands creation to the background and leaves.
+    expect(wrapper.find('[data-test="ns-pending"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="ns-error"]').exists()).toBe(false);
-    expect(wrapper.emitted("created")).toBeFalsy();
-    expect(wrapper.emitted("close")).toBeFalsy();
-    await wrapper.get('[data-test="ns-pending-close"]').trigger("click");
+    expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend", "codex", "backend", undefined, undefined);
     expect(wrapper.emitted("created")?.[0]).toEqual(["backend"]);
     expect(wrapper.emitted("close")).toBeTruthy();
   });
