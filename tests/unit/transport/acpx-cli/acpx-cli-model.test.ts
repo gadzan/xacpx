@@ -46,6 +46,38 @@ test("ensureSession omits --model when the session has none", async () => {
   expect(args).not.toContain("--model");
 });
 
+test("ensureSession retries without --model when the agent does not advertise the requested model", async () => {
+  const calls: string[][] = [];
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("--model")) {
+      return {
+        code: 1,
+        stdout: "",
+        stderr:
+          'Cannot apply --model "gpt-5.2[high]": the ACP agent did not advertise that model. Available models: gpt-5.2/high.',
+      };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+  // Resolves instead of throwing: the stale model is dropped, not fatal.
+  await transport.ensureSession(modelSession);
+  expect(calls.some((a) => a.includes("--model"))).toBe(true);
+  expect(calls.some((a) => !a.includes("--model"))).toBe(true);
+});
+
+test("ensureSession surfaces non-model failures without retrying", async () => {
+  let attempts = 0;
+  const run = mock(async () => {
+    attempts += 1;
+    return { code: 1, stdout: "", stderr: "unrelated boom" };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+  await expect(transport.ensureSession(modelSession)).rejects.toThrow("unrelated boom");
+  expect(attempts).toBe(1);
+});
+
 test("setModel issues `set ... model <id>` with the new model consistently", async () => {
   const run = okRunner();
   const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());

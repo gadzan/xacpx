@@ -17,6 +17,7 @@ import type {
   SessionTransport,
 } from "../types";
 import { getPromptText, normalizeCommandError } from "../prompt-output";
+import { isModelNotAdvertisedError } from "../model-not-advertised";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
 import {
@@ -205,6 +206,24 @@ export class AcpxCliTransport implements SessionTransport {
   // is never emitted. Users on this transport still see the initial "spawn" hint from
   // CommandRouter (emitted before the call) but will not receive mid-flight updates.
   async ensureSession(session: ResolvedSession, _onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
+    try {
+      await this.runEnsureSession(session);
+    } catch (error) {
+      // Different agent adapters advertise model ids in different formats (e.g. the two
+      // codex adapters disagree: `gpt-5.5[high]` vs `gpt-5.5/high`), so a model valid for
+      // one adapter is rejected by another and acpx hard-fails session creation. A stale /
+      // cross-adapter / mistyped model override must never make a session uncreatable —
+      // drop it and retry once, falling back to the agent adapter's default model.
+      const requestedModel = session.model?.trim();
+      if (requestedModel && isModelNotAdvertisedError(error instanceof Error ? error.message : null)) {
+        await this.runEnsureSession({ ...session, model: undefined });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async runEnsureSession(session: ResolvedSession): Promise<void> {
     const args = this.buildArgs(session, [
       "sessions",
       "new",

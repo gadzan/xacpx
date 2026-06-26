@@ -162,13 +162,27 @@ export const useInstancesStore = defineStore("instances", () => {
 
   // Best-effort model suggestions for the new-session form's datalist. acpx can't list
   // an agent's models without a live session, so we reuse the advertised `available`
-  // list from any EXISTING session of the same agent + workspace. Returns [] when there
+  // list from an EXISTING session of the same agent + workspace. Returns [] when there
   // is no such session (e.g. a brand-new agent) or on any failure — the form then falls
   // back to a plain free-text input defaulting to "default".
   async function listModelSuggestions(instanceId: string, agent: string, workspace: string): Promise<string[]> {
     const inst = byId(instanceId);
-    const match = (inst?.sessions ?? []).find((s) => s.agent === agent && s.workspace === workspace);
-    if (!match) return [];
+    // Only consider live (non-archived) same-agent+workspace sessions — a fresh session
+    // resembles a live one, not an archived rollout.
+    const candidates = (inst?.sessions ?? []).filter((s) => s.agent === agent && s.workspace === workspace && !s.archived);
+    if (candidates.length === 0) return [];
+    // Different adapter versions of the same agent advertise model ids in incompatible
+    // formats (e.g. codex: `gpt-5.5[high]` vs `gpt-5.5/high`). Seeding a NEW session's
+    // picker from a session running a DIFFERENT adapter would propose ids the new adapter
+    // rejects. We can't know the new session's adapter ahead of creation, so this is a
+    // best-effort gate: only reuse when every candidate shares ONE resolved adapter
+    // command; suppress (→ free-text default) when they visibly diverge. It can't catch
+    // every case — `agentCommand` is undefined whenever acpx didn't record the session's
+    // adapter (so two such sessions collapse to one value and still reuse) — but the
+    // transport's model-not-advertised fallback (drop the rejected `--model`, use the
+    // agent default) is the actual guarantee that a bad pick never bricks creation.
+    if (new Set(candidates.map((s) => s.agentCommand ?? "")).size > 1) return [];
+    const match = candidates[0];
     try {
       const r = unwrap(await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: match.alias }));
       const seen = new Set<string>();
