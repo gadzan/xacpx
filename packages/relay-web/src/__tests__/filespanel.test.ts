@@ -169,4 +169,60 @@ describe("FilesPanel navigation rail", () => {
     expect(cjk).toBeTruthy();
     expect(cjk!.text()).toContain("草稿.md");
   });
+
+  it("auto-loads the diff when switching sessions while the Changes tab is active", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      sessions: [
+        { alias: "s1", agent: "codex", workspace: "backend" },
+        { alias: "s2", agent: "codex", workspace: "frontend" },
+      ],
+      agents: [], workspaces: [{ name: "backend", cwd: "/b" }, { name: "frontend", cwd: "/f" }], agentCatalog: [],
+    }] as never;
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    await flushPromises();
+
+    const files = useFilesStore();
+    // Changes tab already active with a diff loaded — so the tab watcher's `!files.diff`
+    // guard would NOT fire on its own; only the session-switch path should reload.
+    files.tab = "changes";
+    files.diff = { workspace: "backend", files: [], diff: "", truncated: false } as never;
+    await flushPromises();
+
+    const loadDiff = vi.spyOn(files, "loadDiff").mockResolvedValue();
+    // Switch to a session in a different workspace while the Changes tab stays active.
+    chat.sessionAlias = "s2";
+    await flushPromises();
+
+    expect(loadDiff).toHaveBeenCalled();
+  });
+
+  it("does not auto-load the diff on a session switch when the Files tab is active", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      sessions: [
+        { alias: "s1", agent: "codex", workspace: "backend" },
+        { alias: "s2", agent: "codex", workspace: "frontend" },
+      ],
+      agents: [], workspaces: [{ name: "backend", cwd: "/b" }, { name: "frontend", cwd: "/f" }], agentCatalog: [],
+    }] as never;
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    await flushPromises();
+
+    const files = useFilesStore();
+    files.tab = "files";
+    const loadDiff = vi.spyOn(files, "loadDiff").mockResolvedValue();
+    chat.sessionAlias = "s2";
+    await flushPromises();
+
+    expect(loadDiff).not.toHaveBeenCalled();
+  });
 });

@@ -154,7 +154,13 @@ watch(
     await instances.loadWorkspaces(id).catch(() => {});
     // Default to the active session's workspace; fall back to the first configured one.
     const target = ws ?? instances.byId(id)?.workspaces?.[0]?.name;
-    if (target) void files.selectWorkspace(id, target);
+    if (!target) return;
+    await files.selectWorkspace(id, target);
+    // selectWorkspace cleared the diff, but the files.tab watcher below won't refire on a
+    // session switch (the tab value is unchanged), so the Changes tab would sit on the
+    // "no diff loaded" placeholder until a manual refresh. Load it here when it's the
+    // active view so switching sessions auto-shows the new workspace's changes.
+    if (files.tab === "changes") void files.loadDiff();
   },
   { immediate: true },
 );
