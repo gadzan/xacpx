@@ -90,6 +90,13 @@ describe("InstanceTree session management", () => {
     expect(chat.sessionAlias).toBe("backend");
   });
 
+  it("shows a spinner on an optimistic 'creating' session row", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "", running: false, archived: false, creating: true }])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="session-creating"]').exists()).toBe(true);
+  });
+
   it("selects the freshly created session when the dialog reports it", async () => {
     const store = useInstancesStore();
     store.instances = [instance()] as never;

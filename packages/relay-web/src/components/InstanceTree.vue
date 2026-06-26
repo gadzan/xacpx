@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, ChevronDown, ChevronRight, MoreHorizontal, Plus, Settings2, Trash2 } from "lucide-vue-next";
+import { Archive, ChevronDown, ChevronRight, Loader2, MoreHorizontal, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { confirm } from "../lib/use-confirm";
@@ -222,7 +222,8 @@ const rowSwipes = computed(() => {
                 class="flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
                 @click="onRowTap(inst.id, s.alias)"
               >
-                <span v-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
+                <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
+                <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
                       class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
                 <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
                       class="h-2 w-2 shrink-0 rounded-full bg-info" />

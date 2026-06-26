@@ -8,7 +8,7 @@ import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
-import { AlertTriangle, Bot, Folder, GitBranch, X } from "lucide-vue-next";
+import { AlertTriangle, Bot, Folder, GitBranch, Loader2, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
@@ -47,6 +47,23 @@ const currentSession = computed(() =>
 const currentDriver = computed(() =>
   instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
 );
+
+// Booting state: an optimistic session whose create RPC is still cold-starting the agent.
+// The "starting… Ns" elapsed readout reuses the always-on `nowMs` ticker (declared below
+// for the turn HUD) so there's no second interval.
+const bootElapsed = computed(() => {
+  const since = currentSession.value?.creatingSince;
+  return since ? Math.max(0, Math.floor((nowMs.value - since) / 1000)) : 0;
+});
+
+// Dismiss a booting/failed optimistic session: drop the row and clear the selection
+// back to the empty pane. A session that actually came up keeps its (now real) row.
+function dismissBooting(): void {
+  const id = chat.instanceId;
+  const alias = chat.sessionAlias;
+  if (id && alias) instances.cancelSessionCreation(id, alias);
+  chat.clearSelection();
+}
 
 // Keep a read-only git summary loaded for the current session's workspace so the
 // header chip reflects changes without the user opening the Files panel first.
@@ -126,6 +143,27 @@ const verb = computed(() => {
         <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-md p-1 text-danger/70 transition-colors hover:bg-danger/15 hover:text-danger"
                 :title="$t('common.dismissNotice')" @click="chat.error = ''"><X :size="14" /></button>
       </div>
+      <!-- Cold-starting session: an optimistic row whose create RPC is still spinning up
+           the agent. Show progress (and a way out) instead of an empty transcript. -->
+      <div v-if="currentSession?.creating || currentSession?.createError" data-test="session-booting"
+           class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+        <template v-if="currentSession?.createError">
+          <AlertTriangle :size="22" class="text-danger" aria-hidden="true" />
+          <p class="text-sm font-medium text-danger">{{ $t("session.startFailed") }}</p>
+          <p class="max-w-sm break-words text-xs text-fg-muted">{{ currentSession.createError }}</p>
+          <button data-test="booting-dismiss" class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg hover:bg-fg/5"
+                  @click="dismissBooting">{{ $t("common.dismiss") }}</button>
+        </template>
+        <template v-else>
+          <Loader2 :size="22" class="animate-spin motion-reduce:animate-none text-accent" aria-hidden="true" />
+          <p class="text-sm font-medium text-fg">{{ $t("session.starting", { agent: currentSession?.agent }) }}
+            <span class="ml-1 font-mono tabular-nums text-fg-muted">{{ bootElapsed }}s</span></p>
+          <p class="max-w-sm text-xs text-fg-muted">{{ $t("session.startingHint") }}</p>
+          <button data-test="booting-cancel" class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-fg/5"
+                  @click="dismissBooting">{{ $t("common.cancel") }}</button>
+        </template>
+      </div>
+      <template v-else>
       <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
@@ -152,6 +190,7 @@ const verb = computed(() => {
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                      @send="onSend" @cancel="chat.cancel" />
       </div>
+      </template>
     </template>
   </div>
 </template>

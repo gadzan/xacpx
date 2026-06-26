@@ -111,6 +111,58 @@ it("clears staged attachments when switching session so they don't leak to the n
   expect(composer.pending).toHaveLength(0);
 });
 
+it("shows the booting view (not the composer) for a session that is still creating", async () => {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "backend", agent: "codex", workspace: "gaia", transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now() - 12_000 }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  const booting = w.find('[data-test="session-booting"]');
+  expect(booting.exists()).toBe(true);
+  expect(booting.text()).toContain("Starting codex");
+  expect(booting.text()).toMatch(/1[12]s/); // elapsed ~12s
+  expect(w.find('[data-test="booting-cancel"]').exists()).toBe(true);
+});
+
+it("cancelling a booting session drops its row and clears the selection", async () => {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "backend", agent: "codex", workspace: "gaia", transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now() }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  await w.find('[data-test="booting-cancel"]').trigger("click");
+  expect(instances.byId("i1")!.sessions).toHaveLength(0);
+  expect(chat.sessionAlias).toBeNull();
+});
+
+it("surfaces a create failure in the booting view with a dismiss action", async () => {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "backend", agent: "codex", workspace: "gaia", transportSession: "", running: false, archived: false, creating: false, createError: "agent not installed" }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  const booting = w.find('[data-test="session-booting"]');
+  expect(booting.exists()).toBe(true);
+  expect(booting.text()).toContain("agent not installed");
+  await w.find('[data-test="booting-dismiss"]').trigger("click");
+  expect(chat.sessionAlias).toBeNull();
+});
+
 it("cycles the working verb every ~10s while the turn runs", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);

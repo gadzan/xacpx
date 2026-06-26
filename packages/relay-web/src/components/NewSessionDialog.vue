@@ -84,8 +84,6 @@ function onDocPointerDown(e: MouseEvent): void {
 onMounted(() => document.addEventListener("mousedown", onDocPointerDown));
 onBeforeUnmount(() => document.removeEventListener("mousedown", onDocPointerDown));
 const submitting = ref(false);
-const pending = ref(false);
-const submittedAlias = ref("");
 const error = ref("");
 const loading = ref(true);
 
@@ -238,8 +236,9 @@ async function submit(): Promise<void> {
         error.value = t("session.pickNativeAndAlias");
         return;
       }
-      const result = await store.createSession(props.instanceId, finalAlias, agentName, workspaceName, nativeSel.value);
-      if (result.pending) { submittedAlias.value = finalAlias; pending.value = true; return; }
+      // Optimistic: switch to the new session right away; creation runs in the
+      // background (a cold agent start can block for 10–40s — see beginSessionCreation).
+      store.beginSessionCreation(props.instanceId, finalAlias, agentName, workspaceName, nativeSel.value);
       emit("created", finalAlias);
       emit("close");
       return;
@@ -271,8 +270,7 @@ async function submit(): Promise<void> {
     //    A blank or "default" model means "use the agent's default" — send nothing.
     const modelOverride = model.value.trim();
     const modelArg = modelOverride && modelOverride.toLowerCase() !== "default" ? modelOverride : undefined;
-    const result = await store.createSession(props.instanceId, finalAlias, agentName, workspaceName, undefined, modelArg);
-    if (result.pending) { submittedAlias.value = finalAlias; pending.value = true; return; }
+    store.beginSessionCreation(props.instanceId, finalAlias, agentName, workspaceName, undefined, modelArg);
     emit("created", finalAlias);
     emit("close");
   } catch (e) {
@@ -296,10 +294,7 @@ async function submit(): Promise<void> {
       </header>
 
       <div class="space-y-4 px-5 py-4">
-        <div v-if="pending" data-test="ns-pending" class="rounded-lg bg-info/10 px-3 py-3 text-xs text-info">
-          {{ $t("session.creating") }}
-        </div>
-        <div v-else-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("session.loadingOptions") }}</div>
+        <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("session.loadingOptions") }}</div>
         <template v-else>
           <div class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.source") }}</span>
@@ -406,17 +401,10 @@ async function submit(): Promise<void> {
       </div>
 
       <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
-        <template v-if="pending">
-          <button data-test="ns-pending-close"
-                  class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"
-                  @click="emit('created', submittedAlias); emit('close')">{{ $t("common.ok") }}</button>
-        </template>
-        <template v-else>
-          <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
-          <button data-test="ns-create" :disabled="!canSubmit"
-                  class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
-                  @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>
-        </template>
+        <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
+        <button data-test="ns-create" :disabled="!canSubmit"
+                class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
+                @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>
       </footer>
     </div>
   </div>
