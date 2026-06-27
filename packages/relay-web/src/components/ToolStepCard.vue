@@ -47,10 +47,10 @@ function fmtDuration(ms?: number): string {
        :class="step.status === 'error' ? 'border-danger/40' : 'border-border'">
     <button type="button" data-test="tool-step-header"
             class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg" @click="open = !open">
-      <ChevronDown v-if="open" :size="13" class="text-fg-muted" />
-      <ChevronRight v-else :size="13" class="text-fg-muted" />
+      <ChevronDown v-if="open" :size="13" class="shrink-0 text-fg-muted" />
+      <ChevronRight v-else :size="13" class="shrink-0 text-fg-muted" />
       <component :is="KIND_ICON[step.kind]" :size="13" class="shrink-0 text-fg-muted" />
-      <span class="truncate font-mono text-[11.5px] text-fg">{{ step.title }}</span>
+      <span class="min-w-0 truncate font-mono text-[11.5px] text-fg">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-2">
         <span v-if="step.durationMs !== undefined" class="font-mono text-[10.5px] text-fg-muted">{{ fmtDuration(step.durationMs) }}</span>
         <Check v-if="step.status === 'success'" data-test="step-status-success" :size="13" class="text-run" />
