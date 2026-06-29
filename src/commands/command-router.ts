@@ -624,10 +624,11 @@ export class CommandRouter {
     };
   }
 
-  /** Archive: cancel any in-flight turn (when no other alias shares the transport)
-   *  but keep the acpx session alive and resumable, then flag the logical session
-   *  archived. Re-prompting later resumes the same conversation with full history;
-   *  the warm process idles out via acpx's TTL like any inactive session. */
+  /** Archive: cancel any in-flight turn and free the warm queue-owner process
+   *  (when no other alias shares the transport), but keep the acpx session open
+   *  and resumable, then flag the logical session archived. Re-prompting later
+   *  resumes the same conversation with full history; the first post-archive
+   *  prompt cold-starts a fresh queue owner. */
   async archiveSessionWithTransport(internalAlias: string): Promise<void> {
     const session = await this.sessions.getSession(internalAlias);
     if (!session) {
@@ -647,13 +648,25 @@ export class CommandRouter {
       } catch {
         /* best-effort */
       }
-      // NOTE: we intentionally do NOT close the acpx session here. `sessions close`
-      // marks the record `closed`, which acpx excludes from name lookup — the
-      // session then becomes unresumable and the next prompt would start fresh,
-      // losing history (that fallback still lives in the restore-on-message branch
-      // for genuinely-missing sessions). Leaving it open keeps the conversation
-      // resumable on the next message; its warm queue-owner process idles out via
-      // acpx's TTL exactly like any other inactive session.
+      // Free the warm queue-owner process now instead of waiting for acpx's TTL to
+      // idle it out. freeWarmProcess kills ONLY the owner process — it does NOT
+      // `sessions close` the record (no `closed` flag), so the session stays open
+      // and the next prompt resumes the same conversation with full history,
+      // repeatably across archive→restore cycles. Best-effort: on failure the
+      // process simply lingers until TTL (the prior behavior), never a regression.
+      try {
+        await this.transport.freeWarmProcess?.(session);
+      } catch (error) {
+        await this.logger.error(
+          "session.free_warm_process_failed",
+          "failed to free warm queue-owner on archive",
+          {
+            alias: internalAlias,
+            transportSession: session.transportSession,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
     }
     await this.sessions.setArchived(internalAlias, true);
   }
