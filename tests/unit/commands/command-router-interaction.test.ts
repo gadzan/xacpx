@@ -1,6 +1,7 @@
 import { beforeEach, expect, mock, test } from "bun:test";
 import { setLocale } from "../../../src/i18n";
 import { CommandRouter } from "../../../src/commands/command-router";
+import type { EnsureSessionProgress, ResolvedSession } from "../../../src/transport/types";
 import type { SessionAgentCommandResolver } from "./command-router-test-support";
 import {
   MemoryStateStore,
@@ -176,6 +177,54 @@ test("control-channel /clear keeps a native session native end-to-end", async ()
   expect(after?.agentSessionId).toBe("ses_fresh");
   expect(after?.transportSession).not.toBe(before?.transportSession);
   expect(after?.transportSession.startsWith("backend:resumed:reset-")).toBe(true);
+});
+
+test("control-channel /clear does not stream chat-style progress pings (web is GUI-first)", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  // Session (re)creation emits a spawn progress event; the chat progress handler would
+  // otherwise turn it into a "🚀 Starting…" ping streamed to the chat surface.
+  transport.ensureSession = mock(async (_s: ResolvedSession, onProgress?: (p: EnsureSessionProgress) => void) => {
+    onProgress?.("spawn");
+  });
+  const router = new CommandRouter(sessions, transport);
+  await router.handle("relay:acct", "/session new web --agent codex --ws backend");
+
+  const pings: string[] = [];
+  const reply = async (text: string) => {
+    pings.push(text);
+  };
+  const res = await router.handle(
+    "relay:acct", "/clear", reply, undefined, undefined, undefined,
+    { channel: "control", chatType: "direct" },
+  );
+
+  // No emoji progress dumped into the web chat pane — only the clean confirmation as the
+  // turn result; the dashboard refreshes the row via the sessions-changed event.
+  expect(pings).toEqual([]);
+  expect(res.text).toContain("已重置");
+});
+
+test("non-control /clear still streams the chat progress pings", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  transport.ensureSession = mock(async (_s: ResolvedSession, onProgress?: (p: EnsureSessionProgress) => void) => {
+    onProgress?.("spawn");
+  });
+  const router = new CommandRouter(sessions, transport);
+  await router.handle("wx:user", "/session new web --agent codex --ws backend");
+
+  const pings: string[] = [];
+  const reply = async (text: string) => {
+    pings.push(text);
+  };
+  await router.handle(
+    "wx:user", "/clear", reply, undefined, undefined, undefined,
+    { channel: "weixin", chatType: "direct" },
+  );
+
+  // Chat channels have no GUI, so they keep the live "🚀 Starting…" progress feedback.
+  expect(pings.some((p) => p.includes("🚀"))).toBe(true);
 });
 
 test("non-control channels still handle xacpx slash commands", async () => {
