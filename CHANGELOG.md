@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.4] - 2026-06-29
+
+A `@ganglion/xacpx` (core) release.
+
+### Fixed
+
+- **`/clear` now resets the session from the relay-web chat box (#90, #91).** The control channel is GUI-first: relay-web forwards any slash command the user types verbatim to the agent, since the dashboard owns those actions. But `/clear` (and `/session reset`) had no GUI entry, and codex/ACP agents don't interpret `/clear` themselves — so it was sent to the agent as inert text and silently no-opped. `session.reset` is now exempt from the control-channel passthrough and handled by xacpx like in every other channel: it recreates the transport session and, for a native (agent-side) session, reads back the fresh rollout id and re-binds it so the session **stays native** across the reset. Other slash commands still pass through. The reset rebuilds the transport session mid-turn but emits no event of its own, so the control prompt path now compares the session's `transportSession` before/after the turn and emits `sessions-changed` when it moved — mirroring the existing archived-badge refresh — so the dashboard row reflects the new transport / native binding instead of going stale.
+- **Agent-command resolution tolerates non-normalized session cwds (#88).** The acpx session index matched a session's recorded `cwd` against the resolved target with a raw string compare, so an equivalent-but-unnormalized path (e.g. a trailing slash or `..` segment) failed to match and dropped the resolved adapter command. The comparison now normalizes both sides with `resolve()` before comparing.
+
+### Added
+
+- **`SessionDto.native` marks agent-side sessions over the wire (#89).** The control service now sets `native: true` on a logical session whose `source` is `agent-side` (i.e. attached to an existing agent rollout, such as a resumed codex session), and the relay-protocol `SessionDto` carries the flag through to structured consumers. The relay-web dashboard uses it to badge native sessions in the sidebar (fresh xacpx-created sessions omit the flag).
+
 ## [relay 0.9.9] - 2026-06-26
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol`, and `channel-relay` are unchanged since their previous releases.
