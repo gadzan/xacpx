@@ -1,5 +1,28 @@
 # Changelog
 
+## [relay 0.9.10] - 2026-06-29
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol` (republished as 0.1.5 below), and `channel-relay` are otherwise unchanged.
+
+### Added
+
+- **Native sessions are badged in the sidebar (#89).** A logical session attached to an existing agent-side rollout (e.g. a resumed codex session) now shows a small "native" badge in the session list, distinguishing it from a session freshly created via New Session. The badge is driven by the `SessionDto.native` flag the core control service populates (shipped in core 0.15.4) and appears immediately on an optimistic native attach.
+
+### Fixed
+
+- **The agent avatar fills its box in the conversation list (#92).** The `@lobehub` brand marks are full-viewBox tile glyphs (e.g. codex is a white rounded square), so rendering one at a fixed inset size left it looking small and visually off-center inside the avatar box. The conversation list's assistant and live-streaming avatars now let the brand tile bleed to the box edges (clipped to the rounded border) so it reads as a proper app icon; the generic line-art fallback stays inset.
+- **Tool-card chevron no longer shrinks on long titles (#87).** A long tool-call title could squeeze the disclosure chevron; it now keeps its size.
+
+## [relay-protocol 0.1.5] - 2026-06-29
+
+A `@ganglion/xacpx-relay-protocol` release catching the published wire types up to fields already shipping on the wire via core and the hub.
+
+### Added
+
+- **`SessionDto.native`** — marks a logical session attached to an existing agent-side (native) rollout; omitted for fresh sessions (#89).
+- **`SessionDto.agentCommand`** — the agent adapter command a session actually runs, so the web can avoid seeding a new session's model picker from a session on a different adapter version (#84).
+- **`SessionUsageSnapshotDto` / `SessionCommandsSnapshotDto`** — the per-session context-usage meter and advertised slash-command list retained for a reconnecting web client, so the context bar and `/` composer hints survive a page refresh.
+
 ## [0.15.4] - 2026-06-29
 
 A `@ganglion/xacpx` (core) release.
