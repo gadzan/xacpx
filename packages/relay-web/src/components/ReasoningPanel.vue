@@ -15,8 +15,8 @@ const open = computed(() => localOpen.value);
 <template>
   <div class="overflow-hidden rounded-lg border border-border bg-surface text-xs shadow-e1">
     <button type="button" class="flex w-full items-center gap-1.5 px-3 py-2 text-left text-fg-muted" @click="localOpen = !localOpen">
-      <ChevronDown v-if="open" :size="13" />
-      <ChevronRight v-else :size="13" />
+      <ChevronDown v-if="open" :size="13" class="shrink-0" />
+      <ChevronRight v-else :size="13" class="shrink-0" />
       <Brain :size="13" :class="streaming ? 'text-accent' : ''" />
       <span class="text-[12px] font-medium" :class="streaming ? 'shimmer-text' : ''">{{ streaming ? $t("reasoning.reasoningStreaming") : $t("reasoning.reasoning") }}</span>
       <span v-if="streaming" data-test="reasoning-shimmer" class="ml-1 inline-block h-1.5 w-1.5 animate-pulse motion-reduce:animate-none rounded-full bg-fg-muted" aria-hidden="true" />

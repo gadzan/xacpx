@@ -48,8 +48,8 @@ function fmtDuration(ms?: number): string {
   <div class="overflow-hidden rounded-lg border border-border bg-surface text-xs shadow-e1">
     <button ref="header" type="button"
             class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg" @click="onHeaderClick">
-      <ChevronDown v-if="open" :size="13" class="text-fg-muted" />
-      <ChevronRight v-else :size="13" class="text-fg-muted" />
+      <ChevronDown v-if="open" :size="13" class="shrink-0 text-fg-muted" />
+      <ChevronRight v-else :size="13" class="shrink-0 text-fg-muted" />
       <span class="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-fg-muted"><Wrench :size="13" /> {{ $t("tools.toolSteps") }}</span>
       <FueDot v-if="showFueDot" :pulsing="fue.status.value === 'unseen'" />
       <span v-else data-test="tool-count" class="font-mono text-[10.5px] text-fg-muted">{{ steps.length }}</span>
