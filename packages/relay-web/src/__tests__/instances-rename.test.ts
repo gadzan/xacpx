@@ -26,8 +26,9 @@ describe("instances renameSession", () => {
       agents: [], workspaces: [], agentCatalog: [],
       sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false, displayName: "old" }],
     }] as never;
-    vi.spyOn(api, "rpc").mockResolvedValue({ ok: true } as never);
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ ok: true } as never);
     await store.renameSession("i1", "backend", "   ");
+    expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.rename", { alias: "backend", displayName: "" });
     expect(store.instances[0]!.sessions[0]!.displayName).toBeUndefined();
   });
 });
