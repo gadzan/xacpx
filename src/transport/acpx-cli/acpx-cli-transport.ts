@@ -7,11 +7,13 @@ import type { NonInteractivePermissions, PermissionMode } from "../../config/typ
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
 import type {
+  AgentCommand,
   AgentSessionListQuery,
   AgentSessionListResult,
   EnsureSessionProgress,
   PermissionPolicy,
   PromptOptions,
+  PromptUsage,
   ReplyQuotaContext,
   ResolvedSession,
   SessionTransport,
@@ -291,7 +293,7 @@ export class AcpxCliTransport implements SessionTransport {
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
     const args = this.buildPromptArgs(session, text, structuredPrompt?.filePath);
     try {
-      if (reply || options?.onSegment || options?.onToolEvent || options?.onThought || options?.onPlan) {
+      if (reply || options?.onSegment || options?.onToolEvent || options?.onThought || options?.onPlan || options?.onUsage || options?.onCommands) {
         const effectiveReplyMode = session.effectiveReplyMode ?? session.replyMode;
         const formatToolCalls = (effectiveReplyMode ?? "verbose") === "verbose";
         // replyMode "stream" → raw token streaming (one live bubble, low latency).
@@ -314,6 +316,8 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onToolEvent,
           options?.onThought,
           options?.onPlan,
+          options?.onUsage,
+          options?.onCommands,
           rawStream,
         );
         const baseText = getPromptText(result);
@@ -574,6 +578,8 @@ export class AcpxCliTransport implements SessionTransport {
     onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
     onThought?: (chunk: string) => void | Promise<void>,
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
+    onUsage?: (usage: PromptUsage) => void | Promise<void>,
+    onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
     rawStream: boolean = false,
   ): Promise<{ result: CommandResult; overflowCount: number }> {
     const hooks = this.streamingHooks;
@@ -601,9 +607,15 @@ export class AcpxCliTransport implements SessionTransport {
       let thoughtError: unknown;
       let planChain = Promise.resolve();
       let planError: unknown;
+      let usageChain = Promise.resolve();
+      let usageError: unknown;
+      let commandsChain = Promise.resolve();
+      let commandsError: unknown;
       const userOnToolEvent = onToolEvent;
       const userOnThought = onThought;
       const userOnPlan = onPlan;
+      const userOnUsage = onUsage;
+      const userOnCommands = onCommands;
 
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
@@ -640,6 +652,30 @@ export class AcpxCliTransport implements SessionTransport {
                   .then(() => userOnPlan(entries))
                   .catch((error) => {
                     planError ??= error;
+                  });
+              },
+            }
+          : {}),
+        ...(userOnUsage
+          ? {
+              onUsage: (usage) => {
+                // Serialize handler invocations; first error wins.
+                usageChain = usageChain
+                  .then(() => userOnUsage(usage))
+                  .catch((error) => {
+                    usageError ??= error;
+                  });
+              },
+            }
+          : {}),
+        ...(userOnCommands
+          ? {
+              onCommands: (commands) => {
+                // Serialize handler invocations; first error wins.
+                commandsChain = commandsChain
+                  .then(() => userOnCommands(commands))
+                  .catch((error) => {
+                    commandsError ??= error;
                   });
               },
             }
@@ -720,6 +756,8 @@ export class AcpxCliTransport implements SessionTransport {
           toolEventChain,
           thoughtChain,
           planChain,
+          usageChain,
+          commandsChain,
         ]).then(() => {
           const deferred = sink?.getPendingError();
           if (deferred) {
@@ -740,6 +778,14 @@ export class AcpxCliTransport implements SessionTransport {
           }
           if (planError) {
             reject(planError);
+            return;
+          }
+          if (usageError) {
+            reject(usageError);
+            return;
+          }
+          if (commandsError) {
+            reject(commandsError);
             return;
           }
           resolve({
