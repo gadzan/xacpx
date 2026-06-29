@@ -292,7 +292,15 @@ export class CommandRouter {
         case "cancel":
           return await handleCancel(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.alias);
         case "session.reset":
-          return await handleSessionReset(this.createSessionHandlerContext(reply, perfSpan), chatKey);
+          // The control channel is GUI-first: don't stream the chat-style "🚀 Starting…"
+          // progress pings into the web chat pane — they're mobile-oriented and clash with the
+          // web UI. The clean "Session … has been reset" confirmation is still returned as the
+          // turn result, and the dashboard refreshes the row via the sessions-changed event.
+          // Other channels (no GUI) keep the live progress feedback.
+          return await handleSessionReset(
+            this.createSessionHandlerContext(metadata?.channel === "control" ? undefined : reply, perfSpan),
+            chatKey,
+          );
         case "session.tail":
           return await handleSessionTail(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.lines);
         case "session.rm":
