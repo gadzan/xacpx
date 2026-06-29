@@ -111,7 +111,7 @@ const verb = computed(() => {
     <template v-else>
       <!-- header -->
       <div class="shrink-0 flex min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
-        <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ chat.sessionAlias }}</h1>
+        <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
         <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
              stay fully readable instead of truncating — title tooltips don't work on touch.
              Each chip is shrink-0 (natural width); the strip overflows and scrolls. -->
