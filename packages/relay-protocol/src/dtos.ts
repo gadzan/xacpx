@@ -6,6 +6,10 @@ export interface SessionDto {
   transportSession: string;
   running: boolean;
   archived: boolean;
+  /** True when this logical session was attached to an existing agent-side (native) rollout
+   *  — e.g. a resumed codex session — rather than freshly created via `/session new`. Lets
+   *  the web badge native sessions distinctly. Omitted (not `false`) for fresh sessions. */
+  native?: boolean;
   /** The agent adapter command this session actually runs (acpx-recorded, or the agent's
    *  resolved default). Lets the web avoid seeding a new session's model picker from a
    *  session running a different adapter version — those advertise model ids in

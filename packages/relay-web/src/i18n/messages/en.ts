@@ -172,6 +172,8 @@ export default {
     deleteSession: "Delete session",
     archiveSession: "Archive session",
     sessionArchivedBadge: "archived",
+    sessionNativeBadge: "native",
+    sessionNativeBadgeTitle: "Resumed from an existing agent-side session",
     sessionArchivedToast: "Archived \"{alias}\"",
     undo: "Undo",
     manage: "Manage instance",

@@ -34,6 +34,10 @@ export interface ControlSessionInfo {
   transportSession: string;
   running: boolean;
   archived: boolean;
+  /** True when this logical session was attached to an existing agent-side (native) rollout
+   *  rather than freshly created. Mirrors LogicalSession.source === "agent-side"; omitted for
+   *  fresh xacpx sessions so the wire stays minimal. */
+  native?: boolean;
   /** The agent adapter command this session runs (acpx-recorded, or the agent's resolved
    *  default). Surfaced so the web can avoid seeding a new session's model picker from a
    *  session on a different adapter version (whose advertised model ids may be in an
@@ -222,6 +226,7 @@ export class ControlService {
         transportSession: session.transportSession,
         running: this.deps.activeTurns.isActiveAnywhere(session.alias),
         archived: session.archived === true,
+        ...(session.source === "agent-side" ? { native: true } : {}),
         ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
       }));
   }

@@ -182,7 +182,9 @@ export const useInstancesStore = defineStore("instances", () => {
     const inst = byId(instanceId);
     if (!inst || inst.sessions.some((s) => s.alias === alias)) return false;
     inst.sessions = [
-      { alias, agent, workspace, transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now() },
+      // A native attach (agentSessionId set) yields a native session — badge the optimistic
+      // row immediately so the marker doesn't pop in only once the server row lands.
+      { alias, agent, workspace, transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now(), ...(agentSessionId ? { native: true } : {}) },
       ...inst.sessions,
     ];
     void createSession(instanceId, alias, agent, workspace, agentSessionId, model).catch((e) => {

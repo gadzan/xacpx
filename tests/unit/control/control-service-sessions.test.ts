@@ -73,6 +73,23 @@ test("listSessions maps resolved sessions with running flag", () => {
   ]);
 });
 
+test("listSessions marks an agent-side (native) session with native: true", () => {
+  const { deps } = makeDeps();
+  // A native-attached session carries source "agent-side"; a fresh xacpx session does not.
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "backend", agent: "claude", workspace: "/ws/backend", transportSession: "xacpx-backend" },
+    { alias: "resumed", agent: "codex", workspace: "/ws/docs", transportSession: "ses_abc", source: "agent-side" },
+  ];
+  const control = new ControlService(deps as never);
+
+  const sessions = control.listSessions("relay:acct");
+  const fresh = sessions.find((s) => s.alias === "backend")!;
+  const native = sessions.find((s) => s.alias === "resumed")!;
+  // Fresh sessions omit the flag entirely; only native ones carry native: true.
+  expect("native" in fresh).toBe(false);
+  expect(native.native).toBe(true);
+});
+
 test("createSession runs the transport lifecycle and emits sessions-changed", async () => {
   const { deps, seen, calls } = makeDeps();
   const control = new ControlService(deps as never);

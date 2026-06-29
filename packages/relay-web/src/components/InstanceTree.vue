@@ -235,6 +235,9 @@ const rowSwipes = computed(() => {
                 <AgentIcon :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
                            :class="s.archived ? 'opacity-60' : ''" />
                 <span v-if="s.archived" data-test="archived-badge" class="shrink-0 rounded bg-bg px-1 py-px text-[9px] text-fg-muted">{{ $t("instance.sessionArchivedBadge") }}</span>
+                <span v-if="s.native" data-test="native-badge" :title="$t('instance.sessionNativeBadgeTitle')"
+                      class="shrink-0 rounded bg-info/15 px-1 py-px text-[9px] text-info"
+                      :class="s.archived ? 'opacity-60' : ''">{{ $t("instance.sessionNativeBadge") }}</span>
                 <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
                       class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
               </button>
