@@ -101,6 +101,49 @@ test("prompting a non-archived session does NOT emit sessions-changed (no needle
   expect(seen.some((e) => e.type === "sessions-changed")).toBe(false);
 });
 
+function makeControlWithTransportChange(opts: { changes: boolean }) {
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  events.subscribe((event) => seen.push(event));
+  // Model `/clear`: the turn (agent.chat) recreates the transport session under the same
+  // alias, so getSession returns a new transportSession on the post-turn read.
+  let reads = 0;
+  const control = new ControlService({
+    agent: { chat: async () => ({ text: "会话已重置" }) },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      createSession: async () => { throw new Error("unused"); },
+      removeSession: async () => ({ wasActive: false }),
+      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) => `relay:${alias}`,
+      getSession: async () => {
+        reads += 1;
+        const transportSession = opts.changes && reads > 1 ? "/ws:backend:reset-2" : "/ws:backend";
+        return { alias: "relay:backend", agent: "claude", workspace: "/ws", transportSession };
+      },
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+  } as never);
+  return { control, seen };
+}
+
+test("a control-channel /clear (transport session recreated) emits sessions-changed", async () => {
+  // session.reset rebuilds the transport session mid-turn; without this the dashboard row
+  // keeps showing the stale transport id / native binding until an unrelated refresh.
+  const { control, seen } = makeControlWithTransportChange({ changes: true });
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "/clear", senderId: "acct-1" });
+  expect(seen.some((e) => e.type === "sessions-changed")).toBe(true);
+});
+
+test("an ordinary prompt (transport session unchanged) does NOT emit sessions-changed", async () => {
+  const { control, seen } = makeControlWithTransportChange({ changes: false });
+  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  expect(seen.some((e) => e.type === "sessions-changed")).toBe(false);
+});
+
 test("multi-paragraph reply: each segment after the first restores the \\n\\n break", async () => {
   // Regression: the transport strips paragraph boundaries when splitting into
   // trimmed segments. Concatenating bare segments ran paragraphs together; the

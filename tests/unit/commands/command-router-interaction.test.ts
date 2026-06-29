@@ -120,6 +120,30 @@ test("control-channel slash commands pass through to the agent (web is GUI-first
   expect(reply.text).toContain("agent:web:/status"); // agent echoed it, not the xacpx status card
 });
 
+test("control-channel /clear still resets the session instead of passing through", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  await router.handle("relay:acct", "/session new web --agent codex --ws backend");
+  const before = await sessions.getCurrentSession("relay:acct");
+  const promptsBefore = getPromptMock(transport).mock.calls.length;
+
+  // `/clear` is a session-reset alias. The web GUI has no other reset entry, so even on the
+  // control channel it must be handled by xacpx (recreate the transport session) rather than
+  // forwarded to the agent verbatim like other slash commands.
+  const reply = await router.handle(
+    "relay:acct", "/clear", undefined, undefined, undefined, undefined,
+    { channel: "control", chatType: "direct" },
+  );
+  const after = await sessions.getCurrentSession("relay:acct");
+
+  expect(getPromptMock(transport).mock.calls.length).toBe(promptsBefore); // never sent to the agent
+  expect(after?.transportSession).not.toBe(before?.transportSession);
+  expect(after?.transportSession.startsWith("backend:web:reset-")).toBe(true);
+  expect(reply.text).not.toContain("agent:web:/clear");
+});
+
 test("non-control channels still handle xacpx slash commands", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
