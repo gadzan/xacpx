@@ -451,14 +451,20 @@ export class ControlService {
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     this.inFlight.set(key, { controller, settled });
-    // Sending to an archived session restores it (useSession clears `archived`), but
-    // useSession emits no event — so detect the transition here and emit
-    // `sessions-changed` after, otherwise the dashboard keeps showing a stale
-    // "archived" badge on the row until the next unrelated refresh.
+    // Sending to an archived session restores it (useSession clears `archived`), and
+    // `/clear` (session.reset) recreates the transport session under the same alias — both
+    // mutate the session row, but neither useSession nor the reset handler emits an event.
+    // Capture the pre-turn state here so we can detect the transition afterwards and emit
+    // `sessions-changed`, otherwise the dashboard keeps showing a stale archived badge /
+    // transport+native binding on the row until the next unrelated refresh.
+    let internalAlias: string | undefined;
     let wasArchived = false;
+    let priorTransportSession: string | undefined;
     try {
-      const internalAlias = await this.deps.sessions.resolveAliasForChat(params.chatKey, params.sessionAlias);
-      wasArchived = (await this.deps.sessions.getSession(internalAlias))?.archived === true;
+      internalAlias = await this.deps.sessions.resolveAliasForChat(params.chatKey, params.sessionAlias);
+      const prior = await this.deps.sessions.getSession(internalAlias);
+      wasArchived = prior?.archived === true;
+      priorTransportSession = prior?.transportSession;
     } catch {
       /* best-effort: a detection failure just means no badge refresh */
     }
@@ -618,6 +624,19 @@ export class ControlService {
     } finally {
       this.inFlight.delete(key);
       resolveSettled();
+      // `/clear` (session.reset) recreated the transport session during the turn (and may
+      // have re-bound a fresh native agentSessionId). Emit `sessions-changed` so the
+      // dashboard refreshes the row; best-effort, and only when the binding actually moved.
+      if (internalAlias && priorTransportSession) {
+        try {
+          const after = await this.deps.sessions.getSession(internalAlias);
+          if (after && after.transportSession !== priorTransportSession) {
+            this.deps.events.emit({ type: "sessions-changed" });
+          }
+        } catch {
+          /* best-effort: no refresh on detection failure */
+        }
+      }
     }
   }
 

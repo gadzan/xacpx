@@ -154,7 +154,13 @@ export class CommandRouter {
     // other chat channels have no GUI and still depend on xacpx commands, so this
     // passthrough is scoped to the control channel (set by the control service for
     // every structured-control turn; see docs/control-module.md).
-    if (metadata?.channel === "control" && command.kind !== "prompt") {
+    //
+    // Exception: `session.reset` (`/clear`, `/session reset`) stays xacpx-handled even on
+    // the control channel. The web GUI has no other "clear/reset session" entry, and codex
+    // (and other ACP agents) don't interpret `/clear` themselves — forwarding it verbatim
+    // would silently no-op. Reset is side-effecting on the xacpx session model (recreates
+    // the transport session, preserving native), so it must not be sent to the agent as text.
+    if (metadata?.channel === "control" && command.kind !== "prompt" && command.kind !== "session.reset") {
       command = { kind: "prompt", text: input.trim() };
     }
     await this.logger.debug("command.parsed", "parsed inbound command", {

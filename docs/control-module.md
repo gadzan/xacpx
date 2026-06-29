@@ -78,6 +78,21 @@ turn 结束时无论成功或失败都发出 `turn-finished`（失败时含 `err
 直接将 reply 分片与最终文本以换行连接后返回字符串。适用于不需要会话状态切换和事件流的
 一次性命令执行场景。
 
+### 斜杠命令透传（GUI-first）
+
+control 通道是 GUI-first 的：relay-web 通过看板按钮驱动会话操作，所以用户在 web
+聊天框里输入的任何 `/` 前缀文本都会被 `command-router` **原样转成 prompt 发给 agent**，
+而不是当作 xacpx 命令解释（微信/飞书等无 GUI 的频道不受影响，仍走正常命令解析）。
+
+**例外**：`session.reset`（`/clear`、`/session reset`）即使在 control 通道也仍由 xacpx
+处理。web 端没有别的「清空/重置会话」入口，且 codex 等 ACP agent 不认识 `/clear`，原样转发
+只会静默 no-op；而 reset 对 xacpx 会话模型是有副作用的（重建 transport 会话，并保持
+native 标记），不能当作文本发给 agent。见 `src/commands/command-router.ts` 的透传分支。
+
+reset 在回合内重建了 transport 会话，但 reset handler 不发事件，所以 `control.prompt`
+会在回合结束后比较 `transportSession` 前后值，若变化则补发 `sessions-changed`（与 archived
+徽标的兜底刷新同理），否则看板会一直显示旧的 transport id / native 绑定直到下次无关刷新。
+
 ### 事件总线覆盖范围
 
 事件总线只保证「`ControlService` 自身发起的变更」会发事件；其它入口
