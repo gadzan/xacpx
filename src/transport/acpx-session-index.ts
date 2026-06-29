@@ -28,7 +28,7 @@ export async function resolveSessionAgentCommandFromIndex(session: ResolvedSessi
     const targetCwd = resolve(session.cwd);
     const match = parsed.entries?.find((entry) =>
       entry.name === session.transportSession &&
-      entry.cwd === targetCwd &&
+      typeof entry.cwd === "string" && resolve(entry.cwd) === targetCwd &&
       typeof entry.agentCommand === "string" &&
       entry.agentCommand.trim().length > 0
     );
