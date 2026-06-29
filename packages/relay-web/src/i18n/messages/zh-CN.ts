@@ -169,8 +169,6 @@ export default {
     newSession: "新建会话",
     deleteSession: "删除会话",
     archiveSession: "归档会话",
-    sessionArchivedBadge: "已归档",
-    sessionNativeBadge: "原生",
     sessionNativeBadgeTitle: "从已有的 agent 原生会话续接",
     sessionArchivedToast: "已归档「{alias}」",
     undo: "撤销",

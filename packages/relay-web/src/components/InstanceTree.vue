@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, ChevronDown, ChevronRight, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
+import { Archive, ChevronDown, ChevronRight, Link2, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { confirm } from "../lib/use-confirm";
@@ -252,6 +252,10 @@ const rowSwipes = computed(() => {
                 <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
                       class="h-2 w-2 shrink-0 rounded-full bg-info" />
                 <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
+                <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
+                     saves horizontal space; the agent name stays available on hover. -->
+                <AgentIcon :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
+                           :class="s.archived ? 'opacity-60' : ''" />
                 <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                        v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
                        class="min-w-0 flex-1 rounded border border-accent bg-bg px-1 py-px text-[13px] text-fg outline-none"
@@ -260,14 +264,12 @@ const rowSwipes = computed(() => {
                        v-focus />
                 <span v-else class="truncate text-[12.5px] font-medium"
                       :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ s.displayName || s.alias }}</span>
-                <!-- Agent shown as its brand glyph (driver icon) instead of a text badge to
-                     save horizontal space; the agent name stays available on hover. -->
-                <AgentIcon :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
-                           :class="s.archived ? 'opacity-60' : ''" />
-                <span v-if="s.archived" data-test="archived-badge" class="shrink-0 rounded bg-bg px-1 py-px text-[9px] text-fg-muted">{{ $t("instance.sessionArchivedBadge") }}</span>
-                <span v-if="s.native" data-test="native-badge" :title="$t('instance.sessionNativeBadgeTitle')"
-                      class="shrink-0 rounded bg-info/15 px-1 py-px text-[9px] text-info"
-                      :class="s.archived ? 'opacity-60' : ''">{{ $t("instance.sessionNativeBadge") }}</span>
+                <!-- Native (agent-side / resumed) sessions get a small link glyph instead of a text
+                     badge to keep the row uncluttered. Archived state reads from the dimmed name, so
+                     it no longer carries its own badge. -->
+                <Link2 v-if="s.native" data-test="native-badge" :size="12"
+                       :aria-label="$t('instance.sessionNativeBadgeTitle')" :title="$t('instance.sessionNativeBadgeTitle')"
+                       class="shrink-0 text-info" :class="s.archived ? 'opacity-60' : ''" />
                 <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
                       class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
               </button>
