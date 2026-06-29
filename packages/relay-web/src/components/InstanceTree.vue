@@ -262,11 +262,14 @@ const rowSwipes = computed(() => {
                        @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                        @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                        v-focus />
-                <span v-else class="truncate text-[12.5px] font-medium"
+                <span v-else data-test="session-name" class="min-w-0 truncate text-[12.5px] font-medium"
                       :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ s.displayName || s.alias }}</span>
+                <!-- Archived state is shown visually by the dimmed name (no text badge), but that
+                     greying carries no signal for screen readers — keep a visually-hidden label so
+                     archived status is still announced. -->
+                <span v-if="s.archived" data-test="archived-label" class="sr-only">{{ $t("instance.sessionArchivedLabel") }}</span>
                 <!-- Native (agent-side / resumed) sessions get a small link glyph instead of a text
-                     badge to keep the row uncluttered. Archived state reads from the dimmed name, so
-                     it no longer carries its own badge. -->
+                     badge to keep the row uncluttered. -->
                 <Link2 v-if="s.native" data-test="native-badge" :size="12"
                        :aria-label="$t('instance.sessionNativeBadgeTitle')" :title="$t('instance.sessionNativeBadgeTitle')"
                        class="shrink-0 text-info" :class="s.archived ? 'opacity-60' : ''" />

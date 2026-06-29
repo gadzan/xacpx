@@ -294,8 +294,10 @@ describe("InstanceTree session management", () => {
     expect(archivedRow.text()).toContain("arch"); // archived sunk to bottom
     // Archived state reads from the greyed name; its dedicated text badge was removed to keep
     // the row uncluttered once the native marker landed.
-    expect(archivedRow.find(".truncate").classes()).toContain("text-fg-muted");
+    expect(archivedRow.find('[data-test="session-name"]').classes()).toContain("text-fg-muted");
     expect(w.find('[data-test="archived-badge"]').exists()).toBe(false);
+    // …but a visually-hidden label keeps the archived state announced to screen readers.
+    expect(archivedRow.find('[data-test="archived-label"]').classes()).toContain("sr-only");
   });
 
   it("hides row actions when the instance is offline", () => {
