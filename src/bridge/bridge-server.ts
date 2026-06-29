@@ -39,6 +39,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "cancel",
   "removeSession",
   "deleteSession",
+  "freeWarmProcess",
   "getAgentSessionId",
 ]);
 
@@ -54,6 +55,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "cancel",
   "removeSession",
   "deleteSession",
+  "freeWarmProcess",
   "getAgentSessionId",
 ]);
 
@@ -291,6 +293,13 @@ export class BridgeServer {
         });
       case "deleteSession":
         return await this.runtime.deleteSession({
+          agent: requireString(params, "agent"),
+          agentCommand: asOptionalString(params.agentCommand),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+        });
+      case "freeWarmProcess":
+        return await this.runtime.freeWarmProcess({
           agent: requireString(params, "agent"),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
