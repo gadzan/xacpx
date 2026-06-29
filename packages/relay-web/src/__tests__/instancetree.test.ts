@@ -90,6 +90,18 @@ describe("InstanceTree session management", () => {
     expect(chat.sessionAlias).toBe("backend");
   });
 
+  it("badges a native session and leaves a fresh one unbadged", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false },
+      { alias: "resumed", agent: "codex", workspace: "home", transportSession: "ses_abc", running: false, archived: false, native: true },
+    ])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const badges = w.findAll('[data-test="native-badge"]');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]!.text()).toBe("native");
+  });
+
   it("shows a spinner on an optimistic 'creating' session row", () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "", running: false, archived: false, creating: true }])] as never;
