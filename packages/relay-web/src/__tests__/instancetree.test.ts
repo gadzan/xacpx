@@ -90,16 +90,17 @@ describe("InstanceTree session management", () => {
     expect(chat.sessionAlias).toBe("backend");
   });
 
-  it("badges a native session and leaves a fresh one unbadged", () => {
+  it("marks a native session with the link icon and leaves a fresh one unmarked", () => {
     const store = useInstancesStore();
     store.instances = [instance([
       { alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false },
       { alias: "resumed", agent: "codex", workspace: "home", transportSession: "ses_abc", running: false, archived: false, native: true },
     ])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    const badges = w.findAll('[data-test="native-badge"]');
-    expect(badges).toHaveLength(1);
-    expect(badges[0]!.text()).toBe("native");
+    // Native sessions now carry a compact link glyph (not a text badge) to keep the row tidy.
+    const marks = w.findAll('[data-test="native-badge"]');
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.attributes("title")).toBe("Resumed from an existing agent-side session");
   });
 
   it("shows a spinner on an optimistic 'creating' session row", () => {
@@ -289,8 +290,14 @@ describe("InstanceTree session management", () => {
     ])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     const rows = w.findAll('[data-test="session-row"]');
-    expect(rows[rows.length - 1].text()).toContain("arch"); // archived sunk to bottom
-    expect(w.find('[data-test="archived-badge"]').exists()).toBe(true);
+    const archivedRow = rows[rows.length - 1];
+    expect(archivedRow.text()).toContain("arch"); // archived sunk to bottom
+    // Archived state reads from the greyed name; its dedicated text badge was removed to keep
+    // the row uncluttered once the native marker landed.
+    expect(archivedRow.find('[data-test="session-name"]').classes()).toContain("text-fg-muted");
+    expect(w.find('[data-test="archived-badge"]').exists()).toBe(false);
+    // …but a visually-hidden label keeps the archived state announced to screen readers.
+    expect(archivedRow.find('[data-test="archived-label"]').classes()).toContain("sr-only");
   });
 
   it("hides row actions when the instance is offline", () => {
