@@ -43,6 +43,8 @@ export interface ControlSessionInfo {
    *  session on a different adapter version (whose advertised model ids may be in an
    *  incompatible format). Omitted when unknown. */
   agentCommand?: string;
+  /** Cosmetic relay-web display label; omitted when unset so the wire stays minimal. */
+  displayName?: string;
 }
 
 export interface ControlAgentInfo {
@@ -68,7 +70,7 @@ export interface ControlServiceDeps {
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
-    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel"
+    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setDisplayName"
   >;
   // The active transport, for reading/switching a session's model. setModel/
   // getSessionModel are optional on the interface — absence is handled gracefully.
@@ -200,6 +202,13 @@ export class ControlService {
     await this.deps.sessions.setSessionModel(session.alias, modelId);
   }
 
+  /** Set (or clear) a session's relay-web display label and persist it. */
+  async setSessionDisplayName(chatKey: string, alias: string, displayName: string): Promise<void> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session) throw new Error("session not found");
+    await this.deps.sessions.setDisplayName(session.alias, displayName);
+  }
+
   /** Resolve a chat-scoped display alias to its ResolvedSession, or null. */
   private async resolveControlSession(chatKey: string, alias: string): Promise<ResolvedSession | null> {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
@@ -228,6 +237,7 @@ export class ControlService {
         archived: session.archived === true,
         ...(session.source === "agent-side" ? { native: true } : {}),
         ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+        ...(session.displayName ? { displayName: session.displayName } : {}),
       }));
   }
 
