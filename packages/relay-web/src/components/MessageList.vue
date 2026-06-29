@@ -176,7 +176,7 @@ watch(
           <!-- ASSISTANT row -->
           <div v-else class="cv-row group flex gap-2.5">
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-lg border border-border bg-surface">
-              <AgentIcon :driver="driver" :size="15" />
+              <AgentIcon :driver="driver" :size="15" fill />
             </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
@@ -202,7 +202,7 @@ watch(
         <!-- live streaming assistant row -->
         <div v-if="liveTurn && liveTurn.parts.length" class="flex gap-2.5">
           <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-lg border border-border bg-surface">
-            <AgentIcon :driver="driver" :size="15" />
+            <AgentIcon :driver="driver" :size="15" fill />
           </div>
           <div data-test="msg-streaming" class="min-w-0 flex-1">
             <TurnParts :parts="liveTurn.parts" :streaming="true" />
