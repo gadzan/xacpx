@@ -66,6 +66,9 @@ export interface ResolvedSession {
    * no `--model` is passed and acpx uses the agent adapter's default.
    */
   model?: string;
+  /** Cosmetic per-session display label (relay-web only). Mirrors LogicalSession.display_name;
+   *  undefined when unset. Does not affect identity or transport. */
+  displayName?: string;
   workspace: string;
   transportSession: string;
   source?: "xacpx" | "agent-side";

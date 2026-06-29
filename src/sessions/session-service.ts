@@ -664,6 +664,7 @@ export class SessionService {
       agentCommand: session.transport_agent_command ?? resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, this.config.transport.preferLocalAgents !== false),
       // Session-level model wins; otherwise fall back to the agent config default.
       model: session.model ?? agentConfig.model,
+      displayName: session.display_name,
       workspace: session.workspace,
       transportSession: session.transport_session,
       source: session.source,
@@ -692,6 +693,26 @@ export class SessionService {
         session.model = normalized;
       } else {
         delete session.model;
+      }
+
+      session.last_used_at = new Date(this.now()).toISOString();
+      await this.persist();
+    });
+  }
+
+  /** Set (or clear) a session's relay-web display label. Identity (`alias`) is untouched. */
+  async setDisplayName(alias: string, name?: string): Promise<void> {
+    await this.mutate(async () => {
+      const session = this.state.sessions[alias];
+      if (!session) {
+        throw new Error(`session "${alias}" does not exist`);
+      }
+
+      const normalized = name?.trim();
+      if (normalized) {
+        session.display_name = normalized;
+      } else {
+        delete session.display_name;
       }
 
       session.last_used_at = new Date(this.now()).toISOString();
