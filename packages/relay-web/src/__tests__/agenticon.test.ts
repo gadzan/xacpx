@@ -49,4 +49,24 @@ describe("AgentIcon", () => {
     const w = mount(AgentIcon, { props: { driver: "codex", title: "my-codex" } });
     expect(w.find('[data-test="agent-icon"]').attributes("title")).toBe("my-codex");
   });
+
+  it("fills its parent box (no fixed px) when fill is set", () => {
+    const w = mount(AgentIcon, { props: { driver: "codex", fill: true } });
+    const root = w.find('[data-test="agent-icon"]');
+    // Fill mode drops the fixed width/height so the brand tile bleeds to the parent's edges.
+    expect(root.classes()).toContain("h-full");
+    expect(root.classes()).toContain("w-full");
+    expect(root.attributes("style") ?? "").not.toContain("width");
+    // The brand SVG still fills + centers.
+    const inner = w.find('[data-test="agent-icon"] > span');
+    expect(inner.classes()).toContain("[&>svg]:h-full");
+    expect(inner.classes()).toContain("[&>svg]:w-full");
+  });
+
+  it("keeps a sized, inset glyph for the generic fallback even in fill mode", () => {
+    // The line-art Bot would look cramped bleeding edge-to-edge, so it stays at its px size,
+    // centered by the parent box's place-items-center.
+    const w = mount(AgentIcon, { props: { driver: "nope", fill: true, size: 15 } });
+    expect(w.find(".lucide-bot").exists()).toBe(true);
+  });
 });
