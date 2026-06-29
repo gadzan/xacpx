@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, ChevronDown, ChevronRight, Loader2, MoreHorizontal, Plus, Settings2, Trash2 } from "lucide-vue-next";
+import { Archive, ChevronDown, ChevronRight, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { confirm } from "../lib/use-confirm";
@@ -11,6 +11,11 @@ import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
 import type { InstanceView } from "../stores/instances";
+
+// Local directive: focus + select an element on mount (the rename input).
+const vFocus = {
+  mounted(el: HTMLInputElement) { el.focus(); el.select(); },
+};
 
 const store = useInstancesStore();
 const chat = useChatStore();
@@ -68,6 +73,25 @@ function orderedSessions<T extends { archived?: boolean }>(sessions: T[]): T[] {
 
 // Desktop overflow (⋯) menu open-state, keyed by `${instanceId}:${alias}`.
 const openMenuFor = ref<string | null>(null);
+
+// Inline rename: the row currently being renamed, keyed `${instanceId}:${alias}`, plus its draft.
+const renamingFor = ref<string | null>(null);
+const renameDraft = ref("");
+
+function startRename(id: string, s: { alias: string; displayName?: string }) {
+  openMenuFor.value = null;
+  renamingFor.value = `${id}:${s.alias}`;
+  renameDraft.value = s.displayName ?? s.alias;
+}
+function commitRename(id: string, alias: string) {
+  if (renamingFor.value !== `${id}:${alias}`) return; // already cancelled
+  const next = renameDraft.value.trim();
+  renamingFor.value = null;
+  void store.renameSession(id, alias, next).catch(() => {});
+}
+function cancelRename() {
+  renamingFor.value = null;
+}
 // Touch swipe-to-reveal: the row whose action blocks (archive/delete) are revealed.
 // Single ref ⇒ opening one row auto-closes any other. Swipe right→left reveals;
 // tapping a block executes; tapping the row body or anywhere outside closes.
@@ -228,8 +252,14 @@ const rowSwipes = computed(() => {
                 <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
                       class="h-2 w-2 shrink-0 rounded-full bg-info" />
                 <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
-                <span class="truncate text-[12.5px] font-medium"
-                      :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ s.alias }}</span>
+                <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
+                       v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
+                       class="min-w-0 flex-1 rounded border border-accent bg-bg px-1 py-px text-[13px] text-fg outline-none"
+                       @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
+                       @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
+                       v-focus />
+                <span v-else class="truncate text-[12.5px] font-medium"
+                      :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ s.displayName || s.alias }}</span>
                 <!-- Agent shown as its brand glyph (driver icon) instead of a text badge to
                      save horizontal space; the agent name stays available on hover. -->
                 <AgentIcon :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
@@ -268,6 +298,7 @@ const rowSwipes = computed(() => {
                archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
           <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
                class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
+            <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
             <button v-if="!s.archived" data-test="action-archive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Archive :size="12" />{{ $t("instance.archiveSession") }}</button>
             <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
           </div>
