@@ -144,6 +144,40 @@ test("control-channel /clear still resets the session instead of passing through
   expect(reply.text).not.toContain("agent:web:/clear");
 });
 
+test("control-channel /clear keeps a native session native end-to-end", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  // The fresh transport session created by the reset advertises a new agent rollout id;
+  // the reset handler reads it back to keep the logical session native.
+  (transport as { getAgentSessionId?: unknown }).getAgentSessionId = mock(async () => "ses_fresh");
+  const router = new CommandRouter(sessions, transport);
+
+  // Seed a native (agent-side) session bound to the chat — as if attached from a codex rollout.
+  await sessions.attachNativeSession({
+    alias: "resumed",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "backend:resumed",
+    agentSessionId: "ses_orig",
+  });
+  await sessions.useSession("relay:acct", "resumed");
+  const before = await sessions.getCurrentSession("relay:acct");
+  expect(before?.source).toBe("agent-side");
+
+  await router.handle(
+    "relay:acct", "/clear", undefined, undefined, undefined, undefined,
+    { channel: "control", chatType: "direct" },
+  );
+  const after = await sessions.getCurrentSession("relay:acct");
+
+  // Reset recreated the transport session but the logical session stays native, re-bound to
+  // the fresh rollout id — so the dashboard's "native" badge survives /clear.
+  expect(after?.source).toBe("agent-side");
+  expect(after?.agentSessionId).toBe("ses_fresh");
+  expect(after?.transportSession).not.toBe(before?.transportSession);
+  expect(after?.transportSession.startsWith("backend:resumed:reset-")).toBe(true);
+});
+
 test("non-control channels still handle xacpx slash commands", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
