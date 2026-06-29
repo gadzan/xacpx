@@ -751,8 +751,9 @@ async function promptWithSession(
   // resumes the existing conversation without needing recreation.
   if (session.archived) {
     await context.sessions.setArchived(session.alias, false);
-    // Archive keeps the acpx session alive (archiveSessionWithTransport only
-    // cancels), so checkTransportSession normally reports it present and the prompt
+    // Archive keeps the acpx session record open (archiveSessionWithTransport
+    // cancels and frees the warm queue-owner process but does not close the
+    // record), so checkTransportSession normally reports it present and the prompt
     // resumes the existing conversation with full history. The recreate is a safety
     // net for the chat path when the acpx session really is gone (a session archived
     // under the old close-on-archive build, a manual `sessions close`, or an acpx

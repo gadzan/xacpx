@@ -198,6 +198,8 @@ test("archiveSessionWithTransport throws and touches nothing when a turn is acti
 
   expect((activeTurns.isActiveAnywhere as ReturnType<typeof mock>).mock.calls.length).toBe(1);
   expect((transport.cancel as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  // The in-flight guard throws before the !shared block, so the reap is blocked too.
+  expect((transport.freeWarmProcess as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect((sessions.setArchived as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });
