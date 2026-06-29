@@ -52,4 +52,21 @@ describe("InstanceTree rename", () => {
     expect(rename).not.toHaveBeenCalled();
     expect(w.find('[data-test="rename-input"]').exists()).toBe(false);
   });
+
+  it("Enter then blur calls renameSession exactly once (double-commit guard)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const rename = vi.spyOn(store, "renameSession").mockResolvedValue();
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+
+    await w.find('[data-test="session-menu"]').trigger("click");
+    await w.find('[data-test="action-rename"]').trigger("click");
+    const input = w.find('[data-test="rename-input"]');
+    await input.setValue("API hotfix");
+    await input.trigger("keydown.enter");
+    await input.trigger("blur");
+
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledWith("i1", "backend", "API hotfix");
+  });
 });

@@ -26,7 +26,7 @@ interface Row {
 const sessionRows = computed<Row[]>(() =>
   instances.instances.flatMap((inst) =>
     inst.sessions.map((s) => ({
-      label: s.alias,
+      label: s.displayName || s.alias,
       sub: `${inst.name} · ${s.agent}`,
       instanceId: inst.id,
       alias: s.alias,
@@ -36,7 +36,7 @@ const sessionRows = computed<Row[]>(() =>
 
 function matches(row: Row, q: string): boolean {
   if (!q) return true;
-  const hay = `${row.label} ${row.sub}`.toLowerCase();
+  const hay = `${row.label} ${row.sub} ${row.alias}`.toLowerCase();
   return hay.includes(q.toLowerCase());
 }
 
