@@ -14,6 +14,7 @@ export const MSG = {
   sessionsRemove: "control.sessions.remove",
   sessionsArchive: "control.sessions.archive",
   sessionsUnarchive: "control.sessions.unarchive",
+  sessionsRename: "control.sessions.rename",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
   workspacesCreate: "control.workspaces.create",
@@ -140,6 +141,16 @@ export interface SessionsArchivePayload {
 export interface SessionsUnarchivePayload {
   chatKey: string;
   alias: string;
+}
+export interface SessionsRenamePayload {
+  /** Server-stamped `relay:<accountId>`; scopes the alias to that channel. */
+  chatKey: string;
+  alias: string;
+  /** New display label; empty string clears the override (UI falls back to alias). */
+  displayName: string;
+}
+export interface SessionsRenameResult {
+  ok: true;
 }
 export interface AgentsListResult {
   agents: AgentDto[];

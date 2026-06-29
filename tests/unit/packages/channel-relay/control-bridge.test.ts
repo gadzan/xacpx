@@ -198,6 +198,29 @@ test("control.upload dispatches to uploadFile and returns UploadResult", async (
   });
 });
 
+test("sessions.rename dispatches to setSessionDisplayName and returns ok", async () => {
+  const calls: unknown[] = [];
+  const { control } = makeFakeControl({
+    setSessionDisplayName: async (chatKey: string, alias: string, displayName: string) => {
+      calls.push([chatKey, alias, displayName]);
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  const result = await dispatch(bridge, req(MSG.sessionsRename, { chatKey: "relay:acc", alias: "backend", displayName: "My label" }));
+  expect(result).toEqual({ ok: true });
+  expect(calls).toEqual([["relay:acc", "backend", "My label"]]);
+});
+
+test("sessions.rename returns bad-request when alias is missing", async () => {
+  const { control } = makeFakeControl({
+    setSessionDisplayName: async () => {},
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.sessionsRename, { chatKey: "relay:acc", alias: "", displayName: "x" }))).toEqual({
+    error: { code: "bad-request", message: "alias is required" },
+  });
+});
+
 test("unknown type and thrown errors become error payloads", async () => {
   const { control } = makeFakeControl();
   const broken = { ...control, listSessions: () => { throw new Error("boom"); } };

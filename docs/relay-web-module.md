@@ -100,6 +100,15 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **错误浮现**：实例侧 RPC 错误是 200 + `{error:{code,message}}`（网关 resolve 不 reject），store 的
   `unwrap()` 用 `isErrorPayload` 检出并抛出，对话框渲染错误横幅而非静默吞掉（修了旧表单「点 Create 无反应」）。
 
+## 会话重命名（侧边栏 `⋯` 菜单）
+
+- 会话行的 `⋯` 溢出菜单首项 **「重命名」** 把会话名就地换成输入框（Enter / 失焦提交，Esc 取消）。
+- 设置的是一个**纯展示名 `display_name`**（核心 `LogicalSession.display_name` → `SessionDto.displayName`）；
+  它**不改会话身份**：`alias`、`/use` 句柄、transport 会话名都不变，仅 relay-web 展示。
+- 走 RPC `control.sessions.rename {alias, displayName}`（连接器 → `ControlService.setSessionDisplayName`）；
+  store `renameSession` 提交后乐观更新本地行。**空值清除**（回退显示 `alias`），不做唯一性约束。
+- 侧边栏与 `ChatPane` 头部均渲染 `displayName || alias`。微信 `/sessions`、`/use` 不受影响。
+
 ## 实例配置管理 Modal（`ManageInstanceDialog.vue`）
 
 - 每个实例行的 **「Manage」** 按钮（实例树）打开一个按实例的管理弹窗，内含 workspace + agent 两个管理器

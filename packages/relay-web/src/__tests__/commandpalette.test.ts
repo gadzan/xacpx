@@ -59,4 +59,37 @@ describe("CommandPalette", () => {
     // second session row is "frontend"
     expect(w.emitted("select-session")?.[0]).toEqual(["i1", "frontend"]);
   });
+
+  describe("displayName support", () => {
+    beforeEach(() => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        { id: "i2", name: "staging-box", online: true, lastSeenAt: null, agents: [], workspaces: [], agentCatalog: [],
+          sessions: [{ alias: "backend", displayName: "API hotfix", agent: "codex", workspace: "gaia" }] },
+      ] as never;
+    });
+
+    it("shows displayName in the row instead of raw alias", () => {
+      const w = mount(CommandPalette);
+      const rows = w.findAll('[data-test="palette-row"]');
+      expect(rows[0].text()).toContain("API hotfix");
+      expect(rows[0].text()).not.toContain("backend");
+    });
+
+    it("filters by displayName", async () => {
+      const w = mount(CommandPalette);
+      await w.find('[data-test="palette-input"]').setValue("API hotfix");
+      const rows = w.findAll('[data-test="palette-row"]');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].text()).toContain("API hotfix");
+    });
+
+    it("filters by original alias even when displayName is set", async () => {
+      const w = mount(CommandPalette);
+      await w.find('[data-test="palette-input"]').setValue("backend");
+      const rows = w.findAll('[data-test="palette-row"]');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].text()).toContain("API hotfix");
+    });
+  });
 });

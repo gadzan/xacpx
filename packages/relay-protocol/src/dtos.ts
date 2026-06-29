@@ -16,6 +16,9 @@ export interface SessionDto {
    *  incompatible formats (e.g. codex `gpt-5.5[high]` vs `gpt-5.5/high`). Omitted when
    *  unknown. */
   agentCommand?: string;
+  /** Cosmetic display label set from relay-web. When present, the web shows this instead of
+   *  `alias`. Identity stays `alias`. Omitted when unset. */
+  displayName?: string;
 }
 
 /** Wire DTO for a configured agent on an instance. */
