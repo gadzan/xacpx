@@ -677,7 +677,8 @@ export class BridgeRuntime {
     }
     // Close the acpx session (terminates the queue owner + agent process since
     // acpx >=0.10), then unlink its on-disk files. See deleteAcpxSessionFiles for
-    // the residual orphan-stream-file risk this leaves (notably on Windows).
+    // the residual orphan-stream-file risk this leaves (a file-unlink timing /
+    // Windows file-lock issue, not a live process — notably on Windows).
     await this.removeSession(input);
     await deleteAcpxSessionFiles({ acpxRecordId });
     return {};
