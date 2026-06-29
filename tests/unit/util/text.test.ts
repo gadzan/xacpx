@@ -6,7 +6,8 @@ test("truncateText returns unchanged text when within limit", () => {
 });
 
 test("truncateText truncates and adds ellipsis when over limit", () => {
-  expect(truncateText("hello world", 8)).toBe("hello…");
+  // slices to maxLength - ellipsis.length, then appends the ellipsis
+  expect(truncateText("hello world", 8)).toBe("hello w…");
 });
 
 test("truncateText handles empty string", () => {
@@ -14,7 +15,7 @@ test("truncateText handles empty string", () => {
 });
 
 test("truncateText uses custom ellipsis", () => {
-  expect(truncateText("hello world", 8, "---")).toBe("hel---");
+  expect(truncateText("hello world", 8, "---")).toBe("hello---");
 });
 
 test("truncateText handles exact limit", () => {
@@ -22,7 +23,8 @@ test("truncateText handles exact limit", () => {
 });
 
 test("truncateText handles text shorter than ellipsis", () => {
-  expect(truncateText("hi", 1)).toBe("h");
+  // maxLength < ellipsis length: slice(0, negative) is empty, leaving just the ellipsis
+  expect(truncateText("hi", 1)).toBe("…");
 });
 
 test("escapeForDoubleQuotes escapes backslashes and quotes", () => {

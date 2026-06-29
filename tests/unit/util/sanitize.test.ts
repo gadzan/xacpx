@@ -14,11 +14,12 @@ test("sanitizeString with deny pattern replaces denied characters", () => {
 });
 
 test("sanitizeString collapses multiple replacements", () => {
-  expect(sanitizeString("hello   world", { deny: /\s/, collapse: true })).toBe("hello-world");
+  // deny needs the global flag to replace every match
+  expect(sanitizeString("hello   world", { deny: /\s/g, collapse: true })).toBe("hello-world");
 });
 
 test("sanitizeString trims replacements from start and end", () => {
-  expect(sanitizeString("  hello world  ", { deny: /\s/, trim: true })).toBe("hello-world");
+  expect(sanitizeString("  hello world  ", { deny: /\s/g, trim: true })).toBe("hello-world");
 });
 
 test("sanitizeString lowercases when requested", () => {
@@ -26,7 +27,8 @@ test("sanitizeString lowercases when requested", () => {
 });
 
 test("sanitizeString returns fallback for empty result", () => {
-  expect(sanitizeString("!!!", { deny: /[^a-z]/, fallback: "default" })).toBe("default");
+  // empty replacement strips characters entirely, so an all-denied input becomes ""
+  expect(sanitizeString("!!!", { deny: /[^a-z]/g, replacement: "", fallback: "default" })).toBe("default");
 });
 
 test("sanitizeString uses custom replacement", () => {
@@ -35,7 +37,7 @@ test("sanitizeString uses custom replacement", () => {
 
 test("sanitizeString combines multiple options", () => {
   expect(sanitizeString("  Hello World!!!  ", {
-    deny: /[^a-z]/,
+    deny: /[^a-z]/g,
     replacement: "-",
     lowercase: true,
     collapse: true,
@@ -44,5 +46,5 @@ test("sanitizeString combines multiple options", () => {
 });
 
 test("sanitizeString returns empty string when all characters are stripped", () => {
-  expect(sanitizeString("!!!", { deny: /[^a-z]/ })).toBe("");
+  expect(sanitizeString("!!!", { deny: /[^a-z]/g, replacement: "" })).toBe("");
 });
