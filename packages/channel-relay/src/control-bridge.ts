@@ -27,6 +27,7 @@ import {
   type SessionsRemovePayload,
   type SessionsArchivePayload,
   type SessionsUnarchivePayload,
+  type SessionsRenamePayload,
   type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
@@ -105,6 +106,12 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       const input = payload as SessionsUnarchivePayload;
       await control.unarchiveSession(input.chatKey, input.alias);
       return {};
+    }
+    case MSG.sessionsRename: {
+      const input = payload as SessionsRenamePayload;
+      if (!input.alias) return errorPayload("bad-request", "alias is required");
+      await control.setSessionDisplayName(input.chatKey, input.alias, input.displayName ?? "");
+      return { ok: true };
     }
     case MSG.agentsList:
       return { agents: control.listAgents() };
