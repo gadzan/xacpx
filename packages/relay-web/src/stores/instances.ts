@@ -263,6 +263,15 @@ export const useInstancesStore = defineStore("instances", () => {
     await loadSessions(instanceId);
   }
 
+  // The display label lives in core session state; set it via control RPC, then optimistically
+  // update the local row so the sidebar reflects the new name without a reload. Empty → cleared.
+  async function renameSession(instanceId: string, alias: string, displayName: string): Promise<void> {
+    const trimmed = displayName.trim();
+    await api.rpc(instanceId, "control.sessions.rename", { alias, displayName: trimmed });
+    const row = byId(instanceId)?.sessions.find((s) => s.alias === alias);
+    if (row) row.displayName = trimmed || undefined;
+  }
+
   // The instance name lives solely in the relay DB (not on the connector), so this
   // is a plain relay HTTP PATCH — no control RPC. On success we mutate the local
   // view so the sidebar/dialog reflect the new name without a full reload.
@@ -294,5 +303,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameInstance, applyEvent, byId };
+  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
 });
