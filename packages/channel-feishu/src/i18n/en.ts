@@ -23,6 +23,8 @@ export const en: FeishuMessages = {
   reasoningHeaderElapsed: (elapsed) => `🧠 Thought for ${elapsed}`,
   toolPanelOmitted: (count) => `… ${count} more tool call${count === 1 ? "" : "s"} not shown`,
   toolPanelHeader: (count) => `🔧 Tool calls (${count})`,
+  planPanelHeader: (done, total) => `📋 Plan (${done}/${total})`,
+  planPanelOmitted: (count) => `… ${count} more item${count === 1 ? "" : "s"} not shown`,
 
   // ---- channel ----
   taskCompleted: "Task completed.",

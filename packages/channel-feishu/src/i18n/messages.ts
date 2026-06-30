@@ -47,6 +47,10 @@ export interface FeishuMessages {
   toolPanelOmitted: (count: number) => string;
   /** Collapsible panel header for the tool-use section. */
   toolPanelHeader: (count: number) => string;
+  /** Collapsible panel header for the plan/todo section (done / total). */
+  planPanelHeader: (done: number, total: number) => string;
+  /** Text appended to the plan panel when entries are omitted. */
+  planPanelOmitted: (count: number) => string;
 
   // ---- channel ----
   /** Fallback text sent when an orchestration task completes with no result text. */

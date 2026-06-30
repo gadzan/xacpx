@@ -8,6 +8,7 @@ import {
   buildCard,
   buildCardMessageContent,
   formatElapsedMs,
+  formatUsageSegment,
   truncateForCardBody,
 } from "../../../../packages/channel-feishu/src/card/card-builder";
 
@@ -248,6 +249,122 @@ test("buildCard reasoning header omits elapsed when reasoningElapsedMs is absent
   const headerJson = JSON.stringify(panel.header);
   expect(headerJson).toContain(t().reasoningHeader);
   expect(headerJson).not.toContain(t().reasoningHeaderElapsed(""));
+});
+
+// ---- usage footer (P0) ----
+
+test("formatUsageSegment renders token breakdown and context fill", () => {
+  const seg = formatUsageSegment({
+    used: 12_000,
+    size: 200_000,
+    breakdown: { inputTokens: 1234, outputTokens: 800 },
+  });
+  expect(seg).toBe("↑1.2k · ↓800 · ctx 12k/200k 6%");
+});
+
+test("formatUsageSegment shows only context when breakdown is absent (codex)", () => {
+  const seg = formatUsageSegment({ used: 50_000, size: 100_000 });
+  expect(seg).toBe("ctx 50k/100k 50%");
+});
+
+test("formatUsageSegment omits zero token fields", () => {
+  const seg = formatUsageSegment({ used: 0, size: 128_000, breakdown: { inputTokens: 0, outputTokens: 42 } });
+  expect(seg).toBe("↓42 · ctx 0/128k 0%");
+});
+
+test("formatUsageSegment returns empty string when nothing usable", () => {
+  expect(formatUsageSegment({ used: 0, size: 0 })).toBe("");
+});
+
+test("buildCard 'complete' appends usage segment to the footer", () => {
+  const card = buildCard({
+    state: "complete",
+    text: "answer",
+    elapsedMs: 3400,
+    usage: { used: 12_000, size: 200_000, breakdown: { inputTokens: 1234, outputTokens: 800 } },
+  }) as { body: { elements: Array<{ content: string }> } };
+  const footer = card.body.elements[card.body.elements.length - 1];
+  expect(footer.content).toContain(t().summaryComplete);
+  expect(footer.content).toContain("3.4s");
+  expect(footer.content).toContain("↑1.2k");
+  expect(footer.content).toContain("ctx 12k/200k 6%");
+});
+
+test("buildCard 'complete' renders footer from usage even without elapsed", () => {
+  const card = buildCard({
+    state: "complete",
+    text: "answer",
+    usage: { used: 50_000, size: 100_000 },
+  }) as { body: { elements: Array<{ content: string; element_id?: string }> } };
+  const last = card.body.elements[card.body.elements.length - 1];
+  expect(last.element_id).not.toBe(STREAMING_ELEMENT_ID);
+  expect(last.content).toContain("ctx 50k/100k 50%");
+});
+
+test("buildCard streaming footer carries usage alongside elapsed", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "abc",
+    elapsedMs: 4000,
+    usage: { used: 8_000, size: 200_000 },
+  }) as { body: { elements: Array<{ content: string }> } };
+  const footer = card.body.elements[card.body.elements.length - 1];
+  expect(footer.content).toContain("4.0s");
+  expect(footer.content).toContain("ctx 8k/200k 4%");
+});
+
+// ---- plan panel (P1) ----
+
+test("buildCard with planEntries renders an expanded plan panel above the tool panel", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "working",
+    elapsedMs: 1000,
+    planEntries: [
+      { content: "Read the spec", status: "completed" },
+      { content: "Write the code", status: "in_progress" },
+      { content: "Add tests", status: "pending" },
+    ],
+    toolSteps: [
+      { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "running", startedAt: 0 },
+    ],
+  });
+  const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+  const panel = elements[0];
+  expect(panel.tag).toBe("collapsible_panel");
+  expect(panel.expanded).toBe(true);
+  const json = JSON.stringify(panel);
+  expect(json).toContain(t().planPanelHeader(1, 3));
+  expect(json).toContain("Read the spec");
+  expect(json).toContain("~~Read the spec~~"); // completed struck through
+  expect(json).toContain("Write the code");
+  // Plan panel precedes the tool panel.
+  expect(JSON.stringify(elements[2])).toContain(t().toolPanelHeader(1));
+});
+
+test("buildCard with no planEntries omits the plan panel", () => {
+  const card = buildCard({ state: "streaming", text: "hi", elapsedMs: 1000 });
+  const elements = (card.body as { elements: Array<Record<string, unknown>> }).elements;
+  const planHeaderPresent = elements.some((el) => JSON.stringify(el).includes(t().planPanelHeader(0, 0)));
+  expect(planHeaderPresent).toBe(false);
+});
+
+test("buildCard caps the plan panel rows while preserving the total in the header", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "hi",
+    elapsedMs: 1000,
+    planEntries: Array.from({ length: 35 }, (_, i) => ({
+      content: `Step ${i}`,
+      status: "pending" as const,
+    })),
+  });
+  const panel = (card.body as { elements: Array<Record<string, unknown>> }).elements[0];
+  const json = JSON.stringify(panel);
+  expect(json).toContain(t().planPanelHeader(0, 35));
+  expect(json).toContain("Step 29");
+  expect(json).not.toContain("Step 30");
+  expect(json).toContain(t().planPanelOmitted(5));
 });
 
 test("buildCard reasoning header omits elapsed when reasoningElapsedMs is zero", () => {

@@ -1052,3 +1052,67 @@ test("reasoning panel renders while the card is still in the thinking state", as
   const body = elements.find((el) => el.element_id === "streaming_content");
   expect(body?.content ?? "").toBe("");
 });
+
+test("recordUsage surfaces the usage segment in the terminal card footer", async () => {
+  const { client, calls } = createFakeClient();
+  const controller = new StreamingCardController({ client, flushIntervalMs: 10 });
+  await controller.seed({ to: "oc_chat" });
+
+  controller.appendStream("the answer");
+  controller.recordUsage({ used: 12_000, size: 200_000, breakdown: { inputTokens: 1234, outputTokens: 800 } });
+  await controller.complete();
+
+  const last = calls.cardUpdate[calls.cardUpdate.length - 1];
+  const elements = (last.cardJson.body as { elements: Array<{ content?: string }> }).elements;
+  const footer = elements[elements.length - 1];
+  expect(footer.content).toContain("↑1.2k");
+  expect(footer.content).toContain("ctx 12k/200k 6%");
+});
+
+test("recordUsage forces a full card.update off the streaming fast-path", async () => {
+  const { client, calls } = createFakeClient();
+  const controller = new StreamingCardController({ client, flushIntervalMs: 10 });
+  await controller.seed({ to: "oc_chat" });
+
+  // Get into streaming state with one full update so subsequent text would
+  // normally take the element-content fast-path.
+  controller.appendStream("first");
+  await new Promise((r) => setTimeout(r, 25));
+  const updatesBefore = calls.cardUpdate.length;
+
+  controller.recordUsage({ used: 5_000, size: 100_000 });
+  await new Promise((r) => setTimeout(r, 25));
+
+  // A usage change must go through card.update (footer lives there), not the
+  // element-content fast-path.
+  expect(calls.cardUpdate.length).toBeGreaterThan(updatesBefore);
+  const last = calls.cardUpdate[calls.cardUpdate.length - 1];
+  const elements = (last.cardJson.body as { elements: Array<{ content?: string }> }).elements;
+  expect(JSON.stringify(elements)).toContain("ctx 5k/100k 5%");
+});
+
+test("recordPlan renders an expanded plan panel that replaces on each update", async () => {
+  const { client, calls } = createFakeClient();
+  const controller = new StreamingCardController({ client, flushIntervalMs: 10 });
+  await controller.seed({ to: "oc_chat" });
+
+  controller.recordPlan([
+    { content: "Investigate", status: "completed" },
+    { content: "Implement", status: "in_progress" },
+  ]);
+  await new Promise((r) => setTimeout(r, 25));
+
+  // Re-send the WHOLE list (replace semantics) — second item now done.
+  controller.recordPlan([
+    { content: "Investigate", status: "completed" },
+    { content: "Implement", status: "completed" },
+  ]);
+  await controller.complete();
+
+  const last = calls.cardUpdate[calls.cardUpdate.length - 1];
+  const elements = (last.cardJson.body as { elements: Array<Record<string, unknown>> }).elements;
+  const panel = elements.find((el) => el.tag === "collapsible_panel" && JSON.stringify(el).includes(feishuT().planPanelHeader(2, 2)));
+  expect(panel).toBeDefined();
+  expect(panel!.expanded).toBe(true);
+  expect(JSON.stringify(panel)).toContain("~~Implement~~");
+});

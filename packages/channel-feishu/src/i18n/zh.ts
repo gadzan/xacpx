@@ -38,6 +38,8 @@ export const zh: FeishuMessages = {
   reasoningHeaderElapsed: (elapsed) => `🧠 已思考 ${elapsed}`,
   toolPanelOmitted: (count) => `… 还有 ${count} 个工具调用未显示`,
   toolPanelHeader: (count) => `🔧 工具调用 (${count})`,
+  planPanelHeader: (done, total) => `📋 任务清单 (${done}/${total})`,
+  planPanelOmitted: (count) => `… 还有 ${count} 项未显示`,
 
   // ---- channel ----
   taskCompleted: "任务已完成。",
