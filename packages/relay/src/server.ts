@@ -14,6 +14,7 @@ import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
+import { handleWebClientMessage } from "./gateway/web-inbound.js";
 import { createApp } from "./http/app.js";
 import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
 import { startMaintenanceLoop } from "./maintenance.js";
@@ -293,7 +294,10 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       const token = parseCookie(req.headers.cookie ?? "")["xrelay_session"];
       const account = token ? runtime.accounts.getSessionAccount(token) : null;
       if (!account) { socket.destroy(); return; }
-      webWss.handleUpgrade(req, socket, head, (ws) => runtime.webGateway.register(account.id, ws));
+      webWss.handleUpgrade(req, socket, head, (ws) => {
+        runtime.webGateway.register(account.id, ws);
+        ws.on("message", (data: unknown) => handleWebClientMessage({ instances: runtime.instances, gateway: runtime.gateway }, account.id, String(data)));
+      });
       return;
     }
     // Merged gateway: connectors dial the bare host (root) or an explicit
