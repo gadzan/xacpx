@@ -38,6 +38,10 @@ export const MSG = {
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
+  terminalCreate: "control.terminal.create",
+  terminalInput: "instance.terminal.input",
+  terminalResize: "instance.terminal.resize",
+  terminalClose: "instance.terminal.close",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
