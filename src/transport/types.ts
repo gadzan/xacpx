@@ -223,6 +223,15 @@ export interface SessionTransport {
    */
   deleteSession?(session: ResolvedSession): Promise<void>;
   /**
+   * Terminate the warm queue-owner process for this session, freeing its
+   * resources, WITHOUT closing the acpx session (no `closed` flag, no metadata
+   * change) — the session stays open and resumes with full history on the next
+   * prompt. Idempotent: a missing warm process or missing session is a no-op.
+   * Used by archive to free the process now instead of waiting for acpx's TTL.
+   * Optional: transports that can't reap omit it.
+   */
+  freeWarmProcess?(session: ResolvedSession): Promise<void>;
+  /**
    * Read the underlying agent-native session id for an existing transport
    * session. Used by `/clear` to keep a native session native: the fresh
    * post-clear session is itself backed by a new agent rollout, and this

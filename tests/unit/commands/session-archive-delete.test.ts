@@ -32,6 +32,7 @@ function makeTransport(): SessionTransport {
     cancel: mock(async () => ({ cancelled: true, message: "cancelled" })),
     removeSession: mock(async (_session: ResolvedSession) => {}),
     deleteSession: mock(async (_session: ResolvedSession) => {}),
+    freeWarmProcess: mock(async (_session: ResolvedSession) => {}),
   } as unknown as SessionTransport;
 }
 
@@ -62,7 +63,7 @@ test("removeSessionWithTransport leaves the shared transport intact", async () =
   expect(result.sharedAliasCount).toBe(1);
 });
 
-test("archiveSessionWithTransport cancels the in-flight turn but KEEPS the acpx session resumable", async () => {
+test("archiveSessionWithTransport cancels the in-flight turn and reaps the warm process but KEEPS the acpx session resumable", async () => {
   const sessions = makeSessions({ sharedCount: 0 });
   const transport = makeTransport();
   const router = new CommandRouter(sessions, transport);
@@ -70,7 +71,9 @@ test("archiveSessionWithTransport cancels the in-flight turn but KEEPS the acpx 
   await router.archiveSessionWithTransport("backend:demo");
 
   expect((transport.cancel as ReturnType<typeof mock>).mock.calls.length).toBe(1);
-  // Must NOT close: closing marks the acpx record `closed`, making it unresumable
+  // Frees the warm queue-owner process now (instead of waiting for TTL)...
+  expect((transport.freeWarmProcess as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  // ...but must NOT close: closing marks the record `closed`, making it unresumable
   // and losing history on the next prompt. The session stays alive so re-prompting
   // resumes the same conversation.
   expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
@@ -88,9 +91,27 @@ test("archiveSessionWithTransport keeps a shared process running", async () => {
 
   await router.archiveSessionWithTransport("backend:demo");
 
+  // Shared transport: don't cancel and don't reap — another live alias needs the process.
   expect((transport.cancel as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((transport.freeWarmProcess as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect((sessions.setArchived as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("archiveSessionWithTransport still archives when freeWarmProcess throws", async () => {
+  const sessions = makeSessions({ sharedCount: 0 });
+  const transport = makeTransport();
+  (transport.freeWarmProcess as ReturnType<typeof mock>).mockImplementation(async () => {
+    throw new Error("kill failed");
+  });
+  const router = new CommandRouter(sessions, transport);
+
+  await router.archiveSessionWithTransport("backend:demo");
+
+  expect((transport.freeWarmProcess as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  const setArchived = sessions.setArchived as ReturnType<typeof mock>;
+  expect(setArchived.mock.calls.length).toBe(1);
+  expect(setArchived.mock.calls[0]).toEqual(["backend:demo", true]);
 });
 
 function makeOrchestration(overrides: {
@@ -177,6 +198,8 @@ test("archiveSessionWithTransport throws and touches nothing when a turn is acti
 
   expect((activeTurns.isActiveAnywhere as ReturnType<typeof mock>).mock.calls.length).toBe(1);
   expect((transport.cancel as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  // The in-flight guard throws before the !shared block, so the reap is blocked too.
+  expect((transport.freeWarmProcess as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect((sessions.setArchived as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });

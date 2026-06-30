@@ -13,7 +13,7 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../transport/permission-mode-flag";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
@@ -675,12 +675,31 @@ export class BridgeRuntime {
     } catch {
       return {}; // acpx session already gone → nothing to delete
     }
-    // Close the acpx session (best-effort), then unlink its on-disk files. close
-    // returning does NOT mean the backing process exited — acpx keeps a warm
-    // queue-owner alive via --ttl. See deleteAcpxSessionFiles for the residual
-    // orphan-stream-file risk this leaves (notably on Windows).
+    // Close the acpx session (terminates the queue owner + agent process since
+    // acpx >=0.10), then unlink its on-disk files. See deleteAcpxSessionFiles for
+    // the residual orphan-stream-file risk this leaves (a file-unlink timing /
+    // Windows file-lock issue, not a live process — notably on Windows).
     await this.removeSession(input);
     await deleteAcpxSessionFiles({ acpxRecordId });
+    return {};
+  }
+
+  async freeWarmProcess(input: {
+    agent: string;
+    agentCommand?: string;
+    cwd: string;
+    name: string;
+  }): Promise<Record<string, never>> {
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(input));
+    } catch {
+      return {}; // acpx session already gone → no warm process to free
+    }
+    // Kill ONLY the warm queue-owner process; do NOT `sessions close` it (that
+    // marks the record `closed` → unresumable, history lost). The record stays
+    // open, so the next prompt resumes with full history.
+    await terminateAcpxQueueOwner(acpxRecordId);
     return {};
   }
 
