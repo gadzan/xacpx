@@ -27,7 +27,7 @@ import {
 } from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import { AcpxQueueOwnerLauncher } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../acpx-queue-owner-launcher";
 import { permissionModeToFlag } from "../permission-mode-flag";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
@@ -444,12 +444,26 @@ export class AcpxCliTransport implements SessionTransport {
     } catch {
       return; // acpx session already gone → nothing to delete
     }
-    // Close the acpx session (best-effort), then unlink its on-disk files. close
-    // returning does NOT mean the backing process exited — acpx keeps a warm
-    // queue-owner alive via --ttl. See deleteAcpxSessionFiles for the residual
-    // orphan-stream-file risk this leaves (notably on Windows).
+    // Close the acpx session (terminates the queue owner + agent process since
+    // acpx >=0.10), then unlink its on-disk files. See deleteAcpxSessionFiles for
+    // the residual orphan-stream-file risk this leaves (a file-unlink timing /
+    // Windows file-lock issue, not a live process — notably on Windows).
     await this.removeSession(session);
     await deleteAcpxSessionFiles({ acpxRecordId });
+  }
+
+  async freeWarmProcess(session: ResolvedSession): Promise<void> {
+    let acpxRecordId: string;
+    try {
+      ({ acpxRecordId } = await this.readSessionRecord(session));
+    } catch {
+      return; // acpx session already gone → no warm process to free
+    }
+    // Kill ONLY the warm queue-owner process; do NOT `sessions close` it. Closing
+    // marks the record `closed` (acpx excludes it from name lookup → unresumable,
+    // history lost on next prompt). Terminating the owner leaves the record open,
+    // so the next prompt resumes the same conversation with full history.
+    await terminateAcpxQueueOwner(acpxRecordId);
   }
 
   async hasSession(session: ResolvedSession): Promise<boolean> {
