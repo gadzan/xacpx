@@ -191,7 +191,8 @@ export function formatUsageSegment(usage: PromptUsage): string {
     parts.push(`↓${formatTokenCount(breakdown.outputTokens)}`);
   }
   if (typeof usage.size === "number" && usage.size > 0 && typeof usage.used === "number" && usage.used >= 0) {
-    const percent = Math.round((usage.used / usage.size) * 100);
+    // Clamp: agents can transiently report used > size; never show >100%.
+    const percent = Math.min(100, Math.round((usage.used / usage.size) * 100));
     parts.push(`ctx ${formatTokenCount(usage.used)}/${formatTokenCount(usage.size)} ${percent}%`);
   }
   return parts.join(" · ");
@@ -199,9 +200,15 @@ export function formatUsageSegment(usage: PromptUsage): string {
 
 function formatTokenCount(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "0";
-  if (value >= 1_000_000) return formatScaled(value, 1_000_000, "m");
-  if (value >= 1_000) return formatScaled(value, 1_000, "k");
-  return String(Math.round(value));
+  const rounded = Math.round(value);
+  if (rounded >= 1_000_000) return formatScaled(rounded, 1_000_000, "m");
+  if (rounded >= 1_000) {
+    // Promote to the next unit when the k-rounding would read "1000k"
+    // (e.g. 999_999 → "1m", not "1000k").
+    if (Math.round(rounded / 1_000) >= 1_000) return formatScaled(rounded, 1_000_000, "m");
+    return formatScaled(rounded, 1_000, "k");
+  }
+  return String(rounded);
 }
 
 function formatScaled(value: number, factor: number, suffix: string): string {

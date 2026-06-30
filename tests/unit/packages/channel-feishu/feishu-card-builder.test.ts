@@ -276,6 +276,16 @@ test("formatUsageSegment returns empty string when nothing usable", () => {
   expect(formatUsageSegment({ used: 0, size: 0 })).toBe("");
 });
 
+test("formatUsageSegment clamps context percent to 100 when used exceeds size", () => {
+  const seg = formatUsageSegment({ used: 250_000, size: 200_000 });
+  expect(seg).toBe("ctx 250k/200k 100%");
+});
+
+test("formatUsageSegment promotes 999_999 tokens to 1m instead of 1000k", () => {
+  const seg = formatUsageSegment({ used: 999_999, size: 1_000_000 });
+  expect(seg).toBe("ctx 1m/1m 100%");
+});
+
 test("buildCard 'complete' appends usage segment to the footer", () => {
   const card = buildCard({
     state: "complete",

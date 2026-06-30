@@ -1071,38 +1071,52 @@ test("recordUsage surfaces the usage segment in the terminal card footer", async
 
 test("recordUsage forces a full card.update off the streaming fast-path", async () => {
   const { client, calls } = createFakeClient();
-  const controller = new StreamingCardController({ client, flushIntervalMs: 10 });
+  // Pin the clock so the elapsed footer label can't change between pushes —
+  // that isolates usage as the ONLY thing that can force a full card.update
+  // (same technique as "subsequent streaming pushes use cardElement.content").
+  const controller = new StreamingCardController({ client, flushIntervalMs: 10, now: () => 1_000 });
   await controller.seed({ to: "oc_chat" });
-
-  // Get into streaming state with one full update so subsequent text would
-  // normally take the element-content fast-path.
   controller.appendStream("first");
-  await new Promise((r) => setTimeout(r, 25));
-  const updatesBefore = calls.cardUpdate.length;
+  await new Promise((r) => setTimeout(r, 30));
+  const fullBefore = calls.cardUpdate.length;
 
   controller.recordUsage({ used: 5_000, size: 100_000 });
-  await new Promise((r) => setTimeout(r, 25));
+  controller.appendStream("second");
+  await new Promise((r) => setTimeout(r, 30));
 
-  // A usage change must go through card.update (footer lives there), not the
-  // element-content fast-path.
-  expect(calls.cardUpdate.length).toBeGreaterThan(updatesBefore);
+  // Usage lives in the footer, not streaming_content — it must take the full
+  // card.update path, not the element-content fast-path.
+  expect(calls.cardUpdate.length).toBeGreaterThan(fullBefore);
   const last = calls.cardUpdate[calls.cardUpdate.length - 1];
-  const elements = (last.cardJson.body as { elements: Array<{ content?: string }> }).elements;
-  expect(JSON.stringify(elements)).toContain("ctx 5k/100k 5%");
+  expect(JSON.stringify(last.cardJson)).toContain("ctx 5k/100k 5%");
+
+  // Control: with usage now stable and the clock pinned, a further pure-text
+  // change rides the element-content fast-path — proving the increment above
+  // was caused by the usage change, not an unconditional full update.
+  const fastBefore = calls.elementContent.length;
+  controller.appendStream("third");
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls.elementContent.length).toBeGreaterThan(fastBefore);
 });
 
-test("recordPlan renders an expanded plan panel that replaces on each update", async () => {
+test("recordPlan forces a full update and replaces the whole list", async () => {
   const { client, calls } = createFakeClient();
-  const controller = new StreamingCardController({ client, flushIntervalMs: 10 });
+  const controller = new StreamingCardController({ client, flushIntervalMs: 10, now: () => 1_000 });
   await controller.seed({ to: "oc_chat" });
+  controller.appendStream("first");
+  await new Promise((r) => setTimeout(r, 30));
+  const fullBefore = calls.cardUpdate.length;
 
   controller.recordPlan([
     { content: "Investigate", status: "completed" },
     { content: "Implement", status: "in_progress" },
   ]);
-  await new Promise((r) => setTimeout(r, 25));
+  controller.appendStream("second");
+  await new Promise((r) => setTimeout(r, 30));
+  // Plan renders as its own panel (not streaming_content): forces full update.
+  expect(calls.cardUpdate.length).toBeGreaterThan(fullBefore);
 
-  // Re-send the WHOLE list (replace semantics) — second item now done.
+  // Re-send the WHOLE list (replace, not append) — second item now done.
   controller.recordPlan([
     { content: "Investigate", status: "completed" },
     { content: "Implement", status: "completed" },
@@ -1114,5 +1128,10 @@ test("recordPlan renders an expanded plan panel that replaces on each update", a
   const panel = elements.find((el) => el.tag === "collapsible_panel" && JSON.stringify(el).includes(feishuT().planPanelHeader(2, 2)));
   expect(panel).toBeDefined();
   expect(panel!.expanded).toBe(true);
-  expect(JSON.stringify(panel)).toContain("~~Implement~~");
+  const panelJson = JSON.stringify(panel);
+  // Replace semantics: both prior entries present and completed, header reads
+  // 2/2 — an append would have produced 4 entries (and a 2/4 header).
+  expect(panelJson).toContain("~~Investigate~~");
+  expect(panelJson).toContain("~~Implement~~");
+  expect(panelJson).toContain(feishuT().planPanelHeader(2, 2));
 });
