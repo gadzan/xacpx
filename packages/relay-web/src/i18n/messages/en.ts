@@ -287,4 +287,12 @@ export default {
   taskPanel: {
     noSession: "No session selected.",
   },
+  terminal: {
+    title: "Terminal",
+    disabled: "Terminal is disabled. Enable `terminal.enabled` in the instance config.",
+    unsupported: "Terminal is unsupported on this instance platform (v1: macOS/Linux only).",
+    offline: "Instance is offline.",
+    noSession: "Select a session to open a terminal.",
+    exited: "Terminal exited (code {code}).",
+  },
 } as const;
