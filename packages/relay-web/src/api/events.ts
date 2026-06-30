@@ -1,4 +1,13 @@
-import { parseWebServerEvent, decodeEnvelope, type WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import { parseWebServerEvent, decodeEnvelope, encodeEnvelope, webClientEnvelope, type WebServerEvent, type WebClientMessage } from "@ganglion/xacpx-relay-protocol";
+
+let activeSocket: WebSocket | null = null;
+
+/** Send a browser→hub frame up the live /ws socket. No-op if disconnected. */
+export function sendWebClientMessage(msg: WebClientMessage): void {
+  if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+    activeSocket.send(encodeEnvelope(webClientEnvelope(msg)));
+  }
+}
 
 /** Connects to the relay /ws fan-out and invokes `onEvent` for each web event. Auto-reconnects. */
 export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus?: (online: boolean) => void): () => void {
@@ -10,6 +19,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
   const open = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     socket = new WebSocket(`${proto}://${location.host}/ws`);
+    activeSocket = socket;
     socket.onmessage = (e) => {
       const decoded = decodeEnvelope(String(e.data));
       if (!decoded.ok) return;
@@ -19,6 +29,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
     socket.onopen = () => { retry = 0; onStatus?.(true); };
     socket.onclose = () => {
       onStatus?.(false);
+      activeSocket = null;
       if (closed) return;
       retry = Math.min(retry + 1, 6);
       timer = setTimeout(() => { timer = null; if (!closed) open(); }, 250 * 2 ** (retry - 1));
