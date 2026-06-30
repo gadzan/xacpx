@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.16.0] - 2026-06-30
+
+A `@ganglion/xacpx` (core) release. Ships alongside channel-feishu 0.6.0 (below).
+
+### Added
+
+- **Public plugin-api types for the usage and plan side-channels (#99).** `plugin-api` now re-exports `PromptUsage` / `UsageBreakdown` / `UsageCost` and `AgentCommand` (from the transport layer) plus `PlanEntry` / `PlanEntryStatus` (from the channel layer). These were already delivered to channel plugins via the `chat()` callbacks (`onUsage` / `onPlan` / `onCommands`); exporting the types lets out-of-tree channel packages type those callbacks against the public contract instead of reaching into internals. Purely additive — no runtime change.
+
+## [channel-feishu 0.6.0] - 2026-06-30
+
+A `@ganglion/xacpx-channel-feishu` release. Requires core's new plugin-api type exports (0.16.0 above).
+
+### Added
+
+- **Context-usage footer on the streaming card (#99).** The Feishu streaming card now consumes the `onUsage` side-channel and renders a compact footer segment with the per-turn token breakdown and context-window fill, e.g. `↑1.2k · ↓800 · ctx 12k/200k 6%`. Each piece degrades independently — agents that omit the token breakdown (codex) still get the context percentage. The percent is clamped to 100% and token counts roll over cleanly (`999_999 → 1m`).
+- **Live plan/todo panel on the streaming card (#99).** The card now consumes the `onPlan` side-channel and renders the agent's live plan as an expanded collapsible panel above the tool panel, with per-item status icons (✅/⏳/⬜), struck-through completed items, a `done/total` header, and a 30-row cap. The list is replaced on each update (matching ACP `plan` semantics), not appended.
+
+### Changed
+
+- Usage and plan changes take the full `card.update` path rather than the `streaming_content` element-content fast-path, since the footer and panels are not part of that streamed element.
+
 ## [0.15.5] - 2026-06-30
 
 A `@ganglion/xacpx` (core) release. Ships alongside relay-protocol 0.1.6, relay hub 0.9.11, and channel-relay 0.3.2 (below) — together these complete the per-session **display-name / rename** feature end-to-end.
