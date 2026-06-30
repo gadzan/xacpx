@@ -16,7 +16,8 @@ let offExit: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
 
 function teardown() {
-  offOutput?.(); offExit?.();
+  offOutput?.(); offOutput = null;
+  offExit?.(); offExit = null;
   resizeObs?.disconnect(); resizeObs = null;
   if (terminalId) terminals.close(props.instanceId, terminalId);
   adapter?.dispose(); adapter = null; terminalId = "";

@@ -87,3 +87,101 @@ test("create throws terminal-unsupported-platform on win32", () => {
   const { svc } = setup({ platform: "win32" });
   expect(() => svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 })).toThrow("terminal-unsupported-platform");
 });
+
+// ── Idle timer behavior (Fix 1) ──────────────────────────────────────────────
+// Uses fake timer injection so tests are deterministic, not real-time.
+
+function setupWithFakeTimer(opts?: { idle?: number; platform?: NodeJS.Platform }) {
+  let pendingFn: (() => void) | null = null;
+  let timerId = 0;
+  const setTimer = (fn: () => void, _ms: number): unknown => {
+    pendingFn = fn;
+    return ++timerId;
+  };
+  const clearTimer = (_id: unknown) => { pendingFn = null; };
+  /** Fire the currently pending idle timer, if any. */
+  const tick = () => { const fn = pendingFn; pendingFn = null; fn?.(); };
+  /** True when a pending timer exists. */
+  const hasPending = () => pendingFn !== null;
+
+  const events = createControlEventBus();
+  const pty = fakePty();
+  const spawn = mock(() => pty);
+  const svc = createTerminalService({
+    events,
+    idleTimeoutSeconds: () => opts?.idle ?? 900,
+    spawn: spawn as never,
+    platform: opts?.platform ?? "darwin",
+    setTimer,
+    clearTimer,
+  });
+  return { svc, pty, spawn, tick, hasPending };
+}
+
+test("idle: PTY output (onData) does NOT reset the idle timer", () => {
+  // Create a terminal — this queues the initial idle timer.
+  const { svc, pty, tick } = setupWithFakeTimer();
+  svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+
+  // Emit several output frames — must NOT replace the pending idle timer.
+  pty.emitData("line1\r\n");
+  pty.emitData("line2\r\n");
+  pty.emitData("line3\r\n");
+
+  // The original idle timer is still pending; firing it kills the PTY.
+  tick();
+  expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("idle: write() DOES reset the idle timer", () => {
+  const { svc, pty, tick, hasPending } = setupWithFakeTimer();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  // Timer queued from create; write() clears and resets it.
+  svc.write(terminalId, "ls\n");
+  // A fresh timer should still be pending.
+  expect(hasPending()).toBe(true);
+  // Firing it kills the PTY.
+  tick();
+  expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("idle: resize() DOES reset the idle timer", () => {
+  const { svc, pty, tick, hasPending } = setupWithFakeTimer();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+
+  // resize() should clear the initial timer and install a fresh one.
+  svc.resize(terminalId, 120, 40);
+  expect(hasPending()).toBe(true);
+  tick();
+  expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("idle: output does not block kill; only user input extends lifetime", () => {
+  // Comprehensive: output + then write; only write extends lifetime.
+  const { svc, pty, tick } = setupWithFakeTimer();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+
+  // Output spam — must not reset idle.
+  pty.emitData("a"); pty.emitData("b"); pty.emitData("c");
+  // User input resets idle.
+  svc.write(terminalId, "\r");
+  // More output — still must not reset idle.
+  pty.emitData("d"); pty.emitData("e");
+  // Kill not yet called.
+  expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  // Fire idle → kill called.
+  tick();
+  expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+// ── disposeAll (Fix 2) ────────────────────────────────────────────────────────
+
+test("disposeAll clears timers and kills all PTYs without throwing", () => {
+  const { svc, pty, hasPending } = setupWithFakeTimer();
+  svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  expect(hasPending()).toBe(true);
+  svc.disposeAll();
+  // Idle timer must be cleared (no stale fire after dispose).
+  expect(hasPending()).toBe(false);
+  expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});

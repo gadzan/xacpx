@@ -97,7 +97,7 @@ relay-web 当前能管理会话、看流式对话、浏览工作空间文件,但
 1. **默认关 + 显式开启(命门)**:`terminal.enabled` 默认 `false`;`createTerminal` 首查此位,关则抛 `terminal-disabled`,连 PTY 都不 spawn。文档明确开启=授予「凭 hub 登录态在本机开 shell」的能力。
 2. **身份隔离(复用现成盖章)**:上行 `terminal-*` 帧在 hub 校验「该 cookie 账号是否拥有目标 instance」(镜像 `/rpc` 代理),不通过即丢;`terminalId` 按 instance 命名空间。**不照抄 HAPI 的 fail-open**(HAPI 的 resize/write 不复检会话权限、多 socket 可覆盖劫持)。
 3. **不泄密(env 脱敏)**:spawn env 剔除已知密钥(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`XACPX_*` 凭证等,集中 `SENSITIVE_ENV_KEYS`),注入 `TERM=xterm-256color`、`LANG`。**残余风险如实标注**:shell 仍能读磁盘上的 `~/.ssh`、`~/.aws` 等文件——env 脱敏挡不住主动读文件,这是交互 shell 固有属性,不假装能防。
-4. **不泄漏资源(生命周期硬约束)**:空闲 `idleTimeoutSeconds`(默认 900s)无 I/O 自动 kill + 发 `terminal-exit`;v1 浏览器 `/ws` 断开或切走会话即 close kill PTY;实例离线时连接器 dispose 所有 PTY(沿用 onStatusChange 清理范式);cwd spawn 前校验存在,不存在回退实例默认目录 + notice。
+4. **不泄漏资源(生命周期硬约束)**:空闲 `idleTimeoutSeconds`(默认 900s)无**用户输入**(write/resize)自动 kill + 发 `terminal-exit`——PTY 输出不重置计时器，因此 `top`/`tail -f` 等持续输出的进程在无交互时仍会被回收;v1 浏览器 `/ws` 断开或切走会话即 close kill PTY;实例离线时连接器 dispose 所有 PTY(沿用 onStatusChange 清理范式);cwd spawn 前校验存在,不存在回退实例默认目录 + notice。
 5. **审计(轻量)**:best-effort 记 create/close/idle-kill(instanceId、sessionAlias、accountId)到 `app.log`,v1 不做独立审计表。
 
 **明确不做(YAGNI)**:命令白名单、路径沙箱/chroot、只读模式、资源配额。理由统一为「交互 shell 本质可绕,做了是虚假安全感」;若将来要给非 owner 开放,另起 spec。

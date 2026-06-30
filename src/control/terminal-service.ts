@@ -6,7 +6,12 @@ import type { ControlEventBus } from "./control-event-bus";
 
 const require = createRequire(import.meta.url);
 
-/** Secret-bearing env keys stripped before handing the shell its environment. */
+/**
+ * Secret-bearing env keys stripped before handing the shell its environment.
+ * Best-effort denylist only — a real shell still inherits the full process env;
+ * custom secrets (DATABASE_URL, *_TOKEN, ~/.ssh keys, etc.) not on this list
+ * pass through. Do not treat env scrubbing as a security guarantee.
+ */
 export const SENSITIVE_ENV_KEYS = [
   "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY",
   "GOOGLE_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY", "AWS_SECRET_ACCESS_KEY",
@@ -43,6 +48,9 @@ export interface TerminalServiceDeps {
   spawn?: PtySpawn;
   platform?: NodeJS.Platform;
   now?: () => number;
+  /** Injectable timer primitives; defaults to global setTimeout/clearTimeout. */
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (id: unknown) => void;
 }
 
 function scrubEnv(): Record<string, string> {
@@ -68,20 +76,29 @@ function realPtySpawn(file: string, args: string[], opts: { name: string; cols: 
   return spawnPty(file, args, opts) as unknown as PtyHandle;
 }
 
-interface Session { handle: PtyHandle; seq: number; idleTimer: ReturnType<typeof setTimeout> | null }
+// idleTimer is typed as unknown so the type is compatible with both Node.js Timeout and Bun Timer.
+interface Session { handle: PtyHandle; seq: number; idleTimer: unknown }
 
 export function createTerminalService(deps: TerminalServiceDeps): TerminalService {
   const spawn = deps.spawn ?? realPtySpawn;
   const platform = deps.platform ?? process.platform;
   const sessions = new Map<string, Session>();
+  const setTimer: (fn: () => void, ms: number) => unknown =
+    deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer: (id: unknown) => void =
+    deps.clearTimer ?? ((id) => clearTimeout(id as ReturnType<typeof setTimeout>));
 
+  // Idle timer is reset ONLY by user input (write/resize), not by PTY output.
+  // This ensures an abandoned terminal running a noisy process (top, tail -f)
+  // is still reaped after idleTimeoutSeconds of no user interaction.
   const resetIdle = (terminalId: string) => {
     const s = sessions.get(terminalId);
     if (!s) return;
-    if (s.idleTimer) clearTimeout(s.idleTimer);
+    if (s.idleTimer) clearTimer(s.idleTimer);
     const ms = deps.idleTimeoutSeconds() * 1000;
-    s.idleTimer = setTimeout(() => { try { s.handle.kill(); } catch { /* already gone */ } }, ms);
-    if (typeof s.idleTimer.unref === "function") s.idleTimer.unref();
+    s.idleTimer = setTimer(() => { try { s.handle.kill(); } catch { /* already gone */ } }, ms);
+    const t = s.idleTimer as { unref?: () => void };
+    if (typeof t.unref === "function") t.unref();
   };
 
   return {
@@ -92,11 +109,12 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       const session: Session = { handle, seq: 0, idleTimer: null };
       sessions.set(terminalId, session);
       handle.onData((data) => {
+        // NOTE: resetIdle is intentionally NOT called here.
+        // Output does not count as user interaction; only write/resize do.
         deps.events.emit({ type: "terminal-output", terminalId, seq: session.seq++, data });
-        resetIdle(terminalId);
       });
       handle.onExit(({ exitCode }) => {
-        if (session.idleTimer) clearTimeout(session.idleTimer);
+        if (session.idleTimer) clearTimer(session.idleTimer);
         sessions.delete(terminalId);
         deps.events.emit({ type: "terminal-exit", terminalId, code: exitCode });
       });
@@ -110,7 +128,10 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       resetIdle(terminalId);
     },
     resize(terminalId, cols, rows) {
-      sessions.get(terminalId)?.handle.resize(cols, rows);
+      const s = sessions.get(terminalId);
+      if (!s) return;
+      s.handle.resize(cols, rows);
+      resetIdle(terminalId);
     },
     close(terminalId) {
       const s = sessions.get(terminalId);
@@ -118,7 +139,11 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       try { s.handle.kill(); } catch { /* already gone */ }
     },
     disposeAll() {
-      for (const s of sessions.values()) { try { s.handle.kill(); } catch { /* ignore */ } }
+      for (const s of sessions.values()) {
+        if (s.idleTimer) clearTimer(s.idleTimer);
+        try { s.handle.kill(); } catch { /* ignore */ }
+      }
+      sessions.clear();
     },
   };
 }
