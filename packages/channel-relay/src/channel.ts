@@ -12,7 +12,7 @@ import type {
 
 import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
 import { CredentialStore, defaultCredentialPath, type RelayCredential } from "./credential-store.js";
-import { createControlBridge, subscribeControlEvents } from "./control-bridge.js";
+import { createControlBridge, subscribeControlEvents, dispatchControlEvent } from "./control-bridge.js";
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
@@ -77,6 +77,7 @@ export class RelayChannel implements MessageChannelRuntime {
       instanceName: this.config.name,
       coreVersion: input.coreVersion,
       onRequest: bridge,
+      onEvent: (envelope) => dispatchControlEvent(input.control, envelope),
       logger: input.logger,
     });
     this.client = client;

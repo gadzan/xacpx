@@ -20,6 +20,7 @@ export interface RelayClientOptions {
   instanceName?: string;
   coreVersion?: string;
   onRequest: (envelope: RelayEnvelope, respond: (payload: unknown) => void) => void;
+  onEvent?: (envelope: RelayEnvelope) => void;
   onReady?: () => void;
   reconnectDelaysMs?: number[];
   createSocket?: (url: string) => WebSocket;
@@ -149,6 +150,11 @@ export class RelayClient {
       // Fatal: relay rejected our protocol. Operator action required.
       this.stopped = true;
       socket.close();
+      return;
+    }
+
+    if (envelope.kind === "event") {
+      this.options.onEvent?.(envelope);
       return;
     }
 
