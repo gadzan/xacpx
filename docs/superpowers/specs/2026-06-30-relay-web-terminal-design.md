@@ -97,7 +97,7 @@ relay-web 当前能管理会话、看流式对话、浏览工作空间文件,但
 1. **默认关 + 显式开启(命门)**:`terminal.enabled` 默认 `false`;`createTerminal` 首查此位,关则抛 `terminal-disabled`,连 PTY 都不 spawn。文档明确开启=授予「凭 hub 登录态在本机开 shell」的能力。
 2. **身份隔离(复用现成盖章)**:上行 `terminal-*` 帧在 hub 校验「该 cookie 账号是否拥有目标 instance」(镜像 `/rpc` 代理),不通过即丢;`terminalId` 按 instance 命名空间。**不照抄 HAPI 的 fail-open**(HAPI 的 resize/write 不复检会话权限、多 socket 可覆盖劫持)。
 3. **不泄密(env 脱敏)**:spawn env 剔除已知密钥(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`XACPX_*` 凭证等,集中 `SENSITIVE_ENV_KEYS`),注入 `TERM=xterm-256color`、`LANG`。**残余风险如实标注**:shell 仍能读磁盘上的 `~/.ssh`、`~/.aws` 等文件——env 脱敏挡不住主动读文件,这是交互 shell 固有属性,不假装能防。
-4. **不泄漏资源(生命周期硬约束)**:空闲 `idleTimeoutSeconds`(默认 900s)无**用户输入**(write/resize)自动 kill + 发 `terminal-exit`——PTY 输出不重置计时器，因此 `top`/`tail -f` 等持续输出的进程在无交互时仍会被回收;v1 浏览器 `/ws` 断开或切走会话即 close kill PTY;实例离线时连接器 dispose 所有 PTY(沿用 onStatusChange 清理范式);cwd spawn 前校验存在,不存在回退实例默认目录 + notice。
+4. **不泄漏资源(生命周期硬约束)**:v1 的回收路径有三条:(a) web 端 teardown 显式发 `terminal-close`(切换会话/tab 关闭/组件 unmount);(b) 空闲计时器——`idleTimeoutSeconds`(默认 900s)无**用户输入**(write/resize)自动 kill + 发 `terminal-exit`(PTY 输出不重置计时器，因此 `top`/`tail -f` 等持续输出的进程在无交互时仍会被回收);(c) daemon 全量关闭时 `disposeAll`。**v1 未实现**:浏览器仅刷新/关标签页而不触发 teardown 时,PTY 会留活直到空闲超时命中。hub `/ws` 断开后触发核心清理、连接器链路丢失后 dispose 所有 PTY 留作 **v2**(随重连保活一并实现)。
 5. **审计(轻量)**:best-effort 记 create/close/idle-kill(instanceId、sessionAlias、accountId)到 `app.log`,v1 不做独立审计表。
 
 **明确不做(YAGNI)**:命令白名单、路径沙箱/chroot、只读模式、资源配额。理由统一为「交互 shell 本质可绕,做了是虚假安全感」;若将来要给非 owner 开放,另起 spec。
@@ -108,7 +108,7 @@ relay-web 当前能管理会话、看流式对话、浏览工作空间文件,但
 2. 核心 spawn PTY,返回服务端生成的 `terminalId`;store 存,ghostty `open()`。
 3. 打字 → ghostty `onData` → `terminal-input` 帧;PTY 回显 → `terminal-output` 事件 → ghostty `write`。
 4. 容器 resize → ResizeObserver → 重算 cols/rows → `terminal-resize` 帧。
-5. 关闭:切走会话 / 关 tab / `/ws` 断开 / 空闲 15min / 实例离线 → kill PTY + `terminal-exit`,ghostty 显示退出提示。
+5. 关闭(v1 已实现路径):切走会话 / 关 tab / 组件 unmount → teardown 发 `terminal-close`;空闲 15min 无用户输入 → idle timer kill PTY + `terminal-exit`;daemon 关闭 → `disposeAll`。**v1 未实现**:浏览器直接关标签或刷新不触发 teardown,PTY 留活至空闲超时;`/ws` 断开触发核心清理 + 连接器离线 dispose 为 v2。
 
 ## v2 预留缝(v1 只埋不实现)
 
@@ -121,7 +121,7 @@ relay-web 当前能管理会话、看流式对话、浏览工作空间文件,但
 - `terminal.enabled=false` → `terminal-disabled`,前端提示「在实例 config 开启 `terminal.enabled`」。
 - Windows 实例 → `terminal-unsupported-platform`,前端明示 v1 仅 mac/Linux。
 - 实例离线 → create RPC 走现有 503;前端显示「实例离线」。
-- cwd 不存在 → 回退实例默认目录 + notice。
+- cwd 不存在 → **v1 未做校验/回退**:node-pty spawn 失败会抛错,经 Fix 1/Fix 3 后前端显示通用错误提示(`terminal.error`);cwd 校验存在 + 回退默认目录 + notice 延迟至 v2。
 - ghostty-web WASM 加载失败 / addon 缺口 → adapter 捕获,tab 显示降级提示;开发期评估是否切 xterm。
 - **输出洪流**(`cat 大文件`):v1 直通;`terminal-output` 在连接器侧 ~16ms 合帧 + 单帧上限(如 64KB,超出截断标记)防 web 帧风暴。**明确记一笔**:v1 不做完整背压,洪流下可能丢尾部输出——不假装无损。
 

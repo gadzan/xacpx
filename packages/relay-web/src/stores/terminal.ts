@@ -1,17 +1,23 @@
 import { defineStore } from "pinia";
-import type { WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import { isErrorPayload, type WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { sendWebClientMessage } from "../api/events";
 
 type OutputCb = (terminalId: string, data: string) => void;
 type ExitCb = (terminalId: string, code: number) => void;
 
+function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
+  if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
+  return result;
+}
+
 export const useTerminalStore = defineStore("terminal", () => {
   const outputCbs = new Set<OutputCb>();
   const exitCbs = new Set<ExitCb>();
 
   async function create(instanceId: string, sessionAlias: string, cols: number, rows: number): Promise<string> {
-    const { terminalId } = await api.rpc<{ terminalId: string }>(instanceId, "control.terminal.create", { sessionAlias, cols, rows });
+    const result = await api.rpc<{ terminalId: string }>(instanceId, "control.terminal.create", { sessionAlias, cols, rows });
+    const { terminalId } = unwrap(result);
     return terminalId;
   }
 

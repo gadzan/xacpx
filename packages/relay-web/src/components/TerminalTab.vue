@@ -14,8 +14,10 @@ let terminalId = "";
 let offOutput: (() => void) | null = null;
 let offExit: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
+let epoch = 0;
 
 function teardown() {
+  epoch++;
   offOutput?.(); offOutput = null;
   offExit?.(); offExit = null;
   resizeObs?.disconnect(); resizeObs = null;
@@ -25,25 +27,36 @@ function teardown() {
 
 async function start() {
   teardown();
+  const myEpoch = epoch;
   if (!props.sessionAlias || !host.value) { status.value = "idle"; return; }
   status.value = "connecting";
-  adapter = createTerminalAdapter(host.value, {
+  const currentAdapter = createTerminalAdapter(host.value, {
     cols: 80, rows: 24,
     onData: (d) => { if (terminalId) terminals.input(props.instanceId, terminalId, d); },
   });
+  adapter = currentAdapter;
   offOutput = terminals.onOutput((id, data) => { if (id === terminalId) adapter?.write(data); });
   offExit = terminals.onExit((id, code) => { if (id === terminalId) { status.value = "exited"; errorKey.value = String(code); } });
   try {
-    terminalId = await terminals.create(props.instanceId, props.sessionAlias, adapter.cols(), adapter.rows());
+    const newId = await terminals.create(props.instanceId, props.sessionAlias, currentAdapter.cols(), currentAdapter.rows());
+    if (myEpoch !== epoch) {
+      // Superseded by a later start() or unmount — orphan cleanup.
+      terminals.close(props.instanceId, newId);
+      currentAdapter.dispose();
+      return;
+    }
+    terminalId = newId;
     status.value = "open";
     resizeObs = new ResizeObserver(() => { if (terminalId && adapter) terminals.resize(props.instanceId, terminalId, adapter.cols(), adapter.rows()); });
     if (host.value) resizeObs.observe(host.value);
   } catch (e) {
+    if (myEpoch !== epoch) return; // Already torn down; don't clobber new status.
     status.value = "error";
     const msg = e instanceof Error ? e.message : "";
     errorKey.value = msg === "terminal-disabled" ? "terminal.disabled"
       : msg === "terminal-unsupported-platform" ? "terminal.unsupported"
-      : msg === "instance-offline" ? "terminal.offline" : "terminal.offline";
+      : msg === "instance-offline" ? "terminal.offline"
+      : "terminal.error";
   }
 }
 

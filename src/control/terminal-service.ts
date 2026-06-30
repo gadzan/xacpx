@@ -47,7 +47,6 @@ export interface TerminalServiceDeps {
   idleTimeoutSeconds: () => number;
   spawn?: PtySpawn;
   platform?: NodeJS.Platform;
-  now?: () => number;
   /** Injectable timer primitives; defaults to global setTimeout/clearTimeout. */
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (id: unknown) => void;

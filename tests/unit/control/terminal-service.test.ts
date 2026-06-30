@@ -29,7 +29,6 @@ function setup(opts?: { idle?: number; platform?: NodeJS.Platform }) {
     idleTimeoutSeconds: () => opts?.idle ?? 900,
     spawn: spawn as never,
     platform: opts?.platform ?? "darwin",
-    now: () => 0,
   });
   return { svc, pty, spawn, captured };
 }

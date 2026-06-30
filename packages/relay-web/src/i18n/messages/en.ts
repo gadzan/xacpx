@@ -294,5 +294,6 @@ export default {
     offline: "Instance is offline.",
     noSession: "Select a session to open a terminal.",
     exited: "Terminal exited (code {code}).",
+    error: "Could not open the terminal.",
   },
 } as const;

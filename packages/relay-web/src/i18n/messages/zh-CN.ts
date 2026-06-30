@@ -292,5 +292,6 @@ export default {
     offline: "实例已离线。",
     noSession: "选择一个会话以打开终端。",
     exited: "终端已退出(退出码 {code})。",
+    error: "无法打开终端。",
   },
 };

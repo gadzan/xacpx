@@ -19,6 +19,13 @@ describe("terminal store", () => {
     expect(api.rpc).toHaveBeenCalledWith("i1", "control.terminal.create", { sessionAlias: "demo", cols: 100, rows: 30 });
   });
 
+  it("create rejects when api.rpc resolves an errorPayload (Fix 1 guard)", async () => {
+    // api.rpc RESOLVES (does not throw) with an error payload — the store must surface it as rejection.
+    vi.mocked(api.rpc).mockResolvedValueOnce({ error: { code: "internal", message: "terminal-disabled" } } as never);
+    const s = useTerminalStore();
+    await expect(s.create("i1", "demo", 80, 24)).rejects.toThrow("terminal-disabled");
+  });
+
   it("input/resize/close send web client frames", () => {
     const s = useTerminalStore();
     s.input("i1", "t1", "ls\n");
