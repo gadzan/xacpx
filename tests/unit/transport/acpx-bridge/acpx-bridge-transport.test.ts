@@ -593,6 +593,162 @@ test("first onThought handler error wins when multiple handlers throw", async ()
   ).rejects.toThrow("error-1");
 });
 
+// ── onPlan chain semantics tests ─────────────────────────────────────────────
+
+test("forwards prompt.plan events to options.onPlan", async () => {
+  const plans: unknown[] = [];
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; entries?: unknown[] }) => void) => {
+    onEvent?.({ type: "prompt.plan", entries: [{ content: "step 1", status: "completed" }] });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.prompt(session, "hi", undefined, undefined, {
+    onPlan: (entries) => { plans.push(entries); },
+  });
+
+  expect(plans).toEqual([[{ content: "step 1", status: "completed" }]]);
+});
+
+test("onPlan handler error rejects prompt", async () => {
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; entries?: unknown[] }) => void) => {
+    onEvent?.({ type: "prompt.plan", entries: [{ content: "boom", status: "completed" }] });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(session, "hello", undefined, undefined, {
+      onPlan: () => {
+        throw new Error("handler blew up");
+      },
+    }),
+  ).rejects.toThrow("handler blew up");
+});
+
+test("first onPlan handler error wins when multiple handlers throw", async () => {
+  let callCount = 0;
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; entries?: unknown[] }) => void) => {
+    onEvent?.({ type: "prompt.plan", entries: [{ content: "e1", status: "completed" }] });
+    onEvent?.({ type: "prompt.plan", entries: [{ content: "e2", status: "completed" }] });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(session, "hello", undefined, undefined, {
+      onPlan: () => {
+        callCount += 1;
+        throw new Error(`error-${callCount}`);
+      },
+    }),
+  ).rejects.toThrow("error-1");
+});
+
+// ── onUsage chain semantics tests ────────────────────────────────────────────
+
+test("forwards prompt.usage events to options.onUsage", async () => {
+  const usages: unknown[] = [];
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; used?: number; size?: number }) => void) => {
+    onEvent?.({ type: "prompt.usage", used: 1024, size: 16384 });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.prompt(session, "hi", undefined, undefined, {
+    onUsage: (usage) => { usages.push(usage); },
+  });
+
+  expect(usages).toEqual([{ used: 1024, size: 16384 }]);
+});
+
+test("onUsage handler error rejects prompt", async () => {
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; used?: number; size?: number }) => void) => {
+    onEvent?.({ type: "prompt.usage", used: 100, size: 1000 });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(session, "hello", undefined, undefined, {
+      onUsage: () => {
+        throw new Error("handler blew up");
+      },
+    }),
+  ).rejects.toThrow("handler blew up");
+});
+
+test("first onUsage handler error wins when multiple handlers throw", async () => {
+  let callCount = 0;
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; used?: number; size?: number }) => void) => {
+    onEvent?.({ type: "prompt.usage", used: 100, size: 1000 });
+    onEvent?.({ type: "prompt.usage", used: 200, size: 2000 });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(session, "hello", undefined, undefined, {
+      onUsage: () => {
+        callCount += 1;
+        throw new Error(`error-${callCount}`);
+      },
+    }),
+  ).rejects.toThrow("error-1");
+});
+
+// ── onCommands chain semantics tests ────────────────────────────────────────
+
+test("forwards prompt.commands events to options.onCommands", async () => {
+  const commands: unknown[] = [];
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; commands?: unknown[] }) => void) => {
+    onEvent?.({ type: "prompt.commands", commands: [{ name: "compact", description: "Compact" }] });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.prompt(session, "hi", undefined, undefined, {
+    onCommands: (cmds) => { commands.push(cmds); },
+  });
+
+  expect(commands).toEqual([[{ name: "compact", description: "Compact" }]]);
+});
+
+test("onCommands handler error rejects prompt", async () => {
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; commands?: unknown[] }) => void) => {
+    onEvent?.({ type: "prompt.commands", commands: [{ name: "boom" }] });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(session, "hello", undefined, undefined, {
+      onCommands: () => {
+        throw new Error("handler blew up");
+      },
+    }),
+  ).rejects.toThrow("handler blew up");
+});
+
+test("first onCommands handler error wins when multiple handlers throw", async () => {
+  let callCount = 0;
+  const request = mock(async (_method: string, _params: unknown, onEvent?: (event: { type: string; commands?: unknown[] }) => void) => {
+    onEvent?.({ type: "prompt.commands", commands: [{ name: "cmd1" }] });
+    onEvent?.({ type: "prompt.commands", commands: [{ name: "cmd2" }] });
+    return { text: "done" };
+  });
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.prompt(session, "hello", undefined, undefined, {
+      onCommands: () => {
+        callCount += 1;
+        throw new Error(`error-${callCount}`);
+      },
+    }),
+  ).rejects.toThrow("error-1");
+});
+
 
 test("bridge transport proxies native session methods", async () => {
   const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
