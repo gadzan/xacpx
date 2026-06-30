@@ -14,6 +14,7 @@ import { resolveAcpxCommand } from "./config/resolve-acpx-command";
 import { resolveRuntimeAgentCommand } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
+import { terminalEnabled, terminalIdleTimeoutSeconds } from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
 import { resolveDaemonOrchestrationSocketPath, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
 import type { OrchestrationTaskRecord } from "./orchestration/orchestration-types";
@@ -51,6 +52,7 @@ import { renderTaskHeartbeat, renderTaskProgress } from "./formatting/render-tex
 import { QuotaManager } from "./weixin/messaging/quota-manager";
 import { createControlEventBus } from "./control/control-event-bus";
 import { ControlService } from "./control/control-service";
+import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { startConfigWatcher } from "./config/config-watcher";
@@ -763,6 +765,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   );
   const agent = new ConsoleAgent(router, logger);
   const controlEvents = createControlEventBus(logger);
+  const terminalService = createTerminalService({
+    events: controlEvents,
+    idleTimeoutSeconds: () => terminalIdleTimeoutSeconds(config),
+  });
   const uploadStore = new UploadStore();
   void uploadStore.cleanup(); // best-effort startup sweep of expired uploads
   // A long-lived daemon never re-sweeps on the startup pass alone, so expired uploads
@@ -827,6 +833,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       },
     },
     uploadStore,
+    terminal: terminalService,
+    terminalEnabled: () => terminalEnabled(config),
   });
 
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`
@@ -947,6 +955,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       scheduledScheduler.stop();
       configWatcher.close();
       clearInterval(uploadCleanupInterval);
+      terminalService.disposeAll();
       if (progressHeartbeatInterval !== undefined) {
         clearInterval(progressHeartbeatInterval);
       }
