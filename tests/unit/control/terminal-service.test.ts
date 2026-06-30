@@ -94,8 +94,10 @@ test("create throws terminal-unsupported-platform on win32", () => {
 function setupWithFakeTimer(opts?: { idle?: number; platform?: NodeJS.Platform }) {
   let pendingFn: (() => void) | null = null;
   let timerId = 0;
+  let setTimerCount = 0;
   const setTimer = (fn: () => void, _ms: number): unknown => {
     pendingFn = fn;
+    setTimerCount++;
     return ++timerId;
   };
   const clearTimer = (_id: unknown) => { pendingFn = null; };
@@ -115,18 +117,22 @@ function setupWithFakeTimer(opts?: { idle?: number; platform?: NodeJS.Platform }
     setTimer,
     clearTimer,
   });
-  return { svc, pty, spawn, tick, hasPending };
+  return { svc, pty, spawn, tick, hasPending, getSetTimerCount: () => setTimerCount };
 }
 
 test("idle: PTY output (onData) does NOT reset the idle timer", () => {
   // Create a terminal — this queues the initial idle timer.
-  const { svc, pty, tick } = setupWithFakeTimer();
+  const { svc, pty, tick, getSetTimerCount } = setupWithFakeTimer();
   svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
 
   // Emit several output frames — must NOT replace the pending idle timer.
   pty.emitData("line1\r\n");
   pty.emitData("line2\r\n");
   pty.emitData("line3\r\n");
+
+  // Verify that setTimer was called exactly once (at create), not again on output.
+  // If output handler incorrectly calls resetIdle, this count would be >1.
+  expect(getSetTimerCount()).toBe(1);
 
   // The original idle timer is still pending; firing it kills the PTY.
   tick();
