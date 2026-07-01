@@ -7,7 +7,11 @@ import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interf
 // Harness mirrors control-service-prompt.test.ts's makeControl, but the fake
 // agent.chat blocks on a gate so a turn can be held "in flight" while the test
 // sends follow-up prompts / scheduled turns at it.
-function makeService() {
+function makeService(opts?: {
+  // Override the fake session bind so a test can make a specific turn's useSession throw
+  // (e.g. simulate a transient session-bind failure on one drained queue item).
+  useSession?: (chatKey: string, alias: string) => Promise<unknown>;
+}) {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
   events.subscribe((event) => seen.push(event));
@@ -28,7 +32,9 @@ function makeService() {
     agent: { chat },
     sessions: {
       listAllResolvedSessions: () => [],
-      useSession: async (_chatKey: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" }),
+      useSession:
+        opts?.useSession ??
+        (async (_chatKey: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" })),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
       getSession: async () => null,
     },
@@ -124,5 +130,41 @@ test("a prompt arriving during the drain hand-off is queued (no parallel turn)",
   expect(r3.queued).toBe(true); // saw the session busy, enqueued
   nextChat();
   nextChat();
+  await p1;
+});
+
+test("a drained turn whose useSession fails still drains the following queued item (no stranded tail)", async () => {
+  // Turn 1 (the running "first") binds fine on call 1. When it finishes, "second" drains and
+  // its useSession throws (call 2). The tail ("third") must NOT be stranded: it should still
+  // drain and start its own turn, and the queue must end empty. Without the fix, the drained
+  // "second" turn early-returns before the finally's drain logic, orphaning "third".
+  let useCount = 0;
+  const { service, events, nextChat } = makeService({
+    useSession: async (_chatKey: string, alias: string) => {
+      useCount += 1;
+      if (useCount === 2) throw new Error("transient bind failure");
+      return { alias, agent: "claude", workspace: "/ws" };
+    },
+  });
+  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  await tick();
+  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
+  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
+
+  nextChat(); // finish turn 1 → drain "second" (its useSession throws) → must go on to "third"
+  await tick();
+
+  // "first" started (no queueItemId); "second" failed at useSession BEFORE emitting
+  // turn-started; "third" must still have started as its own drained turn.
+  const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
+  expect(started.length).toBe(2);
+  expect(started.at(-1)!.queueItemId).toBeDefined(); // the drained "third"
+
+  // The queue drained down to empty — nothing stranded behind the failed "second".
+  const q = (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!;
+  expect(q.items).toEqual([]);
+
+  nextChat(); // finish "third" cleanly so no turn is left parked
+  await tick();
   await p1;
 });

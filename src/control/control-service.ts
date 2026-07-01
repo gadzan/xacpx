@@ -564,8 +564,14 @@ export class ControlService {
     try {
       await this.deps.sessions.useSession(params.chatKey, params.sessionAlias);
     } catch (error) {
-      this.inFlight.delete(key);
+      // This turn never really started, but it still holds the slot. Settle it and advance the
+      // queue so a transient bind failure on a *drained* head does not strand the items behind
+      // it (which would otherwise only run when a future unrelated prompt arrives, reordering
+      // FIFO). advanceQueue releases inFlight itself when the queue is empty and hands the slot
+      // to the next drained turn otherwise — so we must NOT delete inFlight here (no
+      // double-release, no double-drain).
       resolveSettled();
+      this.advanceQueue(key, params.chatKey, params.sessionAlias);
       return { ok: false, errorMessage: toErrorMessage(error) };
     }
     if (wasArchived) {
@@ -716,21 +722,22 @@ export class ControlService {
       });
       return { ok: false, errorMessage };
     } finally {
-      // Pop this session's FIFO queue head to run as the next turn. Mark `draining` BEFORE
-      // clearing inFlight so the hand-off window (inFlight gone, drained turn not yet
-      // registered) still reads as busy — no incoming prompt can start a parallel turn.
-      const q = this.queues.get(key) ?? [];
-      const next = q.shift();
-      if (next) {
-        if (q.length === 0) this.queues.delete(key);
-        else this.queues.set(key, q);
+      // If a queued head is waiting, mark `draining` synchronously NOW — before the awaited
+      // sessions-changed detection below and before the slot is handed off — so nothing starts
+      // a parallel turn during the release→drain window, even for an *aborted* turn whose
+      // lingering inFlight entry no longer reads as busy. advanceQueue re-adds it harmlessly;
+      // the drained turn clears it once it re-registers its own inFlight. When the queue is
+      // empty, this turn's still-present inFlight entry is itself the busy marker across the
+      // await (a normally-finished turn's controller is not aborted), so no drain is possible
+      // and none is needed.
+      if ((this.queues.get(key)?.length ?? 0) > 0) {
         this.draining.add(key);
       }
-      this.inFlight.delete(key);
-      resolveSettled();
       // `/clear` (session.reset) recreated the transport session during the turn (and may
       // have re-bound a fresh native agentSessionId). Emit `sessions-changed` so the
       // dashboard refreshes the row; best-effort, and only when the binding actually moved.
+      // Kept inline (NOT inside advanceQueue): it is async/awaited and specific to THIS
+      // just-completed turn. inFlight is still held here, so it stays busy across the await.
       if (internalAlias && priorTransportSession) {
         try {
           const after = await this.deps.sessions.getSession(internalAlias);
@@ -741,27 +748,46 @@ export class ControlService {
           /* best-effort: no refresh on detection failure */
         }
       }
-      if (next) {
-        // The head was already popped above; emit the shorter snapshot.
-        this.emitQueueUpdated(params.chatKey, params.sessionAlias);
-        // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses
-        // the busy gate (drained: true), re-registers inFlight and clears `draining` at its
-        // top — all synchronously before the first await — so there is no parallel-turn
-        // window. Pass queueItemId ONLY, never prompt: the hub already persisted the inbound
-        // at enqueue, so re-emitting prompt would double-persist and duplicate the bubble.
-        void this.executeTurn({
-          chatKey: params.chatKey,
-          sessionAlias: params.sessionAlias,
-          text: next.text,
-          senderId: next.senderId,
-          queueable: true,
-          drained: true,
-          ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
-          ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
-          ...(next.media !== undefined ? { media: next.media } : {}),
-          turnStarted: { queueItemId: next.id },
-        });
-      }
+      resolveSettled();
+      // Single decision point (shared with the useSession-failure path): start the next queued
+      // head as the drained turn while holding the slot, or release inFlight if empty.
+      this.advanceQueue(key, params.chatKey, params.sessionAlias);
+    }
+  }
+
+  // Advances the per-session FIFO queue after a turn ends. If a head exists, starts it as the
+  // next (drained) turn while holding the busy slot via `draining`; otherwise releases the
+  // inFlight slot. Must be called exactly once per ended turn. Fully synchronous: `draining` is
+  // added BEFORE the fire-and-forget drained `executeTurn`, whose `inFlight.set` runs
+  // synchronously before its first await — so there is no window in which an incoming prompt
+  // could observe a not-busy session between the ended turn and the drained turn.
+  private advanceQueue(key: string, chatKey: string, sessionAlias: string): void {
+    const q = this.queues.get(key);
+    const next = q?.shift();
+    if (q && q.length === 0) this.queues.delete(key);
+    if (next) {
+      this.draining.add(key);
+      // The head was already popped above; emit the shorter snapshot.
+      this.emitQueueUpdated(chatKey, sessionAlias);
+      // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses the
+      // busy gate (drained: true), re-registers inFlight and clears `draining` at its top — all
+      // synchronously before the first await — so there is no parallel-turn window. Pass
+      // queueItemId ONLY, never prompt: the hub already persisted the inbound at enqueue, so
+      // re-emitting prompt would double-persist and duplicate the bubble.
+      void this.executeTurn({
+        chatKey,
+        sessionAlias,
+        text: next.text,
+        senderId: next.senderId,
+        queueable: true,
+        drained: true,
+        ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
+        ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
+        ...(next.media !== undefined ? { media: next.media } : {}),
+        turnStarted: { queueItemId: next.id },
+      });
+    } else {
+      this.inFlight.delete(key);
     }
   }
 
