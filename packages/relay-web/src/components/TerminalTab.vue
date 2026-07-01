@@ -40,9 +40,11 @@ async function start() {
   try {
     const newId = await terminals.create(props.instanceId, props.sessionAlias, currentAdapter.cols(), currentAdapter.rows());
     if (myEpoch !== epoch) {
-      // Superseded by a later start() or unmount — orphan cleanup.
+      // Superseded by a later start() or unmount — orphan cleanup. The superseding
+      // teardown() already disposed this adapter when `adapter` still pointed at it,
+      // so only dispose here if it somehow wasn't (guards against double-dispose).
       terminals.close(props.instanceId, newId);
-      currentAdapter.dispose();
+      if (adapter === currentAdapter) currentAdapter.dispose();
       return;
     }
     terminalId = newId;

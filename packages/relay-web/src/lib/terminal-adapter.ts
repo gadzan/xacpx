@@ -29,16 +29,18 @@ export interface TerminalAdapterOptions {
   factory?: (cols: number, rows: number) => GhosttyTerminalLike;
 }
 
+// ghostty-web loads its ~400KB WASM once via the argless `init()`, which fetches
+// `ghostty-vt.wasm` relative to the page root (`/ghostty-vt.wasm`). We ship that file
+// via `packages/relay-web/public/ghostty-vt.wasm` (Vite copies public/ to the dist root,
+// the hub serves the SPA at root), so the fetch resolves. `init()` takes no URL argument,
+// so the asset MUST live at the served root — do not rename it.
+let ghosttyInit: Promise<void> | undefined;
+
 async function defaultFactory(cols: number, rows: number): Promise<GhosttyTerminalLike> {
-  // Use Function constructor so the import specifier is inside a string: both TS module
-  // resolution and Vite's import-analysis are bypassed (they only scan AST-level imports).
-  // Replace with: const mod = await import("ghostty-web") once the package is installed.
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-  const _import = new Function("pkg", "return import(pkg)") as (
-    pkg: string
-  ) => Promise<{ Terminal: new (o: { cols: number; rows: number }) => GhosttyTerminalLike }>;
-  const mod = await _import("ghostty-web");
-  return new mod.Terminal({ cols, rows });
+  const mod = await import("ghostty-web");
+  ghosttyInit ??= mod.init();
+  await ghosttyInit;
+  return new mod.Terminal({ cols, rows }) as unknown as GhosttyTerminalLike;
 }
 
 export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOptions): TerminalAdapter {
