@@ -68,8 +68,12 @@ export class RelayChannel implements MessageChannelRuntime {
     if (!input.control) {
       throw new Error("relay channel requires ChannelStartInput.control (xacpx >= 0.11)");
     }
-    this.control = input.control;
-    const bridge = createControlBridge(input.control);
+    // Capture the guard-narrowed ControlService in a const: the `onEvent` closure below
+    // runs later, and TS does not carry the `if (!input.control)` narrowing into a
+    // deferred closure over the mutable `input.control` property.
+    const control = input.control;
+    this.control = control;
+    const bridge = createControlBridge(control);
     const client = (this.deps.createClient ?? ((options) => new RelayClient(options)))({
       url: this.config.url,
       credentialStore: this.credentials,
@@ -77,11 +81,11 @@ export class RelayChannel implements MessageChannelRuntime {
       instanceName: this.config.name,
       coreVersion: input.coreVersion,
       onRequest: bridge,
-      onEvent: (envelope) => dispatchControlEvent(input.control, envelope),
+      onEvent: (envelope) => dispatchControlEvent(control, envelope),
       logger: input.logger,
     });
     this.client = client;
-    this.unsubscribe = subscribeControlEvents(input.control, (type, payload) => client.sendEvent(type, payload));
+    this.unsubscribe = subscribeControlEvents(control, (type, payload) => client.sendEvent(type, payload));
     client.start(input.abortSignal);
 
     // Channel convention: start() stays pending until shutdown (see run-console).
