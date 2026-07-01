@@ -53,8 +53,8 @@ control layer: turn `reject` into `enqueue`, and drain on turn completion.
 - **Cancel (Stop / HUD) cancels only the running turn; the queue persists** and
   drains next. Per-item ✕ is the way to drop a queued message. No global
   "clear queue / stop everything" button (YAGNI; the visible per-item list makes
-  bulk removal unnecessary). *This is the one genuinely debatable UX call —
-  flagged for spec review.*
+  bulk removal unnecessary). *Confirmed with the user: Stop is turn-only; the
+  queue survives a Stop.*
 - **Server-authoritative, replace-latest snapshots.** Every queue change emits a
   `queue-updated` `ControlEvent` carrying the full ordered item list for that
   session (like `plan`). The web renders from the snapshot; it does not maintain
