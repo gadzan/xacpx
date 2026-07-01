@@ -168,3 +168,15 @@ test("a drained turn whose useSession fails still drains the following queued it
   await tick();
   await p1;
 });
+
+test("cancelQueuedItem removes a queued item and emits queue-updated; false for unknown id", async () => {
+  const { service, events, releaseChat } = makeService();
+  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  await tick();
+  const r2 = await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
+  expect(service.cancelQueuedItem("c", "s", r2.queueItemId!)).toEqual({ cancelled: true });
+  expect((events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!.items).toEqual([]);
+  expect(service.cancelQueuedItem("c", "s", "nope")).toEqual({ cancelled: false });
+  releaseChat();
+  await p1;
+});

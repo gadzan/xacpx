@@ -800,6 +800,22 @@ export class ControlService {
     return true;
   }
 
+  /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
+   *  `{ cancelled: false }`) when the queue or the id is absent/already drained —
+   *  e.g. a race where the item drained into a running turn just before the cancel
+   *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`). */
+  cancelQueuedItem(chatKey: string, sessionAlias: string, itemId: string): { cancelled: boolean } {
+    const key = turnKey(chatKey, sessionAlias);
+    const q = this.queues.get(key);
+    if (!q) return { cancelled: false };
+    const i = q.findIndex((x) => x.id === itemId);
+    if (i < 0) return { cancelled: false };
+    q.splice(i, 1);
+    if (q.length === 0) this.queues.delete(key);
+    this.emitQueueUpdated(chatKey, sessionAlias);
+    return { cancelled: true };
+  }
+
   async executeCommand(input: ControlExecuteCommandInput): Promise<string> {
     const chunks: string[] = [];
     const response = await this.deps.agent.chat({
