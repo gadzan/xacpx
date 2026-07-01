@@ -96,6 +96,8 @@ const CONTROL_EVENT_TYPES = new Set([
   "workspaces-changed",
   "scheduled-changed",
   "orchestration-changed",
+  "terminal-output",
+  "terminal-exit",
 ]);
 
 const TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
@@ -169,6 +171,10 @@ function validControlEvent(e: unknown): boolean {
       && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
+  if (c.type === "terminal-output")
+    return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
+  if (c.type === "terminal-exit")
+    return typeof c.terminalId === "string" && typeof c.code === "number";
   return true; // sessions-changed / workspaces-changed / orchestration-changed carry no extra fields
 }
 
@@ -193,4 +199,29 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
   return payload as WebServerEvent;
+}
+
+// --- web→hub upstream messages (new direction; no prior precedent) ---
+
+export const WEB_CLIENT_TYPE = "web.client";
+
+export type WebClientMessage =
+  | { kind: "terminal-input"; instanceId: string; terminalId: string; data: string }
+  | { kind: "terminal-resize"; instanceId: string; terminalId: string; cols: number; rows: number }
+  | { kind: "terminal-close"; instanceId: string; terminalId: string };
+
+export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
+  return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
+}
+
+export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage | null {
+  if (envelope.kind !== "event" || envelope.type !== WEB_CLIENT_TYPE) return null;
+  const p = envelope.payload;
+  if (typeof p !== "object" || p === null) return null;
+  const c = p as Record<string, unknown>;
+  if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string") return null;
+  if (c.kind === "terminal-input") return typeof c.data === "string" ? (p as WebClientMessage) : null;
+  if (c.kind === "terminal-resize") return typeof c.cols === "number" && typeof c.rows === "number" ? (p as WebClientMessage) : null;
+  if (c.kind === "terminal-close") return p as WebClientMessage;
+  return null;
 }

@@ -7,11 +7,13 @@ import { useTasksStore } from "../stores/tasks";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useFilesStore } from "../stores/files";
+import { useTerminalStore } from "../stores/terminal";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
 import TaskPanel from "../components/TaskPanel.vue";
 import FilesPanel from "../components/FilesPanel.vue";
+import TerminalTab from "../components/TerminalTab.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ActionToast from "../components/ActionToast.vue";
 import ConnectionBadge from "../components/ConnectionBadge.vue";
@@ -20,13 +22,14 @@ import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen, SquareTerminal } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
 const files = useFilesStore();
 const tasks = useTasksStore();
+const terminals = useTerminalStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
 let disconnect: (() => void) | null = null;
@@ -35,12 +38,12 @@ let disconnect: (() => void) | null = null;
 // these flags are visually irrelevant because the lg: classes override the transform.
 const leftOpen = ref(false);
 const rightOpen = ref(false);
-const rightTab = ref<"tasks" | "files">("tasks");
+const rightTab = ref<"tasks" | "files" | "terminal">("tasks");
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
 }
-function openRight(tab: "tasks" | "files") {
+function openRight(tab: "tasks" | "files" | "terminal") {
   rightTab.value = tab;
   rightOpen.value = true;
 }
@@ -176,6 +179,7 @@ onMounted(async () => {
     chat.applyEvent(event);
     tasks.applyEvent(event);
     notices.applyEvent(event);
+    terminals.applyEvent(event);
   }, onStatus);
   // Re-seed any in-flight turns (sidebar "working" dots + live view) lost on refresh.
   await chat.loadActiveTurns().catch(() => {});
@@ -331,11 +335,18 @@ onUnmounted(() => {
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
+          <button data-test="right-tab-terminal"
+                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  :class="rightTab === 'terminal' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  @click="rightTab = 'terminal'">
+            <SquareTerminal :size="13" />{{ $t("terminal.title") }}
+          </button>
           <button data-test="close-tasks" :aria-label='$t("nav.closeTasks")'
                   class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
         <div class="min-h-0 flex-1 overflow-hidden">
           <TaskPanel v-if="rightTab === 'tasks'" />
+          <TerminalTab v-else-if="rightTab === 'terminal'" :instance-id="chat.instanceId ?? ''" :session-alias="chat.sessionAlias ?? ''" />
           <FilesPanel v-else :instance-id="chat.instanceId" />
         </div>
       </div>

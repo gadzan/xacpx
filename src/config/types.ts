@@ -47,6 +47,13 @@ export interface TransportConfig {
   preferLocalAgents?: boolean;
 }
 
+export interface TerminalConfig {
+  /** Default false. When false, control.terminal.create is rejected before any PTY spawns. */
+  enabled: boolean;
+  /** Idle seconds before a terminal PTY is auto-killed. Defaults to 900 (15 min). */
+  idleTimeoutSeconds?: number;
+}
+
 export type LoggingLevel = "error" | "info" | "debug";
 
 export interface PerfLogConfig {
@@ -118,4 +125,14 @@ export interface AppConfig {
   orchestration: OrchestrationConfig;
   later?: LaterConfig;
   language?: Locale;
+  terminal?: TerminalConfig;
+}
+
+export function terminalEnabled(config: AppConfig): boolean {
+  return config.terminal?.enabled === true;
+}
+
+export function terminalIdleTimeoutSeconds(config: AppConfig): number {
+  const v = config.terminal?.idleTimeoutSeconds;
+  return typeof v === "number" && v > 0 ? v : 900;
 }

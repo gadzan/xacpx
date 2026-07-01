@@ -30,6 +30,11 @@ export type ControlEvent =
   // Recovered prior conversation for a freshly-attached native session, so the hub can
   // seed it into history. `sessionAlias` is the display alias the web loads history by.
   | { type: "session-history"; chatKey: string; sessionAlias: string; messages: NativeHistoryMessage[] }
+  // Interactive terminal byte stream (web terminal). Emitted directly by
+  // TerminalService — NOT an agent-turn callback, so it does not traverse
+  // command-router/handlers. `seq` is a per-terminal monotonic counter for v2 replay.
+  | { type: "terminal-output"; terminalId: string; seq: number; data: string }
+  | { type: "terminal-exit"; terminalId: string; code: number }
   | { type: "orchestration-changed" };
 
 export type ControlEventListener = (event: ControlEvent) => void;

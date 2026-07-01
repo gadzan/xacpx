@@ -151,6 +151,45 @@ test("logs a relay.protocol-error event and stops", async () => {
   wss.close();
 });
 
+test("onEvent throwing does not tear down the socket — subsequent events are still received", async () => {
+  let eventCount = 0;
+  let socketSendEvent: ((env: RelayEnvelope) => void) | undefined;
+  const { wss, url } = await makeFakeRelay((envelope, reply) => {
+    if (envelope.type === MSG.instanceAuth) {
+      reply(res(envelope, { ok: true }));
+      socketSendEvent = reply;
+    }
+  });
+  const store = new MemoryCredentialStore({ instanceId: "i-1", credential: "cred-1", relayUrl: url });
+  const { logger, errors } = makeFakeLogger();
+  const controller = new AbortController();
+  let callCount = 0;
+  const client = new RelayClient({
+    url, credentialStore: store, reconnectDelaysMs: [0], logger,
+    onRequest: () => {},
+    onEvent: (_env) => {
+      callCount++;
+      if (callCount === 1) throw new Error("onEvent boom"); // first call throws
+      eventCount++;
+    },
+    onReady: () => {
+      // push two events back-to-back once ready
+      setTimeout(() => {
+        socketSendEvent?.({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.terminalInput, payload: { terminalId: "t1", data: "a" } });
+        socketSendEvent?.({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.terminalInput, payload: { terminalId: "t1", data: "b" } });
+      }, 20);
+    },
+  });
+  client.start(controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  // Second event must still arrive even though first threw.
+  expect(eventCount).toBe(1);
+  // The throw was logged as relay.event_dispatch_failed.
+  expect(errors.some((e) => e.code === "relay.event_dispatch_failed")).toBe(true);
+  controller.abort();
+  wss.close();
+});
+
 test("reconnects after a drop; fatal handshake rejection stops retrying", async () => {
   let connections = 0;
   const { wss, url } = await makeFakeRelay((envelope, reply, raw) => {

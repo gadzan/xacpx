@@ -378,6 +378,16 @@ export function parseConfig(
     orchestration: orchestrationConfig,
     later: laterConfig,
     ...(language ? { language } : {}),
+    ...(raw.terminal && typeof raw.terminal === "object"
+      ? {
+          terminal: {
+            enabled: (raw.terminal as { enabled?: unknown }).enabled === true,
+            ...(typeof (raw.terminal as { idleTimeoutSeconds?: unknown }).idleTimeoutSeconds === "number"
+              ? { idleTimeoutSeconds: (raw.terminal as { idleTimeoutSeconds: number }).idleTimeoutSeconds }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 

@@ -197,6 +197,8 @@ export type ControlEventDto =
   // Recovered prior conversation for a freshly-attached native session; the hub seeds
   // these rows into the session's history so the dashboard isn't blank.
   | { type: "session-history"; chatKey: string; sessionAlias: string; messages: SessionHistoryRowDto[] }
+  | { type: "terminal-output"; terminalId: string; seq: number; data: string }
+  | { type: "terminal-exit"; terminalId: string; code: number }
   | { type: "orchestration-changed" };
 
 /** One recovered history row (a persisted-shaped message) for a native-session seed. */

@@ -152,6 +152,14 @@ export class InstanceGateway {
     return null;
   }
 
+  /** Fire-and-forget downward event to a connector. No pending/timeout. Returns false if offline. */
+  sendEvent(instanceId: string, type: string, payload: unknown): boolean {
+    const connection = this.connections.get(instanceId);
+    if (!connection) return false;
+    connection.socket.send(encodeEnvelope({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload }));
+    return true;
+  }
+
   async sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown> {
     const connection = this.connections.get(instanceId);
     if (!connection) {

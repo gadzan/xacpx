@@ -60,6 +60,9 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   MSG.sessionsArchive, MSG.sessionsUnarchive,
   // Model get/set resolve the session within the caller's chat scope.
   MSG.sessionModelGet, MSG.sessionModelSet,
+  // Terminal create carries sessionAlias; stamp chatKey/senderId/isOwner so the
+  // connector can resolve the session within the caller's chat scope.
+  MSG.terminalCreate,
 ]);
 
 function requireJson(contentType: string | undefined): boolean {
