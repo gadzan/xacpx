@@ -154,7 +154,15 @@ export class RelayClient {
     }
 
     if (envelope.kind === "event") {
-      this.options.onEvent?.(envelope);
+      try {
+        this.options.onEvent?.(envelope);
+      } catch (err) {
+        void this.options.logger?.error(
+          "relay.event_dispatch_failed",
+          `inbound event handler threw; swallowing to protect socket: ${err instanceof Error ? err.message : String(err)}`,
+          { error: err instanceof Error ? err.message : String(err), detail: envelope.type },
+        );
+      }
       return;
     }
 

@@ -123,13 +123,13 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
     write(terminalId, data) {
       const s = sessions.get(terminalId);
       if (!s) return;
-      s.handle.write(data);
+      try { s.handle.write(data); } catch { /* PTY already gone */ }
       resetIdle(terminalId);
     },
     resize(terminalId, cols, rows) {
       const s = sessions.get(terminalId);
       if (!s) return;
-      s.handle.resize(cols, rows);
+      try { s.handle.resize(cols, rows); } catch { /* PTY already gone */ }
       resetIdle(terminalId);
     },
     close(terminalId) {

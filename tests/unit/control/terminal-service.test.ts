@@ -179,6 +179,28 @@ test("idle: output does not block kill; only user input extends lifetime", () =>
   expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
 });
 
+// ── PTY throw safety (Fix 1b hardening) ─────────────────────────────────────
+
+test("write(): a throwing PTY handle does not propagate out of the service", () => {
+  const events = createControlEventBus();
+  const pty = fakePty();
+  (pty.write as ReturnType<typeof mock>).mockImplementation(() => { throw new Error("PTY already dead"); });
+  const spawn = mock(() => pty);
+  const svc = createTerminalService({ events, idleTimeoutSeconds: () => 900, spawn: spawn as never, platform: "darwin" });
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  expect(() => svc.write(terminalId, "x")).not.toThrow();
+});
+
+test("resize(): a throwing PTY handle does not propagate out of the service", () => {
+  const events = createControlEventBus();
+  const pty = fakePty();
+  (pty.resize as ReturnType<typeof mock>).mockImplementation(() => { throw new Error("PTY already dead"); });
+  const spawn = mock(() => pty);
+  const svc = createTerminalService({ events, idleTimeoutSeconds: () => 900, spawn: spawn as never, platform: "darwin" });
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  expect(() => svc.resize(terminalId, 90, 20)).not.toThrow();
+});
+
 // ── disposeAll (Fix 2) ────────────────────────────────────────────────────────
 
 test("disposeAll clears timers and kills all PTYs without throwing", () => {

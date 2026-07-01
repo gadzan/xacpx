@@ -94,7 +94,7 @@ relay-web 当前能管理会话、看流式对话、浏览工作空间文件,但
 
 指导思想:**信任边界就是 hub 登录态**——而 hub 登录态本来就能 prompt agent、agent 跑工具即任意代码执行,故终端不引入新信任边界,只是更直接。因此**不做命令/路径白名单**(交互 shell 总能绕),力气花在「默认关、身份隔离、不泄密、不泄漏资源」。
 
-1. **默认关 + 显式开启(命门)**:`terminal.enabled` 默认 `false`;`createTerminal` 首查此位,关则抛 `terminal-disabled`,连 PTY 都不 spawn。文档明确开启=授予「凭 hub 登录态在本机开 shell」的能力。
+1. **默认关 + 显式开启(命门)**:`terminal.enabled` 默认 `false`;`createTerminal` 首查此位,关则抛 `terminal-disabled`,连 PTY 都不 spawn。文档明确开启=授予「凭 hub 登录态在本机开 shell」的能力。要在运行时**关闭**终端,须将 `terminal.enabled` 置为 `false`(覆写现有 key);**不能**靠删除整个 `terminal` 块来关闭——`replaceRuntimeConfig` 内部用 `Object.assign` 合并,不会删 key,旧的 `enabled: true` 会保留到重启。
 2. **身份隔离(复用现成盖章)**:上行 `terminal-*` 帧在 hub 校验「该 cookie 账号是否拥有目标 instance」(镜像 `/rpc` 代理),不通过即丢;`terminalId` 按 instance 命名空间。**不照抄 HAPI 的 fail-open**(HAPI 的 resize/write 不复检会话权限、多 socket 可覆盖劫持)。
 3. **不泄密(env 脱敏)**:spawn env 剔除已知密钥(`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`XACPX_*` 凭证等,集中 `SENSITIVE_ENV_KEYS`),注入 `TERM=xterm-256color`、`LANG`。**残余风险如实标注**:shell 仍能读磁盘上的 `~/.ssh`、`~/.aws` 等文件——env 脱敏挡不住主动读文件,这是交互 shell 固有属性,不假装能防。
 4. **不泄漏资源(生命周期硬约束)**:v1 的回收路径有三条:(a) web 端 teardown 显式发 `terminal-close`(切换会话/tab 关闭/组件 unmount);(b) 空闲计时器——`idleTimeoutSeconds`(默认 900s)无**用户输入**(write/resize)自动 kill + 发 `terminal-exit`(PTY 输出不重置计时器，因此 `top`/`tail -f` 等持续输出的进程在无交互时仍会被回收);(c) daemon 全量关闭时 `disposeAll`。**v1 未实现**:浏览器仅刷新/关标签页而不触发 teardown 时,PTY 会留活直到空闲超时命中。hub `/ws` 断开后触发核心清理、连接器链路丢失后 dispose 所有 PTY 留作 **v2**(随重连保活一并实现)。
@@ -124,6 +124,7 @@ relay-web 当前能管理会话、看流式对话、浏览工作空间文件,但
 - cwd 不存在 → **v1 未做校验/回退**:node-pty spawn 失败会抛错,经 Fix 1/Fix 3 后前端显示通用错误提示(`terminal.error`);cwd 校验存在 + 回退默认目录 + notice 延迟至 v2。
 - ghostty-web WASM 加载失败 / addon 缺口 → adapter 捕获,tab 显示降级提示;开发期评估是否切 xterm。
 - **输出洪流**(`cat 大文件`):v1 直通;`terminal-output` 在连接器侧 ~16ms 合帧 + 单帧上限(如 64KB,超出截断标记)防 web 帧风暴。**明确记一笔**:v1 不做完整背压,洪流下可能丢尾部输出——不假装无损。
+- **pre-terminalId 早期事件被丢弃(比 output 更广)**:前端按 `id === terminalId` 过滤下行帧,而 `terminalId` 在 create RPC 返回前始终为空,因此 create 解析前到达的 `terminal-output` **和** `terminal-exit`（shell 极速退出时）都会被静默丢弃——tab 可能维持"打开"外观但永无输出。这是 v1 已知限制;v2 修法为基于 `seq` 的缓冲/重放,暂存「等待中那个终端」的早期帧。
 
 ## 测试
 
