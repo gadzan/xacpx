@@ -30,6 +30,10 @@ function makeFakeControl(overrides: Record<string, unknown> = {}) {
     },
     prompt: async (input: unknown) => { record("prompt", input); return { ok: true, text: "done" }; },
     cancelTurn: (chatKey: string, alias: string) => { record("cancelTurn", { chatKey, alias }); return true; },
+    cancelQueuedItem: (chatKey: string, alias: string, itemId: string) => {
+      record("cancelQueuedItem", { chatKey, alias, itemId });
+      return { cancelled: true };
+    },
     executeCommand: async (input: unknown) => { record("executeCommand", input); return "output"; },
     listScheduledTasks: (chatKey: string) => [{
       id: "ab12", chat_key: chatKey, session_alias: "a",
@@ -76,6 +80,14 @@ test("sessions.list / prompt / command.execute dispatch and shape results", asyn
   expect(promptResult).toEqual({ ok: true, text: "done" });
   expect(calls.prompt?.[0]).toEqual({ chatKey: "relay:acct", sessionAlias: "a", text: "hi", senderId: "acct", isOwner: true });
   expect(await dispatch(bridge, req(MSG.commandExecute, { chatKey: "k", text: "/status", senderId: "acct" }))).toEqual({ output: "output" });
+});
+
+test("queue.cancel dispatches to cancelQueuedItem and returns its result", async () => {
+  const { control, calls } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  const result = await dispatch(bridge, req(MSG.queueCancel, { chatKey: "relay:acct", sessionAlias: "a", itemId: "q1" }));
+  expect(result).toEqual({ cancelled: true });
+  expect(calls.cancelQueuedItem?.[0]).toEqual({ chatKey: "relay:acct", alias: "a", itemId: "q1" });
 });
 
 test("sessions.native.list lists, and sessions.create forwards agentSessionId for native resume", async () => {

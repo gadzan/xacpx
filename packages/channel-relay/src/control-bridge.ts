@@ -13,6 +13,7 @@ import {
   type OrchestrationTaskDto,
   type PromptCancelPayload,
   type PromptPayload,
+  type QueueCancelPayload,
   type RelayEnvelope,
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
@@ -152,6 +153,10 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     case MSG.promptCancel: {
       const input = payload as PromptCancelPayload;
       return { cancelled: control.cancelTurn(input.chatKey, input.sessionAlias) };
+    }
+    case MSG.queueCancel: {
+      const input = payload as QueueCancelPayload;
+      return control.cancelQueuedItem(input.chatKey, input.sessionAlias, input.itemId);
     }
     case MSG.commandExecute: {
       const input = payload as CommandExecutePayload;
