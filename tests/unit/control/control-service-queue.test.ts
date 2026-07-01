@@ -12,12 +12,15 @@ function makeService() {
   const seen: ControlEvent[] = [];
   events.subscribe((event) => seen.push(event));
 
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  // Each in-flight agent.chat parks a resolver on `pending`. `nextChat` resolves them
+  // one at a time IN ORDER (FIFO) so a test can finish turn N and watch the drain start
+  // turn N+1 deterministically — no setTimeout races. `releaseChat` drains them all (used
+  // by the single-turn Task 1 tests that never enqueue+drain).
+  const pending: Array<() => void> = [];
   const chat = async (_request: ChatRequest): Promise<ChatResponse> => {
-    await gate;
+    await new Promise<void>((resolve) => {
+      pending.push(resolve);
+    });
     return { text: "done" };
   };
 
@@ -35,7 +38,16 @@ function makeService() {
     events,
   } as never);
 
-  return { service, events: seen, releaseChat: () => release() };
+  return {
+    service,
+    events: seen,
+    releaseChat: () => {
+      while (pending.length) pending.shift()!();
+    },
+    nextChat: () => {
+      pending.shift()?.();
+    },
+  };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -72,5 +84,45 @@ test("scheduled turns are NOT queued (still reject) while a turn runs", async ()
   expect(r.ok).toBe(false);
   expect(r.errorMessage).toBe("turn-already-running");
   releaseChat();
+  await p1;
+});
+
+type TurnStarted = Extract<ControlEvent, { type: "turn-started" }>;
+type QueueUpdated = Extract<ControlEvent, { type: "queue-updated" }>;
+
+test("queued prompts drain FIFO after the running turn finishes, each as its own turn", async () => {
+  const { service, events, nextChat } = makeService();
+  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  await tick();
+  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
+  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
+  nextChat();
+  await tick(); // finish turn 1 → drain "second"
+  const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
+  // Drained turn carries queueItemId but NOT prompt (persistence already happened at
+  // enqueue in the hub; re-emitting prompt would double-persist).
+  expect(started.at(-1)!.queueItemId).toBeDefined();
+  expect(started.at(-1)!.prompt).toBeUndefined();
+  // queue now shows only "third"
+  const q = (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!;
+  expect(q.items.map((i) => i.textPreview)).toEqual(["third"]);
+  nextChat();
+  await tick(); // finish "second" → drain "third"
+  nextChat();
+  await tick(); // finish "third" → queue empty
+  expect((events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!.items).toEqual([]);
+  await p1;
+});
+
+test("a prompt arriving during the drain hand-off is queued (no parallel turn)", async () => {
+  const { service, nextChat } = makeService();
+  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  await tick();
+  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
+  nextChat(); // finish turn1; drain starts "second"
+  const r3 = await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
+  expect(r3.queued).toBe(true); // saw the session busy, enqueued
+  nextChat();
+  nextChat();
   await p1;
 });
