@@ -14,7 +14,7 @@
 - **Only interactive `ControlService.prompt` enqueues.** `runScheduledTurn` keeps its current immediate-or-reject behavior (a `queueable` flag distinguishes them).
 - **No parallel turns:** the drain holds the `inFlight` slot across the turn-N→N+1 hand-off; a prompt arriving in that window enqueues.
 - **FIFO**, replace-latest snapshots. Every queue change (enqueue / drain / cancel) emits a `queue-updated` event carrying the full ordered item list `{ id, textPreview, enqueuedAt }` (textPreview truncated ~120 chars server-side).
-- **A queued message is NOT persisted to history nor shown as a delivered transcript bubble until it drains.** It lives only in the queue until it runs; on drain it is streamed/persisted via `turn-started{prompt, queueItemId}` exactly like a scheduled turn.
+- **Persistence stays at enqueue (hub-owned; DO NOT change it).** Task 1 confirmed the relay hub persists the inbound "in" message at the `control.prompt` RPC entry (`packages/relay/src/http/app.ts:340`), before `ControlService.prompt` runs — so a queued message legitimately appears in the transcript immediately (it's a real message the user sent). The QueueStrip is a **server-authoritative overlay** (driven purely by `queue-updated`) showing which messages are still *pending*; it does not replace the transcript bubble. **Consequently the drained turn emits `turn-started` WITHOUT `prompt`** (only `queueItemId`), so the message is NOT persisted a second time. (Reverses the earlier "persist only at drain" idea, which would have required a hub-persistence refactor — rejected as too much blast radius.)
 - **Cancel (Stop / HUD) cancels only the running turn; the queue survives** and drains next. Per-item ✕ removes a queued item. No global "clear queue" button.
 - **Additive, backward-compatible protocol:** new event type + new RPC + optional result fields. Old web clients ignore the unknown event. Protocol stays `0.1.x` (`^0.1.0`).
 - **relay-protocol builds with `tsc`** (bun tree-shakes `export *` barrels to empty → runtime "no export named MSG"). Rebuild protocol dist before downstream packages pick up new DTOs.
@@ -153,8 +153,10 @@ test("queued prompts drain FIFO after the running turn finishes, each as its own
   await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
   nextChat(); await tick();   // finish turn 1 → drain "second"
   const started = events.filter(e => e.type === "turn-started");
-  expect(started.at(-1)).toMatchObject({ prompt: "second" });
-  expect(typeof started.at(-1).queueItemId).toBe("string");
+  // Drained turn carries queueItemId but NOT prompt (persistence already happened at
+  // enqueue in the hub; re-emitting prompt would double-persist).
+  expect(started.at(-1).queueItemId).toBeDefined();
+  expect(started.at(-1).prompt).toBeUndefined();
   // queue now shows only "third"
   const q = events.filter(e => e.type === "queue-updated").at(-1);
   expect(q.items.map(i => i.textPreview)).toEqual(["third"]);
@@ -202,7 +204,9 @@ Rework the `finally` (lines 634-650) so that instead of only `this.inFlight.dele
           ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
           ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
           ...(next.media !== undefined ? { media: next.media } : {}),
-          turnStarted: { prompt: next.text, queueItemId: next.id },
+          // queueItemId only — NO prompt (hub persisted the inbound at enqueue; re-emitting
+          // prompt would double-persist and duplicate the transcript bubble).
+          turnStarted: { queueItemId: next.id },
         });
         // NOTE: the drained executeTurn call re-sets inFlight[key] at its top (a fresh
         // controller). To avoid a gap, set the new inFlight entry BEFORE deleting this
@@ -356,7 +360,7 @@ git commit -m "feat(channel-relay): dispatch control.queue.cancel to cancelQueue
 
 **Interfaces:**
 - Consumes: `WebServerEvent`/`ControlEventDto` (now with `queue-updated` + `turn-started.queueItemId`), `PromptResult.queued/queueItemId`, `MSG.queueCancel`.
-- Produces (added to the store's return): `queues: Record<sessionKey, QueueItemDto[]>` (reactive), `sessionQueue` computed for the selected session, `cancelQueuedItem(instanceId, alias, itemId)`. `send()` now: if a turn is running for the target session (`liveTurns[key]` present, i.e. `busy`), route to the queue (optimistic chip, no transcript bubble) and reconcile from `queue-updated`; else current behavior (optimistic bubble + immediate turn).
+- Produces (added to the store's return): `queues: Record<sessionKey, QueueItemDto[]>` (reactive), `sessionQueue` computed for the selected session, `cancelQueuedItem(instanceId, alias, itemId)`. **`send()` is UNCHANGED regarding the optimistic transcript bubble** — it always pushes the optimistic "in" bubble, both busy and idle (the hub persists the inbound at enqueue either way, so the transcript stays consistent across reloads). The queue is a separate, purely server-authoritative overlay populated by `queue-updated`. Do NOT suppress the bubble when busy and do NOT push an optimistic queue chip — the `queue-updated` snapshot is the single source of truth for the strip.
 
 - [ ] **Step 1: Write the failing test** — create `chat-queue.test.ts`:
 ```ts
@@ -369,14 +373,14 @@ it("queue-updated replaces the per-session queue list", () => {
   expect(chat.sessionQueue).toEqual([]);
 });
 
-it("sending while busy issues the RPC and does NOT push a transcript bubble", async () => {
+it("sending while busy still issues control.prompt and pushes the optimistic bubble", async () => {
   const chat = useChatStore(); chat.select("i1", "s");
   // make the session busy: a live turn exists
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } } as WebServerEvent);
   const before = chat.messages.length;
   await chat.send("queued msg");
-  expect(chat.messages.length).toBe(before); // no optimistic bubble while busy
-  // rpc called with control.prompt (mock asserts)
+  expect(chat.messages.length).toBe(before + 1); // bubble pushed as normal
+  // rpc called with control.prompt (mock asserts). The strip is driven separately by queue-updated.
 });
 
 it("cancelQueuedItem issues control.queue.cancel and optimistically drops the chip", async () => {
@@ -393,7 +397,7 @@ Mock `api.rpc` (mirror the existing chat.test.ts mock) and assert the RPC method
 - [ ] **Step 3: Implement**
 - Add state: `const queues = ref<Record<string, QueueItemDto[]>>({});` and `const sessionQueue = computed<QueueItemDto[]>(() => selectedKey.value ? queues.value[selectedKey.value] ?? [] : []);`. Import `QueueItemDto` from the protocol package.
 - `applyEvent`: add `else if (e.type === "queue-updated") { queues.value[bufKey(event.instanceId, e.sessionAlias)] = e.items; }`.
-- `send()`: at the top, compute `const key = bufKey(instanceId.value, sessionAlias.value); const willQueue = !!liveTurns.value[key];`. When `willQueue`, DON'T push the optimistic transcript bubble; instead push an optimistic chip into `queues.value[key]` (a temporary `{ id: "optimistic-"+…, textPreview: text.slice(0,120), enqueuedAt: new Date().toISOString() }`), send the RPC as today, and let the authoritative `queue-updated` replace the list. Keep the existing non-busy path unchanged. (The drained item later arrives as a `turn-started{prompt,queueItemId}` which the EXISTING handler at 310-319 already turns into an inbound bubble when selected — no change needed there.)
+- `send()`: **no change to the optimistic bubble** — leave the existing `messages.value.push(optimistic)` and the `control.prompt` RPC exactly as they are (the message shows in the transcript whether or not it queues; the hub persists it at enqueue). The queue strip is driven entirely by `queue-updated`. (A drained turn later arrives as a plain `turn-started` with `queueItemId` but no `prompt`, so the existing handler at 310-319 does NOT push a duplicate bubble — correct, the bubble is already there.)
 - Add `async function cancelQueuedItem(instanceId: string, alias: string, itemId: string) { const key = bufKey(instanceId, alias); const list = queues.value[key]; if (list) queues.value[key] = list.filter(i => i.id !== itemId); try { await api.rpc(instanceId, "control.queue.cancel", { sessionAlias: alias, itemId }); } catch { /* best-effort; a queue-updated will re-sync */ } }`.
 - Add `queues, sessionQueue, cancelQueuedItem` to the store's returned object (line 430).
 
