@@ -121,7 +121,6 @@ const history = ref<string[]>([]);
 let historyIdx = -1; // -1 = editing a fresh line
 
 function submit() {
-  if (props.busy) return;
   if (composer.uploading) return;
   const value = text.value.trim();
   const ready = composer.pending.filter((p) => p.status === "ready");
@@ -224,8 +223,8 @@ function onInput() {
           <span v-if="c.description" class="truncate text-fg-muted">{{ c.description }}</span>
         </li>
       </ul>
-      <!-- Stays enabled while busy so you can pre-compose the next message and press
-           Esc to stop; submit() itself no-ops while busy. -->
+      <!-- Stays enabled while busy: sending here queues server-side (no client-side
+           blocking) and Esc still cancels the in-flight turn. -->
       <textarea ref="textarea" v-model="text" rows="2"
                 class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
                 :placeholder='busy ? $t("chat.working") : $t("chat.message")'
@@ -285,10 +284,7 @@ function onInput() {
                   @click="openPicker">
             <Paperclip :size="15" />
           </button>
-          <button v-if="busy" type="button" data-test="composer-stop"
-                  class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-danger text-white text-[12.5px] font-semibold hover:opacity-90 transition-all"
-                  @click="emit('cancel')">{{ $t("chat.stop") }}</button>
-          <button v-else type="submit" data-test="composer-send" :disabled="composer.uploading || (!text.trim() && !composer.pending.filter(p => p.status === 'ready').length)"
+          <button type="submit" data-test="composer-send" :disabled="composer.uploading || (!text.trim() && !composer.pending.filter(p => p.status === 'ready').length)"
                   class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
             {{ $t("chat.send") }}
             <Send :size="14" />
