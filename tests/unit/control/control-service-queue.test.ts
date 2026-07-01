@@ -11,6 +11,10 @@ function makeService(opts?: {
   // Override the fake session bind so a test can make a specific turn's useSession throw
   // (e.g. simulate a transient session-bind failure on one drained queue item).
   useSession?: (chatKey: string, alias: string) => Promise<unknown>;
+  // Override the fake session lookup. Returning a session with a `transportSession` makes the
+  // executeTurn finally's post-turn `await getSession` window actually run (the C3 drain
+  // hand-off window), so a test can act during that await.
+  getSession?: (alias: string) => Promise<unknown>;
 }) {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
@@ -36,7 +40,7 @@ function makeService(opts?: {
         opts?.useSession ??
         (async (_chatKey: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" })),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
-      getSession: async () => null,
+      getSession: opts?.getSession ?? (async () => null),
     },
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {} as never,
@@ -167,6 +171,58 @@ test("a drained turn whose useSession fails still drains the following queued it
   nextChat(); // finish "third" cleanly so no turn is left parked
   await tick();
   await p1;
+});
+
+test("a cancel that empties the queue during the drain hand-off clears draining (no wedge)", async () => {
+  // C3 regression. When a turn finishes with a queued head, the `finally` sets `draining` and
+  // then awaits a post-turn `getSession` (the sessions-changed detection). If a cancel empties
+  // the queue DURING that await, advanceQueue takes its empty `else` branch — which must clear
+  // `draining` too, else the guard leaks and every future prompt enqueues forever (the session
+  // wedges: shows idle on web but nothing ever drains).
+  const chatKey = "c";
+  const alias = "s";
+  const ref: { service?: ControlService; queuedId?: string } = {};
+  // Armed right before we finish "first", so ONLY the finally's post-turn getSession (the drain
+  // hand-off window, after `draining` was set) performs the cancel — not the earlier pre-turn or
+  // streamMode getSession calls. Robust to how many getSession calls executeTurn makes.
+  let armCancel = false;
+  const { service, events, nextChat } = makeService({
+    // Returning a transportSession makes the finally's post-turn getSession window actually run.
+    getSession: async (a: string) => {
+      if (armCancel && ref.queuedId) {
+        armCancel = false;
+        ref.service!.cancelQueuedItem(chatKey, alias, ref.queuedId);
+      }
+      return { alias: a, transportSession: "t1" };
+    },
+  });
+  ref.service = service;
+
+  const p1 = service.prompt({ chatKey, sessionAlias: alias, text: "first", senderId: "u" });
+  await tick(); // "first" registers in-flight (pre-turn + streamMode getSession already ran, unarmed)
+  const r2 = await service.prompt({ chatKey, sessionAlias: alias, text: "second", senderId: "u" });
+  expect(r2.queued).toBe(true);
+  ref.queuedId = r2.queueItemId!;
+
+  armCancel = true;
+  nextChat(); // finish "first": finally sets draining → next getSession cancels "second" → advanceQueue empty else
+  await tick();
+  await p1;
+
+  // A fresh prompt must START a new turn, not enqueue. Pre-fix, `draining` leaked and this
+  // prompt would resolve immediately with {queued:true}; post-fix it parks on the chat gate.
+  let afterResult: unknown = "unresolved";
+  const pAfter = service
+    .prompt({ chatKey, sessionAlias: alias, text: "after", senderId: "u" })
+    .then((r) => { afterResult = r; });
+  await tick();
+  expect(afterResult).toBe("unresolved"); // parked → a real turn started (not wedged/queued)
+  const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
+  expect(started.length).toBe(2); // "first" + the fresh "after"; the cancelled "second" never started
+  expect(started.at(-1)!.queueItemId).toBeUndefined(); // a fresh user turn, not a drained queue item
+
+  nextChat(); // release "after" so no turn is left parked
+  await pAfter;
 });
 
 test("cancelQueuedItem removes a queued item and emits queue-updated; false for unknown id", async () => {

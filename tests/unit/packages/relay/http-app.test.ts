@@ -240,6 +240,27 @@ test("session archive/unarchive RPCs are chat-scoped (chatKey stamped, else the 
   }
 });
 
+test("queue.cancel RPC is chat-scoped (chatKey stamped, else the connector's cancel is a no-op)", async () => {
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+
+  // Cancelling a queued item resolves the queue within the caller's chat scope, so the hub
+  // MUST stamp chatKey. Without it the connector gets chatKey: undefined and cancelQueuedItem
+  // misses the queue — the cancel becomes a server no-op and the item still runs.
+  const res = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.queueCancel, payload: { chatKey: "forged", sessionAlias: "s", itemId: "q1" } }),
+  });
+  expect(res.status).toBe(200);
+  const stamped = rpcCalls[0]?.payload as { chatKey?: string };
+  expect(stamped.chatKey).toBe(`relay:${redeemed.accountId}`);
+});
+
 test("PATCH /api/instances/:id renames an owned instance", async () => {
   const { app, instances, loginToken, login } = await makeApp();
   const { cookie } = await login(loginToken);

@@ -787,6 +787,11 @@ export class ControlService {
         turnStarted: { queueItemId: next.id },
       });
     } else {
+      // The queue emptied during the drain hand-off (e.g. a cancel removed the only queued
+      // item while the finally's post-turn `await getSession` was in flight, after the finally
+      // set `draining`). No drained turn is coming to clear the guard, so clear it here too —
+      // otherwise `draining` leaks and every future prompt enqueues forever (permanent wedge).
+      this.draining.delete(key);
       this.inFlight.delete(key);
     }
   }

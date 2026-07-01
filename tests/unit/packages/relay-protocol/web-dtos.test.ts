@@ -111,6 +111,25 @@ test("parseWebServerEvent accepts a turn-usage control event and rejects malform
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: "x", size: 200000 } })).toBeNull();
 });
 
+test("parseWebServerEvent accepts a queue-updated control event and rejects malformed ones", () => {
+  // The gate (CONTROL_EVENT_TYPES + validControlEvent) must let well-formed queue snapshots
+  // through and preserve `items`, or the web queue strip never populates on live pushes.
+  const ev = roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "queue-updated", chatKey: "k", sessionAlias: "a", items: [{ id: "q1", textPreview: "hi", enqueuedAt: "2026-07-01T00:00:00Z" }] },
+  });
+  expect(ev).not.toBeNull();
+  expect((ev as Extract<WebServerEvent, { kind: "control-event" }>).event).toMatchObject({
+    type: "queue-updated",
+    items: [{ id: "q1", textPreview: "hi", enqueuedAt: "2026-07-01T00:00:00Z" }],
+  });
+  // an empty queue is valid (the "just drained to empty" snapshot)…
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "queue-updated", chatKey: "k", sessionAlias: "a", items: [] } })).not.toBeNull();
+  // …but items must be an array, or the strip has nothing iterable.
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "queue-updated", chatKey: "k", sessionAlias: "a" } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "queue-updated", chatKey: "k", sessionAlias: "a", items: "x" } })).toBeNull();
+});
+
 test("parseWebServerEvent accepts an agent-commands control event and rejects malformed ones", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",
