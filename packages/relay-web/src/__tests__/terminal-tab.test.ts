@@ -126,4 +126,13 @@ describe("TerminalTab", () => {
     await tick();
     expect(w.find('[data-test="keybar"]').exists()).toBe(false);
   });
+
+  it("applyFit drives both the ghostty grid and the PTY resize after open", async () => {
+    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    expect(adapter.resize).toHaveBeenCalledWith(80, 24);
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-resize", cols: 80, rows: 24 }),
+    );
+  });
 });

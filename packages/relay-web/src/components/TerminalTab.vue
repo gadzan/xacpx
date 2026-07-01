@@ -98,6 +98,9 @@ async function start() {
   try {
     const newId = await terminals.create(props.instanceId, props.sessionAlias, currentAdapter.cols(), currentAdapter.rows());
     if (myEpoch !== epoch) {
+      // Superseded by a later start()/teardown: close the just-created orphan PTY. The superseding
+      // teardown already disposed this adapter when `adapter` still pointed at it, so only dispose
+      // if it wasn't (guard against double-dispose).
       terminals.close(props.instanceId, newId);
       if (adapter === currentAdapter) currentAdapter.dispose();
       return;
