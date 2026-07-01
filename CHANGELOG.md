@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0-beta.0] - 2026-07-01
+
+A `@ganglion/xacpx` (core) beta introducing the web terminal. Published to the npm `next` dist-tag alongside `@ganglion/xacpx-relay` 0.9.11-beta.0 and `@ganglion/xacpx-channel-relay` 0.3.2-beta.0; `@ganglion/xacpx-relay-protocol` 0.1.6 ships stable (additive wire types). Install with `npm i -g @ganglion/xacpx@next`.
+
+### Added
+
+- **Remote instance terminal in the web dashboard (opt-in).** The relay-web dashboard gains a `Terminal` tab in the right panel: open a real interactive shell (rendered with `ghostty-web`) on the selected session's instance, with bytes streamed live over the existing relay link. Keystrokes/resize/close travel up a new ordered `/ws` fast path; PTY output streams down the existing control-event channel; `control.terminal.create` opens the PTY. **Disabled by default** — set `terminal.enabled: true` in the instance config to allow it. macOS/Linux only. The shell opens in the session's workspace cwd with secrets scrubbed from its environment, and is reaped after 15 min of no user input. Every upstream frame is authorized against instance ownership; there is no command/path allowlist (the trust boundary is the hub login, which already grants agent-driven code execution).
+
+### Fixed
+
+- **The `channel-relay` package now builds under the package-level typechecker.** The connector's inbound-event closure lost a guard narrowing that `tsc --noEmit` at the repo root did not catch but `build:packages` did.
+
 ## [relay 0.9.10] - 2026-06-29
 
 A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core, `relay-protocol` (republished as 0.1.5 below), and `channel-relay` are otherwise unchanged.
