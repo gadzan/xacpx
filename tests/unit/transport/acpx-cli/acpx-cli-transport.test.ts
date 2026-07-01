@@ -1918,6 +1918,217 @@ test("onThought: only the first handler error is surfaced", async () => {
   ).rejects.toThrow("thought error 1");
 });
 
+// --- onPlan wiring tests ---
+
+function makePlanLine(entries: unknown[]): string {
+  return JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "plan",
+        entries,
+      },
+    },
+  });
+}
+
+test("onPlan: callback receives plan entries without bleeding into the reply stream", async () => {
+  const plans: unknown[] = [];
+  const segments: string[] = [];
+
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makePlanLine([{ content: "step 1", status: "completed" }, { content: "step 2", status: "in_progress" }]),
+        makeAgentChunkLine("final answer"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(session, "hi", async (text) => {
+    segments.push(text);
+  }, undefined, {
+    onPlan: (entries) => {
+      plans.push(entries);
+    },
+  });
+
+  expect(plans).toEqual([[{ content: "step 1", status: "completed" }, { content: "step 2", status: "in_progress" }]]);
+  expect(segments).toEqual(["final answer"]);
+});
+
+test("onPlan: handler error rejects the prompt", async () => {
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makePlanLine([{ content: "boom", status: "completed" }]),
+        makeAgentChunkLine("done"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await expect(
+    transport.prompt(session, "hi", undefined, undefined, {
+      onPlan: () => {
+        throw new Error("plan handler boom");
+      },
+    }),
+  ).rejects.toThrow("plan handler boom");
+});
+
+// --- onUsage wiring tests ---
+
+function makeUsageLine(used: number, size: number): string {
+  return JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "usage_update",
+        used,
+        size,
+      },
+    },
+  });
+}
+
+test("onUsage: callback receives usage data without bleeding into the reply stream", async () => {
+  const usages: unknown[] = [];
+  const segments: string[] = [];
+
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeUsageLine(1024, 16384),
+        makeAgentChunkLine("final answer"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(session, "hi", async (text) => {
+    segments.push(text);
+  }, undefined, {
+    onUsage: (usage) => {
+      usages.push(usage);
+    },
+  });
+
+  expect(usages).toEqual([{ used: 1024, size: 16384 }]);
+  expect(segments).toEqual(["final answer"]);
+});
+
+test("onUsage: handler error rejects the prompt", async () => {
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeUsageLine(100, 1000),
+        makeAgentChunkLine("done"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await expect(
+    transport.prompt(session, "hi", undefined, undefined, {
+      onUsage: () => {
+        throw new Error("usage handler boom");
+      },
+    }),
+  ).rejects.toThrow("usage handler boom");
+});
+
+// --- onCommands wiring tests ---
+
+function makeCommandsLine(commands: unknown[]): string {
+  return JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: commands,
+      },
+    },
+  });
+}
+
+test("onCommands: callback receives commands list without bleeding into the reply stream", async () => {
+  const commandsList: unknown[] = [];
+  const segments: string[] = [];
+
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeCommandsLine([{ name: "compact", description: "Compact context" }]),
+        makeAgentChunkLine("final answer"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(session, "hi", async (text) => {
+    segments.push(text);
+  }, undefined, {
+    onCommands: (commands) => {
+      commandsList.push(commands);
+    },
+  });
+
+  expect(commandsList).toEqual([[{ name: "compact", description: "Compact context", hasInput: false }]]);
+  expect(segments).toEqual(["final answer"]);
+});
+
+test("onCommands: handler error rejects the prompt", async () => {
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeCommandsLine([{ name: "boom" }]),
+        makeAgentChunkLine("done"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await expect(
+    transport.prompt(session, "hi", undefined, undefined, {
+      onCommands: () => {
+        throw new Error("commands handler boom");
+      },
+    }),
+  ).rejects.toThrow("commands handler boom");
+});
+
 test("getAgentSessionId returns the agentSessionId from sessions show", async () => {
   const run = mock(async () => ({
     code: 0,

@@ -1,3 +1,4 @@
+import type { PlanEntry, PromptUsage } from "xacpx/plugin-api";
 import { t } from "../i18n/index.js";
 import { en } from "../i18n/en.js";
 import { zh } from "../i18n/zh.js";
@@ -13,6 +14,7 @@ export type CardState = "thinking" | "streaming" | "complete" | "aborted" | "err
 export const CARD_BODY_MAX_CHARS = 28000;
 const TRUNCATION_MARKER = "\n\n…(truncated)";
 const TOOL_PANEL_MAX_STEPS = 50;
+const PLAN_PANEL_MAX_STEPS = 30;
 
 export function truncateForCardBody(text: string, maxChars: number = CARD_BODY_MAX_CHARS): string {
   if (text.length <= maxChars) return text;
@@ -31,6 +33,10 @@ export interface BuildCardInput {
   reasoningText?: string;
   reasoningElapsedMs?: number;
   toolSteps?: ToolUseStep[];
+  /** Agent live plan/todo list (ACP `plan`); rendered as a collapsible panel. */
+  planEntries?: PlanEntry[];
+  /** Context-usage side-channel; rendered into the footer (tokens + window %). */
+  usage?: PromptUsage;
   /** Per-call override of {@link CARD_BODY_MAX_CHARS}. */
   maxBodyChars?: number;
 }
@@ -46,6 +52,12 @@ export function buildCard(input: BuildCardInput): Record<string, unknown> {
   };
 
   const elements: Array<Record<string, unknown>> = [];
+
+  const planPanel = buildPlanPanel(input.planEntries);
+  if (planPanel) {
+    elements.push(planPanel);
+    elements.push({ tag: "hr" });
+  }
 
   const toolPanel = buildToolUsePanel(input.toolSteps);
   if (toolPanel) {
@@ -90,7 +102,8 @@ export function buildCard(input: BuildCardInput): Record<string, unknown> {
     text_size: "normal_v2",
   });
 
-  const footer = footerForState(input.state, input.elapsedMs);
+  const usageText = input.usage ? formatUsageSegment(input.usage) : "";
+  const footer = footerForState(input.state, input.elapsedMs, usageText || undefined);
   if (footer) elements.push(footer);
 
   return {
@@ -124,9 +137,22 @@ function summaryForState(state: CardState): Record<string, unknown> {
   }
 }
 
-function footerForState(state: CardState, elapsedMs?: number): Record<string, unknown> | null {
+function footerElement(content: string): Record<string, unknown> {
+  return { tag: "markdown", content, text_size: "notation", text_align: "left" };
+}
+
+function footerForState(
+  state: CardState,
+  elapsedMs?: number,
+  usageText?: string,
+): Record<string, unknown> | null {
   const elapsedLabel = typeof elapsedMs === "number" ? formatElapsedMs(elapsedMs) : "";
   const elapsedSuffix = elapsedLabel ? ` · ${elapsedLabel}` : "";
+  // Usage rides as a trailing ` · <tokens · ctx %>` segment on whatever the
+  // state's footer already shows. It can be present without elapsed (e.g. a
+  // usage_update lands before the first footer tick), so complete/streaming
+  // render their footer when EITHER elapsed or usage is available.
+  const usageSuffix = usageText ? ` · ${usageText}` : "";
   switch (state) {
     // Live states (thinking/streaming) embed the elapsed inline as
     // `处理中... <elapsed>` rather than appending it via ` · <elapsed>`
@@ -135,43 +161,101 @@ function footerForState(state: CardState, elapsedMs?: number): Record<string, un
     // states (complete/aborted/error) use the ` · ` separator because the
     // label is a final outcome and the elapsed is supplementary.
     case "thinking":
-      return {
-        tag: "markdown",
-        content: elapsedLabel ? t().footerThinkingElapsed(elapsedLabel) : t().footerThinking,
-        text_size: "notation",
-        text_align: "left",
-      };
+      return footerElement((elapsedLabel ? t().footerThinkingElapsed(elapsedLabel) : t().footerThinking) + usageSuffix);
     case "aborted":
-      return {
-        tag: "markdown",
-        content: t().footerAborted(elapsedSuffix),
-        text_size: "notation",
-        text_align: "left",
-      };
+      return footerElement(t().footerAborted(elapsedSuffix) + usageSuffix);
     case "error":
-      return {
-        tag: "markdown",
-        content: t().footerError(elapsedSuffix),
-        text_size: "notation",
-        text_align: "left",
-      };
+      return footerElement(t().footerError(elapsedSuffix) + usageSuffix);
     case "complete":
-      if (!elapsedLabel) return null;
-      return {
-        tag: "markdown",
-        content: t().footerComplete(elapsedLabel),
-        text_size: "notation",
-        text_align: "left",
-      };
+      if (!elapsedLabel && !usageText) return null;
+      return footerElement(elapsedLabel ? t().footerComplete(elapsedLabel) + usageSuffix : (usageText ?? ""));
     case "streaming":
-      if (!elapsedLabel) return null;
-      return {
-        tag: "markdown",
-        content: t().footerStreaming(elapsedLabel),
-        text_size: "notation",
-        text_align: "left",
-      };
+      if (!elapsedLabel && !usageText) return null;
+      return footerElement(elapsedLabel ? t().footerStreaming(elapsedLabel) + usageSuffix : (usageText ?? ""));
   }
+}
+
+/**
+ * Render the usage side-channel as a compact footer segment, e.g.
+ * `↑1.2k · ↓800 · ctx 12k/200k 6%`. Each piece is independent: token counts
+ * come from the per-turn breakdown (codex may omit them) and the context part
+ * from the window fill. Returns "" when nothing usable is present.
+ */
+export function formatUsageSegment(usage: PromptUsage): string {
+  const parts: string[] = [];
+  const breakdown = usage.breakdown;
+  if (breakdown && typeof breakdown.inputTokens === "number" && breakdown.inputTokens > 0) {
+    parts.push(`↑${formatTokenCount(breakdown.inputTokens)}`);
+  }
+  if (breakdown && typeof breakdown.outputTokens === "number" && breakdown.outputTokens > 0) {
+    parts.push(`↓${formatTokenCount(breakdown.outputTokens)}`);
+  }
+  if (typeof usage.size === "number" && usage.size > 0 && typeof usage.used === "number" && usage.used >= 0) {
+    // Clamp: agents can transiently report used > size; never show >100%.
+    const percent = Math.min(100, Math.round((usage.used / usage.size) * 100));
+    parts.push(`ctx ${formatTokenCount(usage.used)}/${formatTokenCount(usage.size)} ${percent}%`);
+  }
+  return parts.join(" · ");
+}
+
+function formatTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "0";
+  const rounded = Math.round(value);
+  if (rounded >= 1_000_000) return formatScaled(rounded, 1_000_000, "m");
+  if (rounded >= 1_000) {
+    // Promote to the next unit when the k-rounding would read "1000k"
+    // (e.g. 999_999 → "1m", not "1000k").
+    if (Math.round(rounded / 1_000) >= 1_000) return formatScaled(rounded, 1_000_000, "m");
+    return formatScaled(rounded, 1_000, "k");
+  }
+  return String(rounded);
+}
+
+function formatScaled(value: number, factor: number, suffix: string): string {
+  const scaled = value / factor;
+  if (scaled >= 100 || Number.isInteger(scaled)) return `${Math.round(scaled)}${suffix}`;
+  return `${scaled.toFixed(1).replace(/\.0$/, "")}${suffix}`;
+}
+
+const PLAN_STATUS_ICON: Record<string, string> = {
+  completed: "✅",
+  in_progress: "⏳",
+  pending: "⬜",
+};
+
+function buildPlanPanel(entries: PlanEntry[] | undefined): Record<string, unknown> | null {
+  if (!entries || entries.length === 0) return null;
+  const done = entries.filter((entry) => entry.status === "completed").length;
+  const visible = entries.slice(0, PLAN_PANEL_MAX_STEPS);
+  const lines = visible.map((entry) => {
+    const icon = PLAN_STATUS_ICON[entry.status] ?? PLAN_STATUS_ICON.pending;
+    const text = truncateInline(entry.content, 120);
+    // Strike completed items so the remaining work reads at a glance.
+    return entry.status === "completed" ? `${icon} ~~${text}~~` : `${icon} ${text}`;
+  });
+  const omitted = entries.length - visible.length;
+  if (omitted > 0) {
+    lines.push(t().planPanelOmitted(omitted));
+  }
+  return {
+    tag: "collapsible_panel",
+    // Expanded by default: the live plan is the headline "what's happening".
+    expanded: true,
+    header: {
+      title: {
+        tag: "markdown",
+        content: t().planPanelHeader(done, entries.length),
+      },
+    },
+    elements: [
+      {
+        tag: "markdown",
+        content: lines.join("\n"),
+        text_align: "left",
+        text_size: "notation",
+      },
+    ],
+  };
 }
 
 const TOOL_KIND_ICON: Record<string, string> = {

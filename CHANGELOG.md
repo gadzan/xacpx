@@ -1,8 +1,8 @@
 # Changelog
 
-## [0.16.0-beta.0] - 2026-07-01
+## [0.17.0-beta.0] - 2026-07-01
 
-A `@ganglion/xacpx` (core) beta introducing the web terminal. Published to the npm `next` dist-tag alongside `@ganglion/xacpx-relay` 0.9.11-beta.0 and `@ganglion/xacpx-channel-relay` 0.3.2-beta.0; `@ganglion/xacpx-relay-protocol` 0.1.6 ships stable (additive wire types). Install with `npm i -g @ganglion/xacpx@next`.
+A `@ganglion/xacpx` (core) beta introducing the web terminal. Published to the npm `next` dist-tag with `@ganglion/xacpx-relay` 0.9.12-beta.0 and `@ganglion/xacpx-channel-relay` 0.3.3-beta.0; `@ganglion/xacpx-relay-protocol` 0.1.7 ships stable (additive wire types). Install with `npm i -g @ganglion/xacpx@next`.
 
 ### Added
 
@@ -11,6 +11,69 @@ A `@ganglion/xacpx` (core) beta introducing the web terminal. Published to the n
 ### Fixed
 
 - **The `channel-relay` package now builds under the package-level typechecker.** The connector's inbound-event closure lost a guard narrowing that `tsc --noEmit` at the repo root did not catch but `build:packages` did.
+
+## [0.16.0] - 2026-06-30
+
+A `@ganglion/xacpx` (core) release. Ships alongside channel-feishu 0.6.0 (below).
+
+### Added
+
+- **Public plugin-api types for the usage and plan side-channels (#99).** `plugin-api` now re-exports `PromptUsage` / `UsageBreakdown` / `UsageCost` and `AgentCommand` (from the transport layer) plus `PlanEntry` / `PlanEntryStatus` (from the channel layer). These were already delivered to channel plugins via the `chat()` callbacks (`onUsage` / `onPlan` / `onCommands`); exporting the types lets out-of-tree channel packages type those callbacks against the public contract instead of reaching into internals. Purely additive — no runtime change.
+
+## [channel-feishu 0.6.0] - 2026-06-30
+
+A `@ganglion/xacpx-channel-feishu` release. Requires core's new plugin-api type exports (0.16.0 above).
+
+### Added
+
+- **Context-usage footer on the streaming card (#99).** The Feishu streaming card now consumes the `onUsage` side-channel and renders a compact footer segment with the per-turn token breakdown and context-window fill, e.g. `↑1.2k · ↓800 · ctx 12k/200k 6%`. Each piece degrades independently — agents that omit the token breakdown (codex) still get the context percentage. The percent is clamped to 100% and token counts roll over cleanly (`999_999 → 1m`).
+- **Live plan/todo panel on the streaming card (#99).** The card now consumes the `onPlan` side-channel and renders the agent's live plan as an expanded collapsible panel above the tool panel, with per-item status icons (✅/⏳/⬜), struck-through completed items, a `done/total` header, and a 30-row cap. The list is replaced on each update (matching ACP `plan` semantics), not appended.
+
+### Changed
+
+- Usage and plan changes take the full `card.update` path rather than the `streaming_content` element-content fast-path, since the footer and panels are not part of that streamed element.
+
+## [0.15.5] - 2026-06-30
+
+A `@ganglion/xacpx` (core) release. Ships alongside relay-protocol 0.1.6, relay hub 0.9.11, and channel-relay 0.3.2 (below) — together these complete the per-session **display-name / rename** feature end-to-end.
+
+### Added
+
+- **Per-session display names (#93, core side).** Sessions can carry a cosmetic `display_name` distinct from their alias. `SessionService.setSessionDisplayName` persists it and `listSessions` surfaces it on `ControlSessionInfo.displayName`, so the relay dashboard can rename a session without touching its alias/transport identity. (The wire field, connector dispatch, and web UI ship in relay-protocol 0.1.6 / channel-relay 0.3.2 / relay hub 0.9.11.)
+- **Archive frees the warm acpx queue-owner process (#96).** Since acpx v0.10, `sessions close` kills the queue-owner + agent processes **and** marks the record closed — so a closed session can't be reopened by name and its history is lost. Archiving now instead reaps only the warm queue-owner process via a new `freeWarmProcess` transport op (acpx-cli + bridge), leaving the session record open so a later restore resumes it losslessly and repeatably.
+- **acpx-cli transport streams `onUsage` / `onCommands` (#98).** The acpx-cli transport now forwards the context-usage meter (`usage_update`) and agent-advertised slash commands (`available_commands_update`) to the prompt streaming callbacks, reaching parity with the acpx-bridge transport. Users configured with `transport.type: "acpx-cli"` now get the dashboard context bar and `/` command hints (previously bridge-only). Malformed frames, zero/negative context size, and empty command lists are handled defensively.
+
+### Fixed
+
+- **`/clear` no longer dumps chat-style progress into the web chat pane (#94).** On the control channel (relay-web), `/clear` ran session-reset through the chat reply path, streaming the mobile-oriented "🚀 Starting codex… (waited Ns)" progress pings into the web conversation as an assistant message. The control channel is GUI-first, so reset now suppresses those pings there; the clean "Session … has been reset" confirmation is still returned and the sidebar refreshes via `sessions-changed`. Other channels keep the live progress feedback.
+
+## [relay 0.9.11] - 2026-06-30
+
+A `@ganglion/xacpx-relay` release (the hub bundles the `@ganglion/xacpx-relay-web` dashboard). Core is released as 0.15.5, relay-protocol as 0.1.6, channel-relay as 0.3.2.
+
+### Added
+
+- **Rename a session from the dashboard (#93).** A session can be given a display name via an inline rename in the sidebar menu (and the command palette); the chat header shows the display name. Backed by the new `sessionsRename` RPC and `SessionDto.displayName` (relay-protocol 0.1.6) and the connector dispatch (channel-relay 0.3.2). The alias/transport identity is untouched.
+
+### Changed
+
+- **Decluttered the session row and conversation avatar (#95).** The agent brand glyph now sits **before** the session name (was trailing). The "archived" text badge is gone — archived state reads from the greyed-out name (with a visually-hidden label so it's still announced to screen readers). The "native" session marker is now a compact link glyph instead of a text badge. In the conversation list, the agent avatar dropped its rounded border + surface frame now that the brand tile fills the box.
+
+## [relay-protocol 0.1.6] - 2026-06-30
+
+A `@ganglion/xacpx-relay-protocol` release.
+
+### Added
+
+- **`SessionDto.displayName` + the `sessionsRename` RPC (#93)** — the wire surface for renaming a session to a cosmetic display name, consumed by the relay hub dashboard and dispatched by the connector.
+
+## [channel-relay 0.3.2] - 2026-06-30
+
+A `@ganglion/xacpx-channel-relay` (connector) release.
+
+### Added
+
+- **Dispatch `control.sessions.rename` to `setSessionDisplayName` (#93)** — the connector now routes the dashboard's rename RPC to the core session service, completing the display-name feature's control path.
 
 ## [relay 0.9.10] - 2026-06-29
 

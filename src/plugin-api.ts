@@ -10,10 +10,21 @@ export type {
   ScheduledChannelMessageInput,
   OrchestrationDeliveryCallbacks,
   OutboundQuota,
+  PlanEntry,
+  PlanEntryStatus,
   ToolUseEvent,
   ToolUseKind,
   ToolUseStatus,
 } from "./channels/types.js";
+// Streaming side-channel payloads (context usage + advertised commands) so
+// channel plugins can render token/context footers and command hints. These
+// originate in the transport layer; surfaced here as the public plugin contract.
+export type {
+  AgentCommand,
+  PromptUsage,
+  UsageBreakdown,
+  UsageCost,
+} from "./transport/types.js";
 export type {
   ChannelCliInput,
   ChannelCliIo,

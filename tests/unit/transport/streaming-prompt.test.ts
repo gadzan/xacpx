@@ -672,3 +672,158 @@ test("interleaved stream: thoughts reach onThought in order, agent message lands
   expect(allText).not.toContain("first thought");
   expect(allText).not.toContain("second thought");
 });
+
+// --- onUsage tests ---
+
+test("onUsage receives usage_update with used/size and optional cost/breakdown", () => {
+  const usages: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    onUsage: (usage) => {
+      usages.push(usage);
+    },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: {
+      sessionUpdate: "usage_update",
+      used: 1024,
+      size: 16384,
+      cost: { amount: 0.01, currency: "USD" },
+      _meta: { usage: { inputTokens: 512, outputTokens: 512 } },
+    } },
+  }));
+
+  expect(usages).toEqual([{
+    used: 1024,
+    size: 16384,
+    cost: { amount: 0.01, currency: "USD" },
+    breakdown: { inputTokens: 512, outputTokens: 512 },
+  }]);
+});
+
+test("onUsage ignores malformed usage_update with no used/size", () => {
+  let called = false;
+  const state = createStreamingPromptState(false, {
+    onUsage: () => { called = true; },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "usage_update" } },
+  }));
+
+  expect(called).toBe(false);
+});
+
+test("onUsage ignores usage_update with zero or negative size", () => {
+  let called = false;
+  const state = createStreamingPromptState(false, {
+    onUsage: () => { called = true; },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "usage_update", used: 100, size: 0 } },
+  }));
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "usage_update", used: 100, size: -1 } },
+  }));
+
+  expect(called).toBe(false);
+});
+
+test("onUsage receives partial usage_update with only used/size", () => {
+  const usages: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    onUsage: (usage) => { usages.push(usage); },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "usage_update", used: 512, size: 8192 } },
+  }));
+
+  expect(usages).toEqual([{ used: 512, size: 8192 }]);
+});
+
+// --- onCommands tests ---
+
+test("onCommands receives available_commands_update with command list", () => {
+  const commandsList: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    onCommands: (commands) => { commandsList.push(commands); },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: {
+      sessionUpdate: "available_commands_update",
+      availableCommands: [
+        { name: "compact", description: "Compact context" },
+        { name: "debug", input: "mode" },
+      ],
+    } },
+  }));
+
+  expect(commandsList).toEqual([[
+    { name: "compact", description: "Compact context", hasInput: false },
+    { name: "debug", hasInput: true },
+  ]]);
+});
+
+test("onCommands receives empty array as valid clear signal", () => {
+  const commandsList: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    onCommands: (commands) => { commandsList.push(commands); },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "available_commands_update", availableCommands: [] } },
+  }));
+
+  expect(commandsList).toEqual([[]]);
+});
+
+test("onCommands ignores malformed available_commands_update without array", () => {
+  let called = false;
+  const state = createStreamingPromptState(false, {
+    onCommands: () => { called = true; },
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "available_commands_update" } },
+  }));
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "available_commands_update", availableCommands: "not array" } },
+  }));
+
+  expect(called).toBe(false);
+});
+
+// --- onPlan edge cases ---
+
+test("onPlan filters malformed plan entries", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, { onPlan: (entries) => plans.push(entries) });
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "plan", entries: [
+      { content: "valid entry", status: "completed" },
+      { content: "no status" },
+      { status: "completed" },
+      "not an object",
+      null,
+      { content: 123, status: "completed" },
+      { content: "another valid", status: "in_progress" },
+    ] } },
+  }));
+  expect(plans).toEqual([[
+    { content: "valid entry", status: "completed" },
+    { content: "another valid", status: "in_progress" },
+  ]]);
+});

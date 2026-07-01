@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-relay",
-  "version": "0.3.2-beta.0",
+  "version": "0.3.3-beta.0",
   "description": "Relay hub connector channel plugin for xacpx.",
   "license": "MIT",
   "keywords": [

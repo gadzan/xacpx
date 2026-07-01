@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-feishu",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Feishu channel plugin for xacpx.",
   "license": "MIT",
   "keywords": ["xacpx", "feishu", "channel", "plugin"],

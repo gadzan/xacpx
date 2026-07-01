@@ -251,6 +251,14 @@ export class FeishuChannel implements MessageChannelRuntime {
             if (input.abortSignal?.aborted) return;
             cardController.appendReasoning(chunk);
           },
+          onPlan: (entries) => {
+            if (input.abortSignal?.aborted) return;
+            cardController.recordPlan(entries);
+          },
+          onUsage: (usage) => {
+            if (input.abortSignal?.aborted) return;
+            cardController.recordUsage(usage);
+          },
         } : {}),
       });
 
@@ -644,6 +652,14 @@ export class FeishuChannel implements MessageChannelRuntime {
             onThought: (chunk) => {
               if (active.suppressed) return;
               active.cardController?.appendReasoning(chunk);
+            },
+            onPlan: (entries) => {
+              if (active.suppressed) return;
+              active.cardController?.recordPlan(entries);
+            },
+            onUsage: (usage) => {
+              if (active.suppressed) return;
+              active.cardController?.recordUsage(usage);
             },
           } : {}),
           abortSignal: abortController.signal,

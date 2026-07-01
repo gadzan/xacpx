@@ -1,12 +1,14 @@
 import { isMessageUnavailable, markIfUnavailableError } from "../message-unavailable.js";
 import { resolveFeishuReceiveIdType, normalizeFeishuTarget } from "../send.js";
 import { t } from "../i18n/index.js";
+import type { PlanEntry, PromptUsage } from "xacpx/plugin-api";
 import {
   CARD_BODY_MAX_CHARS,
   STREAMING_ELEMENT_ID,
   buildCard,
   buildCardMessageContent,
   formatElapsedMs,
+  formatUsageSegment,
   truncateForCardBody,
   type CardState,
 } from "./card-builder.js";
@@ -143,6 +145,13 @@ export class StreamingCardController {
   private lastFooterText: string | null = null;
   private readonly toolUseStore: ToolUseStore;
   private lastPushedToolRevision = -1;
+  // Latest usage side-channel (replace, not accumulate — each update is the
+  // current window/turn snapshot). Folded into the footer text key so a change
+  // forces the full card.update path off the streaming fast-path.
+  private lastUsage: PromptUsage | undefined = undefined;
+  // Latest plan/todo list (ACP `plan` re-sends the WHOLE list → replace).
+  private planEntries: PlanEntry[] = [];
+  private lastPushedPlanKey = "";
   private terminated = false;
   private seededAtMs = 0;
   private degraded = false;
@@ -277,6 +286,26 @@ export class StreamingCardController {
     // Ensure the next push goes through the full card.update path so the
     // tool-use panel actually renders (the fast-path only touches the
     // streaming_content element).
+    this.flush.requestFlush(() => this.pushUpdate());
+  }
+
+  recordUsage(usage: PromptUsage): void {
+    if (this.terminated) return;
+    this.lastUsage = usage;
+    if (!this.cardId) return;
+    // Usage lives in the footer, not streaming_content — pushUpdate detects the
+    // footer-text change and takes the full card.update path.
+    this.flush.requestFlush(() => this.pushUpdate());
+  }
+
+  recordPlan(entries: PlanEntry[]): void {
+    if (this.terminated) return;
+    // Replace, don't append — the agent re-sends the whole list each update.
+    this.planEntries = entries;
+    if (!this.cardId) return;
+    // Plan renders as a separate collapsible panel, so it can't ride the
+    // streaming_content fast-path — pushUpdate detects the change and takes
+    // the full card.update path.
     this.flush.requestFlush(() => this.pushUpdate());
   }
 
@@ -466,12 +495,16 @@ export class StreamingCardController {
     const reasoningChanged = reasoningRendered !== this.lastPushedReasoning;
 
     const elapsedMs = this.seededAtMs > 0 ? this.now() - this.seededAtMs : undefined;
-    const currentFooterText = computeFooterText(this.state, elapsedMs);
+    const usageText = this.lastUsage ? formatUsageSegment(this.lastUsage) : "";
+    const currentFooterText = computeFooterText(this.state, elapsedMs, usageText);
     const footerChanged = currentFooterText !== this.lastFooterText;
 
     const toolSteps = this.toolUseStore.steps();
     const toolRevision = this.toolUseStore.getRevision();
     const toolStepsChanged = toolRevision !== this.lastPushedToolRevision;
+
+    const planKey = this.planEntries.length > 0 ? planStateKey(this.planEntries) : "";
+    const planChanged = planKey !== this.lastPushedPlanKey;
 
     const elementApi = this.client.cardkit.v1.cardElement;
     if (
@@ -480,6 +513,7 @@ export class StreamingCardController {
       !reasoningChanged &&
       !footerChanged &&
       !toolStepsChanged &&
+      !planChanged &&
       elementApi
     ) {
       const seq = this.sequence++;
@@ -503,6 +537,8 @@ export class StreamingCardController {
       ...(reasoningRendered ? { reasoningText: reasoningRendered } : {}),
       ...(reasoningElapsedMs !== undefined ? { reasoningElapsedMs } : {}),
       ...(toolSteps.length > 0 ? { toolSteps } : {}),
+      ...(this.planEntries.length > 0 ? { planEntries: this.planEntries } : {}),
+      ...(this.lastUsage ? { usage: this.lastUsage } : {}),
       ...(this.cardBodyMaxChars !== undefined ? { maxBodyChars: this.cardBodyMaxChars } : {}),
     });
     const seq = this.sequence++;
@@ -515,6 +551,7 @@ export class StreamingCardController {
       this.lastPushedReasoning = reasoningRendered;
       this.lastFooterText = currentFooterText;
       this.lastPushedToolRevision = toolRevision;
+      this.lastPushedPlanKey = planKey;
     } catch (error) {
       // 230011/231003 mean the message is gone — that's a terminal "success"
       // for our purposes; don't count it as a failure (the user couldn't see
@@ -527,7 +564,11 @@ export class StreamingCardController {
   }
 }
 
-function computeFooterText(state: CardState, elapsedMs: number | undefined): string {
-  if (elapsedMs === undefined) return state;
-  return `${state}|${formatElapsedMs(elapsedMs)}`;
+function computeFooterText(state: CardState, elapsedMs: number | undefined, usageText: string): string {
+  if (elapsedMs === undefined && !usageText) return state;
+  return `${state}|${elapsedMs === undefined ? "" : formatElapsedMs(elapsedMs)}|${usageText}`;
+}
+
+function planStateKey(entries: PlanEntry[]): string {
+  return entries.map((entry) => `${entry.status}:${entry.content}`).join("\n");
 }
