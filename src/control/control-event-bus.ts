@@ -8,11 +8,24 @@ export interface ScheduledOrigin {
   executeAt: string;
 }
 
+/** A single pending item in the per-session server-side prompt queue, as surfaced on
+ *  the wire by `queue-updated`. `textPreview` is truncated server-side (~120 chars). */
+export interface QueuedItemInfo {
+  id: string;
+  textPreview: string;
+  enqueuedAt: string;
+}
+
 export type ControlEvent =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
   // `prompt`/`scheduled` are populated only for turns started by a fired scheduled
-  // task (relay channel), letting the hub persist the inbound prompt and the web badge it.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin }
+  // task (relay channel), or a turn drained from the queue, letting the hub persist
+  // the inbound prompt and the web badge it. `queueItemId` is set when this turn was
+  // drained from the queue (Task 2), so the web can reconcile the queue chip.
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string }
+  // Full ordered snapshot (replace-latest) of the pending prompt queue for a session,
+  // emitted on every enqueue/drain/cancel.
+  | { type: "queue-updated"; chatKey: string; sessionAlias: string; items: QueuedItemInfo[] }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; event: ToolUseEvent }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntry[] }

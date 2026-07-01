@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import type { Agent as ChatAgent, ChatRequestMetadata } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
@@ -130,6 +131,24 @@ export interface ControlPromptResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+  /** True when this prompt did not run immediately and was instead appended to the
+   *  per-session server-side queue (a turn was already in flight). */
+  queued?: boolean;
+  /** Id of the queued item, present only when `queued` is true. Used to cancel it via
+   *  `cancelQueuedItem` before it drains. */
+  queueItemId?: string;
+}
+
+/** A prompt held in the per-session server-side queue while a turn is in flight.
+ *  Runs through the same `executeTurn` machinery as a manual prompt once drained. */
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  enqueuedAt: string;
+  senderId: string;
+  isOwner?: boolean;
+  accountId?: string;
+  media?: PromptAttachmentRef[];
 }
 
 /** A turn started by a fired scheduled task. Runs through the same agent + turn-event
@@ -392,12 +411,27 @@ export class ControlService {
   // resolves once the turn has fully unwound (transport cancelled, inFlight cleared).
   private readonly inFlight = new Map<string, { controller: AbortController; settled: Promise<void> }>();
 
+  // Per-session FIFO queue of prompts that arrived while a turn was already running.
+  // Only interactive prompt() enqueues (see `queueable` on executeTurn); scheduled
+  // turns keep rejecting immediately. Drained by Task 2's turn-finish hand-off.
+  private readonly queues = new Map<string, QueuedPrompt[]>();
+
+  private emitQueueUpdated(chatKey: string, sessionAlias: string): void {
+    const items = (this.queues.get(turnKey(chatKey, sessionAlias)) ?? []).map((q) => ({
+      id: q.id,
+      textPreview: q.text.length > QUEUE_PREVIEW_MAX ? q.text.slice(0, QUEUE_PREVIEW_MAX) : q.text,
+      enqueuedAt: q.enqueuedAt,
+    }));
+    this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items });
+  }
+
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
     return this.executeTurn({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
       senderId: input.senderId,
+      queueable: true,
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.media !== undefined ? { media: input.media } : {}),
@@ -433,12 +467,35 @@ export class ControlService {
     // Extra fields stamped onto turn-started for scheduled-origin turns.
     turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin };
     media?: PromptAttachmentRef[];
+    // Only interactive prompt() sets this. When true and a turn is already running,
+    // the prompt is appended to the per-session queue instead of being rejected.
+    // runScheduledTurn omits it, so scheduled turns keep the immediate-or-reject
+    // behavior.
+    queueable?: boolean;
   }): Promise<ControlPromptResult> {
     const key = turnKey(params.chatKey, params.sessionAlias);
     const existing = this.inFlight.get(key);
     if (existing) {
-      // A live, un-cancelled turn really is busy — reject right away.
+      // A live, un-cancelled turn really is busy.
       if (!existing.controller.signal.aborted) {
+        if (params.queueable) {
+          const id = randomUUID();
+          const item: QueuedPrompt = {
+            id,
+            text: params.text,
+            enqueuedAt: new Date().toISOString(),
+            senderId: params.senderId,
+            ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+            ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
+            ...(params.media !== undefined ? { media: params.media } : {}),
+          };
+          const q = this.queues.get(key) ?? [];
+          q.push(item);
+          this.queues.set(key, q);
+          this.emitQueueUpdated(params.chatKey, params.sessionAlias);
+          return { ok: true, queued: true, queueItemId: id };
+        }
+        // Not queueable (e.g. a scheduled turn) — reject right away.
         return { ok: false, errorMessage: "turn-already-running" };
       }
       // A Stop is already unwinding this turn. Cancelling the transport and draining
@@ -680,6 +737,10 @@ export class ControlService {
 // Upper bound on how long a follow-up prompt waits for a just-cancelled turn to
 // finish tearing down before giving up and reporting the session still busy.
 const CANCEL_DRAIN_TIMEOUT_MS = 5000;
+
+// Server-side truncation for a queued item's textPreview on the queue-updated wire
+// event, so a very long queued prompt doesn't bloat the snapshot payload.
+const QUEUE_PREVIEW_MAX = 120;
 
 // Resolve when `promise` settles or `ms` elapses, whichever comes first. The timer
 // is cleared on the winning path so a fast drain doesn't keep the event loop alive.
