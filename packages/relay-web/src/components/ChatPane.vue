@@ -8,6 +8,7 @@ import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
+import QueueStrip from "./QueueStrip.vue";
 import { AlertTriangle, Bot, Folder, GitBranch, Loader2, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
@@ -185,6 +186,7 @@ const verb = computed(() => {
                   class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
                   @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
         </div>
+        <QueueStrip />
         <PlanPanel v-if="chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
