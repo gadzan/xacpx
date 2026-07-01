@@ -1,3 +1,6 @@
+import { describe, expect, test } from "bun:test";
+import { terminateProcessTree } from "../../../src/process/terminate-process-tree";
+
 describe("terminateProcessTree", () => {
   test("returns immediately for pid <= 0", async () => {
     const killProcess = () => {
