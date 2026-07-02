@@ -270,11 +270,19 @@ onBeforeUnmount(teardown);
 </template>
 
 <style scoped>
-/* ghostty renders into a focusable canvas; the browser's default focus ring draws a blue
- * box around the whole terminal. The cursor already signals focus, so suppress it. */
+/* ghostty turns the host element itself into a focusable contenteditable textbox
+ * (open() sets tabindex + contenteditable on the element we pass in), so the browser's
+ * default focus ring draws a blue box around the whole terminal. Suppress it on the host
+ * itself (NOT just descendants — :deep(*:focus) never matches the host element) and on any
+ * focusable child; the cursor already signals focus. box-shadow covers ring-style focus. */
+.term-host,
+.term-host:focus,
+.term-host:focus-visible,
+.term-host:focus-within,
 .term-host :deep(canvas),
 .term-host :deep(*:focus),
 .term-host :deep(*:focus-visible) {
-  outline: none;
+  outline: none !important;
+  box-shadow: none !important;
 }
 </style>
