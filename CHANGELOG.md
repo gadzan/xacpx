@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0-beta.1] - 2026-07-01
+
+A `@ganglion/xacpx` (core) beta adding a non-blocking composer with a server-authoritative message queue, and reworking the web terminal into a center overlay. Published to the npm `next` dist-tag with `@ganglion/xacpx-relay` 0.9.12-beta.1 and `@ganglion/xacpx-channel-relay` 0.3.3-beta.1; `@ganglion/xacpx-relay-protocol` 0.1.8 ships stable (additive wire types). Install with `npm i -g @ganglion/xacpx@next`.
+
+### Added
+
+- **Non-blocking send + server-authoritative message queue (#103).** While the agent is working you can keep typing and sending — the send button no longer flips to "Stop". Messages sent mid-turn are enqueued on the server (FIFO) and drained automatically when the current turn finishes, with no parallel turns (a synchronous drain bracket hands turn N off to N+1). The relay-web dashboard renders a queue strip of the pending messages with per-item cancel, and a queued message is persisted into the transcript at enqueue time so it shows immediately. Stop (Esc, or the working HUD) now cancels only the in-flight turn and leaves the queue intact. New wire surface: a `queue-updated` control event (replace-latest snapshot of pending items) and a `control.queue.cancel` RPC, both plumbed through the hub's chat-scoped allowlist and the connector.
+
+### Changed
+
+- **Web terminal moved to a center overlay (#102).** The remote-instance terminal shipped in 0.17.0-beta.0 as a right-panel tab now opens as a center overlay toggled from the top bar. It gains a mobile shortcut bar (paste + arrow keys), sticky-Ctrl for control sequences, a lazily-loaded JetBrains Mono Nerd Font (via the jsdmirror CDN), and fit-to-container sizing derived from the rendered canvas cell metrics (fixing the fixed-80-column overflow). Still disabled by default (`terminal.enabled`).
+
 ## [0.17.0-beta.0] - 2026-07-01
 
 A `@ganglion/xacpx` (core) beta introducing the web terminal. Published to the npm `next` dist-tag with `@ganglion/xacpx-relay` 0.9.12-beta.0 and `@ganglion/xacpx-channel-relay` 0.3.3-beta.0; `@ganglion/xacpx-relay-protocol` 0.1.7 ships stable (additive wire types). Install with `npm i -g @ganglion/xacpx@next`.
