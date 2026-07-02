@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, mkdir, writeFile, realpath, symlink, readdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, realpath, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceFs } from "../../../src/control/workspace-fs";
@@ -33,4 +33,23 @@ test("createFile rejects '.' and '..' as the final segment", async () => {
 });
 test("createFile rejects creating at the workspace root (empty path)", async () => {
   await expect(fs.createFile("ws", "")).rejects.toThrow("bad-target");
+});
+
+test("createFile creates an empty file and returns its rel path", async () => {
+  const r = await fs.createFile("ws", "sub/new.txt");
+  expect(r.path).toBe("sub/new.txt");
+  const listed = await readdir(join(rootDir, "sub"));
+  expect(listed).toContain("new.txt");
+});
+test("createFile on an existing path throws already-exists", async () => {
+  await expect(fs.createFile("ws", "a.txt")).rejects.toThrow("already-exists");
+});
+test("createDir creates a directory", async () => {
+  const r = await fs.createDir("ws", "sub/kid");
+  expect(r.path).toBe("sub/kid");
+  const listed = await readdir(join(rootDir, "sub"));
+  expect(listed).toContain("kid");
+});
+test("createDir on an existing path throws already-exists", async () => {
+  await expect(fs.createDir("ws", "sub")).rejects.toThrow("already-exists");
 });

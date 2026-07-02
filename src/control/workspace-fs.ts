@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
-import { readdir, realpath, stat, open, readFile, writeFile } from "node:fs/promises";
+import { readdir, realpath, stat, open, readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -158,12 +158,25 @@ export class WorkspaceFs {
     return { root, parentAbs, name, targetAbs, rel };
   }
 
-  /** Minimal write-empty-file. Full semantics (already-exists mapping, createDir) land
-   *  in Task 2 — this exists so resolveParent's containment/name-validation behavior is
-   *  exercised end to end. */
   async createFile(workspace: string, relPath: string): Promise<{ path: string }> {
     const { targetAbs, rel } = await this.resolveParent(workspace, relPath);
-    await writeFile(targetAbs, "", { flag: "wx" }); // wx → fail if exists
+    try {
+      await writeFile(targetAbs, "", { flag: "wx" });
+    } catch (e) {
+      if ((e as { code?: string }).code === "EEXIST") throw new Error("already-exists");
+      throw e;
+    }
+    return { path: rel };
+  }
+
+  async createDir(workspace: string, relPath: string): Promise<{ path: string }> {
+    const { targetAbs, rel } = await this.resolveParent(workspace, relPath);
+    try {
+      await mkdir(targetAbs);
+    } catch (e) {
+      if ((e as { code?: string }).code === "EEXIST") throw new Error("already-exists");
+      throw e;
+    }
     return { path: rel };
   }
 
