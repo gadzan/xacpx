@@ -22,6 +22,8 @@ export interface GhosttyTerminalLike {
   paste?(data: string): void;
   getSelection?(): string;
   setTheme?(theme: TerminalTheme): void;
+  /** Scroll the viewport by N lines (positive = toward the newest/bottom rows). */
+  scrollLines?(amount: number): void;
   /** ghostty's Terminal has no public setTheme yet; its renderer does. */
   renderer?: { setTheme?(theme: TerminalTheme): void };
   element?: HTMLElement;
@@ -38,6 +40,8 @@ export interface TerminalAdapter {
   getSelection(): string;
   /** Recolor the live terminal (e.g. on light/dark theme switch). No-op before open. */
   setTheme(theme: TerminalTheme): void;
+  /** Scroll the viewport by N lines (positive = toward the newest/bottom rows). */
+  scrollLines(amount: number): void;
   /** Compute cols/rows that fit the host element, using the rendered canvas cell size.
    *  Returns null until the canvas has a measurable size. */
   fit(): { cols: number; rows: number } | null;
@@ -100,6 +104,7 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       if (live?.setTheme) live.setTheme(theme);
       else live?.renderer?.setTheme?.(theme);
     },
+    scrollLines: (n) => live?.scrollLines?.(n),
     fit: () => {
       if (!live?.element || !live.cols || !live.rows) return null;
       const canvas = live.element.querySelector("canvas");

@@ -4,7 +4,7 @@ import { mount } from "@vue/test-utils";
 
 const adapter = {
   write: vi.fn(), resize: vi.fn(), dispose: vi.fn(), focus: vi.fn(),
-  getSelection: vi.fn(() => ""), setTheme: vi.fn(),
+  getSelection: vi.fn(() => ""), setTheme: vi.fn(), scrollLines: vi.fn(),
   fit: vi.fn(() => ({ cols: 80, rows: 24 })),
   cols: () => 80, rows: () => 24,
 };
@@ -177,17 +177,46 @@ describe("TerminalTab", () => {
     );
   });
 
-  it("keybar Home / PgUp send the standard escape sequences", async () => {
+  it("keybar Home / End send Ctrl-A / Ctrl-E (bound in default zsh/bash)", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
     await w.find('[data-test="key-home"]').trigger("click");
     expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "[H" }),
+      expect.objectContaining({ kind: "terminal-input", data: "" }),
     );
-    await w.find('[data-test="key-pageup"]').trigger("click");
+    await w.find('[data-test="key-end"]').trigger("click");
     expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "[5~" }),
+      expect.objectContaining({ kind: "terminal-input", data: "" }),
     );
+  });
+
+  it("keybar PgUp / PgDn scroll the viewport locally (rows-1 lines), not send keys", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    vi.mocked(sendWebClientMessage).mockClear();
+    await w.find('[data-test="key-pageup"]').trigger("click");
+    expect(adapter.scrollLines).toHaveBeenCalledWith(-23); // rows(24) - 1, toward older
+    await w.find('[data-test="key-pagedown"]').trigger("click");
+    expect(adapter.scrollLines).toHaveBeenCalledWith(23); // toward newer
+    expect(sendWebClientMessage).not.toHaveBeenCalled(); // local scroll, nothing sent to PTY
+  });
+
+  it("touch drag scrolls the viewport (finger up -> toward newer) without focusing", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
+    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true }); // rows 24 -> lineH 10
+    adapter.scrollLines.mockClear(); adapter.focus.mockClear();
+    const touch = (type: string, y: number) => {
+      const e = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(e, "touches", { value: [{ clientX: 0, clientY: y }], configurable: true });
+      el.dispatchEvent(e);
+    };
+    touch("touchstart", 100);
+    touch("touchmove", 60); // dy=-40, lineH=10 -> 4 lines toward newer
+    touch("touchend", 60);
+    expect(adapter.scrollLines).toHaveBeenCalledWith(4);
+    expect(adapter.focus).not.toHaveBeenCalled(); // a drag must not raise the keyboard
   });
 
   it("Copy writes the terminal selection to the clipboard; no-op when empty", async () => {
