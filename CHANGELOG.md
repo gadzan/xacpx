@@ -1,5 +1,17 @@
 # Changelog
 
+## [relay 0.9.12-beta.2] - 2026-07-02
+
+A `@ganglion/xacpx-relay` (hub) beta shipping a web-terminal polish pass. UI-only — the dashboard (`@ganglion/xacpx-relay-web`, bundled into this package) is the only thing that changed; core, `relay-protocol`, and `channel-relay` are unchanged and need no republish. Published to the npm `next` dist-tag. Update with `xacpx-relay update` or `npm i -g @ganglion/xacpx-relay@next`.
+
+### Changed
+
+- **Web terminal polish (#104).** Suppressed the browser focus ring drawn around the terminal canvas. Matched the terminal background/foreground to the app design tokens (`--c-bg`/`--c-fg`) and centered the grid so the integer-cell fit remainder no longer shows a black seam on the right/bottom; recolors live on light/dark switch.
+
+### Added
+
+- **Richer terminal shortcut bar (#104).** Sticky Alt (ESC/Meta prefix) and Shift (upcase, `Shift+Tab` reverse-tab, xterm-modified arrows) modifiers alongside the existing sticky Ctrl; plus Home/End/PgUp/PgDn/Ins/Enter keys and a Copy button (selection → clipboard).
+
 ## [0.17.0-beta.1] - 2026-07-01
 
 A `@ganglion/xacpx` (core) beta adding a non-blocking composer with a server-authoritative message queue, and reworking the web terminal into a center overlay. Published to the npm `next` dist-tag with `@ganglion/xacpx-relay` 0.9.12-beta.1 and `@ganglion/xacpx-channel-relay` 0.3.3-beta.1; `@ganglion/xacpx-relay-protocol` 0.1.8 ships stable (additive wire types). Install with `npm i -g @ganglion/xacpx@next`.
