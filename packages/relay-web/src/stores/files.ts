@@ -3,6 +3,7 @@ import { ref } from "vue";
 import {
   isErrorPayload,
   type FsDiffResult,
+  type FsDownloadResult,
   type FsEntryDto,
   type FsListResult,
   type FsReadResult,
@@ -320,15 +321,18 @@ export const useFilesStore = defineStore("files", () => {
     if (!instanceId.value || !workspace.value) return;
     error.value = "";
     try {
-      const r = unwrap(await api.rpc<{ path: string; base64: string; size: number; mimeType: string }>(
+      const r = unwrap(await api.rpc<FsDownloadResult>(
         instanceId.value, "control.fs.download", { workspace: workspace.value, path: rel }));
       const bytes = Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0));
       const blob = new Blob([bytes], { type: r.mimeType });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = rel.split("/").pop() ?? "download";
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
+      try {
+        const a = document.createElement("a");
+        a.href = url; a.download = rel.split("/").pop() ?? "download";
+        document.body.appendChild(a); a.click(); a.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     } catch (e) { error.value = e instanceof Error ? e.message : "download-failed"; }
   }
 

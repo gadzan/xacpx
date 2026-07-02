@@ -10,6 +10,11 @@ import FileTreeNode from "./FileTreeNode.vue";
 // Navigation-only file rail: a file tree (Files) and a changed-files list (Changes).
 // Opening a file or a single-file diff shows it full-width in the center column (see
 // FileViewer); the rail stays narrow and is just for getting around.
+// Local directive: focus + select an element on mount (the rename input).
+const vFocus = {
+  mounted(el: HTMLInputElement) { el.focus(); el.select(); },
+};
+
 const props = defineProps<{ instanceId: string | null }>();
 const files = useFilesStore();
 const instances = useInstancesStore();
@@ -270,7 +275,7 @@ watch(
           <button data-test="root-new-folder" class="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-raised"
                   @click="rootInline = 'dir'" :title="$t('files.menu.newFolder')">＋{{ $t('files.menu.newFolder') }}</button>
         </div>
-        <input v-if="rootInline" data-test="root-inline-name" v-model="rootName"
+        <input v-if="rootInline" v-focus data-test="root-inline-name" v-model="rootName"
                @keyup.enter="submitRoot" @keyup.esc="rootInline = null" @blur="rootInline = null"
                class="mb-1 w-full rounded border border-border bg-raised px-1 text-[12px]" />
 

@@ -7,6 +7,11 @@ import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
 import ContextMenu from "./ContextMenu.vue";
 
+// Local directive: focus + select an element on mount (the rename input).
+const vFocus = {
+  mounted(el: HTMLInputElement) { el.focus(); el.select(); },
+};
+
 const props = defineProps<{ entry: FsEntryDto; dir: string; depth: number; showDotfiles: boolean; showGitignored: boolean }>();
 const emit = defineEmits<{ openFile: [rel: string] }>();
 const files = useFilesStore();
@@ -107,7 +112,7 @@ async function onMenuSelect(key: string) {
                  class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
       <span v-if="inlineMode?.kind !== 'rename'" class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
       <!-- rename: replace the label with an input in-place -->
-      <input v-else data-test="inline-name" v-model="inlineName" @click.stop
+      <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
              @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
              class="flex-1 rounded border border-border bg-raised px-1 text-[12px]" />
       <span v-if="gitDot" data-test="fs-status" class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
@@ -116,7 +121,7 @@ async function onMenuSelect(key: string) {
 
     <div v-if="isDir && isOpen">
       <!-- create: new-name input at top of the expanded children -->
-      <input v-if="inlineMode && inlineMode.kind !== 'rename'" data-test="inline-name" v-model="inlineName" @click.stop
+      <input v-if="inlineMode && inlineMode.kind !== 'rename'" v-focus data-test="inline-name" v-model="inlineName" @click.stop
              @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
              :style="{ marginLeft: (depth + 1) * 12 + 16 + 'px' }"
              class="my-0.5 rounded border border-border bg-raised px-1 text-[12px]" />
