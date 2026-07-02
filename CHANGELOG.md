@@ -1,5 +1,13 @@
 # Changelog
 
+## [relay 0.9.12-beta.5] - 2026-07-02
+
+A `@ganglion/xacpx-relay` (hub) beta hotfix for a mobile terminal layout regression from beta.4. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard).
+
+### Fixed
+
+- **Phantom bottom gap under the terminal shortcut bar on mobile (#107).** The beta.4 keyboard-inset (which lifts the shortcut bar above the on-screen keyboard) fired even with the keyboard closed — mobile Safari's persistent bottom toolbar exceeded the old threshold, leaving a permanent padding gap. It now only applies while the terminal is focused and above a keyboard-sized threshold (120px), so browser chrome no longer leaves a phantom inset.
+
 ## [relay 0.9.12-beta.4] - 2026-07-02
 
 A `@ganglion/xacpx-relay` (hub) beta with mobile web-terminal fixes. UI-only (bundled `relay-web`); no other package changed. Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard — the PWA service worker caches it). Note: Chinese/CJK IME input remains broken on mobile — that's an upstream `ghostty-web` limitation and is not addressed here.
