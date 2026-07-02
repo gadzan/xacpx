@@ -35,6 +35,12 @@ describe("TerminalTab", () => {
     expect(createTerminalAdapter).toHaveBeenCalled();
   });
 
+  it("host carries the term-host class the focus-ring suppression targets", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    expect(w.find('[data-test="terminal-host"]').classes()).toContain("term-host");
+  });
+
   it("shows the no-session hint when sessionAlias is empty", () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "" }, global: globalOpts });
     expect(w.text()).toContain("terminal.noSession");
