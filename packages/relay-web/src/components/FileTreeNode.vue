@@ -26,6 +26,26 @@ function visible(e: FsEntryDto): boolean {
 const visibleChildren = computed(() => children.value.filter(visible));
 const selfVisible = computed(() => visible(props.entry));
 
+// Git-status dot: a file gets its own porcelain status color; a dir gets a generic
+// dot if any changed path lives under it. Mirrors the old FilesPanel `statusBadge` colors.
+const gitDot = computed<string | null>(() => {
+  if (props.entry.type === "file") {
+    const code = files.changed[rel.value];
+    return code ? dotClass(code) : null;
+  }
+  const prefix = rel.value + "/";
+  return Object.keys(files.changed).some((p) => p.startsWith(prefix)) ? "bg-warn" : null;
+});
+function dotClass(code: string): string {
+  const c = code.trim();
+  if (c.includes("?")) return "bg-warn";
+  if (c.includes("A")) return "bg-run";
+  if (c.includes("D")) return "bg-danger";
+  if (c.includes("R")) return "bg-accent";
+  if (c.includes("M")) return "bg-warn";
+  return "bg-warn";
+}
+
 function onRowClick() {
   if (isDir.value) void files.toggleExpand(rel.value);
   else emit("openFile", rel.value);
@@ -53,6 +73,8 @@ async function onMenuSelect(key: string) {
       <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
                  class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
       <span class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
+      <span v-if="gitDot" data-test="fs-status" class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
+            :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
     </button>
 
     <div v-if="isDir && isOpen">

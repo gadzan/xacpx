@@ -47,4 +47,15 @@ describe("FileTreeNode", () => {
     await w.find('[data-test="menu-copyPath"]').trigger("click");
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("/abs/ws/src/a.ts");
   });
+
+  it("renders a git-status dot for a changed file and a dir containing changes, not for clean files", async () => {
+    const s = useFilesStore(); s.instanceId = "i1"; s.workspace = "ws"; s.root = "/abs"; s.sep = "/";
+    s.changed = { "src/a.ts": " M" };
+    const changedFile = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "src", depth: 1, showDotfiles: true, showGitignored: true }, ...g });
+    expect(changedFile.find('[data-test="fs-status"]').exists()).toBe(true);
+    const dirWithChange = mount(FileTreeNode, { props: { entry: { name: "src", type: "dir" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    expect(dirWithChange.find('[data-test="fs-status"]').exists()).toBe(true);
+    const cleanFile = mount(FileTreeNode, { props: { entry: { name: "clean.ts", type: "file" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    expect(cleanFile.find('[data-test="fs-status"]').exists()).toBe(false);
+  });
 });
