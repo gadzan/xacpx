@@ -294,3 +294,11 @@ test("opening the terminal closes an already-open right drawer (rightOpen mutual
   await flushPromises();
   expect(right.classes()).toContain("translate-x-full");
 });
+
+test("right drawer is full-width on mobile (no 85% cap)", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const right = wrapper.find('[data-drawer="right"]');
+  expect(right.classes()).toContain("w-full");
+  expect(right.classes()).not.toContain("max-w-[85%]");
+});

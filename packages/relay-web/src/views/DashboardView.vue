@@ -328,7 +328,7 @@ onUnmounted(() => {
            which stays as a no-JS fallback); on mobile no inline width is set so the
            fixed `w-72` drawer width applies. -->
       <div data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
            :style="isDesktop ? { width: rightWidth + 'px' } : undefined">
         <!-- Resize handle: a thin grab strip on the panel's left edge (desktop only).
