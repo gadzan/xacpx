@@ -64,6 +64,10 @@ export const useFilesStore = defineStore("files", () => {
     expanded.value = new Set();
     hits.value = [];
     root.value = "";
+    // The folder scope is workspace-bound (a relPath in the outgoing workspace) — the
+    // other searchOpts (mode/matchCase/wholeWord/regex/include/exclude) are user
+    // preferences and survive a workspace switch on purpose.
+    searchOpts.value.path = "";
   }
 
   async function selectWorkspace(id: string, ws: string): Promise<void> {

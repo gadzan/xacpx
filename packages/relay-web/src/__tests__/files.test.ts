@@ -232,4 +232,11 @@ describe("files store: tree + advanced search", () => {
     expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "foo", mode: "content", matchCase: false, wholeWord: false, regex: true, include: "**/*.ts", exclude: "", path: "" });
     expect(s.hits[0].line).toBe(2);
   });
+
+  it("reset() clears the directory search scope (searchOpts.path) to avoid cross-workspace leak", () => {
+    const s = useFilesStore();
+    s.searchOpts.path = "src";
+    s.reset();
+    expect(s.searchOpts.path).toBe("");
+  });
 });
