@@ -148,17 +148,22 @@ function pageUp() { adapter?.scrollLines(-pageLines()); }
 function pageDown() { adapter?.scrollLines(pageLines()); }
 
 // --- Mobile: keep the shortcut bar above the on-screen keyboard ---------------------
-// The soft keyboard doesn't shrink the layout viewport on iOS, so a bottom-anchored bar
-// ends up hidden behind it. visualViewport tells us the covered height; we translate the
-// bar up by that much so it floats on top of the keyboard.
+// When the layout viewport doesn't shrink for the keyboard (iOS Safari ignores
+// interactive-widget), a bottom-anchored bar hides behind it. visualViewport tells us the
+// covered height, applied as pane padding. Two guards keep this from firing spuriously:
+//   1. Only while the terminal is focused — a keyboard can't be open otherwise, so a
+//      persistent browser-chrome gap (Safari's bottom toolbar) never leaves a phantom inset.
+//   2. Only above a keyboard-sized threshold — a toolbar (<=~90px) must not count; real
+//      keyboards are >=~150px. (When the browser DOES resize the layout, the raw delta is
+//      ~0 and this is a no-op, so it never double-applies.)
+const KEYBOARD_MIN_INSET = 120;
+const hostFocused = ref(false);
 const keyboardInset = ref(0);
 function updateKeyboardInset() {
   const vv = typeof window !== "undefined" ? window.visualViewport : null;
-  if (!vv) return;
+  if (!vv || !hostFocused.value) { keyboardInset.value = 0; return; }
   const raw = Math.round(window.innerHeight - vv.height - vv.offsetTop);
-  // Ignore small deltas (e.g. a desktop horizontal scrollbar makes innerHeight exceed
-  // visualViewport.height by ~15px); only a real on-screen keyboard clears this bar.
-  keyboardInset.value = raw > 60 ? raw : 0;
+  keyboardInset.value = raw > KEYBOARD_MIN_INSET ? raw : 0;
 }
 
 // --- Mobile: drag to scroll, tap to focus (raise the keyboard) ----------------------
@@ -250,6 +255,11 @@ async function start() {
   }
 }
 
+// focusin/focusout bubble from ghostty's focus target (the contenteditable host or its
+// textarea), so listening on the host catches both — gating the keyboard inset on focus.
+function onHostFocusIn() { hostFocused.value = true; updateKeyboardInset(); }
+function onHostFocusOut() { hostFocused.value = false; keyboardInset.value = 0; }
+
 // Touch listeners go on the host in CAPTURE phase so they run before ghostty's own
 // bubble-phase touchend — letting a drag stopPropagation() to suppress its tap-to-focus.
 function attachTouch() {
@@ -258,6 +268,8 @@ function attachTouch() {
   el.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
   el.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
   el.addEventListener("touchend", onTouchEnd, { capture: true });
+  el.addEventListener("focusin", onHostFocusIn);
+  el.addEventListener("focusout", onHostFocusOut);
 }
 function detachTouch() {
   const el = host.value;
@@ -265,6 +277,8 @@ function detachTouch() {
   el.removeEventListener("touchstart", onTouchStart, { capture: true });
   el.removeEventListener("touchmove", onTouchMove, { capture: true });
   el.removeEventListener("touchend", onTouchEnd, { capture: true });
+  el.removeEventListener("focusin", onHostFocusIn);
+  el.removeEventListener("focusout", onHostFocusOut);
 }
 
 onMounted(() => {
