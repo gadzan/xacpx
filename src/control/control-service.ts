@@ -118,6 +118,7 @@ export interface ControlServiceDeps {
   // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
   terminal: import("./terminal-service").TerminalService;
   terminalEnabled: () => boolean;
+  filesWriteEnabled: () => boolean;
 }
 
 export interface ControlPromptInput {
@@ -201,6 +202,30 @@ export class ControlService {
 
   searchWorkspace(workspace: string, opts: SearchOptions): Promise<SearchResult> {
     return this.workspaceFs.search(workspace, opts);
+  }
+
+  async fsCreate(workspace: string, path: string, kind: "file" | "dir"): Promise<{ path: string }> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return kind === "dir" ? this.workspaceFs.createDir(workspace, path) : this.workspaceFs.createFile(workspace, path);
+  }
+
+  async fsRename(workspace: string, path: string, newName: string): Promise<{ path: string }> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return this.workspaceFs.rename(workspace, path, newName);
+  }
+
+  async fsDelete(workspace: string, path: string): Promise<{ path: string }> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return this.workspaceFs.remove(workspace, path);
+  }
+
+  async fsCopy(workspace: string, path: string): Promise<{ path: string }> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return this.workspaceFs.duplicate(workspace, path);
+  }
+
+  async fsDownload(workspace: string, path: string): Promise<{ path: string; base64: string; size: number; mimeType: string }> {
+    return this.workspaceFs.readFileBytes(workspace, path); // read op — intentionally NOT gated
   }
 
   async uploadFile(input: { filename: string; content: string; mimeType: string }): Promise<{ id: string; path: string; filename: string; mimeType: string; size: number }> {
