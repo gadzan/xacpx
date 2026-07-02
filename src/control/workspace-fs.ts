@@ -214,13 +214,13 @@ export class WorkspaceFs {
    *  stays contained), applying the query plus any include/exclude globs. Content mode
    *  delegates to `contentGrep`. Both are bounded by a scan budget and a result cap. */
   async search(workspace: string, opts: SearchOptions): Promise<SearchResult> {
-    const { root, abs: base } = await this.resolve(workspace, opts.path);
+    const { root, abs: base, rel: scopeRel } = await this.resolve(workspace, opts.path);
     const query = opts.query.trim();
     const empty: SearchResult = { workspace, query, matches: [], hits: [], truncated: false };
     if (!query) return empty;
 
     if ((opts.mode ?? "name") === "content") {
-      return this.contentGrep(workspace, root, base, opts, query);
+      return this.contentGrep(workspace, root, base, scopeRel, opts, query);
     }
 
     // name mode: walk relative paths, apply matcher + include/exclude globs.
@@ -258,21 +258,24 @@ export class WorkspaceFs {
 
   /** Content grep: `git grep` when the workspace root is a git repo (fast, respects
    *  .gitignore), else a bounded manual walk that scans each file line by line. Never
-   *  throws on git absence/failure or an invalid user regex — both degrade gracefully. */
-  private async contentGrep(workspace: string, root: string, base: string, opts: SearchOptions, query: string): Promise<SearchResult> {
+   *  throws on git absence/failure or an invalid user regex — both degrade gracefully.
+   *  `scopeRel` is the already-resolved (canonicalized, containment-checked) scope from
+   *  `resolve()`; include/exclude are applied as a post-filter on the parsed hits rather
+   *  than as extra git pathspecs — git ORs multiple positive pathspecs together, so a
+   *  scope pathspec plus an include pathspec would leak matches from outside the scope. */
+  private async contentGrep(workspace: string, root: string, base: string, scopeRel: string, opts: SearchOptions, query: string): Promise<SearchResult> {
+    const inc = opts.include ? globToRegExp(opts.include) : null;
+    const exc = opts.exclude ? globToRegExp(opts.exclude) : null;
+
     // Try git grep first: it's fast and respects .gitignore. Args are argv (never a shell).
     const inGit = await execFileAsync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { maxBuffer: GIT_MAX_BUFFER })
       .then(() => true).catch(() => false);
     if (inGit) {
-      const args = ["-C", root, "grep", "-n", "--column", "-I", "--no-color"];
+      const args = ["-C", root, "grep", "-n", "--column", "-I", "--no-color", "--untracked"];
       if (!opts.matchCase) args.push("-i");
       if (opts.wholeWord) args.push("-w");
       args.push(opts.regex ? "-E" : "-F");
-      args.push("-e", query, "--");
-      const scope = opts.path ? opts.path : ".";
-      args.push(scope);
-      if (opts.include) args.push(`:(glob)${opts.include}`);
-      if (opts.exclude) args.push(`:(exclude,glob)${opts.exclude}`);
+      args.push("-e", query, "--", scopeRel || ".");
       let stdout = "";
       try {
         stdout = (await execFileAsync("git", args, { maxBuffer: GIT_MAX_BUFFER })).stdout;
@@ -288,7 +291,10 @@ export class WorkspaceFs {
         // format: <path>:<line>:<column>:<text>
         const m = raw.match(/^(.*?):(\d+):(\d+):(.*)$/);
         if (!m) continue;
-        hits.push({ path: m[1]!.split(sep).join("/"), line: Number(m[2]), text: m[4]!.slice(0, 400) });
+        const p = m[1]!.split(sep).join("/");
+        if (inc && !inc.test(p)) continue;
+        if (exc && exc.test(p)) continue;
+        hits.push({ path: p, line: Number(m[2]), text: m[4]!.slice(0, 400) });
         if (hits.length >= SEARCH_CONTENT_MAX_HITS) { truncated = true; break; }
       }
       return { workspace, query, matches: [], hits, truncated };
@@ -296,8 +302,6 @@ export class WorkspaceFs {
 
     // Fallback (non-git): bounded manual walk + per-line match.
     const matcher = buildLineMatcher(query, opts);
-    const inc = opts.include ? globToRegExp(opts.include) : null;
-    const exc = opts.exclude ? globToRegExp(opts.exclude) : null;
     const hits: SearchHit[] = [];
     let scanned = 0;
     let truncated = false;

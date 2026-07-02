@@ -134,6 +134,49 @@ describe("WorkspaceFs search: modes + flags", () => {
   });
 });
 
+describe("WorkspaceFs search: content grep in a git repo (include/exclude/path narrowing)", () => {
+  let repo: string;
+  let rfs: WorkspaceFs;
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), "wsfs-grep-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    mkdirSync(join(repo, "src"));
+    mkdirSync(join(repo, "other"));
+    writeFileSync(join(repo, "src", "a.ts"), "const needle = 1;\n");
+    writeFileSync(join(repo, "other", "b.ts"), "const needle = 2;\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo }); // tracked; --untracked also covers unadded files
+    rfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+  test("finds hits across both files with no scoping", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content" });
+    expect(r.hits.map((h) => h.path).sort()).toEqual(["other/b.ts", "src/a.ts"]);
+  });
+
+  test("include narrows to matching files only (no leak from outside the glob)", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content", include: "src/**" });
+    expect(r.hits.map((h) => h.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("path scopes the search (no leak from outside the base dir)", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content", path: "src" });
+    expect(r.hits.map((h) => h.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("exclude drops matching files", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content", exclude: "other/**" });
+    expect(r.hits.some((h) => h.path === "other/b.ts")).toBe(false);
+    expect(r.hits.some((h) => h.path === "src/a.ts")).toBe(true);
+  });
+
+  test("path containment still applies to search scoping", async () => {
+    await expect(rfs.search("g", { query: "x", mode: "content", path: "../.." })).rejects.toThrow(/escapes-workspace|not-found/);
+  });
+});
+
 describe("WorkspaceFs git diff", () => {
   test("throws on a non-git workspace", async () => {
     await expect(fs.gitDiff("ws")).rejects.toThrow("not-a-git-repo");
