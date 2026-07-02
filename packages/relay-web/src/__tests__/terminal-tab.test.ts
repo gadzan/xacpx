@@ -4,6 +4,7 @@ import { mount } from "@vue/test-utils";
 
 const adapter = {
   write: vi.fn(), resize: vi.fn(), dispose: vi.fn(), focus: vi.fn(),
+  getSelection: vi.fn(() => ""), setTheme: vi.fn(),
   fit: vi.fn(() => ({ cols: 80, rows: 24 })),
   cols: () => 80, rows: () => 24,
 };
@@ -101,6 +102,100 @@ describe("TerminalTab", () => {
     expect(sendWebClientMessage).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "terminal-input", data: "d" }),
     );
+  });
+
+  it("sticky Alt prefixes ESC to the next typed char, then disarms", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-alt"]').trigger("click"); // arm
+    const onData = onDataOf();
+    onData("b");
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "b" }),
+    );
+    vi.mocked(sendWebClientMessage).mockClear();
+    onData("b"); // disarmed → plain 'b'
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "b" }),
+    );
+  });
+
+  it("multi-char input (paste/IME) passes through and disarms an armed modifier", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-alt"]').trigger("click"); // arm Alt
+    const onData = onDataOf();
+    onData("abc"); // multi-char → unchanged, and the one-shot arm is dropped
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "abc" }),
+    );
+    vi.mocked(sendWebClientMessage).mockClear();
+    onData("x"); // disarmed → plain 'x' (no ESC prefix)
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "x" }),
+    );
+  });
+
+  it("sticky Shift upcases the next typed letter, then disarms", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-shift"]').trigger("click"); // arm
+    onDataOf()("a");
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "A" }),
+    );
+  });
+
+  it("Shift + arrow-up sends the xterm modified CSI sequence and disarms Shift", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-shift"]').trigger("click"); // arm
+    await w.find('[data-test="key-up"]').trigger("click");
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "[1;2A" }),
+    );
+    vi.mocked(sendWebClientMessage).mockClear();
+    await w.find('[data-test="key-up"]').trigger("click"); // disarmed → plain up
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "[A" }),
+    );
+  });
+
+  it("Shift + Tab sends reverse-tab CSI Z", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-shift"]').trigger("click"); // arm
+    await w.find('[data-test="key-tab"]').trigger("click");
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "[Z" }),
+    );
+  });
+
+  it("keybar Home / PgUp send the standard escape sequences", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-home"]').trigger("click");
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "[H" }),
+    );
+    await w.find('[data-test="key-pageup"]').trigger("click");
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "[5~" }),
+    );
+  });
+
+  it("Copy writes the terminal selection to the clipboard; no-op when empty", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.assign(navigator, { clipboard: { writeText } });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    adapter.getSelection.mockReturnValueOnce("selected text");
+    await w.find('[data-test="key-copy"]').trigger("click");
+    expect(writeText).toHaveBeenCalledWith("selected text");
+    writeText.mockClear();
+    adapter.getSelection.mockReturnValueOnce("");
+    await w.find('[data-test="key-copy"]').trigger("click");
+    expect(writeText).not.toHaveBeenCalled();
   });
 
   it("sticky Ctrl passes a non-letter through unchanged and disarms", async () => {

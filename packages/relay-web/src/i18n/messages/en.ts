@@ -302,6 +302,7 @@ export default {
       show: "Show shortcut bar",
       hide: "Hide shortcut bar",
       paste: "Paste",
+      copy: "Copy",
       up: "Up",
       down: "Down",
       left: "Left",
