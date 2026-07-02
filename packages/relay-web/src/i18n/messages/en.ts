@@ -297,5 +297,15 @@ export default {
     noSession: "Select a session to open a terminal.",
     exited: "Terminal exited (code {code}).",
     error: "Could not open the terminal.",
+    close: "Close terminal",
+    keybar: {
+      show: "Show shortcut bar",
+      hide: "Hide shortcut bar",
+      paste: "Paste",
+      up: "Up",
+      down: "Down",
+      left: "Left",
+      right: "Right",
+    },
   },
 } as const;

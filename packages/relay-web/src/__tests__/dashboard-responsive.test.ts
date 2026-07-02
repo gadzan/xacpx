@@ -15,7 +15,7 @@ import FileViewer from "../components/FileViewer.vue";
 import { useChatStore } from "../stores/chat";
 import { useFilesStore } from "../stores/files";
 
-const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, "router-link": true };
+const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -223,4 +223,74 @@ test("edge-swipe left from the right edge opens the tasks/files drawer (mobile)"
   } finally {
     Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
   }
+});
+
+test("terminal toggle is disabled without a session and enabled with one", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const btn = wrapper.find('[data-test="toggle-terminal"]');
+  expect(btn.exists()).toBe(true);
+  expect(btn.attributes("disabled")).toBeDefined();
+
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = "demo";
+  await flushPromises();
+  expect(wrapper.find('[data-test="toggle-terminal"]').attributes("disabled")).toBeUndefined();
+});
+
+test("toggling the terminal opens a center overlay and is mutually exclusive with the file viewer", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = "demo";
+  const files = useFilesStore();
+  files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
+  await flushPromises();
+
+  await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
+  await flushPromises();
+  // Terminal overlay is mounted (VTU renders a `true` stub as <terminal-tab-stub>)...
+  expect(wrapper.find("terminal-tab-stub").exists()).toBe(true);
+  // ...and opening it cleared the file viewer (mutual exclusion).
+  expect(files.file).toBeNull();
+});
+
+test("the right rail no longer exposes a Terminal tab", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  expect(wrapper.find('[data-test="right-tab-terminal"]').exists()).toBe(false);
+  expect(wrapper.find('[data-test="right-tab-files"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="right-tab-tasks"]').exists()).toBe(true);
+});
+
+test("clearing the session auto-closes the terminal overlay", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = "demo";
+  await flushPromises();
+  await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
+  await flushPromises();
+  expect(wrapper.find("terminal-tab-stub").exists()).toBe(true);
+  chat.sessionAlias = null;
+  await flushPromises();
+  expect(wrapper.find("terminal-tab-stub").exists()).toBe(false);
+});
+
+test("opening the terminal closes an already-open right drawer (rightOpen mutual exclusion)", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = "demo";
+  await flushPromises();
+  await wrapper.find('[data-test="open-files"]').trigger("click");
+  const right = wrapper.find('[data-drawer="right"]');
+  expect(right.classes()).toContain("translate-x-0");
+  await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
+  await flushPromises();
+  expect(right.classes()).toContain("translate-x-full");
 });

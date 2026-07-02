@@ -295,5 +295,15 @@ export default {
     noSession: "选择一个会话以打开终端。",
     exited: "终端已退出(退出码 {code})。",
     error: "无法打开终端。",
+    close: "关闭终端",
+    keybar: {
+      show: "显示快捷键条",
+      hide: "隐藏快捷键条",
+      paste: "粘贴",
+      up: "上",
+      down: "下",
+      left: "左",
+      right: "右",
+    },
   },
 };

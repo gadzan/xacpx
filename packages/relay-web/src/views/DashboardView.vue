@@ -38,12 +38,13 @@ let disconnect: (() => void) | null = null;
 // these flags are visually irrelevant because the lg: classes override the transform.
 const leftOpen = ref(false);
 const rightOpen = ref(false);
-const rightTab = ref<"tasks" | "files" | "terminal">("tasks");
+const rightTab = ref<"tasks" | "files">("tasks");
+const terminalOpen = ref(false);
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
 }
-function openRight(tab: "tasks" | "files" | "terminal") {
+function openRight(tab: "tasks" | "files") {
   rightTab.value = tab;
   rightOpen.value = true;
 }
@@ -131,7 +132,10 @@ function closeFileViewer() {
   files.file = null;
   files.diffPath = null;
 }
-watch(viewingFile, (v) => { if (v) rightOpen.value = false; });
+watch(viewingFile, (v) => { if (v) { rightOpen.value = false; terminalOpen.value = false; } });
+watch(terminalOpen, (v) => { if (v) { files.file = null; files.diffPath = null; rightOpen.value = false; } });
+// 会话被清空时自动收起终端（否则会显示无会话态且开关已禁用）。
+watch(() => chat.sessionAlias, (a) => { if (!a) terminalOpen.value = false; });
 
 // Cmd/Ctrl+K command palette.
 const paletteOpen = ref(false);
@@ -230,6 +234,17 @@ onUnmounted(() => {
           <kbd class="hidden rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
+          data-test="toggle-terminal"
+          :aria-label='$t("terminal.title")'
+          :title='$t("terminal.title")'
+          :disabled="!chat.sessionAlias"
+          class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+          :class="terminalOpen ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
+          @click="terminalOpen = !terminalOpen"
+        >
+          <SquareTerminal :size="15" />
+        </button>
+        <button
           data-test="theme-toggle"
           :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
           class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -301,8 +316,11 @@ onUnmounted(() => {
            Overlaying keeps the scroller warm, so Back is an instant repaint. `inert`
            disables the occluded conversation for focus/interaction. -->
       <div data-test="column" class="relative flex min-w-0 flex-1 flex-col">
-        <ChatPane class="absolute inset-0" :inert="viewingFile" @show-files="rightTab = 'files'" />
+        <ChatPane class="absolute inset-0" :inert="viewingFile || terminalOpen" @show-files="rightTab = 'files'" />
         <FileViewer v-if="viewingFile" class="absolute inset-0 z-10" @back="backToFileList" @close="closeFileViewer" />
+        <TerminalTab v-if="terminalOpen" class="absolute inset-0 z-20"
+                     :instance-id="chat.instanceId ?? ''" :session-alias="chat.sessionAlias ?? ''"
+                     @close="terminalOpen = false" />
       </div>
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. On desktop its
@@ -335,18 +353,11 @@ onUnmounted(() => {
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
-          <button data-test="right-tab-terminal"
-                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
-                  :class="rightTab === 'terminal' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
-                  @click="rightTab = 'terminal'">
-            <SquareTerminal :size="13" />{{ $t("terminal.title") }}
-          </button>
           <button data-test="close-tasks" :aria-label='$t("nav.closeTasks")'
                   class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
         <div class="min-h-0 flex-1 overflow-hidden">
           <TaskPanel v-if="rightTab === 'tasks'" />
-          <TerminalTab v-else-if="rightTab === 'terminal'" :instance-id="chat.instanceId ?? ''" :session-alias="chat.sessionAlias ?? ''" />
           <FilesPanel v-else :instance-id="chat.instanceId" />
         </div>
       </div>
