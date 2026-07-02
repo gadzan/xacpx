@@ -300,6 +300,7 @@ export default {
       show: "显示快捷键条",
       hide: "隐藏快捷键条",
       paste: "粘贴",
+      copy: "复制",
       up: "上",
       down: "下",
       left: "左",
