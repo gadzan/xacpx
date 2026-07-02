@@ -4,6 +4,7 @@ import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
+import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
@@ -17,6 +18,9 @@ const chat = useChatStore();
 const instances = useInstancesStore();
 const files = useFilesStore();
 const composer = useComposerStore();
+// While the soft keyboard is open it already covers the iOS home indicator, so the
+// composer's safe-area bottom padding is just a gap — drop it then (see the template).
+const keyboardInset = useVirtualKeyboardInset();
 
 function onSend(text: string, media: PromptAttachmentRef[] = []) {
   void chat.send(text, media);
@@ -173,7 +177,9 @@ const verb = computed(() => {
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
            inset is applied ONCE here (the bottommost element) and never stacks on top of the
            composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+           :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
+           data-test="composer-area">
         <!-- TURN HUD -->
         <div v-if="chat.busy" data-test="turn-hud"
              class="flex items-center gap-2 rounded-lg border border-run/20 bg-run/8 px-3 py-1.5">
