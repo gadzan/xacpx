@@ -54,6 +54,12 @@ export interface TerminalConfig {
   idleTimeoutSeconds?: number;
 }
 
+export interface FilesConfig {
+  /** Default false. When false, all fs write ops (new/rename/delete/copy) are rejected
+   *  before touching disk. Download is a read and stays available regardless. */
+  writeEnabled: boolean;
+}
+
 export type LoggingLevel = "error" | "info" | "debug";
 
 export interface PerfLogConfig {
@@ -126,6 +132,7 @@ export interface AppConfig {
   later?: LaterConfig;
   language?: Locale;
   terminal?: TerminalConfig;
+  files?: FilesConfig;
 }
 
 export function terminalEnabled(config: AppConfig): boolean {
@@ -135,4 +142,8 @@ export function terminalEnabled(config: AppConfig): boolean {
 export function terminalIdleTimeoutSeconds(config: AppConfig): number {
   const v = config.terminal?.idleTimeoutSeconds;
   return typeof v === "number" && v > 0 ? v : 900;
+}
+
+export function filesWriteEnabled(config: AppConfig): boolean {
+  return config.files?.writeEnabled === true;
 }
