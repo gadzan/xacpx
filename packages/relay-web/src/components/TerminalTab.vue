@@ -326,8 +326,12 @@ onBeforeUnmount(() => {
     <div ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
 
     <!-- shortcut bar — the root's padding-bottom (= keyboard height) lifts the whole pane,
-         so both this bar and the terminal's prompt row stay above the on-screen keyboard. -->
+         so both this bar and the terminal's prompt row stay above the on-screen keyboard.
+         The safe-area bottom padding (home-indicator inset) only applies when the keyboard
+         is CLOSED; while it's open the keyboard already covers the home indicator, so the
+         inset would just leave a gap between the buttons and the keyboard. -->
     <div v-if="keybarVisible" data-test="keybar"
+         :style="keyboardInset ? { paddingBottom: '0.375rem' } : undefined"
          class="flex shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-surface px-2 py-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] thin-scroll">
       <button data-test="key-esc" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b')">Esc</button>
       <button data-test="key-tab" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\t')">Tab</button>
