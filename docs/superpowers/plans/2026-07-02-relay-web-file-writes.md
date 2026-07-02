@@ -39,7 +39,7 @@
 **测试文件：**
 - Create: `tests/unit/control/workspace-fs-writes.test.ts`（任务 1-3）
 - Modify/Create: `tests/unit/control/control-service-files-gate.test.ts`（任务 6）
-- relay-web: `packages/relay-web/tests/unit/file-tree-writes.test.ts`（任务 10-11）
+- relay-web 测试全部放新文件 `packages/relay-web/src/__tests__/file-tree-writes.test.ts`（任务 8 store 用例；任务 10/11 追加组件用例）。**relay-web 测试目录是 `src/__tests__/`，不是 `tests/unit/`**；组件 mount/i18n/pinia 装配照抄同目录既有 `filetree.test.ts`/`filespanel.test.ts` 的写法。
 
 ---
 
@@ -770,7 +770,7 @@ git commit -m "feat(channel-relay): route fs write rpc types to ControlService"
 
 **Files:**
 - Modify: `packages/relay-web/src/stores/files.ts`
-- Test: `packages/relay-web/tests/unit/file-tree-writes.test.ts`（新建；vitest）
+- Test: `packages/relay-web/src/__tests__/file-tree-writes.test.ts`（新建；vitest）
 
 **Interfaces:**
 - Consumes: `api.rpc`（既有）；`MSG` 字符串直用（store 里 A 用字符串字面量 `"control.fs.list"`，保持一致用字面量）
@@ -786,7 +786,7 @@ downloadEntry(rel: string): Promise<void>
 
 - [ ] **Step 1: 写失败测试（vitest）**
 
-`packages/relay-web/tests/unit/file-tree-writes.test.ts`：
+`packages/relay-web/src/__tests__/file-tree-writes.test.ts`：
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
@@ -829,7 +829,7 @@ describe("file-tree write actions", () => {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd packages/relay-web && npx vitest run tests/unit/file-tree-writes.test.ts`
+Run: `cd packages/relay-web && npx vitest run src/__tests__/file-tree-writes.test.ts`
 Expected: FAIL（`createEntry` 不是函数）
 
 - [ ] **Step 3: 实现**
@@ -899,13 +899,13 @@ async function downloadEntry(rel: string): Promise<void> {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cd packages/relay-web && npx vitest run tests/unit/file-tree-writes.test.ts`
+Run: `cd packages/relay-web && npx vitest run src/__tests__/file-tree-writes.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add packages/relay-web/src/stores/files.ts packages/relay-web/tests/unit/file-tree-writes.test.ts
+git add packages/relay-web/src/stores/files.ts packages/relay-web/src/__tests__/file-tree-writes.test.ts
 git commit -m "feat(relay-web): file store write + download actions"
 ```
 
@@ -922,8 +922,7 @@ git commit -m "feat(relay-web): file store write + download actions"
 
 - [ ] **Step 1: 查既有对齐测试**
 
-Run: `ls packages/relay-web/tests/unit | grep -i i18n || echo none`
-若有 parity 测试：它会在缺键时失败——即本任务的失败测试。
+既有 parity 测试在 `packages/relay-web/src/__tests__/i18n-parity.test.ts`，缺键或 en/zh 不对齐时会失败——即本任务的失败测试。
 
 - [ ] **Step 2: 加 zh 键、跑 parity 确认失败（en 缺）**
 
@@ -973,7 +972,7 @@ git commit -m "i18n(relay-web): file-tree write menu strings (en/zh)"
 
 **Files:**
 - Modify: `packages/relay-web/src/components/FileTreeNode.vue`
-- Test: `packages/relay-web/tests/unit/file-tree-writes.test.ts`（追加组件用例）
+- Test: `packages/relay-web/src/__tests__/file-tree-writes.test.ts`（追加组件用例）
 
 **Interfaces:**
 - Consumes: store `createEntry/renameEntry/deleteEntry/duplicateEntry/downloadEntry`（Task 8）；i18n 键（Task 9）；既有 `ContextMenu.vue`（通用 `{key,label}[]`，无需改）
@@ -1002,7 +1001,7 @@ it("newFile enters an inline input and submits via createEntry on Enter", async 
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd packages/relay-web && npx vitest run tests/unit/file-tree-writes.test.ts`
+Run: `cd packages/relay-web && npx vitest run src/__tests__/file-tree-writes.test.ts`
 Expected: FAIL（菜单无写项 / 无内联输入）
 
 - [ ] **Step 3: 实现**
@@ -1045,20 +1044,18 @@ async function onMenuSelect(key: string) {
   menu.value = null;
 }
 ```
-- `:items` 改为按 dir/file 组装（含分隔——ContextMenu 无分隔渲染，直接顺序排）：
+- `:items` 改为按 dir/file 组装（ContextMenu 顺序渲染，无分隔）。**文件夹菜单不含 `download`**（后端 `readFileBytes` 仅对文件）：
 ```ts
-// dir menu:
+// 文件夹（dir）菜单：
 [{key:'newFile',label:$t('files.menu.newFile')},{key:'newFolder',label:$t('files.menu.newFolder')},
  {key:'duplicate',label:$t('files.menu.duplicate')},{key:'rename',label:$t('files.menu.rename')},
- {key:'delete',label:$t('files.menu.delete')},{key:'download',label:$t('files.menu.download')},
+ {key:'delete',label:$t('files.menu.delete')},
  {key:'copyPath',label:$t('files.menu.copyPath')},{key:'copyRelativePath',label:$t('files.menu.copyRelativePath')},
  {key:'searchInFolder',label:$t('files.menu.searchInFolder')}]
-// 注：文件夹「下载」也可保留（zip? 否 → 去掉 download from dir）。决策：文件夹菜单不含 download（后端 readFileBytes 仅文件）。
-```
-  修正——**文件夹菜单去掉 `download`**（后端只下载文件）。文件菜单：
-```ts
-[{key:'duplicate',...},{key:'rename',...},{key:'delete',...},{key:'download',...},
- {key:'copyPath',...},{key:'copyRelativePath',...}]
+// 文件（file）菜单：
+[{key:'duplicate',label:$t('files.menu.duplicate')},{key:'rename',label:$t('files.menu.rename')},
+ {key:'delete',label:$t('files.menu.delete')},{key:'download',label:$t('files.menu.download')},
+ {key:'copyPath',label:$t('files.menu.copyPath')},{key:'copyRelativePath',label:$t('files.menu.copyRelativePath')}]
 ```
 - template：在展开子层顶部插入内联输入（当 `inlineMode?.kind !== 'rename'`）与重命名替换行（当 `=== 'rename'`）：
 ```html
@@ -1080,13 +1077,13 @@ async function onMenuSelect(key: string) {
 
 - [ ] **Step 4: 跑测试确认通过 + 构建**
 
-Run: `cd packages/relay-web && npx vitest run tests/unit/file-tree-writes.test.ts && npm run build`
+Run: `cd packages/relay-web && npx vitest run src/__tests__/file-tree-writes.test.ts && npm run build`
 Expected: PASS + build 成功
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add packages/relay-web/src/components/FileTreeNode.vue packages/relay-web/tests/unit/file-tree-writes.test.ts
+git add packages/relay-web/src/components/FileTreeNode.vue packages/relay-web/src/__tests__/file-tree-writes.test.ts
 git commit -m "feat(relay-web): file-tree node write menu + inline create/rename + delete confirm + download"
 ```
 
@@ -1096,7 +1093,7 @@ git commit -m "feat(relay-web): file-tree node write menu + inline create/rename
 
 **Files:**
 - Modify: `packages/relay-web/src/components/FilesPanel.vue`（树头部）
-- Test: `packages/relay-web/tests/unit/file-tree-writes.test.ts`（追加）
+- Test: `packages/relay-web/src/__tests__/file-tree-writes.test.ts`（追加）
 
 **Interfaces:**
 - Consumes: store `createEntry`（对根 `dir=""`）
@@ -1116,7 +1113,7 @@ it("root new-file button creates at workspace root", async () => {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd packages/relay-web && npx vitest run tests/unit/file-tree-writes.test.ts`
+Run: `cd packages/relay-web && npx vitest run src/__tests__/file-tree-writes.test.ts`
 Expected: FAIL（按钮不存在）
 
 - [ ] **Step 3: 实现**
@@ -1152,7 +1149,7 @@ Expected: PASS（含 A 的既有用例）+ build 成功
 - [ ] **Step 5: 提交**
 
 ```bash
-git add packages/relay-web/src/components/FilesPanel.vue packages/relay-web/tests/unit/file-tree-writes.test.ts
+git add packages/relay-web/src/components/FilesPanel.vue packages/relay-web/src/__tests__/file-tree-writes.test.ts
 git commit -m "feat(relay-web): root-level new file/folder entry in FilesPanel"
 ```
 
