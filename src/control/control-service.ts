@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import type { Agent as ChatAgent, ChatRequestMetadata } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
@@ -133,6 +134,24 @@ export interface ControlPromptResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+  /** True when this prompt did not run immediately and was instead appended to the
+   *  per-session server-side queue (a turn was already in flight). */
+  queued?: boolean;
+  /** Id of the queued item, present only when `queued` is true. Used to cancel it via
+   *  `cancelQueuedItem` before it drains. */
+  queueItemId?: string;
+}
+
+/** A prompt held in the per-session server-side queue while a turn is in flight.
+ *  Runs through the same `executeTurn` machinery as a manual prompt once drained. */
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  enqueuedAt: string;
+  senderId: string;
+  isOwner?: boolean;
+  accountId?: string;
+  media?: PromptAttachmentRef[];
 }
 
 /** A turn started by a fired scheduled task. Runs through the same agent + turn-event
@@ -395,12 +414,33 @@ export class ControlService {
   // resolves once the turn has fully unwound (transport cancelled, inFlight cleared).
   private readonly inFlight = new Map<string, { controller: AbortController; settled: Promise<void> }>();
 
+  // Per-session FIFO queue of prompts that arrived while a turn was already running.
+  // Only interactive prompt() enqueues (see `queueable` on executeTurn); scheduled
+  // turns keep rejecting immediately. Drained by Task 2's turn-finish hand-off.
+  private readonly queues = new Map<string, QueuedPrompt[]>();
+
+  // Set synchronously during a turn-finish drain hand-off: the finished turn has cleared
+  // its inFlight entry but the drained head has not yet re-registered its own. The enqueue
+  // gate treats `draining.has(key)` as busy so nothing starts a parallel turn in that
+  // window. The drained turn clears it right after it re-registers inFlight.
+  private readonly draining = new Set<string>();
+
+  private emitQueueUpdated(chatKey: string, sessionAlias: string): void {
+    const items = (this.queues.get(turnKey(chatKey, sessionAlias)) ?? []).map((q) => ({
+      id: q.id,
+      textPreview: q.text.length > QUEUE_PREVIEW_MAX ? q.text.slice(0, QUEUE_PREVIEW_MAX) : q.text,
+      enqueuedAt: q.enqueuedAt,
+    }));
+    this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items });
+  }
+
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
     return this.executeTurn({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
       senderId: input.senderId,
+      queueable: true,
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.media !== undefined ? { media: input.media } : {}),
@@ -433,25 +473,62 @@ export class ControlService {
     accountId?: string;
     // External abort (e.g. the scheduler's per-dispatch timeout) linked to this turn.
     abortSignal?: AbortSignal;
-    // Extra fields stamped onto turn-started for scheduled-origin turns.
-    turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin };
+    // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
+    // is set only for a drained queue head (Task 2) so the web can reconcile the badge.
+    turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string };
     media?: PromptAttachmentRef[];
+    // Only interactive prompt() sets this. When true and a turn is already running,
+    // the prompt is appended to the per-session queue instead of being rejected.
+    // runScheduledTurn omits it, so scheduled turns keep the immediate-or-reject
+    // behavior.
+    queueable?: boolean;
+    // Set only by the turn-finish drain hand-off. A drained head turn bypasses the busy
+    // gate (it is what the finished turn intentionally started next), re-registers its own
+    // inFlight, and clears the `draining` guard — all synchronously at its top.
+    drained?: boolean;
   }): Promise<ControlPromptResult> {
     const key = turnKey(params.chatKey, params.sessionAlias);
-    const existing = this.inFlight.get(key);
-    if (existing) {
-      // A live, un-cancelled turn really is busy — reject right away.
-      if (!existing.controller.signal.aborted) {
+    // A drained head turn (params.drained) is the turn the just-finished turn intentionally
+    // started next; it must bypass this gate (it re-registers its own inFlight and clears
+    // the `draining` guard synchronously at its top). Every other caller treats a live turn
+    // OR an in-progress drain hand-off as busy.
+    if (!params.drained) {
+      const existing = this.inFlight.get(key);
+      // Busy when a live un-cancelled turn holds the slot, OR a drain hand-off is mid-flight
+      // (inFlight momentarily cleared but the drained head not yet re-registered).
+      const busy =
+        this.draining.has(key) || (existing !== undefined && !existing.controller.signal.aborted);
+      if (busy) {
+        if (params.queueable) {
+          const id = randomUUID();
+          const item: QueuedPrompt = {
+            id,
+            text: params.text,
+            enqueuedAt: new Date().toISOString(),
+            senderId: params.senderId,
+            ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+            ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
+            ...(params.media !== undefined ? { media: params.media } : {}),
+          };
+          const q = this.queues.get(key) ?? [];
+          q.push(item);
+          this.queues.set(key, q);
+          this.emitQueueUpdated(params.chatKey, params.sessionAlias);
+          return { ok: true, queued: true, queueItemId: id };
+        }
+        // Not queueable (e.g. a scheduled turn) — reject right away.
         return { ok: false, errorMessage: "turn-already-running" };
       }
-      // A Stop is already unwinding this turn. Cancelling the transport and draining
-      // the agent takes time, during which the turn stays registered. Wait (bounded)
-      // for it to clear so the user's immediate follow-up starts a fresh turn instead
-      // of hitting "turn-already-running"; a wedged turn still falls through to the
-      // rejection below once the window elapses.
-      await raceWithTimeout(existing.settled, CANCEL_DRAIN_TIMEOUT_MS);
-      if (this.inFlight.has(key)) {
-        return { ok: false, errorMessage: "turn-already-running" };
+      if (existing) {
+        // existing is present but its controller is aborted (a Stop is unwinding it) and no
+        // drain is in progress. Cancelling the transport and draining the agent takes time,
+        // during which the turn stays registered. Wait (bounded) for it to clear so the
+        // user's immediate follow-up starts a fresh turn instead of hitting
+        // "turn-already-running"; a wedged turn still falls through to the rejection below.
+        await raceWithTimeout(existing.settled, CANCEL_DRAIN_TIMEOUT_MS);
+        if (this.inFlight.has(key)) {
+          return { ok: false, errorMessage: "turn-already-running" };
+        }
       }
     }
     const controller = new AbortController();
@@ -464,6 +541,12 @@ export class ControlService {
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
     this.inFlight.set(key, { controller, settled });
+    // A drained head turn has now re-registered its own inFlight synchronously (no await
+    // since the finished turn's finally). Clear the hand-off guard: the slot is genuinely
+    // held again, so the temporary `draining` busy marker is no longer needed.
+    if (params.drained) {
+      this.draining.delete(key);
+    }
     // Sending to an archived session restores it (useSession clears `archived`), and
     // `/clear` (session.reset) recreates the transport session under the same alias — both
     // mutate the session row, but neither useSession nor the reset handler emits an event.
@@ -484,8 +567,14 @@ export class ControlService {
     try {
       await this.deps.sessions.useSession(params.chatKey, params.sessionAlias);
     } catch (error) {
-      this.inFlight.delete(key);
+      // This turn never really started, but it still holds the slot. Settle it and advance the
+      // queue so a transient bind failure on a *drained* head does not strand the items behind
+      // it (which would otherwise only run when a future unrelated prompt arrives, reordering
+      // FIFO). advanceQueue releases inFlight itself when the queue is empty and hands the slot
+      // to the next drained turn otherwise — so we must NOT delete inFlight here (no
+      // double-release, no double-drain).
       resolveSettled();
+      this.advanceQueue(key, params.chatKey, params.sessionAlias);
       return { ok: false, errorMessage: toErrorMessage(error) };
     }
     if (wasArchived) {
@@ -497,6 +586,7 @@ export class ControlService {
       sessionAlias: params.sessionAlias,
       ...(params.turnStarted?.prompt ? { prompt: params.turnStarted.prompt } : {}),
       ...(params.turnStarted?.scheduled ? { scheduled: params.turnStarted.scheduled } : {}),
+      ...(params.turnStarted?.queueItemId ? { queueItemId: params.turnStarted.queueItemId } : {}),
     });
     // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
     // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.
@@ -635,11 +725,22 @@ export class ControlService {
       });
       return { ok: false, errorMessage };
     } finally {
-      this.inFlight.delete(key);
-      resolveSettled();
+      // If a queued head is waiting, mark `draining` synchronously NOW — before the awaited
+      // sessions-changed detection below and before the slot is handed off — so nothing starts
+      // a parallel turn during the release→drain window, even for an *aborted* turn whose
+      // lingering inFlight entry no longer reads as busy. advanceQueue re-adds it harmlessly;
+      // the drained turn clears it once it re-registers its own inFlight. When the queue is
+      // empty, this turn's still-present inFlight entry is itself the busy marker across the
+      // await (a normally-finished turn's controller is not aborted), so no drain is possible
+      // and none is needed.
+      if ((this.queues.get(key)?.length ?? 0) > 0) {
+        this.draining.add(key);
+      }
       // `/clear` (session.reset) recreated the transport session during the turn (and may
       // have re-bound a fresh native agentSessionId). Emit `sessions-changed` so the
       // dashboard refreshes the row; best-effort, and only when the binding actually moved.
+      // Kept inline (NOT inside advanceQueue): it is async/awaited and specific to THIS
+      // just-completed turn. inFlight is still held here, so it stays busy across the await.
       if (internalAlias && priorTransportSession) {
         try {
           const after = await this.deps.sessions.getSession(internalAlias);
@@ -650,6 +751,51 @@ export class ControlService {
           /* best-effort: no refresh on detection failure */
         }
       }
+      resolveSettled();
+      // Single decision point (shared with the useSession-failure path): start the next queued
+      // head as the drained turn while holding the slot, or release inFlight if empty.
+      this.advanceQueue(key, params.chatKey, params.sessionAlias);
+    }
+  }
+
+  // Advances the per-session FIFO queue after a turn ends. If a head exists, starts it as the
+  // next (drained) turn while holding the busy slot via `draining`; otherwise releases the
+  // inFlight slot. Must be called exactly once per ended turn. Fully synchronous: `draining` is
+  // added BEFORE the fire-and-forget drained `executeTurn`, whose `inFlight.set` runs
+  // synchronously before its first await — so there is no window in which an incoming prompt
+  // could observe a not-busy session between the ended turn and the drained turn.
+  private advanceQueue(key: string, chatKey: string, sessionAlias: string): void {
+    const q = this.queues.get(key);
+    const next = q?.shift();
+    if (q && q.length === 0) this.queues.delete(key);
+    if (next) {
+      this.draining.add(key);
+      // The head was already popped above; emit the shorter snapshot.
+      this.emitQueueUpdated(chatKey, sessionAlias);
+      // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses the
+      // busy gate (drained: true), re-registers inFlight and clears `draining` at its top — all
+      // synchronously before the first await — so there is no parallel-turn window. Pass
+      // queueItemId ONLY, never prompt: the hub already persisted the inbound at enqueue, so
+      // re-emitting prompt would double-persist and duplicate the bubble.
+      void this.executeTurn({
+        chatKey,
+        sessionAlias,
+        text: next.text,
+        senderId: next.senderId,
+        queueable: true,
+        drained: true,
+        ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
+        ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
+        ...(next.media !== undefined ? { media: next.media } : {}),
+        turnStarted: { queueItemId: next.id },
+      });
+    } else {
+      // The queue emptied during the drain hand-off (e.g. a cancel removed the only queued
+      // item while the finally's post-turn `await getSession` was in flight, after the finally
+      // set `draining`). No drained turn is coming to clear the guard, so clear it here too —
+      // otherwise `draining` leaks and every future prompt enqueues forever (permanent wedge).
+      this.draining.delete(key);
+      this.inFlight.delete(key);
     }
   }
 
@@ -660,6 +806,22 @@ export class ControlService {
     }
     entry.controller.abort();
     return true;
+  }
+
+  /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
+   *  `{ cancelled: false }`) when the queue or the id is absent/already drained —
+   *  e.g. a race where the item drained into a running turn just before the cancel
+   *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`). */
+  cancelQueuedItem(chatKey: string, sessionAlias: string, itemId: string): { cancelled: boolean } {
+    const key = turnKey(chatKey, sessionAlias);
+    const q = this.queues.get(key);
+    if (!q) return { cancelled: false };
+    const i = q.findIndex((x) => x.id === itemId);
+    if (i < 0) return { cancelled: false };
+    q.splice(i, 1);
+    if (q.length === 0) this.queues.delete(key);
+    this.emitQueueUpdated(chatKey, sessionAlias);
+    return { cancelled: true };
   }
 
   async executeCommand(input: ControlExecuteCommandInput): Promise<string> {
@@ -703,6 +865,10 @@ export class ControlService {
 // Upper bound on how long a follow-up prompt waits for a just-cancelled turn to
 // finish tearing down before giving up and reporting the session still busy.
 const CANCEL_DRAIN_TIMEOUT_MS = 5000;
+
+// Server-side truncation for a queued item's textPreview on the queue-updated wire
+// event, so a very long queued prompt doesn't bloat the snapshot payload.
+const QUEUE_PREVIEW_MAX = 120;
 
 // Resolve when `promise` settles or `ms` elapses, whichever comes first. The timer
 // is cleared on the winning path so a fast drain doesn't keep the event loop alive.

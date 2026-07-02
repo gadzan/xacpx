@@ -170,6 +170,12 @@ export interface UsageBreakdownDto {
     thoughtTokens?: number;
     totalTokens?: number;
 }
+/** One pending item in a session's server-side prompt queue. */
+export interface QueueItemDto {
+    id: string;
+    textPreview: string;
+    enqueuedAt: string;
+}
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto = {
     type: "turn-output";
@@ -182,6 +188,7 @@ export type ControlEventDto = {
     sessionAlias: string;
     prompt?: string;
     scheduled?: ScheduledOriginDto;
+    queueItemId?: string;
 } | {
     type: "tool-event";
     chatKey: string;
@@ -240,6 +247,11 @@ export type ControlEventDto = {
     code: number;
 } | {
     type: "orchestration-changed";
+} | {
+    type: "queue-updated";
+    chatKey: string;
+    sessionAlias: string;
+    items: QueueItemDto[];
 };
 /** One recovered history row (a persisted-shaped message) for a native-session seed. */
 export interface SessionHistoryRowDto {

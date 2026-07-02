@@ -50,6 +50,9 @@ export const GLOBAL_MAX_FAILURES = 200;
 /** Chat-scoped control RPCs get chatKey/senderId/isOwner stamped server-side. */
 const CHAT_SCOPED_TYPES = new Set<string>([
   MSG.prompt, MSG.promptCancel, MSG.commandExecute,
+  // Cancelling a queued item resolves the queue within the caller's chat scope; without
+  // the stamp the connector gets `chatKey: undefined` and cancelQueuedItem misses the queue.
+  MSG.queueCancel,
   MSG.scheduledList, MSG.scheduledCreate, MSG.scheduledCancel,
   // Session ops are chat-scoped too: created sessions must land in the same
   // `relay:<accountId>` channel scope that prompt/list resolve against, else a

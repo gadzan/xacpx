@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -90,6 +90,9 @@ export const useChatStore = defineStore("chat", () => {
   // Agent-advertised slash commands per session (latest `agent-commands`). Session-scoped
   // like plans/usage (REPLACE), persists across turns. Empty for agents that don't advertise.
   const agentCommands = ref<Record<string, AgentCommandDto[]>>({});
+  // Server-side prompt queue per session (latest `queue-updated`), REPLACE semantics like
+  // plans/usage. Purely server-authoritative — populated only by the event, never by send().
+  const queues = ref<Record<string, QueueItemDto[]>>({});
   // Sessions whose turn finished while NOT being viewed — drives the "unread" attention
   // dot in the session list. Reassigned (never mutated in place) so the Set stays reactive.
   const unread = ref<Set<string>>(new Set());
@@ -129,6 +132,9 @@ export const useChatStore = defineStore("chat", () => {
   );
   const sessionCommands = computed<AgentCommandDto[]>(() =>
     selectedKey.value ? agentCommands.value[selectedKey.value] ?? [] : [],
+  );
+  const sessionQueue = computed<QueueItemDto[]>(() =>
+    selectedKey.value ? queues.value[selectedKey.value] ?? [] : [],
   );
   const streaming = computed(() => (liveTurn.value ? textOf(liveTurn.value.parts) : ""));
   const liveToolSteps = computed(() => (liveTurn.value ? toolStepsOf(liveTurn.value.parts) : []));
@@ -336,6 +342,9 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "agent-commands") {
       // Latest agent slash-command list for the session (REPLACE). Drives composer "/" hints.
       agentCommands.value[bufKey(event.instanceId, e.sessionAlias)] = e.commands;
+    } else if (e.type === "queue-updated") {
+      // Server-authoritative snapshot of the session's pending prompt queue (REPLACE).
+      queues.value[bufKey(event.instanceId, e.sessionAlias)] = e.items;
     } else if (e.type === "session-history") {
       // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
@@ -427,5 +436,19 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel };
+  /** Cancel a still-pending queued prompt. Drops the chip optimistically (so the strip
+   *  reacts immediately) and issues the RPC best-effort — if it fails, the next
+   *  `queue-updated` snapshot re-syncs the truth anyway. */
+  async function cancelQueuedItem(instanceId: string, alias: string, itemId: string): Promise<void> {
+    const key = bufKey(instanceId, alias);
+    const list = queues.value[key];
+    if (list) queues.value[key] = list.filter((i) => i.id !== itemId);
+    try {
+      await api.rpc(instanceId, "control.queue.cancel", { sessionAlias: alias, itemId });
+    } catch {
+      // best-effort; a queue-updated re-syncs
+    }
+  }
+
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel, cancelQueuedItem };
 });

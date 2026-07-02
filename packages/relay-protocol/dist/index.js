@@ -61,6 +61,7 @@ var MSG = {
   workspacesRemove: "control.workspaces.remove",
   prompt: "control.prompt",
   promptCancel: "control.prompt.cancel",
+  queueCancel: "control.queue.cancel",
   commandExecute: "control.command.execute",
   scheduledList: "control.scheduled.list",
   scheduledCreate: "control.scheduled.create",
@@ -107,6 +108,7 @@ var CONTROL_EVENT_TYPES = new Set([
   "turn-usage",
   "agent-commands",
   "turn-finished",
+  "queue-updated",
   "sessions-changed",
   "workspaces-changed",
   "scheduled-changed",
@@ -179,6 +181,8 @@ function validControlEvent(e) {
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
   if (c.type === "agent-commands")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every((x) => x !== null && typeof x === "object" && typeof x.name === "string");
+  if (c.type === "queue-updated")
+    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
   if (c.type === "terminal-output")
