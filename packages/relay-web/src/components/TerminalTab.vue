@@ -89,7 +89,11 @@ function handleData(d: string) {
       const lc = out.toLowerCase().charCodeAt(0);
       if (lc >= 97 && lc <= 122) out = String.fromCharCode(lc - 96);
     }
-    if (altArmed.value) out = "" + out;
+    if (altArmed.value) out = ESC + out;
+    disarmMods();
+  } else if (anyModArmed()) {
+    // Multi-char input (paste/IME) can't carry a soft modifier — drop the one-shot arm
+    // instead of letting it silently fire on a later keystroke.
     disarmMods();
   }
   terminals.input(props.instanceId, terminalId, out);
@@ -101,11 +105,11 @@ function handleData(d: string) {
 function applyMods(seq: string): string {
   const mod = modParam();
   if (mod === 1) return seq;
-  if (seq === "\t") return shiftArmed.value ? "[Z" : seq;
-  const letter = /^\[([A-Z])$/.exec(seq);
-  if (letter) return `[1;${mod}${letter[1]}`;
-  const tilde = /^\[(\d+)~$/.exec(seq);
-  if (tilde) return `[${tilde[1]};${mod}~`;
+  if (seq === "\t") return shiftArmed.value ? ESC + "[Z" : seq;
+  const letter = new RegExp("^" + ESC + "\\[([A-Z])$").exec(seq);
+  if (letter) return ESC + "[1;" + mod + letter[1];
+  const tilde = new RegExp("^" + ESC + "\\[(\\d+)~$").exec(seq);
+  if (tilde) return ESC + "[" + tilde[1] + ";" + mod + "~";
   return seq;
 }
 

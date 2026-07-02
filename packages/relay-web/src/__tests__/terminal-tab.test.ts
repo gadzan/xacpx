@@ -120,6 +120,22 @@ describe("TerminalTab", () => {
     );
   });
 
+  it("multi-char input (paste/IME) passes through and disarms an armed modifier", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="key-alt"]').trigger("click"); // arm Alt
+    const onData = onDataOf();
+    onData("abc"); // multi-char → unchanged, and the one-shot arm is dropped
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "abc" }),
+    );
+    vi.mocked(sendWebClientMessage).mockClear();
+    onData("x"); // disarmed → plain 'x' (no ESC prefix)
+    expect(sendWebClientMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "terminal-input", data: "x" }),
+    );
+  });
+
   it("sticky Shift upcases the next typed letter, then disarms", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
