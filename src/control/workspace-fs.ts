@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { readdir, realpath, stat, open } from "node:fs/promises";
@@ -35,11 +35,17 @@ export interface FsEntry {
   name: string;
   type: "dir" | "file";
   size?: number;
+  /** True when git check-ignore matches this entry (omitted in non-git workspaces). */
+  ignored?: boolean;
 }
 export interface DirListing {
   workspace: string;
   path: string;
   entries: FsEntry[];
+  /** Absolute realpath'd workspace root on the connector host. */
+  root: string;
+  /** Host path separator, so the client can render an absolute host path. */
+  sep: "/" | "\\";
 }
 export interface FileContent {
   workspace: string;
@@ -106,7 +112,7 @@ export class WorkspaceFs {
   }
 
   async listDirectory(workspace: string, relPath?: string): Promise<DirListing> {
-    const { abs, rel } = await this.resolve(workspace, relPath);
+    const { root, abs, rel } = await this.resolve(workspace, relPath);
     const dirents = await readdir(abs, { withFileTypes: true });
     const entries: FsEntry[] = [];
     for (const d of dirents.slice(0, MAX_ENTRIES)) {
@@ -124,7 +130,39 @@ export class WorkspaceFs {
       // symlinks / sockets / devices are skipped (not browsable read targets)
     }
     entries.sort((a, b) => (a.type !== b.type ? (a.type === "dir" ? -1 : 1) : a.name.localeCompare(b.name)));
-    return { workspace, path: rel, entries };
+    // Mark gitignored entries (dirs are checked with a trailing slash so `dist/` rules match).
+    const relOf = (name: string, isDir: boolean) => (rel ? `${rel}/${name}` : name) + (isDir ? "/" : "");
+    const ignoredSet = await this.gitCheckIgnore(root, entries.map((e) => relOf(e.name, e.type === "dir")));
+    for (const e of entries) {
+      if (ignoredSet.has(relOf(e.name, e.type === "dir"))) e.ignored = true;
+    }
+    return { workspace, path: rel, entries, root, sep: sep as "/" | "\\" };
+  }
+
+  /** Return the subset of the given root-relative paths that git considers ignored.
+   *  Uses `check-ignore -z --stdin` (bounded by the caller's MAX_ENTRIES listing).
+   *  Any git error (not a repo, git missing) yields an empty set — callers degrade to
+   *  "nothing ignored". Never throws. */
+  private gitCheckIgnore(root: string, relPaths: string[]): Promise<Set<string>> {
+    return new Promise((resolvePromise) => {
+      if (!relPaths.length) return resolvePromise(new Set());
+      const ignored = new Set<string>();
+      let out = "";
+      let child;
+      try {
+        child = spawn("git", ["-C", root, "check-ignore", "-z", "--stdin"], { stdio: ["pipe", "pipe", "ignore"] });
+      } catch {
+        return resolvePromise(ignored);
+      }
+      child.on("error", () => resolvePromise(ignored)); // git missing
+      child.stdout.on("data", (b) => { out += b.toString(); });
+      child.on("close", () => {
+        for (const p of out.split("\0")) { if (p) ignored.add(p); }
+        resolvePromise(ignored);
+      });
+      child.stdin.on("error", () => {}); // ignore EPIPE if git bails early
+      child.stdin.end(relPaths.join("\0") + "\0");
+    });
   }
 
   async readFile(workspace: string, relPath: string): Promise<FileContent> {

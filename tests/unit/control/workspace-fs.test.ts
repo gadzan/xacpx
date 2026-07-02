@@ -220,3 +220,38 @@ describe("WorkspaceFs git diff", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 });
+
+describe("WorkspaceFs listing: ignored flag + root/sep", () => {
+  let gitRoot: string;
+  let gfs: WorkspaceFs;
+  beforeAll(() => {
+    gitRoot = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    execFileSync("git", ["init", "-q"], { cwd: gitRoot });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: gitRoot });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: gitRoot });
+    writeFileSync(join(gitRoot, ".gitignore"), "ignored.log\ndist/\n");
+    writeFileSync(join(gitRoot, "keep.ts"), "export const x = 1;\n");
+    writeFileSync(join(gitRoot, "ignored.log"), "noise\n");
+    mkdirSync(join(gitRoot, "dist"));
+    writeFileSync(join(gitRoot, "dist", "out.js"), "1\n");
+    gfs = new WorkspaceFs(() => [{ name: "g", cwd: gitRoot }]);
+  });
+  afterAll(() => rmSync(gitRoot, { recursive: true, force: true }));
+
+  test("marks gitignored entries and returns absolute root + sep", async () => {
+    const r = await gfs.listDirectory("g", "");
+    const byName = Object.fromEntries(r.entries.map((e) => [e.name, e]));
+    expect(byName["ignored.log"].ignored).toBe(true);
+    expect(byName["dist"].ignored).toBe(true);
+    expect(byName["keep.ts"].ignored).toBeUndefined();
+    expect(r.root).toBe(require("node:fs").realpathSync(gitRoot));
+    expect(r.sep).toBe(require("node:path").sep);
+  });
+
+  test("non-git workspace lists without ignored flags and still returns root/sep", async () => {
+    const r = await fs.listDirectory("ws", "");
+    expect(r.entries.every((e) => e.ignored === undefined)).toBe(true);
+    expect(typeof r.root).toBe("string");
+    expect(r.sep).toBe(require("node:path").sep);
+  });
+});
