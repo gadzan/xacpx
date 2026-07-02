@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.9.12-beta.4] - 2026-07-02
+
+A `@ganglion/xacpx-relay` (hub) beta with mobile web-terminal fixes. UI-only (bundled `relay-web`); no other package changed. Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard — the PWA service worker caches it). Note: Chinese/CJK IME input remains broken on mobile — that's an upstream `ghostty-web` limitation and is not addressed here.
+
+### Fixed
+
+- **Shortcut bar hidden behind the on-screen keyboard (#106).** The terminal pane now tracks `visualViewport` and reserves the keyboard's height as padding, so the grid shrinks and both the shortcut bar and the active prompt row stay above the keyboard.
+- **Home/End did nothing; PgUp/PgDn behaved oddly (#106).** Home/End now send Ctrl-A/Ctrl-E (emacs beginning/end-of-line, bound by default in zsh/bash where the raw Home/End escape sequences are not). PgUp/PgDn now scroll the viewport one page locally instead of sending escape sequences the shell ignores.
+- **No touch scrolling; every tap raised the keyboard (#106).** Dragging now scrolls the terminal viewport; only a deliberate tap focuses and raises the keyboard.
+
 ## [relay 0.9.12-beta.3] - 2026-07-02
 
 A `@ganglion/xacpx-relay` (hub) beta hotfix for the web terminal focus ring. UI-only (bundled `relay-web`); no other package changed. Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard — the PWA service worker caches it).
