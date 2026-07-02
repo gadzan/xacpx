@@ -238,6 +238,46 @@ describe("TerminalTab", () => {
     expect(endStop).not.toHaveBeenCalled(); // tap reaches ghostty → focuses/raises keyboard
   });
 
+  it("keyboard inset applies only while focused and above the toolbar threshold", async () => {
+    const vv = { height: 400, offsetTop: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    Object.defineProperty(window, "visualViewport", { value: vv, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true }); // delta 400 > 120
+    try {
+      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await tick();
+      const center = () => w.find('[data-test="terminal-center"]').attributes("style") ?? "";
+      const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
+      // Unfocused: a large innerHeight−visualViewport delta is browser chrome, NOT a keyboard → no inset.
+      expect(center()).not.toContain("padding-bottom");
+      el.dispatchEvent(new Event("focusin", { bubbles: true }));
+      await tick();
+      expect(center()).toContain("padding-bottom: 400px");
+      el.dispatchEvent(new Event("focusout", { bubbles: true }));
+      await tick();
+      expect(center()).not.toContain("padding-bottom");
+    } finally {
+      Reflect.deleteProperty(window, "visualViewport");
+      Object.defineProperty(window, "innerHeight", { value: 768, configurable: true });
+    }
+  });
+
+  it("keyboard inset ignores a sub-threshold delta (browser toolbar) even when focused", async () => {
+    const vv = { height: 740, offsetTop: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+    Object.defineProperty(window, "visualViewport", { value: vv, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true }); // delta 60 < 120
+    try {
+      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await tick();
+      const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
+      el.dispatchEvent(new Event("focusin", { bubbles: true }));
+      await tick();
+      expect(w.find('[data-test="terminal-center"]').attributes("style") ?? "").not.toContain("padding-bottom");
+    } finally {
+      Reflect.deleteProperty(window, "visualViewport");
+      Object.defineProperty(window, "innerHeight", { value: 768, configurable: true });
+    }
+  });
+
   it("Copy writes the terminal selection to the clipboard; no-op when empty", async () => {
     const writeText = vi.fn(async () => {});
     Object.assign(navigator, { clipboard: { writeText } });
