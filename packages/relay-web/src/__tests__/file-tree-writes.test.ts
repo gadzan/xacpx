@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
+import { mount } from "@vue/test-utils";
 import { useFilesStore } from "../../src/stores/files";
 import { api } from "../../src/api/client";
+import FileTreeNode from "../../src/components/FileTreeNode.vue";
 
 beforeEach(() => { setActivePinia(createPinia()); });
+
+const g = { global: { mocks: { $t: (k: string) => k } } };
 
 describe("file-tree write actions", () => {
   it("createEntry posts control.fs.create with the joined path and refreshes", async () => {
@@ -33,5 +37,49 @@ describe("file-tree write actions", () => {
     vi.spyOn(api, "rpc").mockResolvedValue({ error: { code: "internal", message: "files-write-disabled" } } as any);
     await store.createEntry("", "x.txt", "file");
     expect(store.error).toContain("files-write-disabled");
+  });
+});
+
+describe("FileTreeNode write menu", () => {
+  it("file menu includes duplicate/rename/delete/download but not newFile", async () => {
+    const store = useFilesStore();
+    store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
+    const w = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    await w.find('[data-test="tree-row"]').trigger("contextmenu");
+    expect(w.find('[data-test="menu-duplicate"]').exists()).toBe(true);
+    expect(w.find('[data-test="menu-rename"]').exists()).toBe(true);
+    expect(w.find('[data-test="menu-delete"]').exists()).toBe(true);
+    expect(w.find('[data-test="menu-download"]').exists()).toBe(true);
+    expect(w.find('[data-test="menu-newFile"]').exists()).toBe(false);
+  });
+
+  it("delete calls window.confirm then store.deleteEntry when confirmed", async () => {
+    const store = useFilesStore();
+    store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
+    const deleteEntry = vi.spyOn(store, "deleteEntry").mockResolvedValue();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const w = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "src", depth: 1, showDotfiles: true, showGitignored: true }, ...g });
+    await w.find('[data-test="tree-row"]').trigger("contextmenu");
+    await w.find('[data-test="menu-delete"]').trigger("click");
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(deleteEntry).toHaveBeenCalledWith("src/a.ts");
+  });
+
+  it("newFile enters an inline input and submits via createEntry on Enter", async () => {
+    const store = useFilesStore();
+    store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
+    store.tree["src"] = [];
+    const createEntry = vi.spyOn(store, "createEntry").mockResolvedValue();
+    const w = mount(FileTreeNode, { props: { entry: { name: "src", type: "dir" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    await w.find('[data-test="tree-row"]').trigger("contextmenu");
+    await w.find('[data-test="menu-newFile"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const input = w.find('[data-test="inline-name"]');
+    expect(input.exists()).toBe(true);
+    await input.setValue("new.txt");
+    await input.trigger("keyup.enter");
+
+    expect(createEntry).toHaveBeenCalledWith("src", "new.txt", "file");
   });
 });
