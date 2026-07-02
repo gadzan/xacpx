@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
-import { readdir, realpath, stat, open, readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { readdir, realpath, stat, open, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -130,6 +130,41 @@ export class WorkspaceFs {
     if (abs !== root && !abs.startsWith(root + sep)) throw new Error("path-escapes-workspace");
     const rel = abs === root ? "" : relative(root, abs).split(sep).join("/");
     return { root, abs, rel };
+  }
+
+  /** Resolve the PARENT directory of a to-be-created/renamed target. Parent must exist
+   *  and be contained; the final segment is validated (non-empty, no separators, not
+   *  "."/".."). Because parent is realpath'd+contained and name has no separator, the
+   *  join target stays inside the workspace root. */
+  private async resolveParent(
+    workspace: string,
+    relPath: string,
+  ): Promise<{ root: string; parentAbs: string; name: string; targetAbs: string; rel: string }> {
+    if (relPath && isAbsolute(relPath)) throw new Error("path-must-be-relative");
+    const trimmed = (relPath ?? "").replace(/\/+$/, "");
+    if (!trimmed) throw new Error("bad-target"); // cannot create at/above the root
+    const name = basename(trimmed);
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      throw new Error("bad-target");
+    }
+    const parentRel = dirname(trimmed);
+    // Resolve the parent through the existing choke point (realpath + containment).
+    const { root, abs: parentAbs, rel: parentRelNorm } = await this.resolve(
+      workspace,
+      parentRel === "." ? undefined : parentRel,
+    );
+    const targetAbs = resolve(parentAbs, name);
+    const rel = (parentRelNorm ? `${parentRelNorm}/${name}` : name);
+    return { root, parentAbs, name, targetAbs, rel };
+  }
+
+  /** Minimal write-empty-file. Full semantics (already-exists mapping, createDir) land
+   *  in Task 2 — this exists so resolveParent's containment/name-validation behavior is
+   *  exercised end to end. */
+  async createFile(workspace: string, relPath: string): Promise<{ path: string }> {
+    const { targetAbs, rel } = await this.resolveParent(workspace, relPath);
+    await writeFile(targetAbs, "", { flag: "wx" }); // wx → fail if exists
+    return { path: rel };
   }
 
   async listDirectory(workspace: string, relPath?: string): Promise<DirListing> {
