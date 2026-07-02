@@ -6,6 +6,11 @@ import {
   type FsListPayload,
   type FsReadPayload,
   type FsSearchPayload,
+  type FsCreatePayload,
+  type FsRenamePayload,
+  type FsDeletePayload,
+  type FsCopyPayload,
+  type FsDownloadPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type OrchestrationCancelPayload,
@@ -221,6 +226,32 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
         exclude: input.exclude,
         path: input.path,
       }); // SearchResult ≅ FsSearchResult
+    }
+    case MSG.fsCreate: {
+      const i = payload as FsCreatePayload;
+      if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
+      if (i.kind !== "file" && i.kind !== "dir") return errorPayload("bad-request", "kind must be file or dir");
+      return await control.fsCreate(i.workspace, i.path, i.kind);
+    }
+    case MSG.fsRename: {
+      const i = payload as FsRenamePayload;
+      if (!i.workspace || !i.path || !i.newName) return errorPayload("bad-request", "workspace, path and newName are required");
+      return await control.fsRename(i.workspace, i.path, i.newName);
+    }
+    case MSG.fsDelete: {
+      const i = payload as FsDeletePayload;
+      if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
+      return await control.fsDelete(i.workspace, i.path);
+    }
+    case MSG.fsCopy: {
+      const i = payload as FsCopyPayload;
+      if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
+      return await control.fsCopy(i.workspace, i.path);
+    }
+    case MSG.fsDownload: {
+      const i = payload as FsDownloadPayload;
+      if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
+      return await control.fsDownload(i.workspace, i.path);
     }
     case MSG.sessionModelGet: {
       const input = payload as SessionModelGetPayload;
