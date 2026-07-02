@@ -80,6 +80,8 @@ export default {
     working: "Agent is working… (Esc to stop)",
     message: "Message",
     jumpLatest: "↓ Latest",
+    queuedHeader: "Queued",
+    queueCancelAria: "Remove from queue",
     contextUsage: "Context: {used} / {size} tokens",
     usage: {
       contextWindow: "Context window",

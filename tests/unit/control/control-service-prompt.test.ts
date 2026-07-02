@@ -217,7 +217,7 @@ test("prompt rejects unknown session without emitting turn events", async () => 
   expect(seen).toHaveLength(0);
 });
 
-test("second concurrent prompt on the same session is rejected; cancelTurn aborts", async () => {
+test("a concurrent prompt while a turn runs is queued; cancelTurn aborts the running turn", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -245,14 +245,14 @@ test("second concurrent prompt on the same session is rejected; cancelTurn abort
     text: "again",
     senderId: "acct-1",
   });
-  expect(second).toEqual({ ok: false, errorMessage: "turn-already-running" });
+  expect(second.ok).toBe(true);
+  expect(second.queued).toBe(true);
+  expect(typeof second.queueItemId).toBe("string");
 
   expect(control.cancelTurn("relay:acct-1", "backend")).toBe(true);
   const result = await first;
   expect(result.ok).toBe(false);
   release();
-
-  expect(control.cancelTurn("relay:acct-1", "backend")).toBe(false);
 });
 
 test("a follow-up prompt after Stop waits for the cancelled turn to drain, then runs", async () => {
@@ -334,7 +334,7 @@ test("executeCommand concatenates reply chunks and final text", async () => {
   expect(output).toBe("part-1\npart-2\ntail");
 });
 
-test("two prompts issued in the same tick: exactly one wins, the other is rejected", async () => {
+test("two prompts issued in the same tick: exactly one wins, the other is queued", async () => {
   // Regression for the TOCTOU race between `inFlight.has` and `inFlight.set`.
   // The guard must register synchronously, BEFORE the `await useSession`,
   // otherwise both calls slip past the guard while awaiting the session bind.
@@ -368,8 +368,6 @@ test("two prompts issued in the same tick: exactly one wins, the other is reject
   // Let the winning (gated) turn's agent.chat complete so neither promise hangs.
   release();
   const [resultA, resultB] = await Promise.all([promiseA, promiseB]);
-  const rejected = [resultA, resultB].filter(
-    (r) => r.ok === false && r.errorMessage === "turn-already-running",
-  );
-  expect(rejected).toHaveLength(1);
+  const queued = [resultA, resultB].filter((r) => r.ok === true && r.queued === true);
+  expect(queued).toHaveLength(1);
 });

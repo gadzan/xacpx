@@ -174,12 +174,19 @@ export interface UsageBreakdownDto {
   totalTokens?: number;
 }
 
+/** One pending item in a session's server-side prompt queue. */
+export interface QueueItemDto {
+  id: string;
+  textPreview: string;
+  enqueuedAt: string;
+}
+
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
   // `prompt`/`scheduled` are set only for turns started by a fired scheduled task,
   // so the hub can persist the inbound prompt and the web can badge it.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto }
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
@@ -199,7 +206,10 @@ export type ControlEventDto =
   | { type: "session-history"; chatKey: string; sessionAlias: string; messages: SessionHistoryRowDto[] }
   | { type: "terminal-output"; terminalId: string; seq: number; data: string }
   | { type: "terminal-exit"; terminalId: string; code: number }
-  | { type: "orchestration-changed" };
+  | { type: "orchestration-changed" }
+  // The session's server-side prompt queue changed (item enqueued/dequeued/cancelled);
+  // replace-latest snapshot of the pending items.
+  | { type: "queue-updated"; chatKey: string; sessionAlias: string; items: QueueItemDto[] };
 
 /** One recovered history row (a persisted-shaped message) for a native-session seed. */
 export interface SessionHistoryRowDto {

@@ -24,6 +24,7 @@ export const MSG = {
   workspacesRemove: "control.workspaces.remove",
   prompt: "control.prompt",
   promptCancel: "control.prompt.cancel",
+  queueCancel: "control.queue.cancel",
   commandExecute: "control.command.execute",
   scheduledList: "control.scheduled.list",
   scheduledCreate: "control.scheduled.create",
@@ -230,12 +231,24 @@ export interface PromptResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+  /** True when the prompt was enqueued behind a running turn instead of dispatched
+   *  immediately; `queueItemId` identifies the queued entry for later cancellation. */
+  queued?: boolean;
+  queueItemId?: string;
 }
 export interface PromptCancelPayload {
   chatKey: string;
   sessionAlias: string;
 }
 export interface PromptCancelResult {
+  cancelled: boolean;
+}
+export interface QueueCancelPayload {
+  chatKey: string;
+  sessionAlias: string;
+  itemId: string;
+}
+export interface QueueCancelResult {
   cancelled: boolean;
 }
 export interface CommandExecutePayload {

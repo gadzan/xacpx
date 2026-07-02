@@ -92,6 +92,7 @@ const CONTROL_EVENT_TYPES = new Set([
   "turn-usage",
   "agent-commands",
   "turn-finished",
+  "queue-updated",
   "sessions-changed",
   "workspaces-changed",
   "scheduled-changed",
@@ -169,6 +170,8 @@ function validControlEvent(e: unknown): boolean {
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
       && Array.isArray(c.commands)
       && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
+  if (c.type === "queue-updated")
+    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
   if (c.type === "tool-event")
     return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
   if (c.type === "terminal-output")
