@@ -211,7 +211,16 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     case MSG.fsSearch: {
       const input = payload as FsSearchPayload;
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
-      return await control.searchWorkspace(input.workspace, input.query ?? ""); // SearchResult ≅ FsSearchResult
+      return await control.searchWorkspace(input.workspace, {
+        query: input.query ?? "",
+        mode: input.mode,
+        matchCase: input.matchCase,
+        wholeWord: input.wholeWord,
+        regex: input.regex,
+        include: input.include,
+        exclude: input.exclude,
+        path: input.path,
+      }); // SearchResult ≅ FsSearchResult
     }
     case MSG.sessionModelGet: {
       const input = payload as SessionModelGetPayload;

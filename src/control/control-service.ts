@@ -24,7 +24,7 @@ import {
 import type { ControlEventBus, ScheduledOrigin } from "./control-event-bus";
 import { readNativeSessionHistory, type NativeHistoryMessage } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
-import { WorkspaceFs, type DirListing, type FileContent, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
+import { WorkspaceFs, type DirListing, type FileContent, type SearchOptions, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 
@@ -199,8 +199,8 @@ export class ControlService {
     return this.workspaceFs.gitDiff(workspace, path);
   }
 
-  searchWorkspace(workspace: string, query: string): Promise<SearchResult> {
-    return this.workspaceFs.search(workspace, query);
+  searchWorkspace(workspace: string, opts: SearchOptions): Promise<SearchResult> {
+    return this.workspaceFs.search(workspace, opts);
   }
 
   async uploadFile(input: { filename: string; content: string; mimeType: string }): Promise<{ id: string; path: string; filename: string; mimeType: string; size: number }> {
