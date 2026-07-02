@@ -1,5 +1,13 @@
 # Changelog
 
+## [relay 0.9.12-beta.3] - 2026-07-02
+
+A `@ganglion/xacpx-relay` (hub) beta hotfix for the web terminal focus ring. UI-only (bundled `relay-web`); no other package changed. Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard — the PWA service worker caches it).
+
+### Fixed
+
+- **Terminal focus ring not actually suppressed (#105).** The 0.9.12-beta.2 fix only targeted `.term-host :deep(*:focus)` (descendants), but ghostty's `open()` makes the host element itself the focusable surface (`tabindex` + `contenteditable`), so the browser's default focus ring drew on the host — which a descendant-only selector never matches. Now suppressed on the host element directly (plus `box-shadow` for ring-style focus).
+
 ## [relay 0.9.12-beta.2] - 2026-07-02
 
 A `@ganglion/xacpx-relay` (hub) beta shipping a web-terminal polish pass. UI-only — the dashboard (`@ganglion/xacpx-relay-web`, bundled into this package) is the only thing that changed; core, `relay-protocol`, and `channel-relay` are unchanged and need no republish. Published to the npm `next` dist-tag. Update with `xacpx-relay update` or `npm i -g @ganglion/xacpx-relay@next`.
