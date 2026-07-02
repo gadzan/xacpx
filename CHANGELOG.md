@@ -1,5 +1,14 @@
 # Changelog
 
+## [relay 0.9.12-beta.6] - 2026-07-02
+
+A `@ganglion/xacpx-relay` (hub) beta closing the mobile keyboard gap on both the terminal shortcut bar and the chat composer. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard).
+
+### Fixed
+
+- **Gap between the terminal shortcut bar and the on-screen keyboard (#109).** The bar's `env(safe-area-inset-bottom)` (iOS home-indicator inset) was dead space while the keyboard was open — the keyboard already covers the home indicator. The inset is now dropped when the keyboard is open, so the buttons sit flush on it; it still applies when the keyboard is closed.
+- **Same gap under the chat composer (#110).** Applied the same treatment to the composer via a shared `useVirtualKeyboardInset()` helper (visualViewport delta, gated on an editable element being focused and a keyboard-sized threshold, so mobile browser chrome never triggers it).
+
 ## [relay 0.9.12-beta.5] - 2026-07-02
 
 A `@ganglion/xacpx-relay` (hub) beta hotfix for a mobile terminal layout regression from beta.4. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard).
