@@ -27,6 +27,18 @@ function openTreeFile(rel: string) {
   files.diffPath = null;
   void files.openFile(rel);
 }
+
+// Root-level "new file / new folder" — there's no parent tree row to right-click at the
+// workspace root, so this inline entry point lives in the tree header instead.
+const rootInline = ref<null | "file" | "dir">(null);
+const rootName = ref("");
+async function submitRoot() {
+  const kind = rootInline.value;
+  const name = rootName.value.trim();
+  rootInline.value = null;
+  rootName.value = "";
+  if (kind && name) await files.createEntry("", name, kind);
+}
 // Re-run the active search when its options change (toggles, include/exclude, mode).
 watch(() => ({ ...files.searchOpts }), () => { if (files.query.trim()) void files.search(files.query); }, { deep: true });
 
@@ -250,6 +262,17 @@ watch(
           <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-dotfiles" v-model="showDotfiles" class="accent-accent" />{{ $t("files.toggle.showDotfiles") }}</label>
           <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-gitignored" v-model="showGitignored" class="accent-accent" />{{ $t("files.toggle.showGitignored") }}</label>
         </div>
+
+        <!-- root-level new file/folder: the workspace root has no parent row to right-click. -->
+        <div class="mb-1 flex items-center gap-1">
+          <button data-test="root-new-file" class="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-raised"
+                  @click="rootInline = 'file'" :title="$t('files.menu.newFile')">＋{{ $t('files.menu.newFile') }}</button>
+          <button data-test="root-new-folder" class="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-raised"
+                  @click="rootInline = 'dir'" :title="$t('files.menu.newFolder')">＋{{ $t('files.menu.newFolder') }}</button>
+        </div>
+        <input v-if="rootInline" data-test="root-inline-name" v-model="rootName"
+               @keyup.enter="submitRoot" @keyup.esc="rootInline = null" @blur="rootInline = null"
+               class="mb-1 w-full rounded border border-border bg-raised px-1 text-[12px]" />
 
         <!-- directory tree: recursive rows (chevron + folder/file icon), lazy-expanded -->
         <div class="min-h-0 flex-1 overflow-y-auto thin-scroll py-1 font-mono">

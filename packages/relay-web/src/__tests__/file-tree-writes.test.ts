@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { useFilesStore } from "../../src/stores/files";
 import { api } from "../../src/api/client";
 import FileTreeNode from "../../src/components/FileTreeNode.vue";
+import FilesPanel from "../../src/components/FilesPanel.vue";
 
 beforeEach(() => { setActivePinia(createPinia()); });
 
@@ -81,5 +82,45 @@ describe("FileTreeNode write menu", () => {
     await input.trigger("keyup.enter");
 
     expect(createEntry).toHaveBeenCalledWith("src", "new.txt", "file");
+  });
+});
+
+describe("FilesPanel root-level create", () => {
+  it("root new-file button creates at workspace root", async () => {
+    vi.spyOn(api, "rpc").mockResolvedValue({} as any);
+    const store = useFilesStore();
+    const createEntry = vi.spyOn(store, "createEntry").mockResolvedValue();
+    const w = mount(FilesPanel, { props: { instanceId: "i1" } });
+    await flushPromises();
+
+    expect(w.find('[data-test="root-new-file"]').exists()).toBe(true);
+    expect(w.find('[data-test="root-new-folder"]').exists()).toBe(true);
+    expect(w.find('[data-test="root-inline-name"]').exists()).toBe(false);
+
+    await w.find('[data-test="root-new-file"]').trigger("click");
+    const input = w.find('[data-test="root-inline-name"]');
+    expect(input.exists()).toBe(true);
+    await input.setValue("top.txt");
+    await input.trigger("keyup.enter");
+
+    expect(createEntry).toHaveBeenCalledWith("", "top.txt", "file");
+    expect(w.find('[data-test="root-inline-name"]').exists()).toBe(false);
+  });
+
+  it("Esc cancels the root inline input without creating", async () => {
+    vi.spyOn(api, "rpc").mockResolvedValue({} as any);
+    const store = useFilesStore();
+    const createEntry = vi.spyOn(store, "createEntry").mockResolvedValue();
+    const w = mount(FilesPanel, { props: { instanceId: "i1" } });
+    await flushPromises();
+
+    await w.find('[data-test="root-new-folder"]').trigger("click");
+    const input = w.find('[data-test="root-inline-name"]');
+    expect(input.exists()).toBe(true);
+    await input.setValue("nope");
+    await input.trigger("keyup.esc");
+
+    expect(createEntry).not.toHaveBeenCalled();
+    expect(w.find('[data-test="root-inline-name"]').exists()).toBe(false);
   });
 });
