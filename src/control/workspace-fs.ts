@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
-import { readdir, realpath, stat, open } from "node:fs/promises";
+import { readdir, realpath, stat, open, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -30,6 +30,8 @@ const GIT_MAX_BUFFER = 32 * 1024 * 1024;
 const SEARCH_MAX_RESULTS = 200;
 const SEARCH_MAX_SCAN = 20000; // directory entries visited before giving up
 const SEARCH_SKIP_DIRS = new Set([".git", "node_modules"]);
+const SEARCH_CONTENT_MAX_HITS = 500;
+const SEARCH_CONTENT_MAX_FILE = 1024 * 1024; // skip files > 1 MiB in the fallback walker
 
 export interface FsEntry {
   name: string;
@@ -59,11 +61,30 @@ export interface DiffFile {
   path: string;
   status: string;
 }
+export interface SearchHit {
+  path: string;
+  line: number;
+  text: string;
+}
 export interface SearchResult {
   workspace: string;
   query: string;
   matches: string[];
+  hits: SearchHit[];
   truncated: boolean;
+}
+export interface SearchOptions {
+  query: string;
+  mode?: "name" | "content";
+  matchCase?: boolean;
+  wholeWord?: boolean;
+  regex?: boolean;
+  /** Glob to restrict matches (relative to workspace root). */
+  include?: string;
+  /** Glob to drop matches. */
+  exclude?: string;
+  /** Base directory (relative) to scope the search; defaults to the whole workspace. */
+  path?: string;
 }
 export interface WorkspaceDiff {
   workspace: string;
@@ -188,26 +209,32 @@ export class WorkspaceFs {
     }
   }
 
-  /** Find files whose relative path contains `query` (case-insensitive). Walks the
-   *  tree breadth-first, skipping `.git`/`node_modules` and never following symlinks
-   *  (so it stays contained), bounded by a scan budget and a result cap. */
-  async search(workspace: string, query: string): Promise<SearchResult> {
-    const { root } = await this.resolve(workspace, undefined);
-    const needle = query.trim().toLowerCase();
-    const matches: string[] = [];
-    if (!needle) return { workspace, query, matches, truncated: false };
+  /** Find files by name (default) or content. Name mode walks relative paths
+   *  breadth-first, skipping `.git`/`node_modules` and never following symlinks (so it
+   *  stays contained), applying the query plus any include/exclude globs. Content mode
+   *  delegates to `contentGrep`. Both are bounded by a scan budget and a result cap. */
+  async search(workspace: string, opts: SearchOptions): Promise<SearchResult> {
+    const { root, abs: base } = await this.resolve(workspace, opts.path);
+    const query = opts.query.trim();
+    const empty: SearchResult = { workspace, query, matches: [], hits: [], truncated: false };
+    if (!query) return empty;
 
+    if ((opts.mode ?? "name") === "content") {
+      return this.contentGrep(workspace, root, base, opts, query);
+    }
+
+    // name mode: walk relative paths, apply matcher + include/exclude globs.
+    const matcher = buildMatcher(query, opts);
+    const inc = opts.include ? globToRegExp(opts.include) : null;
+    const exc = opts.exclude ? globToRegExp(opts.exclude) : null;
+    const matches: string[] = [];
     let scanned = 0;
     let truncated = false;
-    const queue: string[] = [root];
+    const queue: string[] = [base];
     while (queue.length) {
       const dir = queue.shift()!;
       let dirents;
-      try {
-        dirents = await readdir(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
+      try { dirents = await readdir(dir, { withFileTypes: true }); } catch { continue; }
       for (const d of dirents) {
         if (++scanned > SEARCH_MAX_SCAN) { truncated = true; break; }
         if (d.isSymbolicLink()) continue; // never follow symlinks — keeps us contained
@@ -215,7 +242,9 @@ export class WorkspaceFs {
           if (!SEARCH_SKIP_DIRS.has(d.name)) queue.push(resolve(dir, d.name));
         } else if (d.isFile()) {
           const rel = relative(root, resolve(dir, d.name)).split(sep).join("/");
-          if (rel.toLowerCase().includes(needle)) {
+          if (inc && !inc.test(rel)) continue;
+          if (exc && exc.test(rel)) continue;
+          if (matcher(rel)) {
             matches.push(rel);
             if (matches.length >= SEARCH_MAX_RESULTS) { truncated = true; break; }
           }
@@ -224,7 +253,85 @@ export class WorkspaceFs {
       if (truncated) break;
     }
     matches.sort();
-    return { workspace, query, matches, truncated };
+    return { workspace, query, matches, hits: [], truncated };
+  }
+
+  /** Content grep: `git grep` when the workspace root is a git repo (fast, respects
+   *  .gitignore), else a bounded manual walk that scans each file line by line. Never
+   *  throws on git absence/failure or an invalid user regex — both degrade gracefully. */
+  private async contentGrep(workspace: string, root: string, base: string, opts: SearchOptions, query: string): Promise<SearchResult> {
+    // Try git grep first: it's fast and respects .gitignore. Args are argv (never a shell).
+    const inGit = await execFileAsync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { maxBuffer: GIT_MAX_BUFFER })
+      .then(() => true).catch(() => false);
+    if (inGit) {
+      const args = ["-C", root, "grep", "-n", "--column", "-I", "--no-color"];
+      if (!opts.matchCase) args.push("-i");
+      if (opts.wholeWord) args.push("-w");
+      args.push(opts.regex ? "-E" : "-F");
+      args.push("-e", query, "--");
+      const scope = opts.path ? opts.path : ".";
+      args.push(scope);
+      if (opts.include) args.push(`:(glob)${opts.include}`);
+      if (opts.exclude) args.push(`:(exclude,glob)${opts.exclude}`);
+      let stdout = "";
+      try {
+        stdout = (await execFileAsync("git", args, { maxBuffer: GIT_MAX_BUFFER })).stdout;
+      } catch (e) {
+        const code = (e as { code?: number }).code;
+        if (code === 1) stdout = ""; // no matches
+        else { const out = (e as { stdout?: string }).stdout; stdout = typeof out === "string" ? out : ""; }
+      }
+      const hits: SearchHit[] = [];
+      let truncated = false;
+      for (const raw of stdout.split("\n")) {
+        if (!raw) continue;
+        // format: <path>:<line>:<column>:<text>
+        const m = raw.match(/^(.*?):(\d+):(\d+):(.*)$/);
+        if (!m) continue;
+        hits.push({ path: m[1]!.split(sep).join("/"), line: Number(m[2]), text: m[4]!.slice(0, 400) });
+        if (hits.length >= SEARCH_CONTENT_MAX_HITS) { truncated = true; break; }
+      }
+      return { workspace, query, matches: [], hits, truncated };
+    }
+
+    // Fallback (non-git): bounded manual walk + per-line match.
+    const matcher = buildLineMatcher(query, opts);
+    const inc = opts.include ? globToRegExp(opts.include) : null;
+    const exc = opts.exclude ? globToRegExp(opts.exclude) : null;
+    const hits: SearchHit[] = [];
+    let scanned = 0;
+    let truncated = false;
+    const queue: string[] = [base];
+    while (queue.length) {
+      const dir = queue.shift()!;
+      let dirents;
+      try { dirents = await readdir(dir, { withFileTypes: true }); } catch { continue; }
+      for (const d of dirents) {
+        if (++scanned > SEARCH_MAX_SCAN) { truncated = true; break; }
+        if (d.isSymbolicLink()) continue;
+        const full = resolve(dir, d.name);
+        if (d.isDirectory()) { if (!SEARCH_SKIP_DIRS.has(d.name)) queue.push(full); continue; }
+        if (!d.isFile()) continue;
+        const rel = relative(root, full).split(sep).join("/");
+        if (inc && !inc.test(rel)) continue;
+        if (exc && exc.test(rel)) continue;
+        let info; try { info = await stat(full); } catch { continue; }
+        if (info.size > SEARCH_CONTENT_MAX_FILE) continue;
+        let text; try { text = await readFile(full, "utf8"); } catch { continue; }
+        if (text.includes("\0")) continue; // NUL byte ⇒ binary, skip
+        const lines = text.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]!;
+          if (matcher(line)) {
+            hits.push({ path: rel, line: i + 1, text: line.slice(0, 400) });
+            if (hits.length >= SEARCH_CONTENT_MAX_HITS) { truncated = true; break; }
+          }
+        }
+        if (truncated) break;
+      }
+      if (truncated) break;
+    }
+    return { workspace, query, matches: [], hits, truncated };
   }
 
   async gitDiff(workspace: string, relPath?: string): Promise<WorkspaceDiff> {
@@ -319,4 +426,43 @@ export class WorkspaceFs {
     }
     return ctx;
   }
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+/** Build a path/name matcher for name-mode search. */
+function buildMatcher(query: string, opts: SearchOptions): (s: string) => boolean {
+  return buildLineMatcher(query, opts);
+}
+/** Build a per-line/string matcher honoring regex/wholeWord/matchCase. In non-regex
+ *  mode it's a substring test; wholeWord wraps with \b boundaries. */
+function buildLineMatcher(query: string, opts: SearchOptions): (s: string) => boolean {
+  const flags = opts.matchCase ? "" : "i";
+  let pattern: string;
+  if (opts.regex) pattern = query;
+  else pattern = escapeRe(query);
+  if (opts.wholeWord) pattern = `\\b${pattern}\\b`;
+  let re: RegExp | null = null;
+  try { re = new RegExp(pattern, flags); } catch { re = null; }
+  if (!re) {
+    // Invalid user regex → fall back to case-adjusted substring so search never throws.
+    const needle = opts.matchCase ? query : query.toLowerCase();
+    return (s) => (opts.matchCase ? s : s.toLowerCase()).includes(needle);
+  }
+  return (s) => re!.test(s);
+}
+/** Minimal glob → RegExp for include/exclude (supports **, *, ?). Anchored full-match. */
+function globToRegExp(glob: string): RegExp {
+  let re = "^";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") { re += ".*"; i++; if (glob[i + 1] === "/") i++; }
+      else re += "[^/]*";
+    } else if (c === "?") re += "[^/]";
+    else re += escapeRe(c!);
+  }
+  re += "$";
+  try { return new RegExp(re); } catch { return /$^/; }
 }

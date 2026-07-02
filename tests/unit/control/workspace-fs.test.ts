@@ -81,19 +81,55 @@ describe("WorkspaceFs listing & reading", () => {
 
 describe("WorkspaceFs search", () => {
   test("finds files by case-insensitive path substring", async () => {
-    const r = await fs.search("ws", "A.TS");
+    const r = await fs.search("ws", { query: "A.TS" });
     expect(r.matches).toContain("src/a.ts");
     expect(r.truncated).toBe(false);
   });
 
   test("returns no matches for an empty or unmatched query", async () => {
-    expect((await fs.search("ws", "")).matches).toEqual([]);
-    expect((await fs.search("ws", "zzz-nope")).matches).toEqual([]);
+    expect((await fs.search("ws", { query: "" })).matches).toEqual([]);
+    expect((await fs.search("ws", { query: "zzz-nope" })).matches).toEqual([]);
   });
 
   test("does not follow a symlink that escapes the root", async () => {
     // `escape` points outside; its `secret.txt` must never appear in results.
-    const r = await fs.search("ws", "secret");
+    const r = await fs.search("ws", { query: "secret" });
+    expect(r.matches).toEqual([]);
+  });
+});
+
+describe("WorkspaceFs search: modes + flags", () => {
+  test("name mode: regex + include filter on relative path", async () => {
+    const r = await fs.search("ws", { query: "\\.ts$", mode: "name", regex: true });
+    expect(r.matches).toContain("src/a.ts");
+    expect(r.matches.every((m) => m.endsWith(".ts"))).toBe(true);
+    expect(r.hits).toEqual([]);
+  });
+
+  test("name mode: exclude glob drops matches", async () => {
+    const r = await fs.search("ws", { query: "a", mode: "name", exclude: "src/**" });
+    expect(r.matches.some((m) => m.startsWith("src/"))).toBe(false);
+  });
+
+  test("content mode: finds a line and returns path/line/text", async () => {
+    const r = await fs.search("ws", { query: "export const a", mode: "content" });
+    const hit = r.hits.find((h) => h.path === "src/a.ts");
+    expect(hit).toBeDefined();
+    expect(hit!.line).toBe(1);
+    expect(hit!.text).toContain("export const a");
+    expect(r.matches).toEqual([]);
+  });
+
+  test("content mode: case-sensitive miss vs case-insensitive hit", async () => {
+    const sensitive = await fs.search("ws", { query: "EXPORT", mode: "content", matchCase: true });
+    expect(sensitive.hits.length).toBe(0);
+    const insensitive = await fs.search("ws", { query: "EXPORT", mode: "content", matchCase: false });
+    expect(insensitive.hits.length).toBeGreaterThan(0);
+  });
+
+  test("empty query returns nothing", async () => {
+    const r = await fs.search("ws", { query: "   ", mode: "content" });
+    expect(r.hits).toEqual([]);
     expect(r.matches).toEqual([]);
   });
 });
