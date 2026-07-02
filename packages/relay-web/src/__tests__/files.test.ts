@@ -57,7 +57,7 @@ describe("files store", () => {
     await s.selectWorkspace("i1", "ws");
     rpc.mockResolvedValueOnce({ workspace: "ws", query: "a.ts", matches: ["src/a.ts"], truncated: false });
     await s.search("a.ts");
-    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "a.ts" });
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "a.ts", mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "", path: "" });
     expect(s.results).toEqual(["src/a.ts"]);
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
     await s.openFile("src/a.ts");
@@ -195,5 +195,41 @@ describe("files store", () => {
     const s = useFilesStore();
     await s.selectWorkspace("i1", "ws");
     expect(s.error).toBe("path-escapes-workspace");
+  });
+});
+
+describe("files store: tree + advanced search", () => {
+  it("listTree caches a directory layer and records root/sep", async () => {
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [{ name: "src", type: "dir" }], root: "/abs/ws", sep: "/" });
+    const s = useFilesStore();
+    s.instanceId = "i1"; s.workspace = "ws";
+    await s.listTree("");
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.list", { workspace: "ws", path: "" });
+    expect(s.tree[""].map((e) => e.name)).toEqual(["src"]);
+    expect(s.root).toBe("/abs/ws");
+    expect(s.absPath("src/a.ts")).toBe("/abs/ws/src/a.ts");
+  });
+
+  it("toggleExpand lazy-loads then toggles without refetching", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1"; s.workspace = "ws";
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "src", entries: [{ name: "a.ts", type: "file", size: 3 }], root: "/abs/ws", sep: "/" });
+    await s.toggleExpand("src");
+    expect(s.expanded.has("src")).toBe(true);
+    expect(s.tree["src"].length).toBe(1);
+    rpc.mockClear();
+    await s.toggleExpand("src"); // collapse — no fetch
+    expect(s.expanded.has("src")).toBe(false);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("content search sends advanced options and fills hits", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1"; s.workspace = "ws";
+    s.searchOpts.mode = "content"; s.searchOpts.regex = true; s.searchOpts.include = "**/*.ts";
+    rpc.mockResolvedValueOnce({ workspace: "ws", query: "foo", matches: [], hits: [{ path: "a.ts", line: 2, text: "foo" }], truncated: false });
+    await s.search("foo");
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "foo", mode: "content", matchCase: false, wholeWord: false, regex: true, include: "**/*.ts", exclude: "", path: "" });
+    expect(s.hits[0].line).toBe(2);
   });
 });
