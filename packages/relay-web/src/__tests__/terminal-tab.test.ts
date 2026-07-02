@@ -201,22 +201,41 @@ describe("TerminalTab", () => {
     expect(sendWebClientMessage).not.toHaveBeenCalled(); // local scroll, nothing sent to PTY
   });
 
-  it("touch drag scrolls the viewport (finger up -> toward newer) without focusing", async () => {
+  // The mount uses a mocked adapter (no real ghostty), so tap-to-focus suppression is
+  // asserted via stopPropagation on the touchend — the actual mechanism that prevents
+  // ghostty's canvas touchend handler (an ancestor-capture vs descendant-bubble race) from
+  // focusing and popping the keyboard on a drag.
+  function touchOn(el: HTMLElement, type: string, y: number) {
+    const e = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(e, "touches", { value: [{ clientX: 0, clientY: y }], configurable: true });
+    const stop = vi.spyOn(e, "stopPropagation");
+    el.dispatchEvent(e);
+    return stop;
+  }
+
+  it("touch drag scrolls (finger up -> toward newer) and stops propagation to suppress focus", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
     const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
     Object.defineProperty(el, "clientHeight", { value: 240, configurable: true }); // rows 24 -> lineH 10
-    adapter.scrollLines.mockClear(); adapter.focus.mockClear();
-    const touch = (type: string, y: number) => {
-      const e = new Event(type, { bubbles: true, cancelable: true });
-      Object.defineProperty(e, "touches", { value: [{ clientX: 0, clientY: y }], configurable: true });
-      el.dispatchEvent(e);
-    };
-    touch("touchstart", 100);
-    touch("touchmove", 60); // dy=-40, lineH=10 -> 4 lines toward newer
-    touch("touchend", 60);
+    adapter.scrollLines.mockClear();
+    touchOn(el, "touchstart", 100);
+    touchOn(el, "touchmove", 60); // dy=-40, lineH=10 -> 4 lines toward newer
+    const endStop = touchOn(el, "touchend", 60);
     expect(adapter.scrollLines).toHaveBeenCalledWith(4);
-    expect(adapter.focus).not.toHaveBeenCalled(); // a drag must not raise the keyboard
+    expect(endStop).toHaveBeenCalled(); // drag suppresses ghostty's tap-to-focus
+  });
+
+  it("a plain touch tap does NOT stop propagation (falls through to focus/keyboard)", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
+    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true });
+    adapter.scrollLines.mockClear();
+    touchOn(el, "touchstart", 100);
+    const endStop = touchOn(el, "touchend", 100); // no movement → tap
+    expect(adapter.scrollLines).not.toHaveBeenCalled();
+    expect(endStop).not.toHaveBeenCalled(); // tap reaches ghostty → focuses/raises keyboard
   });
 
   it("Copy writes the terminal selection to the clipboard; no-op when empty", async () => {

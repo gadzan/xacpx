@@ -155,7 +155,10 @@ const keyboardInset = ref(0);
 function updateKeyboardInset() {
   const vv = typeof window !== "undefined" ? window.visualViewport : null;
   if (!vv) return;
-  keyboardInset.value = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  const raw = Math.round(window.innerHeight - vv.height - vv.offsetTop);
+  // Ignore small deltas (e.g. a desktop horizontal scrollbar makes innerHeight exceed
+  // visualViewport.height by ~15px); only a real on-screen keyboard clears this bar.
+  keyboardInset.value = raw > 60 ? raw : 0;
 }
 
 // --- Mobile: drag to scroll, tap to focus (raise the keyboard) ----------------------
@@ -175,6 +178,7 @@ function onTouchMove(e: TouchEvent) {
   touchMoved = true;
   e.preventDefault(); e.stopPropagation(); // suppress page scroll + ghostty's tap-to-focus
   const lineH = host.value.clientHeight / Math.max(1, adapter.rows());
+  if (!(lineH > 0)) return; // not laid out yet — avoid div-by-zero → Infinity scroll
   touchResidual += t.clientY - touchLastY;
   touchLastY = t.clientY;
   const lines = Math.trunc(touchResidual / lineH);
@@ -282,7 +286,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-bg" data-test="terminal-center">
+  <div class="flex h-full flex-col bg-bg" data-test="terminal-center"
+       :style="keyboardInset ? { paddingBottom: `${keyboardInset}px` } : undefined">
     <!-- header -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
       <button data-test="term-close" :aria-label="$t('terminal.close')"
@@ -306,10 +311,10 @@ onBeforeUnmount(() => {
     <div v-else-if="status === 'exited'" class="p-4 text-sm text-fg-muted">{{ $t("terminal.exited", { code: errorKey }) }}</div>
     <div ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
 
-    <!-- shortcut bar — translated up by the on-screen keyboard height so it stays visible -->
+    <!-- shortcut bar — the root's padding-bottom (= keyboard height) lifts the whole pane,
+         so both this bar and the terminal's prompt row stay above the on-screen keyboard. -->
     <div v-if="keybarVisible" data-test="keybar"
-         :style="keyboardInset ? { transform: `translateY(-${keyboardInset}px)` } : undefined"
-         class="relative z-10 flex shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-surface px-2 py-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] thin-scroll">
+         class="flex shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-surface px-2 py-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] thin-scroll">
       <button data-test="key-esc" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b')">Esc</button>
       <button data-test="key-tab" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\t')">Tab</button>
       <button data-test="key-ctrl" :aria-pressed="ctrlArmed"
