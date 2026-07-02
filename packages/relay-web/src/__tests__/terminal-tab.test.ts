@@ -246,15 +246,20 @@ describe("TerminalTab", () => {
       const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
       await tick();
       const center = () => w.find('[data-test="terminal-center"]').attributes("style") ?? "";
+      const keybar = () => w.find('[data-test="keybar"]').attributes("style") ?? "";
       const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
       // Unfocused: a large innerHeight−visualViewport delta is browser chrome, NOT a keyboard → no inset.
       expect(center()).not.toContain("padding-bottom");
       el.dispatchEvent(new Event("focusin", { bubbles: true }));
       await tick();
       expect(center()).toContain("padding-bottom: 400px");
+      // Keyboard open → the keybar drops its home-indicator safe-area padding so it sits
+      // flush on the keyboard instead of leaving a gap.
+      expect(keybar()).toContain("padding-bottom: 0.375rem");
       el.dispatchEvent(new Event("focusout", { bubbles: true }));
       await tick();
       expect(center()).not.toContain("padding-bottom");
+      expect(keybar()).not.toContain("padding-bottom");
     } finally {
       Reflect.deleteProperty(window, "visualViewport");
       Object.defineProperty(window, "innerHeight", { value: 768, configurable: true });
