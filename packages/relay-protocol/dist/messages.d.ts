@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, OrchestrationTaskDto, ScheduledTaskDto, SessionDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledTaskDto, SessionDto, WorkspaceDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -282,6 +282,10 @@ export interface FsListResult {
     /** Normalized path relative to the workspace root ("" = root). */
     path: string;
     entries: FsEntryDto[];
+    /** Absolute realpath'd workspace root on the connector host. */
+    root: string;
+    /** Host path separator. */
+    sep: "/" | "\\";
 }
 export interface FsReadPayload {
     workspace: string;
@@ -324,14 +328,28 @@ export interface FsDiffResult {
 }
 export interface FsSearchPayload {
     workspace: string;
-    /** Case-insensitive substring matched against each file's relative path. */
+    /** Case-insensitive substring matched against each file's relative path (name mode)
+     *  or file content (content mode). */
     query: string;
+    /** Search target; defaults to "name" when omitted. */
+    mode?: "name" | "content";
+    matchCase?: boolean;
+    wholeWord?: boolean;
+    regex?: boolean;
+    /** Glob to restrict matches (relative to workspace root). */
+    include?: string;
+    /** Glob to drop matches. */
+    exclude?: string;
+    /** Base directory (relative) to scope the search. */
+    path?: string;
 }
 export interface FsSearchResult {
     workspace: string;
     query: string;
-    /** Matching file paths relative to the workspace root. */
+    /** Matching file paths relative to the workspace root (name mode). */
     matches: string[];
+    /** Content matches (content mode). */
+    hits: FsSearchHitDto[];
     /** True when the result cap was hit. */
     truncated: boolean;
 }
