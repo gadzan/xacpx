@@ -32,6 +32,11 @@ export declare const MSG: {
     readonly fsRead: "control.fs.read";
     readonly fsDiff: "control.fs.diff";
     readonly fsSearch: "control.fs.search";
+    readonly fsCreate: "control.fs.create";
+    readonly fsRename: "control.fs.rename";
+    readonly fsDelete: "control.fs.delete";
+    readonly fsCopy: "control.fs.copy";
+    readonly fsDownload: "control.fs.download";
     readonly upload: "control.upload";
     readonly sessionModelGet: "control.session.model.get";
     readonly sessionModelSet: "control.session.model.set";
@@ -352,6 +357,37 @@ export interface FsSearchResult {
     hits: FsSearchHitDto[];
     /** True when the result cap was hit. */
     truncated: boolean;
+}
+export interface FsCreatePayload {
+    workspace: string;
+    path: string;
+    kind: "file" | "dir";
+}
+export interface FsRenamePayload {
+    workspace: string;
+    path: string;
+    newName: string;
+}
+export interface FsDeletePayload {
+    workspace: string;
+    path: string;
+}
+export interface FsCopyPayload {
+    workspace: string;
+    path: string;
+}
+export interface FsDownloadPayload {
+    workspace: string;
+    path: string;
+}
+export interface FsMutateResult {
+    path: string;
+}
+export interface FsDownloadResult {
+    path: string;
+    base64: string;
+    size: number;
+    mimeType: string;
 }
 export interface SessionModelGetPayload {
     chatKey: string;
