@@ -58,12 +58,14 @@ let epoch = 0;
 
 // ESC built from a char code — a literal escape byte in this .vue gets mangled on save.
 const ESC = String.fromCharCode(0x1b);
-// Named CSI sequences for the shortcut bar (arrows stay inline in the template).
+// Named sequences for the shortcut bar (arrows stay inline in the template).
+// Home/End are sent as Ctrl-A / Ctrl-E (emacs beginning/end-of-line): a bare zsh/bash
+// line editor leaves the raw Home/End escape sequences (ESC[H / ESC[F) unbound, but binds
+// Ctrl-A/Ctrl-E by default, so these actually move the cursor on the command line.
+// PgUp/PgDn are NOT here — they scroll the viewport locally (pageUp/pageDown below).
 const KEYS = {
-  home: ESC + "[H",
-  end: ESC + "[F",
-  pageUp: ESC + "[5~",
-  pageDown: ESC + "[6~",
+  home: String.fromCharCode(1),
+  end: String.fromCharCode(5),
   insert: ESC + "[2~",
   enter: "\r",
 };
@@ -136,6 +138,58 @@ async function copySelection() {
   adapter?.focus();
 }
 
+// PgUp/PgDn scroll the local viewport by ~one screen (ghostty scrollLines: + = toward the
+// newest/bottom rows). This is what "page up/down" means for a scrollback pager, rather
+// than sending ESC[5~/ESC[6~ which a shell ignores. No-op in alt-screen (no scrollback).
+function pageLines(): number {
+  return Math.max(1, (adapter?.rows() ?? 24) - 1);
+}
+function pageUp() { adapter?.scrollLines(-pageLines()); }
+function pageDown() { adapter?.scrollLines(pageLines()); }
+
+// --- Mobile: keep the shortcut bar above the on-screen keyboard ---------------------
+// The soft keyboard doesn't shrink the layout viewport on iOS, so a bottom-anchored bar
+// ends up hidden behind it. visualViewport tells us the covered height; we translate the
+// bar up by that much so it floats on top of the keyboard.
+const keyboardInset = ref(0);
+function updateKeyboardInset() {
+  const vv = typeof window !== "undefined" ? window.visualViewport : null;
+  if (!vv) return;
+  const raw = Math.round(window.innerHeight - vv.height - vv.offsetTop);
+  // Ignore small deltas (e.g. a desktop horizontal scrollbar makes innerHeight exceed
+  // visualViewport.height by ~15px); only a real on-screen keyboard clears this bar.
+  keyboardInset.value = raw > 60 ? raw : 0;
+}
+
+// --- Mobile: drag to scroll, tap to focus (raise the keyboard) ----------------------
+// ghostty only wires wheel (desktop) + a touchend that focuses; there's no touch scroll,
+// and every tap raises the keyboard. We add touch scrolling and only focus on a real tap.
+let touchStartY = 0, touchStartX = 0, touchLastY = 0, touchResidual = 0, touchMoved = false;
+function onTouchStart(e: TouchEvent) {
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  touchStartY = touchLastY = t.clientY; touchStartX = t.clientX;
+  touchResidual = 0; touchMoved = false;
+}
+function onTouchMove(e: TouchEvent) {
+  if (e.touches.length !== 1 || !adapter || !host.value) return;
+  const t = e.touches[0];
+  if (!touchMoved && Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY) < 8) return;
+  touchMoved = true;
+  e.preventDefault(); e.stopPropagation(); // suppress page scroll + ghostty's tap-to-focus
+  const lineH = host.value.clientHeight / Math.max(1, adapter.rows());
+  if (!(lineH > 0)) return; // not laid out yet — avoid div-by-zero → Infinity scroll
+  touchResidual += t.clientY - touchLastY;
+  touchLastY = t.clientY;
+  const lines = Math.trunc(touchResidual / lineH);
+  if (lines !== 0) { adapter.scrollLines(-lines); touchResidual -= lines * lineH; }
+}
+function onTouchEnd(e: TouchEvent) {
+  // A drag already scrolled — stop ghostty's touchend from focusing (which pops the
+  // keyboard). A plain tap falls through to ghostty and focuses as expected.
+  if (touchMoved) { e.preventDefault(); e.stopPropagation(); }
+}
+
 // Fit the ghostty grid to the host using the adapter's canvas-derived cell size, then tell
 // the PTY. Retries via rAF until the canvas has a measurable size. Epoch-guarded so a
 // teardown/supersede stops the retry loop.
@@ -196,16 +250,44 @@ async function start() {
   }
 }
 
-onMounted(() => void start());
+// Touch listeners go on the host in CAPTURE phase so they run before ghostty's own
+// bubble-phase touchend — letting a drag stopPropagation() to suppress its tap-to-focus.
+function attachTouch() {
+  const el = host.value;
+  if (!el) return;
+  el.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+  el.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
+  el.addEventListener("touchend", onTouchEnd, { capture: true });
+}
+function detachTouch() {
+  const el = host.value;
+  if (!el) return;
+  el.removeEventListener("touchstart", onTouchStart, { capture: true });
+  el.removeEventListener("touchmove", onTouchMove, { capture: true });
+  el.removeEventListener("touchend", onTouchEnd, { capture: true });
+}
+
+onMounted(() => {
+  void start();
+  attachTouch();
+  window.visualViewport?.addEventListener("resize", updateKeyboardInset);
+  window.visualViewport?.addEventListener("scroll", updateKeyboardInset);
+});
 watch(() => [props.instanceId, props.sessionAlias], () => void start());
 // Recolor the live terminal when the app toggles light/dark so it never leaves a
 // mismatched background band around the grid.
 watch(() => theme.mode, () => adapter?.setTheme(currentTheme()));
-onBeforeUnmount(teardown);
+onBeforeUnmount(() => {
+  detachTouch();
+  window.visualViewport?.removeEventListener("resize", updateKeyboardInset);
+  window.visualViewport?.removeEventListener("scroll", updateKeyboardInset);
+  teardown();
+});
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-bg" data-test="terminal-center">
+  <div class="flex h-full flex-col bg-bg" data-test="terminal-center"
+       :style="keyboardInset ? { paddingBottom: `${keyboardInset}px` } : undefined">
     <!-- header -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
       <button data-test="term-close" :aria-label="$t('terminal.close')"
@@ -227,9 +309,10 @@ onBeforeUnmount(teardown);
     <div v-if="!props.sessionAlias" class="p-4 text-sm text-fg-muted">{{ $t("terminal.noSession") }}</div>
     <div v-else-if="status === 'error'" class="p-4 text-sm text-fg-muted">{{ $t(errorKey) }}</div>
     <div v-else-if="status === 'exited'" class="p-4 text-sm text-fg-muted">{{ $t("terminal.exited", { code: errorKey }) }}</div>
-    <div ref="host" class="term-host flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
+    <div ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
 
-    <!-- shortcut bar -->
+    <!-- shortcut bar — the root's padding-bottom (= keyboard height) lifts the whole pane,
+         so both this bar and the terminal's prompt row stay above the on-screen keyboard. -->
     <div v-if="keybarVisible" data-test="keybar"
          class="flex shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-surface px-2 py-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] thin-scroll">
       <button data-test="key-esc" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b')">Esc</button>
@@ -254,8 +337,8 @@ onBeforeUnmount(teardown);
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <button data-test="key-home" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.home)">Home</button>
       <button data-test="key-end" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.end)">End</button>
-      <button data-test="key-pageup" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.pageUp)">PgUp</button>
-      <button data-test="key-pagedown" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.pageDown)">PgDn</button>
+      <button data-test="key-pageup" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageUp">PgUp</button>
+      <button data-test="key-pagedown" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageDown">PgDn</button>
       <button data-test="key-insert" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.insert)">Ins</button>
       <button data-test="key-enter" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.enter)">Enter</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
