@@ -115,6 +115,9 @@ export interface ControlServiceDeps {
     remove(name: string): Promise<void>;
   };
   uploadStore: UploadStore;
+  // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
+  terminal: import("./terminal-service").TerminalService;
+  terminalEnabled: () => boolean;
 }
 
 export interface ControlPromptInput {
@@ -836,6 +839,26 @@ export class ControlService {
       chunks.push(response.text);
     }
     return chunks.join("\n");
+  }
+
+  /** Open an interactive terminal in the session's workspace cwd. Rejected when terminal is disabled. */
+  async createTerminal(chatKey: string, sessionAlias: string, cols: number, rows: number): Promise<{ terminalId: string }> {
+    if (!this.deps.terminalEnabled()) throw new Error("terminal-disabled");
+    const session = await this.resolveControlSession(chatKey, sessionAlias);
+    if (!session) throw new Error("session-not-found");
+    return this.deps.terminal.create({ cwd: session.cwd, cols, rows });
+  }
+
+  writeTerminal(terminalId: string, data: string): void {
+    this.deps.terminal.write(terminalId, data);
+  }
+
+  resizeTerminal(terminalId: string, cols: number, rows: number): void {
+    this.deps.terminal.resize(terminalId, cols, rows);
+  }
+
+  closeTerminal(terminalId: string): void {
+    this.deps.terminal.close(terminalId);
   }
 }
 

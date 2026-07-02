@@ -224,6 +224,11 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
       return { ok: true };
     }
+    case MSG.terminalCreate: {
+      const input = payload as { chatKey: string; sessionAlias: string; cols?: number; rows?: number };
+      if (!input.sessionAlias) return errorPayload("bad-request", "sessionAlias is required");
+      return await control.createTerminal(input.chatKey, input.sessionAlias, input.cols ?? 80, input.rows ?? 24);
+    }
     case MSG.upload: {
       const input = payload as UploadPayload;
       if (!input.filename || !input.content || !input.mimeType) {
@@ -264,6 +269,25 @@ function historyMessagesToRows(
       : undefined;
     return { direction: "out" as const, text: m.text, ...(structured ? { structured } : {}) };
   });
+}
+
+/** Routes hub→connector downward terminal event frames to the ControlService. Fire-and-forget. */
+export function dispatchControlEvent(control: ControlService, envelope: RelayEnvelope): void {
+  const p = (envelope.payload ?? {}) as { terminalId?: string; data?: string; cols?: number; rows?: number };
+  if (!p.terminalId) return;
+  switch (envelope.type) {
+    case MSG.terminalInput:
+      if (typeof p.data === "string") control.writeTerminal(p.terminalId, p.data);
+      return;
+    case MSG.terminalResize:
+      if (typeof p.cols === "number" && typeof p.rows === "number") control.resizeTerminal(p.terminalId, p.cols, p.rows);
+      return;
+    case MSG.terminalClose:
+      control.closeTerminal(p.terminalId);
+      return;
+    default:
+      return;
+  }
 }
 
 export function subscribeControlEvents(
