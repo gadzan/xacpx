@@ -228,3 +228,51 @@ describe("FilesPanel navigation rail", () => {
     expect(loadDiff).not.toHaveBeenCalled();
   });
 });
+
+describe("FilesPanel content search results", () => {
+  function mountWithHits(hits: { path: string; line: number; text: string }[], query = "foo") {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    // Changing searchOpts triggers the re-search watcher; stub it so it can't overwrite our fixture.
+    vi.spyOn(files, "search").mockResolvedValue();
+    files.searchOpts.mode = "content";
+    files.query = query;
+    files.hits = hits as never;
+    return { w, files };
+  }
+
+  it("renders each hit on two lines (path:line, then the matched text) with the query highlighted", async () => {
+    const { w } = mountWithHits([{ path: "src/a.ts", line: 12, text: "const foo = bar(foo)" }]);
+    await flushPromises();
+    const hit = w.find('[data-test="fs-hit"]');
+    expect(hit.exists()).toBe(true);
+    expect(hit.text()).toContain("src/a.ts");
+    expect(hit.text()).toContain(":12");
+    // Two occurrences of "foo" get wrapped in highlight marks.
+    const marks = hit.findAll('[data-test="hit-mark"]');
+    expect(marks.length).toBe(2);
+    expect(marks.every((m) => m.text() === "foo")).toBe(true);
+  });
+
+  it("shows only the first page (10) and reveals more via the Show-more button", async () => {
+    const hits = Array.from({ length: 15 }, (_, i) => ({ path: `f${i}.ts`, line: i + 1, text: `foo ${i}` }));
+    const { w } = mountWithHits(hits);
+    await flushPromises();
+    expect(w.findAll('[data-test="fs-hit"]').length).toBe(10);
+    const more = w.find('[data-test="fs-more"]');
+    expect(more.exists()).toBe(true);
+    await more.trigger("click");
+    expect(w.findAll('[data-test="fs-hit"]').length).toBe(15);
+    expect(w.find('[data-test="fs-more"]').exists()).toBe(false);
+  });
+
+  it("does not throw on an invalid highlight regex (renders the line unhighlighted)", async () => {
+    const { w } = mountWithHits([{ path: "a.ts", line: 1, text: "a(b" }], "(");
+    const files = useFilesStore();
+    files.searchOpts.regex = true;
+    await flushPromises();
+    const hit = w.find('[data-test="fs-hit"]');
+    expect(hit.text()).toContain("a(b");
+    expect(hit.findAll('[data-test="hit-mark"]').length).toBe(0);
+  });
+});
