@@ -217,6 +217,8 @@ export default {
     offline: "离线",
     loading: "加载中…",
     noSessions: "暂无会话",
+    showMoreSessions: "再显示 {n} 个",
+    collapseSessions: "收起",
     deleteSessionTitle: "删除会话？",
     deleteSessionBody: "“{alias}” 将被永久删除，此操作无法撤销。",
     manageTitle: "管理 · {name}",
@@ -321,6 +323,11 @@ export default {
   },
   taskPanel: {
     noSession: "未选择会话。",
+  },
+  center: {
+    chat: "会话",
+    terminal: "终端",
+    closeTab: "关闭标签",
   },
   terminal: {
     title: "终端",

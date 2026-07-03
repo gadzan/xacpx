@@ -6,7 +6,7 @@ import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
-import { useFilesStore } from "../stores/files";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
@@ -14,6 +14,7 @@ import FileViewer from "../components/FileViewer.vue";
 import TaskPanel from "../components/TaskPanel.vue";
 import FilesPanel from "../components/FilesPanel.vue";
 import TerminalTab from "../components/TerminalTab.vue";
+import CenterTabStrip from "../components/CenterTabStrip.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ActionToast from "../components/ActionToast.vue";
 import ToastHost from "../components/ToastHost.vue";
@@ -28,11 +29,11 @@ import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, P
 const theme = useThemeStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
-const files = useFilesStore();
 const tasks = useTasksStore();
 const terminals = useTerminalStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
+const centerTabs = useCenterTabsStore();
 let disconnect: (() => void) | null = null;
 
 // Mobile-only drawer state. On desktop (lg:) both panels are static columns and
@@ -40,7 +41,6 @@ let disconnect: (() => void) | null = null;
 const leftOpen = ref(false);
 const rightOpen = ref(false);
 const rightTab = ref<"tasks" | "files">("tasks");
-const terminalOpen = ref(false);
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
@@ -65,10 +65,10 @@ const swipe = createEdgeSwipe({
   closeLeft: () => { leftOpen.value = false; },
   closeRight: () => { rightOpen.value = false; },
 });
-// Mobile: "Back" from the file viewer returns to the FILE LIST (reopen the Files drawer),
-// not the conversation. Clearing the open file reverts the center to ChatPane underneath.
+// Mobile: "Back" from the file viewer returns to the FILE LIST (reopen the Files drawer)
+// so the user can pick another file. It does NOT close the underlying file/diff tab — the
+// tab stays open (and active) in the per-session tab strip; the drawer just overlays it.
 function backToFileList() {
-  closeFileViewer();
   openRight("files");
 }
 
@@ -125,18 +125,60 @@ function onDesktopChange(e: MediaQueryListEvent | MediaQueryList) {
   isDesktop.value = e.matches;
 }
 
-// A file/diff opened from the rail takes over the center column (FileViewer); Back
-// returns to the conversation. On mobile, opening one also closes the right drawer so
-// the viewer is actually visible.
-const viewingFile = computed(() => !!(files.file || files.diffPath));
-function closeFileViewer() {
-  files.file = null;
-  files.diffPath = null;
+// Per-session center tab strip: the session key the tab strip / panes below key off.
+// Both instanceId and sessionAlias must be set (a fresh/deselected pane has neither).
+const currentKey = computed(() => (chat.instanceId && chat.sessionAlias ? sessionKey(chat.instanceId, chat.sessionAlias) : null));
+
+/** Split a `${instanceId}::${alias}` session key back into its parts. */
+function keyInstance(key: string): string {
+  const idx = key.indexOf("::");
+  return idx === -1 ? key : key.slice(0, idx);
 }
-watch(viewingFile, (v) => { if (v) { rightOpen.value = false; terminalOpen.value = false; } });
-watch(terminalOpen, (v) => { if (v) { files.file = null; files.diffPath = null; rightOpen.value = false; } });
-// 会话被清空时自动收起终端（否则会显示无会话态且开关已禁用）。
-watch(() => chat.sessionAlias, (a) => { if (!a) terminalOpen.value = false; });
+function keyAlias(key: string): string {
+  const idx = key.indexOf("::");
+  return idx === -1 ? "" : key.slice(idx + 2);
+}
+// Resolve a session key's workspace via the instances store — mirrors FilesPanel's
+// `activeWorkspace` lookup, generalized to any (not just the current) session so hidden
+// panes for other sessions can still load their own content. "" when unresolvable (e.g.
+// the instance hasn't loaded its session list yet).
+function keyWorkspace(key: string): string {
+  const inst = instances.byId(keyInstance(key));
+  return inst?.sessions.find((s) => s.alias === keyAlias(key))?.workspace ?? "";
+}
+
+// Prune center-tabs whose session has disappeared OUT-OF-BAND (deleted from the CLI /
+// WeChat / another browser tab). `InstanceTree` prunes on local archive/delete, but a
+// server-driven removal only reloads `instances` (via applyEvent → loadSessions) — nothing
+// else tells centerTabs, so that session's FileViewer/TerminalTab panes above would stay
+// mounted (and any PTY alive) forever. Only consider an instance's session list authoritative
+// once it has actually loaded (`sessionsLoaded`): while a fetch is still in flight, a key
+// that isn't in `sessions` yet hasn't necessarily been removed, it just hasn't arrived —
+// pruning then would race the load and drop a still-valid tab.
+const validSessionKeys = computed(() => {
+  const keys = new Set<string>();
+  for (const inst of instances.instances) {
+    if (!inst.sessionsLoaded) continue;
+    for (const s of inst.sessions) keys.add(sessionKey(inst.id, s.alias));
+  }
+  return keys;
+});
+function reconcileCenterTabs() {
+  const valid = validSessionKeys.value;
+  const openKeys = new Set(centerTabs.allOpenTabs().map((t) => t.key));
+  for (const key of openKeys) {
+    const inst = instances.byId(keyInstance(key));
+    if (inst?.sessionsLoaded && !valid.has(key)) centerTabs.clearSession(key);
+  }
+}
+watch(() => instances.instances, reconcileCenterTabs, { deep: true });
+
+// A file/diff/terminal tab opened for the current session takes over the center column.
+// On mobile, opening one also closes the right drawer so the pane is actually visible.
+watch(
+  () => (currentKey.value ? centerTabs.activeFor(currentKey.value) : "chat"),
+  (active) => { if (active !== "chat") rightOpen.value = false; },
+);
 
 // Cmd/Ctrl+K command palette.
 const paletteOpen = ref(false);
@@ -240,8 +282,8 @@ onUnmounted(() => {
           :title='$t("terminal.title")'
           :disabled="!chat.sessionAlias"
           class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
-          :class="terminalOpen ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
-          @click="terminalOpen = !terminalOpen"
+          :class="currentKey && centerTabs.activeFor(currentKey) === 'terminal' ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
+          @click="currentKey && centerTabs.openTerminal(currentKey)"
         >
           <SquareTerminal :size="15" />
         </button>
@@ -307,21 +349,41 @@ onUnmounted(() => {
               class="hidden w-5 shrink-0 items-center justify-center border-r border-border bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
               @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
 
-      <!-- Center: chat, always full width of the remaining space. -->
+      <!-- Center: per-session tab strip (pinned Chat + closable file/diff/terminal tabs),
+           always full width of the remaining space. -->
       <!-- min-w-0: let this flex child shrink to its share instead of growing to its
            widest content (a tool card's command/diff line), which would otherwise push
            the right panel off-screen. Wide tool content scrolls/wraps within instead. -->
-      <!-- ChatPane stays mounted AND laid out (never display:none) — a file viewer just
-           overlays it. v-if/v-show would unmount or display:none the conversation, which
-           loses its scroll position and forces a full re-layout on return (visible jank).
-           Overlaying keeps the scroller warm, so Back is an instant repaint. `inert`
-           disables the occluded conversation for focus/interaction. -->
+      <!-- ChatPane is a SINGLE always-mounted instance bound to the current session,
+           toggled with `v-show` (never `v-if`) — so switching tabs only flips CSS
+           display, it never destroys/recreates the component, which is what preserves
+           its scroll position and message-list state across a tab switch. `inert`
+           additionally disables the occluded conversation for focus/interaction while a
+           tab is active. Every OPEN file/diff/terminal tab across ALL sessions gets its
+           own always-mounted pane too (so a background session's terminal PTY / a file's
+           scroll stay warm); `v-show` reveals only the current session's active tab. A
+           pane only ever unmounts when its tab is closed (closeTab) or its session is
+           cleared (clearSession). -->
       <div data-test="column" class="relative flex min-w-0 flex-1 flex-col">
-        <ChatPane class="absolute inset-0" :inert="viewingFile || terminalOpen" @show-files="rightTab = 'files'" />
-        <FileViewer v-if="viewingFile" class="absolute inset-0 z-10" @back="backToFileList" @close="closeFileViewer" />
-        <TerminalTab v-if="terminalOpen" class="absolute inset-0 z-20"
-                     :instance-id="chat.instanceId ?? ''" :session-alias="chat.sessionAlias ?? ''"
-                     @close="terminalOpen = false" />
+        <CenterTabStrip v-if="currentKey" :session-key="currentKey" />
+        <div class="relative min-h-0 flex-1">
+          <ChatPane class="absolute inset-0"
+                    :inert="!!currentKey && centerTabs.activeFor(currentKey) !== 'chat'"
+                    v-show="!currentKey || centerTabs.activeFor(currentKey) === 'chat'"
+                    @show-files="rightTab = 'files'" />
+          <template v-for="{ key, tab } in centerTabs.allOpenTabs()" :key="key + '|' + tab.id">
+            <FileViewer v-if="tab.kind === 'file' || tab.kind === 'diff'" class="absolute inset-0 z-10"
+                        v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
+                        :instance-id="keyInstance(key)" :workspace="keyWorkspace(key)"
+                        :path="tab.kind === 'file' ? tab.path : undefined"
+                        :diff-path="tab.kind === 'diff' ? tab.path : undefined"
+                        @close="centerTabs.closeTab(key, tab.id)" @back="backToFileList" />
+            <TerminalTab v-else-if="tab.kind === 'terminal'" class="absolute inset-0 z-20"
+                         v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
+                         :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"
+                         @close="centerTabs.closeTab(key, tab.id)" />
+          </template>
+        </div>
       </div>
 
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. On desktop its

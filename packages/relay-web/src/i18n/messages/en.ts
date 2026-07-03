@@ -219,6 +219,8 @@ export default {
     offline: "offline",
     loading: "loading…",
     noSessions: "no sessions yet",
+    showMoreSessions: "Show {n} more",
+    collapseSessions: "Collapse",
     deleteSessionTitle: "Delete session?",
     deleteSessionBody: "\"{alias}\" will be permanently removed. This can't be undone.",
     manageTitle: "Manage · {name}",
@@ -323,6 +325,11 @@ export default {
   },
   taskPanel: {
     noSession: "No session selected.",
+  },
+  center: {
+    chat: "Chat",
+    terminal: "Terminal",
+    closeTab: "Close tab",
   },
   terminal: {
     title: "Terminal",

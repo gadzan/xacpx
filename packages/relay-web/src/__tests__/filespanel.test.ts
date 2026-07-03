@@ -12,6 +12,7 @@ import FilesPanel from "../components/FilesPanel.vue";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 
 let pinia: ReturnType<typeof createPinia>;
 beforeEach(() => {
@@ -41,15 +42,33 @@ describe("FilesPanel navigation rail", () => {
     expect(label.text()).toContain("backend");
   });
 
-  it("opening a tree file routes it to the center viewer (clears any diff)", async () => {
+  it("opening a tree file clears the changed-file row highlight, not files.diffPath", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();
-    files.diffPath = "old/diff.ts"; // a stale diff selection
+    // Select a changed-file row first (sets the local highlight, per this component).
+    files.tab = "changes";
+    files.diff = { workspace: "ws", files: [{ path: "src/a.ts", status: " M" }], diff: "+x\n-y\n", truncated: false } as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="diff-file"]').trigger("click");
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+    // `files.diffPath` (the loaded-diff scope) is untouched by row selection — it's still
+    // whatever loadDiff() set it to (null here, since loadDiff was never actually called).
+    const diffPathBefore = files.diffPath;
+
+    files.tab = "files";
     files.tree[""] = [{ name: "a.ts", type: "file", size: 1 }] as never;
     await w.vm.$nextTick();
     await w.find('[data-test="tree-row"]').trigger("click");
-    // The diff selection is cleared so the center shows the freshly opened file, not a mix.
-    expect(files.diffPath).toBeNull();
+
+    // files.diffPath (load-scope) is untouched by opening a tree file.
+    expect(files.diffPath).toBe(diffPathBefore);
+    // The local row highlight is cleared — back on the Changes tab, the row is no longer highlighted.
+    files.tab = "changes";
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).not.toContain("bg-accent/10");
   });
 
   it("renders the tree root (no breadcrumb / up button)", async () => {
@@ -226,6 +245,168 @@ describe("FilesPanel navigation rail", () => {
     await flushPromises();
 
     expect(loadDiff).not.toHaveBeenCalled();
+  });
+});
+
+describe("FilesPanel center-tab routing", () => {
+  it("opening a tree file with a selected session opens a center file tab", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.tree[""] = [{ name: "a.ts", type: "file", size: 1 }] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="tree-row"]').trigger("click");
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "a.ts");
+    // The tree still renders (listing behavior unchanged).
+    expect(w.find('[data-test="tree-row"]').exists()).toBe(true);
+  });
+
+  it("opening a tree file with no selected session is a no-op for the center-tabs store", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.tree[""] = [{ name: "a.ts", type: "file", size: 1 }] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="tree-row"]').trigger("click");
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("clicking a name-mode search result opens a center file tab", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    vi.spyOn(files, "search").mockResolvedValue();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.query = "foo";
+    files.results = ["src/foo.ts"] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="fs-result"]').trigger("click");
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/foo.ts");
+    expect(w.find('[data-test="fs-result"]').exists()).toBe(true);
+  });
+
+  it("clicking a content-mode search hit opens a center file tab", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    vi.spyOn(files, "search").mockResolvedValue();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.searchOpts.mode = "content";
+    files.query = "foo";
+    files.hits = [{ path: "src/a.ts", line: 3, text: "const foo = 1" }] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="fs-hit"]').trigger("click");
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/a.ts");
+  });
+
+  it("clicking a changed file opens a center diff tab, keeps the listing, and highlights the row", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws",
+      files: [{ path: "src/a.ts", status: " M" }],
+      diff: "+x\n-y\n",
+      truncated: false,
+    } as never;
+    await w.vm.$nextTick();
+    const loadDiff = vi.spyOn(files, "loadDiff").mockResolvedValue();
+    const openDiff = vi.spyOn(centerTabs, "openDiff");
+    await w.find('[data-test="diff-file"]').trigger("click");
+    expect(openDiff).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/a.ts");
+    // The panel-data listing itself must not be reloaded by the click-to-view action.
+    expect(loadDiff).not.toHaveBeenCalled();
+    // The changed-files list is still there (panel data untouched).
+    expect(w.findAll('[data-test="diff-file"]').length).toBe(1);
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+  });
+
+  it("refreshing the Changes tab after selecting a changed-file row reloads the whole-tree diff, not the selected file", async () => {
+    // Regression for: openDiff() used to write files.diffPath purely to drive the row
+    // highlight, but files.diffPath doubles as the SCOPE of the loaded files.diff — so a
+    // later refresh() would rescope the whole-tree diff down to just the clicked file.
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.instanceId = "i1";
+    files.workspace = "ws";
+    files.tab = "changes";
+    const wholeTreeDiff = {
+      workspace: "ws",
+      files: [
+        { path: "a.ts", status: " M" },
+        { path: "b.ts", status: " M" },
+        { path: "c.ts", status: " M" },
+      ],
+      diff: "+x\n-y\n+z\n",
+      truncated: false,
+    };
+    files.diff = wholeTreeDiff;
+    await w.vm.$nextTick();
+
+    // Note: vi.spyOn(files, "loadDiff") would NOT observe refresh()'s internal call —
+    // Pinia setup-store actions call sibling actions via the closure reference, not the
+    // store's public property, so the spy is only triggered by external callers (verified
+    // empirically: a spy here sees 0 calls even though the real RPC call fires correctly).
+    // Assert on the actual RPC call args instead, which is what the bug really breaks.
+    rpc.mockClear();
+    rpc.mockResolvedValue(wholeTreeDiff);
+
+    // Click a changed-file row: opens a center diff tab + highlights it, but must not
+    // touch files.diffPath (the loaded-diff scope) or trigger a reload by itself.
+    await w.find('[data-test="diff-file"]').trigger("click");
+    expect(files.diffPath).toBeNull();
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+
+    // Refresh: the reviewer's bug scenario — must reload the WHOLE tree, not rescope to
+    // whichever changed-file row was last clicked.
+    await w.find('[data-test="refresh-files"]').trigger("click");
+    await flushPromises();
+
+    const diffCalls = rpc.mock.calls.filter((c) => c[1] === "control.fs.diff");
+    expect(diffCalls.length).toBe(1);
+    // No `path` param on the diff RPC call — whole-tree, not scoped to the clicked file.
+    expect(diffCalls[0][2]).toEqual({ workspace: "ws" });
+    // The Changes list stays whole-tree (3 files), not narrowed down to the clicked one.
+    expect(files.diff?.files.length).toBe(3);
+
+    // The row highlight still reflects the previously clicked file (local view state
+    // survives the refresh, since it's independent of the reloaded files.diff).
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+  });
+
+  it("clicking a changed file with no selected session is a no-op for the center-tabs store", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    const openDiff = vi.spyOn(centerTabs, "openDiff");
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws",
+      files: [{ path: "src/a.ts", status: " M" }],
+      diff: "+x\n-y\n",
+      truncated: false,
+    } as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="diff-file"]').trigger("click");
+    expect(openDiff).not.toHaveBeenCalled();
   });
 });
 

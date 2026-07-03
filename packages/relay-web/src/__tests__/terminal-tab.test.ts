@@ -5,7 +5,7 @@ import { mount } from "@vue/test-utils";
 const adapter = {
   write: vi.fn(), resize: vi.fn(), dispose: vi.fn(), focus: vi.fn(),
   getSelection: vi.fn(() => ""), setTheme: vi.fn(), scrollLines: vi.fn(),
-  fit: vi.fn(() => ({ cols: 80, rows: 24 })),
+  fit: vi.fn((): { cols: number; rows: number } | null => ({ cols: 80, rows: 24 })),
   cols: () => 80, rows: () => 24,
 };
 vi.mock("../lib/terminal-adapter", () => ({ createTerminalAdapter: vi.fn(() => adapter) }));
@@ -328,5 +328,20 @@ describe("TerminalTab", () => {
     expect(sendWebClientMessage).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "terminal-resize", cols: 80, rows: 24 }),
     );
+  });
+
+  // Non-active terminal tabs now stay mounted under v-show (display:none -> the host is
+  // 0×0). fit() returning null used to unconditionally reschedule via requestAnimationFrame,
+  // which would self-perpetuate a 60fps rAF loop forever for a backgrounded terminal. The
+  // guard must bail instead when the host isn't actually laid out (jsdom's div clientWidth
+  // defaults to 0, same as a real display:none host) — it self-heals via the ResizeObserver
+  // once the terminal is revealed again.
+  it("applyFit does not reschedule an rAF when the host is hidden (0 width)", async () => {
+    const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
+    adapter.fit.mockReturnValue(null); // host can't be measured — as when display:none
+    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    expect(rafSpy).not.toHaveBeenCalled();
+    rafSpy.mockRestore();
   });
 });

@@ -13,7 +13,7 @@ import DashboardView from "../views/DashboardView.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
 import { useChatStore } from "../stores/chat";
-import { useFilesStore } from "../stores/files";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
@@ -75,8 +75,12 @@ test("the mobile bar exposes a discoverable Files button that opens the Files dr
   expect(filesTab.classes()).toContain("font-semibold");
 });
 
-test("file viewer Back returns to the file list (drawer reopens) and Close returns to the conversation", async () => {
-  const files = useFilesStore();
+test("file viewer Back opens the file list drawer (the tab stays open); Close removes the tab and returns to chat", async () => {
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = "demo";
+  const centerTabs = useCenterTabsStore();
+  const key = sessionKey("i1", "demo");
   // Replace the FileViewer stub with a minimal one that re-emits back/close so we can
   // exercise DashboardView's nav handlers (rightTab/rightOpen are internal refs, so we
   // assert via observable drawer DOM).
@@ -87,25 +91,25 @@ test("file viewer Back returns to the file list (drawer reopens) and Close retur
   await flushPromises();
   const right = wrapper.find('[data-drawer="right"]');
 
-  // Open a file so the (stubbed) FileViewer renders.
-  files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
+  // Open a file tab so the (stubbed) FileViewer renders.
+  centerTabs.openFile(key, "a.ts");
   await flushPromises();
   expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
+  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
 
-  // Back -> file list: file cleared AND right drawer open on files.
+  // Back -> file list: right drawer opens on files, but the tab is untouched (still
+  // open/active) — the drawer just overlays it on mobile.
   wrapper.findComponent(FileViewer).vm.$emit("back");
   await flushPromises();
-  expect(files.file).toBeNull();
+  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
 
-  // Re-open a file, then Close -> conversation: file cleared AND right drawer NOT open.
-  files.file = { workspace: "ws", path: "b.ts", content: "y", size: 1, truncated: false, binary: false };
-  await flushPromises();
+  // Close -> the tab is actually removed and active falls back to chat.
   wrapper.findComponent(FileViewer).vm.$emit("close");
   await flushPromises();
-  expect(files.file).toBeNull();
-  expect(right.classes()).toContain("translate-x-full");
+  expect(centerTabs.tabsFor(key)).toEqual([]);
+  expect(centerTabs.activeFor(key)).toBe("chat");
 });
 
 test("tasks drawer opens via the Tasks button", async () => {
@@ -143,27 +147,33 @@ test("selecting a session closes the instance drawer and routes to chat", async 
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
 });
 
-test("opening a file overlays the viewer but keeps the chat mounted+laid out (inert) so scroll is preserved without re-layout jank", async () => {
+test("opening a file overlays the viewer but keeps the chat mounted (inert) so scroll is preserved without re-layout jank", async () => {
+  const chat0 = useChatStore();
+  chat0.instanceId = "i1";
+  chat0.sessionAlias = "demo";
+  const centerTabs = useCenterTabsStore();
+  const key = sessionKey("i1", "demo");
   const wrapper = mountDash();
   await flushPromises();
   const chatBefore = wrapper.findComponent(ChatPane);
   expect(chatBefore.exists()).toBe(true);
-  // Bound inert is false when no file is open (the stub surfaces the raw bound value; on the
-  // real single-root ChatPane Vue drops the attribute entirely when false).
+  // Bound inert is false when no tab is active (the stub surfaces the raw bound value; on
+  // the real single-root ChatPane Vue drops the attribute entirely when false).
   expect(chatBefore.attributes("inert")).toBe("false");
   expect(wrapper.findComponent(FileViewer).exists()).toBe(false);
-  // Opening a file overlays the FileViewer on top. ChatPane is NOT unmounted or hidden via
-  // display:none — it stays laid out underneath (just `inert`), so its scroll position is
-  // preserved and returning is a cheap repaint, not a full re-layout.
-  const files = useFilesStore();
-  files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
+  // Opening a file tab mounts a FileViewer pane. ChatPane is NOT unmounted or hidden via
+  // display:none in the sense of losing layout — v-show only toggles CSS display, so its
+  // scroll position is preserved and returning is a cheap repaint, not a full re-layout.
+  centerTabs.openFile(key, "a.ts");
   await flushPromises();
-  expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
+  const file = wrapper.findComponent(FileViewer);
+  expect(file.exists()).toBe(true);
+  expect(file.attributes("style") ?? "").not.toContain("display: none"); // the active tab is visible
   const chat = wrapper.findComponent(ChatPane);
   expect(chat.exists()).toBe(true);
   expect(chat.attributes("inert")).toBe("true"); // occluded → disabled for focus/interaction
-  // Not hidden via display:none (that's what caused the reveal jank).
-  expect(chat.attributes("style") ?? "").not.toContain("display: none");
+  // Hidden via v-show (display:none) while a tab is active — NOT unmounted (still findable).
+  expect(chat.attributes("style") ?? "").toContain("display: none");
 });
 
 test("the sidebar header toggle collapses the instances column, and the edge handle restores it", async () => {
@@ -239,22 +249,26 @@ test("terminal toggle is disabled without a session and enabled with one", async
   expect(wrapper.find('[data-test="toggle-terminal"]').attributes("disabled")).toBeUndefined();
 });
 
-test("toggling the terminal opens a center overlay and is mutually exclusive with the file viewer", async () => {
+test("toggling the terminal activates the terminal tab and is mutually exclusive with the file tab (only one active at a time)", async () => {
   const wrapper = mountDash();
   await flushPromises();
   const chat = useChatStore();
   chat.instanceId = "i1";
   chat.sessionAlias = "demo";
-  const files = useFilesStore();
-  files.file = { workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false };
+  const centerTabs = useCenterTabsStore();
+  const key = sessionKey("i1", "demo");
+  centerTabs.openFile(key, "a.ts");
   await flushPromises();
+  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
 
   await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
   await flushPromises();
   // Terminal overlay is mounted (VTU renders a `true` stub as <terminal-tab-stub>)...
   expect(wrapper.find("terminal-tab-stub").exists()).toBe(true);
-  // ...and opening it cleared the file viewer (mutual exclusion).
-  expect(files.file).toBeNull();
+  // ...and it becomes the sole active tab (mutual exclusion) — the file tab is untouched
+  // (still open in the strip, just no longer active).
+  expect(centerTabs.activeFor(key)).toBe("terminal");
+  expect(centerTabs.tabsFor(key).map((t) => t.id)).toEqual(["file:a.ts", "terminal"]);
 });
 
 test("the right rail no longer exposes a Terminal tab", async () => {
@@ -265,7 +279,7 @@ test("the right rail no longer exposes a Terminal tab", async () => {
   expect(wrapper.find('[data-test="right-tab-tasks"]').exists()).toBe(true);
 });
 
-test("clearing the session auto-closes the terminal overlay", async () => {
+test("deselecting the session hides (but keeps mounted) its terminal — it stays warm in the background and reappears on reselect", async () => {
   const wrapper = mountDash();
   await flushPromises();
   const chat = useChatStore();
@@ -275,9 +289,19 @@ test("clearing the session auto-closes the terminal overlay", async () => {
   await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
   await flushPromises();
   expect(wrapper.find("terminal-tab-stub").exists()).toBe(true);
+
+  // Deselecting the session (not archiving/removing it) must NOT tear down the terminal's
+  // PTY — the pane just hides. Unmounting only happens via closeTab/clearSession.
   chat.sessionAlias = null;
   await flushPromises();
-  expect(wrapper.find("terminal-tab-stub").exists()).toBe(false);
+  const hiddenTerm = wrapper.find("terminal-tab-stub");
+  expect(hiddenTerm.exists()).toBe(true);
+  expect(hiddenTerm.attributes("style") ?? "").toContain("display: none");
+
+  // Reselecting the same session reveals the same (still-open) terminal tab again.
+  chat.sessionAlias = "demo";
+  await flushPromises();
+  expect(wrapper.find("terminal-tab-stub").attributes("style") ?? "").not.toContain("display: none");
 });
 
 test("opening the terminal closes an already-open right drawer (rightOpen mutual exclusion)", async () => {

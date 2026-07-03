@@ -196,6 +196,23 @@ describe("files store", () => {
     await s.selectWorkspace("i1", "ws");
     expect(s.error).toBe("path-escapes-workspace");
   });
+
+  it("readFile returns content without touching the global file slot", async () => {
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ workspace: "ws", path: "a.ts", content: "x", size: 1, truncated: false, binary: false });
+    const r = await s.readFile("i1", "ws", "a.ts");
+    expect(r.content).toBe("x");
+    expect(s.file).toBeNull(); // global slot untouched
+  });
+
+  it("readDiff returns a diff without touching global diff state", async () => {
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ workspace: "ws", files: [], diff: "@@", truncated: false });
+    const r = await s.readDiff("i1", "ws", "a.ts");
+    expect(r.diff).toBe("@@");
+    expect(s.diff).toBeNull();
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.diff", { workspace: "ws", path: "a.ts" });
+  });
 });
 
 describe("files store: tree + advanced search", () => {

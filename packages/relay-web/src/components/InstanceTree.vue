@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Archive, ChevronDown, ChevronRight, Link2, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
 import { useSwipeActions } from "../lib/use-swipe-actions";
@@ -19,6 +20,7 @@ const vFocus = {
 
 const store = useInstancesStore();
 const chat = useChatStore();
+const centerTabs = useCenterTabsStore();
 const { t } = useI18n();
 
 // A session row carries the agent NAME; the brand glyph keys on its driver. Resolve via the
@@ -69,6 +71,22 @@ function toggle(id: string) {
 // server order, archived last) so the active work stays at the top of the list.
 function orderedSessions<T extends { archived?: boolean }>(sessions: T[]): T[] {
   return [...sessions].sort((a, b) => Number(a.archived ?? false) - Number(b.archived ?? false));
+}
+
+// Long session lists get noisy fast — cap the rendered rows per instance and let the
+// user opt into the rest via "show N more" (mirrors the instance collapse/expand
+// pattern above, but keyed independently since either can toggle without the other).
+const SESSION_CAP = 10;
+const sessionsExpanded = ref<Set<string>>(new Set());
+function toggleSessions(id: string) {
+  const next = new Set(sessionsExpanded.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  sessionsExpanded.value = next;
+}
+function visibleSessions(inst: InstanceView): InstanceView["sessions"] {
+  const all = orderedSessions(inst.sessions);
+  return sessionsExpanded.value.has(inst.id) ? all : all.slice(0, SESSION_CAP);
 }
 
 // Desktop overflow (⋯) menu open-state, keyed by `${instanceId}:${alias}`.
@@ -132,6 +150,9 @@ function onRowTap(id: string, alias: string) {
 async function onArchive(id: string, alias: string) {
   openMenuFor.value = null;
   openSwipeFor.value = null;
+  // Drop this session's center tabs (terminal/file panes) right away — the ephemeral
+  // tabs/PTY are freed on archive; unarchive (via the undo toast) does not restore them.
+  centerTabs.clearSession(sessionKey(id, alias));
   await store.archiveSession(id, alias).catch(() => {});
   showUndoToast(id, alias);
 }
@@ -157,6 +178,8 @@ async function askDelete(id: string, alias: string) {
   // Deleting the session you're viewing drops the view back to the empty "no session"
   // state rather than leaving a stale, now-broken selection pointed at it.
   const wasActive = isSelected(id, alias);
+  // Drop this session's center tabs (terminal/file panes) so they unmount along with it.
+  centerTabs.clearSession(sessionKey(id, alias));
   void store.removeSession(id, alias).catch(() => {});
   if (wasActive) chat.clearSelection();
 }
@@ -219,7 +242,7 @@ const rowSwipes = computed(() => {
       <!-- Indented session rows under an accent-able left rule. -->
       <div v-show="isExpanded(inst.id)" class="ml-2.5 mt-px space-y-px border-l border-border pl-2.5">
         <div
-          v-for="s in orderedSessions(inst.sessions)"
+          v-for="s in visibleSessions(inst)"
           :key="s.alias"
           data-test="session-row"
           class="group relative rounded-md"
@@ -308,6 +331,19 @@ const rowSwipes = computed(() => {
             <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
           </div>
         </div>
+
+        <button v-if="orderedSessions(inst.sessions).length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
+                data-test="sessions-show-more"
+                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
+                @click.stop="toggleSessions(inst.id)">
+          {{ $t("instance.showMoreSessions", { n: orderedSessions(inst.sessions).length - SESSION_CAP }) }}
+        </button>
+        <button v-else-if="orderedSessions(inst.sessions).length > SESSION_CAP"
+                data-test="sessions-collapse"
+                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
+                @click.stop="toggleSessions(inst.id)">
+          {{ $t("instance.collapseSessions") }}
+        </button>
 
         <div v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
              class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
