@@ -318,7 +318,10 @@ onUnmounted(() => {
            disables the occluded conversation for focus/interaction. -->
       <div data-test="column" class="relative flex min-w-0 flex-1 flex-col">
         <ChatPane class="absolute inset-0" :inert="viewingFile || terminalOpen" @show-files="rightTab = 'files'" />
-        <FileViewer v-if="viewingFile" class="absolute inset-0 z-10" @back="backToFileList" @close="closeFileViewer" />
+        <FileViewer v-if="viewingFile" class="absolute inset-0 z-10"
+                    :instance-id="files.instanceId ?? ''" :workspace="files.workspace ?? ''"
+                    :path="files.file?.path" :diff-path="files.diffPath ?? undefined"
+                    @back="backToFileList" @close="closeFileViewer" />
         <TerminalTab v-if="terminalOpen" class="absolute inset-0 z-20"
                      :instance-id="chat.instanceId ?? ''" :session-alias="chat.sessionAlias ?? ''"
                      @close="terminalOpen = false" />
