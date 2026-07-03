@@ -38,8 +38,14 @@ watch(showGitignored, (v) => localStorage.setItem("xacpx.files.showGitignored", 
 // Root-layer children, filtered by the same predicate FileTreeNode applies to its own children.
 const rootChildren = computed(() => (files.tree[""] ?? []).filter((e) =>
   (!e.ignored || showGitignored.value) && (!e.name.startsWith(".") || showDotfiles.value)));
+// Purely local view state for the Changes-tab row highlight — distinct from
+// `files.diffPath`, which is the SCOPE of the currently loaded `files.diff` (whole-tree
+// vs one file) and must only ever be written by `files.loadDiff()`. Conflating the two
+// used to cause `refresh()` to rescope the loaded diff to whatever row was last clicked.
+const selectedDiff = ref<string | null>(null);
+
 function openTreeFile(rel: string) {
-  files.diffPath = null; // clear any Changes-tab row highlight in favor of the freshly opened file
+  selectedDiff.value = null; // clear any Changes-tab row highlight in favor of the freshly opened file
   if (currentKey.value) centerTabs.openFile(currentKey.value, rel);
 }
 
@@ -196,14 +202,16 @@ function statusBadge(code: string): { label: string; cls: string; dot: string } 
 }
 
 function openSearchResult(m: string) {
-  files.diffPath = null; // clear any Changes-tab row highlight in favor of the freshly opened file
+  selectedDiff.value = null; // clear any Changes-tab row highlight in favor of the freshly opened file
   if (currentKey.value) centerTabs.openFile(currentKey.value, m);
 }
 function openDiff(path: string) {
   // Keep the Changes-tab row highlighted without re-fetching (that would rescope the
   // panel's loaded `diff` to this one file and skew the +/- summary counts above the
-  // list) — the diff VIEW itself now loads its own content in a center diff tab.
-  files.diffPath = path;
+  // list) — the diff VIEW itself now loads its own content in a center diff tab. The
+  // highlight is purely local view state (`selectedDiff`); `files.diffPath` stays
+  // untouched here so it keeps meaning "scope of the loaded diff", not "last-clicked row".
+  selectedDiff.value = path;
   if (currentKey.value) centerTabs.openDiff(currentKey.value, path);
 }
 
@@ -214,6 +222,7 @@ watch(
   async ([id, ws]) => {
     files.reset();
     searchInput.value = "";
+    selectedDiff.value = null;
     if (!id) return;
     files.instanceId = id;
     await instances.loadWorkspaces(id).catch(() => {});
@@ -413,11 +422,11 @@ watch(
                 <li v-for="f in s.items" :key="f.path">
                   <button data-test="diff-file" :title="f.path"
                           class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
-                          :class="files.diffPath === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
+                          :class="selectedDiff === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
                     <span class="w-3 shrink-0 text-center font-mono text-[10.5px] uppercase" :class="statusBadge(f.status).cls">{{ statusBadge(f.status).label }}</span>
                     <span class="flex min-w-0 flex-1 items-baseline truncate font-mono text-[11px]">
                       <span v-if="splitPath(f.path).dir" class="truncate text-fg-muted/70">{{ splitPath(f.path).dir }}</span>
-                      <span class="shrink-0" :class="files.diffPath === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
+                      <span class="shrink-0" :class="selectedDiff === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
                     </span>
                   </button>
                 </li>
