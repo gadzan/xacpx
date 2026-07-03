@@ -166,6 +166,38 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 后端只读、复用 `WorkspaceFs.resolve()` 三道闸（account-owns-instance → workspace 名白名单 → realpath 包含），无新增 config 门。
 
+## 文件写能力（子项目 B）
+
+Files 面板支持以下写操作（均需在 relay hub config 启用 `files.writeEnabled`，默认关闭）：
+
+- **新建文件** — 在当前目录创建空文件，返回 `{path, mimeType}`
+- **新建文件夹** — 在当前目录创建目录，返回 `{path}`
+- **重命名** — 重命名文件或目录，返回 `{path}`
+- **复制（副本）** — 复制文件或目录，自动去重（复制后的名称避免与现有文件冲突），返回 `{path}`
+- **删除** — 永久删除文件或目录，删除前需二次确认，无回收站，返回 `{path}`
+- **下载** — 下载文件（≤5 MiB，超出拒绝），返回 base64 编码的文件内容 + MIME 类型；**下载不受 `files.writeEnabled` 门控影响**，用户总能下载
+
+### 门控与安全模型
+
+- **`files.writeEnabled` 开关**：relay hub `config.files.writeEnabled`（boolean，默认 `false`）控制 5 个写操作的访问权；关闭时写操作（create/rename/delete/copy）返回 403，只读操作（list/download）仍可用。通过 relay hub 启动参数 `--files-write-enabled` 或配置文件 `relay.config.json` 中 `files.writeEnabled: true` 启用。
+- **安全隔离**：写操作复用 `WorkspaceFs.resolveParent()` 和 `WorkspaceFs.resolve()` 三道闸（account-owns-instance → workspace 名白名单 → realpath 包含），确保操作不脱离 workspace 容器。
+- **删除确认**：Web UI 在执行删除前弹出确认对话框，删除后无法恢复（永久删除）。
+- **下载大小限制**：单个文件≤5 MiB；超出大小的文件下载请求被 relay hub 拒绝（413）。
+
+### 实现细节
+
+- `control.fs.create(path, kind)` — `kind: "file" | "directory"`
+- `control.fs.rename(path, newName)`
+- `control.fs.delete(path)`  
+- `control.fs.copy(path, destName?)`  — destName 自动避开现有同名文件
+- `control.fs.download(path)` — 返回 `{base64, mimeType, size}`
+
+Web 侧 `FilesPanel.vue` 在树节点右键菜单或行操作按钮中暴露这些操作；关闭时菜单项禁用。
+
+### 范围说明
+
+"在 OS 打开"（open-in-browser/open-in-finder）已明确排出范围，不实现。仅提供下载供本地查看。
+
 ## 如何与 relay 通信
 
 - **REST**：`/api/*`（登录、实例列表、会话/历史快照），其中

@@ -3,6 +3,7 @@ import { ref } from "vue";
 import {
   isErrorPayload,
   type FsDiffResult,
+  type FsDownloadResult,
   type FsEntryDto,
   type FsListResult,
   type FsReadResult,
@@ -273,6 +274,68 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
+  /** Re-list one directory layer + refresh git badges after a write. */
+  async function refreshDir(dir: string): Promise<void> {
+    await listTree(dir);
+    await loadStatus();
+  }
+  function parentOf(rel: string): string {
+    const i = rel.lastIndexOf("/");
+    return i < 0 ? "" : rel.slice(0, i);
+  }
+
+  async function createEntry(dir: string, name: string, kind: "file" | "dir"): Promise<void> {
+    if (!instanceId.value || !workspace.value || !name.trim()) return;
+    error.value = "";
+    const p = dir ? `${dir}/${name}` : name;
+    try {
+      unwrap(await api.rpc(instanceId.value, "control.fs.create", { workspace: workspace.value, path: p, kind }));
+      await refreshDir(dir);
+    } catch (e) { error.value = e instanceof Error ? e.message : "create-failed"; }
+  }
+  async function renameEntry(rel: string, newName: string): Promise<void> {
+    if (!instanceId.value || !workspace.value || !newName.trim()) return;
+    error.value = "";
+    try {
+      unwrap(await api.rpc(instanceId.value, "control.fs.rename", { workspace: workspace.value, path: rel, newName }));
+      await refreshDir(parentOf(rel));
+    } catch (e) { error.value = e instanceof Error ? e.message : "rename-failed"; }
+  }
+  async function deleteEntry(rel: string): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    error.value = "";
+    try {
+      unwrap(await api.rpc(instanceId.value, "control.fs.delete", { workspace: workspace.value, path: rel }));
+      await refreshDir(parentOf(rel));
+    } catch (e) { error.value = e instanceof Error ? e.message : "delete-failed"; }
+  }
+  async function duplicateEntry(rel: string): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    error.value = "";
+    try {
+      unwrap(await api.rpc(instanceId.value, "control.fs.copy", { workspace: workspace.value, path: rel }));
+      await refreshDir(parentOf(rel));
+    } catch (e) { error.value = e instanceof Error ? e.message : "copy-failed"; }
+  }
+  async function downloadEntry(rel: string): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    error.value = "";
+    try {
+      const r = unwrap(await api.rpc<FsDownloadResult>(
+        instanceId.value, "control.fs.download", { workspace: workspace.value, path: rel }));
+      const bytes = Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: r.mimeType });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = url; a.download = rel.split("/").pop() ?? "download";
+        document.body.appendChild(a); a.click(); a.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) { error.value = e instanceof Error ? e.message : "download-failed"; }
+  }
+
   /** Load the git diff for the whole tree (path omitted) or one file. */
   async function loadDiff(filePath?: string): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
@@ -302,5 +365,6 @@ export const useFilesStore = defineStore("files", () => {
     root, sep: sepChar, tree, expanded, loadingDirs, hits, searchOpts,
     reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh,
     listTree, toggleExpand, absPath,
+    createEntry, renameEntry, deleteEntry, duplicateEntry, downloadEntry,
   };
 });

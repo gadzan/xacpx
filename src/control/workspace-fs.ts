@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
-import { readdir, realpath, stat, open, readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { readdir, realpath, stat, open, readFile, writeFile, mkdir, rename as fsRename, cp, rm } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +32,7 @@ const SEARCH_MAX_SCAN = 20000; // directory entries visited before giving up
 const SEARCH_SKIP_DIRS = new Set([".git", "node_modules"]);
 const SEARCH_CONTENT_MAX_HITS = 500;
 const SEARCH_CONTENT_MAX_FILE = 1024 * 1024; // skip files > 1 MiB in the fallback walker
+const DOWNLOAD_MAX = 5 * 1024 * 1024; // 5 MiB cap for readFileBytes downloads
 
 export interface FsEntry {
   name: string;
@@ -130,6 +131,107 @@ export class WorkspaceFs {
     if (abs !== root && !abs.startsWith(root + sep)) throw new Error("path-escapes-workspace");
     const rel = abs === root ? "" : relative(root, abs).split(sep).join("/");
     return { root, abs, rel };
+  }
+
+  /** Resolve the PARENT directory of a to-be-created/renamed target. Parent must exist
+   *  and be contained; the final segment is validated (non-empty, no separators, not
+   *  "."/".."). Because parent is realpath'd+contained and name has no separator, the
+   *  join target stays inside the workspace root. */
+  private async resolveParent(
+    workspace: string,
+    relPath: string,
+  ): Promise<{ root: string; parentAbs: string; name: string; targetAbs: string; rel: string }> {
+    if (relPath && isAbsolute(relPath)) throw new Error("path-must-be-relative");
+    const trimmed = (relPath ?? "").replace(/\/+$/, "");
+    if (!trimmed) throw new Error("bad-target"); // cannot create at/above the root
+    const name = basename(trimmed);
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      throw new Error("bad-target");
+    }
+    const parentRel = dirname(trimmed);
+    // Resolve the parent through the existing choke point (realpath + containment).
+    const { root, abs: parentAbs, rel: parentRelNorm } = await this.resolve(
+      workspace,
+      parentRel === "." ? undefined : parentRel,
+    );
+    const targetAbs = resolve(parentAbs, name);
+    const rel = (parentRelNorm ? `${parentRelNorm}/${name}` : name);
+    return { root, parentAbs, name, targetAbs, rel };
+  }
+
+  async createFile(workspace: string, relPath: string): Promise<{ path: string }> {
+    const { targetAbs, rel } = await this.resolveParent(workspace, relPath);
+    try {
+      await writeFile(targetAbs, "", { flag: "wx" });
+    } catch (e) {
+      if ((e as { code?: string }).code === "EEXIST") throw new Error("already-exists");
+      throw e;
+    }
+    return { path: rel };
+  }
+
+  async createDir(workspace: string, relPath: string): Promise<{ path: string }> {
+    const { targetAbs, rel } = await this.resolveParent(workspace, relPath);
+    try {
+      await mkdir(targetAbs);
+    } catch (e) {
+      if ((e as { code?: string }).code === "EEXIST") throw new Error("already-exists");
+      throw e;
+    }
+    return { path: rel };
+  }
+
+  async rename(workspace: string, relPath: string, newName: string): Promise<{ path: string }> {
+    const src = await this.resolve(workspace, relPath);           // must exist + contained
+    if (!src.rel) throw new Error("bad-target");                  // refuse renaming the root
+    // A rename's newName must be a bare final segment, never a path (deviation from brief:
+    // the brief's literal snippet let a "/"-bearing newName fall through to resolveParent's
+    // recursive parent resolve, which throws path-escapes-workspace instead of the bad-target
+    // its own test asserts). Reject separators up front so newName is always a single segment.
+    if (newName.includes("/") || newName.includes("\\")) throw new Error("bad-target");
+    // Validate the new name as a same-directory final segment by resolving the parent of
+    // the destination: dirname(src.rel)/newName. Reuse resolveParent for the name checks.
+    const destRelInput = src.rel.includes("/") ? `${src.rel.slice(0, src.rel.lastIndexOf("/"))}/${newName}` : newName;
+    const dest = await this.resolveParent(workspace, destRelInput);
+    try {
+      await stat(dest.targetAbs);
+      throw new Error("already-exists");                          // target present
+    } catch (e) {
+      if ((e as Error).message === "already-exists") throw e;
+      // ENOENT → free to rename
+    }
+    await fsRename(src.abs, dest.targetAbs);
+    return { path: dest.rel };
+  }
+
+  async duplicate(workspace: string, relPath: string): Promise<{ path: string }> {
+    const src = await this.resolve(workspace, relPath);
+    if (!src.rel) throw new Error("bad-target");                  // refuse duplicating the root
+    const parent = await this.resolveParent(workspace, src.rel);  // parent.parentAbs = src's dir; parent.name = basename(src)
+    const siblings = new Set(await readdir(parent.parentAbs));
+    const newBase = copyName(siblings, parent.name);
+    const destAbs = resolve(parent.parentAbs, newBase);
+    await cp(src.abs, destAbs, { recursive: true });
+    const destRel = parent.rel.includes("/")
+      ? `${parent.rel.slice(0, parent.rel.lastIndexOf("/"))}/${newBase}`
+      : newBase;
+    return { path: destRel };
+  }
+
+  async remove(workspace: string, relPath: string): Promise<{ path: string }> {
+    const { abs, rel } = await this.resolve(workspace, relPath);
+    if (!rel) throw new Error("refuse-delete-root");
+    await rm(abs, { recursive: true, force: false });
+    return { path: rel };
+  }
+
+  async readFileBytes(workspace: string, relPath: string): Promise<{ path: string; base64: string; size: number; mimeType: string }> {
+    const { abs, rel } = await this.resolve(workspace, relPath);
+    const info = await stat(abs);
+    if (!info.isFile()) throw new Error("not-a-file");
+    if (info.size > DOWNLOAD_MAX) throw new Error("file-too-large");
+    const buf = await readFile(abs);
+    return { path: rel, base64: buf.toString("base64"), size: info.size, mimeType: mimeForName(basename(abs)) };
   }
 
   async listDirectory(workspace: string, relPath?: string): Promise<DirListing> {
@@ -434,6 +536,33 @@ export class WorkspaceFs {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** First free "NAME copy", "NAME copy 2"… inserting before the extension. Dotfiles
+ *  (leading dot, no other dot) and extension-less names get no split. */
+export function copyName(existing: Set<string>, name: string): string {
+  const dot = name.lastIndexOf(".");
+  const hasExt = dot > 0; // dot at index 0 (dotfile) is not an extension
+  const base = hasExt ? name.slice(0, dot) : name;
+  const ext = hasExt ? name.slice(dot) : "";
+  let candidate = `${base} copy${ext}`;
+  let n = 2;
+  while (existing.has(candidate)) candidate = `${base} copy ${n++}${ext}`;
+  return candidate;
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  ".txt": "text/plain", ".md": "text/markdown", ".json": "application/json",
+  ".js": "text/javascript", ".ts": "text/plain", ".html": "text/html",
+  ".css": "text/css", ".csv": "text/csv", ".xml": "application/xml",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+  ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp",
+  ".pdf": "application/pdf", ".zip": "application/zip",
+};
+function mimeForName(name: string): string {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot).toLowerCase() : "";
+  return MIME_BY_EXT[ext] ?? "application/octet-stream";
 }
 /** Build a path/name matcher for name-mode search. */
 function buildMatcher(query: string, opts: SearchOptions): (s: string) => boolean {

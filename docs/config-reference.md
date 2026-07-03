@@ -572,6 +572,28 @@ The default execution session mode for scheduled tasks (`/lt`).
 
 ---
 
+## `files`
+
+File tree operations configuration for relay-web file browser.
+
+### `files.writeEnabled`
+
+| Field | Type | Required | Description |
+|------|------|------|------|
+| `writeEnabled` | `boolean` | No | Enable or disable write operations (new file, new folder, rename, delete, copy) in the relay-web file browser. Download is unaffected and remains always available. Defaults to `false` (write disabled). Requires daemon restart to take effect when changed |
+
+### Example
+
+```json
+{
+  "files": {
+    "writeEnabled": true
+  }
+}
+```
+
+---
+
 ## Environment Variable Overrides
 
 The following environment variables can override configuration file paths:

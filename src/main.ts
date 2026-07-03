@@ -14,7 +14,7 @@ import { resolveAcpxCommand } from "./config/resolve-acpx-command";
 import { resolveRuntimeAgentCommand } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
-import { terminalEnabled, terminalIdleTimeoutSeconds } from "./config/types";
+import { terminalEnabled, terminalIdleTimeoutSeconds, filesWriteEnabled } from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
 import { resolveDaemonOrchestrationSocketPath, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
 import type { OrchestrationTaskRecord } from "./orchestration/orchestration-types";
@@ -835,6 +835,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     uploadStore,
     terminal: terminalService,
     terminalEnabled: () => terminalEnabled(config),
+    filesWriteEnabled: () => filesWriteEnabled(config),
   });
 
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`

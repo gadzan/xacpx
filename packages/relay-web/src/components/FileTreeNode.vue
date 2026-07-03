@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { ChevronRight, ChevronDown, Folder, FolderOpen } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
 import ContextMenu from "./ContextMenu.vue";
 
+// Local directive: focus + select an element on mount (the rename input).
+const vFocus = {
+  mounted(el: HTMLInputElement) { el.focus(); el.select(); },
+};
+
 const props = defineProps<{ entry: FsEntryDto; dir: string; depth: number; showDotfiles: boolean; showGitignored: boolean }>();
 const emit = defineEmits<{ openFile: [rel: string] }>();
 const files = useFilesStore();
+const { t } = useI18n();
 
 const rel = computed(() => (props.dir ? `${props.dir}/${props.entry.name}` : props.entry.name));
 const isDir = computed(() => props.entry.type === "dir");
@@ -54,10 +61,41 @@ function onRowClick() {
 // context menu (items are built inline in the template via i18n — see :items below)
 const menu = ref<{ x: number; y: number } | null>(null);
 function openMenu(e: MouseEvent) { menu.value = { x: e.clientX, y: e.clientY }; }
+
+// inline create/rename input
+const inlineMode = ref<null | { kind: "file" | "dir" | "rename" }>(null);
+const inlineName = ref("");
+function startCreate(kind: "file" | "dir") {
+  if (!files.expanded.has(rel.value)) void files.toggleExpand(rel.value); // ensure open
+  inlineMode.value = { kind };
+  inlineName.value = "";
+}
+function startRename() {
+  inlineMode.value = { kind: "rename" };
+  inlineName.value = props.entry.name;
+}
+async function submitInline() {
+  const m = inlineMode.value;
+  const name = inlineName.value.trim();
+  inlineMode.value = null;
+  if (!m || !name) return;
+  if (m.kind === "rename") await files.renameEntry(rel.value, name);
+  else await files.createEntry(rel.value, name, m.kind); // create INSIDE this folder
+}
+function cancelInline() { inlineMode.value = null; }
+
 async function onMenuSelect(key: string) {
   if (key === "copyPath") await navigator.clipboard?.writeText(files.absPath(rel.value)).catch(() => {});
   else if (key === "copyRelativePath") await navigator.clipboard?.writeText(rel.value).catch(() => {});
   else if (key === "searchInFolder") { files.searchOpts.path = rel.value; }
+  else if (key === "newFile") startCreate("file");
+  else if (key === "newFolder") startCreate("dir");
+  else if (key === "rename") startRename();
+  else if (key === "duplicate") await files.duplicateEntry(rel.value);
+  else if (key === "download") await files.downloadEntry(rel.value);
+  else if (key === "delete") {
+    if (window.confirm(t("files.menu.confirmDelete", { name: props.entry.name }))) await files.deleteEntry(rel.value);
+  }
   menu.value = null;
 }
 </script>
@@ -72,12 +110,21 @@ async function onMenuSelect(key: string) {
       <span v-else class="w-3 shrink-0" />
       <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
                  class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
-      <span class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
+      <span v-if="inlineMode?.kind !== 'rename'" class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
+      <!-- rename: replace the label with an input in-place -->
+      <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
+             @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
+             class="flex-1 rounded border border-border bg-raised px-1 text-[12px]" />
       <span v-if="gitDot" data-test="fs-status" class="ml-auto h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
             :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
     </button>
 
     <div v-if="isDir && isOpen">
+      <!-- create: new-name input at top of the expanded children -->
+      <input v-if="inlineMode && inlineMode.kind !== 'rename'" v-focus data-test="inline-name" v-model="inlineName" @click.stop
+             @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
+             :style="{ marginLeft: (depth + 1) * 12 + 16 + 'px' }"
+             class="my-0.5 rounded border border-border bg-raised px-1 text-[12px]" />
       <FileTreeNode v-for="c in visibleChildren" :key="c.name" :entry="c" :dir="rel" :depth="depth + 1"
                     :show-dotfiles="showDotfiles" :show-gitignored="showGitignored" @open-file="emit('openFile', $event)" />
       <div v-if="!visibleChildren.length && files.tree[rel]" class="py-0.5 text-[11px] text-fg-muted" :style="{ paddingLeft: (depth + 1) * 12 + 16 + 'px' }">{{ $t("files.tree.emptyFolder") }}</div>
@@ -85,8 +132,14 @@ async function onMenuSelect(key: string) {
 
     <ContextMenu v-if="menu" :x="menu.x" :y="menu.y"
                  :items="isDir
-                   ? [{ key: 'copyPath', label: $t('files.menu.copyPath') }, { key: 'copyRelativePath', label: $t('files.menu.copyRelativePath') }, { key: 'searchInFolder', label: $t('files.menu.searchInFolder') }]
-                   : [{ key: 'copyPath', label: $t('files.menu.copyPath') }, { key: 'copyRelativePath', label: $t('files.menu.copyRelativePath') }]"
+                   ? [{ key: 'newFile', label: $t('files.menu.newFile') }, { key: 'newFolder', label: $t('files.menu.newFolder') },
+                      { key: 'duplicate', label: $t('files.menu.duplicate') }, { key: 'rename', label: $t('files.menu.rename') },
+                      { key: 'delete', label: $t('files.menu.delete') },
+                      { key: 'copyPath', label: $t('files.menu.copyPath') }, { key: 'copyRelativePath', label: $t('files.menu.copyRelativePath') },
+                      { key: 'searchInFolder', label: $t('files.menu.searchInFolder') }]
+                   : [{ key: 'duplicate', label: $t('files.menu.duplicate') }, { key: 'rename', label: $t('files.menu.rename') },
+                      { key: 'delete', label: $t('files.menu.delete') }, { key: 'download', label: $t('files.menu.download') },
+                      { key: 'copyPath', label: $t('files.menu.copyPath') }, { key: 'copyRelativePath', label: $t('files.menu.copyRelativePath') }]"
                  @select="onMenuSelect" @close="menu = null" />
   </div>
 </template>
