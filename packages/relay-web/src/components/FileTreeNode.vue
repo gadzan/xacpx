@@ -63,10 +63,11 @@ function onRowClick() {
 // `openMenuKey` (shared across all rows + the root header) enforces one menu at a time:
 // this row's menu renders only while it's the active key, so opening another closes ours.
 const menu = ref<{ x: number; y: number } | null>(null);
-function openMenu(e: MouseEvent | KeyboardEvent) {
-  let x = 0, y = 0;
-  if (e instanceof MouseEvent && (e.clientX || e.clientY)) { x = e.clientX; y = e.clientY; }
-  else {
+function openMenu(e: MouseEvent) {
+  // Right-click / mouse-click gives real coords; keyboard-activating the ⋯ button yields a
+  // click with clientX/Y = 0, so fall back to the trigger's rect to place the menu.
+  let x = e.clientX, y = e.clientY;
+  if (!x && !y) {
     const r = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
     if (r) { x = r.left; y = r.bottom; }
   }
@@ -75,10 +76,11 @@ function openMenu(e: MouseEvent | KeyboardEvent) {
 }
 function closeMenu() { menu.value = null; if (openMenuKey.value === rel.value) openMenuKey.value = null; }
 
-// "Search in this folder" fills the visible include field with a regex anchored to this
-// folder (VSCode-style), escaping regex metacharacters in the path — no hidden scope.
-function folderIncludeRegex(p: string): string {
-  return `^${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`;
+// "Search in this folder" fills the visible include field with a glob scoping the search
+// to this folder (VSCode-style) — the backend matches `include` as a glob (**, *, ?), not
+// a regex, so `<folder>/**` is what actually restricts results to the subtree. No hidden scope.
+function folderIncludeGlob(p: string): string {
+  return `${p}/**`;
 }
 
 // inline create/rename input
@@ -106,7 +108,7 @@ function cancelInline() { inlineMode.value = null; }
 async function onMenuSelect(key: string) {
   if (key === "copyPath") await navigator.clipboard?.writeText(files.absPath(rel.value)).catch(() => {});
   else if (key === "copyRelativePath") await navigator.clipboard?.writeText(rel.value).catch(() => {});
-  else if (key === "searchInFolder") { files.searchOpts.include = folderIncludeRegex(rel.value); }
+  else if (key === "searchInFolder") { files.searchOpts.include = folderIncludeGlob(rel.value); }
   else if (key === "newFile") startCreate("file");
   else if (key === "newFolder") startCreate("dir");
   else if (key === "rename") startRename();
@@ -120,32 +122,33 @@ async function onMenuSelect(key: string) {
 
 <template>
   <div v-if="selfVisible">
-    <button data-test="tree-row"
-            class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-raised"
-            :style="{ paddingLeft: depth * 12 + 4 + 'px' }"
-            @click="onRowClick" @contextmenu.prevent="openMenu">
-      <component :is="isOpen ? ChevronDown : ChevronRight" v-if="isDir" :size="12" class="shrink-0 text-fg-muted" />
-      <span v-else class="w-3 shrink-0" />
-      <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
-                 class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
-      <span v-if="inlineMode?.kind !== 'rename'" class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
-      <!-- rename: replace the label with an input in-place -->
-      <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
-             @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
-             class="flex-1 rounded border border-border bg-raised px-1 text-[12px]" />
-      <span class="ml-auto flex shrink-0 items-center gap-1">
-        <!-- Always-visible ⋯ trigger: opens the same context menu, so touch devices (no
-             right-click) can reach every action. Kept as a role=button span since the row
-             itself is a <button>. -->
-        <span data-test="row-menu" role="button" tabindex="0" :aria-label="$t('files.menu.more')"
-              class="grid h-4 w-4 place-items-center rounded text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
-              @click.stop="openMenu($event)" @keyup.enter.stop="openMenu($event)">
-          <MoreHorizontal :size="13" />
-        </span>
-        <span v-if="gitDot" data-test="fs-status" class="h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
-              :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
-      </span>
-    </button>
+    <!-- Row = clickable label button + a sibling ⋯ button + status dot. The ⋯ is a real
+         button (not nested in the row button) so it's keyboard-activatable and valid ARIA. -->
+    <div class="flex w-full items-center rounded pr-1 hover:bg-raised">
+      <button data-test="tree-row"
+              class="flex min-w-0 flex-1 items-center gap-1 py-0.5 pl-1 text-left"
+              :style="{ paddingLeft: depth * 12 + 4 + 'px' }"
+              @click="onRowClick" @contextmenu.prevent="openMenu">
+        <component :is="isOpen ? ChevronDown : ChevronRight" v-if="isDir" :size="12" class="shrink-0 text-fg-muted" />
+        <span v-else class="w-3 shrink-0" />
+        <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
+                   class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
+        <span v-if="inlineMode?.kind !== 'rename'" class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
+        <!-- rename: replace the label with an input in-place -->
+        <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
+               @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
+               class="flex-1 rounded border border-border bg-raised px-1 text-[12px]" />
+      </button>
+      <!-- Always-visible ⋯ trigger: opens the same context menu, so touch devices (no
+           right-click) can reach every action. -->
+      <button data-test="row-menu" type="button" :aria-label="$t('files.menu.more')"
+              class="ml-1 grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
+              @click.stop="openMenu($event)">
+        <MoreHorizontal :size="13" />
+      </button>
+      <span v-if="gitDot" data-test="fs-status" class="ml-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
+            :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
+    </div>
 
     <div v-if="isDir && isOpen">
       <!-- create: new-name input at top of the expanded children -->

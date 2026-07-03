@@ -84,13 +84,13 @@ describe("FileTreeNode write menu", () => {
     expect(w.find('[data-test="menu-rename"]').exists()).toBe(true);
   });
 
-  it("searchInFolder fills the include field with an anchored regex, not a hidden scope", async () => {
+  it("searchInFolder fills the include field with a folder glob, not a hidden scope", async () => {
     const store = useFilesStore();
     store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
-    const w = mount(FileTreeNode, { props: { entry: { name: "ut.ils", type: "dir" }, dir: "src", depth: 1, showDotfiles: true, showGitignored: true }, ...g });
+    const w = mount(FileTreeNode, { props: { entry: { name: "utils", type: "dir" }, dir: "src", depth: 1, showDotfiles: true, showGitignored: true }, ...g });
     await w.find('[data-test="tree-row"]').trigger("contextmenu");
     await w.find('[data-test="menu-searchInFolder"]').trigger("click");
-    expect(store.searchOpts.include).toBe("^src/ut\\.ils/"); // metachar in name escaped
+    expect(store.searchOpts.include).toBe("src/utils/**"); // backend matches include as a glob
     expect(store.searchOpts.path).toBe("");
   });
 
