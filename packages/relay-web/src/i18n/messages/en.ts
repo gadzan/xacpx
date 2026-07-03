@@ -168,6 +168,23 @@ export default {
     detached: "detached",
     linked: "linked",
     worktree: "worktree",
+    tree: { expand: "Expand", collapse: "Collapse", emptyFolder: "Empty folder" },
+    search: {
+      matchCase: "Match case",
+      wholeWord: "Match whole word",
+      regex: "Use regular expression",
+      include: "files to include",
+      exclude: "files to exclude",
+      byName: "By name",
+      byContent: "By content",
+      noContentMatches: "No matches in files",
+    },
+    menu: {
+      copyPath: "Copy path",
+      copyRelativePath: "Copy relative path",
+      searchInFolder: "Search in this folder",
+    },
+    toggle: { showDotfiles: "Show dotfiles", showGitignored: "Show git-ignored" },
   },
   instance: {
     newSession: "New session",

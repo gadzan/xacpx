@@ -223,6 +223,41 @@ test("sessions.rename dispatches to setSessionDisplayName and returns ok", async
   expect(calls).toEqual([["relay:acc", "backend", "My label"]]);
 });
 
+test("fs.search passes advanced search options through to control.searchWorkspace", async () => {
+  const calls: unknown[] = [];
+  const { control } = makeFakeControl({
+    searchWorkspace: async (workspace: string, opts: unknown) => {
+      calls.push([workspace, opts]);
+      return { workspace, query: "x", matches: [], hits: [], truncated: false };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  const result = await dispatch(bridge, req(MSG.fsSearch, {
+    workspace: "w", query: "x", mode: "content", regex: true,
+    include: "**/*.ts", exclude: "dist/**", path: "src", matchCase: true, wholeWord: true,
+  }));
+  expect(result).toEqual({ workspace: "w", query: "x", matches: [], hits: [], truncated: false });
+  expect(calls).toEqual([["w", {
+    query: "x", mode: "content", matchCase: true, wholeWord: true, regex: true,
+    include: "**/*.ts", exclude: "dist/**", path: "src",
+  }]]);
+});
+
+test("fs.search returns bad-request when workspace is missing", async () => {
+  const { control, calls } = makeFakeControl({
+    searchWorkspace: async (workspace: string, opts: unknown) => {
+      calls.searchWorkspace ??= [];
+      calls.searchWorkspace.push([workspace, opts]);
+      return { workspace, query: "x", matches: [], hits: [], truncated: false };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.fsSearch, { query: "x" }))).toEqual({
+    error: { code: "bad-request", message: "workspace is required" },
+  });
+  expect(calls.searchWorkspace).toBeUndefined();
+});
+
 test("sessions.rename returns bad-request when alias is missing", async () => {
   const { control } = makeFakeControl({
     setSessionDisplayName: async () => {},

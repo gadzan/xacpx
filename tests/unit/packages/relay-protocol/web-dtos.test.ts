@@ -6,6 +6,11 @@ import {
   encodeEnvelope,
   parseWebServerEvent,
   webEventEnvelope,
+  type FsEntryDto,
+  type FsListResult,
+  type FsSearchHitDto,
+  type FsSearchPayload,
+  type FsSearchResult,
   type WebServerEvent,
 } from "../../../../packages/relay-protocol/src/index";
 
@@ -199,4 +204,16 @@ test("accepts well-formed per-variant tool details", () => {
   expect(roundtrip(step({ type: "search", query: "rg x" }))).not.toBeNull();
   expect(roundtrip(step({ type: "text", text: "thinking" }))).not.toBeNull();
   expect(roundtrip(step({ type: "fields", fields: [{ label: "a", value: "b" }], output: "o" }))).not.toBeNull();
+});
+
+test("fs DTOs carry the tree-browser additions", () => {
+  const entry: FsEntryDto = { name: "a", type: "file", ignored: true };
+  const list: FsListResult = { workspace: "w", path: "", entries: [entry], root: "/abs", sep: "/" };
+  const hit: FsSearchHitDto = { path: "a.ts", line: 3, text: "x" };
+  const payload: FsSearchPayload = { workspace: "w", query: "x", mode: "content", regex: true, include: "**/*.ts", path: "src" };
+  const result: FsSearchResult = { workspace: "w", query: "x", matches: [], hits: [hit], truncated: false };
+  expect(list.root).toBe("/abs");
+  expect(list.sep).toBe("/");
+  expect(payload.mode).toBe("content");
+  expect(result.hits[0].line).toBe(3);
 });

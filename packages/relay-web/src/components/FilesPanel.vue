@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, CornerLeftUp, File, FileText, Folder, FolderGit2, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
-import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
+import { ChevronRight, File, FileText, Folder, FolderGit2, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { groupChanges, splitPath } from "../lib/change-groups";
+import FileTreeNode from "./FileTreeNode.vue";
 
 // Navigation-only file rail: a file tree (Files) and a changed-files list (Changes).
 // Opening a file or a single-file diff shows it full-width in the center column (see
@@ -15,13 +15,20 @@ const files = useFilesStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
 
-const crumbs = computed(() => (files.path ? files.path.split("/") : []));
-const atRoot = computed(() => crumbs.value.length === 0);
-// Go up one directory level. `up(i)` keeps the first i+1 path segments, so the parent of
-// the current dir is `up(crumbs.length - 2)` (and `up(-1)` lands on the workspace root).
-function upOne() {
-  if (!atRoot.value) files.up(crumbs.value.length - 2);
+// dotfile / gitignore toggles for the Files-tab tree, persisted across sessions.
+const showDotfiles = ref(localStorage.getItem("xacpx.files.showDotfiles") === "1");
+const showGitignored = ref(localStorage.getItem("xacpx.files.showGitignored") === "1");
+watch(showDotfiles, (v) => localStorage.setItem("xacpx.files.showDotfiles", v ? "1" : "0"));
+watch(showGitignored, (v) => localStorage.setItem("xacpx.files.showGitignored", v ? "1" : "0"));
+// Root-layer children, filtered by the same predicate FileTreeNode applies to its own children.
+const rootChildren = computed(() => (files.tree[""] ?? []).filter((e) =>
+  (!e.ignored || showGitignored.value) && (!e.name.startsWith(".") || showDotfiles.value)));
+function openTreeFile(rel: string) {
+  files.diffPath = null;
+  void files.openFile(rel);
 }
+// Re-run the active search when its options change (toggles, include/exclude, mode).
+watch(() => ({ ...files.searchOpts }), () => { if (files.query.trim()) void files.search(files.query); }, { deep: true });
 
 // The panel follows the ACTIVE session's workspace — there's no manual picker, since the
 // workspace is a fixed property of the session you're chatting with.
@@ -92,17 +99,7 @@ function clearSearch() {
   void files.search("");
 }
 
-// Format a byte size compactly.
-function fmtSize(n?: number): string {
-  if (n === undefined) return "";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-// Git-status badge for a directory entry, derived from the quietly-loaded status map.
-function entryRel(name: string): string {
-  return files.path ? `${files.path}/${name}` : name;
-}
+// Git-status badge for a Changes-tab row, derived from the porcelain status code.
 function statusBadge(code: string): { label: string; cls: string; dot: string } {
   const c = code.trim();
   if (c.includes("?")) return { label: "U", cls: "text-warn", dot: "bg-warn" }; // untracked
@@ -112,27 +109,7 @@ function statusBadge(code: string): { label: string; cls: string; dot: string } 
   if (c.includes("M")) return { label: "M", cls: "text-info", dot: "bg-warn" };
   return { label: c[0] ?? "•", cls: "text-fg-muted", dot: "bg-warn" };
 }
-function entryStatus(e: { name: string; type: string }): { label: string; cls: string; dot: string } | null {
-  const rel = entryRel(e.name);
-  if (e.type === "file") {
-    const code = files.changed[rel];
-    return code ? statusBadge(code) : null;
-  }
-  const prefix = `${rel}/`;
-  return Object.keys(files.changed).some((p) => p.startsWith(prefix)) ? { label: "•", cls: "text-warn", dot: "bg-warn" } : null;
-}
 
-// `true` when this entry is the file currently shown in the center viewer.
-function isOpen(name: string): boolean {
-  return !!files.file && files.file.path === entryRel(name);
-}
-
-// Open helpers: clear the counterpart so the center viewer shows exactly one thing —
-// a file or a single-file diff, never a stale mix.
-function openEntry(e: FsEntryDto) {
-  if (e.type === "file") files.diffPath = null;
-  void files.open(e);
-}
 function openSearchResult(m: string) {
   files.diffPath = null;
   void files.openFile(m);
@@ -215,62 +192,71 @@ watch(
 
       <!-- Files tab: pinned search (+ breadcrumb when browsing); only the listing scrolls. -->
       <div v-if="files.tab === 'files'" class="flex min-h-0 flex-1 flex-col">
-        <!-- search (pinned) -->
-        <div class="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
-          <input v-model="searchInput" data-test="fs-search" :placeholder="$t('files.searchPlaceholder')"
-                 class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
-          <button v-if="searchInput" :aria-label="$t('files.clearSearch')" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
+        <!-- search (pinned): query + match-case/whole-word/regex + include/exclude + name/content mode -->
+        <div class="shrink-0 border-b border-border px-2 py-1 space-y-1">
+          <div class="flex items-center gap-1">
+            <input v-model="searchInput" data-test="fs-search" :placeholder="$t('files.searchPlaceholder')"
+                   class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
+            <button data-test="search-matchcase" :title="$t('files.search.matchCase')" @click="files.searchOpts.matchCase = !files.searchOpts.matchCase"
+                    class="grid h-6 w-6 place-items-center rounded text-[11px]" :class="files.searchOpts.matchCase ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">Aa</button>
+            <button data-test="search-wholeword" :title="$t('files.search.wholeWord')" @click="files.searchOpts.wholeWord = !files.searchOpts.wholeWord"
+                    class="grid h-6 w-6 place-items-center rounded text-[11px]" :class="files.searchOpts.wholeWord ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">W</button>
+            <button data-test="search-regex" :title="$t('files.search.regex')" @click="files.searchOpts.regex = !files.searchOpts.regex"
+                    class="grid h-6 w-6 place-items-center rounded font-mono text-[11px]" :class="files.searchOpts.regex ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">.*</button>
+            <button v-if="searchInput" :aria-label="$t('files.clearSearch')" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
+          </div>
+          <div class="flex items-center gap-1">
+            <input v-model="files.searchOpts.include" data-test="search-include" :placeholder="$t('files.search.include')" class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-0.5 text-[11px] text-fg placeholder:text-fg-muted" />
+            <input v-model="files.searchOpts.exclude" data-test="search-exclude" :placeholder="$t('files.search.exclude')" class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-0.5 text-[11px] text-fg placeholder:text-fg-muted" />
+          </div>
+          <div class="flex items-center gap-1 text-[11px]">
+            <button data-test="search-mode-name" @click="files.searchOpts.mode = 'name'" class="rounded px-2 py-0.5" :class="files.searchOpts.mode === 'name' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byName") }}</button>
+            <button data-test="search-mode-content" @click="files.searchOpts.mode = 'content'" class="rounded px-2 py-0.5" :class="files.searchOpts.mode === 'content' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byContent") }}</button>
+          </div>
         </div>
 
-        <!-- search results (the list scrolls) -->
+        <!-- search results (the list scrolls): content mode groups hits by file, name mode keeps the flat list -->
         <div v-if="files.query.trim()" data-test="fs-results" class="min-h-0 flex-1 overflow-y-auto thin-scroll">
-          <ul class="p-2.5 text-[11px] font-mono leading-5 space-y-px">
-            <li v-for="m in files.results" :key="m">
-              <button data-test="fs-result"
-                      class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-raised cursor-pointer" @click="openSearchResult(m)">
-                <File :size="13" class="shrink-0 text-fg-muted" />
-                <span class="truncate font-sans text-[12px] text-fg-muted">{{ m }}</span>
-              </button>
-            </li>
-            <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
-          </ul>
-          <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
-        </div>
-
-        <!-- browsing: pinned breadcrumb, then the directory listing scrolls -->
-        <template v-else>
-        <div class="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2.5 py-1.5 font-mono text-[11px] text-fg-muted">
-          <button data-test="fs-up" :title="$t('files.upOneLevel')" :aria-label="$t('files.upOneLevel')"
-                  class="grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
-                  :disabled="atRoot || files.loading" @click="upOne">
-            <CornerLeftUp :size="13" />
-          </button>
-          <button class="hover:text-fg" @click="files.up(-1)">{{ files.workspace ?? $t("files.root") }}</button>
-          <template v-for="(c, i) in crumbs" :key="i">
-            <span>/</span><button class="hover:text-fg" @click="files.up(i)">{{ c }}</button>
+          <template v-if="files.searchOpts.mode === 'content'">
+            <div v-if="!files.hits.length && !files.searching" class="px-3 py-1 text-xs text-fg-muted">{{ $t("files.search.noContentMatches") }}</div>
+            <ul class="p-2 text-[11px] font-mono leading-5">
+              <li v-for="(h, i) in files.hits" :key="i">
+                <button data-test="fs-hit" class="flex w-full items-baseline gap-2 rounded px-1.5 py-0.5 text-left hover:bg-raised" @click="openSearchResult(h.path)">
+                  <span class="shrink-0 text-fg-muted/70">{{ h.path }}:{{ h.line }}</span>
+                  <span class="truncate text-fg-muted">{{ h.text }}</span>
+                </button>
+              </li>
+            </ul>
+            <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
+          </template>
+          <template v-else>
+            <ul class="p-2.5 text-[11px] font-mono leading-5 space-y-px">
+              <li v-for="m in files.results" :key="m">
+                <button data-test="fs-result"
+                        class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-raised cursor-pointer" @click="openSearchResult(m)">
+                  <File :size="13" class="shrink-0 text-fg-muted" />
+                  <span class="truncate font-sans text-[12px] text-fg-muted">{{ m }}</span>
+                </button>
+              </li>
+              <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
+            </ul>
+            <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
           </template>
         </div>
 
-        <!-- directory listing: tree-styled rows (chevron + folder/file icon) -->
-        <ul class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 text-[11px] font-mono leading-5 space-y-px">
-          <li v-for="e in files.entries" :key="e.name">
-            <button data-test="fs-entry"
-                    class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left cursor-pointer"
-                    :class="isOpen(e.name) ? 'bg-accent/15' : (entryStatus(e) ? 'bg-accent/10' : 'hover:bg-raised')" @click="openEntry(e)">
-              <ChevronRight v-if="e.type === 'dir'" :size="11" class="shrink-0 text-fg-muted" />
-              <span v-else class="w-[11px] shrink-0" />
-              <Folder v-if="e.type === 'dir'" :size="13" class="shrink-0" :class="entryStatus(e) ? 'text-accent' : 'text-fg-muted'" />
-              <File v-else :size="13" class="shrink-0" :class="isOpen(e.name) || entryStatus(e) ? 'text-accent' : 'text-fg-muted'" />
-              <span class="flex-1 truncate font-sans text-[12px]"
-                    :class="isOpen(e.name) || entryStatus(e) ? 'text-accent font-medium' : (e.type === 'dir' ? 'text-fg font-medium' : 'text-fg-muted')">{{ e.name }}</span>
-              <span v-if="entryStatus(e)" data-test="fs-status" class="w-1.5 h-1.5 shrink-0 rounded-full"
-                    :class="entryStatus(e)!.dot"
-                    :title="`${entryStatus(e)!.label} — ${files.changed[entryRel(e.name)] || $t('files.containsChanges')}`" />
-              <span v-if="e.type === 'file' && !entryStatus(e)" class="shrink-0 font-mono text-[10.5px] text-fg-muted tabular-nums">{{ fmtSize(e.size) }}</span>
-            </button>
-          </li>
-          <li v-if="!files.entries.length && !files.loading" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.emptyDirectory") }}</li>
-        </ul>
+        <!-- browsing: dotfile/gitignore toggles, then the tree scrolls -->
+        <template v-else>
+        <div class="flex shrink-0 items-center gap-3 border-b border-border px-2.5 py-1 text-[11px] text-fg-muted">
+          <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-dotfiles" v-model="showDotfiles" class="accent-accent" />{{ $t("files.toggle.showDotfiles") }}</label>
+          <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-gitignored" v-model="showGitignored" class="accent-accent" />{{ $t("files.toggle.showGitignored") }}</label>
+        </div>
+
+        <!-- directory tree: recursive rows (chevron + folder/file icon), lazy-expanded -->
+        <div class="min-h-0 flex-1 overflow-y-auto thin-scroll py-1 font-mono">
+          <FileTreeNode v-for="e in rootChildren" :key="e.name" :entry="e" dir="" :depth="0"
+                        :show-dotfiles="showDotfiles" :show-gitignored="showGitignored" @open-file="openTreeFile" />
+          <div v-if="!rootChildren.length && !files.loading" class="px-3 py-1 text-xs text-fg-muted">{{ $t("files.emptyDirectory") }}</div>
+        </div>
         </template>
       </div>
 

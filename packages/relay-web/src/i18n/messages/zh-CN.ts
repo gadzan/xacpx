@@ -166,6 +166,23 @@ export default {
     detached: "分离 HEAD",
     linked: "链接",
     worktree: "工作树",
+    tree: { expand: "展开", collapse: "折叠", emptyFolder: "空文件夹" },
+    search: {
+      matchCase: "精确大小写",
+      wholeWord: "匹配整词",
+      regex: "使用正则",
+      include: "要包含的文件",
+      exclude: "要排除的文件",
+      byName: "按文件名",
+      byContent: "按内容",
+      noContentMatches: "文件中无匹配",
+    },
+    menu: {
+      copyPath: "复制路径",
+      copyRelativePath: "复制相对路径",
+      searchInFolder: "在此文件夹搜索",
+    },
+    toggle: { showDotfiles: "显示点文件", showGitignored: "显示 Git 忽略文件" },
   },
   instance: {
     newSession: "新建会话",

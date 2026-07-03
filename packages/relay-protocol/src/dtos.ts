@@ -47,6 +47,15 @@ export interface FsEntryDto {
   type: "dir" | "file";
   /** File size in bytes; omitted for directories. */
   size?: number;
+  /** True when git considers the entry ignored (omitted in non-git workspaces). */
+  ignored?: boolean;
+}
+
+/** One content-search match line (mode:"content"). */
+export interface FsSearchHitDto {
+  path: string;
+  line: number;
+  text: string;
 }
 
 /** A changed file in a workspace's git working tree. `status` is the porcelain XY

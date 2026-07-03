@@ -18,6 +18,7 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   rpc.mockClear();
+  localStorage.clear();
 });
 
 describe("FilesPanel navigation rail", () => {
@@ -40,58 +41,47 @@ describe("FilesPanel navigation rail", () => {
     expect(label.text()).toContain("backend");
   });
 
-  it("badges directory entries with git status", async () => {
-    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
-    const files = useFilesStore();
-    files.path = "";
-    files.entries = [
-      { name: "src", type: "dir" },
-      { name: "clean.ts", type: "file", size: 1 },
-      { name: "new.ts", type: "file", size: 1 },
-    ];
-    files.changed = { "src/a.ts": " M", "new.ts": "??" };
-    await w.vm.$nextTick();
-    const badges = w.findAll('[data-test="fs-status"]');
-    // src (dir, nested change) + new.ts (untracked) badge; clean.ts has none.
-    expect(badges.length).toBe(2);
-    const titles = badges.map((b) => b.attributes("title"));
-    expect(titles.some((t) => t?.startsWith("•"))).toBe(true); // src directory contains a change
-    expect(titles.some((t) => t?.startsWith("U"))).toBe(true); // new.ts is untracked
-    expect(badges.every((b) => b.classes().includes("bg-warn"))).toBe(true);
-  });
-
-  it("opening a directory entry that is a file routes it to the center viewer (clears any diff)", async () => {
+  it("opening a tree file routes it to the center viewer (clears any diff)", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();
     files.diffPath = "old/diff.ts"; // a stale diff selection
-    files.entries = [{ name: "a.ts", type: "file", size: 1 }];
+    files.tree[""] = [{ name: "a.ts", type: "file", size: 1 }] as never;
     await w.vm.$nextTick();
-    await w.find('[data-test="fs-entry"]').trigger("click");
+    await w.find('[data-test="tree-row"]').trigger("click");
     // The diff selection is cleared so the center shows the freshly opened file, not a mix.
     expect(files.diffPath).toBeNull();
   });
 
-  it("up button is disabled at the workspace root and goes up one level from a nested dir", async () => {
+  it("renders the tree root (no breadcrumb / up button)", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();
-    const up = vi.spyOn(files, "up").mockImplementation(() => {});
-
-    // At the root: no path segments → the button is present but disabled.
-    files.path = "";
+    files.tree[""] = [{ name: "src", type: "dir" }] as never;
     await w.vm.$nextTick();
-    const btnRoot = w.find('[data-test="fs-up"]');
-    expect(btnRoot.exists()).toBe(true);
-    expect(btnRoot.attributes("disabled")).toBeDefined();
-    await btnRoot.trigger("click");
-    expect(up).not.toHaveBeenCalled();
+    expect(w.find('[data-test="fs-up"]').exists()).toBe(false);
+    expect(w.find('[data-test="tree-row"]').exists()).toBe(true);
+  });
 
-    // Two levels deep (src/lib): up one level keeps the first segment → up(0) ("src").
-    files.path = "src/lib";
+  it("search toggles drive searchOpts", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
     await w.vm.$nextTick();
-    const btn = w.find('[data-test="fs-up"]');
-    expect(btn.attributes("disabled")).toBeUndefined();
-    await btn.trigger("click");
-    expect(up).toHaveBeenCalledWith(0);
+    await w.find('[data-test="search-regex"]').trigger("click");
+    expect(files.searchOpts.regex).toBe(true);
+    await w.find('[data-test="search-mode-content"]').trigger("click");
+    expect(files.searchOpts.mode).toBe("content");
+  });
+
+  it("dotfile/gitignore toggles persist and filter", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.tree[""] = [{ name: "src", type: "dir" }, { name: ".env", type: "file" }] as never;
+    await w.vm.$nextTick();
+    // .env is a dotfile, hidden by default.
+    expect(w.findAll('[data-test="tree-row"]').length).toBe(1);
+    await w.find('[data-test="toggle-dotfiles"]').setValue(true);
+    expect(localStorage.getItem("xacpx.files.showDotfiles")).toBe("1");
+    await w.vm.$nextTick();
+    expect(w.findAll('[data-test="tree-row"]').length).toBe(2);
   });
 
   it("has a refresh button that re-fetches the current view via the store", async () => {

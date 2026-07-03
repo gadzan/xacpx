@@ -81,20 +81,99 @@ describe("WorkspaceFs listing & reading", () => {
 
 describe("WorkspaceFs search", () => {
   test("finds files by case-insensitive path substring", async () => {
-    const r = await fs.search("ws", "A.TS");
+    const r = await fs.search("ws", { query: "A.TS" });
     expect(r.matches).toContain("src/a.ts");
     expect(r.truncated).toBe(false);
   });
 
   test("returns no matches for an empty or unmatched query", async () => {
-    expect((await fs.search("ws", "")).matches).toEqual([]);
-    expect((await fs.search("ws", "zzz-nope")).matches).toEqual([]);
+    expect((await fs.search("ws", { query: "" })).matches).toEqual([]);
+    expect((await fs.search("ws", { query: "zzz-nope" })).matches).toEqual([]);
   });
 
   test("does not follow a symlink that escapes the root", async () => {
     // `escape` points outside; its `secret.txt` must never appear in results.
-    const r = await fs.search("ws", "secret");
+    const r = await fs.search("ws", { query: "secret" });
     expect(r.matches).toEqual([]);
+  });
+});
+
+describe("WorkspaceFs search: modes + flags", () => {
+  test("name mode: regex + include filter on relative path", async () => {
+    const r = await fs.search("ws", { query: "\\.ts$", mode: "name", regex: true });
+    expect(r.matches).toContain("src/a.ts");
+    expect(r.matches.every((m) => m.endsWith(".ts"))).toBe(true);
+    expect(r.hits).toEqual([]);
+  });
+
+  test("name mode: exclude glob drops matches", async () => {
+    const r = await fs.search("ws", { query: "a", mode: "name", exclude: "src/**" });
+    expect(r.matches.some((m) => m.startsWith("src/"))).toBe(false);
+  });
+
+  test("content mode: finds a line and returns path/line/text", async () => {
+    const r = await fs.search("ws", { query: "export const a", mode: "content" });
+    const hit = r.hits.find((h) => h.path === "src/a.ts");
+    expect(hit).toBeDefined();
+    expect(hit!.line).toBe(1);
+    expect(hit!.text).toContain("export const a");
+    expect(r.matches).toEqual([]);
+  });
+
+  test("content mode: case-sensitive miss vs case-insensitive hit", async () => {
+    const sensitive = await fs.search("ws", { query: "EXPORT", mode: "content", matchCase: true });
+    expect(sensitive.hits.length).toBe(0);
+    const insensitive = await fs.search("ws", { query: "EXPORT", mode: "content", matchCase: false });
+    expect(insensitive.hits.length).toBeGreaterThan(0);
+  });
+
+  test("empty query returns nothing", async () => {
+    const r = await fs.search("ws", { query: "   ", mode: "content" });
+    expect(r.hits).toEqual([]);
+    expect(r.matches).toEqual([]);
+  });
+});
+
+describe("WorkspaceFs search: content grep in a git repo (include/exclude/path narrowing)", () => {
+  let repo: string;
+  let rfs: WorkspaceFs;
+  beforeAll(() => {
+    repo = mkdtempSync(join(tmpdir(), "wsfs-grep-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: repo });
+    mkdirSync(join(repo, "src"));
+    mkdirSync(join(repo, "other"));
+    writeFileSync(join(repo, "src", "a.ts"), "const needle = 1;\n");
+    writeFileSync(join(repo, "other", "b.ts"), "const needle = 2;\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo }); // tracked; --untracked also covers unadded files
+    rfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+  });
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+  test("finds hits across both files with no scoping", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content" });
+    expect(r.hits.map((h) => h.path).sort()).toEqual(["other/b.ts", "src/a.ts"]);
+  });
+
+  test("include narrows to matching files only (no leak from outside the glob)", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content", include: "src/**" });
+    expect(r.hits.map((h) => h.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("path scopes the search (no leak from outside the base dir)", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content", path: "src" });
+    expect(r.hits.map((h) => h.path)).toEqual(["src/a.ts"]);
+  });
+
+  test("exclude drops matching files", async () => {
+    const r = await rfs.search("g", { query: "needle", mode: "content", exclude: "other/**" });
+    expect(r.hits.some((h) => h.path === "other/b.ts")).toBe(false);
+    expect(r.hits.some((h) => h.path === "src/a.ts")).toBe(true);
+  });
+
+  test("path containment still applies to search scoping", async () => {
+    await expect(rfs.search("g", { query: "x", mode: "content", path: "../.." })).rejects.toThrow(/escapes-workspace|not-found/);
   });
 });
 
@@ -218,5 +297,40 @@ describe("WorkspaceFs git diff", () => {
     expect(d.diff).toContain("+alpha");
     expect(d.diff).toContain("+beta");
     rmSync(repo, { recursive: true, force: true });
+  });
+});
+
+describe("WorkspaceFs listing: ignored flag + root/sep", () => {
+  let gitRoot: string;
+  let gfs: WorkspaceFs;
+  beforeAll(() => {
+    gitRoot = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    execFileSync("git", ["init", "-q"], { cwd: gitRoot });
+    execFileSync("git", ["config", "user.email", "t@t"], { cwd: gitRoot });
+    execFileSync("git", ["config", "user.name", "t"], { cwd: gitRoot });
+    writeFileSync(join(gitRoot, ".gitignore"), "ignored.log\ndist/\n");
+    writeFileSync(join(gitRoot, "keep.ts"), "export const x = 1;\n");
+    writeFileSync(join(gitRoot, "ignored.log"), "noise\n");
+    mkdirSync(join(gitRoot, "dist"));
+    writeFileSync(join(gitRoot, "dist", "out.js"), "1\n");
+    gfs = new WorkspaceFs(() => [{ name: "g", cwd: gitRoot }]);
+  });
+  afterAll(() => rmSync(gitRoot, { recursive: true, force: true }));
+
+  test("marks gitignored entries and returns absolute root + sep", async () => {
+    const r = await gfs.listDirectory("g", "");
+    const byName = Object.fromEntries(r.entries.map((e) => [e.name, e]));
+    expect(byName["ignored.log"].ignored).toBe(true);
+    expect(byName["dist"].ignored).toBe(true);
+    expect(byName["keep.ts"].ignored).toBeUndefined();
+    expect(r.root).toBe(require("node:fs").realpathSync(gitRoot));
+    expect(r.sep).toBe(require("node:path").sep);
+  });
+
+  test("non-git workspace lists without ignored flags and still returns root/sep", async () => {
+    const r = await fs.listDirectory("ws", "");
+    expect(r.entries.every((e) => e.ignored === undefined)).toBe(true);
+    expect(typeof r.root).toBe("string");
+    expect(r.sep).toBe(require("node:path").sep);
   });
 });

@@ -153,6 +153,19 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `TaskPanel.vue`、`ScheduledTasks.vue`、`OrchestrationTasks.vue`、`NoticeToast.vue`、`ConnectionBadge.vue`；
 - `src/router/index.ts`（含 `/settings` 路由）、`src/main.ts`、`src/App.vue`、`src/style.css`。
 
+## 文件树浏览器（Files 面板 / 子项目 A）
+
+`FilesPanel.vue` 的 **Files tab** 是懒加载**树视图**（`FileTreeNode.vue` 递归 + `ContextMenu.vue`）：
+
+- **树 / 懒加载**：根 = 会话 workspace 根；展开文件夹时按需调 `control.fs.list` 拉该层（`store.tree` 逐目录缓存，`store.expanded` 集合按 workspace 存 localStorage）。去掉了旧的面包屑 + 向上按钮。文件夹开/合图标（`FolderOpen`/`Folder`），文件按扩展名映射 lucide 图标（`src/lib/file-icons.ts`）。
+- **gitignore / 点文件**：`control.fs.list` 的每个条目带 `ignored`（后端 `git check-ignore`）；点文件按名判定。两个切换「显示点文件 / 显示 Git 忽略文件」默认关（存 localStorage），显示时以低透明度 + 斜体呈现（视觉「被忽略」）。默认隐藏使 `node_modules`/`.git` 不进树。
+- **git 状态点**：改动过的文件/含改动的目录在树节点上显示 M/A/D/? 状态点（复用 `store.changed`，由 `loadStatus()` 填充）。
+- **高级搜索**：主查询 + 三开关「精确大小写 / 匹配整词 / 正则」+「包含 / 排除」glob + 模式切换「文件名 / 内容」。内容模式为 grep（后端优先 `git grep`，非 git 回退手写走查；include/exclude 对返回路径后置过滤、`path` 限定作用域）。协议 `FsSearchPayload` 携带 `mode/matchCase/wholeWord/regex/include/exclude/path`，`FsSearchResult` 返回 `matches`(名字) / `hits`(内容 `{path,line,text}`)。
+- **右键菜单（只读子集）**：复制路径（**主机绝对路径** = `FsListResult.root + sep + relPath`）、复制相对路径（workspace 根相对）、（文件夹）在此文件夹搜索。写操作（新建/重命名/删除/下载/在 OS 打开）属**子项目 B**，本面板只搭右键菜单骨架。
+- **移动端**：右栏抽屉在 `<lg` 满屏宽（`w-full`）。
+
+后端只读、复用 `WorkspaceFs.resolve()` 三道闸（account-owns-instance → workspace 名白名单 → realpath 包含），无新增 config 门。
+
 ## 如何与 relay 通信
 
 - **REST**：`/api/*`（登录、实例列表、会话/历史快照），其中

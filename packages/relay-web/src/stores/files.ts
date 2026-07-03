@@ -7,6 +7,7 @@ import {
   type FsListResult,
   type FsReadResult,
   type FsSearchResult,
+  type FsSearchHitDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 
@@ -35,6 +36,17 @@ export const useFilesStore = defineStore("files", () => {
   const searching = ref(false);
   const loading = ref(false);
   const error = ref("");
+  // Lazy tree state for the file-tree browser — parallel to the flat path/entries
+  // above, which the Changes tab and openFile() still rely on.
+  const root = ref("");
+  const sepChar = ref<"/" | "\\">("/");
+  const tree = ref<Record<string, FsEntryDto[]>>({});
+  const expanded = ref<Set<string>>(new Set());
+  const loadingDirs = ref<Set<string>>(new Set());
+  const hits = ref<FsSearchHitDto[]>([]);
+  const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string; path: string }>({
+    mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "", path: "",
+  });
 
   function reset(): void {
     workspace.value = null;
@@ -48,6 +60,14 @@ export const useFilesStore = defineStore("files", () => {
     query.value = "";
     results.value = [];
     error.value = "";
+    tree.value = {};
+    expanded.value = new Set();
+    hits.value = [];
+    root.value = "";
+    // The folder scope is workspace-bound (a relPath in the outgoing workspace) — the
+    // other searchOpts (mode/matchCase/wholeWord/regex/include/exclude) are user
+    // preferences and survive a workspace switch on purpose.
+    searchOpts.value.path = "";
   }
 
   async function selectWorkspace(id: string, ws: string): Promise<void> {
@@ -60,7 +80,15 @@ export const useFilesStore = defineStore("files", () => {
     changed.value = {};
     query.value = "";
     results.value = [];
-    await list("");
+    tree.value = {}; hits.value = [];
+    try { expanded.value = new Set(JSON.parse(localStorage.getItem(expandedKey()) ?? "[]") as string[]); } catch { expanded.value = new Set(); }
+    await listTree("");
+    // Mirror the root layer into the flat path/entries state — the Changes tab and
+    // any surviving flat-view consumers read those, not `tree`, after selectWorkspace.
+    path.value = "";
+    entries.value = tree.value[""] ?? [];
+    // Re-hydrate previously expanded layers (best-effort).
+    for (const dir of [...expanded.value]) { if (dir && !tree.value[dir]) await listTree(dir).catch(() => {}); }
     void loadStatus();
   }
 
@@ -127,6 +155,42 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
+  function expandedKey(): string { return `xacpx.fileTree.expanded.${workspace.value ?? ""}`; }
+
+  /** Fetch one directory layer into the tree cache, recording root/sep along the way. */
+  async function listTree(dir: string): Promise<void> {
+    if (!instanceId.value || !workspace.value) return;
+    loadingDirs.value = new Set(loadingDirs.value).add(dir);
+    try {
+      const r = unwrap(await api.rpc<FsListResult>(instanceId.value, "control.fs.list", { workspace: workspace.value, path: dir }));
+      root.value = r.root; sepChar.value = r.sep;
+      tree.value = { ...tree.value, [dir]: r.entries };
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : "list-failed";
+    } finally {
+      const next = new Set(loadingDirs.value); next.delete(dir); loadingDirs.value = next;
+    }
+  }
+
+  /** Expand/collapse a tree node, lazily fetching its children on first expand. */
+  async function toggleExpand(dir: string): Promise<void> {
+    const next = new Set(expanded.value);
+    if (next.has(dir)) {
+      next.delete(dir);
+    } else {
+      next.add(dir);
+      if (!tree.value[dir]) await listTree(dir);
+    }
+    expanded.value = next;
+    try { localStorage.setItem(expandedKey(), JSON.stringify([...next])); } catch { /* ignore */ }
+  }
+
+  /** Resolve a workspace-relative path to an absolute path using the workspace root/sep. */
+  function absPath(rel: string): string {
+    const s = sepChar.value;
+    return root.value + s + rel.split("/").join(s);
+  }
+
   /** Descend into a child dir or open a file, relative to the current path. */
   async function open(entry: FsEntryDto): Promise<void> {
     const child = path.value ? `${path.value}/${entry.name}` : entry.name;
@@ -167,6 +231,11 @@ export const useFilesStore = defineStore("files", () => {
       return;
     }
     await list(path.value);
+    // Also drop the stale tree cache and re-pull the root plus any expanded layers,
+    // so the tree browser reflects the same post-write state as the flat view above.
+    tree.value = {};
+    await listTree("");
+    for (const dir of [...expanded.value]) { if (dir) await listTree(dir).catch(() => {}); }
     await loadStatus();
     await loadGitSummary(instanceId.value, workspace.value);
   }
@@ -181,14 +250,21 @@ export const useFilesStore = defineStore("files", () => {
     query.value = q;
     if (!instanceId.value || !workspace.value || !q.trim()) {
       results.value = [];
+      hits.value = [];
       searchTruncated.value = false;
       return;
     }
     searching.value = true;
     error.value = "";
     try {
-      const r = unwrap(await api.rpc<FsSearchResult>(instanceId.value, "control.fs.search", { workspace: workspace.value, query: q }));
+      const o = searchOpts.value;
+      const r = unwrap(await api.rpc<FsSearchResult>(instanceId.value, "control.fs.search", {
+        workspace: workspace.value, query: q,
+        mode: o.mode, matchCase: o.matchCase, wholeWord: o.wholeWord, regex: o.regex,
+        include: o.include, exclude: o.exclude, path: o.path,
+      }));
       results.value = r.matches;
+      hits.value = r.hits ?? [];
       searchTruncated.value = r.truncated;
     } catch (e) {
       error.value = e instanceof Error ? e.message : "search-failed";
@@ -221,5 +297,10 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
-  return { instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error, reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh };
+  return {
+    instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error,
+    root, sep: sepChar, tree, expanded, loadingDirs, hits, searchOpts,
+    reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh,
+    listTree, toggleExpand, absPath,
+  };
 });
