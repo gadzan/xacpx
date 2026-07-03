@@ -1,5 +1,20 @@
 # Changelog
 
+## [file-tree browser] - 2026-07-03
+
+A coordinated pre-release across the full relay stack adding the relay-web **file-tree browser** (read + write) and hardening its search. All four packages go out together — the write/search backend spans core + connector + protocol, so the hub UI alone would not work. Pre-releases publish to the npm `next` dist-tag. Update the daemon with `xacpx update` (core + connector) and the hub with `xacpx-relay update`, then restart both and hard-reload the dashboard.
+
+Versions: `@ganglion/xacpx` 0.17.0-beta.2 · `@ganglion/xacpx-relay-protocol` 0.1.9 · `@ganglion/xacpx-channel-relay` 0.3.3-beta.2 · `@ganglion/xacpx-relay` 0.9.12-beta.7.
+
+### Added
+
+- **File-tree browser (read-only, sub-project A / #108).** Lazy per-directory tree replacing the flat listing; folder open/closed and per-extension file icons; gitignored + dotfiles dimmed/italic and hidden behind toggles; advanced search over file names or content (`git grep`, with a non-git fallback) with match-case / whole-word / regex toggles, include/exclude globs, and search-in-folder scoping; git-status dots; full-width mobile drawer.
+- **File writes (sub-project B / #111), off by default.** New file / new folder / rename / duplicate / delete (permanent, with confirmation) / download (≤5 MiB), gated by a new `files.writeEnabled` config flag (default `false`). Download is a read and is not gated. All writes reuse the `WorkspaceFs` containment choke point (new `resolveParent()` for not-yet-existing targets); the workspace root cannot be renamed/duplicated/deleted.
+
+### Security
+
+- **Search ReDoS / runaway-subprocess hardening (#112).** Every `git` subprocess now runs under a 10s timeout + SIGKILL; the non-git content fallback routes through `git grep --no-index` (a killable, timeout-bounded engine) so no user-supplied regex runs in-process for content search when git is present; the remaining in-process JS walks carry a wall-clock deadline. Closes the event-loop-hang risk from a catastrophic content-search regex.
+
 ## [relay 0.9.12-beta.6] - 2026-07-02
 
 A `@ganglion/xacpx-relay` (hub) beta closing the mobile keyboard gap on both the terminal shortcut bar and the chat composer. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard).
