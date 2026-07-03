@@ -96,6 +96,64 @@ describe("CenterTabStrip", () => {
     }
   });
 
+  it("suppresses text selection on the strip so a touch press-hold starts a drag instead of highlighting a label", () => {
+    const store = useCenterTabsStore();
+    const K = sessionKey("i1", "s1");
+    store.openFile(K, "src/a.ts");
+
+    const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
+    expect(w.element.className).toContain("select-none");
+  });
+
+  it("renders its own border/background chrome when standalone (default)", () => {
+    const store = useCenterTabsStore();
+    const K = sessionKey("i1", "s1");
+    store.openFile(K, "src/a.ts");
+
+    const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
+    const cls = w.element.className;
+    expect(cls).toContain("border-b");
+    expect(cls).toContain("bg-surface");
+  });
+
+  it("drops its own border/background chrome when bare, so it slots into a host row", () => {
+    const store = useCenterTabsStore();
+    const K = sessionKey("i1", "s1");
+    store.openFile(K, "src/a.ts");
+
+    const w = mount(CenterTabStrip, { props: { sessionKey: K, bare: true }, ...g });
+    const cls = w.element.className;
+    expect(cls).not.toContain("border-b");
+    expect(cls).not.toContain("bg-surface");
+    // Still a working strip: chat + the open file tab both render.
+    expect(w.find('[data-test="tab-chat"]').exists()).toBe(true);
+    expect(w.findAll('[data-test="tab"]')).toHaveLength(1);
+  });
+
+  it("lifts the dragged tab (scale/opacity) once a pointer drag crosses the threshold", async () => {
+    const store = useCenterTabsStore();
+    const K = sessionKey("i1", "s1");
+    store.openFile(K, "src/a.ts");
+    // jsdom has no elementFromPoint; stub it so the drag composable's default
+    // resolveId doesn't throw. Returning null keeps overId null — draggingId (which
+    // drives the lift class) is set from the armed tab before resolveId runs.
+    (document as unknown as { elementFromPoint: () => null }).elementFromPoint = () => null;
+
+    const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
+    const fileTab = w.findAll('[data-test="tab"]').find((t) => t.attributes("data-tab-id") === "file:src/a.ts")!;
+    expect(fileTab.classes()).not.toContain("scale-95"); // not lifted at rest
+
+    await fileTab.trigger("pointerdown", { clientX: 100 });
+    document.dispatchEvent(new MouseEvent("pointermove", { clientX: 120, clientY: 0, bubbles: true })); // dx=20 >= 4px
+    await w.vm.$nextTick();
+
+    expect(fileTab.classes()).toContain("scale-95");
+    expect(fileTab.classes()).toContain("opacity-50");
+
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 120, bubbles: true })); // end gesture, remove listeners
+    delete (document as unknown as { elementFromPoint?: () => null }).elementFromPoint;
+  });
+
   it("renders a trailing end-of-strip drop zone carrying the END sentinel id, after the last tab", () => {
     const store = useCenterTabsStore();
     const K = sessionKey("i1", "s1");

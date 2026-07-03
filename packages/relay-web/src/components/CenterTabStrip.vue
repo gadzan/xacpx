@@ -5,13 +5,24 @@ import { useCenterTabsStore, type CenterTab, TAB_DROP_END } from "../stores/cent
 import { useTabDrag } from "../lib/use-tab-drag";
 import { iconForFile } from "../lib/file-icons";
 
-const props = defineProps<{ sessionKey: string }>();
+// The center tab strip: pinned Chat button + closable, drag-reorderable file/diff/
+// terminal tabs, horizontally scrollable when they overflow. Rendered in two places:
+// a standalone row above the content on desktop, and (with `bare`) inside the mobile
+// top bar where it replaces the session-name text. `bare` drops the strip's own chrome
+// (border/background/shrink-0) so it slots into a host row that already owns those.
+//
+// `select-none` + `[-webkit-touch-callout:none]` on the root stop a touch press-hold
+// (the natural start of a drag) from highlighting a tab's label or popping the iOS
+// callout menu. Keep the root <div> the FIRST node in <template>: a leading sibling
+// comment would make the component a fragment root, so tests' `w.element` would resolve
+// to the comment instead of the div.
+const props = defineProps<{ sessionKey: string; bare?: boolean }>();
 const store = useCenterTabsStore();
 const { t } = useI18n();
 
-// Destructure so Vue's template compiler auto-unwraps `overId` (a top-level ref
-// binding); `drag.overId` (member access on a plain object) would NOT be unwrapped.
-const { overId, start } = useTabDrag({
+// Destructure so Vue's template compiler auto-unwraps the refs (top-level bindings);
+// `drag.overId` (member access on a plain object) would NOT be unwrapped.
+const { draggingId, overId, start } = useTabDrag({
   onReorder: (draggedId, targetId) => store.reorder(props.sessionKey, draggedId, targetId),
 });
 
@@ -31,7 +42,10 @@ function labelFor(tab: CenterTab): string {
 </script>
 
 <template>
-  <div class="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border bg-surface px-1 py-1">
+  <div
+    class="flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
+    :class="props.bare ? '' : 'shrink-0 border-b border-border bg-surface'"
+  >
     <!-- Pinned chat tab: never closable, never draggable, always first. -->
     <button
       type="button"
@@ -49,10 +63,11 @@ function labelFor(tab: CenterTab): string {
       data-test="tab"
       :data-tab-id="tab.id"
       style="touch-action: none"
-      class="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11.5px] transition-colors cursor-pointer"
+      class="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11.5px] transition cursor-pointer"
       :class="[
         tab.id === store.activeFor(props.sessionKey) ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
         overId === tab.id ? 'ring-1 ring-inset ring-accent' : '',
+        tab.id === draggingId ? 'scale-95 opacity-50' : '',
       ]"
       @click="store.setActive(props.sessionKey, tab.id)"
       @pointerdown="start($event, tab.id)"
