@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, File, FileText, Folder, FolderGit2, GitBranch, List, RefreshCw, X } from "lucide-vue-next";
+import { ChevronRight, File, FileText, Folder, FolderGit2, GitBranch, List, MoreHorizontal, RefreshCw, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { groupChanges, splitPath } from "../lib/change-groups";
+import { openMenuKey, ROOT_MENU_KEY } from "../lib/tree-menu";
 import FileTreeNode from "./FileTreeNode.vue";
+import ContextMenu from "./ContextMenu.vue";
 
 // Navigation-only file rail: a file tree (Files) and a changed-files list (Changes).
 // Opening a file or a single-file diff shows it full-width in the center column (see
@@ -33,8 +35,8 @@ function openTreeFile(rel: string) {
   void files.openFile(rel);
 }
 
-// Root-level "new file / new folder" — there's no parent tree row to right-click at the
-// workspace root, so this inline entry point lives in the tree header instead.
+// Root-level "new file / new folder" — the workspace root has no parent tree row to
+// right-click, so the workspace-header ⋯ button opens a menu that drops an inline input.
 const rootInline = ref<null | "file" | "dir">(null);
 const rootName = ref("");
 async function submitRoot() {
@@ -44,6 +46,22 @@ async function submitRoot() {
   rootName.value = "";
   if (kind && name) await files.createEntry("", name, kind);
 }
+const rootMenu = ref<{ x: number; y: number } | null>(null);
+function openRootMenu(e: MouseEvent | KeyboardEvent) {
+  const r = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+  rootMenu.value = r ? { x: r.right - 160, y: r.bottom } : { x: 0, y: 0 };
+  openMenuKey.value = ROOT_MENU_KEY;
+}
+function onRootMenuSelect(key: string) {
+  if (key === "newFile") rootInline.value = "file";
+  else if (key === "newFolder") rootInline.value = "dir";
+  rootMenu.value = null;
+  if (openMenuKey.value === ROOT_MENU_KEY) openMenuKey.value = null;
+}
+
+// Search box placeholder tracks the active mode (name vs content).
+const searchPlaceholder = computed(() =>
+  files.searchOpts.mode === "content" ? "files.searchContentPlaceholder" : "files.searchPlaceholder");
 // Re-run the active search when its options change (toggles, include/exclude, mode).
 watch(() => ({ ...files.searchOpts }), () => { if (files.query.trim()) void files.search(files.query); }, { deep: true });
 
@@ -180,6 +198,16 @@ watch(
           <span class="truncate font-medium">{{ files.workspace ?? "—" }}</span>
         </div>
         <div class="flex shrink-0 items-center gap-1">
+          <!-- Root-level new file/folder lives here (the workspace root has no tree row). -->
+          <button
+            data-test="root-menu"
+            :title="$t('files.menu.more')"
+            :aria-label="$t('files.menu.more')"
+            class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+            @click.stop="openRootMenu($event)"
+          >
+            <MoreHorizontal :size="14" />
+          </button>
           <button
             data-test="refresh-files"
             :title="$t('files.refresh')"
@@ -207,12 +235,16 @@ watch(
 
       <div v-if="files.error" data-test="files-error" class="shrink-0 bg-danger/10 px-2 py-1 text-xs text-danger">{{ files.error }}</div>
 
+      <ContextMenu v-if="rootMenu && openMenuKey === ROOT_MENU_KEY" :x="rootMenu.x" :y="rootMenu.y"
+                   :items="[{ key: 'newFile', label: $t('files.menu.newFile') }, { key: 'newFolder', label: $t('files.menu.newFolder') }]"
+                   @select="onRootMenuSelect" @close="rootMenu = null; openMenuKey = null" />
+
       <!-- Files tab: pinned search (+ breadcrumb when browsing); only the listing scrolls. -->
       <div v-if="files.tab === 'files'" class="flex min-h-0 flex-1 flex-col">
         <!-- search (pinned): query + match-case/whole-word/regex + include/exclude + name/content mode -->
         <div class="shrink-0 border-b border-border px-2 py-1 space-y-1">
           <div class="flex items-center gap-1">
-            <input v-model="searchInput" data-test="fs-search" :placeholder="$t('files.searchPlaceholder')"
+            <input v-model="searchInput" data-test="fs-search" :placeholder="$t(searchPlaceholder)"
                    class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
             <button data-test="search-matchcase" :title="$t('files.search.matchCase')" @click="files.searchOpts.matchCase = !files.searchOpts.matchCase"
                     class="grid h-6 w-6 place-items-center rounded text-[11px]" :class="files.searchOpts.matchCase ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">Aa</button>
@@ -268,13 +300,7 @@ watch(
           <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-gitignored" v-model="showGitignored" class="accent-accent" />{{ $t("files.toggle.showGitignored") }}</label>
         </div>
 
-        <!-- root-level new file/folder: the workspace root has no parent row to right-click. -->
-        <div class="mb-1 flex items-center gap-1">
-          <button data-test="root-new-file" class="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-raised"
-                  @click="rootInline = 'file'" :title="$t('files.menu.newFile')">＋{{ $t('files.menu.newFile') }}</button>
-          <button data-test="root-new-folder" class="rounded px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-raised"
-                  @click="rootInline = 'dir'" :title="$t('files.menu.newFolder')">＋{{ $t('files.menu.newFolder') }}</button>
-        </div>
+        <!-- root-level new file/folder: dropped by the workspace-header ⋯ menu (openRootMenu). -->
         <input v-if="rootInline" v-focus data-test="root-inline-name" v-model="rootName"
                @keyup.enter="submitRoot" @keyup.esc="rootInline = null" @blur="rootInline = null"
                class="mb-1 w-full rounded border border-border bg-raised px-1 text-[12px]" />

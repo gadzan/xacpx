@@ -7,10 +7,11 @@ vi.mock("../api/client", () => ({ api: { rpc: (id: string, t: string, p?: unknow
 
 import FileTreeNode from "../components/FileTreeNode.vue";
 import { useFilesStore } from "../stores/files";
+import { openMenuKey } from "../lib/tree-menu";
 
 const g = { global: { mocks: { $t: (k: string) => k } } };
 
-beforeEach(() => { setActivePinia(createPinia()); rpc.mockReset(); Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } }); });
+beforeEach(() => { setActivePinia(createPinia()); rpc.mockReset(); openMenuKey.value = null; Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } }); });
 
 describe("FileTreeNode", () => {
   it("renders a dir row with a chevron and lazy-expands on click", async () => {
@@ -46,6 +47,18 @@ describe("FileTreeNode", () => {
     await w.find('[data-test="tree-row"]').trigger("contextmenu");
     await w.find('[data-test="menu-copyPath"]').trigger("click");
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("/abs/ws/src/a.ts");
+  });
+
+  it("keeps only one context menu open across rows (shared openMenuKey)", async () => {
+    const s = useFilesStore(); s.instanceId = "i1"; s.workspace = "ws"; s.root = "/abs"; s.sep = "/";
+    const a = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    const b = mount(FileTreeNode, { props: { entry: { name: "b.ts", type: "file" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    await a.find('[data-test="tree-row"]').trigger("contextmenu");
+    expect(a.find('[data-test="context-menu"]').exists()).toBe(true);
+    await b.find('[data-test="tree-row"]').trigger("contextmenu");
+    await a.vm.$nextTick(); await b.vm.$nextTick();
+    expect(b.find('[data-test="context-menu"]').exists()).toBe(true);
+    expect(a.find('[data-test="context-menu"]').exists()).toBe(false); // opening B closed A
   });
 
   it("renders a git-status dot for a changed file and a dir containing changes, not for clean files", async () => {

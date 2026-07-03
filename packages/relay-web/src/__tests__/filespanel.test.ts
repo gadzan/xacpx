@@ -71,6 +71,17 @@ describe("FilesPanel navigation rail", () => {
     expect(files.searchOpts.mode).toBe("content");
   });
 
+  it("search placeholder tracks the active mode (name vs content)", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    await w.vm.$nextTick();
+    const namePh = w.find('[data-test="fs-search"]').attributes("placeholder");
+    await w.find('[data-test="search-mode-content"]').trigger("click");
+    await w.vm.$nextTick();
+    const contentPh = w.find('[data-test="fs-search"]').attributes("placeholder");
+    expect(contentPh).not.toBe(namePh);
+    expect(contentPh?.length).toBeGreaterThan(0);
+  });
+
   it("dotfile/gitignore toggles persist and filter", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
     const files = useFilesStore();
