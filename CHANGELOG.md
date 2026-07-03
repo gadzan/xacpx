@@ -1,5 +1,18 @@
 # Changelog
 
+## [relay 0.9.12-beta.10] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta adding a multi-tab center area and a session-list cap (#117). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Added
+
+- **Center multi-tab interface.** The dashboard center column is now a per-session tab strip: a pinned **Chat** tab plus closable **file / diff / terminal** tabs. Clicking a file (tree or search) or a changed file opens a tab; the terminal button opens a terminal tab. Tabs are **drag-reorderable** (pointer-based — mouse and touch), including to the last position. Each session keeps its own tab set, so switching sessions restores its tabs; open tabs stay mounted, so **terminals survive session switches** (their PTY isn't torn down) and file scroll persists.
+- **Session-list cap.** Each instance shows at most **10** sessions with a **"Show N more" / "Collapse"** toggle, so a busy instance no longer floods the left rail.
+
+### Fixed
+
+- Files opened as tabs load their own content and surface load errors/loading state (no more silently showing a stale file). A session removed out-of-band (from the CLI or another client) now prunes its tabs and terminal. Backgrounded (hidden) terminals no longer spin a render loop.
+
 ## [relay 0.9.12-beta.9] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta folding in on-device feedback on the file-tree browser UX. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
