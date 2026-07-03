@@ -78,6 +78,8 @@ export function useTabDrag(opts: TabDragOptions): TabDragHandlers {
     document.removeEventListener("pointercancel", pointercancel);
     armedId = id;
     startX = e.clientX;
+    draggingId.value = null;
+    overId.value = null;
     document.addEventListener("pointermove", pointermove);
     document.addEventListener("pointerup", pointerup);
     document.addEventListener("pointercancel", pointercancel);

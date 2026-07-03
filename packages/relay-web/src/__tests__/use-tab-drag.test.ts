@@ -122,6 +122,32 @@ describe("useTabDrag", () => {
     expect(onReorder).not.toHaveBeenCalled();
   });
 
+  it("resets stale drag state from an abandoned gesture when start() re-fires mid-drag", () => {
+    const onReorder = vi.fn();
+    const resolveId = vi.fn().mockReturnValue("x");
+    const { draggingId, overId, start } = useTabDrag({ onReorder, resolveId });
+
+    // Gesture 1: crosses the threshold, so draggingId/overId become non-null.
+    start(fakeStartEvent(100), "a");
+    document.dispatchEvent(pointerEvent("pointermove", 110));
+    expect(draggingId.value).toBe("a");
+    expect(overId.value).toBe("x");
+
+    // Gesture 2: a second pointerdown fires before gesture 1's pointerup/cancel
+    // (e.g. a second touch point). Re-arming must clear the stale drag refs.
+    start(fakeStartEvent(500), "c");
+    expect(draggingId.value).toBeNull();
+    expect(overId.value).toBeNull();
+
+    // Sub-threshold movement for gesture 2 must not cross into dragging.
+    document.dispatchEvent(pointerEvent("pointermove", 502)); // dx=2 < 4
+    expect(draggingId.value).toBeNull();
+    expect(overId.value).toBeNull();
+
+    document.dispatchEvent(pointerEvent("pointerup", 502));
+    expect(onReorder).not.toHaveBeenCalled();
+  });
+
   it("falls back to document.elementFromPoint + closest('[data-tab-id]') when resolveId is omitted", () => {
     // jsdom does not implement elementFromPoint at all (property is undefined),
     // so vi.spyOn has nothing to wrap — stub it directly and remove it after.
