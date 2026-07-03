@@ -71,6 +71,22 @@ function orderedSessions<T extends { archived?: boolean }>(sessions: T[]): T[] {
   return [...sessions].sort((a, b) => Number(a.archived ?? false) - Number(b.archived ?? false));
 }
 
+// Long session lists get noisy fast — cap the rendered rows per instance and let the
+// user opt into the rest via "show N more" (mirrors the instance collapse/expand
+// pattern above, but keyed independently since either can toggle without the other).
+const SESSION_CAP = 10;
+const sessionsExpanded = ref<Set<string>>(new Set());
+function toggleSessions(id: string) {
+  const next = new Set(sessionsExpanded.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  sessionsExpanded.value = next;
+}
+function visibleSessions(inst: InstanceView): InstanceView["sessions"] {
+  const all = orderedSessions(inst.sessions);
+  return sessionsExpanded.value.has(inst.id) ? all : all.slice(0, SESSION_CAP);
+}
+
 // Desktop overflow (⋯) menu open-state, keyed by `${instanceId}:${alias}`.
 const openMenuFor = ref<string | null>(null);
 
@@ -219,7 +235,7 @@ const rowSwipes = computed(() => {
       <!-- Indented session rows under an accent-able left rule. -->
       <div v-show="isExpanded(inst.id)" class="ml-2.5 mt-px space-y-px border-l border-border pl-2.5">
         <div
-          v-for="s in orderedSessions(inst.sessions)"
+          v-for="s in visibleSessions(inst)"
           :key="s.alias"
           data-test="session-row"
           class="group relative rounded-md"
@@ -308,6 +324,19 @@ const rowSwipes = computed(() => {
             <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
           </div>
         </div>
+
+        <button v-if="orderedSessions(inst.sessions).length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
+                data-test="sessions-show-more"
+                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
+                @click.stop="toggleSessions(inst.id)">
+          {{ $t("instance.showMoreSessions", { n: orderedSessions(inst.sessions).length - SESSION_CAP }) }}
+        </button>
+        <button v-else-if="orderedSessions(inst.sessions).length > SESSION_CAP"
+                data-test="sessions-collapse"
+                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
+                @click.stop="toggleSessions(inst.id)">
+          {{ $t("instance.collapseSessions") }}
+        </button>
 
         <div v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
              class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>

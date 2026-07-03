@@ -219,6 +219,8 @@ export default {
     offline: "offline",
     loading: "loading…",
     noSessions: "no sessions yet",
+    showMoreSessions: "Show {n} more",
+    collapseSessions: "Collapse",
     deleteSessionTitle: "Delete session?",
     deleteSessionBody: "\"{alias}\" will be permanently removed. This can't be undone.",
     manageTitle: "Manage · {name}",
