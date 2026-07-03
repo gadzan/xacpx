@@ -32,6 +32,7 @@ const SEARCH_MAX_SCAN = 20000; // directory entries visited before giving up
 const SEARCH_SKIP_DIRS = new Set([".git", "node_modules"]);
 const SEARCH_CONTENT_MAX_HITS = 500;
 const SEARCH_CONTENT_MAX_FILE = 1024 * 1024; // skip files > 1 MiB in the fallback walker
+const LINE_MATCH_CAP = 2000; // cap chars fed to the in-process regex (git-absent last-resort ReDoS bound)
 const DOWNLOAD_MAX = 5 * 1024 * 1024; // 5 MiB cap for readFileBytes downloads
 const GIT_TIMEOUT_MS = 10_000; // kill any git subprocess that runs longer (slow repo / ReDoS via `git grep -E`)
 const SEARCH_DEADLINE_MS = 4_000; // abort an in-process JS walk that runs longer (best-effort ReDoS bound)
@@ -386,15 +387,17 @@ export class WorkspaceFs {
       args.push(opts.regex ? "-E" : "-F");
       args.push("-e", query, "--", scopeRel || ".");
       let stdout = "";
+      let killed = false;
       try {
         stdout = (await execFileAsync("git", args, { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout;
       } catch (e) {
+        killed = (e as { killed?: boolean }).killed === true || (e as { signal?: string }).signal === "SIGKILL";
         const code = (e as { code?: number }).code;
         if (code === 1) stdout = ""; // no matches
         else { const out = (e as { stdout?: string }).stdout; stdout = typeof out === "string" ? out : ""; }
       }
       const hits: SearchHit[] = [];
-      let truncated = false;
+      let truncated = killed;
       for (const raw of stdout.split("\n")) {
         if (!raw) continue;
         // format: <path>:<line>:<column>:<text>
@@ -417,18 +420,20 @@ export class WorkspaceFs {
       if (!opts.matchCase) args.push("-i");
       if (opts.wholeWord) args.push("-w");
       args.push(opts.regex ? "-E" : "-F");
-      args.push("-e", query, "--", ".");
+      args.push("-e", query, "--", ".", ":(exclude)node_modules/", ":(exclude).git/");
       let stdout = "";
+      let killed = false;
       try {
         stdout = (await execFileAsync("git", args, { cwd: base, maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout;
       } catch (e) {
         if ((e as { code?: string }).code === "ENOENT") throw e; // git missing → JS fallback below
+        killed = (e as { killed?: boolean }).killed === true || (e as { signal?: string }).signal === "SIGKILL";
         const code = (e as { code?: number }).code;
         if (code === 1) stdout = ""; // no matches
         else { const out = (e as { stdout?: string }).stdout; stdout = typeof out === "string" ? out : ""; }
       }
       const hits: SearchHit[] = [];
-      let truncated = false;
+      let truncated = killed;
       for (const raw of stdout.split("\n")) {
         if (!raw) continue;
         const m = raw.match(/^(.*?):(\d+):(\d+):(.*)$/);
@@ -479,8 +484,9 @@ export class WorkspaceFs {
         if (text.includes("\0")) continue; // NUL byte ⇒ binary, skip
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
+          if (Date.now() > deadline) { truncated = true; break; }
           const line = lines[i]!;
-          if (matcher(line)) {
+          if (matcher(line.length > LINE_MATCH_CAP ? line.slice(0, LINE_MATCH_CAP) : line)) {
             hits.push({ path: rel, line: i + 1, text: line.slice(0, 400) });
             if (hits.length >= SEARCH_CONTENT_MAX_HITS) { truncated = true; break; }
           }

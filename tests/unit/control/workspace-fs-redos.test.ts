@@ -62,6 +62,26 @@ describe("WorkspaceFs content search: ReDoS pattern in a git repo returns prompt
   });
 });
 
+describe("WorkspaceFs content search: `--no-index` skips node_modules/.git", () => {
+  let root: string;
+  let fs: WorkspaceFs;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "wsfs-redos-skipdirs-"));
+    mkdirSync(join(root, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "pkg", "index.js"), "needle\n");
+    writeFileSync(join(root, "real.txt"), "needle\n");
+    fs = new WorkspaceFs(() => [{ name: "ws", cwd: root }]);
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  test("hits include real.txt but not any node_modules/ path", async () => {
+    const r = await fs.search("ws", { query: "needle", mode: "content" });
+    const paths = r.hits.map((h) => h.path);
+    expect(paths).toContain("real.txt");
+    expect(paths.some((p) => p.startsWith("node_modules/"))).toBe(false);
+  });
+});
+
 describe("WorkspaceFs search: regressions", () => {
   let root: string;
   let fs: WorkspaceFs;
