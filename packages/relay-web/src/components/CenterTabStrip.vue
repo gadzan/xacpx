@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 import { MessageSquare, SquareTerminal, X } from "lucide-vue-next";
-import { useCenterTabsStore, type CenterTab } from "../stores/center-tabs";
+import { useCenterTabsStore, type CenterTab, TAB_DROP_END } from "../stores/center-tabs";
 import { useTabDrag } from "../lib/use-tab-drag";
 import { iconForFile } from "../lib/file-icons";
 
@@ -70,5 +70,16 @@ function labelFor(tab: CenterTab): string {
         <X :size="11" />
       </button>
     </div>
+
+    <!-- Trailing drop zone: not a tab (no label/close), just extends the drop target past
+         the last tab so a drag released in the empty strip area moves it to the end.
+         `flex-1` fills remaining strip width; `min-w-3` keeps it hit-testable even when
+         tabs already fill/overflow the strip. -->
+    <div
+      data-test="tab-drop-end"
+      :data-tab-id="TAB_DROP_END"
+      class="min-w-3 flex-1 self-stretch rounded-md"
+      :class="overId === TAB_DROP_END ? 'ring-1 ring-inset ring-accent' : ''"
+    />
   </div>
 </template>

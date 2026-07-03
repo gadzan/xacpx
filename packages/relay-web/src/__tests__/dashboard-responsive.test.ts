@@ -95,13 +95,13 @@ test("file viewer Back opens the file list drawer (the tab stays open); Close re
   centerTabs.openFile(key, "a.ts");
   await flushPromises();
   expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
-  expect(centerTabs.activeFor(key)).toBe("a.ts");
+  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
 
   // Back -> file list: right drawer opens on files, but the tab is untouched (still
   // open/active) — the drawer just overlays it on mobile.
   wrapper.findComponent(FileViewer).vm.$emit("back");
   await flushPromises();
-  expect(centerTabs.activeFor(key)).toBe("a.ts");
+  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
 
@@ -259,7 +259,7 @@ test("toggling the terminal activates the terminal tab and is mutually exclusive
   const key = sessionKey("i1", "demo");
   centerTabs.openFile(key, "a.ts");
   await flushPromises();
-  expect(centerTabs.activeFor(key)).toBe("a.ts");
+  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
 
   await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
   await flushPromises();
@@ -268,7 +268,7 @@ test("toggling the terminal activates the terminal tab and is mutually exclusive
   // ...and it becomes the sole active tab (mutual exclusion) — the file tab is untouched
   // (still open in the strip, just no longer active).
   expect(centerTabs.activeFor(key)).toBe("terminal");
-  expect(centerTabs.tabsFor(key).map((t) => t.id)).toEqual(["a.ts", "terminal"]);
+  expect(centerTabs.tabsFor(key).map((t) => t.id)).toEqual(["file:a.ts", "terminal"]);
 });
 
 test("the right rail no longer exposes a Terminal tab", async () => {

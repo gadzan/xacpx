@@ -16,6 +16,10 @@ export function sessionKey(instanceId: string, alias: string): string {
   return `${instanceId}::${alias}`;
 }
 
+/** Sentinel `targetId` for `reorder()`: drop past the last tab moves the
+ *  dragged tab to the end of the list instead of before a real tab. */
+export const TAB_DROP_END = "__end__";
+
 export const useCenterTabsStore = defineStore("center-tabs", () => {
   const bySession = ref<Record<string, SessionTabs>>({});
 
@@ -36,7 +40,7 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
   }
 
   function openFile(key: string, path: string): void {
-    upsertAndActivate(key, { kind: "file", id: path, path });
+    upsertAndActivate(key, { kind: "file", id: `file:${path}`, path });
   }
 
   function openDiff(key: string, path: string): void {
@@ -63,17 +67,26 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     bySession.value = { ...bySession.value, [key]: { tabs, activeId } };
   }
 
+  /** Moves `draggedId` before `targetId`, or to the end of the list when
+   *  `targetId` is `TAB_DROP_END` (a drop past the last tab). No-op if
+   *  `draggedId` isn't open, or `targetId` is neither `TAB_DROP_END` nor an
+   *  open tab. */
   function reorder(key: string, draggedId: string, targetId: string): void {
     if (draggedId === targetId) return;
     const current = bySession.value[key];
     if (!current) return;
     const draggedIndex = current.tabs.findIndex((t) => t.id === draggedId);
-    const targetIndex = current.tabs.findIndex((t) => t.id === targetId);
-    if (draggedIndex === -1 || targetIndex === -1) return;
+    if (draggedIndex === -1) return;
+    const isEnd = targetId === TAB_DROP_END;
+    if (!isEnd && !current.tabs.some((t) => t.id === targetId)) return;
     const tabs = [...current.tabs];
     const [dragged] = tabs.splice(draggedIndex, 1);
-    const insertAt = tabs.findIndex((t) => t.id === targetId);
-    tabs.splice(insertAt, 0, dragged);
+    if (isEnd) {
+      tabs.push(dragged);
+    } else {
+      const insertAt = tabs.findIndex((t) => t.id === targetId);
+      tabs.splice(insertAt, 0, dragged);
+    }
     bySession.value = { ...bySession.value, [key]: { tabs, activeId: current.activeId } };
   }
 
