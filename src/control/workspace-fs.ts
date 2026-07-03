@@ -32,7 +32,10 @@ const SEARCH_MAX_SCAN = 20000; // directory entries visited before giving up
 const SEARCH_SKIP_DIRS = new Set([".git", "node_modules"]);
 const SEARCH_CONTENT_MAX_HITS = 500;
 const SEARCH_CONTENT_MAX_FILE = 1024 * 1024; // skip files > 1 MiB in the fallback walker
+const LINE_MATCH_CAP = 2000; // cap chars fed to the in-process regex (git-absent last-resort ReDoS bound)
 const DOWNLOAD_MAX = 5 * 1024 * 1024; // 5 MiB cap for readFileBytes downloads
+const GIT_TIMEOUT_MS = 10_000; // kill any git subprocess that runs longer (slow repo / ReDoS via `git grep -E`)
+const SEARCH_DEADLINE_MS = 4_000; // abort an in-process JS walk that runs longer (best-effort ReDoS bound)
 
 export interface FsEntry {
   name: string;
@@ -277,9 +280,11 @@ export class WorkspaceFs {
       } catch {
         return resolvePromise(ignored);
       }
-      child.on("error", () => resolvePromise(ignored)); // git missing
+      const killer = setTimeout(() => { try { child!.kill("SIGKILL"); } catch { /* already gone */ } }, GIT_TIMEOUT_MS);
+      child.on("error", () => { clearTimeout(killer); resolvePromise(ignored); }); // git missing
       child.stdout.on("data", (b) => { out += b.toString(); });
       child.on("close", () => {
+        clearTimeout(killer);
         for (const p of out.split("\0")) { if (p) ignored.add(p); }
         resolvePromise(ignored);
       });
@@ -332,12 +337,15 @@ export class WorkspaceFs {
     const matches: string[] = [];
     let scanned = 0;
     let truncated = false;
+    const deadline = Date.now() + SEARCH_DEADLINE_MS;
     const queue: string[] = [base];
     while (queue.length) {
+      if (Date.now() > deadline) { truncated = true; break; }
       const dir = queue.shift()!;
       let dirents;
       try { dirents = await readdir(dir, { withFileTypes: true }); } catch { continue; }
       for (const d of dirents) {
+        if (Date.now() > deadline) { truncated = true; break; }
         if (++scanned > SEARCH_MAX_SCAN) { truncated = true; break; }
         if (d.isSymbolicLink()) continue; // never follow symlinks — keeps us contained
         if (d.isDirectory()) {
@@ -370,7 +378,7 @@ export class WorkspaceFs {
     const exc = opts.exclude ? globToRegExp(opts.exclude) : null;
 
     // Try git grep first: it's fast and respects .gitignore. Args are argv (never a shell).
-    const inGit = await execFileAsync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { maxBuffer: GIT_MAX_BUFFER })
+    const inGit = await execFileAsync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })
       .then(() => true).catch(() => false);
     if (inGit) {
       const args = ["-C", root, "grep", "-n", "--column", "-I", "--no-color", "--untracked"];
@@ -379,15 +387,17 @@ export class WorkspaceFs {
       args.push(opts.regex ? "-E" : "-F");
       args.push("-e", query, "--", scopeRel || ".");
       let stdout = "";
+      let killed = false;
       try {
-        stdout = (await execFileAsync("git", args, { maxBuffer: GIT_MAX_BUFFER })).stdout;
+        stdout = (await execFileAsync("git", args, { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout;
       } catch (e) {
+        killed = (e as { killed?: boolean }).killed === true || (e as { signal?: string }).signal === "SIGKILL";
         const code = (e as { code?: number }).code;
         if (code === 1) stdout = ""; // no matches
         else { const out = (e as { stdout?: string }).stdout; stdout = typeof out === "string" ? out : ""; }
       }
       const hits: SearchHit[] = [];
-      let truncated = false;
+      let truncated = killed;
       for (const raw of stdout.split("\n")) {
         if (!raw) continue;
         // format: <path>:<line>:<column>:<text>
@@ -402,17 +412,64 @@ export class WorkspaceFs {
       return { workspace, query, matches: [], hits, truncated };
     }
 
-    // Fallback (non-git): bounded manual walk + per-line match.
+    // Not a git repo. Prefer `git grep --no-index` — same killable, timeout-bounded engine
+    // (no in-process user regex), just over on-disk files. Fall to the pure-JS walk only if
+    // the git binary is entirely absent.
+    try {
+      const args = ["grep", "--no-index", "-n", "--column", "-I", "--no-color"];
+      if (!opts.matchCase) args.push("-i");
+      if (opts.wholeWord) args.push("-w");
+      args.push(opts.regex ? "-E" : "-F");
+      args.push("-e", query, "--", ".", ":(exclude)node_modules/", ":(exclude).git/");
+      let stdout = "";
+      let killed = false;
+      try {
+        stdout = (await execFileAsync("git", args, { cwd: base, maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout;
+      } catch (e) {
+        if ((e as { code?: string }).code === "ENOENT") throw e; // git missing → JS fallback below
+        killed = (e as { killed?: boolean }).killed === true || (e as { signal?: string }).signal === "SIGKILL";
+        const code = (e as { code?: number }).code;
+        if (code === 1) stdout = ""; // no matches
+        else { const out = (e as { stdout?: string }).stdout; stdout = typeof out === "string" ? out : ""; }
+      }
+      const hits: SearchHit[] = [];
+      let truncated = killed;
+      for (const raw of stdout.split("\n")) {
+        if (!raw) continue;
+        const m = raw.match(/^(.*?):(\d+):(\d+):(.*)$/);
+        if (!m) continue;
+        // paths are relative to `base` (the scope dir); reconcile to root-relative like the repo path.
+        const relToBase = m[1]!.split(sep).join("/");
+        const p = scopeRel ? `${scopeRel}/${relToBase}` : relToBase;
+        if (inc && !inc.test(p)) continue;
+        if (exc && exc.test(p)) continue;
+        hits.push({ path: p, line: Number(m[2]), text: m[4]!.slice(0, 400) });
+        if (hits.length >= SEARCH_CONTENT_MAX_HITS) { truncated = true; break; }
+      }
+      return { workspace, query, matches: [], hits, truncated };
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT") {
+        // Non-ENOENT unexpected error: degrade to empty rather than the (ReDoS-prone) JS walk.
+        return { workspace, query, matches: [], hits: [], truncated: false };
+      }
+      // else: git binary absent → pure-JS last-resort walk below.
+    }
+
+    // Fallback (git binary entirely absent): bounded manual walk + per-line match, with a
+    // wall-clock deadline so a catastrophic user regex can't hang the event loop forever.
     const matcher = buildLineMatcher(query, opts);
     const hits: SearchHit[] = [];
     let scanned = 0;
     let truncated = false;
+    const deadline = Date.now() + SEARCH_DEADLINE_MS;
     const queue: string[] = [base];
     while (queue.length) {
+      if (Date.now() > deadline) { truncated = true; break; }
       const dir = queue.shift()!;
       let dirents;
       try { dirents = await readdir(dir, { withFileTypes: true }); } catch { continue; }
       for (const d of dirents) {
+        if (Date.now() > deadline) { truncated = true; break; }
         if (++scanned > SEARCH_MAX_SCAN) { truncated = true; break; }
         if (d.isSymbolicLink()) continue;
         const full = resolve(dir, d.name);
@@ -427,8 +484,9 @@ export class WorkspaceFs {
         if (text.includes("\0")) continue; // NUL byte ⇒ binary, skip
         const lines = text.split("\n");
         for (let i = 0; i < lines.length; i++) {
+          if (Date.now() > deadline) { truncated = true; break; }
           const line = lines[i]!;
-          if (matcher(line)) {
+          if (matcher(line.length > LINE_MATCH_CAP ? line.slice(0, LINE_MATCH_CAP) : line)) {
             hits.push({ path: rel, line: i + 1, text: line.slice(0, 400) });
             if (hits.length >= SEARCH_CONTENT_MAX_HITS) { truncated = true; break; }
           }
@@ -443,7 +501,7 @@ export class WorkspaceFs {
   async gitDiff(workspace: string, relPath?: string): Promise<WorkspaceDiff> {
     const { root, rel } = await this.resolve(workspace, relPath);
     try {
-      await execFileAsync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { maxBuffer: GIT_MAX_BUFFER });
+      await execFileAsync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" });
     } catch {
       throw new Error("not-a-git-repo");
     }
@@ -456,7 +514,7 @@ export class WorkspaceFs {
       const { stdout } = await execFileAsync(
         "git",
         ["-C", root, "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
-        { maxBuffer: GIT_MAX_BUFFER },
+        { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" },
       );
       const fields = stdout.split("\0");
       for (let i = 0; i < fields.length; i++) {
@@ -478,10 +536,10 @@ export class WorkspaceFs {
     const diffArgs = (base: string[]) => ["-C", root, ...base, ...(rel ? ["--", rel] : [])];
     let diff = "";
     try {
-      diff = (await execFileAsync("git", diffArgs(["diff", "HEAD"]), { maxBuffer: GIT_MAX_BUFFER })).stdout;
+      diff = (await execFileAsync("git", diffArgs(["diff", "HEAD"]), { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout;
     } catch {
       try {
-        diff = (await execFileAsync("git", diffArgs(["diff"]), { maxBuffer: GIT_MAX_BUFFER })).stdout;
+        diff = (await execFileAsync("git", diffArgs(["diff"]), { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout;
       } catch {
         diff = "";
       }
@@ -495,7 +553,7 @@ export class WorkspaceFs {
         diff = (await execFileAsync(
           "git",
           ["-C", root, "-c", "core.quotePath=false", "diff", "--no-index", "--", "/dev/null", rel],
-          { maxBuffer: GIT_MAX_BUFFER },
+          { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" },
         )).stdout;
       } catch (e) {
         const out = (e as { stdout?: string }).stdout;
@@ -512,7 +570,7 @@ export class WorkspaceFs {
   private async gitContext(root: string): Promise<Pick<WorkspaceDiff, "branch" | "detached" | "worktree">> {
     const run = async (...args: string[]): Promise<string | null> => {
       try {
-        return (await execFileAsync("git", ["-C", root, ...args], { maxBuffer: GIT_MAX_BUFFER })).stdout.trim();
+        return (await execFileAsync("git", ["-C", root, ...args], { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" })).stdout.trim();
       } catch {
         return null;
       }
