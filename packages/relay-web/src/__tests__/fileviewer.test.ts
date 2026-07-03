@@ -129,4 +129,47 @@ describe("FileViewer", () => {
     expect(body.text()).toContain("second");
     expect(body.text()).not.toContain("stale");
   });
+
+  it("ignores a stale readFile rejection when props change before it rejects (race guard)", async () => {
+    const files = useFilesStore();
+    let rejectFirst!: (e: Error) => void;
+    const first = new Promise<{ workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }>((_resolve, reject) => { rejectFirst = reject; });
+    const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first);
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await w.vm.$nextTick();
+    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, truncated: false, binary: false });
+    // switch to a second file before the first load rejects
+    await w.setProps({ path: "b.ts" });
+    await flushPromises();
+    await w.vm.$nextTick();
+    // second file's content is showing
+    expect(w.find('[data-test="fv-file-body"]').text()).toContain("second");
+    // now let the stale first load reject — it must NOT clobber the second file's content
+    // nor surface an error for a selection that's no longer current
+    rejectFirst(new Error("deleted"));
+    await flushPromises();
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="fv-file-body"]').text()).toContain("second");
+    expect(w.find('[data-test="fv-error"]').exists()).toBe(false);
+  });
+
+  it("shows an error (and clears stale content) when a load rejects with no newer selection pending", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValueOnce({ workspace: "ws", path: "a.ts", content: "first", size: 5, truncated: false, binary: false });
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="fv-file-body"]').text()).toContain("first");
+    // switch to a file whose load rejects (deleted file, permission error, etc.)
+    vi.spyOn(files, "readFile").mockRejectedValueOnce(new Error("deleted"));
+    await w.setProps({ path: "gone.ts" });
+    await flushPromises();
+    await w.vm.$nextTick();
+    const err = w.find('[data-test="fv-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("deleted");
+    // the previous selection's content must not still be shown as if it were the new one
+    expect(w.find('[data-test="fv-file-body"]').exists()).toBe(false);
+    expect(w.text()).not.toContain("first");
+  });
 });

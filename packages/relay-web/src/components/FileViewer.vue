@@ -55,6 +55,10 @@ async function load(): Promise<void> {
     }
   } catch (e) {
     if (token !== loadToken) return;
+    // Clear stale content on a real failure — otherwise the pane would keep showing the
+    // previous selection's file/diff as if it were the (failed) new one.
+    file.value = null;
+    diff.value = null;
     error.value = e instanceof Error ? e.message : "read-failed";
   } finally {
     if (token === loadToken) loading.value = false;
@@ -140,6 +144,13 @@ function fmtSize(n?: number): string {
 
     <!-- body -->
     <div class="min-h-0 flex-1 overflow-auto thin-scroll">
+      <!-- load failed: a rejected load clears file/diff (see `load()`'s catch), so this only
+           shows in place of — never on top of — stale content from a previous selection. -->
+      <div v-if="error" data-test="fv-error" class="m-3 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-danger">{{ error }}</div>
+      <!-- loading affordance: only while nothing is on screen yet (first load, or after an
+           error-cleared retry) — a load-in-progress for an already-shown file keeps that
+           file visible instead of flashing this. -->
+      <div v-else-if="loading && !file && !diff" data-test="fv-loading" class="p-6 text-sm text-fg-muted">{{ $t("files.loading") }}</div>
       <!-- file content -->
       <template v-if="file">
         <div v-if="!file.binary && fileLines.length <= LINE_GUTTER_LIMIT" data-test="fv-file-body">
