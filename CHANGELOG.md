@@ -1,5 +1,24 @@
 # Changelog
 
+## [relay 0.9.12-beta.8] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta bundling file-tree browser UX refinements (#114). UI-only (bundled `relay-web`); no core/protocol/connector change. Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard).
+
+### Added
+
+- **Per-row ⋯ menu button.** Every file-tree row and the workspace-root header now expose an always-visible ⋯ button that opens the same context menu, so touch devices (no right-click) can reach every action. Root-level new file / new folder moved into the header menu (the two standalone root buttons are gone).
+- **Global toast system.** File operations (create / rename / delete / download) now report success and failure through a unified, top-center toast host that stacks, auto-dismisses, and can be closed by hand — replacing the sticky, non-dismissible error banner for write ops.
+
+### Changed
+
+- **"Search in this folder" is now visible and editable.** It writes a `<folder>/**` glob into the "files to include" field (VSCode-style) instead of a hidden scope; the field is cleared on a workspace switch so a folder scope never leaks across workspaces.
+- **Search placeholder tracks the active mode** (by name vs by content).
+- Only one file-tree context menu is open at a time (repeated right-clicks no longer stack menus).
+
+### Removed
+
+- The **Duplicate** action from the file/folder context menu.
+
 ## [file-tree browser] - 2026-07-03
 
 A coordinated pre-release across the full relay stack adding the relay-web **file-tree browser** (read + write) and hardening its search. All four packages go out together — the write/search backend spans core + connector + protocol, so the hub UI alone would not work. Pre-releases publish to the npm `next` dist-tag. Update the daemon with `xacpx update` (core + connector) and the hub with `xacpx-relay update`, then restart both and hard-reload the dashboard.
