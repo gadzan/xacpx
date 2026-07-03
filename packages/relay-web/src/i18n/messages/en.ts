@@ -326,6 +326,11 @@ export default {
   taskPanel: {
     noSession: "No session selected.",
   },
+  center: {
+    chat: "Chat",
+    terminal: "Terminal",
+    closeTab: "Close tab",
+  },
   terminal: {
     title: "Terminal",
     disabled: "Terminal is disabled. Enable `terminal.enabled` in the instance config.",

@@ -324,6 +324,11 @@ export default {
   taskPanel: {
     noSession: "未选择会话。",
   },
+  center: {
+    chat: "会话",
+    terminal: "终端",
+    closeTab: "关闭标签",
+  },
   terminal: {
     title: "终端",
     disabled: "终端未启用。请在实例 config 中开启 `terminal.enabled`。",
