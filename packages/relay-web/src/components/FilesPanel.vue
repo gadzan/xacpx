@@ -49,7 +49,8 @@ async function submitRoot() {
 const rootMenu = ref<{ x: number; y: number } | null>(null);
 function openRootMenu(e: MouseEvent | KeyboardEvent) {
   const r = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
-  rootMenu.value = r ? { x: r.right - 160, y: r.bottom } : { x: 0, y: 0 };
+  // Anchor under the button; ContextMenu clamps into the viewport if it would overflow.
+  rootMenu.value = r ? { x: r.left, y: r.bottom } : { x: 0, y: 0 };
   openMenuKey.value = ROOT_MENU_KEY;
 }
 function onRootMenuSelect(key: string) {
@@ -134,6 +135,47 @@ function clearSearch() {
   void files.search("");
 }
 
+// Client-side windowing: show a first page of results, reveal more on demand — keeps the
+// panel snappy instead of dumping every hit (backend still caps + flags `searchTruncated`).
+const PAGE = 10;
+const visibleCount = ref(PAGE);
+// Collapse back to the first page whenever a new result set arrives — covers a new query,
+// a mode switch, and any search-option toggle (each re-runs search(), reassigning the arrays).
+watch(() => [files.results, files.hits], () => { visibleCount.value = PAGE; });
+const visibleHits = computed(() => files.hits.slice(0, visibleCount.value));
+const visibleResults = computed(() => files.results.slice(0, visibleCount.value));
+const moreHits = computed(() => Math.max(0, files.hits.length - visibleCount.value));
+const moreResults = computed(() => Math.max(0, files.results.length - visibleCount.value));
+function showMore() { visibleCount.value += PAGE; }
+
+// Highlight the matched query inside a content line. Mirrors the backend matcher
+// (regex / matchCase / wholeWord) so highlights line up with what actually matched;
+// an invalid regex just yields no highlight (the line still renders).
+function buildHighlightRe(): RegExp | null {
+  const q = files.query.trim();
+  if (!q) return null;
+  const o = files.searchOpts;
+  let pat = o.regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (o.wholeWord) pat = `\\b${pat}\\b`;
+  try { return new RegExp(pat, "g" + (o.matchCase ? "" : "i")); } catch { return null; }
+}
+function segments(text: string): { text: string; hit: boolean }[] {
+  const re = buildHighlightRe();
+  if (!re) return [{ text, hit: false }];
+  const out: { text: string; hit: boolean }[] = [];
+  let last = 0, guard = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) && guard++ < 2000) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index), hit: false });
+    const matched = m[0] || "";
+    if (matched) out.push({ text: matched, hit: true });
+    last = m.index + matched.length;
+    if (m.index === re.lastIndex) re.lastIndex++; // guard against a zero-width match looping
+  }
+  if (last < text.length) out.push({ text: text.slice(last), hit: false });
+  return out.length ? out : [{ text, hit: false }];
+}
+
 // Git-status badge for a Changes-tab row, derived from the porcelain status code.
 function statusBadge(code: string): { label: string; cls: string; dot: string } {
   const c = code.trim();
@@ -201,8 +243,8 @@ watch(
           <!-- Root-level new file/folder lives here (the workspace root has no tree row). -->
           <button
             data-test="root-menu"
-            :title="$t('files.menu.more')"
-            :aria-label="$t('files.menu.more')"
+            :title="$t('files.newInRoot')"
+            :aria-label="$t('files.newInRoot')"
             class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
             @click.stop="openRootMenu($event)"
           >
@@ -268,19 +310,26 @@ watch(
         <div v-if="files.query.trim()" data-test="fs-results" class="min-h-0 flex-1 overflow-y-auto thin-scroll">
           <template v-if="files.searchOpts.mode === 'content'">
             <div v-if="!files.hits.length && !files.searching" class="px-3 py-1 text-xs text-fg-muted">{{ $t("files.search.noContentMatches") }}</div>
-            <ul class="p-2 text-[11px] font-mono leading-5">
-              <li v-for="(h, i) in files.hits" :key="i">
-                <button data-test="fs-hit" class="flex w-full items-baseline gap-2 rounded px-1.5 py-0.5 text-left hover:bg-raised" @click="openSearchResult(h.path)">
-                  <span class="shrink-0 text-fg-muted/70">{{ h.path }}:{{ h.line }}</span>
-                  <span class="truncate text-fg-muted">{{ h.text }}</span>
+            <!-- Each hit: file:line on its own line, then the matched source line below with
+                 the query highlighted, wrapped so there's enough context to recognize it. -->
+            <ul class="p-2 space-y-1">
+              <li v-for="(h, i) in visibleHits" :key="i">
+                <button data-test="fs-hit" class="block w-full rounded px-1.5 py-1 text-left hover:bg-raised" @click="openSearchResult(h.path)">
+                  <div class="truncate font-mono text-[10.5px] text-fg-muted/70">{{ h.path }}<span class="text-accent">:{{ h.line }}</span></div>
+                  <div class="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-5 text-fg-muted">
+                    <template v-for="(seg, j) in segments(h.text)" :key="j"><span :data-test="seg.hit ? 'hit-mark' : null" :class="seg.hit ? 'rounded-sm bg-warn/30 font-semibold text-fg' : ''">{{ seg.text }}</span></template>
+                  </div>
                 </button>
               </li>
             </ul>
-            <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
+            <button v-if="moreHits" data-test="fs-more" class="mx-2 mb-1 block rounded px-2 py-1 text-[11px] text-accent hover:bg-raised" @click="showMore">
+              {{ $t("files.showMore", { n: Math.min(PAGE, moreHits) }) }}
+            </button>
+            <div v-else-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
           </template>
           <template v-else>
             <ul class="p-2.5 text-[11px] font-mono leading-5 space-y-px">
-              <li v-for="m in files.results" :key="m">
+              <li v-for="m in visibleResults" :key="m">
                 <button data-test="fs-result"
                         class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-raised cursor-pointer" @click="openSearchResult(m)">
                   <File :size="13" class="shrink-0 text-fg-muted" />
@@ -289,7 +338,10 @@ watch(
               </li>
               <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
             </ul>
-            <div v-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
+            <button v-if="moreResults" data-test="fs-more" class="mx-2 mb-1 block rounded px-2 py-1 text-[11px] text-accent hover:bg-raised" @click="showMore">
+              {{ $t("files.showMore", { n: Math.min(PAGE, moreResults) }) }}
+            </button>
+            <div v-else-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
           </template>
         </div>
 

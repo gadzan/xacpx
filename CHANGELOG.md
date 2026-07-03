@@ -1,5 +1,19 @@
 # Changelog
 
+## [relay 0.9.12-beta.9] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta folding in on-device feedback on the file-tree browser UX. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Fixed
+
+- **Context menu no longer spills off-screen.** A menu opened near the right or bottom edge now clamps into the viewport (and re-clamps if the same row is right-clicked again at a new point).
+- **The ⋯ row button is pinned to the far right** (the git-status dot moved to its left), so the action target is a stable column.
+
+### Changed
+
+- **Content search results redesigned.** The matched source line now renders on its own line beneath `file:line`, wrapped for context, with the query highlighted (the highlight mirrors the match-case / whole-word / regex options). Results are windowed to 10 with a "show more" button (both name and content modes) instead of dumping up to 200 at once; the window collapses back to the first page whenever a new result set arrives.
+- **Clearer root-create affordance.** The workspace-header ⋯ button (which opens New file / New folder at the workspace root) now carries a "New file / folder in root" tooltip.
+
 ## [relay 0.9.12-beta.8] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta bundling file-tree browser UX refinements (#114). UI-only (bundled `relay-web`); no core/protocol/connector change. Published to the npm `next` dist-tag. Update with `xacpx-relay update` (then restart the hub and hard-reload the dashboard).

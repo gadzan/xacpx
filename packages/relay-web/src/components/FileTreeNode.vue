@@ -139,15 +139,15 @@ async function onMenuSelect(key: string) {
                @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
                class="flex-1 rounded border border-border bg-raised px-1 text-[12px]" />
       </button>
-      <!-- Always-visible ⋯ trigger: opens the same context menu, so touch devices (no
-           right-click) can reach every action. -->
+      <span v-if="gitDot" data-test="fs-status" class="ml-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
+            :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
+      <!-- Always-visible ⋯ trigger, pinned at the far right: opens the same context menu, so
+           touch devices (no right-click) can reach every action. -->
       <button data-test="row-menu" type="button" :aria-label="$t('files.menu.more')"
               class="ml-1 grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
               @click.stop="openMenu($event)">
         <MoreHorizontal :size="13" />
       </button>
-      <span v-if="gitDot" data-test="fs-status" class="ml-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
-            :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
     </div>
 
     <div v-if="isDir && isOpen">
