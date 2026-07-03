@@ -91,7 +91,15 @@ describe("FileTreeNode write menu", () => {
     await w.find('[data-test="tree-row"]').trigger("contextmenu");
     await w.find('[data-test="menu-searchInFolder"]').trigger("click");
     expect(store.searchOpts.include).toBe("src/utils/**"); // backend matches include as a glob
-    expect(store.searchOpts.path).toBe("");
+  });
+
+  it("reset() clears the include folder-scope so it can't leak across workspace switches", () => {
+    const store = useFilesStore();
+    store.searchOpts.include = "src/utils/**"; // a folder scope from "Search in this folder"
+    store.searchOpts.exclude = "*.log"; // a genuine user preference
+    store.reset();
+    expect(store.searchOpts.include).toBe(""); // workspace-bound scope cleared
+    expect(store.searchOpts.exclude).toBe("*.log"); // preference survives
   });
 
   it("delete calls window.confirm then store.deleteEntry when confirmed", async () => {

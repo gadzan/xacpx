@@ -51,8 +51,8 @@ export const useFilesStore = defineStore("files", () => {
   const expanded = ref<Set<string>>(new Set());
   const loadingDirs = ref<Set<string>>(new Set());
   const hits = ref<FsSearchHitDto[]>([]);
-  const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string; path: string }>({
-    mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "", path: "",
+  const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string }>({
+    mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "",
   });
 
   function reset(): void {
@@ -71,10 +71,11 @@ export const useFilesStore = defineStore("files", () => {
     expanded.value = new Set();
     hits.value = [];
     root.value = "";
-    // The folder scope is workspace-bound (a relPath in the outgoing workspace) — the
-    // other searchOpts (mode/matchCase/wholeWord/regex/include/exclude) are user
-    // preferences and survive a workspace switch on purpose.
-    searchOpts.value.path = "";
+    // `include` can hold a workspace-bound folder scope ("<folder>/**", set by "Search in
+    // this folder"), so clear it on a workspace switch — otherwise a stale scope leaks into
+    // the next workspace and silently filters out all of its results. The rest
+    // (mode/matchCase/wholeWord/regex/exclude) are user preferences and survive on purpose.
+    searchOpts.value.include = "";
   }
 
   async function selectWorkspace(id: string, ws: string): Promise<void> {
@@ -268,7 +269,7 @@ export const useFilesStore = defineStore("files", () => {
       const r = unwrap(await api.rpc<FsSearchResult>(instanceId.value, "control.fs.search", {
         workspace: workspace.value, query: q,
         mode: o.mode, matchCase: o.matchCase, wholeWord: o.wholeWord, regex: o.regex,
-        include: o.include, exclude: o.exclude, path: o.path,
+        include: o.include, exclude: o.exclude,
       }));
       results.value = r.matches;
       hits.value = r.hits ?? [];

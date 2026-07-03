@@ -57,7 +57,7 @@ describe("files store", () => {
     await s.selectWorkspace("i1", "ws");
     rpc.mockResolvedValueOnce({ workspace: "ws", query: "a.ts", matches: ["src/a.ts"], truncated: false });
     await s.search("a.ts");
-    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "a.ts", mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "", path: "" });
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "a.ts", mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "" });
     expect(s.results).toEqual(["src/a.ts"]);
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
     await s.openFile("src/a.ts");
@@ -226,17 +226,17 @@ describe("files store: tree + advanced search", () => {
   it("content search sends advanced options and fills hits", async () => {
     const s = useFilesStore();
     s.instanceId = "i1"; s.workspace = "ws";
-    s.searchOpts.mode = "content"; s.searchOpts.regex = true; s.searchOpts.include = "**/*.ts";
+    s.searchOpts.mode = "content"; s.searchOpts.regex = true; s.searchOpts.include = "**/*.ts"; // manual include glob
     rpc.mockResolvedValueOnce({ workspace: "ws", query: "foo", matches: [], hits: [{ path: "a.ts", line: 2, text: "foo" }], truncated: false });
     await s.search("foo");
-    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "foo", mode: "content", matchCase: false, wholeWord: false, regex: true, include: "**/*.ts", exclude: "", path: "" });
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "foo", mode: "content", matchCase: false, wholeWord: false, regex: true, include: "**/*.ts", exclude: "" });
     expect(s.hits[0].line).toBe(2);
   });
 
-  it("reset() clears the directory search scope (searchOpts.path) to avoid cross-workspace leak", () => {
+  it("reset() clears the directory search scope (searchOpts.include) to avoid cross-workspace leak", () => {
     const s = useFilesStore();
-    s.searchOpts.path = "src";
+    s.searchOpts.include = "src/**"; // folder scope set by "Search in this folder"
     s.reset();
-    expect(s.searchOpts.path).toBe("");
+    expect(s.searchOpts.include).toBe("");
   });
 });
