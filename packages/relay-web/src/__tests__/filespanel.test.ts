@@ -266,6 +266,18 @@ describe("FilesPanel content search results", () => {
     expect(w.find('[data-test="fs-more"]').exists()).toBe(false);
   });
 
+  it("collapses back to the first page when a new result set arrives", async () => {
+    const hits = Array.from({ length: 15 }, (_, i) => ({ path: `f${i}.ts`, line: i + 1, text: `foo ${i}` }));
+    const { w, files } = mountWithHits(hits);
+    await flushPromises();
+    await w.find('[data-test="fs-more"]').trigger("click");
+    expect(w.findAll('[data-test="fs-hit"]').length).toBe(15);
+    // A fresh search (any option toggle re-runs search → new hits array) resets the window.
+    files.hits = Array.from({ length: 12 }, (_, i) => ({ path: `g${i}.ts`, line: i + 1, text: `foo ${i}` })) as never;
+    await flushPromises();
+    expect(w.findAll('[data-test="fs-hit"]').length).toBe(10);
+  });
+
   it("does not throw on an invalid highlight regex (renders the line unhighlighted)", async () => {
     const { w } = mountWithHits([{ path: "a.ts", line: 1, text: "a(b" }], "(");
     const files = useFilesStore();

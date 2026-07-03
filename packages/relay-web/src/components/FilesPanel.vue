@@ -139,7 +139,9 @@ function clearSearch() {
 // panel snappy instead of dumping every hit (backend still caps + flags `searchTruncated`).
 const PAGE = 10;
 const visibleCount = ref(PAGE);
-watch(() => [files.query, files.searchOpts.mode], () => { visibleCount.value = PAGE; });
+// Collapse back to the first page whenever a new result set arrives — covers a new query,
+// a mode switch, and any search-option toggle (each re-runs search(), reassigning the arrays).
+watch(() => [files.results, files.hits], () => { visibleCount.value = PAGE; });
 const visibleHits = computed(() => files.hits.slice(0, visibleCount.value));
 const visibleResults = computed(() => files.results.slice(0, visibleCount.value));
 const moreHits = computed(() => Math.max(0, files.hits.length - visibleCount.value));

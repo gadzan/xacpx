@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from "vue";
+import { onMounted, onBeforeUnmount, ref, watch } from "vue";
 const props = defineProps<{ x: number; y: number; items: { key: string; label: string }[] }>();
 const emit = defineEmits<{ select: [key: string]; close: [] }>();
 
@@ -18,6 +18,8 @@ function clamp() {
   if (height && y + height > vh - m) y = Math.max(m, vh - height - m);
   pos.value = { x, y };
 }
+// Re-open at a new point without a remount (same row right-clicked again): re-clamp.
+watch(() => [props.x, props.y], () => { pos.value = { x: props.x, y: props.y }; clamp(); });
 
 function onDocClick() { emit("close"); }
 function onKey(e: KeyboardEvent) { if (e.key === "Escape") emit("close"); }
