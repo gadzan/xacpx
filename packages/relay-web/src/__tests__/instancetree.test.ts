@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import InstanceTree from "../components/InstanceTree.vue";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 
 const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
@@ -305,5 +306,47 @@ describe("InstanceTree session management", () => {
     store.instances = [{ ...instance([{ alias: "a", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }]), online: false }] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     expect(w.find('[data-test="session-actions"]').exists()).toBe(false);
+  });
+
+  // Archiving/deleting a session must drop its center-tabs entry so any mounted
+  // terminal/file panes unmount (and the terminal's PTY tears down) — otherwise
+  // an archived/deleted session leaks a live terminal pane forever.
+  it("clears the session's center tabs when it is archived", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    vi.spyOn(store, "archiveSession").mockResolvedValue();
+    const centerTabs = useCenterTabsStore();
+    const key = sessionKey("i1", "backend");
+    centerTabs.openTerminal(key);
+    expect(centerTabs.tabsFor(key)).toHaveLength(1);
+    const clearSession = vi.spyOn(centerTabs, "clearSession");
+    const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("mousedown");
+    await w.find('[data-test="session-menu"]').trigger("click");
+    const item = w.find('[data-test="action-archive"]');
+    await item.trigger("mousedown");
+    await item.trigger("click");
+    await flushPromises();
+    expect(clearSession).toHaveBeenCalledWith(key);
+    expect(centerTabs.tabsFor(key)).toEqual([]);
+    w.unmount();
+  });
+
+  it("clears the session's center tabs when it is deleted", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    vi.spyOn(store, "removeSession").mockResolvedValue();
+    const centerTabs = useCenterTabsStore();
+    const key = sessionKey("i1", "backend");
+    centerTabs.openTerminal(key);
+    expect(centerTabs.tabsFor(key)).toHaveLength(1);
+    const clearSession = vi.spyOn(centerTabs, "clearSession");
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("click");
+    await w.find('[data-test="delete-session"]').trigger("click");
+    settleConfirm(true);
+    await flushPromises();
+    expect(clearSession).toHaveBeenCalledWith(key);
+    expect(centerTabs.tabsFor(key)).toEqual([]);
   });
 });

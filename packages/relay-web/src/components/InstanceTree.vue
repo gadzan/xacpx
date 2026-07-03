@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Archive, ChevronDown, ChevronRight, Link2, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
 import { useSwipeActions } from "../lib/use-swipe-actions";
@@ -19,6 +20,7 @@ const vFocus = {
 
 const store = useInstancesStore();
 const chat = useChatStore();
+const centerTabs = useCenterTabsStore();
 const { t } = useI18n();
 
 // A session row carries the agent NAME; the brand glyph keys on its driver. Resolve via the
@@ -148,6 +150,9 @@ function onRowTap(id: string, alias: string) {
 async function onArchive(id: string, alias: string) {
   openMenuFor.value = null;
   openSwipeFor.value = null;
+  // Drop this session's center tabs (terminal/file panes) right away — the ephemeral
+  // tabs/PTY are freed on archive; unarchive (via the undo toast) does not restore them.
+  centerTabs.clearSession(sessionKey(id, alias));
   await store.archiveSession(id, alias).catch(() => {});
   showUndoToast(id, alias);
 }
@@ -173,6 +178,8 @@ async function askDelete(id: string, alias: string) {
   // Deleting the session you're viewing drops the view back to the empty "no session"
   // state rather than leaving a stale, now-broken selection pointed at it.
   const wasActive = isSelected(id, alias);
+  // Drop this session's center tabs (terminal/file panes) so they unmount along with it.
+  centerTabs.clearSession(sessionKey(id, alias));
   void store.removeSession(id, alias).catch(() => {});
   if (wasActive) chat.clearSelection();
 }
