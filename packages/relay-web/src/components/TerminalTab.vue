@@ -201,7 +201,16 @@ function onTouchEnd(e: TouchEvent) {
 function applyFit(myEpoch = epoch) {
   if (myEpoch !== epoch || !terminalId || !adapter) return;
   const dim = adapter.fit();
-  if (!dim) { requestAnimationFrame(() => applyFit(myEpoch)); return; }
+  if (!dim) {
+    // fit() also returns null when the host is hidden (v-show="false" -> display:none ->
+    // 0x0), which non-active terminal tabs now stay mounted as. Rescheduling unconditionally
+    // there would self-perpetuate this rAF loop at 60fps forever for every backgrounded
+    // terminal. Only retry while the host is actually laid out (non-zero size); once it's
+    // hidden, bail — the ResizeObserver below re-invokes applyFit when it's revealed again
+    // (display change -> size change), so this self-heals without polling.
+    if (host.value && host.value.clientWidth > 0) requestAnimationFrame(() => applyFit(myEpoch));
+    return;
+  }
   adapter.resize(dim.cols, dim.rows);
   terminals.resize(props.instanceId, terminalId, dim.cols, dim.rows);
 }

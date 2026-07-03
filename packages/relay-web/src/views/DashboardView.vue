@@ -147,6 +147,32 @@ function keyWorkspace(key: string): string {
   return inst?.sessions.find((s) => s.alias === keyAlias(key))?.workspace ?? "";
 }
 
+// Prune center-tabs whose session has disappeared OUT-OF-BAND (deleted from the CLI /
+// WeChat / another browser tab). `InstanceTree` prunes on local archive/delete, but a
+// server-driven removal only reloads `instances` (via applyEvent → loadSessions) — nothing
+// else tells centerTabs, so that session's FileViewer/TerminalTab panes above would stay
+// mounted (and any PTY alive) forever. Only consider an instance's session list authoritative
+// once it has actually loaded (`sessionsLoaded`): while a fetch is still in flight, a key
+// that isn't in `sessions` yet hasn't necessarily been removed, it just hasn't arrived —
+// pruning then would race the load and drop a still-valid tab.
+const validSessionKeys = computed(() => {
+  const keys = new Set<string>();
+  for (const inst of instances.instances) {
+    if (!inst.sessionsLoaded) continue;
+    for (const s of inst.sessions) keys.add(sessionKey(inst.id, s.alias));
+  }
+  return keys;
+});
+function reconcileCenterTabs() {
+  const valid = validSessionKeys.value;
+  const openKeys = new Set(centerTabs.allOpenTabs().map((t) => t.key));
+  for (const key of openKeys) {
+    const inst = instances.byId(keyInstance(key));
+    if (inst?.sessionsLoaded && !valid.has(key)) centerTabs.clearSession(key);
+  }
+}
+watch(() => instances.instances, reconcileCenterTabs, { deep: true });
+
 // A file/diff/terminal tab opened for the current session takes over the center column.
 // On mobile, opening one also closes the right drawer so the pane is actually visible.
 watch(
