@@ -365,11 +365,24 @@ export const useFilesStore = defineStore("files", () => {
     }
   }
 
+  /** Read a file's content without touching the global `file` slot — for tab
+   *  panes that hold their own local content independent of the file browser. */
+  async function readFile(id: string, ws: string, filePath: string): Promise<FsReadResult> {
+    return unwrap(await api.rpc<FsReadResult>(id, "control.fs.read", { workspace: ws, path: filePath }));
+  }
+
+  /** Read a git diff (whole-tree or one file) without touching the global `diff`/`diffPath`
+   *  slots — for tab panes that hold their own local diff content. */
+  async function readDiff(id: string, ws: string, filePath?: string): Promise<FsDiffResult> {
+    return unwrap(await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws, ...(filePath ? { path: filePath } : {}) }));
+  }
+
   return {
     instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error,
     root, sep: sepChar, tree, expanded, loadingDirs, hits, searchOpts,
     reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh,
     listTree, toggleExpand, absPath,
     createEntry, renameEntry, deleteEntry, downloadEntry,
+    readFile, readDiff,
   };
 });
