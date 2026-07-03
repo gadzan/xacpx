@@ -11,10 +11,16 @@ import {
   type FsSearchHitDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { pushToast } from "../lib/use-toasts";
 
 function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
   if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
   return result;
+}
+
+/** Basename of a workspace-relative path, for toast messages. */
+function baseName(rel: string): string {
+  return rel.split("/").pop() || rel;
 }
 
 export const useFilesStore = defineStore("files", () => {
@@ -284,42 +290,39 @@ export const useFilesStore = defineStore("files", () => {
     return i < 0 ? "" : rel.slice(0, i);
   }
 
+  // Write-op results surface as global toasts (auto-dismissing, closable) rather than
+  // the sticky `error` banner, which stays reserved for read/list/search failures.
+  function opFailed(e: unknown): void {
+    pushToast("error", "files.toast.failed", { msg: e instanceof Error ? e.message : "unknown" });
+  }
+
   async function createEntry(dir: string, name: string, kind: "file" | "dir"): Promise<void> {
     if (!instanceId.value || !workspace.value || !name.trim()) return;
-    error.value = "";
     const p = dir ? `${dir}/${name}` : name;
     try {
       unwrap(await api.rpc(instanceId.value, "control.fs.create", { workspace: workspace.value, path: p, kind }));
       await refreshDir(dir);
-    } catch (e) { error.value = e instanceof Error ? e.message : "create-failed"; }
+      pushToast("success", "files.toast.created", { name });
+    } catch (e) { opFailed(e); }
   }
   async function renameEntry(rel: string, newName: string): Promise<void> {
     if (!instanceId.value || !workspace.value || !newName.trim()) return;
-    error.value = "";
     try {
       unwrap(await api.rpc(instanceId.value, "control.fs.rename", { workspace: workspace.value, path: rel, newName }));
       await refreshDir(parentOf(rel));
-    } catch (e) { error.value = e instanceof Error ? e.message : "rename-failed"; }
+      pushToast("success", "files.toast.renamed", { name: newName });
+    } catch (e) { opFailed(e); }
   }
   async function deleteEntry(rel: string): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
-    error.value = "";
     try {
       unwrap(await api.rpc(instanceId.value, "control.fs.delete", { workspace: workspace.value, path: rel }));
       await refreshDir(parentOf(rel));
-    } catch (e) { error.value = e instanceof Error ? e.message : "delete-failed"; }
-  }
-  async function duplicateEntry(rel: string): Promise<void> {
-    if (!instanceId.value || !workspace.value) return;
-    error.value = "";
-    try {
-      unwrap(await api.rpc(instanceId.value, "control.fs.copy", { workspace: workspace.value, path: rel }));
-      await refreshDir(parentOf(rel));
-    } catch (e) { error.value = e instanceof Error ? e.message : "copy-failed"; }
+      pushToast("success", "files.toast.deleted", { name: baseName(rel) });
+    } catch (e) { opFailed(e); }
   }
   async function downloadEntry(rel: string): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
-    error.value = "";
     try {
       const r = unwrap(await api.rpc<FsDownloadResult>(
         instanceId.value, "control.fs.download", { workspace: workspace.value, path: rel }));
@@ -328,12 +331,13 @@ export const useFilesStore = defineStore("files", () => {
       const url = URL.createObjectURL(blob);
       try {
         const a = document.createElement("a");
-        a.href = url; a.download = rel.split("/").pop() ?? "download";
+        a.href = url; a.download = baseName(rel) || "download";
         document.body.appendChild(a); a.click(); a.remove();
       } finally {
         URL.revokeObjectURL(url);
       }
-    } catch (e) { error.value = e instanceof Error ? e.message : "download-failed"; }
+      pushToast("success", "files.toast.downloaded", { name: baseName(rel) });
+    } catch (e) { opFailed(e); }
   }
 
   /** Load the git diff for the whole tree (path omitted) or one file. */
@@ -365,6 +369,6 @@ export const useFilesStore = defineStore("files", () => {
     root, sep: sepChar, tree, expanded, loadingDirs, hits, searchOpts,
     reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh,
     listTree, toggleExpand, absPath,
-    createEntry, renameEntry, deleteEntry, duplicateEntry, downloadEntry,
+    createEntry, renameEntry, deleteEntry, downloadEntry,
   };
 });

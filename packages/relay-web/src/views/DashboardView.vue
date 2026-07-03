@@ -16,6 +16,7 @@ import FilesPanel from "../components/FilesPanel.vue";
 import TerminalTab from "../components/TerminalTab.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ActionToast from "../components/ActionToast.vue";
+import ToastHost from "../components/ToastHost.vue";
 import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
@@ -364,6 +365,7 @@ onUnmounted(() => {
     </div>
     <NoticeToast />
     <ActionToast />
+    <ToastHost />
     <CommandPalette v-if="paletteOpen"
                     @close="paletteOpen = false"
                     @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }" />
