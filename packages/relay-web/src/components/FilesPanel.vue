@@ -4,6 +4,7 @@ import { ChevronRight, File, FileText, Folder, FolderGit2, GitBranch, List, More
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { groupChanges, splitPath } from "../lib/change-groups";
 import { openMenuKey, ROOT_MENU_KEY } from "../lib/tree-menu";
 import FileTreeNode from "./FileTreeNode.vue";
@@ -21,6 +22,13 @@ const props = defineProps<{ instanceId: string | null }>();
 const files = useFilesStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
+const centerTabs = useCenterTabsStore();
+
+// The session whose center tabs a click here should open a tab on — null when no
+// session is selected, in which case opening a file/diff from the rail is a no-op.
+const currentKey = computed(() =>
+  chat.instanceId && chat.sessionAlias ? sessionKey(chat.instanceId, chat.sessionAlias) : null,
+);
 
 // dotfile / gitignore toggles for the Files-tab tree, persisted across sessions.
 const showDotfiles = ref(localStorage.getItem("xacpx.files.showDotfiles") === "1");
@@ -31,8 +39,8 @@ watch(showGitignored, (v) => localStorage.setItem("xacpx.files.showGitignored", 
 const rootChildren = computed(() => (files.tree[""] ?? []).filter((e) =>
   (!e.ignored || showGitignored.value) && (!e.name.startsWith(".") || showDotfiles.value)));
 function openTreeFile(rel: string) {
-  files.diffPath = null;
-  void files.openFile(rel);
+  files.diffPath = null; // clear any Changes-tab row highlight in favor of the freshly opened file
+  if (currentKey.value) centerTabs.openFile(currentKey.value, rel);
 }
 
 // Root-level "new file / new folder" — the workspace root has no parent tree row to
@@ -188,12 +196,15 @@ function statusBadge(code: string): { label: string; cls: string; dot: string } 
 }
 
 function openSearchResult(m: string) {
-  files.diffPath = null;
-  void files.openFile(m);
+  files.diffPath = null; // clear any Changes-tab row highlight in favor of the freshly opened file
+  if (currentKey.value) centerTabs.openFile(currentKey.value, m);
 }
 function openDiff(path: string) {
-  files.file = null;
-  void files.loadDiff(path);
+  // Keep the Changes-tab row highlighted without re-fetching (that would rescope the
+  // panel's loaded `diff` to this one file and skew the +/- summary counts above the
+  // list) — the diff VIEW itself now loads its own content in a center diff tab.
+  files.diffPath = path;
+  if (currentKey.value) centerTabs.openDiff(currentKey.value, path);
 }
 
 // Follow the instance + active session's workspace. Re-selects (and resets navigation)

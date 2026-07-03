@@ -12,6 +12,7 @@ import FilesPanel from "../components/FilesPanel.vue";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 
 let pinia: ReturnType<typeof createPinia>;
 beforeEach(() => {
@@ -226,6 +227,112 @@ describe("FilesPanel navigation rail", () => {
     await flushPromises();
 
     expect(loadDiff).not.toHaveBeenCalled();
+  });
+});
+
+describe("FilesPanel center-tab routing", () => {
+  it("opening a tree file with a selected session opens a center file tab", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.tree[""] = [{ name: "a.ts", type: "file", size: 1 }] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="tree-row"]').trigger("click");
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "a.ts");
+    // The tree still renders (listing behavior unchanged).
+    expect(w.find('[data-test="tree-row"]').exists()).toBe(true);
+  });
+
+  it("opening a tree file with no selected session is a no-op for the center-tabs store", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.tree[""] = [{ name: "a.ts", type: "file", size: 1 }] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="tree-row"]').trigger("click");
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("clicking a name-mode search result opens a center file tab", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    vi.spyOn(files, "search").mockResolvedValue();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.query = "foo";
+    files.results = ["src/foo.ts"] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="fs-result"]').trigger("click");
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/foo.ts");
+    expect(w.find('[data-test="fs-result"]').exists()).toBe(true);
+  });
+
+  it("clicking a content-mode search hit opens a center file tab", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    vi.spyOn(files, "search").mockResolvedValue();
+    const openFile = vi.spyOn(centerTabs, "openFile");
+    files.searchOpts.mode = "content";
+    files.query = "foo";
+    files.hits = [{ path: "src/a.ts", line: 3, text: "const foo = 1" }] as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="fs-hit"]').trigger("click");
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/a.ts");
+  });
+
+  it("clicking a changed file opens a center diff tab, keeps the listing, and highlights the row", async () => {
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws",
+      files: [{ path: "src/a.ts", status: " M" }],
+      diff: "+x\n-y\n",
+      truncated: false,
+    } as never;
+    await w.vm.$nextTick();
+    const loadDiff = vi.spyOn(files, "loadDiff").mockResolvedValue();
+    const openDiff = vi.spyOn(centerTabs, "openDiff");
+    await w.find('[data-test="diff-file"]').trigger("click");
+    expect(openDiff).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/a.ts");
+    // The panel-data listing itself must not be reloaded by the click-to-view action.
+    expect(loadDiff).not.toHaveBeenCalled();
+    // The changed-files list is still there (panel data untouched).
+    expect(w.findAll('[data-test="diff-file"]').length).toBe(1);
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+  });
+
+  it("clicking a changed file with no selected session is a no-op for the center-tabs store", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const centerTabs = useCenterTabsStore();
+    const openDiff = vi.spyOn(centerTabs, "openDiff");
+    files.tab = "changes";
+    files.diff = {
+      workspace: "ws",
+      files: [{ path: "src/a.ts", status: " M" }],
+      diff: "+x\n-y\n",
+      truncated: false,
+    } as never;
+    await w.vm.$nextTick();
+    await w.find('[data-test="diff-file"]').trigger("click");
+    expect(openDiff).not.toHaveBeenCalled();
   });
 });
 
