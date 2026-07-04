@@ -213,6 +213,16 @@ describe("files store", () => {
     expect(s.diff).toBeNull();
     expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.diff", { workspace: "ws", path: "a.ts" });
   });
+
+  it("saveFile sends control.fs.write with the content and expected token", async () => {
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ path: "a.ts", mtimeMs: 222, size: 3 });
+    const res = await s.saveFile("inst1", "ws", "a.ts", "new", { mtimeMs: 111, size: 2 });
+    expect(rpc).toHaveBeenLastCalledWith("inst1", "control.fs.write", {
+      workspace: "ws", path: "a.ts", content: "new", expected: { mtimeMs: 111, size: 2 },
+    });
+    expect(res).toEqual({ path: "a.ts", mtimeMs: 222, size: 3 });
+  });
 });
 
 describe("files store: tree + advanced search", () => {
