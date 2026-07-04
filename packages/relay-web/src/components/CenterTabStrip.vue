@@ -57,12 +57,18 @@ function labelFor(tab: CenterTab): string {
       <MessageSquare :size="13" />{{ $t("center.chat") }}
     </button>
 
+    <!-- `touch-action: pan-x`: let a horizontal swipe scroll the strip natively; the
+         drag-reorder is gated behind a long-press instead (see use-tab-drag). pan-x also
+         forbids the browser from vertically panning from a tab — fine because the strip
+         only ever lives in the fixed mobile top bar / the desktop row, neither of which is
+         inside vertically-scrollable content. Revisit pan-x if the strip is ever placed
+         somewhere a vertical scroll must start on a tab. -->
     <div
       v-for="tab in store.tabsFor(props.sessionKey)"
       :key="tab.id"
       data-test="tab"
       :data-tab-id="tab.id"
-      style="touch-action: none"
+      style="touch-action: pan-x"
       class="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11.5px] transition cursor-pointer"
       :class="[
         tab.id === store.activeFor(props.sessionKey) ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
