@@ -224,6 +224,16 @@ export class ControlService {
     return this.workspaceFs.duplicate(workspace, path);
   }
 
+  async fsWrite(
+    workspace: string,
+    path: string,
+    content: string,
+    expected: { mtimeMs: number; size: number },
+  ): Promise<{ path: string; mtimeMs: number; size: number }> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return this.workspaceFs.writeFile(workspace, path, content, expected);
+  }
+
   async fsDownload(workspace: string, path: string): Promise<{ path: string; base64: string; size: number; mimeType: string }> {
     return this.workspaceFs.readFileBytes(workspace, path); // read op — intentionally NOT gated
   }

@@ -4,7 +4,7 @@ import { ref } from "vue";
 export type CenterTab =
   // targetLine/targetRev: a scroll-to-line request (e.g. from a content-search hit). rev is
   // bumped on every openFile so re-opening the SAME file at the same line still re-scrolls.
-  | { kind: "file"; id: string; path: string; targetLine?: number; targetRev?: number }
+  | { kind: "file"; id: string; path: string; targetLine?: number; targetRev?: number; dirty?: boolean }
   | { kind: "diff"; id: string; path: string }
   | { kind: "terminal"; id: string };
 
@@ -48,8 +48,12 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     revCounter += 1;
     const id = `file:${path}`;
     const current = bySession.value[key] ?? { tabs: [], activeId: "chat" };
-    const tab: CenterTab = { kind: "file", id, path, targetLine: line, targetRev: revCounter };
     const idx = current.tabs.findIndex((t) => t.id === id);
+    const existing = idx === -1 ? undefined : current.tabs[idx];
+    const tab: CenterTab = {
+      kind: "file", id, path, targetLine: line, targetRev: revCounter,
+      dirty: existing?.kind === "file" ? existing.dirty : undefined,
+    };
     const tabs = idx === -1 ? [...current.tabs, tab] : current.tabs.map((t, i) => (i === idx ? tab : t));
     bySession.value = { ...bySession.value, [key]: { tabs, activeId: id } };
   }
@@ -112,9 +116,31 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     return Object.entries(bySession.value).flatMap(([key, s]) => s.tabs.map((tab) => ({ key, tab })));
   }
 
+  function setDirty(key: string, id: string, dirty: boolean): void {
+    const current = bySession.value[key];
+    if (!current) return;
+    const tabs = current.tabs.map((t) => (t.id === id && t.kind === "file" ? { ...t, dirty } : t));
+    bySession.value = { ...bySession.value, [key]: { tabs, activeId: current.activeId } };
+  }
+
+  function isDirty(key: string, id: string): boolean {
+    const t = bySession.value[key]?.tabs.find((x) => x.id === id);
+    return !!(t && t.kind === "file" && t.dirty);
+  }
+
+  /** Close `id`, but if it holds unsaved edits, ask `confirm()` first. Returns whether the
+   *  tab was closed. `confirm` is injected (the store cannot show UI) — callers pass e.g.
+   *  `() => window.confirm(t("files.unsavedConfirm"))`. */
+  function closeTabGuarded(key: string, id: string, confirm: () => boolean): boolean {
+    if (isDirty(key, id) && !confirm()) return false;
+    closeTab(key, id);
+    return true;
+  }
+
   return {
     tabsFor, activeFor,
     openFile, openDiff, openTerminal,
     setActive, closeTab, reorder, clearSession, allOpenTabs,
+    setDirty, isDirty, closeTabGuarded,
   };
 });

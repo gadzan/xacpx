@@ -3,6 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile, realpath, readdir } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceFs, copyName } from "../../../src/control/workspace-fs";
+import { stat, readFile as readFileFs } from "node:fs/promises";
 
 let rootDir: string;      // realpath'd workspace root
 let fs: WorkspaceFs;
@@ -116,4 +117,66 @@ test("readFileBytes returns base64 + size + mimeType", async () => {
 test("readFileBytes rejects a file over 5 MiB", async () => {
   await writeFile(join(rootDir, "big.bin"), Buffer.alloc(5 * 1024 * 1024 + 1));
   await expect(fs.readFileBytes("ws", "big.bin")).rejects.toThrow("file-too-large");
+});
+
+test("readFile returns an mtimeMs token", async () => {
+  const r = await fs.readFile("ws", "a.txt");
+  expect(typeof r.mtimeMs).toBe("number");
+  expect(r.mtimeMs).toBeGreaterThan(0);
+});
+
+test("writeFile saves new content when the token matches", async () => {
+  const before = await fs.readFile("ws", "a.txt");
+  const res = await fs.writeFile("ws", "a.txt", "goodbye", { mtimeMs: before.mtimeMs, size: before.size });
+  expect(res.path).toBe("a.txt");
+  expect(await readFileFs(join(rootDir, "a.txt"), "utf8")).toBe("goodbye");
+  const onDisk = await stat(join(rootDir, "a.txt"));
+  expect(res.mtimeMs).toBe(onDisk.mtimeMs);
+  expect(res.size).toBe(onDisk.size);
+});
+
+test("writeFile rejects a stale token (size changed on disk)", async () => {
+  const before = await fs.readFile("ws", "a.txt");
+  await writeFile(join(rootDir, "a.txt"), "changed-by-agent");
+  await expect(
+    fs.writeFile("ws", "a.txt", "mine", { mtimeMs: before.mtimeMs, size: before.size }),
+  ).rejects.toThrow("stale-write");
+});
+
+test("writeFile rejects a path that escapes the workspace", async () => {
+  await expect(
+    fs.writeFile("ws", "../escape.txt", "x", { mtimeMs: 1, size: 1 }),
+  ).rejects.toThrow();
+});
+
+test("writeFile rejects a directory target", async () => {
+  await expect(
+    fs.writeFile("ws", "sub", "x", { mtimeMs: 1, size: 1 }),
+  ).rejects.toThrow("not-a-file");
+});
+
+test("writeFile rejects content containing a NUL byte", async () => {
+  const before = await fs.readFile("ws", "a.txt");
+  await expect(
+    fs.writeFile("ws", "a.txt", "a\u0000b", { mtimeMs: before.mtimeMs, size: before.size }),
+  ).rejects.toThrow("is-binary");
+});
+
+test("writeFile rejects content over the size cap", async () => {
+  const before = await fs.readFile("ws", "a.txt");
+  const huge = "x".repeat(256 * 1024 + 1);
+  await expect(
+    fs.writeFile("ws", "a.txt", huge, { mtimeMs: before.mtimeMs, size: before.size }),
+  ).rejects.toThrow("file-too-large");
+});
+
+test("writeFile rejects saving over a file whose on-disk size exceeds the read cap (truncated-target guard)", async () => {
+  // write a >256 KiB file, read it back (its read is truncated), then attempt to save small content with the matching token
+  const big = "x".repeat(256 * 1024 + 500);
+  await writeFile(join(rootDir, "big.txt"), big);
+  const before = await fs.readFile("ws", "big.txt");
+  expect(before.truncated).toBe(true);
+  await expect(
+    fs.writeFile("ws", "big.txt", "small", { mtimeMs: before.mtimeMs, size: before.size }),
+  ).rejects.toThrow("file-too-large");
 });

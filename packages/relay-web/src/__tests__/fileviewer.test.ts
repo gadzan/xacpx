@@ -14,6 +14,7 @@ vi.mock("../lib/shiki", () => ({
 }));
 
 import FileViewer from "../components/FileViewer.vue";
+import CodeEditor from "../components/CodeEditor.vue";
 import { useFilesStore } from "../stores/files";
 
 let pinia: ReturnType<typeof createPinia>;
@@ -27,7 +28,7 @@ describe("FileViewer", () => {
   it("renders the file content (loaded via readFile from the path prop) and upgrades it to highlighted HTML", async () => {
     vi.useFakeTimers();
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "one\ntwo\nthree", size: 13, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "one\ntwo\nthree", size: 13, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -47,7 +48,7 @@ describe("FileViewer", () => {
 
   it("offers a copy button that copies the file content", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "hello", size: 5, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "hello", size: 5, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -58,7 +59,7 @@ describe("FileViewer", () => {
 
   it("hides the gutter and copy button for a binary file", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "bin.dat", content: "", size: 4, truncated: false, binary: true });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "bin.dat", content: "", size: 4, mtimeMs: 1000, truncated: false, binary: true });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "bin.dat" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -69,7 +70,7 @@ describe("FileViewer", () => {
 
   it("the mobile Files affordance emits back (return to the file list)", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -79,7 +80,7 @@ describe("FileViewer", () => {
 
   it("the mobile Close affordance emits close (return to the conversation)", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -89,7 +90,7 @@ describe("FileViewer", () => {
 
   it("the desktop Back affordance emits close (desktop has the list always visible)", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -101,7 +102,7 @@ describe("FileViewer", () => {
     vi.useFakeTimers();
     (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = vi.fn();
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "const foo = 1\nreturn foo", size: 22, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "const foo = 1\nreturn foo", size: 22, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -130,7 +131,7 @@ describe("FileViewer", () => {
   it("does not offer the find bar for a huge (never-highlighted) file", async () => {
     const files = useFilesStore();
     const huge = Array.from({ length: 5001 }, (_, i) => `line ${i}`).join("\n");
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.txt", content: huge, size: huge.length, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.txt", content: huge, size: huge.length, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "big.txt" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -142,7 +143,7 @@ describe("FileViewer", () => {
     vi.useFakeTimers();
     (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = vi.fn();
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "l1\nl2\nl3\nl4", size: 11, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "l1\nl2\nl3\nl4", size: 11, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts", line: 3, lineRev: 1 }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -177,10 +178,10 @@ describe("FileViewer", () => {
     const files = useFilesStore();
     let resolveFirst!: (v: { workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }) => void;
     const first = new Promise((resolve) => { resolveFirst = resolve; });
-    const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first as Promise<{ workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }>);
+    const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first as Promise<{ workspace: string; path: string; content: string; size: number; mtimeMs: number; truncated: boolean; binary: boolean }>);
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await w.vm.$nextTick();
-    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, truncated: false, binary: false });
+    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, mtimeMs: 1000, truncated: false, binary: false });
     // switch to a second file before the first load resolves
     await w.setProps({ path: "b.ts" });
     await flushPromises();
@@ -197,11 +198,11 @@ describe("FileViewer", () => {
   it("ignores a stale readFile rejection when props change before it rejects (race guard)", async () => {
     const files = useFilesStore();
     let rejectFirst!: (e: Error) => void;
-    const first = new Promise<{ workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }>((_resolve, reject) => { rejectFirst = reject; });
+    const first = new Promise<{ workspace: string; path: string; content: string; size: number; mtimeMs: number; truncated: boolean; binary: boolean }>((_resolve, reject) => { rejectFirst = reject; });
     const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first);
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await w.vm.$nextTick();
-    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, truncated: false, binary: false });
+    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, mtimeMs: 1000, truncated: false, binary: false });
     // switch to a second file before the first load rejects
     await w.setProps({ path: "b.ts" });
     await flushPromises();
@@ -219,7 +220,7 @@ describe("FileViewer", () => {
 
   it("shows an error (and clears stale content) when a load rejects with no newer selection pending", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValueOnce({ workspace: "ws", path: "a.ts", content: "first", size: 5, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValueOnce({ workspace: "ws", path: "a.ts", content: "first", size: 5, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -235,5 +236,81 @@ describe("FileViewer", () => {
     // the previous selection's content must not still be shown as if it were the new one
     expect(w.find('[data-test="fv-file-body"]').exists()).toBe(false);
     expect(w.text()).not.toContain("first");
+  });
+
+  it("Edit enters edit mode and Save calls saveFile with the read token", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });
+    const saveFile = vi.fn().mockResolvedValue({ path: "a.ts", mtimeMs: 200, size: 3 });
+    files.saveFile = saveFile;
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    expect(w.find('[data-test="code-editor"]').exists()).toBe(true);
+    // Save starts disabled until the draft actually differs from the loaded content — mirror a
+    // real edit via the CodeEditor's v-model (its own doc-change wiring is covered by
+    // codeeditor.test.ts) rather than clicking Save on an untouched, still-clean draft.
+    await w.getComponent(CodeEditor).vm.$emit("update:modelValue", "new content");
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-save"]').trigger("click");
+    await flushPromises();
+    expect(saveFile).toHaveBeenCalledWith("i1", "ws", "a.ts", "new content", { mtimeMs: 100, size: 3 });
+  });
+
+  it("Edit button is hidden for binary/truncated files", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.bin", content: "", size: 9e9, mtimeMs: 1, truncated: true, binary: true });
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "big.bin" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="fv-edit"]').exists()).toBe(false);
+  });
+
+  it("Cmd/Ctrl-S while editing saves exactly once (CodeMirror's own Mod-s keymap and the " +
+    "document-level shortcut must not both fire save() for the same keypress)", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });
+    const saveFile = vi.fn().mockResolvedValue({ path: "a.ts", mtimeMs: 200, size: 3 });
+    files.saveFile = saveFile;
+    // attachTo: document.body so the synthetic keydown actually bubbles up to `document`,
+    // where FileViewer's own shortcut handler is registered (see onKeydown/onMounted below).
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] }, attachTo: document.body });
+    await flushPromises();
+    await w.vm.$nextTick();
+    // jsdom never lays out elements, so offsetParent is always null; stub it non-null the way
+    // a real visible (non `display:none`) pane would report, so the document-level Cmd/Ctrl-S
+    // handler's visibility gate doesn't bail out regardless of the bug under test.
+    Object.defineProperty(w.element, "offsetParent", { value: document.body, configurable: true });
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    await w.getComponent(CodeEditor).vm.$emit("update:modelValue", "new content");
+    await w.vm.$nextTick();
+    // Dispatch ONE real keydown on the CodeMirror content DOM (not just synthetically calling
+    // save()): it both (a) runs through CodeMirror's own `Mod-s` keymap (emits `save`, handled
+    // by the parent's `@save="save()"` on <CodeEditor>) and (b) bubbles up to `document`, where
+    // FileViewer's own keydown listener ALSO matches and calls save() — exactly the double-fire
+    // this test guards against. (jsdom resolves "Mod" to Ctrl, not Cmd, since navigator.platform
+    // doesn't report "Mac" — ctrlKey is what actually drives CodeMirror's keymap here.)
+    const view = (w.getComponent(CodeEditor).vm as unknown as { view: { contentDOM: HTMLElement } }).view;
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(saveFile).toHaveBeenCalledTimes(1);
+    w.unmount();
+  });
+
+  it("a stale-write error shows the reload banner and keeps edit mode", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });
+    files.saveFile = vi.fn().mockRejectedValue(new Error("stale-write"));
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    await w.getComponent(CodeEditor).vm.$emit("update:modelValue", "new content");
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-save"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="fv-save-error"]').exists()).toBe(true);
+    expect(w.find('[data-test="code-editor"]').exists()).toBe(true); // still editing, draft kept
   });
 });

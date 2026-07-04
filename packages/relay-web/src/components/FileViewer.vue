@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
-import { ArrowLeft, FileText, FileDiff, X, Search, ChevronUp, ChevronDown } from "lucide-vue-next";
+import { ArrowLeft, FileText, FileDiff, X, Search, ChevronUp, ChevronDown, Pencil, Save as SaveIcon } from "lucide-vue-next";
+import { useI18n } from "vue-i18n";
 import { useFilesStore } from "../stores/files";
 import { findInLines } from "../lib/find-in-lines";
 import { applyMarks, clearMarks, setCurrent, scrollToLine } from "../lib/dom-line-highlight";
 import type { FsDiffResult, FsReadResult } from "@ganglion/xacpx-relay-protocol";
+import CodeEditor from "./CodeEditor.vue";
 // NOTE: ../lib/shiki is imported DYNAMICALLY inside the highlight callback below — never
 // statically — so the Shiki core + JS engine stay out of FileViewer's (eagerly-loaded)
 // chunk and the entry bundle, per the lazy-load size constraint. parseUnifiedDiff is a
@@ -31,7 +33,8 @@ const props = defineProps<{
   line?: number;
   lineRev?: number;
 }>();
-const emit = defineEmits<{ back: []; close: [] }>();
+const emit = defineEmits<{ back: []; close: []; "dirty-change": [boolean] }>();
+const { t } = useI18n();
 const files = useFilesStore();
 
 const rootEl = ref<HTMLElement | null>(null);
@@ -141,8 +144,76 @@ let anchors: HTMLElement[] = [];
 // gate out binary and huge (> LINE_GUTTER_LIMIT, plain-<pre>) files so we never offer a
 // find bar that would always report "No results".
 const canFind = computed(
-  () => !!file.value && !file.value.binary && fileLines.value.length <= LINE_GUTTER_LIMIT,
+  () => !!file.value && !file.value.binary && fileLines.value.length <= LINE_GUTTER_LIMIT && !editing.value,
 );
+
+// ── Edit mode ────────────────────────────────────────────────────────────────────────
+const editing = ref(false);
+const draft = ref("");
+const baseRev = ref<{ mtimeMs: number; size: number } | null>(null);
+const saving = ref(false);
+const saveError = ref<string | null>(null);
+
+const canEdit = computed(
+  () =>
+    !!file.value &&
+    !file.value.binary &&
+    !file.value.truncated &&
+    fileLines.value.length <= LINE_GUTTER_LIMIT &&
+    typeof file.value.mtimeMs === "number",
+);
+const editDirty = computed(() => editing.value && !!file.value && draft.value !== file.value.content);
+watch(editDirty, (v) => emit("dirty-change", v));
+
+// Map backend error codes to friendly copy; unknown codes pass through raw.
+const saveErrorLabel = computed(() => {
+  const code = saveError.value;
+  if (!code) return "";
+  const known: Record<string, string> = {
+    "stale-write": t("files.staleConflict"),
+    "files-write-disabled": t("files.writeDisabled"),
+    "is-binary": t("files.binaryNotEditable"),
+    "file-too-large": t("files.tooLarge"),
+  };
+  return known[code] ?? code;
+});
+const isStale = computed(() => saveError.value === "stale-write");
+
+function startEdit() {
+  if (!canEdit.value || !file.value) return;
+  draft.value = file.value.content;
+  baseRev.value = { mtimeMs: file.value.mtimeMs, size: file.value.size };
+  saveError.value = null;
+  editing.value = true;
+  closeFind();
+}
+function cancelEdit() {
+  editing.value = false;
+  draft.value = "";
+  saveError.value = null;
+  emit("dirty-change", false);
+}
+async function save() {
+  if (saving.value) return;
+  if (!file.value || !baseRev.value) return;
+  saving.value = true;
+  saveError.value = null;
+  try {
+    const res = await files.saveFile(props.instanceId, props.workspace, file.value.path, draft.value, baseRev.value);
+    file.value = { ...file.value, content: draft.value, size: res.size, mtimeMs: res.mtimeMs };
+    editing.value = false;
+    emit("dirty-change", false);
+  } catch (e) {
+    saveError.value = e instanceof Error ? e.message : "write-failed";
+  } finally {
+    saving.value = false;
+  }
+}
+async function reloadFromDisk() {
+  await load();          // re-reads → fresh mtime/size; draft is preserved for copy
+  if (file.value) baseRev.value = { mtimeMs: file.value.mtimeMs, size: file.value.size };
+  saveError.value = null;
+}
 
 function recomputeSearch() {
   const el = scrollBody.value;
@@ -186,6 +257,12 @@ function closeFind() {
 // mounted (v-show-hidden) FileViewer, and offsetParent is null while display:none, so the
 // hidden ones ignore the shortcut.
 function onKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+    if (!rootEl.value || rootEl.value.offsetParent === null || !editing.value) return;
+    e.preventDefault();
+    void save();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
     if (!rootEl.value || rootEl.value.offsetParent === null || !canFind.value) return;
     // Don't steal Cmd/Ctrl-F from another focused field (e.g. the right-rail file search).
@@ -249,7 +326,19 @@ watch(
                 class="grid h-7 w-7 place-items-center rounded transition-colors hover:bg-raised hover:text-fg"
                 :class="findOpen ? 'bg-accent/10 text-accent' : 'text-fg-muted'"
                 @click="findOpen ? closeFind() : openFind()"><Search :size="15" /></button>
-        <CopyButton v-if="file && !file.binary" :text="file.content" />
+        <button v-if="canEdit && !editing" data-test="fv-edit" :aria-label="$t('files.editFile')" :title="$t('files.editFile')"
+                class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                @click="startEdit()"><Pencil :size="15" /></button>
+        <template v-if="editing">
+          <span v-if="editDirty" data-test="fv-dirty-dot" class="mr-0.5 h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
+          <button data-test="fv-save" :disabled="saving || !editDirty" :aria-label="$t('files.save')"
+                  class="flex h-7 items-center gap-1 rounded px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
+                  @click="save()"><SaveIcon :size="14" />{{ saving ? $t("files.saving") : $t("files.save") }}</button>
+          <button data-test="fv-cancel" :aria-label="$t('files.cancel')"
+                  class="h-7 rounded px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  @click="cancelEdit()">{{ $t("files.cancel") }}</button>
+        </template>
+        <CopyButton v-if="file && !file.binary && !editing" :text="file.content" />
         <button data-test="fv-close" :aria-label="$t('files.closeFile')"
                 class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:hidden"
                 @click="emit('close')"><X :size="16" /></button>
@@ -283,8 +372,15 @@ watch(
            error-cleared retry) — a load-in-progress for an already-shown file keeps that
            file visible instead of flashing this. -->
       <div v-else-if="loading && !file && !diff" data-test="fv-loading" class="p-6 text-sm text-fg-muted">{{ $t("files.loading") }}</div>
+      <!-- save error / stale-conflict banner -->
+      <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-danger">
+        <span class="min-w-0 flex-1">{{ saveErrorLabel }}</span>
+        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded bg-danger/15 px-2 py-0.5 text-[12px] font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
+      </div>
+      <!-- editor takes over the body while editing -->
+      <CodeEditor v-if="editing && file" v-model="draft" :filename="file.path" class="h-full" @save="save()" />
       <!-- file content -->
-      <template v-if="file">
+      <template v-else-if="file">
         <div v-if="!file.binary && fileLines.length <= LINE_GUTTER_LIMIT" data-test="fv-file-body">
           <div v-if="fileHtml" v-html="fileHtml"></div>
           <pre v-else class="overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-fg whitespace-pre">{{ file.content }}</pre>

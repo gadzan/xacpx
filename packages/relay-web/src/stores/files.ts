@@ -7,6 +7,7 @@ import {
   type FsEntryDto,
   type FsListResult,
   type FsReadResult,
+  type FsWriteResult,
   type FsSearchResult,
   type FsSearchHitDto,
 } from "@ganglion/xacpx-relay-protocol";
@@ -377,12 +378,21 @@ export const useFilesStore = defineStore("files", () => {
     return unwrap(await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws, ...(filePath ? { path: filePath } : {}) }));
   }
 
+  /** Overwrite a file's content, echoing the read-time stale-write token. Throws the raw
+   *  error code (`stale-write` / `files-write-disabled` / `is-binary` / `file-too-large`)
+   *  so the caller can map it to a message. */
+  async function saveFile(
+    id: string, ws: string, filePath: string, content: string, expected: { mtimeMs: number; size: number },
+  ): Promise<FsWriteResult> {
+    return unwrap(await api.rpc<FsWriteResult>(id, "control.fs.write", { workspace: ws, path: filePath, content, expected }));
+  }
+
   return {
     instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error,
     root, sep: sepChar, tree, expanded, loadingDirs, hits, searchOpts,
     reset, selectWorkspace, list, open, openFile, up, search, loadDiff, loadStatus, loadGitSummary, refresh,
     listTree, toggleExpand, absPath,
     createEntry, renameEntry, deleteEntry, downloadEntry,
-    readFile, readDiff,
+    readFile, readDiff, saveFile,
   };
 });
