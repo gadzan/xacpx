@@ -1,5 +1,18 @@
 # Changelog
 
+## [relay 0.9.12-beta.11] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta folding in on-device feedback on the center tab strip (#119). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Changed
+
+- **Center tabs fold into the mobile top bar.** On mobile the tab strip now lives in the existing `☰ … 📄📋` bar in place of the centered session name (horizontally scrollable when tabs overflow), so mobile spends one bar instead of the top bar plus a second full-width tab-strip row. Desktop keeps the standalone strip row. Trade-off: on mobile the session alias no longer shows in the top bar while a session is open (the sidebar still highlights it).
+
+### Fixed
+
+- **Mobile long-press starts a drag instead of selecting text.** The tab strip suppresses text selection and the iOS long-press callout, so a press-hold begins a tab drag rather than highlighting the label.
+- **The dragged tab now has visual feedback** — it lifts (slight shrink + fade) while being dragged.
+
 ## [relay 0.9.12-beta.10] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta adding a multi-tab center area and a session-list cap (#117). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
