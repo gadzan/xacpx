@@ -162,7 +162,11 @@ function onKeydown(e: KeyboardEvent) {
   }
   if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F") && showEditor.value) {
     const tgt = e.target as HTMLElement | null;
-    // let CodeMirror's own Mod-f handle it when focus is already inside the editor
+    // Avoid stealing Cmd/Ctrl-F from OTHER form fields (e.g. the right-rail file search input).
+    // CodeMirror's focused element is a contenteditable DIV (.cm-content), not one of these
+    // tags, so editor focus is NOT special-cased here — this guard doesn't fire for it. A
+    // duplicate openSearchPanel() call while the editor is focused is benign: it just refocuses
+    // the already-open panel.
     if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT")) return;
     e.preventDefault();
     openSearch();

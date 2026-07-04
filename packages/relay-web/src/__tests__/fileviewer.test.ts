@@ -78,10 +78,31 @@ describe("FileViewer", () => {
     vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT });
     const w = mountViewer({ path: "src/a.ts" });
     await settle();
-    const editor = w.findComponent({ name: "CodeEditor" });
-    const openSearch = vi.fn();
-    (editor.vm as unknown as { openSearch: () => void }).openSearch = openSearch;
     await w.get('[data-test="fv-find-toggle"]').trigger("click");
-    expect(openSearch).toHaveBeenCalled();
+    await settle();
+    expect(w.find(".cm-search").exists() || w.find(".cm-panel").exists()).toBe(true);
+  });
+
+  it("a stale-write reload keeps the user's edited buffer (does not clobber the draft)", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT });
+    vi.spyOn(files, "saveFile").mockRejectedValue(new Error("stale-write"));
+    const w = mountViewer({ path: "src/a.ts" });
+    await settle();
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    const editor = w.findComponent({ name: "CodeEditor" });
+    const view = (editor.vm as unknown as { view: { state: { doc: { length: number; toString(): string } }; dispatch: (t: unknown) => void } }).view;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "edited-draft" } });
+    await settle();
+    await w.get('[data-test="fv-save"]').trigger("click");
+    await settle();
+    expect(w.find('[data-test="fv-save-error"]').exists()).toBe(true);
+
+    vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT, mtimeMs: 5000, size: 99 });
+    await w.get('[data-test="fv-reload"]').trigger("click");
+    await settle();
+
+    expect(w.find('[data-test="code-editor"]').exists()).toBe(true);
+    expect(view.state.doc.toString()).toBe("edited-draft");
   });
 });
