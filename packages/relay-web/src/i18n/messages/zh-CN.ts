@@ -189,7 +189,6 @@ export default {
       rename: "重命名",
       delete: "删除",
       download: "下载",
-      more: "更多操作",
       confirmDelete: "确定删除「{name}」？此操作不可撤销。",
       writeDisabled: "文件写入未启用，请在实例 config 中开启 `files.writeEnabled`。",
     },

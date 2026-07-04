@@ -105,6 +105,15 @@ describe("CenterTabStrip", () => {
     expect(w.element.className).toContain("select-none");
   });
 
+  it("hides the native scrollbar on the strip (edge fade stands in for it)", () => {
+    const store = useCenterTabsStore();
+    const K = sessionKey("i1", "s1");
+    store.openFile(K, "src/a.ts");
+
+    const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
+    expect(w.element.className).toContain("no-scrollbar");
+  });
+
   it("renders its own border/background chrome when standalone (default)", () => {
     const store = useCenterTabsStore();
     const K = sessionKey("i1", "s1");

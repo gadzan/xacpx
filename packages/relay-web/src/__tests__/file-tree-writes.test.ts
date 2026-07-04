@@ -74,14 +74,36 @@ describe("FileTreeNode write menu", () => {
     expect(w.find('[data-test="menu-newFile"]').exists()).toBe(false);
   });
 
-  it("the ⋯ row button opens the same context menu (touch-reachable)", async () => {
+  it("a touch long-press on the row opens the same context menu (no ⋯ button)", async () => {
+    vi.useFakeTimers();
     const store = useFilesStore();
     store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
     const w = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    expect(w.find('[data-test="row-menu"]').exists()).toBe(false); // the per-row ⋯ button is gone
     expect(w.find('[data-test="context-menu"]').exists()).toBe(false);
-    await w.find('[data-test="row-menu"]').trigger("click");
+
+    await w.find('[data-test="tree-row"]').trigger("pointerdown", { pointerType: "touch", clientX: 40, clientY: 50 });
+    vi.advanceTimersByTime(450); // hold elapses → menu opens at the finger
+    await w.vm.$nextTick();
     expect(w.find('[data-test="context-menu"]').exists()).toBe(true);
     expect(w.find('[data-test="menu-rename"]').exists()).toBe(true);
+
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 40, clientY: 50 })); // lift ends the gesture
+    vi.advanceTimersByTime(500); // disarm the click-swallow backstop so no document listener leaks
+    vi.useRealTimers();
+  });
+
+  it("a quick tap (no hold) does NOT open the menu — it stays a normal row click", async () => {
+    vi.useFakeTimers();
+    const store = useFilesStore();
+    store.instanceId = "i1"; store.workspace = "ws"; store.root = "/abs"; store.sep = "/";
+    const w = mount(FileTreeNode, { props: { entry: { name: "a.ts", type: "file" }, dir: "", depth: 0, showDotfiles: true, showGitignored: true }, ...g });
+    await w.find('[data-test="tree-row"]').trigger("pointerdown", { pointerType: "touch", clientX: 40, clientY: 50 });
+    document.dispatchEvent(new MouseEvent("pointerup", { clientX: 40, clientY: 50 })); // lift before the hold
+    vi.advanceTimersByTime(450);
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="context-menu"]').exists()).toBe(false);
+    vi.useRealTimers();
   });
 
   it("searchInFolder fills the include field with a folder glob, not a hidden scope", async () => {
