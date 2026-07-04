@@ -29,3 +29,9 @@ test("fsDownload is NOT gated (reaches WorkspaceFs, fails on missing workspace r
   // gate off, but download must still attempt the read → WorkspaceFs error, NOT the gate error
   await expect(svc.fsDownload("ws", "x.txt")).rejects.not.toThrow("files-write-disabled");
 });
+test("fsWrite is rejected with files-write-disabled when the gate is off", async () => {
+  const svc = make(false, []);
+  await expect(
+    svc.fsWrite("ws", "x.txt", "hello", { mtimeMs: 1, size: 1 }),
+  ).rejects.toThrow("files-write-disabled");
+});

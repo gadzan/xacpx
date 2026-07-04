@@ -10,6 +10,7 @@ import {
   type FsRenamePayload,
   type FsDeletePayload,
   type FsCopyPayload,
+  type FsWritePayload,
   type FsDownloadPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
@@ -252,6 +253,15 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       const i = payload as FsDownloadPayload;
       if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
       return await control.fsDownload(i.workspace, i.path);
+    }
+    case MSG.fsWrite: {
+      const i = payload as FsWritePayload;
+      if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
+      if (typeof i.content !== "string") return errorPayload("bad-request", "content must be a string");
+      if (!i.expected || typeof i.expected.mtimeMs !== "number" || typeof i.expected.size !== "number") {
+        return errorPayload("bad-request", "expected {mtimeMs,size} is required");
+      }
+      return await control.fsWrite(i.workspace, i.path, i.content, i.expected);
     }
     case MSG.sessionModelGet: {
       const input = payload as SessionModelGetPayload;
