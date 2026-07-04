@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.9.12-beta.13] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta with a batch of center-panel and file-tree UX refinements (#123). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Changed
+
+- **Tab strip: no scrollbar, edge fade instead.** The center tab strip no longer shows an OS scrollbar; overflowing tabs fade out at whichever edge(s) actually have more tabs off-screen.
+- **Session name back in view.** The session name now leads the workspace / instance / agent / branch chip row on mobile (desktop already shows it in the header title) — restoring the name that moved out of the mobile top bar when tabs took its place.
+- **File tree: long-press for the menu.** The always-visible per-row ⋯ button is gone. On desktop the actions menu opens with right-click; on touch it opens with a **long-press** on the row (a swipe still scrolls the tree). The workspace-root ⋯ (new file / folder in root) is unchanged.
+
 ## [relay 0.9.12-beta.12] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta fixing a touch-gesture conflict in the center tab strip (#121). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
