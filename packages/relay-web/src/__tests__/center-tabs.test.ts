@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useCenterTabsStore, sessionKey, TAB_DROP_END } from "../stores/center-tabs";
 
@@ -95,4 +95,34 @@ describe("center-tabs store", () => {
     expect(s.activeFor(sessionKey("x", "y"))).toBe("chat");
     expect(s.tabsFor(sessionKey("x", "y"))).toEqual([]);
   });
+});
+
+test("setDirty/isDirty track a file tab's unsaved state", () => {
+  const s = useCenterTabsStore();
+  const key = sessionKey("i1", "a");
+  s.openFile(key, "src/x.ts");
+  expect(s.isDirty(key, "file:src/x.ts")).toBe(false);
+  s.setDirty(key, "file:src/x.ts", true);
+  expect(s.isDirty(key, "file:src/x.ts")).toBe(true);
+});
+
+test("closeTabGuarded closes a clean tab without asking", () => {
+  const s = useCenterTabsStore();
+  const key = sessionKey("i1", "a");
+  s.openFile(key, "src/x.ts");
+  const confirm = vi.fn(() => false);
+  expect(s.closeTabGuarded(key, "file:src/x.ts", confirm)).toBe(true);
+  expect(confirm).not.toHaveBeenCalled();
+  expect(s.tabsFor(key).some((t) => t.id === "file:src/x.ts")).toBe(false);
+});
+
+test("closeTabGuarded blocks a dirty tab when confirm is declined", () => {
+  const s = useCenterTabsStore();
+  const key = sessionKey("i1", "a");
+  s.openFile(key, "src/x.ts");
+  s.setDirty(key, "file:src/x.ts", true);
+  expect(s.closeTabGuarded(key, "file:src/x.ts", () => false)).toBe(false);
+  expect(s.tabsFor(key).some((t) => t.id === "file:src/x.ts")).toBe(true);
+  expect(s.closeTabGuarded(key, "file:src/x.ts", () => true)).toBe(true);
+  expect(s.tabsFor(key).some((t) => t.id === "file:src/x.ts")).toBe(false);
 });
