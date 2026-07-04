@@ -289,7 +289,8 @@ describe("FilesPanel center-tab routing", () => {
     files.results = ["src/foo.ts"] as never;
     await w.vm.$nextTick();
     await w.find('[data-test="fs-result"]').trigger("click");
-    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/foo.ts");
+    // name-mode results carry no line → openFile's line arg is undefined
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/foo.ts", undefined);
     expect(w.find('[data-test="fs-result"]').exists()).toBe(true);
   });
 
@@ -307,7 +308,8 @@ describe("FilesPanel center-tab routing", () => {
     files.hits = [{ path: "src/a.ts", line: 3, text: "const foo = 1" }] as never;
     await w.vm.$nextTick();
     await w.find('[data-test="fs-hit"]').trigger("click");
-    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/a.ts");
+    // content hits pass their line so the viewer scrolls there
+    expect(openFile).toHaveBeenCalledWith(sessionKey("i1", "s1"), "src/a.ts", 3);
   });
 
   it("clicking a changed file opens a center diff tab, keeps the listing, and highlights the row", async () => {

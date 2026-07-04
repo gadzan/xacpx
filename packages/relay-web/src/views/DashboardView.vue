@@ -385,6 +385,8 @@ onUnmounted(() => {
                         :instance-id="keyInstance(key)" :workspace="keyWorkspace(key)"
                         :path="tab.kind === 'file' ? tab.path : undefined"
                         :diff-path="tab.kind === 'diff' ? tab.path : undefined"
+                        :line="tab.kind === 'file' ? tab.targetLine : undefined"
+                        :line-rev="tab.kind === 'file' ? tab.targetRev : undefined"
                         @close="centerTabs.closeTab(key, tab.id)" @back="backToFileList" />
             <TerminalTab v-else-if="tab.kind === 'terminal'" class="absolute inset-0 z-20"
                          v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
