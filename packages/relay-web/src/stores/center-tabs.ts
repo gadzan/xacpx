@@ -2,7 +2,9 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 
 export type CenterTab =
-  | { kind: "file"; id: string; path: string }
+  // targetLine/targetRev: a scroll-to-line request (e.g. from a content-search hit). rev is
+  // bumped on every openFile so re-opening the SAME file at the same line still re-scrolls.
+  | { kind: "file"; id: string; path: string; targetLine?: number; targetRev?: number }
   | { kind: "diff"; id: string; path: string }
   | { kind: "terminal"; id: string };
 
@@ -39,8 +41,17 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     bySession.value = { ...bySession.value, [key]: { tabs, activeId: tab.id } };
   }
 
-  function openFile(key: string, path: string): void {
-    upsertAndActivate(key, { kind: "file", id: `file:${path}`, path });
+  // Bumped on every openFile so a scroll-to-line request re-fires even when the target file
+  // (and line) is already open — FileViewer watches targetRev.
+  let revCounter = 0;
+  function openFile(key: string, path: string, line?: number): void {
+    revCounter += 1;
+    const id = `file:${path}`;
+    const current = bySession.value[key] ?? { tabs: [], activeId: "chat" };
+    const tab: CenterTab = { kind: "file", id, path, targetLine: line, targetRev: revCounter };
+    const idx = current.tabs.findIndex((t) => t.id === id);
+    const tabs = idx === -1 ? [...current.tabs, tab] : current.tabs.map((t, i) => (i === idx ? tab : t));
+    bySession.value = { ...bySession.value, [key]: { tabs, activeId: id } };
   }
 
   function openDiff(key: string, path: string): void {

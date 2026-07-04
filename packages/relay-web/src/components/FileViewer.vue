@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { ArrowLeft, FileText, FileDiff, X } from "lucide-vue-next";
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { ArrowLeft, FileText, FileDiff, X, Search, ChevronUp, ChevronDown } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
+import { findInLines } from "../lib/find-in-lines";
+import { applyMarks, clearMarks, setCurrent, scrollToLine } from "../lib/dom-line-highlight";
 import type { FsDiffResult, FsReadResult } from "@ganglion/xacpx-relay-protocol";
 // NOTE: ../lib/shiki is imported DYNAMICALLY inside the highlight callback below — never
 // statically — so the Shiki core + JS engine stay out of FileViewer's (eagerly-loaded)
@@ -19,9 +21,21 @@ import CopyButton from "./CopyButton.vue";
 // return-based readFile/readDiff — so multiple open tabs (e.g. two files, or a file and a
 // terminal, across sessions) never clobber each other's content the way the old single
 // `files.file`/`files.diff` slot did.
-const props = defineProps<{ instanceId: string; workspace: string; path?: string; diffPath?: string }>();
+// line/lineRev: a scroll-to-line request (e.g. from a content-search hit). lineRev is bumped
+// on each request so re-opening the same file+line still re-scrolls (see center-tabs store).
+const props = defineProps<{
+  instanceId: string;
+  workspace: string;
+  path?: string;
+  diffPath?: string;
+  line?: number;
+  lineRev?: number;
+}>();
 const emit = defineEmits<{ back: []; close: [] }>();
 const files = useFilesStore();
+
+const rootEl = ref<HTMLElement | null>(null);
+const scrollBody = ref<HTMLElement | null>(null);
 
 const file = ref<FsReadResult | null>(null);
 const diff = ref<FsDiffResult | null>(null);
@@ -110,10 +124,106 @@ function fmtSize(n?: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+
+// ── In-file find ─────────────────────────────────────────────────────────────────────
+// Search highlights are layered onto the ALREADY-rendered code DOM (so Shiki syntax colors
+// survive) via dom-line-highlight, anchored to the `.line` elements Shiki emits. `anchors`
+// is the ordered list of per-match <mark>s; it's plain (non-reactive) DOM state, while the
+// count/current index drive the UI.
+const findOpen = ref(false);
+const findQuery = ref("");
+const findInput = ref<HTMLInputElement | null>(null);
+const matchCount = ref(0);
+const currentIdx = ref(-1);
+let anchors: HTMLElement[] = [];
+
+// Only text files that are actually highlighted have the `.line` anchors search needs;
+// gate out binary and huge (> LINE_GUTTER_LIMIT, plain-<pre>) files so we never offer a
+// find bar that would always report "No results".
+const canFind = computed(
+  () => !!file.value && !file.value.binary && fileLines.value.length <= LINE_GUTTER_LIMIT,
+);
+
+function recomputeSearch() {
+  const el = scrollBody.value;
+  if (!el) return;
+  clearMarks(el);
+  anchors = [];
+  matchCount.value = 0;
+  currentIdx.value = -1;
+  if (!findOpen.value || !findQuery.value.trim()) return;
+  anchors = applyMarks(el, findInLines(fileLines.value, findQuery.value));
+  matchCount.value = anchors.length;
+  if (anchors.length) {
+    currentIdx.value = 0;
+    setCurrent(anchors, 0);
+  }
+}
+// flush:'post' so the v-html DOM (and any content swap) is in place before we mark it.
+watch([() => fileHtml.value, findQuery, findOpen], recomputeSearch, { flush: "post" });
+
+function nextMatch() {
+  if (!anchors.length) return;
+  currentIdx.value = (currentIdx.value + 1) % anchors.length;
+  setCurrent(anchors, currentIdx.value);
+}
+function prevMatch() {
+  if (!anchors.length) return;
+  currentIdx.value = (currentIdx.value - 1 + anchors.length) % anchors.length;
+  setCurrent(anchors, currentIdx.value);
+}
+function openFind() {
+  if (!canFind.value) return;
+  findOpen.value = true;
+  void nextTick(() => findInput.value?.focus());
+}
+function closeFind() {
+  findOpen.value = false;
+  findQuery.value = "";
+}
+
+// Cmd/Ctrl-F opens the find bar, but only in the VISIBLE pane — every open file tab has a
+// mounted (v-show-hidden) FileViewer, and offsetParent is null while display:none, so the
+// hidden ones ignore the shortcut.
+function onKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
+    if (!rootEl.value || rootEl.value.offsetParent === null || !canFind.value) return;
+    // Don't steal Cmd/Ctrl-F from another focused field (e.g. the right-rail file search).
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT") && t !== findInput.value) return;
+    e.preventDefault();
+    openFind();
+  }
+}
+onMounted(() => document.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onKeydown);
+  if (hlTimer) clearTimeout(hlTimer); // don't run the highlight debounce after unmount
+});
+
+// ── Scroll-to-line (from a content-search hit) ───────────────────────────────────────
+let lastScrolledRev = 0;
+watch(
+  [() => props.lineRev, () => file.value, () => fileHtml.value],
+  () => {
+    if (!props.line || props.lineRev == null || props.lineRev === lastScrolledRev) return;
+    if (!file.value) return; // content not on screen yet — this refires when it loads
+    const el = scrollBody.value;
+    if (!el) return;
+    // Prefer scrolling once the highlighted `.line` rows exist (precise + line flash). If the
+    // file WILL be highlighted but isn't yet, wait — this refires when fileHtml lands. Only a
+    // never-highlighted (huge) file takes the line-height fallback immediately.
+    const willHighlight = !file.value.binary && fileLines.value.length <= LINE_GUTTER_LIMIT;
+    if (!el.querySelector(".line") && willHighlight) return;
+    scrollToLine(el, props.line);
+    lastScrolledRev = props.lineRev;
+  },
+  { flush: "post" },
+);
 </script>
 
 <template>
-  <div class="flex h-full flex-1 flex-col bg-bg" data-test="file-viewer-center">
+  <div ref="rootEl" class="flex h-full flex-1 flex-col bg-bg" data-test="file-viewer-center">
     <!-- header: back + path + meta -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
       <button data-test="fv-back-list" :aria-label="$t('files.backToList')"
@@ -135,6 +245,10 @@ function fmtSize(n?: number): string {
         <span class="truncate font-mono text-[12.5px] text-fg">{{ props.diffPath }}</span>
       </template>
       <div class="ml-auto flex shrink-0 items-center gap-1">
+        <button v-if="canFind" data-test="fv-find-toggle" :aria-label="$t('files.find')" :title="$t('files.find')"
+                class="grid h-7 w-7 place-items-center rounded transition-colors hover:bg-raised hover:text-fg"
+                :class="findOpen ? 'bg-accent/10 text-accent' : 'text-fg-muted'"
+                @click="findOpen ? closeFind() : openFind()"><Search :size="15" /></button>
         <CopyButton v-if="file && !file.binary" :text="file.content" />
         <button data-test="fv-close" :aria-label="$t('files.closeFile')"
                 class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:hidden"
@@ -142,8 +256,26 @@ function fmtSize(n?: number): string {
       </div>
     </div>
 
+    <!-- in-file find bar -->
+    <div v-if="findOpen" data-test="fv-find-bar" class="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
+      <Search :size="13" class="shrink-0 text-fg-muted" />
+      <input ref="findInput" data-test="fv-find-input" v-model="findQuery" :placeholder="$t('files.findPlaceholder')"
+             class="min-w-0 flex-1 bg-transparent text-[12.5px] text-fg outline-none placeholder:text-fg-muted/60"
+             @keydown.enter.prevent="nextMatch()" @keydown.enter.shift.prevent="prevMatch()" @keydown.esc.prevent="closeFind()" />
+      <span data-test="fv-find-count" class="shrink-0 tabular-nums text-[11px] text-fg-muted">{{ matchCount ? `${currentIdx + 1}/${matchCount}` : $t("files.findNone") }}</span>
+      <button data-test="fv-find-prev" :aria-label="$t('files.findPrev')" :disabled="!matchCount"
+              class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
+              @click="prevMatch()"><ChevronUp :size="14" /></button>
+      <button data-test="fv-find-next" :aria-label="$t('files.findNext')" :disabled="!matchCount"
+              class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
+              @click="nextMatch()"><ChevronDown :size="14" /></button>
+      <button data-test="fv-find-close" :aria-label="$t('files.findClose')"
+              class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="closeFind()"><X :size="14" /></button>
+    </div>
+
     <!-- body -->
-    <div class="min-h-0 flex-1 overflow-auto thin-scroll">
+    <div ref="scrollBody" class="min-h-0 flex-1 overflow-auto thin-scroll">
       <!-- load failed: a rejected load clears file/diff (see `load()`'s catch), so this only
            shows in place of — never on top of — stale content from a previous selection. -->
       <div v-if="error" data-test="fv-error" class="m-3 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-sm text-danger">{{ error }}</div>

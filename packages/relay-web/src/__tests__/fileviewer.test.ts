@@ -5,8 +5,12 @@ import { flushPromises } from "@vue/test-utils";
 
 vi.mock("../lib/shiki", () => ({
   resolveLang: () => "text",
-  // deterministic stand-in so jsdom never loads the real engine
-  highlightToHtml: (code: string) => Promise.resolve(`<pre class="shiki"><code><span class="line">${code}</span></code></pre>`),
+  // deterministic stand-in so jsdom never loads the real engine — one `.line` per source
+  // line, mirroring real Shiki output so line anchoring (scroll/search) is exercised.
+  highlightToHtml: (code: string) =>
+    Promise.resolve(
+      `<pre class="shiki"><code>${code.split("\n").map((l) => `<span class="line">${l}</span>`).join("")}</code></pre>`,
+    ),
 }));
 
 import FileViewer from "../components/FileViewer.vue";
@@ -91,6 +95,66 @@ describe("FileViewer", () => {
     await w.vm.$nextTick();
     await w.find('[data-test="fv-back"]').trigger("click");
     expect(w.emitted("close")).toBeTruthy();
+  });
+
+  it("in-file find marks every match and reports the count (prev/next cycle, clear on close)", async () => {
+    vi.useFakeTimers();
+    (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = vi.fn();
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "const foo = 1\nreturn foo", size: 22, truncated: false, binary: false });
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    vi.advanceTimersByTime(200); // let the highlight resolve so `.line` rows exist
+    await flushPromises();
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-test="fv-find-bar"]').exists()).toBe(false);
+    await w.find('[data-test="fv-find-toggle"]').trigger("click");
+    await w.find('[data-test="fv-find-input"]').setValue("foo");
+    await flushPromises();
+    await w.vm.$nextTick();
+
+    expect(w.findAll("mark.search-hit")).toHaveLength(2);
+    expect(w.find('[data-test="fv-find-count"]').text()).toBe("1/2");
+    // next wraps 1→2→1
+    await w.find('[data-test="fv-find-next"]').trigger("click");
+    expect(w.find('[data-test="fv-find-count"]').text()).toBe("2/2");
+    // closing clears the marks
+    await w.find('[data-test="fv-find-close"]').trigger("click");
+    await w.vm.$nextTick();
+    expect(w.findAll("mark.search-hit")).toHaveLength(0);
+    vi.useRealTimers();
+  });
+
+  it("does not offer the find bar for a huge (never-highlighted) file", async () => {
+    const files = useFilesStore();
+    const huge = Array.from({ length: 5001 }, (_, i) => `line ${i}`).join("\n");
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.txt", content: huge, size: huge.length, truncated: false, binary: false });
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "big.txt" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    // > LINE_GUTTER_LIMIT ⇒ plain <pre>, no `.line` anchors ⇒ find would always say "no results".
+    expect(w.find('[data-test="fv-find-toggle"]').exists()).toBe(false);
+  });
+
+  it("scrolls to and flashes the target line when opened from a content-search hit", async () => {
+    vi.useFakeTimers();
+    (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = vi.fn();
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "l1\nl2\nl3\nl4", size: 11, truncated: false, binary: false });
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts", line: 3, lineRev: 1 }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    vi.advanceTimersByTime(200);
+    await flushPromises();
+    await w.vm.$nextTick();
+
+    const lines = Array.from(w.element.querySelectorAll(".line")) as HTMLElement[];
+    expect(lines).toHaveLength(4);
+    expect(lines[2].scrollIntoView).toHaveBeenCalled();
+    expect(lines[2].classList.contains("line-flash")).toBe(true);
+    vi.useRealTimers();
   });
 
   it("renders a single-file diff (loaded via readDiff from the diffPath prop) as structured rows", async () => {

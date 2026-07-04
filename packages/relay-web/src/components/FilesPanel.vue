@@ -201,9 +201,9 @@ function statusBadge(code: string): { label: string; cls: string; dot: string } 
   return { label: c[0] ?? "•", cls: "text-fg-muted", dot: "bg-warn" };
 }
 
-function openSearchResult(m: string) {
+function openSearchResult(m: string, line?: number) {
   selectedDiff.value = null; // clear any Changes-tab row highlight in favor of the freshly opened file
-  if (currentKey.value) centerTabs.openFile(currentKey.value, m);
+  if (currentKey.value) centerTabs.openFile(currentKey.value, m, line); // line = scroll target for content hits
 }
 function openDiff(path: string) {
   // Keep the Changes-tab row highlighted without re-fetching (that would rescope the
@@ -334,7 +334,7 @@ watch(
                  the query highlighted, wrapped so there's enough context to recognize it. -->
             <ul class="p-2 space-y-1">
               <li v-for="(h, i) in visibleHits" :key="i">
-                <button data-test="fs-hit" class="block w-full rounded px-1.5 py-1 text-left hover:bg-raised" @click="openSearchResult(h.path)">
+                <button data-test="fs-hit" class="block w-full rounded px-1.5 py-1 text-left hover:bg-raised" @click="openSearchResult(h.path, h.line)">
                   <div class="truncate font-mono text-[10.5px] text-fg-muted/70">{{ h.path }}<span class="text-accent">:{{ h.line }}</span></div>
                   <div class="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-5 text-fg-muted">
                     <template v-for="(seg, j) in segments(h.text)" :key="j"><span :data-test="seg.hit ? 'hit-mark' : null" :class="seg.hit ? 'rounded-sm bg-warn/30 font-semibold text-fg' : ''">{{ seg.text }}</span></template>

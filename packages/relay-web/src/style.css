@@ -137,6 +137,27 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
   opacity: 0.45;
   user-select: none;
 }
+/* In-file search highlights, layered onto the rendered code by dom-line-highlight.
+   <mark> is not a <span>, so the `.shiki span { background: transparent !important }`
+   rule above doesn't touch it; the token colors inside keep their syntax highlight. */
+.shiki mark.search-hit {
+  background: rgb(var(--c-warn) / 0.32);
+  border-radius: 2px;
+}
+.shiki mark.search-hit.is-current {
+  background: rgb(var(--c-accent) / 0.45);
+  box-shadow: 0 0 0 1px rgb(var(--c-accent) / 0.8);
+}
+/* Transient flash when jumping to a line (search-result click / current match). Uses an
+   inset box-shadow, not background, because `.line` IS a span and would lose a background
+   to that same !important rule; box-shadow is unaffected. */
+.shiki code .line.line-flash {
+  animation: line-flash-fade 1.5s ease-out;
+}
+@keyframes line-flash-fade {
+  0% { box-shadow: inset 0 0 0 9999px rgb(var(--c-accent) / 0.22); }
+  100% { box-shadow: inset 0 0 0 9999px transparent; }
+}
 
 /* iOS Safari gives <input type="datetime-local"> an intrinsic min content width
    that overflows a width:100% flex parent (the scheduled-task composer). Resetting
