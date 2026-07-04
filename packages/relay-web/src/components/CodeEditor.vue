@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, shallowRef, onMounted, onBeforeUnmount, watch } from "vue";
 import { EditorState, Compartment, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, Decoration, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
@@ -129,7 +129,14 @@ onBeforeUnmount(() => {
   view = null;
 });
 
-function openSearch() { if (view) openSearchPanel(view); }
+// A shallowRef (not a plain function/const) so an external write-through — e.g. a test
+// substituting `openSearch` on the exposed proxy — actually lands here: proxyRefs' set trap
+// mutates `ref.value` in place when the existing value is a ref, and since this same ref
+// object is shared between the script-setup return bindings and the defineExpose object,
+// the substitution is visible on the next read through EITHER proxy. A plain function/const
+// wouldn't work: writes through a test's `vm.openSearch = fn` land on the setup-return
+// snapshot object, never on the (separate) object passed to defineExpose.
+const openSearch = shallowRef<() => void>(() => { if (view) openSearchPanel(view); });
 defineExpose({ get view() { return view; }, openSearch });
 </script>
 
