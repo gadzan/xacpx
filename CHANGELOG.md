@@ -1,5 +1,14 @@
 # Changelog
 
+## [relay 0.9.12-beta.15] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta adding file-viewer search (#126). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Added
+
+- **Find in file.** The file viewer has a search bar (the header magnifier, or ⌘/Ctrl-F): type to highlight every match in place — syntax colors preserved — with a match count and previous/next (Enter / Shift-Enter, Esc to close). Available for highlighted text files.
+- **Jump to line from a search hit.** Clicking a content-search result in the right rail now opens the file and scrolls to the matched line, briefly flashing it.
+
 ## [relay 0.9.12-beta.14] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta stopping iOS focus auto-zoom. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
