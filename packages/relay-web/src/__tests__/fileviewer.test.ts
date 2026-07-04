@@ -27,7 +27,7 @@ describe("FileViewer", () => {
   it("renders the file content (loaded via readFile from the path prop) and upgrades it to highlighted HTML", async () => {
     vi.useFakeTimers();
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "one\ntwo\nthree", size: 13, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "one\ntwo\nthree", size: 13, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -47,7 +47,7 @@ describe("FileViewer", () => {
 
   it("offers a copy button that copies the file content", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "hello", size: 5, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "hello", size: 5, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -58,7 +58,7 @@ describe("FileViewer", () => {
 
   it("hides the gutter and copy button for a binary file", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "bin.dat", content: "", size: 4, truncated: false, binary: true });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "bin.dat", content: "", size: 4, mtimeMs: 1000, truncated: false, binary: true });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "bin.dat" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -69,7 +69,7 @@ describe("FileViewer", () => {
 
   it("the mobile Files affordance emits back (return to the file list)", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -79,7 +79,7 @@ describe("FileViewer", () => {
 
   it("the mobile Close affordance emits close (return to the conversation)", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -89,7 +89,7 @@ describe("FileViewer", () => {
 
   it("the desktop Back affordance emits close (desktop has the list always visible)", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "src/a.ts", content: "x", size: 1, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -101,7 +101,7 @@ describe("FileViewer", () => {
     vi.useFakeTimers();
     (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = vi.fn();
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "const foo = 1\nreturn foo", size: 22, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "const foo = 1\nreturn foo", size: 22, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -130,7 +130,7 @@ describe("FileViewer", () => {
   it("does not offer the find bar for a huge (never-highlighted) file", async () => {
     const files = useFilesStore();
     const huge = Array.from({ length: 5001 }, (_, i) => `line ${i}`).join("\n");
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.txt", content: huge, size: huge.length, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.txt", content: huge, size: huge.length, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "big.txt" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -142,7 +142,7 @@ describe("FileViewer", () => {
     vi.useFakeTimers();
     (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = vi.fn();
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "l1\nl2\nl3\nl4", size: 11, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "l1\nl2\nl3\nl4", size: 11, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts", line: 3, lineRev: 1 }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
@@ -177,10 +177,10 @@ describe("FileViewer", () => {
     const files = useFilesStore();
     let resolveFirst!: (v: { workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }) => void;
     const first = new Promise((resolve) => { resolveFirst = resolve; });
-    const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first as Promise<{ workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }>);
+    const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first as Promise<{ workspace: string; path: string; content: string; size: number; mtimeMs: number; truncated: boolean; binary: boolean }>);
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await w.vm.$nextTick();
-    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, truncated: false, binary: false });
+    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, mtimeMs: 1000, truncated: false, binary: false });
     // switch to a second file before the first load resolves
     await w.setProps({ path: "b.ts" });
     await flushPromises();
@@ -197,11 +197,11 @@ describe("FileViewer", () => {
   it("ignores a stale readFile rejection when props change before it rejects (race guard)", async () => {
     const files = useFilesStore();
     let rejectFirst!: (e: Error) => void;
-    const first = new Promise<{ workspace: string; path: string; content: string; size: number; truncated: boolean; binary: boolean }>((_resolve, reject) => { rejectFirst = reject; });
+    const first = new Promise<{ workspace: string; path: string; content: string; size: number; mtimeMs: number; truncated: boolean; binary: boolean }>((_resolve, reject) => { rejectFirst = reject; });
     const readFileSpy = vi.spyOn(files, "readFile").mockImplementationOnce(() => first);
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await w.vm.$nextTick();
-    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, truncated: false, binary: false });
+    readFileSpy.mockResolvedValueOnce({ workspace: "ws", path: "b.ts", content: "second", size: 6, mtimeMs: 1000, truncated: false, binary: false });
     // switch to a second file before the first load rejects
     await w.setProps({ path: "b.ts" });
     await flushPromises();
@@ -219,7 +219,7 @@ describe("FileViewer", () => {
 
   it("shows an error (and clears stale content) when a load rejects with no newer selection pending", async () => {
     const files = useFilesStore();
-    vi.spyOn(files, "readFile").mockResolvedValueOnce({ workspace: "ws", path: "a.ts", content: "first", size: 5, truncated: false, binary: false });
+    vi.spyOn(files, "readFile").mockResolvedValueOnce({ workspace: "ws", path: "a.ts", content: "first", size: 5, mtimeMs: 1000, truncated: false, binary: false });
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
