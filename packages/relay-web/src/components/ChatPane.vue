@@ -121,6 +121,10 @@ const verb = computed(() => {
              stay fully readable instead of truncating — title tooltips don't work on touch.
              Each chip is shrink-0 (natural width); the strip overflows and scrolls. -->
         <div v-if="currentSession || instance" class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto no-scrollbar">
+          <!-- Session name as the leading chip. Mobile only: on lg+ the <h1> above already
+               shows it at the front of this row, so showing it here too would duplicate. -->
+          <span data-test="ctx-chip-session"
+                class="flex shrink-0 items-center whitespace-nowrap rounded-md border border-border bg-surface px-2 py-0.5 text-[10.5px] font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
                   class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title='$t("chat.browseFiles")'

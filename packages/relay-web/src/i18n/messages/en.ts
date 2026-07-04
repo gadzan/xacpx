@@ -191,7 +191,6 @@ export default {
       rename: "Rename",
       delete: "Delete",
       download: "Download",
-      more: "More actions",
       confirmDelete: 'Delete "{name}"? This cannot be undone.',
       writeDisabled: "File writes are disabled. Enable `files.writeEnabled` in the instance config.",
     },

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronRight, ChevronDown, Folder, FolderOpen, MoreHorizontal } from "lucide-vue-next";
+import { ChevronRight, ChevronDown, Folder, FolderOpen } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
 import { openMenuKey } from "../lib/tree-menu";
+import { useLongPress } from "../lib/use-long-press";
 import ContextMenu from "./ContextMenu.vue";
 
 // Local directive: focus + select an element on mount (the rename input).
@@ -63,16 +64,25 @@ function onRowClick() {
 // `openMenuKey` (shared across all rows + the root header) enforces one menu at a time:
 // this row's menu renders only while it's the active key, so opening another closes ours.
 const menu = ref<{ x: number; y: number } | null>(null);
+function openMenuAt(x: number, y: number) {
+  menu.value = { x, y };
+  openMenuKey.value = rel.value;
+}
+// Desktop: right-click. Real coords from the contextmenu event; fall back to the row's
+// rect if a synthesized event has clientX/Y = 0.
 function openMenu(e: MouseEvent) {
-  // Right-click / mouse-click gives real coords; keyboard-activating the ⋯ button yields a
-  // click with clientX/Y = 0, so fall back to the trigger's rect to place the menu.
   let x = e.clientX, y = e.clientY;
   if (!x && !y) {
     const r = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
     if (r) { x = r.left; y = r.bottom; }
   }
-  menu.value = { x, y };
-  openMenuKey.value = rel.value;
+  openMenuAt(x, y);
+}
+// Touch has no right-click, so a long-press on the row opens the same menu at the finger.
+const longPress = useLongPress((x, y) => openMenuAt(x, y));
+function onRowPointerDown(e: PointerEvent) {
+  if (inlineMode.value?.kind === "rename") return; // holding to place the caret must not pop the menu
+  longPress.start(e);
 }
 function closeMenu() { menu.value = null; if (openMenuKey.value === rel.value) openMenuKey.value = null; }
 
@@ -122,32 +132,27 @@ async function onMenuSelect(key: string) {
 
 <template>
   <div v-if="selfVisible">
-    <!-- Row = clickable label button + a sibling ⋯ button + status dot. The ⋯ is a real
-         button (not nested in the row button) so it's keyboard-activatable and valid ARIA. -->
-    <div class="flex w-full items-center rounded pr-1 hover:bg-raised">
+    <!-- Row = clickable label button + status dot. The "more actions" menu opens via
+         right-click on desktop and a long-press on touch (no per-row ⋯ button). select-none
+         + no iOS callout so the long-press doesn't highlight the name or pop the callout. -->
+    <div class="flex w-full select-none items-center rounded pr-1 hover:bg-raised [-webkit-touch-callout:none]">
       <button data-test="tree-row"
               class="flex min-w-0 flex-1 items-center gap-1 py-0.5 pl-1 text-left"
               :style="{ paddingLeft: depth * 12 + 4 + 'px' }"
-              @click="onRowClick" @contextmenu.prevent="openMenu">
+              @click="onRowClick" @contextmenu.prevent="openMenu" @pointerdown="onRowPointerDown">
         <component :is="isOpen ? ChevronDown : ChevronRight" v-if="isDir" :size="12" class="shrink-0 text-fg-muted" />
         <span v-else class="w-3 shrink-0" />
         <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
                    class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
         <span v-if="inlineMode?.kind !== 'rename'" class="flex-1 truncate text-[12px]" :class="[dim ? 'opacity-45 italic' : '', isDir ? 'text-fg font-medium' : 'text-fg-muted']">{{ entry.name }}</span>
-        <!-- rename: replace the label with an input in-place -->
+        <!-- rename: replace the label with an input in-place. select-text re-enables caret
+             placement/selection that the row's select-none would otherwise inherit-block. -->
         <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
                @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
-               class="flex-1 rounded border border-border bg-raised px-1 text-[12px]" />
+               class="flex-1 select-text rounded border border-border bg-raised px-1 text-[12px]" />
       </button>
-      <span v-if="gitDot" data-test="fs-status" class="ml-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
+      <span v-if="gitDot" data-test="fs-status" class="mx-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
             :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
-      <!-- Always-visible ⋯ trigger, pinned at the far right: opens the same context menu, so
-           touch devices (no right-click) can reach every action. -->
-      <button data-test="row-menu" type="button" :aria-label="$t('files.menu.more')"
-              class="ml-1 grid h-5 w-5 shrink-0 place-items-center rounded text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
-              @click.stop="openMenu($event)">
-        <MoreHorizontal :size="13" />
-      </button>
     </div>
 
     <div v-if="isDir && isOpen">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { MessageSquare, SquareTerminal, X } from "lucide-vue-next";
 import { useCenterTabsStore, type CenterTab, TAB_DROP_END } from "../stores/center-tabs";
@@ -39,11 +40,57 @@ function iconFor(tab: CenterTab) {
 function labelFor(tab: CenterTab): string {
   return tab.kind === "terminal" ? t("center.terminal") : basename(tab.path);
 }
+
+// Edge-fade + hidden scrollbar. The scrollbar is suppressed (`no-scrollbar`); to signal
+// that tabs continue off-screen we fade the strip's content with a mask, but ONLY on the
+// side(s) that actually have hidden tabs — a static both-ends mask would dim the first/last
+// tab even when nothing is clipped. `canLeft`/`canRight` track the scroll position.
+const scroller = ref<HTMLElement | null>(null);
+const canLeft = ref(false);
+const canRight = ref(false);
+
+function updateFades() {
+  const el = scroller.value;
+  if (!el) {
+    canLeft.value = false;
+    canRight.value = false;
+    return;
+  }
+  canLeft.value = el.scrollLeft > 1;
+  canRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+}
+
+const FADE = "1.25rem";
+const maskStyle = computed(() => {
+  const l = canLeft.value;
+  const r = canRight.value;
+  if (!l && !r) return {};
+  const stops = [l ? "transparent 0" : "#000 0"];
+  if (l) stops.push(`#000 ${FADE}`);
+  if (r) stops.push(`#000 calc(100% - ${FADE})`);
+  stops.push(r ? "transparent 100%" : "#000 100%");
+  const g = `linear-gradient(to right, ${stops.join(", ")})`;
+  return { maskImage: g, WebkitMaskImage: g };
+});
+
+onMounted(() => {
+  updateFades();
+  scroller.value?.addEventListener("scroll", updateFades, { passive: true });
+  window.addEventListener("resize", updateFades);
+});
+onBeforeUnmount(() => {
+  scroller.value?.removeEventListener("scroll", updateFades);
+  window.removeEventListener("resize", updateFades);
+});
+// A tab added/closed changes scrollWidth ⇒ re-evaluate which side overflows.
+watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades));
 </script>
 
 <template>
   <div
-    class="flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
+    ref="scroller"
+    :style="maskStyle"
+    class="no-scrollbar flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
     :class="props.bare ? '' : 'shrink-0 border-b border-border bg-surface'"
   >
     <!-- Pinned chat tab: never closable, never draggable, always first. -->
