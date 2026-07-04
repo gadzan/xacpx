@@ -155,7 +155,12 @@ const saving = ref(false);
 const saveError = ref<string | null>(null);
 
 const canEdit = computed(
-  () => !!file.value && !file.value.binary && !file.value.truncated && fileLines.value.length <= LINE_GUTTER_LIMIT,
+  () =>
+    !!file.value &&
+    !file.value.binary &&
+    !file.value.truncated &&
+    fileLines.value.length <= LINE_GUTTER_LIMIT &&
+    typeof file.value.mtimeMs === "number",
 );
 const editDirty = computed(() => editing.value && !!file.value && draft.value !== file.value.content);
 watch(editDirty, (v) => emit("dirty-change", v));
@@ -189,6 +194,7 @@ function cancelEdit() {
   emit("dirty-change", false);
 }
 async function save() {
+  if (saving.value) return;
   if (!file.value || !baseRev.value) return;
   saving.value = true;
   saveError.value = null;

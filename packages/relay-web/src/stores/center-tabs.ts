@@ -48,8 +48,12 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     revCounter += 1;
     const id = `file:${path}`;
     const current = bySession.value[key] ?? { tabs: [], activeId: "chat" };
-    const tab: CenterTab = { kind: "file", id, path, targetLine: line, targetRev: revCounter };
     const idx = current.tabs.findIndex((t) => t.id === id);
+    const existing = idx === -1 ? undefined : current.tabs[idx];
+    const tab: CenterTab = {
+      kind: "file", id, path, targetLine: line, targetRev: revCounter,
+      dirty: existing?.kind === "file" ? existing.dirty : undefined,
+    };
     const tabs = idx === -1 ? [...current.tabs, tab] : current.tabs.map((t, i) => (i === idx ? tab : t));
     bySession.value = { ...bySession.value, [key]: { tabs, activeId: id } };
   }

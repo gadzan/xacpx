@@ -267,6 +267,37 @@ describe("FileViewer", () => {
     expect(w.find('[data-test="fv-edit"]').exists()).toBe(false);
   });
 
+  it("Cmd/Ctrl-S while editing saves exactly once (CodeMirror's own Mod-s keymap and the " +
+    "document-level shortcut must not both fire save() for the same keypress)", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });
+    const saveFile = vi.fn().mockResolvedValue({ path: "a.ts", mtimeMs: 200, size: 3 });
+    files.saveFile = saveFile;
+    // attachTo: document.body so the synthetic keydown actually bubbles up to `document`,
+    // where FileViewer's own shortcut handler is registered (see onKeydown/onMounted below).
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] }, attachTo: document.body });
+    await flushPromises();
+    await w.vm.$nextTick();
+    // jsdom never lays out elements, so offsetParent is always null; stub it non-null the way
+    // a real visible (non `display:none`) pane would report, so the document-level Cmd/Ctrl-S
+    // handler's visibility gate doesn't bail out regardless of the bug under test.
+    Object.defineProperty(w.element, "offsetParent", { value: document.body, configurable: true });
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    await w.getComponent(CodeEditor).vm.$emit("update:modelValue", "new content");
+    await w.vm.$nextTick();
+    // Dispatch ONE real keydown on the CodeMirror content DOM (not just synthetically calling
+    // save()): it both (a) runs through CodeMirror's own `Mod-s` keymap (emits `save`, handled
+    // by the parent's `@save="save()"` on <CodeEditor>) and (b) bubbles up to `document`, where
+    // FileViewer's own keydown listener ALSO matches and calls save() — exactly the double-fire
+    // this test guards against. (jsdom resolves "Mod" to Ctrl, not Cmd, since navigator.platform
+    // doesn't report "Mac" — ctrlKey is what actually drives CodeMirror's keymap here.)
+    const view = (w.getComponent(CodeEditor).vm as unknown as { view: { contentDOM: HTMLElement } }).view;
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(saveFile).toHaveBeenCalledTimes(1);
+    w.unmount();
+  });
+
   it("a stale-write error shows the reload banner and keeps edit mode", async () => {
     const files = useFilesStore();
     vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });

@@ -116,6 +116,18 @@ test("closeTabGuarded closes a clean tab without asking", () => {
   expect(s.tabsFor(key).some((t) => t.id === "file:src/x.ts")).toBe(false);
 });
 
+test("openFile on an already-open dirty file preserves the dirty flag (close guard stays armed)", () => {
+  const s = useCenterTabsStore();
+  const key = sessionKey("i1", "a");
+  s.openFile(key, "src/x.ts");
+  s.setDirty(key, "file:src/x.ts", true);
+  s.openFile(key, "src/x.ts"); // re-open same path (e.g. clicked in the tree again)
+  expect(s.isDirty(key, "file:src/x.ts")).toBe(true);
+  // guard still prompts:
+  expect(s.closeTabGuarded(key, "file:src/x.ts", () => false)).toBe(false);
+  expect(s.tabsFor(key).some((t) => t.id === "file:src/x.ts")).toBe(true);
+});
+
 test("closeTabGuarded blocks a dirty tab when confirm is declined", () => {
   const s = useCenterTabsStore();
   const key = sessionKey("i1", "a");
