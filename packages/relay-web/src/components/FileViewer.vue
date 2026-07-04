@@ -144,7 +144,7 @@ let anchors: HTMLElement[] = [];
 // gate out binary and huge (> LINE_GUTTER_LIMIT, plain-<pre>) files so we never offer a
 // find bar that would always report "No results".
 const canFind = computed(
-  () => !!file.value && !file.value.binary && fileLines.value.length <= LINE_GUTTER_LIMIT,
+  () => !!file.value && !file.value.binary && fileLines.value.length <= LINE_GUTTER_LIMIT && !editing.value,
 );
 
 // ── Edit mode ────────────────────────────────────────────────────────────────────────

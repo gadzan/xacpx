@@ -332,6 +332,7 @@ export class WorkspaceFs {
     const { abs, rel } = await this.resolve(workspace, relPath); // realpath + containment; throws not-found if missing
     const info = await stat(abs);
     if (!info.isFile()) throw new Error("not-a-file");
+    if (info.size > FILE_READ_CAP) throw new Error("file-too-large");
     if (content.includes("\u0000")) throw new Error("is-binary");
     if (Buffer.byteLength(content, "utf8") > FILE_READ_CAP) throw new Error("file-too-large");
     if (info.mtimeMs !== expected.mtimeMs || info.size !== expected.size) throw new Error("stale-write");

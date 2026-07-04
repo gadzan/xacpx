@@ -169,3 +169,14 @@ test("writeFile rejects content over the size cap", async () => {
     fs.writeFile("ws", "a.txt", huge, { mtimeMs: before.mtimeMs, size: before.size }),
   ).rejects.toThrow("file-too-large");
 });
+
+test("writeFile rejects saving over a file whose on-disk size exceeds the read cap (truncated-target guard)", async () => {
+  // write a >256 KiB file, read it back (its read is truncated), then attempt to save small content with the matching token
+  const big = "x".repeat(256 * 1024 + 500);
+  await writeFile(join(rootDir, "big.txt"), big);
+  const before = await fs.readFile("ws", "big.txt");
+  expect(before.truncated).toBe(true);
+  await expect(
+    fs.writeFile("ws", "big.txt", "small", { mtimeMs: before.mtimeMs, size: before.size }),
+  ).rejects.toThrow("file-too-large");
+});
