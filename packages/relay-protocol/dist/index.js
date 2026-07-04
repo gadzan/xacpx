@@ -78,6 +78,7 @@ var MSG = {
   fsDelete: "control.fs.delete",
   fsCopy: "control.fs.copy",
   fsDownload: "control.fs.download",
+  fsWrite: "control.fs.write",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",

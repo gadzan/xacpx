@@ -41,6 +41,7 @@ export const MSG = {
   fsDelete: "control.fs.delete",
   fsCopy: "control.fs.copy",
   fsDownload: "control.fs.download",
+  fsWrite: "control.fs.write",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
@@ -329,6 +330,8 @@ export interface FsReadResult {
   content: string;
   /** Total file size in bytes. */
   size: number;
+  /** Filesystem mtime in ms; paired with `size` as a stale-write token for editing. */
+  mtimeMs: number;
   /** True when the file exceeded the read cap and `content` is a prefix. */
   truncated: boolean;
   /** True when the file looks binary; `content` is then empty. */
@@ -411,6 +414,20 @@ export interface FsDownloadResult {
   base64: string;
   size: number;
   mimeType: string;
+}
+
+export interface FsWritePayload {
+  workspace: string;
+  path: string;
+  /** Full new UTF-8 file content. */
+  content: string;
+  /** Stale-write token captured at read time; the write is rejected if disk no longer matches. */
+  expected: { mtimeMs: number; size: number };
+}
+export interface FsWriteResult {
+  path: string;
+  mtimeMs: number;
+  size: number;
 }
 
 export interface SessionModelGetPayload {
