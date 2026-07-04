@@ -1,5 +1,26 @@
 # Changelog
 
+## [file edit & save] - 2026-07-04
+
+Edit and save file content from the relay-web dashboard's file viewer (#128). This is a **four-package** release, not a UI-only hub bump — it adds a new gated wire RPC `control.fs.write`:
+
+- `@ganglion/xacpx-relay-protocol` **0.1.10** (stable) — new `control.fs.write` message + `FsWritePayload`/`FsWriteResult`, and an `mtimeMs` field on `FsReadResult` (the stale-write token).
+- `@ganglion/xacpx` **0.17.0-beta.3** (`next`) — `WorkspaceFs.writeFile` (realpath containment, atomic write, binary/size/truncated-target guards, `{mtimeMs,size}` stale-write check) and gated `ControlService.fsWrite`.
+- `@ganglion/xacpx-channel-relay` **0.3.3-beta.3** (`next`) — connector dispatch for `control.fs.write`.
+- `@ganglion/xacpx-relay` **0.9.12-beta.16** (`next`, bundled `relay-web`) — the editor UI.
+
+### Added
+
+- **Edit & save files.** The file viewer's header has a pencil that opens a CodeMirror 6 editor in place, with **Save** / **Cancel**, a dirty indicator, and **⌘/Ctrl-S** to save. Syntax highlighting for common languages, plain-text fallback otherwise.
+- **Stale-write protection.** A save is rejected (`stale-write`) if the file changed on disk since you opened it — an inline banner offers **Reload** while preserving your draft, so an agent's concurrent edit is never silently overwritten.
+- **Unsaved-changes guard.** Closing a tab with unsaved edits prompts before discarding.
+
+### Safety
+
+- Editing is gated by the same `filesWriteEnabled()` policy as create/rename/delete, strictly before any filesystem I/O; writes stay contained to the workspace root (realpath) and are atomic. Binary, truncated-on-read, and oversized files can't be edited or saved.
+
+> Release order: protocol → core → (relay, channel-relay). The connector must be repacked, reinstalled into the plugin home, and the console restarted to serve `control.fs.write` live.
+
 ## [relay 0.9.12-beta.15] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta adding file-viewer search (#126). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
