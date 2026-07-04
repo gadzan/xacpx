@@ -1,5 +1,13 @@
 # Changelog
 
+## [relay 0.9.12-beta.14] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta stopping iOS focus auto-zoom. UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Fixed
+
+- **No more zoom-on-focus on iOS.** Tapping into an input on mobile Safari no longer zooms the page toward the field (iOS auto-zooms any control with font-size < 16px, and the dashboard's inputs are intentionally compact). The viewport now sets `maximum-scale=1` / `user-scalable=no`. Trade-off: pinch-to-zoom is disabled.
+
 ## [relay 0.9.12-beta.13] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta with a batch of center-panel and file-tree UX refinements (#123). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
