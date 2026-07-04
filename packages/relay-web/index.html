@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- maximum-scale=1 + user-scalable=no: stop iOS Safari from auto-zooming toward a
+         focused input (it does this for any form control with font-size < 16px, and the
+         dashboard's inputs are intentionally compact). Trade-off: also disables pinch-zoom. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>XACPX HUB</title>
     <meta name="theme-color" content="#0E1116" />
     <meta name="description" content="Self-hosted relay dashboard for xacpx — remote-control acpx sessions." />
