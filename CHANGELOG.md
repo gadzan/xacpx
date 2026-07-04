@@ -1,5 +1,13 @@
 # Changelog
 
+## [relay 0.9.12-beta.12] - 2026-07-03
+
+A `@ganglion/xacpx-relay` (hub) beta fixing a touch-gesture conflict in the center tab strip (#121). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Fixed
+
+- **The mobile tab strip can be scrolled again.** With several tabs open, a horizontal swipe was always captured as a drag-reorder, so the overflowing strip could never scroll. Tabs now scroll natively on a swipe; **reordering is a long-press-then-drag** on touch (the standard mobile pattern), while mouse drag is unchanged. An active drag suppresses the native scroll so the two no longer fight.
+
 ## [relay 0.9.12-beta.11] - 2026-07-03
 
 A `@ganglion/xacpx-relay` (hub) beta folding in on-device feedback on the center tab strip (#119). UI-only (bundled `relay-web`). Published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
