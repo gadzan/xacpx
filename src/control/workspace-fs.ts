@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { readdir, realpath, stat, open, readFile, writeFile, mkdir, rename as fsRename, cp, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import writeFileAtomic from "write-file-atomic";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +59,7 @@ export interface FileContent {
   path: string;
   content: string;
   size: number;
+  mtimeMs: number;
   truncated: boolean;
   binary: boolean;
 }
@@ -308,12 +310,34 @@ export class WorkspaceFs {
         path: rel,
         content: binary ? "" : slice.toString("utf8"),
         size: info.size,
+        mtimeMs: info.mtimeMs,
         truncated: info.size > FILE_READ_CAP,
         binary,
       };
     } finally {
       await fh.close();
     }
+  }
+
+  /** Overwrite an EXISTING file's content, guarded by a stale-write token. The target must
+   *  resolve inside the workspace (realpath containment), be a regular file, and match the
+   *  caller's `{mtimeMs,size}` token — otherwise `stale-write`. Content must be UTF-8 text
+   *  (no NUL) and within the read cap. Writes atomically. Returns a fresh token. */
+  async writeFile(
+    workspace: string,
+    relPath: string,
+    content: string,
+    expected: { mtimeMs: number; size: number },
+  ): Promise<{ path: string; mtimeMs: number; size: number }> {
+    const { abs, rel } = await this.resolve(workspace, relPath); // realpath + containment; throws not-found if missing
+    const info = await stat(abs);
+    if (!info.isFile()) throw new Error("not-a-file");
+    if (content.includes("\u0000")) throw new Error("is-binary");
+    if (Buffer.byteLength(content, "utf8") > FILE_READ_CAP) throw new Error("file-too-large");
+    if (info.mtimeMs !== expected.mtimeMs || info.size !== expected.size) throw new Error("stale-write");
+    await writeFileAtomic(abs, content);
+    const after = await stat(abs);
+    return { path: rel, mtimeMs: after.mtimeMs, size: after.size };
   }
 
   /** Find files by name (default) or content. Name mode walks relative paths
