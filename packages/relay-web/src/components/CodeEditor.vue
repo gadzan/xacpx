@@ -74,6 +74,16 @@ const theme = EditorView.theme({
   ".cm-activeLineGutter": { backgroundColor: "rgb(var(--c-raised) / 0.5)" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "rgb(var(--c-accent) / 0.25)" },
   ".cm-cursor": { borderLeftColor: "rgb(var(--c-accent))" },
+  ".cm-panels": { backgroundColor: "rgb(var(--c-surface))", color: "rgb(var(--c-fg))" },
+  ".cm-panels.cm-panels-top": { borderBottom: "1px solid rgb(var(--c-border))" },
+  ".cm-panels.cm-panels-bottom": { borderTop: "1px solid rgb(var(--c-border))" },
+  ".cm-panel.cm-search": { padding: "4px 8px" },
+  ".cm-panel.cm-search input, .cm-panel.cm-search button, .cm-panel.cm-search label": { fontSize: "12px" },
+  ".cm-panel.cm-search input[type=text]": { backgroundColor: "rgb(var(--c-bg))", color: "rgb(var(--c-fg))", border: "1px solid rgb(var(--c-border))", borderRadius: "4px", padding: "2px 6px" },
+  ".cm-panel.cm-search button": { backgroundColor: "rgb(var(--c-raised))", color: "rgb(var(--c-fg))", border: "1px solid rgb(var(--c-border))", borderRadius: "4px", backgroundImage: "none" },
+  ".cm-panel.cm-search .cm-button": { backgroundImage: "none" },
+  ".cm-searchMatch": { backgroundColor: "rgb(var(--c-warn) / 0.3)" },
+  ".cm-searchMatch-selected": { backgroundColor: "rgb(var(--c-accent) / 0.4)" },
 });
 
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
