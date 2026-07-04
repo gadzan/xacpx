@@ -19,3 +19,13 @@ if (typeof (globalThis as { requestAnimationFrame?: unknown }).requestAnimationF
     setTimeout(() => cb(0), 0) as unknown as number;
   (globalThis as { cancelAnimationFrame: unknown }).cancelAnimationFrame = (id: number) => clearTimeout(id);
 }
+
+// jsdom's Range doesn't implement getClientRects/getBoundingClientRect. CodeMirror 6 (the
+// FileViewer edit-mode editor) measures layout via Range on every mount/update, so without
+// these stubs every CodeEditor-mounting test spams benign `getClientRects is not a function`
+// stack traces to stderr. Stub minimal, spec-shaped return values — no real layout, just
+// enough for CM6's measurement code not to throw.
+Range.prototype.getClientRects = () =>
+  ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as unknown as DOMRectList;
+Range.prototype.getBoundingClientRect = () =>
+  ({ x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, toJSON() {} }) as DOMRect;

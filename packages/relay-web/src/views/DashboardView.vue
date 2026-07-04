@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { connectEvents } from "../api/events";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
@@ -34,6 +35,7 @@ const terminals = useTerminalStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
 const centerTabs = useCenterTabsStore();
+const { t } = useI18n();
 let disconnect: (() => void) | null = null;
 
 // Mobile-only drawer state. On desktop (lg:) both panels are static columns and
@@ -145,6 +147,12 @@ function keyAlias(key: string): string {
 function keyWorkspace(key: string): string {
   const inst = instances.byId(keyInstance(key));
   return inst?.sessions.find((s) => s.alias === keyAlias(key))?.workspace ?? "";
+}
+
+// Route every tab close (file/diff/terminal) through the dirty-aware guard: a clean tab
+// closes immediately, a dirty file tab asks first (native confirm — the store can't show UI).
+function requestCloseTab(key: string, id: string) {
+  centerTabs.closeTabGuarded(key, id, () => window.confirm(t("files.unsavedConfirm")));
 }
 
 // Prune center-tabs whose session has disappeared OUT-OF-BAND (deleted from the CLI /
@@ -387,11 +395,12 @@ onUnmounted(() => {
                         :diff-path="tab.kind === 'diff' ? tab.path : undefined"
                         :line="tab.kind === 'file' ? tab.targetLine : undefined"
                         :line-rev="tab.kind === 'file' ? tab.targetRev : undefined"
-                        @close="centerTabs.closeTab(key, tab.id)" @back="backToFileList" />
+                        @dirty-change="(v) => centerTabs.setDirty(key, tab.id, v)"
+                        @close="requestCloseTab(key, tab.id)" @back="backToFileList" />
             <TerminalTab v-else-if="tab.kind === 'terminal'" class="absolute inset-0 z-20"
                          v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
                          :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"
-                         @close="centerTabs.closeTab(key, tab.id)" />
+                         @close="requestCloseTab(key, tab.id)" />
           </template>
         </div>
       </div>

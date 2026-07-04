@@ -65,20 +65,26 @@ describe("CenterTabStrip", () => {
     expect(setActive).toHaveBeenLastCalledWith(K, "chat");
   });
 
-  it("clicking a tab's close button closes it via the store without also activating it", async () => {
+  it("clicking a tab's close button closes it via the store (guarded) without also activating it", async () => {
     const store = useCenterTabsStore();
     const K = sessionKey("i1", "s1");
     store.openFile(K, "src/a.ts");
     store.openTerminal(K);
     store.setActive(K, "chat");
     const setActive = vi.spyOn(store, "setActive");
-    const closeTab = vi.spyOn(store, "closeTab");
+    // The close button routes through closeTabGuarded (Task 7), which asks for confirmation
+    // only when the tab is dirty. This tab is clean, so the guard closes it without prompting
+    // — asserted both via the guard call and the resulting store state (closeTabGuarded calls
+    // the store's OWN closeTab internally via a closure reference, which a spy on the
+    // store-object's `closeTab` property can't observe).
+    const closeTabGuarded = vi.spyOn(store, "closeTabGuarded");
 
     const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
     const fileTab = w.findAll('[data-test="tab"]').find((t) => t.attributes("data-tab-id") === "file:src/a.ts")!;
     await fileTab.find('[data-test="tab-close"]').trigger("click");
 
-    expect(closeTab).toHaveBeenCalledWith(K, "file:src/a.ts");
+    expect(closeTabGuarded).toHaveBeenCalledWith(K, "file:src/a.ts", expect.any(Function));
+    expect(store.tabsFor(K).some((t) => t.id === "file:src/a.ts")).toBe(false); // actually closed
     expect(setActive).not.toHaveBeenCalled(); // @click.stop must not also bubble into activation
   });
 

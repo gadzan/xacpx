@@ -41,6 +41,13 @@ function labelFor(tab: CenterTab): string {
   return tab.kind === "terminal" ? t("center.terminal") : basename(tab.path);
 }
 
+// Guarded close: a clean tab closes immediately; a dirty file tab asks first via the
+// native confirm dialog (the store itself can't show UI, so the confirm callback is
+// injected — see closeTabGuarded).
+function requestClose(id: string) {
+  store.closeTabGuarded(props.sessionKey, id, () => window.confirm(t("files.unsavedConfirm")));
+}
+
 // Edge-fade + hidden scrollbar. The scrollbar is suppressed (`no-scrollbar`); to signal
 // that tabs continue off-screen we fade the strip's content with a mask, but ONLY on the
 // side(s) that actually have hidden tabs — a static both-ends mask would dim the first/last
@@ -128,12 +135,13 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       <component :is="iconFor(tab)" :size="13" class="shrink-0" />
       <span v-if="tab.kind === 'diff'" class="shrink-0 text-[10px] font-semibold opacity-80">Δ</span>
       <span class="max-w-[10rem] truncate">{{ labelFor(tab) }}</span>
+      <span v-if="tab.kind === 'file' && tab.dirty" class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
       <button
         type="button"
         data-test="tab-close"
         :aria-label="$t('center.closeTab')"
         class="ml-0.5 grid h-4 w-4 shrink-0 place-items-center rounded text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
-        @click.stop="store.closeTab(props.sessionKey, tab.id)"
+        @click.stop="requestClose(tab.id)"
       >
         <X :size="11" />
       </button>

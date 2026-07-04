@@ -14,6 +14,7 @@ vi.mock("../lib/shiki", () => ({
 }));
 
 import FileViewer from "../components/FileViewer.vue";
+import CodeEditor from "../components/CodeEditor.vue";
 import { useFilesStore } from "../stores/files";
 
 let pinia: ReturnType<typeof createPinia>;
@@ -235,5 +236,50 @@ describe("FileViewer", () => {
     // the previous selection's content must not still be shown as if it were the new one
     expect(w.find('[data-test="fv-file-body"]').exists()).toBe(false);
     expect(w.text()).not.toContain("first");
+  });
+
+  it("Edit enters edit mode and Save calls saveFile with the read token", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });
+    const saveFile = vi.fn().mockResolvedValue({ path: "a.ts", mtimeMs: 200, size: 3 });
+    files.saveFile = saveFile;
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    expect(w.find('[data-test="code-editor"]').exists()).toBe(true);
+    // Save starts disabled until the draft actually differs from the loaded content — mirror a
+    // real edit via the CodeEditor's v-model (its own doc-change wiring is covered by
+    // codeeditor.test.ts) rather than clicking Save on an untouched, still-clean draft.
+    await w.getComponent(CodeEditor).vm.$emit("update:modelValue", "new content");
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-save"]').trigger("click");
+    await flushPromises();
+    expect(saveFile).toHaveBeenCalledWith("i1", "ws", "a.ts", "new content", { mtimeMs: 100, size: 3 });
+  });
+
+  it("Edit button is hidden for binary/truncated files", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "big.bin", content: "", size: 9e9, mtimeMs: 1, truncated: true, binary: true });
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "big.bin" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="fv-edit"]').exists()).toBe(false);
+  });
+
+  it("a stale-write error shows the reload banner and keeps edit mode", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ workspace: "ws", path: "a.ts", content: "old", size: 3, mtimeMs: 100, truncated: false, binary: false });
+    files.saveFile = vi.fn().mockRejectedValue(new Error("stale-write"));
+    const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "a.ts" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-edit"]').trigger("click");
+    await w.getComponent(CodeEditor).vm.$emit("update:modelValue", "new content");
+    await w.vm.$nextTick();
+    await w.get('[data-test="fv-save"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="fv-save-error"]').exists()).toBe(true);
+    expect(w.find('[data-test="code-editor"]').exists()).toBe(true); // still editing, draft kept
   });
 });
