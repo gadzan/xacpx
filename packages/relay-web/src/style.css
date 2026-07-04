@@ -125,66 +125,6 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
   .pulse-dot, .shimmer-text, .caret::after { animation: none !important; }
 }
 
-/* Shiki syntax highlighting — dual theme via CSS vars, line numbers via counters. */
-.shiki,
-.shiki span {
-  background-color: transparent !important;
-  color: var(--shiki-light);
-}
-.dark .shiki,
-.dark .shiki span {
-  color: var(--shiki-dark);
-}
-.shiki {
-  margin: 0;
-  padding: 0.75rem;
-  overflow-x: auto;
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-.shiki code {
-  display: grid;
-  counter-reset: shiki-ln;
-}
-/* Line-number gutter: keep it tight so code isn't pushed far from the left edge on
-   narrow (mobile) viewports. Width fits up to 4 digits (LINE_GUTTER_LIMIT = 5000). */
-.shiki code .line {
-  position: relative;
-  padding-left: 2.75rem;
-  min-height: 1.6em;
-}
-.shiki code .line::before {
-  counter-increment: shiki-ln;
-  content: counter(shiki-ln);
-  position: absolute;
-  left: 0;
-  width: 2.25rem;
-  text-align: right;
-  opacity: 0.45;
-  user-select: none;
-}
-/* In-file search highlights, layered onto the rendered code by dom-line-highlight.
-   <mark> is not a <span>, so the `.shiki span { background: transparent !important }`
-   rule above doesn't touch it; the token colors inside keep their syntax highlight. */
-.shiki mark.search-hit {
-  background: rgb(var(--c-warn) / 0.32);
-  border-radius: 2px;
-}
-.shiki mark.search-hit.is-current {
-  background: rgb(var(--c-accent) / 0.45);
-  box-shadow: 0 0 0 1px rgb(var(--c-accent) / 0.8);
-}
-/* Transient flash when jumping to a line (search-result click / current match). Uses an
-   inset box-shadow, not background, because `.line` IS a span and would lose a background
-   to that same !important rule; box-shadow is unaffected. */
-.shiki code .line.line-flash {
-  animation: line-flash-fade 1.5s ease-out;
-}
-@keyframes line-flash-fade {
-  0% { box-shadow: inset 0 0 0 9999px rgb(var(--c-accent) / 0.22); }
-  100% { box-shadow: inset 0 0 0 9999px transparent; }
-}
-
 /* Transient flash when jumping to a line (content-search hit). The decoration is removed
    after ~1.5s by the CodeEditor timer; the animation fades the background over that window. */
 .cm-flash-line { animation: cm-flash-fade 1.5s ease-out; }
