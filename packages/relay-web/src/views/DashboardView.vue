@@ -9,7 +9,7 @@ import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
-import { loadTerminalId, clearTerminalId } from "../lib/terminal-sessions";
+import { killSessionTerminal } from "../lib/session-terminal";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -155,11 +155,7 @@ function keyWorkspace(key: string): string {
 function requestCloseTab(key: string, id: string) {
   // Explicit close of a terminal tab kills its PTY and forgets the id (a refresh does NOT reach here).
   const tab = centerTabs.tabsFor(key).find((t) => t.id === id);
-  if (tab?.kind === "terminal") {
-    const tid = loadTerminalId(key);
-    if (tid) terminals.close(keyInstance(key), tid);
-    clearTerminalId(key);
-  }
+  if (tab?.kind === "terminal") killSessionTerminal(key, keyInstance(key), terminals);
   centerTabs.closeTabGuarded(key, id, () => window.confirm(t("files.unsavedConfirm")));
 }
 
@@ -186,11 +182,7 @@ function reconcileCenterTabs() {
     const inst = instances.byId(keyInstance(key));
     if (inst?.sessionsLoaded && !valid.has(key)) {
       const hasTerminal = centerTabs.tabsFor(key).some((t) => t.kind === "terminal");
-      if (hasTerminal) {
-        const tid = loadTerminalId(key);
-        if (tid) terminals.close(keyInstance(key), tid);
-        clearTerminalId(key);
-      }
+      if (hasTerminal) killSessionTerminal(key, keyInstance(key), terminals);
       centerTabs.clearSession(key);
     }
   }

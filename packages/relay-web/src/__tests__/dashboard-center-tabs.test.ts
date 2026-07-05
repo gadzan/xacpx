@@ -170,8 +170,12 @@ test("out-of-band session removal prunes that session's center-tabs, but leaves 
   centerTabs.openTerminal(goneKey);
   centerTabs.openFile(keepKey, "b.ts");
   centerTabs.openFile(loadingKey, "c.ts");
+  saveTerminalId(goneKey, "tid-prune"); // the pruned session has a live, persisted terminal
   await flushPromises();
   expect(centerTabs.tabsFor(goneKey).length).toBe(2);
+
+  const terminals = useTerminalStore();
+  const closeSpy = vi.spyOn(terminals, "close");
 
   // Simulate a SERVER-driven removal (deleted from the CLI / WeChat / another browser):
   // the session vanishes from i1's list, but sessionsLoaded stays true — exactly what a
@@ -182,6 +186,10 @@ test("out-of-band session removal prunes that session's center-tabs, but leaves 
   expect(centerTabs.tabsFor(goneKey)).toEqual([]); // reconciled away
   expect(centerTabs.tabsFor(keepKey).length).toBe(1); // untouched — still a valid session
   expect(centerTabs.tabsFor(loadingKey).length).toBe(1); // guarded — instance still loading
+  // The pruned session's live terminal PTY must be killed and its persisted id forgotten —
+  // otherwise the process leaks and a later re-attach would resurrect a dead id.
+  expect(closeSpy).toHaveBeenCalledWith("i1", "tid-prune");
+  expect(loadTerminalId(goneKey)).toBeNull();
 });
 
 // The two tests below drive `requestCloseTab` via the pane's `@close` emit — the same idiom
