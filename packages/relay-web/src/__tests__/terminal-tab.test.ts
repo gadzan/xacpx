@@ -400,6 +400,28 @@ describe("TerminalTab", () => {
     expect(adapter.write).toHaveBeenCalledWith("NEW");
   });
 
+  it("queues live output arriving during attach-in-flight, then flushes seq>lastSeq after the buffer", async () => {
+    saveTerminalId("i1::demo", "term-persisted");
+    let resolveAttach!: (v: unknown) => void;
+    vi.mocked(api.rpc).mockImplementation((_i, method) =>
+      method === "control.terminal.attach"
+        ? new Promise((r) => { resolveAttach = r; })
+        : (Promise.resolve({}) as never));
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick(); // attach now in flight, subscribed + queueing
+    const store = useTerminalStore();
+    // live events arrive WHILE attach is pending → must be queued (not written yet)
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 5, data: "DUP" } } as never); // <= lastSeq → drop
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 6, data: "MID" } } as never); // > lastSeq → flush
+    expect(adapter.write).not.toHaveBeenCalledWith("MID"); // still queued, buffer not replayed yet
+    resolveAttach({ ok: true, buffer: "BUF", lastSeq: 5 });
+    await tick();
+    // order: buffer first, then queued live (MID), DUP dropped
+    expect(adapter.write).toHaveBeenCalledWith("BUF");
+    expect(adapter.write).toHaveBeenCalledWith("MID");
+    expect(adapter.write).not.toHaveBeenCalledWith("DUP");
+  });
+
   it("attach ok:false clears the id and falls back to the start placeholder", async () => {
     saveTerminalId("i1::demo", "gone");
     vi.mocked(api.rpc).mockImplementation(async (_i, method) =>

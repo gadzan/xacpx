@@ -250,7 +250,6 @@ async function tryAttach(id: string): Promise<boolean> {
   releaseFrontend();
   const myEpoch = epoch;
   status.value = "connecting";
-  started = true;
   terminalId = id;
   const currentAdapter = createTerminalAdapter(host.value, { cols: 80, rows: 24, onData: handleData, theme: currentTheme() });
   adapter = currentAdapter;
@@ -266,13 +265,20 @@ async function tryAttach(id: string): Promise<boolean> {
   offExit = terminals.onExit((oid, code) => { if (oid === terminalId) { status.value = "exited"; errorKey.value = String(code); } });
   try {
     const res = await terminals.attach(props.instanceId, id);
-    if (myEpoch !== epoch) { currentAdapter.dispose(); return true; } // superseded
+    if (myEpoch !== epoch) {
+      // Superseded while the attach RPC was in flight: the superseding releaseFrontend()
+      // already disposed this adapter when `adapter` still pointed at it, so only dispose
+      // if it wasn't (guard against double-dispose).
+      if (adapter === currentAdapter) currentAdapter.dispose();
+      return true;
+    }
     if (!res.ok) { releaseFrontend(); status.value = "idle"; return false; }
     ignoreThroughSeq = res.lastSeq;
     currentAdapter.write(res.buffer);            // replay scrollback
     queueing = false;
     for (const p of pending) if (p.seq > ignoreThroughSeq) currentAdapter.write(p.data); // flush queued live
     pending.length = 0;
+    started = true; // gate the prop-watch only once attach actually succeeded
     status.value = "open";
     resizeObs = new ResizeObserver(() => applyFit());
     if (host.value) resizeObs.observe(host.value);
