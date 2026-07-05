@@ -1,9 +1,9 @@
 import { defineStore } from "pinia";
-import { isErrorPayload, type WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import { isErrorPayload, type WebServerEvent, type TerminalAttachResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { sendWebClientMessage } from "../api/events";
 
-type OutputCb = (terminalId: string, data: string) => void;
+type OutputCb = (terminalId: string, data: string, seq: number) => void;
 type ExitCb = (terminalId: string, code: number) => void;
 
 function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
@@ -19,6 +19,11 @@ export const useTerminalStore = defineStore("terminal", () => {
     const result = await api.rpc<{ terminalId: string }>(instanceId, "control.terminal.create", { sessionAlias, cols, rows });
     const { terminalId } = unwrap(result);
     return terminalId;
+  }
+
+  async function attach(instanceId: string, terminalId: string): Promise<TerminalAttachResult> {
+    const result = await api.rpc<TerminalAttachResult>(instanceId, "control.terminal.attach", { terminalId });
+    return unwrap(result);
   }
 
   function input(instanceId: string, terminalId: string, data: string): void {
@@ -47,11 +52,11 @@ export const useTerminalStore = defineStore("terminal", () => {
     if (event.kind !== "control-event") return;
     const e = event.event;
     if (e.type === "terminal-output") {
-      for (const cb of outputCbs) cb(e.terminalId, e.data);
+      for (const cb of outputCbs) cb(e.terminalId, e.data, e.seq);
     } else if (e.type === "terminal-exit") {
       for (const cb of exitCbs) cb(e.terminalId, e.code);
     }
   }
 
-  return { create, input, resize, close, onOutput, onExit, applyEvent };
+  return { create, attach, input, resize, close, onOutput, onExit, applyEvent };
 });

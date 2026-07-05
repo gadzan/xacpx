@@ -44,7 +44,23 @@ describe("terminal store", () => {
     s.onExit(exit);
     s.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "t1", seq: 0, data: "hi" } } as never);
     s.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-exit", terminalId: "t1", code: 0 } } as never);
-    expect(out).toHaveBeenCalledWith("t1", "hi");
+    expect(out).toHaveBeenCalledWith("t1", "hi", 0);
     expect(exit).toHaveBeenCalledWith("t1", 0);
+  });
+
+  it("attach() calls control.terminal.attach and unwraps the result", async () => {
+    vi.mocked(api.rpc).mockResolvedValueOnce({ ok: true, buffer: "scroll", lastSeq: 7 } as never);
+    const store = useTerminalStore();
+    const res = await store.attach("i1", "term-x");
+    expect(api.rpc).toHaveBeenCalledWith("i1", "control.terminal.attach", { terminalId: "term-x" });
+    expect(res).toEqual({ ok: true, buffer: "scroll", lastSeq: 7 });
+  });
+
+  it("applyEvent forwards seq to output callbacks", () => {
+    const store = useTerminalStore();
+    const seen: Array<[string, string, number]> = [];
+    store.onOutput((id, data, seq) => seen.push([id, data, seq]));
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "t1", seq: 42, data: "hi" } } as never);
+    expect(seen).toEqual([["t1", "hi", 42]]);
   });
 });
