@@ -279,6 +279,11 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       if (!input.sessionAlias) return errorPayload("bad-request", "sessionAlias is required");
       return await control.createTerminal(input.chatKey, input.sessionAlias, input.cols ?? 80, input.rows ?? 24);
     }
+    case MSG.terminalAttach: {
+      const input = payload as { terminalId?: string };
+      if (!input.terminalId) return errorPayload("bad-request", "terminalId is required");
+      return control.attachTerminal(input.terminalId);
+    }
     case MSG.upload: {
       const input = payload as UploadPayload;
       if (!input.filename || !input.content || !input.mimeType) {
