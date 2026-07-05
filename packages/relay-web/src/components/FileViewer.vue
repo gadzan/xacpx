@@ -114,10 +114,12 @@ function startEdit() {
 function cancelEdit() {
   if (file.value) content.value = file.value.content; // revert the buffer
   editing.value = false;
+  baseRev.value = null;
   saveError.value = null;
   emit("dirty-change", false);
 }
 async function save() {
+  if (!editing.value) return;
   if (saving.value) return;
   if (!file.value || !baseRev.value) return;
   saving.value = true;
@@ -126,6 +128,7 @@ async function save() {
     const res = await files.saveFile(props.instanceId, props.workspace, file.value.path, content.value, baseRev.value);
     file.value = { ...file.value, content: content.value, size: res.size, mtimeMs: res.mtimeMs };
     editing.value = false;
+    baseRev.value = null;
     emit("dirty-change", false);
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : "write-failed";
