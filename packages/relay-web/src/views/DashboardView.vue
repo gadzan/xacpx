@@ -400,6 +400,7 @@ onUnmounted(() => {
             <TerminalTab v-else-if="tab.kind === 'terminal'" class="absolute inset-0 z-20"
                          v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
                          :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"
+                         :autostart="tab.autostart ?? false"
                          @close="requestCloseTab(key, tab.id)" />
           </template>
         </div>

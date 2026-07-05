@@ -347,6 +347,8 @@ export default {
     unsupported: "Terminal is unsupported on this instance platform (v1: macOS/Linux only).",
     offline: "Instance is offline.",
     noSession: "Select a session to open a terminal.",
+    restoredHint: "This terminal disconnected on reload.",
+    startNew: "Start new terminal",
     exited: "Terminal exited (code {code}).",
     error: "Could not open the terminal.",
     close: "Close terminal",
