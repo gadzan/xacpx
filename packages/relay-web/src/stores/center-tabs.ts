@@ -1,12 +1,13 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
+import { draftKey, clearFileDraft } from "../lib/file-drafts";
 
 export type CenterTab =
   // targetLine/targetRev: a scroll-to-line request (e.g. from a content-search hit). rev is
   // bumped on every openFile so re-opening the SAME file at the same line still re-scrolls.
   | { kind: "file"; id: string; path: string; targetLine?: number; targetRev?: number; dirty?: boolean }
   | { kind: "diff"; id: string; path: string }
-  | { kind: "terminal"; id: string };
+  | { kind: "terminal"; id: string; autostart?: boolean };
 
 interface SessionTabs {
   tabs: CenterTab[];
@@ -22,8 +23,46 @@ export function sessionKey(instanceId: string, alias: string): string {
  *  dragged tab to the end of the list instead of before a real tab. */
 export const TAB_DROP_END = "__end__";
 
+const STORAGE_KEY = "xacpx.center-tabs.v1";
+
+/** Read persisted tab sets from sessionStorage. Restored terminal tabs can't reconnect to
+ *  their old PTY, so force `autostart:false` — they render a lazy "start" placeholder instead
+ *  of spawning a fresh shell on mount. Corrupt data or malformed session entries are dropped
+ *  (bad entry skipped, good entries kept) so one broken record can't blank the whole view. */
+function hydrate(): Record<string, SessionTabs> {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, SessionTabs> = {};
+    for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+      const v = val as { tabs?: unknown; activeId?: unknown };
+      if (!Array.isArray(v.tabs) || typeof v.activeId !== "string") continue;
+      const tabs = (v.tabs as CenterTab[]).map((t) =>
+        t && t.kind === "terminal" ? { ...t, autostart: false } : t,
+      );
+      out[key] = { tabs, activeId: v.activeId };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function persist(v: Record<string, SessionTabs>): void {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(v));
+  } catch {
+    /* storage full / disabled — persistence is best-effort */
+  }
+}
+
 export const useCenterTabsStore = defineStore("center-tabs", () => {
-  const bySession = ref<Record<string, SessionTabs>>({});
+  const bySession = ref<Record<string, SessionTabs>>(hydrate());
+  // flush: "sync" — persistence must happen synchronously with the mutation (not on the next
+  // microtask/pre-render flush) so a page unload right after a mutation still sees it saved.
+  watch(bySession, (v) => persist(v), { deep: true, flush: "sync" });
 
   function tabsFor(key: string): CenterTab[] {
     return bySession.value[key]?.tabs ?? [];
@@ -63,7 +102,7 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
   }
 
   function openTerminal(key: string): void {
-    upsertAndActivate(key, { kind: "terminal", id: "terminal" });
+    upsertAndActivate(key, { kind: "terminal", id: "terminal", autostart: true });
   }
 
   function setActive(key: string, id: string): void {
@@ -76,6 +115,8 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     if (!current) return;
     const index = current.tabs.findIndex((t) => t.id === id);
     if (index === -1) return;
+    const closed = current.tabs[index];
+    if (closed.kind === "file") clearFileDraft(draftKey(key, closed.path));
     const tabs = current.tabs.filter((t) => t.id !== id);
     const wasActive = current.activeId === id;
     const activeId = wasActive ? (current.tabs[index - 1]?.id ?? tabs[index]?.id ?? "chat") : current.activeId;
@@ -107,6 +148,9 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
 
   function clearSession(key: string): void {
     if (!(key in bySession.value)) return;
+    for (const t of bySession.value[key].tabs) {
+      if (t.kind === "file") clearFileDraft(draftKey(key, t.path));
+    }
     const next = { ...bySession.value };
     delete next[key];
     bySession.value = next;

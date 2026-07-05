@@ -27,7 +27,7 @@ function onDataOf() {
 }
 
 describe("TerminalTab", () => {
-  beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks(); localStorage.clear(); });
+  beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); });
 
   it("creates a terminal and mounts the adapter when a session is selected", async () => {
     mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
@@ -343,5 +343,28 @@ describe("TerminalTab", () => {
     await tick();
     expect(rafSpy).not.toHaveBeenCalled();
     rafSpy.mockRestore();
+  });
+
+  it("autostart=false does NOT spawn and shows the restore placeholder", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick();
+    expect(createTerminalAdapter).not.toHaveBeenCalled();
+    expect(w.find('[data-test="term-restore"]').exists()).toBe(true);
+    expect(w.find('[data-test="term-start"]').exists()).toBe(true);
+  });
+
+  it("clicking the placeholder start button spawns the terminal", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick();
+    await w.find('[data-test="term-start"]').trigger("click");
+    await tick();
+    expect(createTerminalAdapter).toHaveBeenCalledTimes(1);
+    expect(w.find('[data-test="term-restore"]').exists()).toBe(false);
+  });
+
+  it("autostart=true (default) spawns on mount as before", async () => {
+    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    expect(createTerminalAdapter).toHaveBeenCalledTimes(1);
   });
 });

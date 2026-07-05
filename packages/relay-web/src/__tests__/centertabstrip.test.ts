@@ -6,7 +6,9 @@ import { useCenterTabsStore, sessionKey, TAB_DROP_END } from "../stores/center-t
 
 const g = { global: { mocks: { $t: (k: string) => k } } };
 
-beforeEach(() => setActivePinia(createPinia()));
+// center-tabs now persists to sessionStorage (task 2); clear it alongside the pinia reset so
+// tabs opened in one test don't leak into the next test's store via hydrate().
+beforeEach(() => { setActivePinia(createPinia()); sessionStorage.clear(); });
 
 describe("CenterTabStrip", () => {
   it("renders the pinned chat tab plus one tab per open file/terminal", () => {

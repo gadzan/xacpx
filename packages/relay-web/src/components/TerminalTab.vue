@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { ArrowLeft, Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
 import { useTerminalStore } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
 
-const props = defineProps<{ instanceId: string; sessionAlias: string }>();
+const props = withDefaults(defineProps<{ instanceId: string; sessionAlias: string; autostart?: boolean }>(), {
+  autostart: true,
+});
 const emit = defineEmits<{ close: [] }>();
 const terminals = useTerminalStore();
 const theme = useThemeStore();
@@ -48,6 +50,12 @@ function toggleKeybar() {
   keybarVisible.value = !keybarVisible.value;
   try { localStorage.setItem("xacpx.terminalKeybar", keybarVisible.value ? "1" : "0"); } catch { /* ignore */ }
 }
+
+// Lazy start: a tab restored from sessionStorage arrives autostart=false — it can't reconnect
+// to its old PTY, so it waits on a "start new terminal" placeholder instead of spawning on
+// mount. `started` gates the prop-watch so a dormant tab never auto-spawns on a prop change.
+let started = false;
+const showPlaceholder = computed(() => !!props.sessionAlias && status.value === "idle" && !props.autostart);
 
 let adapter: TerminalAdapter | null = null;
 let terminalId = "";
@@ -230,6 +238,7 @@ async function start() {
   const myEpoch = epoch;
   if (!props.sessionAlias || !host.value) { status.value = "idle"; return; }
   status.value = "connecting";
+  started = true;
   const currentAdapter = createTerminalAdapter(host.value, {
     cols: 80, rows: 24,
     onData: handleData,
@@ -291,12 +300,12 @@ function detachTouch() {
 }
 
 onMounted(() => {
-  void start();
+  if (props.autostart) void start();
   attachTouch();
   window.visualViewport?.addEventListener("resize", updateKeyboardInset);
   window.visualViewport?.addEventListener("scroll", updateKeyboardInset);
 });
-watch(() => [props.instanceId, props.sessionAlias], () => void start());
+watch(() => [props.instanceId, props.sessionAlias], () => { if (started) void start(); });
 // Recolor the live terminal when the app toggles light/dark so it never leaves a
 // mismatched background band around the grid.
 watch(() => theme.mode, () => adapter?.setTheme(currentTheme()));
@@ -332,7 +341,14 @@ onBeforeUnmount(() => {
     <div v-if="!props.sessionAlias" class="p-4 text-sm text-fg-muted">{{ $t("terminal.noSession") }}</div>
     <div v-else-if="status === 'error'" class="p-4 text-sm text-fg-muted">{{ $t(errorKey) }}</div>
     <div v-else-if="status === 'exited'" class="p-4 text-sm text-fg-muted">{{ $t("terminal.exited", { code: errorKey }) }}</div>
-    <div ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
+    <div v-if="showPlaceholder" data-test="term-restore"
+         class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+      <p class="text-sm text-fg-muted">{{ $t("terminal.restoredHint") }}</p>
+      <button data-test="term-start"
+              class="rounded-md border border-border px-3 py-1.5 text-[12px] font-medium text-fg transition-colors hover:bg-raised"
+              @click="void start()">{{ $t("terminal.startNew") }}</button>
+    </div>
+    <div v-show="!showPlaceholder" ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
 
     <!-- shortcut bar — the root's padding-bottom (= keyboard height) lifts the whole pane,
          so both this bar and the terminal's prompt row stay above the on-screen keyboard.

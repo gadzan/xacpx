@@ -11,6 +11,7 @@ let pinia: ReturnType<typeof createPinia>;
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
+  sessionStorage.clear();
   Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
 });
 
@@ -142,5 +143,49 @@ describe("FileViewer", () => {
 
     expect(w.find('[data-test="code-editor"]').exists()).toBe(true);
     expect(view.state.doc.toString()).toBe("edited-draft");
+  });
+
+  it("restores an edit draft into edit mode on load", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT, path: "src/a.ts", content: "DISK BODY" });
+    sessionStorage.setItem("xacpx.file-drafts.v1", JSON.stringify({ "i1::s1::src/a.ts": "DRAFT BODY" }));
+    const w = mountViewer({ path: "src/a.ts", sessionKey: "i1::s1" });
+    await settle();
+    // Draft differs from disk + file is editable ⇒ enter edit mode with the draft buffer.
+    expect(w.find('[data-test="fv-dirty-dot"]').exists()).toBe(true);
+    expect(w.find('[data-test="fv-save"]').exists()).toBe(true);
+    expect(w.emitted("dirty-change")?.some((e) => e[0] === true)).toBe(true);
+  });
+
+  it("does NOT enter edit mode when the draft equals disk content", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT, path: "src/a.ts", content: "DISK BODY" });
+    sessionStorage.setItem("xacpx.file-drafts.v1", JSON.stringify({ "i1::s1::src/a.ts": "DISK BODY" }));
+    const w = mountViewer({ path: "src/a.ts", sessionKey: "i1::s1" });
+    await settle();
+    expect(w.find('[data-test="fv-dirty-dot"]').exists()).toBe(false);
+    expect(w.find('[data-test="fv-edit"]').exists()).toBe(true); // read mode: pencil visible
+  });
+
+  it("clears the draft on cancel", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT, path: "src/a.ts", content: "DISK BODY" });
+    sessionStorage.setItem("xacpx.file-drafts.v1", JSON.stringify({ "i1::s1::src/a.ts": "DRAFT BODY" }));
+    const w = mountViewer({ path: "src/a.ts", sessionKey: "i1::s1" });
+    await settle();
+    await w.get('[data-test="fv-cancel"]').trigger("click");
+    expect(JSON.parse(sessionStorage.getItem("xacpx.file-drafts.v1")!)["i1::s1::src/a.ts"]).toBeUndefined();
+  });
+
+  it("clears the draft after a successful save", async () => {
+    const files = useFilesStore();
+    vi.spyOn(files, "readFile").mockResolvedValue({ ...TEXT, path: "src/a.ts", content: "DISK BODY" });
+    vi.spyOn(files, "saveFile").mockResolvedValue({ path: "src/a.ts", mtimeMs: 2000, size: 5 });
+    sessionStorage.setItem("xacpx.file-drafts.v1", JSON.stringify({ "i1::s1::src/a.ts": "DRAFT BODY" }));
+    const w = mountViewer({ path: "src/a.ts", sessionKey: "i1::s1" });
+    await settle();
+    await w.get('[data-test="fv-save"]').trigger("click");
+    await settle();
+    expect(JSON.parse(sessionStorage.getItem("xacpx.file-drafts.v1")!)["i1::s1::src/a.ts"]).toBeUndefined();
   });
 });

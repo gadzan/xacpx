@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useCenterTabsStore, sessionKey, TAB_DROP_END } from "../stores/center-tabs";
+import { draftKey, loadFileDraft, saveFileDraft } from "../lib/file-drafts";
 
-beforeEach(() => setActivePinia(createPinia()));
+beforeEach(() => { setActivePinia(createPinia()); sessionStorage.clear(); });
 const K = sessionKey("i1", "s1");
 
 describe("center-tabs store", () => {
@@ -90,10 +91,115 @@ describe("center-tabs store", () => {
     expect(s.allOpenTabs().length).toBe(1);
   });
 
+  it("closeTab clears the closed file tab's draft (abandoned edit does not come back)", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft content");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBe("draft content");
+    s.closeTab(K, "file:a.ts");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBeNull();
+  });
+
+  it("closeTab on a file tab with no draft is a no-op for drafts (doesn't throw / doesn't create one)", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    s.closeTab(K, "file:a.ts");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBeNull();
+  });
+
+  it("closeTab on a diff or terminal tab does not touch any file draft", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft content");
+    s.openDiff(K, "b.ts");
+    s.openTerminal(K);
+    s.closeTab(K, "diff:b.ts");
+    s.closeTab(K, "terminal");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBe("draft content");
+  });
+
+  it("closing one file's tab does not clear a different file's draft", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts"); s.openFile(K, "b.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft a");
+    saveFileDraft(draftKey(K, "b.ts"), "draft b");
+    s.closeTab(K, "file:b.ts");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBe("draft a");
+    expect(loadFileDraft(draftKey(K, "b.ts"))).toBeNull();
+  });
+
+  it("clearSession clears drafts for every file tab in that session, but not other sessions'", () => {
+    const s = useCenterTabsStore();
+    const K2 = sessionKey("i1", "s2");
+    s.openFile(K, "a.ts"); s.openFile(K, "b.ts"); s.openTerminal(K);
+    s.openFile(K2, "c.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft a");
+    saveFileDraft(draftKey(K, "b.ts"), "draft b");
+    saveFileDraft(draftKey(K2, "c.ts"), "draft c");
+    s.clearSession(K);
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBeNull();
+    expect(loadFileDraft(draftKey(K, "b.ts"))).toBeNull();
+    expect(loadFileDraft(draftKey(K2, "c.ts"))).toBe("draft c");
+  });
+
   it("activeFor defaults to chat for an unknown session", () => {
     const s = useCenterTabsStore();
     expect(s.activeFor(sessionKey("x", "y"))).toBe("chat");
     expect(s.tabsFor(sessionKey("x", "y"))).toEqual([]);
+  });
+
+  it("openTerminal marks the tab autostart:true (fresh user action spawns)", () => {
+    const s = useCenterTabsStore();
+    s.openTerminal(K);
+    const term = s.tabsFor(K).find((t) => t.kind === "terminal");
+    expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(true);
+  });
+
+  it("persists tab state to sessionStorage on mutation", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    const raw = sessionStorage.getItem("xacpx.center-tabs.v1");
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw!)[K].tabs.map((t: { id: string }) => t.id)).toEqual(["file:a.ts"]);
+    expect(JSON.parse(raw!)[K].activeId).toBe("file:a.ts");
+  });
+
+  it("hydrates tab state from sessionStorage on a fresh store", () => {
+    sessionStorage.setItem(
+      "xacpx.center-tabs.v1",
+      JSON.stringify({ [K]: { tabs: [{ kind: "file", id: "file:a.ts", path: "a.ts" }], activeId: "file:a.ts" } }),
+    );
+    const s = useCenterTabsStore(); // fresh pinia from beforeEach ran BEFORE we set storage? see note
+    expect(s.tabsFor(K).map((t) => t.id)).toEqual(["file:a.ts"]);
+    expect(s.activeFor(K)).toBe("file:a.ts");
+  });
+
+  it("forces restored terminal tabs to autostart:false", () => {
+    sessionStorage.setItem(
+      "xacpx.center-tabs.v1",
+      JSON.stringify({ [K]: { tabs: [{ kind: "terminal", id: "terminal", autostart: true }], activeId: "terminal" } }),
+    );
+    const s = useCenterTabsStore();
+    const term = s.tabsFor(K).find((t) => t.kind === "terminal");
+    expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(false);
+  });
+
+  it("discards corrupt storage and bad session entries without throwing", () => {
+    sessionStorage.setItem("xacpx.center-tabs.v1", "{not json");
+    expect(() => useCenterTabsStore()).not.toThrow();
+    expect(useCenterTabsStore().tabsFor(K)).toEqual([]);
+
+    // Pinia memoizes the store per active pinia instance — calling useCenterTabsStore() again
+    // here would just return the already-hydrated store above, not re-read storage. Activate a
+    // fresh pinia so the next call re-triggers the factory's hydrate() against the new data.
+    setActivePinia(createPinia());
+    sessionStorage.setItem(
+      "xacpx.center-tabs.v1",
+      JSON.stringify({ [K]: { tabs: "nope", activeId: 5 }, "i1::s2": { tabs: [{ kind: "file", id: "file:b.ts", path: "b.ts" }], activeId: "file:b.ts" } }),
+    );
+    const s2 = useCenterTabsStore();
+    expect(s2.tabsFor(K)).toEqual([]); // bad entry dropped
+    expect(s2.tabsFor(sessionKey("i1", "s2")).map((t) => t.id)).toEqual(["file:b.ts"]); // good entry kept
   });
 });
 

@@ -345,6 +345,8 @@ export default {
     unsupported: "该实例平台不支持终端(v1 仅 macOS/Linux)。",
     offline: "实例已离线。",
     noSession: "选择一个会话以打开终端。",
+    restoredHint: "终端会话已随刷新断开。",
+    startNew: "启动新终端",
     exited: "终端已退出(退出码 {code})。",
     error: "无法打开终端。",
     close: "关闭终端",
