@@ -46,6 +46,8 @@ export interface TerminalService {
 export interface TerminalServiceDeps {
   events: ControlEventBus;
   idleTimeoutSeconds: () => number;
+  /** Optional explicit shell override from config (terminal.shell). */
+  shell?: () => string | undefined;
   spawn?: PtySpawn;
   platform?: NodeJS.Platform;
   /** Injectable timer primitives; defaults to global setTimeout/clearTimeout. */
@@ -63,11 +65,6 @@ function scrubEnv(): Record<string, string> {
   out.TERM = "xterm-256color";
   out.LANG = out.LANG ?? "en_US.UTF-8";
   return out;
-}
-
-function defaultShell(platform: NodeJS.Platform): string {
-  if (process.env.SHELL) return process.env.SHELL;
-  return platform === "darwin" ? "/bin/zsh" : "/bin/bash";
 }
 
 function defaultExists(p: string): boolean {
@@ -143,9 +140,9 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
 
   return {
     create({ cwd, cols, rows }) {
-      if (platform === "win32") throw new Error("terminal-unsupported-platform");
+      const shell = resolveShell({ platform, env: process.env, shellOverride: deps.shell?.() });
       const terminalId = randomUUID();
-      const handle = spawn(defaultShell(platform), [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
+      const handle = spawn(shell, [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
       const session: Session = { handle, seq: 0, idleTimer: null };
       sessions.set(terminalId, session);
       handle.onData((data) => {

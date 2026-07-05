@@ -18,7 +18,7 @@ function fakePty() {
   return handle;
 }
 
-function setup(opts?: { idle?: number; platform?: NodeJS.Platform }) {
+function setup(opts?: { idle?: number; platform?: NodeJS.Platform; shell?: () => string | undefined }) {
   const events = createControlEventBus();
   const captured: ControlEvent[] = [];
   events.subscribe((e) => captured.push(e));
@@ -29,6 +29,7 @@ function setup(opts?: { idle?: number; platform?: NodeJS.Platform }) {
     idleTimeoutSeconds: () => opts?.idle ?? 900,
     spawn: spawn as never,
     platform: opts?.platform ?? "darwin",
+    shell: opts?.shell,
   });
   return { svc, pty, spawn, captured };
 }
@@ -82,9 +83,21 @@ test("write/resize/close on an unknown terminalId are no-ops (no throw)", () => 
   expect(() => svc.close("nope")).not.toThrow();
 });
 
-test("create throws terminal-unsupported-platform on win32", () => {
-  const { svc } = setup({ platform: "win32" });
-  expect(() => svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 })).toThrow("terminal-unsupported-platform");
+test("create no longer throws on win32 and spawns the resolved shell", () => {
+  const { svc, spawn } = setup({ platform: "win32", shell: () => "C:/win/pwsh.exe" });
+  expect(() => svc.create({ cwd: "C:/ws", cols: 80, rows: 24 })).not.toThrow();
+  const call = (spawn as ReturnType<typeof mock>).mock.calls[0];
+  expect(call[0]).toBe("C:/win/pwsh.exe"); // shellOverride from config wins
+});
+
+test("create uses resolveShell (darwin default /bin/zsh) when no override", () => {
+  const { svc, spawn } = setup(); // darwin, no shell override, no SHELL guaranteed? force it
+  const prev = process.env.SHELL;
+  delete process.env.SHELL;
+  svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  const call = (spawn as ReturnType<typeof mock>).mock.calls[0];
+  expect(call[0]).toBe("/bin/zsh");
+  if (prev !== undefined) process.env.SHELL = prev;
 });
 
 // ── Idle timer behavior (Fix 1) ──────────────────────────────────────────────
