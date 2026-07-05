@@ -1,5 +1,22 @@
 # Changelog
 
+## [relay 0.9.12-beta.18] - 2026-07-05
+
+A `@ganglion/xacpx-relay` (hub) beta that restores your dashboard workspace across a browser refresh (#132). UI-only (bundled `relay-web`), published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Added
+
+- **Refresh restores your open tabs and drafts.** A browser reload now brings back the center tabs you had open (files, diffs, terminals), the active tab, and any unsaved file edit as a live draft — so an accidental refresh no longer loses your place. State lives in `sessionStorage`, matching the existing composer-draft lifetime: it survives F5 and crashes, and clears when you close the tab.
+- **File content is re-fetched, not cached.** Restored file tabs re-read the file from disk, so you always see the current content; an unsaved edit is restored on top as a draft (entering edit mode only when it differs from disk), and the existing stale-write guard still protects a save if the file changed while you were away.
+
+### Changed
+
+- **Restored terminals start on demand.** A terminal can't reconnect to its old shell across a reload, so a restored terminal tab now shows a "start new terminal" placeholder instead of silently spawning a fresh shell — click to start when you want it.
+
+### Note
+
+- This restores the *layout and edit drafts* only. Restoring a terminal's scrollback/output and reconnecting to the live shell is a separate, larger change (it needs backend output buffering) and is not part of this release.
+
 ## [relay 0.9.12-beta.17] - 2026-07-04
 
 A `@ganglion/xacpx-relay` (hub) beta that unifies the file viewer on a single CodeMirror 6 stack and removes Shiki (#130). UI-only (bundled `relay-web`), published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
