@@ -14,7 +14,7 @@ test("spawns a real shell and round-trips output", async () => {
     if (e.type === "terminal-output") buf += e.data;
   });
   const svc = createTerminalService({ events, idleTimeoutSeconds: () => 900 });
-  const { terminalId } = svc.create({ cwd: process.cwd(), cols: 80, rows: 24 });
+  const { terminalId } = svc.create({ cwd: process.cwd().replace(/\\/g, "/"), cols: 80, rows: 24 });
 
   // `echo <marker>` prints the marker in pwsh / powershell / cmd / bash / zsh alike.
   // The trailing CR submits the line.

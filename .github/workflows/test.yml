@@ -49,26 +49,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: 'npm'
 
-      # Installs node-pty, resolving its Windows prebuilt binary (ConPTY). A failure here
-      # means the prebuild didn't resolve for this Node ABI on Windows.
+      # Installs node-pty and resolves its Windows prebuilt binary (ConPTY).
       - name: Install dependencies
         run: npm ci
 
-      # Focused terminal coverage only — NOT the full unit suite (never run on Windows).
-      - name: Terminal unit tests
-        run: bun test tests/unit/control/terminal-service.test.ts
-
-      # Real ConPTY: spawns a live shell and asserts the byte stream round-trips.
-      - name: Terminal PTY smoke (ConPTY)
-        run: bun test tests/smoke/terminal-pty-smoke.test.ts
+      # Real ConPTY under the PRODUCTION runtime (Node) — spawns a live shell with a
+      # forward-slash cwd and asserts the byte stream round-trips.
+      - name: Terminal ConPTY smoke (Node)
+        run: node scripts/smoke-terminal-conpty.mjs

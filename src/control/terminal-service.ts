@@ -97,7 +97,8 @@ export function resolveShell(args: ResolveShellArgs): string {
     const dirs = pathValue.split(";").filter(Boolean);
     for (const name of ["pwsh.exe", "powershell.exe"]) {
       for (const dir of dirs) {
-        const full = `${dir}\\${name}`;
+        const clean = dir.replace(/^"|"$/g, "");
+        const full = `${clean}\\${name}`;
         if (exists(full)) return full;
       }
     }

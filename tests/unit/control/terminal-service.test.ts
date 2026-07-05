@@ -263,3 +263,9 @@ test("resolveShell: win32 prefers pwsh over powershell when both exist", () => {
   const bothExist = (p: string) => p === "C:\\B\\pwsh.exe" || p === "C:\\A\\powershell.exe";
   expect(resolveShell({ platform: "win32", env, exists: bothExist })).toBe("C:\\B\\pwsh.exe");
 });
+
+test("resolveShell: win32 strips surrounding quotes from PATH entries", () => {
+  const env = { PATH: "\"C:\\PS7\";C:\\Windows\\System32" };
+  const exists = (p: string) => p === "C:\\PS7\\pwsh.exe"; // unquoted form
+  expect(resolveShell({ platform: "win32", env, exists })).toBe("C:\\PS7\\pwsh.exe");
+});
