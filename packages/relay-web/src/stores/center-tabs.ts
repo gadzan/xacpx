@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
+import { draftKey, clearFileDraft } from "../lib/file-drafts";
 
 export type CenterTab =
   // targetLine/targetRev: a scroll-to-line request (e.g. from a content-search hit). rev is
@@ -114,6 +115,8 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     if (!current) return;
     const index = current.tabs.findIndex((t) => t.id === id);
     if (index === -1) return;
+    const closed = current.tabs[index];
+    if (closed.kind === "file") clearFileDraft(draftKey(key, closed.path));
     const tabs = current.tabs.filter((t) => t.id !== id);
     const wasActive = current.activeId === id;
     const activeId = wasActive ? (current.tabs[index - 1]?.id ?? tabs[index]?.id ?? "chat") : current.activeId;
@@ -145,6 +148,9 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
 
   function clearSession(key: string): void {
     if (!(key in bySession.value)) return;
+    for (const t of bySession.value[key].tabs) {
+      if (t.kind === "file") clearFileDraft(draftKey(key, t.path));
+    }
     const next = { ...bySession.value };
     delete next[key];
     bySession.value = next;

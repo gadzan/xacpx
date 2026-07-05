@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useCenterTabsStore, sessionKey, TAB_DROP_END } from "../stores/center-tabs";
+import { draftKey, loadFileDraft, saveFileDraft } from "../lib/file-drafts";
 
 beforeEach(() => { setActivePinia(createPinia()); sessionStorage.clear(); });
 const K = sessionKey("i1", "s1");
@@ -88,6 +89,57 @@ describe("center-tabs store", () => {
     s.clearSession(K);
     expect(s.tabsFor(K)).toEqual([]);
     expect(s.allOpenTabs().length).toBe(1);
+  });
+
+  it("closeTab clears the closed file tab's draft (abandoned edit does not come back)", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft content");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBe("draft content");
+    s.closeTab(K, "file:a.ts");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBeNull();
+  });
+
+  it("closeTab on a file tab with no draft is a no-op for drafts (doesn't throw / doesn't create one)", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    s.closeTab(K, "file:a.ts");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBeNull();
+  });
+
+  it("closeTab on a diff or terminal tab does not touch any file draft", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft content");
+    s.openDiff(K, "b.ts");
+    s.openTerminal(K);
+    s.closeTab(K, "diff:b.ts");
+    s.closeTab(K, "terminal");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBe("draft content");
+  });
+
+  it("closing one file's tab does not clear a different file's draft", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts"); s.openFile(K, "b.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft a");
+    saveFileDraft(draftKey(K, "b.ts"), "draft b");
+    s.closeTab(K, "file:b.ts");
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBe("draft a");
+    expect(loadFileDraft(draftKey(K, "b.ts"))).toBeNull();
+  });
+
+  it("clearSession clears drafts for every file tab in that session, but not other sessions'", () => {
+    const s = useCenterTabsStore();
+    const K2 = sessionKey("i1", "s2");
+    s.openFile(K, "a.ts"); s.openFile(K, "b.ts"); s.openTerminal(K);
+    s.openFile(K2, "c.ts");
+    saveFileDraft(draftKey(K, "a.ts"), "draft a");
+    saveFileDraft(draftKey(K, "b.ts"), "draft b");
+    saveFileDraft(draftKey(K2, "c.ts"), "draft c");
+    s.clearSession(K);
+    expect(loadFileDraft(draftKey(K, "a.ts"))).toBeNull();
+    expect(loadFileDraft(draftKey(K, "b.ts"))).toBeNull();
+    expect(loadFileDraft(draftKey(K2, "c.ts"))).toBe("draft c");
   });
 
   it("activeFor defaults to chat for an unknown session", () => {
