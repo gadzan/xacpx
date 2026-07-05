@@ -184,13 +184,10 @@ test("out-of-band session removal prunes that session's center-tabs, but leaves 
   expect(centerTabs.tabsFor(loadingKey).length).toBe(1); // guarded — instance still loading
 });
 
-// Both tests below drive `requestCloseTab` via the pane's `@close` emit — the same idiom
-// dashboard-responsive.test.ts uses for FileViewer's close test — rather than via
-// CenterTabStrip's own tab-close button. That button (data-test="tab-close") calls
-// `store.closeTabGuarded` directly (see centertabstrip.test.ts) and never routes through
-// DashboardView at all, so it can't exercise the PTY-kill logic added here. TerminalTab
-// is stubbed elsewhere in this file (`stub-term`, no real close control), so a
-// close-emitting stub is substituted for just these two tests.
+// The two tests below drive `requestCloseTab` via the pane's `@close` emit — the same idiom
+// dashboard-responsive.test.ts uses for FileViewer's close test. TerminalTab is stubbed
+// elsewhere in this file (`stub-term`, no real close control), so a close-emitting stub is
+// substituted for just these two tests.
 test("closing a terminal tab kills its PTY and clears the persisted id", async () => {
   const termStub = { name: "TerminalTab", template: '<div data-test="stub-term" />', emits: ["close"] };
   const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
@@ -228,4 +225,34 @@ test("closing a FILE tab does not kill any terminal PTY", async () => {
 
   expect(closeSpy).not.toHaveBeenCalled();
   expect(centerTabs.tabsFor(key)).toEqual([]);
+});
+
+// Regression for the tab-strip close bypass: CenterTabStrip's own X button used to call
+// store.closeTabGuarded() directly, skipping requestCloseTab's terminal-PTY-kill logic
+// entirely. This test mounts the REAL CenterTabStrip (excluded from the shared `stubs` map
+// below) so its actual `data-test="tab-close"` button is clickable, unlike the tests above
+// which drive requestCloseTab via a stubbed pane's `@close` emit.
+test("clicking the tab strip's own X button kills the terminal's PTY and clears the persisted id", async () => {
+  const { CenterTabStrip: _stubbedStrip, ...stubsWithoutStrip } = stubs;
+  const wrapper = mount(DashboardView, { global: { stubs: stubsWithoutStrip } });
+  await flushPromises();
+  const key = selectSession();
+  await flushPromises();
+  const centerTabs = useCenterTabsStore();
+  centerTabs.openTerminal(key);
+  saveTerminalId(key, "tid-2");
+  await flushPromises();
+  const terminals = useTerminalStore();
+  const closeSpy = vi.spyOn(terminals, "close");
+
+  // Both the mobile (bare) and desktop standalone strips are mounted in jsdom (media
+  // queries aren't evaluated), so more than one real "tab-close" button may exist for the
+  // same terminal tab — any one of them must route through requestCloseTab.
+  const closeButtons = wrapper.findAll('[data-test="tab-close"]');
+  expect(closeButtons.length).toBeGreaterThan(0);
+  await closeButtons[0].trigger("click");
+  await flushPromises();
+
+  expect(closeSpy).toHaveBeenCalledWith("i1", "tid-2");
+  expect(loadTerminalId(key)).toBeNull();
 });

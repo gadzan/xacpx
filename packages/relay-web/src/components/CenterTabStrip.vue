@@ -18,6 +18,7 @@ import { iconForFile } from "../lib/file-icons";
 // comment would make the component a fragment root, so tests' `w.element` would resolve
 // to the comment instead of the div.
 const props = defineProps<{ sessionKey: string; bare?: boolean }>();
+const emit = defineEmits<{ close: [id: string] }>();
 const store = useCenterTabsStore();
 const { t } = useI18n();
 
@@ -41,11 +42,11 @@ function labelFor(tab: CenterTab): string {
   return tab.kind === "terminal" ? t("center.terminal") : basename(tab.path);
 }
 
-// Guarded close: a clean tab closes immediately; a dirty file tab asks first via the
-// native confirm dialog (the store itself can't show UI, so the confirm callback is
-// injected — see closeTabGuarded).
+// The strip doesn't close tabs itself — it just reports the intent up to the parent
+// (DashboardView.requestCloseTab), which owns the dirty-aware confirm guard AND the
+// terminal-PTY-kill logic that must run before a terminal tab is actually closed.
 function requestClose(id: string) {
-  store.closeTabGuarded(props.sessionKey, id, () => window.confirm(t("files.unsavedConfirm")));
+  emit("close", id);
 }
 
 // Edge-fade + hidden scrollbar. The scrollbar is suppressed (`no-scrollbar`); to signal
