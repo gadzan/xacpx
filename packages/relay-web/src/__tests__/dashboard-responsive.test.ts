@@ -19,6 +19,9 @@ const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: 
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // center-tabs now persists to sessionStorage (task 2); clear it too so tabs opened in one
+  // test don't leak into the next test's store via hydrate().
+  sessionStorage.clear();
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
 });
 

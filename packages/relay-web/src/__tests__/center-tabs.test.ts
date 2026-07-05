@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useCenterTabsStore, sessionKey, TAB_DROP_END } from "../stores/center-tabs";
 
-beforeEach(() => setActivePinia(createPinia()));
+beforeEach(() => { setActivePinia(createPinia()); sessionStorage.clear(); });
 const K = sessionKey("i1", "s1");
 
 describe("center-tabs store", () => {
@@ -94,6 +94,60 @@ describe("center-tabs store", () => {
     const s = useCenterTabsStore();
     expect(s.activeFor(sessionKey("x", "y"))).toBe("chat");
     expect(s.tabsFor(sessionKey("x", "y"))).toEqual([]);
+  });
+
+  it("openTerminal marks the tab autostart:true (fresh user action spawns)", () => {
+    const s = useCenterTabsStore();
+    s.openTerminal(K);
+    const term = s.tabsFor(K).find((t) => t.kind === "terminal");
+    expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(true);
+  });
+
+  it("persists tab state to sessionStorage on mutation", () => {
+    const s = useCenterTabsStore();
+    s.openFile(K, "a.ts");
+    const raw = sessionStorage.getItem("xacpx.center-tabs.v1");
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw!)[K].tabs.map((t: { id: string }) => t.id)).toEqual(["file:a.ts"]);
+    expect(JSON.parse(raw!)[K].activeId).toBe("file:a.ts");
+  });
+
+  it("hydrates tab state from sessionStorage on a fresh store", () => {
+    sessionStorage.setItem(
+      "xacpx.center-tabs.v1",
+      JSON.stringify({ [K]: { tabs: [{ kind: "file", id: "file:a.ts", path: "a.ts" }], activeId: "file:a.ts" } }),
+    );
+    const s = useCenterTabsStore(); // fresh pinia from beforeEach ran BEFORE we set storage? see note
+    expect(s.tabsFor(K).map((t) => t.id)).toEqual(["file:a.ts"]);
+    expect(s.activeFor(K)).toBe("file:a.ts");
+  });
+
+  it("forces restored terminal tabs to autostart:false", () => {
+    sessionStorage.setItem(
+      "xacpx.center-tabs.v1",
+      JSON.stringify({ [K]: { tabs: [{ kind: "terminal", id: "terminal", autostart: true }], activeId: "terminal" } }),
+    );
+    const s = useCenterTabsStore();
+    const term = s.tabsFor(K).find((t) => t.kind === "terminal");
+    expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(false);
+  });
+
+  it("discards corrupt storage and bad session entries without throwing", () => {
+    sessionStorage.setItem("xacpx.center-tabs.v1", "{not json");
+    expect(() => useCenterTabsStore()).not.toThrow();
+    expect(useCenterTabsStore().tabsFor(K)).toEqual([]);
+
+    // Pinia memoizes the store per active pinia instance — calling useCenterTabsStore() again
+    // here would just return the already-hydrated store above, not re-read storage. Activate a
+    // fresh pinia so the next call re-triggers the factory's hydrate() against the new data.
+    setActivePinia(createPinia());
+    sessionStorage.setItem(
+      "xacpx.center-tabs.v1",
+      JSON.stringify({ [K]: { tabs: "nope", activeId: 5 }, "i1::s2": { tabs: [{ kind: "file", id: "file:b.ts", path: "b.ts" }], activeId: "file:b.ts" } }),
+    );
+    const s2 = useCenterTabsStore();
+    expect(s2.tabsFor(K)).toEqual([]); // bad entry dropped
+    expect(s2.tabsFor(sessionKey("i1", "s2")).map((t) => t.id)).toEqual(["file:b.ts"]); // good entry kept
   });
 });
 
