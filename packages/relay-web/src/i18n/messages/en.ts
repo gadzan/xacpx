@@ -344,7 +344,7 @@ export default {
   terminal: {
     title: "Terminal",
     disabled: "Terminal is disabled. Enable `terminal.enabled` in the instance config.",
-    unsupported: "Terminal is unsupported on this instance platform (v1: macOS/Linux only).",
+    unsupported: "Terminal is not supported on this instance platform.",
     offline: "Instance is offline.",
     noSession: "Select a session to open a terminal.",
     restoredHint: "This terminal disconnected on reload.",
