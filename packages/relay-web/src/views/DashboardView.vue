@@ -391,6 +391,7 @@ onUnmounted(() => {
             <FileViewer v-if="tab.kind === 'file' || tab.kind === 'diff'" class="absolute inset-0 z-10"
                         v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
                         :instance-id="keyInstance(key)" :workspace="keyWorkspace(key)"
+                        :session-key="key"
                         :path="tab.kind === 'file' ? tab.path : undefined"
                         :diff-path="tab.kind === 'diff' ? tab.path : undefined"
                         :line="tab.kind === 'file' ? tab.targetLine : undefined"

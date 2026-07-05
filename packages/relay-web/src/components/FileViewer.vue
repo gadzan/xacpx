@@ -7,6 +7,7 @@ import type { FsDiffResult, FsReadResult } from "@ganglion/xacpx-relay-protocol"
 import CodeEditor from "./CodeEditor.vue";
 import { parseUnifiedDiff } from "../lib/unified-diff";
 import CopyButton from "./CopyButton.vue";
+import { draftKey, loadFileDraft, saveFileDraft, clearFileDraft } from "../lib/file-drafts";
 
 // Roomy file/diff viewer that takes over the center column. A single CodeMirror instance
 // (CodeEditor) renders file content for BOTH read and edit — read is editable:false, the
@@ -19,6 +20,7 @@ const props = defineProps<{
   diffPath?: string;
   line?: number;
   lineRev?: number;
+  sessionKey?: string;
 }>();
 const emit = defineEmits<{ back: []; close: []; "dirty-change": [boolean] }>();
 const { t } = useI18n();
@@ -50,6 +52,18 @@ async function load(): Promise<void> {
       content.value = result.binary ? "" : result.content;
       editing.value = false;
       emit("dirty-change", false);
+      // Restore a persisted edit draft: enter edit mode with the saved buffer. Only when the
+      // draft differs from disk (equal ⇒ nothing to restore) and the file is actually editable
+      // (a truncated / mtime-less file can't be saved). Staleness isn't checked here — the
+      // existing save-time mtime guard (baseRev) catches a disk that changed while away.
+      if (!result.binary && !result.truncated && typeof result.mtimeMs === "number") {
+        const draft = loadFileDraft(draftKey(props.sessionKey ?? "", path));
+        if (draft !== null && draft !== result.content) {
+          baseRev.value = { mtimeMs: result.mtimeMs, size: result.size };
+          content.value = draft;
+          editing.value = true;
+        }
+      }
     } else if (diffPath) {
       const result = await files.readDiff(instanceId, workspace, diffPath);
       if (token !== loadToken) return;
@@ -92,6 +106,15 @@ const canEdit = computed(
 const editDirty = computed(() => editing.value && !!file.value && content.value !== file.value.content);
 watch(editDirty, (v) => emit("dirty-change", v));
 
+// Persist the edit buffer while editing so a reload can restore it. Clearing the edits back to
+// disk content removes the key (empty store). Only writes in edit mode with a real path.
+watch(content, (val) => {
+  if (!editing.value || !props.path) return;
+  const key = draftKey(props.sessionKey ?? "", props.path);
+  if (file.value && val !== file.value.content) saveFileDraft(key, val);
+  else clearFileDraft(key);
+});
+
 const saveErrorLabel = computed(() => {
   const code = saveError.value;
   if (!code) return "";
@@ -117,6 +140,7 @@ function cancelEdit() {
   baseRev.value = null;
   saveError.value = null;
   emit("dirty-change", false);
+  if (props.path) clearFileDraft(draftKey(props.sessionKey ?? "", props.path));
 }
 async function save() {
   if (!editing.value) return;
@@ -130,6 +154,7 @@ async function save() {
     editing.value = false;
     baseRev.value = null;
     emit("dirty-change", false);
+    if (props.path) clearFileDraft(draftKey(props.sessionKey ?? "", props.path));
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : "write-failed";
   } finally {
