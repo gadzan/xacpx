@@ -1,5 +1,18 @@
 # Changelog
 
+## [relay 0.9.12-beta.17] - 2026-07-04
+
+A `@ganglion/xacpx-relay` (hub) beta that unifies the file viewer on a single CodeMirror 6 stack and removes Shiki (#130). UI-only (bundled `relay-web`), published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
+
+### Changed
+
+- **One editor for read and edit.** The file viewer now uses a single CodeMirror 6 instance for both viewing and editing — toggling in place with no re-render or scroll jump. Search is CodeMirror's native panel (⌘/Ctrl-F or the header magnifier) and now works while editing too.
+- **Highlighting.** Common languages (js/ts/jsx/tsx, json, html, css/scss, markdown, python, yaml, vue, xml, sql) are syntax-highlighted with a GitHub light/dark palette; other file types render as plain text. Large files are now highlighted (previously they fell back to plain text past 5000 lines).
+
+### Preserved
+
+- The full edit/save path is unchanged: pencil to edit, Save/Cancel, dirty indicator, ⌘/Ctrl-S, the stale-write reload banner (your draft is kept), and the unsaved-changes close guard. Binary files stay non-editable; truncated files stay read-only; the diff view, copy button, and light/dark are unchanged.
+
 ## [file edit & save] - 2026-07-04
 
 Edit and save file content from the relay-web dashboard's file viewer (#128). This is a **four-package** release, not a UI-only hub bump — it adds a new gated wire RPC `control.fs.write`:
