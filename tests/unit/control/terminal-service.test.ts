@@ -1,6 +1,6 @@
 // tests/unit/control/terminal-service.test.ts
 import { test, expect, mock } from "bun:test";
-import { createTerminalService, type PtyHandle } from "../../../src/control/terminal-service";
+import { createTerminalService, resolveShell, type PtyHandle } from "../../../src/control/terminal-service";
 import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
 
 function fakePty() {
@@ -211,4 +211,42 @@ test("disposeAll clears timers and kills all PTYs without throwing", () => {
   // Idle timer must be cleared (no stale fire after dispose).
   expect(hasPending()).toBe(false);
   expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+// ── resolveShell ─────────────────────────────────────────────────────────────
+const noExist = () => false;
+
+test("resolveShell: explicit shellOverride wins on any platform", () => {
+  expect(resolveShell({ platform: "win32", env: {}, shellOverride: "C:/tools/nu.exe", exists: noExist })).toBe("C:/tools/nu.exe");
+  expect(resolveShell({ platform: "darwin", env: { SHELL: "/bin/zsh" }, shellOverride: "/bin/fish" })).toBe("/bin/fish");
+  // blank override is ignored (falls through to platform default)
+  expect(resolveShell({ platform: "linux", env: { SHELL: "/bin/bash" }, shellOverride: "   " })).toBe("/bin/bash");
+});
+
+test("resolveShell: unix honors SHELL then falls to zsh(darwin)/bash(other) — unchanged", () => {
+  expect(resolveShell({ platform: "darwin", env: { SHELL: "/opt/homebrew/bin/fish" } })).toBe("/opt/homebrew/bin/fish");
+  expect(resolveShell({ platform: "darwin", env: {} })).toBe("/bin/zsh");
+  expect(resolveShell({ platform: "linux", env: {} })).toBe("/bin/bash");
+});
+
+test("resolveShell: win32 IGNORES SHELL and scans PATH pwsh -> powershell -> ComSpec -> cmd", () => {
+  const PATH = "C:\\Windows\\System32;C:\\PS7";
+  // SHELL set to an MSYS path (git-bash) must be ignored on win32
+  const env = { SHELL: "/usr/bin/bash", PATH, ComSpec: "C:\\Windows\\System32\\cmd.exe" };
+  // pwsh present anywhere in PATH wins
+  const pwshExists = (p: string) => p === "C:\\PS7\\pwsh.exe";
+  expect(resolveShell({ platform: "win32", env, exists: pwshExists })).toBe("C:\\PS7\\pwsh.exe");
+  // no pwsh, powershell present in System32
+  const psExists = (p: string) => p === "C:\\Windows\\System32\\powershell.exe";
+  expect(resolveShell({ platform: "win32", env, exists: psExists })).toBe("C:\\Windows\\System32\\powershell.exe");
+  // neither present -> ComSpec
+  expect(resolveShell({ platform: "win32", env, exists: noExist })).toBe("C:\\Windows\\System32\\cmd.exe");
+  // neither present and no ComSpec -> literal cmd.exe
+  expect(resolveShell({ platform: "win32", env: { PATH }, exists: noExist })).toBe("cmd.exe");
+});
+
+test("resolveShell: win32 prefers pwsh over powershell when both exist", () => {
+  const env = { PATH: "C:\\A;C:\\B" };
+  const bothExist = (p: string) => p === "C:\\B\\pwsh.exe" || p === "C:\\A\\powershell.exe";
+  expect(resolveShell({ platform: "win32", env, exists: bothExist })).toBe("C:\\B\\pwsh.exe");
 });
