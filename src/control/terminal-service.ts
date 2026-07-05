@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { statSync } from "node:fs";
 import { spawn as spawnPty } from "node-pty";
 import { resolveNodePtyHelperPath, ensureNodePtyHelperExecutable } from "../transport/acpx-cli/node-pty-helper";
 import type { ControlEventBus } from "./control-event-bus";
@@ -45,6 +46,8 @@ export interface TerminalService {
 export interface TerminalServiceDeps {
   events: ControlEventBus;
   idleTimeoutSeconds: () => number;
+  /** Optional explicit shell override from config (terminal.shell). */
+  shell?: () => string | undefined;
   spawn?: PtySpawn;
   platform?: NodeJS.Platform;
   /** Injectable timer primitives; defaults to global setTimeout/clearTimeout. */
@@ -64,8 +67,44 @@ function scrubEnv(): Record<string, string> {
   return out;
 }
 
-function defaultShell(platform: NodeJS.Platform): string {
-  if (process.env.SHELL) return process.env.SHELL;
+function defaultExists(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export interface ResolveShellArgs {
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  /** Explicit override from config terminal.shell — wins on every platform. */
+  shellOverride?: string;
+  /** Injectable executable-existence predicate (defaults to fs statSync). */
+  exists?: (p: string) => boolean;
+}
+
+/** Pick the shell to spawn. Priority: explicit override -> platform default.
+ *  win32 deliberately ignores SHELL (git-bash sets it to an MSYS path that
+ *  node-pty can't spawn on Windows) and scans PATH for pwsh -> powershell,
+ *  falling back to %ComSpec% (cmd.exe). Never throws — always returns a value. */
+export function resolveShell(args: ResolveShellArgs): string {
+  const { platform, env, shellOverride } = args;
+  const exists = args.exists ?? defaultExists;
+  if (shellOverride && shellOverride.trim()) return shellOverride;
+  if (platform === "win32") {
+    const pathValue = env.PATH ?? env.Path ?? "";
+    const dirs = pathValue.split(";").filter(Boolean);
+    for (const name of ["pwsh.exe", "powershell.exe"]) {
+      for (const dir of dirs) {
+        const clean = dir.replace(/^"|"$/g, "");
+        const full = `${clean}\\${name}`;
+        if (exists(full)) return full;
+      }
+    }
+    return env.ComSpec ?? "cmd.exe";
+  }
+  if (env.SHELL) return env.SHELL;
   return platform === "darwin" ? "/bin/zsh" : "/bin/bash";
 }
 
@@ -102,9 +141,9 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
 
   return {
     create({ cwd, cols, rows }) {
-      if (platform === "win32") throw new Error("terminal-unsupported-platform");
+      const shell = resolveShell({ platform, env: process.env, shellOverride: deps.shell?.() });
       const terminalId = randomUUID();
-      const handle = spawn(defaultShell(platform), [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
+      const handle = spawn(shell, [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
       const session: Session = { handle, seq: 0, idleTimer: null };
       sessions.set(terminalId, session);
       handle.onData((data) => {

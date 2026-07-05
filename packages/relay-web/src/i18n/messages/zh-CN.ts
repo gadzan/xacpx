@@ -342,7 +342,7 @@ export default {
   terminal: {
     title: "终端",
     disabled: "终端未启用。请在实例 config 中开启 `terminal.enabled`。",
-    unsupported: "该实例平台不支持终端(v1 仅 macOS/Linux)。",
+    unsupported: "该实例平台不支持终端。",
     offline: "实例已离线。",
     noSession: "选择一个会话以打开终端。",
     restoredHint: "终端会话已随刷新断开。",

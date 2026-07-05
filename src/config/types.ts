@@ -52,6 +52,8 @@ export interface TerminalConfig {
   enabled: boolean;
   /** Idle seconds before a terminal PTY is auto-killed. Defaults to 900 (15 min). */
   idleTimeoutSeconds?: number;
+  /** Explicit shell override (absolute path or bare name). Cross-platform: wins over SHELL / platform default. */
+  shell?: string;
 }
 
 export interface FilesConfig {
@@ -142,6 +144,11 @@ export function terminalEnabled(config: AppConfig): boolean {
 export function terminalIdleTimeoutSeconds(config: AppConfig): number {
   const v = config.terminal?.idleTimeoutSeconds;
   return typeof v === "number" && v > 0 ? v : 900;
+}
+
+export function terminalShell(config: AppConfig): string | undefined {
+  const v = config.terminal?.shell;
+  return typeof v === "string" && v.trim() ? v : undefined;
 }
 
 export function filesWriteEnabled(config: AppConfig): boolean {
