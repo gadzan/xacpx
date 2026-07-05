@@ -9,6 +9,7 @@ import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
+import { loadTerminalId, clearTerminalId } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -152,6 +153,13 @@ function keyWorkspace(key: string): string {
 // Route every tab close (file/diff/terminal) through the dirty-aware guard: a clean tab
 // closes immediately, a dirty file tab asks first (native confirm — the store can't show UI).
 function requestCloseTab(key: string, id: string) {
+  // Explicit close of a terminal tab kills its PTY and forgets the id (a refresh does NOT reach here).
+  const tab = centerTabs.tabsFor(key).find((t) => t.id === id);
+  if (tab?.kind === "terminal") {
+    const tid = loadTerminalId(key);
+    if (tid) terminals.close(keyInstance(key), tid);
+    clearTerminalId(key);
+  }
   centerTabs.closeTabGuarded(key, id, () => window.confirm(t("files.unsavedConfirm")));
 }
 
@@ -176,7 +184,15 @@ function reconcileCenterTabs() {
   const openKeys = new Set(centerTabs.allOpenTabs().map((t) => t.key));
   for (const key of openKeys) {
     const inst = instances.byId(keyInstance(key));
-    if (inst?.sessionsLoaded && !valid.has(key)) centerTabs.clearSession(key);
+    if (inst?.sessionsLoaded && !valid.has(key)) {
+      const hasTerminal = centerTabs.tabsFor(key).some((t) => t.kind === "terminal");
+      if (hasTerminal) {
+        const tid = loadTerminalId(key);
+        if (tid) terminals.close(keyInstance(key), tid);
+        clearTerminalId(key);
+      }
+      centerTabs.clearSession(key);
+    }
   }
 }
 watch(() => instances.instances, reconcileCenterTabs, { deep: true });

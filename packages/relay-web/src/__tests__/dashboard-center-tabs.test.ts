@@ -3,17 +3,23 @@ import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
-// Stub the WS client so jsdom needs no real socket.
+// Stub the WS client so jsdom needs no real socket. sendWebClientMessage is exercised
+// indirectly: terminals.close() (spied on, not mocked away) calls through to it.
 vi.mock("../api/events", () => ({
   connectEvents: () => vi.fn(),
+  sendWebClientMessage: vi.fn(),
 }));
 // DashboardView uses useRouter()/<router-link>; mock to avoid a real router.
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import DashboardView from "../views/DashboardView.vue";
+import TerminalTab from "../components/TerminalTab.vue";
+import FileViewer from "../components/FileViewer.vue";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useInstancesStore, type InstanceView } from "../stores/instances";
+import { useTerminalStore } from "../stores/terminal";
+import { saveTerminalId, loadTerminalId } from "../lib/terminal-sessions";
 
 const stubs = {
   ChatPane: { template: '<div data-test="stub-chat"/>' },
@@ -176,4 +182,50 @@ test("out-of-band session removal prunes that session's center-tabs, but leaves 
   expect(centerTabs.tabsFor(goneKey)).toEqual([]); // reconciled away
   expect(centerTabs.tabsFor(keepKey).length).toBe(1); // untouched — still a valid session
   expect(centerTabs.tabsFor(loadingKey).length).toBe(1); // guarded — instance still loading
+});
+
+// Both tests below drive `requestCloseTab` via the pane's `@close` emit — the same idiom
+// dashboard-responsive.test.ts uses for FileViewer's close test — rather than via
+// CenterTabStrip's own tab-close button. That button (data-test="tab-close") calls
+// `store.closeTabGuarded` directly (see centertabstrip.test.ts) and never routes through
+// DashboardView at all, so it can't exercise the PTY-kill logic added here. TerminalTab
+// is stubbed elsewhere in this file (`stub-term`, no real close control), so a
+// close-emitting stub is substituted for just these two tests.
+test("closing a terminal tab kills its PTY and clears the persisted id", async () => {
+  const termStub = { name: "TerminalTab", template: '<div data-test="stub-term" />', emits: ["close"] };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
+  await flushPromises();
+  const key = selectSession();
+  await flushPromises();
+  const centerTabs = useCenterTabsStore();
+  centerTabs.openTerminal(key);
+  saveTerminalId(key, "tid-1");
+  await flushPromises();
+  const terminals = useTerminalStore();
+  const closeSpy = vi.spyOn(terminals, "close");
+
+  wrapper.findComponent(TerminalTab).vm.$emit("close");
+  await flushPromises();
+
+  expect(closeSpy).toHaveBeenCalledWith(expect.any(String), "tid-1");
+  expect(loadTerminalId(key)).toBeNull();
+});
+
+test("closing a FILE tab does not kill any terminal PTY", async () => {
+  const fileStub = { name: "FileViewer", template: '<div data-test="stub-file" />', emits: ["close", "back", "dirty-change"] };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, FileViewer: fileStub } } });
+  await flushPromises();
+  const key = selectSession();
+  await flushPromises();
+  const centerTabs = useCenterTabsStore();
+  centerTabs.openFile(key, "a.ts");
+  await flushPromises();
+  const terminals = useTerminalStore();
+  const closeSpy = vi.spyOn(terminals, "close");
+
+  wrapper.findComponent(FileViewer).vm.$emit("close");
+  await flushPromises();
+
+  expect(closeSpy).not.toHaveBeenCalled();
+  expect(centerTabs.tabsFor(key)).toEqual([]);
 });
