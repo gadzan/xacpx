@@ -17,6 +17,19 @@
   --c-warn: 180 83 9;           /* #B45309 — AA */
   --c-danger: 200 30 30;        /* #C81E1E — AA */
   --c-info: 37 99 235;          /* #2563EB */
+  /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
+  --c-syn-keyword: #cf222e;
+  --c-syn-string: #0a3069;
+  --c-syn-number: #0550ae;
+  --c-syn-comment: #6e7781;
+  --c-syn-function: #8250df;
+  --c-syn-type: #953800;
+  --c-syn-tag: #116329;
+  --c-syn-attribute: #0550ae;
+  --c-syn-property: #0550ae;
+  --c-syn-constant: #0550ae;
+  --c-syn-heading: #0550ae;
+  --c-syn-link: #0a3069;
   /* Elevation scale (soft, light theme) */
   --shadow-e1: 0 1px 2px rgba(12,18,28,0.06), 0 1px 1px rgba(12,18,28,0.04);
   --shadow-e2: 0 4px 12px rgba(12,18,28,0.08), 0 2px 4px rgba(12,18,28,0.05);
@@ -37,6 +50,19 @@
   --c-warn: 251 191 36;         /* #FBBF24 */
   --c-danger: 248 113 113;      /* #F87171 */
   --c-info: 96 165 250;         /* #60A5FA */
+  /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
+  --c-syn-keyword: #ff7b72;
+  --c-syn-string: #a5d6ff;
+  --c-syn-number: #79c0ff;
+  --c-syn-comment: #8b949e;
+  --c-syn-function: #d2a8ff;
+  --c-syn-type: #ffa657;
+  --c-syn-tag: #7ee787;
+  --c-syn-attribute: #79c0ff;
+  --c-syn-property: #79c0ff;
+  --c-syn-constant: #79c0ff;
+  --c-syn-heading: #79c0ff;
+  --c-syn-link: #a5d6ff;
   /* Elevation scale (deeper, dark theme) */
   --shadow-e1: 0 1px 2px rgba(0,0,0,0.5);
   --shadow-e2: 0 6px 18px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.45);
@@ -99,64 +125,12 @@ select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
   .pulse-dot, .shimmer-text, .caret::after { animation: none !important; }
 }
 
-/* Shiki syntax highlighting — dual theme via CSS vars, line numbers via counters. */
-.shiki,
-.shiki span {
-  background-color: transparent !important;
-  color: var(--shiki-light);
-}
-.dark .shiki,
-.dark .shiki span {
-  color: var(--shiki-dark);
-}
-.shiki {
-  margin: 0;
-  padding: 0.75rem;
-  overflow-x: auto;
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-.shiki code {
-  display: grid;
-  counter-reset: shiki-ln;
-}
-/* Line-number gutter: keep it tight so code isn't pushed far from the left edge on
-   narrow (mobile) viewports. Width fits up to 4 digits (LINE_GUTTER_LIMIT = 5000). */
-.shiki code .line {
-  position: relative;
-  padding-left: 2.75rem;
-  min-height: 1.6em;
-}
-.shiki code .line::before {
-  counter-increment: shiki-ln;
-  content: counter(shiki-ln);
-  position: absolute;
-  left: 0;
-  width: 2.25rem;
-  text-align: right;
-  opacity: 0.45;
-  user-select: none;
-}
-/* In-file search highlights, layered onto the rendered code by dom-line-highlight.
-   <mark> is not a <span>, so the `.shiki span { background: transparent !important }`
-   rule above doesn't touch it; the token colors inside keep their syntax highlight. */
-.shiki mark.search-hit {
-  background: rgb(var(--c-warn) / 0.32);
-  border-radius: 2px;
-}
-.shiki mark.search-hit.is-current {
-  background: rgb(var(--c-accent) / 0.45);
-  box-shadow: 0 0 0 1px rgb(var(--c-accent) / 0.8);
-}
-/* Transient flash when jumping to a line (search-result click / current match). Uses an
-   inset box-shadow, not background, because `.line` IS a span and would lose a background
-   to that same !important rule; box-shadow is unaffected. */
-.shiki code .line.line-flash {
-  animation: line-flash-fade 1.5s ease-out;
-}
-@keyframes line-flash-fade {
-  0% { box-shadow: inset 0 0 0 9999px rgb(var(--c-accent) / 0.22); }
-  100% { box-shadow: inset 0 0 0 9999px transparent; }
+/* Transient flash when jumping to a line (content-search hit). The decoration is removed
+   after ~1.5s by the CodeEditor timer; the animation fades the background over that window. */
+.cm-flash-line { animation: cm-flash-fade 1.5s ease-out; }
+@keyframes cm-flash-fade {
+  0% { background-color: rgb(var(--c-accent) / 0.22); }
+  100% { background-color: transparent; }
 }
 
 /* iOS Safari gives <input type="datetime-local"> an intrinsic min content width
