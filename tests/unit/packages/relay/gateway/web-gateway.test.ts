@@ -1,5 +1,5 @@
 // tests/unit/packages/relay/gateway/web-gateway.test.ts
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { decodeEnvelope, parseWebServerEvent, type WebServerEvent } from "../../../../../packages/relay-protocol/src/index";
 import { WebGateway } from "../../../../../packages/relay/src/gateway/web-gateway";
 
@@ -35,21 +35,17 @@ test("closed sockets are dropped from the account set", () => {
 });
 
 test("a throwing socket does not prevent delivery to the remaining sockets", () => {
-  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const gw = new WebGateway();
-    const bad = new FakeSocket();
-    bad.send = () => { throw new Error("send boom"); };
-    const good = new FakeSocket();
-    // Insertion order matters: the throwing socket comes first.
-    gw.register("a1", bad as never);
-    gw.register("a1", good as never);
-    expect(() => gw.broadcast("a1", evt(true))).not.toThrow();
-    expect(good.sent.length).toBe(1);
-    expect(errorSpy).toHaveBeenCalled();
-  } finally {
-    errorSpy.mockRestore();
-  }
+  const logs: Array<[string, string]> = [];
+  const gw = new WebGateway({ logger: { debug: () => {}, info: () => {}, error: (e, m) => logs.push([e, m]) } });
+  const bad = new FakeSocket();
+  bad.send = () => { throw new Error("send boom"); };
+  const good = new FakeSocket();
+  // Insertion order matters: the throwing socket comes first.
+  gw.register("a1", bad as never);
+  gw.register("a1", good as never);
+  expect(() => gw.broadcast("a1", evt(true))).not.toThrow();
+  expect(good.sent.length).toBe(1);
+  expect(logs.some(([e]) => e === "relay.web.broadcast_failed")).toBe(true);
 });
 
 test("non-open sockets are skipped; sockets without readyState still receive", () => {

@@ -18,6 +18,7 @@ import { handleWebClientMessage } from "./gateway/web-inbound.js";
 import { createApp } from "./http/app.js";
 import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
 import { startMaintenanceLoop } from "./maintenance.js";
+import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
 
 const MAX_MESSAGES_PER_SESSION = 2000;
 const MAX_TOOL_STEPS = 200;
@@ -39,16 +40,18 @@ export interface CreateRuntimeOptions {
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
+  logger?: RelayLogger;
 }
 
 /** Testable assembly without any network listener. */
 export async function createRelayRuntime(dbPath: string, options: CreateRuntimeOptions = {}): Promise<RelayRuntime> {
   const db = await createSqlDriver(dbPath);
   initSchema(db);
+  const logger = options.logger ?? createNoopRelayLogger();
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
-  const webGateway = new WebGateway();
+  const webGateway = new WebGateway({ logger });
 
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
   // `parts` records text / reasoning / tool events in arrival order so the web can
@@ -129,6 +132,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     instances,
     accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    logger,
     onStatusChange: (instanceId, accountId, online) => {
       if (!online) {
         const prefix = `${instanceId}\0`;
@@ -234,6 +238,7 @@ export interface StartRelayOptions {
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
+  logger?: RelayLogger;
 }
 
 export interface RunningRelay {
@@ -250,6 +255,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     historyRetentionDays: options.historyRetentionDays,
     requestTimeoutMs: options.requestTimeoutMs,
     trustProxy: options.trustProxy,
+    logger: options.logger,
   });
   const host = options.host ?? "0.0.0.0";
 

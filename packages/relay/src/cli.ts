@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { createRelayRuntime, startRelayServer } from "./server.js";
 import { handleRelayUpdate } from "./cli-update.js";
+import { createRelayLogger } from "./logging.js";
 
 export interface RelayCliIo {
   print(line: string): void;
@@ -103,7 +104,8 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
     if (!startOpts.webRoot) {
       startOpts.webRoot = resolveBundledWebRoot();
     }
-    const running = await startRelayServer(startOpts);
+    const logger = createRelayLogger();
+    const running = await startRelayServer({ ...startOpts, logger });
     const gatewayDesc = running.wsPort !== null
       ? `instance ws :${running.wsPort}`
       : `instance gateway: merged on http :${running.httpPort} (path / or /gateway)`;

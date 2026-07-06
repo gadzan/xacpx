@@ -11,6 +11,7 @@ import {
 
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
+import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
 
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
@@ -35,6 +36,7 @@ export interface InstanceGatewayDeps {
   heartbeatIntervalMs?: number;
   onEvent?: (instanceId: string, accountId: string, envelope: RelayEnvelope) => void;
   onStatusChange?: (instanceId: string, accountId: string, online: boolean) => void;
+  logger?: RelayLogger;
 }
 
 interface PendingRequest {
@@ -47,9 +49,12 @@ interface PendingRequest {
 export class InstanceGateway {
   private readonly connections = new Map<string, { socket: GatewaySocket; accountId: string }>();
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly logger: RelayLogger;
   private seq = 0;
 
-  constructor(private readonly deps: InstanceGatewayDeps) {}
+  constructor(private readonly deps: InstanceGatewayDeps) {
+    this.logger = deps.logger ?? createNoopRelayLogger();
+  }
 
   isOnline(instanceId: string): boolean {
     return this.connections.has(instanceId);
@@ -57,7 +62,7 @@ export class InstanceGateway {
 
   handleConnection(socket: GatewaySocket): void {
     let authed: { instanceId: string; accountId: string } | null = null;
-    startHeartbeat(socket, this.deps.heartbeatIntervalMs);
+    startHeartbeat(socket, this.deps.heartbeatIntervalMs, undefined, this.logger);
 
     socket.on("message", (data) => {
       // A single bad frame (or a throwing onEvent consumer, e.g. a DB write) must
@@ -67,7 +72,7 @@ export class InstanceGateway {
           authed = identity;
         });
       } catch (err) {
-        console.error("[relay] instance gateway message handling failed:", err);
+        this.logger.error("relay.instance.message_failed", "message handling failed", { error: String(err) });
       }
     });
 
@@ -120,7 +125,7 @@ export class InstanceGateway {
           try {
             existing.socket.close(4409, "superseded");
           } catch (err) {
-            console.error("[relay] closing superseded instance socket failed:", err);
+            this.logger.error("relay.instance.superseded_close_failed", "closing superseded instance socket failed", { error: String(err) });
           }
         }
         this.deps.onStatusChange?.(identity.instanceId, identity.accountId, true);
