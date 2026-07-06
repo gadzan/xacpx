@@ -9,7 +9,7 @@ import {
   errorPayload,
   type RelayEnvelope,
 } from "../../../../packages/relay-protocol/src/index";
-import { RelayClient } from "../../../../packages/channel-relay/src/relay-client";
+import { RelayClient, applyReconnectJitter } from "../../../../packages/channel-relay/src/relay-client";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
 class MemoryCredentialStore {
@@ -187,6 +187,48 @@ test("onEvent throwing does not tear down the socket — subsequent events are s
   // The throw was logged as relay.event_dispatch_failed.
   expect(errors.some((e) => e.code === "relay.event_dispatch_failed")).toBe(true);
   controller.abort();
+  wss.close();
+});
+
+test("reconnect delay gets +/-20% jitter around the configured base", () => {
+  expect(applyReconnectJitter(1000, () => 0)).toBe(800);
+  expect(applyReconnectJitter(1000, () => 0.5)).toBe(1000);
+  expect(applyReconnectJitter(1000, () => 1)).toBe(1200);
+  expect(applyReconnectJitter(0, () => 1)).toBe(0); // zero-delay test configs stay zero
+});
+
+test("respond after the socket closed is dropped safely instead of throwing", async () => {
+  let capturedRespond: ((payload: unknown) => void) | undefined;
+  const seen: RelayEnvelope[] = [];
+  const { wss, url } = await makeFakeRelay((envelope, reply) => {
+    seen.push(envelope);
+    if (envelope.type === MSG.instanceAuth) {
+      reply(res(envelope, { ok: true }));
+      // Push a control req; the handler will answer only after the socket is gone.
+      reply({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "late-1", type: MSG.sessionsList, payload: {} });
+    }
+  });
+  const store = new MemoryCredentialStore({ instanceId: "i-1", credential: "cred-1", relayUrl: url });
+  const droppedLogs: string[] = [];
+  const logger = {
+    info: async () => {}, error: async () => {}, cleanup: async () => {}, flush: async () => {},
+    debug: async (code: string) => { droppedLogs.push(code); },
+  } as never;
+  const controller = new AbortController();
+  const client = new RelayClient({
+    url, credentialStore: store, reconnectDelaysMs: [0], logger,
+    onRequest: (_envelope, respond) => { capturedRespond = respond; },
+  });
+  client.start(controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(capturedRespond).toBeDefined();
+
+  controller.abort(); // closes the socket
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(() => capturedRespond!({ sessions: [] })).not.toThrow();
+  expect(droppedLogs).toContain("relay.response_dropped");
+  // No res frame ever reached the relay for the late request.
+  expect(seen.some((e) => e.kind === "res" && e.id === "late-1")).toBe(false);
   wss.close();
 });
 
