@@ -79,12 +79,22 @@ html, body, #app { height: 100%; }
 html, body { overflow-x: hidden; }
 body { @apply bg-bg text-fg font-sans antialiased; }
 
-/* Branded focus ring on interactive elements (gap + accent halo). */
-a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible,
-select:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
+/* Branded focus ring on interactive elements (gap + accent halo).
+   Text fields (input/textarea/select) are intentionally excluded — see the rule below. */
+a:focus-visible, button:focus-visible,
+[tabindex]:focus-visible, [role="button"]:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgb(var(--c-bg)), 0 0 0 4px rgb(var(--c-accent));
   border-radius: 6px;
+}
+
+/* No focus box-shadow on form fields. Authoritative override so per-component Tailwind
+   `focus-visible:ring-*` utilities (which compile to box-shadow) are neutralized too. */
+input:focus, input:focus-visible,
+textarea:focus, textarea:focus-visible,
+select:focus, select:focus-visible {
+  box-shadow: none !important;
+  outline: none;
 }
 
 /* Live run-dot: expanding bright-green ring (matches mockup softpulse). */

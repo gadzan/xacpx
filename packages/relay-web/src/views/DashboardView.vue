@@ -43,7 +43,7 @@ let disconnect: (() => void) | null = null;
 // these flags are visually irrelevant because the lg: classes override the transform.
 const leftOpen = ref(false);
 const rightOpen = ref(false);
-const rightTab = ref<"tasks" | "files">("tasks");
+const rightTab = ref<"tasks" | "files">("files");
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
@@ -68,13 +68,6 @@ const swipe = createEdgeSwipe({
   closeLeft: () => { leftOpen.value = false; },
   closeRight: () => { rightOpen.value = false; },
 });
-// Mobile: "Back" from the file viewer returns to the FILE LIST (reopen the Files drawer)
-// so the user can pick another file. It does NOT close the underlying file/diff tab — the
-// tab stays open (and active) in the per-session tab strip; the drawer just overlays it.
-function backToFileList() {
-  openRight("files");
-}
-
 // Desktop-only: collapse the instances sidebar to reclaim width. Persisted so the
 // choice survives reloads. (Mobile uses the leftOpen off-canvas drawer instead.)
 const leftCollapsed = ref(localStorage.getItem("xacpx.leftCollapsed") === "1");
@@ -408,7 +401,7 @@ onUnmounted(() => {
                         :line="tab.kind === 'file' ? tab.targetLine : undefined"
                         :line-rev="tab.kind === 'file' ? tab.targetRev : undefined"
                         @dirty-change="(v) => centerTabs.setDirty(key, tab.id, v)"
-                        @close="requestCloseTab(key, tab.id)" @back="backToFileList" />
+                        @close="requestCloseTab(key, tab.id)" />
             <TerminalTab v-else-if="tab.kind === 'terminal'" class="absolute inset-0 z-20"
                          v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
                          :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"

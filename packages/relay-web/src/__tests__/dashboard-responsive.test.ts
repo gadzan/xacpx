@@ -78,35 +78,25 @@ test("the mobile bar exposes a discoverable Files button that opens the Files dr
   expect(filesTab.classes()).toContain("font-semibold");
 });
 
-test("file viewer Back opens the file list drawer (the tab stays open); Close removes the tab and returns to chat", async () => {
+test("file viewer Close removes the tab and returns to chat", async () => {
   const chat = useChatStore();
   chat.instanceId = "i1";
   chat.sessionAlias = "demo";
   const centerTabs = useCenterTabsStore();
   const key = sessionKey("i1", "demo");
-  // Replace the FileViewer stub with a minimal one that re-emits back/close so we can
-  // exercise DashboardView's nav handlers (rightTab/rightOpen are internal refs, so we
-  // assert via observable drawer DOM).
-  const fvStub = { name: "FileViewer", template: "<div data-test=\"fv-stub\" />", emits: ["back", "close"] };
+  // Replace the FileViewer stub with a minimal one that re-emits close so we can
+  // exercise DashboardView's close wiring.
+  const fvStub = { name: "FileViewer", template: "<div data-test=\"fv-stub\" />", emits: ["close"] };
   const wrapper = mount(DashboardView, {
     global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true, FileViewer: fvStub } },
   });
   await flushPromises();
-  const right = wrapper.find('[data-drawer="right"]');
 
   // Open a file tab so the (stubbed) FileViewer renders.
   centerTabs.openFile(key, "a.ts");
   await flushPromises();
   expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
   expect(centerTabs.activeFor(key)).toBe("file:a.ts");
-
-  // Back -> file list: right drawer opens on files, but the tab is untouched (still
-  // open/active) — the drawer just overlays it on mobile.
-  wrapper.findComponent(FileViewer).vm.$emit("back");
-  await flushPromises();
-  expect(centerTabs.activeFor(key)).toBe("file:a.ts");
-  expect(right.classes()).toContain("translate-x-0");
-  expect(right.classes()).not.toContain("translate-x-full");
 
   // Close -> the tab is actually removed and active falls back to chat.
   wrapper.findComponent(FileViewer).vm.$emit("close");

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
-import { ArrowLeft, FileText, FileDiff, X, Search, Pencil, Save as SaveIcon } from "lucide-vue-next";
+import { FileText, FileDiff, X, Search, Pencil, Save as SaveIcon } from "lucide-vue-next";
 import { useI18n } from "vue-i18n";
 import { useFilesStore } from "../stores/files";
 import type { FsDiffResult, FsReadResult } from "@ganglion/xacpx-relay-protocol";
@@ -22,7 +22,7 @@ const props = defineProps<{
   lineRev?: number;
   sessionKey?: string;
 }>();
-const emit = defineEmits<{ back: []; close: []; "dirty-change": [boolean] }>();
+const emit = defineEmits<{ close: []; "dirty-change": [boolean] }>();
 const { t } = useI18n();
 const files = useFilesStore();
 
@@ -206,15 +206,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
 
 <template>
   <div ref="rootEl" class="flex h-full flex-1 flex-col bg-bg" data-test="file-viewer-center">
-    <!-- header: back + path + meta -->
+    <!-- header: path + meta -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
-      <button data-test="fv-back-list" :aria-label="$t('files.backToList')"
-              class="flex lg:hidden shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('back')"><ArrowLeft :size="14" class="shrink-0" />{{ $t("files.title") }}</button>
-      <button data-test="fv-back" :aria-label="$t('files.back')"
-              class="hidden lg:flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('close')"><ArrowLeft :size="14" class="shrink-0" />{{ $t("files.back") }}</button>
-      <span class="h-4 w-px bg-border" aria-hidden="true" />
       <template v-if="file">
         <FileText :size="14" class="shrink-0 text-accent" />
         <span class="truncate font-mono text-[12.5px] text-fg">{{ file.path }}</span>

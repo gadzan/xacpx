@@ -55,6 +55,7 @@ describe("files store", () => {
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
     const s = useFilesStore();
     await s.selectWorkspace("i1", "ws");
+    s.searchOpts.mode = "name"; // this case exercises name-mode search explicitly
     rpc.mockResolvedValueOnce({ workspace: "ws", query: "a.ts", matches: ["src/a.ts"], truncated: false });
     await s.search("a.ts");
     expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.search", { workspace: "ws", query: "a.ts", mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "" });
