@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Brain, Check, ChevronDown, Gauge, Paperclip, Send, X } from "lucide-vue-next";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
+import { createDebouncedFlush } from "../lib/debounce-flush";
 import UsagePopover from "./UsagePopover.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
@@ -97,14 +98,38 @@ async function onDrop(e: DragEvent) {
 
 // Persist the draft per session and restore on switch: when the key changes, stash the
 // current text under the previous key, then load the incoming session's draft.
-watch(text, (t) => saveDraft(props.draftKey ?? "", t));
+// Writes are debounced (parse+stringify of the whole draft map per keystroke is a hot
+// path), with a synchronous flush on pagehide/unmount so a reload right after typing
+// still restores the very last input. The key+text are captured at schedule time so a
+// late-firing write can never land under the wrong session.
+let pendingDraft: { key: string; text: string } | null = null;
+const draftPersist = createDebouncedFlush(() => {
+  const p = pendingDraft;
+  pendingDraft = null;
+  if (p) saveDraft(p.key, p.text);
+}, 300);
+watch(text, (t) => {
+  pendingDraft = { key: props.draftKey ?? "", text: t };
+  draftPersist.schedule();
+});
 watch(
   () => props.draftKey,
   (next, prev) => {
+    // The old session's text is stashed synchronously below — drop the pending write.
+    pendingDraft = null;
+    draftPersist.cancel();
     if (prev) saveDraft(prev, text.value);
     text.value = loadDraft(next ?? "");
   },
 );
+function flushDraft(): void {
+  draftPersist.flush();
+}
+onMounted(() => window.addEventListener("pagehide", flushDraft));
+onBeforeUnmount(() => {
+  window.removeEventListener("pagehide", flushDraft);
+  flushDraft();
+});
 
 // External insert requests (e.g. command palette) targeted at this session.
 watch(

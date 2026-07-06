@@ -8,6 +8,7 @@ import CodeEditor from "./CodeEditor.vue";
 import { parseUnifiedDiff } from "../lib/unified-diff";
 import CopyButton from "./CopyButton.vue";
 import { draftKey, loadFileDraft, saveFileDraft, clearFileDraft } from "../lib/file-drafts";
+import { createDebouncedFlush } from "../lib/debounce-flush";
 
 // Roomy file/diff viewer that takes over the center column. A single CodeMirror instance
 // (CodeEditor) renders file content for BOTH read and edit — read is editable:false, the
@@ -108,11 +109,34 @@ watch(editDirty, (v) => emit("dirty-change", v));
 
 // Persist the edit buffer while editing so a reload can restore it. Clearing the edits back to
 // disk content removes the key (empty store). Only writes in edit mode with a real path.
+// Writes are debounced (each one re-parses + re-stringifies the whole draft map), with a
+// synchronous flush on pagehide/unmount so a reload right after typing still restores the
+// very last edits. Key + buffer + disk content are captured at schedule time, so a write
+// firing after a tab switch still lands under the file it was typed into.
+let pendingEditDraft: { key: string; text: string; disk: string } | null = null;
+const editDraftPersist = createDebouncedFlush(() => {
+  const p = pendingEditDraft;
+  pendingEditDraft = null;
+  if (!p) return;
+  if (p.text !== p.disk) saveFileDraft(p.key, p.text);
+  else clearFileDraft(p.key);
+}, 300);
+function cancelPendingEditDraft(): void {
+  pendingEditDraft = null;
+  editDraftPersist.cancel();
+}
 watch(content, (val) => {
-  if (!editing.value || !props.path) return;
-  const key = draftKey(props.sessionKey ?? "", props.path);
-  if (file.value && val !== file.value.content) saveFileDraft(key, val);
-  else clearFileDraft(key);
+  if (!editing.value || !props.path || !file.value) return;
+  pendingEditDraft = { key: draftKey(props.sessionKey ?? "", props.path), text: val, disk: file.value.content };
+  editDraftPersist.schedule();
+});
+function flushEditDraft(): void {
+  editDraftPersist.flush();
+}
+onMounted(() => window.addEventListener("pagehide", flushEditDraft));
+onBeforeUnmount(() => {
+  window.removeEventListener("pagehide", flushEditDraft);
+  flushEditDraft();
 });
 
 const saveErrorLabel = computed(() => {
@@ -140,6 +164,7 @@ function cancelEdit() {
   baseRev.value = null;
   saveError.value = null;
   emit("dirty-change", false);
+  cancelPendingEditDraft(); // a late debounced write must not resurrect the cleared draft
   if (props.path) clearFileDraft(draftKey(props.sessionKey ?? "", props.path));
 }
 async function save() {
@@ -154,6 +179,7 @@ async function save() {
     editing.value = false;
     baseRev.value = null;
     emit("dirty-change", false);
+    cancelPendingEditDraft(); // the buffer just became disk content — drop the stale write
     if (props.path) clearFileDraft(draftKey(props.sessionKey ?? "", props.path));
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : "write-failed";

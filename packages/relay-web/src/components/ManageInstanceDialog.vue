@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { X } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import WorkspacesManager from "./WorkspacesManager.vue";
 import AgentsManager from "./AgentsManager.vue";
 
@@ -55,29 +56,12 @@ async function saveName(): Promise<void> {
   }
 }
 
-// Accessibility: trap focus inside the dialog, close on Esc, and restore focus to
-// whatever was focused before the dialog opened.
+// Accessibility (shared composable): trap focus inside the dialog, close on Esc, and
+// restore focus to whatever was focused before the dialog opened.
 const dialogEl = ref<HTMLElement | null>(null);
-let previouslyFocused: HTMLElement | null = null;
-const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
-function focusables(): HTMLElement[] {
-  return dialogEl.value ? Array.from(dialogEl.value.querySelectorAll<HTMLElement>(FOCUSABLE)) : [];
-}
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") { e.preventDefault(); emit("close"); return; }
-  if (e.key !== "Tab") return;
-  const els = focusables();
-  if (els.length === 0) return;
-  const first = els[0], last = els[els.length - 1];
-  const active = document.activeElement as HTMLElement | null;
-  if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
-}
+useModalA11y(dialogEl, () => emit("close"));
 
 onMounted(async () => {
-  previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  document.addEventListener("keydown", onKeydown);
-  void nextTick(() => { (focusables()[0] ?? dialogEl.value)?.focus(); });
   try {
     await store.loadFormOptions(props.instanceId);
   } catch {
@@ -85,11 +69,6 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("keydown", onKeydown);
-  previouslyFocused?.focus?.();
 });
 </script>
 
