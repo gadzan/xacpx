@@ -66,7 +66,18 @@ export class InstanceGateway {
       if (!authed) {
         authed = this.handleHandshake(socket, envelope);
         if (authed) {
+          // A reconnect can race the old (often half-open) socket: replace the map
+          // entry FIRST, then close the old socket, whose close handler no-ops
+          // because the entry no longer points at it.
+          const existing = this.connections.get(authed.instanceId);
           this.connections.set(authed.instanceId, { socket, accountId: authed.accountId });
+          if (existing && existing.socket !== socket) {
+            try {
+              existing.socket.close(4409, "superseded");
+            } catch (err) {
+              console.error("[relay] closing superseded instance socket failed:", err);
+            }
+          }
           this.deps.onStatusChange?.(authed.instanceId, authed.accountId, true);
         }
         return;
@@ -88,17 +99,21 @@ export class InstanceGateway {
     });
 
     socket.on("close", () => {
-      if (authed) {
-        this.connections.delete(authed.instanceId);
-        for (const [id, p] of this.pending) {
-          if (p.instanceId === authed.instanceId) {
-            clearTimeout(p.timer);
-            this.pending.delete(id);
-            p.reject(new Error("instance-offline"));
-          }
+      if (!authed) return;
+      // Only the socket that currently owns the map entry may take the instance
+      // offline. A superseded socket's late close would otherwise evict the NEW
+      // connection and reject its in-flight requests.
+      const current = this.connections.get(authed.instanceId);
+      if (current?.socket !== socket) return;
+      this.connections.delete(authed.instanceId);
+      for (const [id, p] of this.pending) {
+        if (p.instanceId === authed.instanceId) {
+          clearTimeout(p.timer);
+          this.pending.delete(id);
+          p.reject(new Error("instance-offline"));
         }
-        this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
       }
+      this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
     });
   }
 
