@@ -11,6 +11,7 @@ import {
 
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
+import { startHeartbeat } from "./heartbeat.js";
 
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
@@ -18,14 +19,20 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export interface GatewaySocket {
   send(data: string): void;
   close(code?: number, reason?: string): void;
+  /** Optional (real `ws` sockets have them): enables the keepalive heartbeat. */
+  ping?(): void;
+  terminate?(): void;
   on(event: "message", listener: (data: unknown) => void): unknown;
   on(event: "close", listener: () => void): unknown;
+  on(event: "pong", listener: () => void): unknown;
 }
 
 export interface InstanceGatewayDeps {
   instances: Pick<InstanceStore, "redeemPairingToken" | "registerInstanceForAccount" | "verifyCredential" | "touch">;
   accounts: Pick<AccountStore, "resolveLoginToken">;
   requestTimeoutMs?: number;
+  /** Keepalive ping cadence; overridable for tests. Defaults to HEARTBEAT_INTERVAL_MS. */
+  heartbeatIntervalMs?: number;
   onEvent?: (instanceId: string, accountId: string, envelope: RelayEnvelope) => void;
   onStatusChange?: (instanceId: string, accountId: string, online: boolean) => void;
 }
@@ -50,56 +57,90 @@ export class InstanceGateway {
 
   handleConnection(socket: GatewaySocket): void {
     let authed: { instanceId: string; accountId: string } | null = null;
+    startHeartbeat(socket, this.deps.heartbeatIntervalMs);
 
     socket.on("message", (data) => {
-      const decoded = decodeEnvelope(String(data));
-      if (!decoded.ok) {
-        socket.send(encodeEnvelope({
-          protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "relay.protocol-error",
-          payload: errorPayload(decoded.error, decoded.detail ?? "invalid envelope"),
-        }));
-        if (!authed) socket.close(4400, decoded.error);
-        return;
-      }
-      const envelope = decoded.envelope;
-
-      if (!authed) {
-        authed = this.handleHandshake(socket, envelope);
-        if (authed) {
-          this.connections.set(authed.instanceId, { socket, accountId: authed.accountId });
-          this.deps.onStatusChange?.(authed.instanceId, authed.accountId, true);
-        }
-        return;
-      }
-
-      if (envelope.kind === "res" && envelope.id) {
-        const waiting = this.pending.get(envelope.id);
-        if (waiting) {
-          clearTimeout(waiting.timer);
-          this.pending.delete(envelope.id);
-          waiting.resolve(envelope.payload);
-        }
-        return;
-      }
-      if (envelope.kind === "event") {
-        this.deps.instances.touch(authed.instanceId);
-        this.deps.onEvent?.(authed.instanceId, authed.accountId, envelope);
+      // A single bad frame (or a throwing onEvent consumer, e.g. a DB write) must
+      // not propagate out of the listener and tear down the whole connection.
+      try {
+        this.handleMessage(socket, data, authed, (identity) => {
+          authed = identity;
+        });
+      } catch (err) {
+        console.error("[relay] instance gateway message handling failed:", err);
       }
     });
 
     socket.on("close", () => {
-      if (authed) {
-        this.connections.delete(authed.instanceId);
-        for (const [id, p] of this.pending) {
-          if (p.instanceId === authed.instanceId) {
-            clearTimeout(p.timer);
-            this.pending.delete(id);
-            p.reject(new Error("instance-offline"));
+      if (!authed) return;
+      // Only the socket that currently owns the map entry may take the instance
+      // offline. A superseded socket's late close (see handleMessage) would
+      // otherwise evict the NEW connection and reject its in-flight requests.
+      const current = this.connections.get(authed.instanceId);
+      if (current?.socket !== socket) return;
+      this.connections.delete(authed.instanceId);
+      for (const [id, p] of this.pending) {
+        if (p.instanceId === authed.instanceId) {
+          clearTimeout(p.timer);
+          this.pending.delete(id);
+          p.reject(new Error("instance-offline"));
+        }
+      }
+      this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
+    });
+  }
+
+  private handleMessage(
+    socket: GatewaySocket,
+    data: unknown,
+    authed: { instanceId: string; accountId: string } | null,
+    setAuthed: (identity: { instanceId: string; accountId: string }) => void,
+  ): void {
+    const decoded = decodeEnvelope(String(data));
+    if (!decoded.ok) {
+      socket.send(encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "relay.protocol-error",
+        payload: errorPayload(decoded.error, decoded.detail ?? "invalid envelope"),
+      }));
+      if (!authed) socket.close(4400, decoded.error);
+      return;
+    }
+    const envelope = decoded.envelope;
+
+    if (!authed) {
+      const identity = this.handleHandshake(socket, envelope);
+      if (identity) {
+        setAuthed(identity);
+        // A reconnect can race the old (often half-open) socket: replace the map
+        // entry FIRST, then close the old socket, whose close handler no-ops
+        // because the entry no longer points at it.
+        const existing = this.connections.get(identity.instanceId);
+        this.connections.set(identity.instanceId, { socket, accountId: identity.accountId });
+        if (existing && existing.socket !== socket) {
+          try {
+            existing.socket.close(4409, "superseded");
+          } catch (err) {
+            console.error("[relay] closing superseded instance socket failed:", err);
           }
         }
-        this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
+        this.deps.onStatusChange?.(identity.instanceId, identity.accountId, true);
       }
-    });
+      return;
+    }
+
+    if (envelope.kind === "res" && envelope.id) {
+      const waiting = this.pending.get(envelope.id);
+      if (waiting) {
+        clearTimeout(waiting.timer);
+        this.pending.delete(envelope.id);
+        waiting.resolve(envelope.payload);
+      }
+      return;
+    }
+    if (envelope.kind === "event") {
+      this.deps.instances.touch(authed.instanceId);
+      this.deps.onEvent?.(authed.instanceId, authed.accountId, envelope);
+    }
   }
 
   /** Returns the authed identity, or null (after replying/closing) when the handshake fails. */

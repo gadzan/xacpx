@@ -23,12 +23,28 @@ export interface RelayClientOptions {
   onEvent?: (envelope: RelayEnvelope) => void;
   onReady?: () => void;
   reconnectDelaysMs?: number[];
+  /**
+   * Kill the socket when no inbound traffic (the hub pings every 30s) arrives
+   * within this window — detects half-open connections the connector would
+   * otherwise never notice. The resulting close runs the normal reconnect path.
+   */
+  livenessTimeoutMs?: number;
   createSocket?: (url: string) => WebSocket;
   logger?: AppLogger;
 }
 
 const DEFAULT_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
+/** 3x the hub's 30s heartbeat interval: tolerate two lost pings before declaring death. */
+const DEFAULT_LIVENESS_TIMEOUT_MS = 90_000;
 const HANDSHAKE_ID = "handshake-1";
+
+/**
+ * +-20% random jitter so a fleet of connectors dropped by the same hub restart
+ * does not reconnect in lockstep (thundering herd).
+ */
+export function applyReconnectJitter(baseMs: number, random: () => number = Math.random): number {
+  return Math.round(baseMs * (0.8 + random() * 0.4));
+}
 
 export class RelayClient {
   private socket: WebSocket | null = null;
@@ -64,18 +80,49 @@ export class RelayClient {
     this.socket = socket;
     this.ready = false;
 
-    socket.on("open", () => this.sendHandshake(socket));
-    socket.on("message", (data) => this.handleMessage(socket, String(data)));
+    // Liveness watchdog: the hub pings on a 30s cadence, so prolonged silence
+    // means the connection is half-open. terminate() forces the close event,
+    // which runs the normal reconnect path below. (`ws` answers pings with
+    // pongs automatically; we only need to notice their absence.)
+    let livenessTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearLiveness = () => {
+      if (livenessTimer) clearTimeout(livenessTimer);
+      livenessTimer = null;
+    };
+    const armLiveness = () => {
+      clearLiveness();
+      livenessTimer = setTimeout(() => {
+        void this.options.logger?.error(
+          "relay.connection_stalled",
+          "no traffic from relay within the liveness window; terminating half-open socket",
+          {},
+        );
+        if (typeof socket.terminate === "function") socket.terminate();
+        else socket.close();
+      }, this.options.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS);
+      (livenessTimer as unknown as { unref?: () => void }).unref?.();
+    };
+
+    socket.on("open", () => {
+      armLiveness();
+      this.sendHandshake(socket);
+    });
+    socket.on("ping", armLiveness);
+    socket.on("message", (data) => {
+      armLiveness();
+      this.handleMessage(socket, String(data));
+    });
     socket.on("error", () => {
       // close event follows; reconnect is handled there
     });
     socket.on("close", () => {
+      clearLiveness();
       this.ready = false;
       if (this.stopped) return;
       const delays = this.options.reconnectDelaysMs ?? DEFAULT_DELAYS;
       const delay = delays[Math.min(this.attempts, delays.length - 1)] ?? 30_000;
       this.attempts += 1;
-      setTimeout(() => this.connect(), delay);
+      setTimeout(() => this.connect(), applyReconnectJitter(delay));
     });
   }
 
@@ -198,15 +245,35 @@ export class RelayClient {
 
     if (envelope.kind === "req") {
       const respond = (payload: unknown) => {
-        socket.send(
-          encodeEnvelope({
-            protocolVersion: RELAY_PROTOCOL_VERSION,
-            kind: "res",
-            id: envelope.id,
-            type: envelope.type,
-            payload,
-          }),
-        );
+        // Handlers may respond long after the request arrived (async control
+        // dispatch); the socket can be gone by then. Sending on a closed socket
+        // throws, which would surface as an unhandledRejection in callers like
+        // control-bridge's catch-path respond — drop the response instead.
+        if (socket.readyState !== WebSocket.OPEN) {
+          void this.options.logger?.debug(
+            "relay.response_dropped",
+            `dropping response for ${envelope.type}: socket is no longer open`,
+            { type: envelope.type, id: envelope.id ?? "" },
+          );
+          return;
+        }
+        try {
+          socket.send(
+            encodeEnvelope({
+              protocolVersion: RELAY_PROTOCOL_VERSION,
+              kind: "res",
+              id: envelope.id,
+              type: envelope.type,
+              payload,
+            }),
+          );
+        } catch (err) {
+          void this.options.logger?.error(
+            "relay.response_send_failed",
+            `sending response for ${envelope.type} failed: ${err instanceof Error ? err.message : String(err)}`,
+            { type: envelope.type },
+          );
+        }
       };
       this.options.onRequest(envelope, respond);
     }
