@@ -139,8 +139,6 @@ export default {
   },
   files: {
     title: "Files",
-    back: "Back",
-    backToList: "Back to file list",
     closeFile: "Close file",
     selectToBrowse: "Select a session to browse its workspace",
     searchPlaceholder: "Search files by name…",
@@ -351,7 +349,6 @@ export default {
     startNew: "Start new terminal",
     exited: "Terminal exited (code {code}).",
     error: "Could not open the terminal.",
-    close: "Close terminal",
     keybar: {
       show: "Show shortcut bar",
       hide: "Hide shortcut bar",
