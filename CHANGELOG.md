@@ -1,5 +1,19 @@
 # Changelog
 
+## [terminal batch beta] - 2026-07-05
+
+A four-package beta shipping two terminal features together: **Windows support** and **content replay across reload**. Versions: `@ganglion/xacpx-relay-protocol` 0.1.11, `@ganglion/xacpx` (core) 0.17.0-beta.4, `@ganglion/xacpx-channel-relay` 0.3.3-beta.4, `@ganglion/xacpx-relay` (hub) 0.9.12-beta.19 — all on the npm `next` dist-tag. Update the core/daemon and the hub, restart both, then hard-reload the dashboard.
+
+### Added
+
+- **The built-in terminal now works on Windows** (#134). The previous macOS/Linux-only gate is lifted. The shell is chosen as `pwsh` → Windows PowerShell → `cmd.exe` (scanning `PATH`), and a new cross-platform `terminal.shell` config overrides it explicitly. `SHELL` is deliberately ignored on Windows (git-bash sets it to an MSYS path that can't be spawned). Validated by a `windows-latest` CI leg that spawns a real ConPTY shell under Node.
+- **Terminals survive a browser reload** (#135). Reloading the dashboard now restores a terminal's scrollback and **reconnects to the same running shell** instead of opening a fresh one — the working directory, environment, and in-progress commands are still there. Each terminal keeps a bounded 256 KB output buffer on the backend; on reload the tab re-attaches and replays it. If the shell was already reaped (after ~15 min idle), the tab falls back to the "start new terminal" placeholder. Closing a terminal tab (or archiving/deleting its session) still kills the shell; only a reload keeps it alive.
+
+### Notes
+
+- Windows terminal real-machine validation is confirmatory (the CI leg already exercises the native ConPTY path); please still try it on a Windows instance.
+- Terminal replay is per-account: as before, a terminal's output is visible to your own account's dashboard sessions only.
+
 ## [relay 0.9.12-beta.18] - 2026-07-05
 
 A `@ganglion/xacpx-relay` (hub) beta that restores your dashboard workspace across a browser refresh (#132). UI-only (bundled `relay-web`), published to the npm `next` dist-tag. Update with `xacpx-relay update`, then restart the hub and hard-reload the dashboard.
