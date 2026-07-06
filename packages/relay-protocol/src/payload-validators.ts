@@ -58,107 +58,107 @@ const optArr = (v: unknown): boolean => v === undefined || Array.isArray(v);
 // --- session / agent / workspace ---
 const validateSessionsList: Validator<SessionsListPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) ? (o as SessionsListPayload) : null;
+  return o && isStr(o.chatKey) ? (o as unknown as SessionsListPayload) : null;
 };
 const validateSessionsCreate: Validator<SessionsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.agent) && isStr(o.workspace)
-    && optStr(o.agentSessionId) && optStr(o.model) ? (o as SessionsCreatePayload) : null;
+    && optStr(o.agentSessionId) && optStr(o.model) ? (o as unknown as SessionsCreatePayload) : null;
 };
 const validateSessionsNativeList: Validator<SessionsNativeListPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.agent) && isStr(o.workspace) ? (o as SessionsNativeListPayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.agent) && isStr(o.workspace) ? (o as unknown as SessionsNativeListPayload) : null;
 };
 const validateSessionsRemove: Validator<SessionsRemovePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as SessionsRemovePayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as unknown as SessionsRemovePayload) : null;
 };
 const validateSessionsArchive: Validator<SessionsArchivePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as SessionsArchivePayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as unknown as SessionsArchivePayload) : null;
 };
 const validateSessionsUnarchive: Validator<SessionsUnarchivePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as SessionsUnarchivePayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.alias) ? (o as unknown as SessionsUnarchivePayload) : null;
 };
 const validateSessionsRename: Validator<SessionsRenamePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.displayName) ? (o as SessionsRenamePayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.displayName) ? (o as unknown as SessionsRenamePayload) : null;
 };
 const validateWorkspacesCreate: Validator<WorkspacesCreatePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) && isStr(o.cwd) && optStr(o.description) ? (o as WorkspacesCreatePayload) : null;
+  return o && isStr(o.name) && isStr(o.cwd) && optStr(o.description) ? (o as unknown as WorkspacesCreatePayload) : null;
 };
 const validateAgentsCreate: Validator<AgentsCreatePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) && isStr(o.driver) ? (o as AgentsCreatePayload) : null;
+  return o && isStr(o.name) && isStr(o.driver) ? (o as unknown as AgentsCreatePayload) : null;
 };
 const validateAgentsRemove: Validator<AgentsRemovePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) ? (o as AgentsRemovePayload) : null;
+  return o && isStr(o.name) ? (o as unknown as AgentsRemovePayload) : null;
 };
 const validateWorkspacesRemove: Validator<WorkspacesRemovePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) ? (o as WorkspacesRemovePayload) : null;
+  return o && isStr(o.name) ? (o as unknown as WorkspacesRemovePayload) : null;
 };
 
 // --- prompt / command / queue ---
 const validatePrompt: Validator<PromptPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId)
-    && optBool(o.isOwner) && optArr(o.media) ? (o as PromptPayload) : null;
+    && optBool(o.isOwner) && optArr(o.media) ? (o as unknown as PromptPayload) : null;
 };
 const validatePromptCancel: Validator<PromptCancelPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as PromptCancelPayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as unknown as PromptCancelPayload) : null;
 };
 const validateQueueCancel: Validator<QueueCancelPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.itemId) ? (o as QueueCancelPayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.itemId) ? (o as unknown as QueueCancelPayload) : null;
 };
 const validateCommandExecute: Validator<CommandExecutePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner)
-    ? (o as CommandExecutePayload) : null;
+    ? (o as unknown as CommandExecutePayload) : null;
 };
 
 // --- scheduled ---
 const validateScheduledList: Validator<ScheduledListPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) ? (o as ScheduledListPayload) : null;
+  return o && isStr(o.chatKey) ? (o as unknown as ScheduledListPayload) : null;
 };
 const validateScheduledCreate: Validator<ScheduledCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.executeAt) && isStr(o.message)
-    ? (o as ScheduledCreatePayload) : null;
+    ? (o as unknown as ScheduledCreatePayload) : null;
 };
 const validateScheduledCancel: Validator<ScheduledCancelPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.id) && isStr(o.chatKey) ? (o as ScheduledCancelPayload) : null;
+  return o && isStr(o.id) && isStr(o.chatKey) ? (o as unknown as ScheduledCancelPayload) : null;
 };
 
 // --- orchestration ---
 const validateOrchestrationGet: Validator<OrchestrationGetPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.taskId) ? (o as OrchestrationGetPayload) : null;
+  return o && isStr(o.taskId) ? (o as unknown as OrchestrationGetPayload) : null;
 };
 const validateOrchestrationCancel: Validator<OrchestrationCancelPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.taskId) ? (o as OrchestrationCancelPayload) : null;
+  return o && isStr(o.taskId) ? (o as unknown as OrchestrationCancelPayload) : null;
 };
 
 // --- fs (read family: workspace + optional path) ---
 const validateFsList: Validator<FsListPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && optStr(o.path) ? (o as FsListPayload) : null;
+  return o && isStr(o.workspace) && optStr(o.path) ? (o as unknown as FsListPayload) : null;
 };
 const validateFsRead: Validator<FsReadPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && isStr(o.path) ? (o as FsReadPayload) : null;
+  return o && isStr(o.workspace) && isStr(o.path) ? (o as unknown as FsReadPayload) : null;
 };
 const validateFsDiff: Validator<FsDiffPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && optStr(o.path) ? (o as FsDiffPayload) : null;
+  return o && isStr(o.workspace) && optStr(o.path) ? (o as unknown as FsDiffPayload) : null;
 };
 const validateFsSearch: Validator<FsSearchPayload> = (p) => {
   const o = fields(p);
@@ -166,60 +166,60 @@ const validateFsSearch: Validator<FsSearchPayload> = (p) => {
     && (o.mode === undefined || o.mode === "name" || o.mode === "content")
     && optBool(o.matchCase) && optBool(o.wholeWord) && optBool(o.regex)
     && optStr(o.include) && optStr(o.exclude) && optStr(o.path)
-    ? (o as FsSearchPayload) : null;
+    ? (o as unknown as FsSearchPayload) : null;
 };
 
 // --- fs (mutating family) ---
 const validateFsCreate: Validator<FsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && isStr(o.path) && (o.kind === "file" || o.kind === "dir")
-    ? (o as FsCreatePayload) : null;
+    ? (o as unknown as FsCreatePayload) : null;
 };
 const validateFsRename: Validator<FsRenamePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && isStr(o.path) && isStr(o.newName) ? (o as FsRenamePayload) : null;
+  return o && isStr(o.workspace) && isStr(o.path) && isStr(o.newName) ? (o as unknown as FsRenamePayload) : null;
 };
 const validateFsDelete: Validator<FsDeletePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && isStr(o.path) ? (o as FsDeletePayload) : null;
+  return o && isStr(o.workspace) && isStr(o.path) ? (o as unknown as FsDeletePayload) : null;
 };
 const validateFsCopy: Validator<FsCopyPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && isStr(o.path) ? (o as FsCopyPayload) : null;
+  return o && isStr(o.workspace) && isStr(o.path) ? (o as unknown as FsCopyPayload) : null;
 };
 const validateFsDownload: Validator<FsDownloadPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.workspace) && isStr(o.path) ? (o as FsDownloadPayload) : null;
+  return o && isStr(o.workspace) && isStr(o.path) ? (o as unknown as FsDownloadPayload) : null;
 };
 const validateFsWrite: Validator<FsWritePayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.workspace) || !isStr(o.path) || !isStr(o.content)) return null;
   const exp = fields(o.expected);
   if (!exp || typeof exp.mtimeMs !== "number" || typeof exp.size !== "number") return null;
-  return o as FsWritePayload;
+  return o as unknown as FsWritePayload;
 };
 
 // --- model / terminal / upload ---
 const validateSessionModelGet: Validator<SessionModelGetPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as SessionModelGetPayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as unknown as SessionModelGetPayload) : null;
 };
 const validateSessionModelSet: Validator<SessionModelSetPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.modelId) ? (o as SessionModelSetPayload) : null;
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.modelId) ? (o as unknown as SessionModelSetPayload) : null;
 };
 const validateTerminalCreate: Validator<TerminalCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && optNum(o.cols) && optNum(o.rows)
-    ? (o as TerminalCreatePayload) : null;
+    ? (o as unknown as TerminalCreatePayload) : null;
 };
 const validateTerminalAttach: Validator<TerminalAttachPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.terminalId) ? (o as TerminalAttachPayload) : null;
+  return o && isStr(o.terminalId) ? (o as unknown as TerminalAttachPayload) : null;
 };
 const validateUpload: Validator<UploadPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? (o as UploadPayload) : null;
+  return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? (o as unknown as UploadPayload) : null;
 };
 
 /** The control-RPC message types that carry a client-supplied payload to validate.
@@ -288,6 +288,6 @@ export type PayloadFor<T extends ControlRpcType> =
 /** Type-safe replacement for `payload as XxxPayload`: validates shape, returns the bound
  *  payload type or null. */
 export function parseControlPayload<T extends ControlRpcType>(type: T, payload: unknown): PayloadFor<T> | null {
-  const validate = CONTROL_PAYLOAD_VALIDATORS[type] as Validator<PayloadFor<T>>;
+  const validate = CONTROL_PAYLOAD_VALIDATORS[type] as unknown as Validator<PayloadFor<T>>;
   return validate(payload);
 }
