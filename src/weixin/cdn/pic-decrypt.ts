@@ -83,7 +83,9 @@ function parseAesKey(aesKeyBase64: string, label: string): Buffer {
     // hex-encoded key: base64 → hex string → raw bytes
     return Buffer.from(decoded.toString("ascii"), "hex");
   }
-  const msg = `${label}: aes_key must decode to 16 raw bytes or 32-char hex string, got ${decoded.length} bytes (base64="${aesKeyBase64}")`;
+  // Never log/throw the raw aes_key itself (it is a per-media decryption key,
+  // even when malformed) — the decoded byte length is enough to diagnose.
+  const msg = `${label}: aes_key must decode to 16 raw bytes or 32-char hex string, got ${decoded.length} bytes`;
   weixinLog.error("weixin.cdn.pic_decrypt_failed", msg);
   throw new Error(msg);
 }

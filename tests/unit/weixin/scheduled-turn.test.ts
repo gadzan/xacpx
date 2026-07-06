@@ -375,5 +375,5 @@ test("single-chunk scheduled final with zero quota and no pending queue keeps th
 
   expect(sent).toEqual(["notice"]);
   const infoEvents = (logger as { info: ReturnType<typeof mock> }).info.mock.calls.map((c: unknown[]) => c[0]);
-  expect(infoEvents).toContain("weixin.message.scheduled_final_dropped");
+  expect(infoEvents).toContain("scheduled.final_dropped");
 });

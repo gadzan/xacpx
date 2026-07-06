@@ -86,7 +86,7 @@ test("throws QuotaDeferredError (not generic Error) when reserveMidSegment retur
   expect((captured as QuotaDeferredError).chatKey).toBe("wx:user");
   expect(sendMessage).not.toHaveBeenCalled();
   const deferredCall = logger.info.mock.calls.find(
-    (call) => call[0] === "weixin.message.coordinator_message_deferred",
+    (call) => call[0] === "orchestration.coordinator_message.deferred",
   );
   expect(deferredCall).toBeDefined();
 });

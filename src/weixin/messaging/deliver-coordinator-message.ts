@@ -27,7 +27,7 @@ export async function deliverCoordinatorMessage(
 ): Promise<void> {
   if (deps.reserveMidSegment && !deps.reserveMidSegment(normalizeWeixinUserIdFromChatKey(input.chatKey))) {
     await deps.logger.info(
-      "weixin.message.coordinator_message_deferred",
+      "orchestration.coordinator_message.deferred",
       "deferring coordinator message because outbound quota is exhausted",
       {
         coordinatorSession: input.coordinatorSession,
@@ -78,7 +78,7 @@ export async function deliverCoordinatorMessage(
       lastError = error;
       const described = describeWeixinSendError(error);
       await deps.logger.error(
-        "weixin.message.coordinator_message_send_failed",
+        "orchestration.coordinator_message.send_failed",
         "failed to deliver coordinator message through candidate weixin account",
         {
           coordinatorSession: input.coordinatorSession,
