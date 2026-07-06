@@ -3,7 +3,6 @@ import path from "node:path";
 
 import { ensureDirSync } from "../storage/ensure-dir.js";
 import { resolveStateDir } from "../storage/state-dir.js";
-import { logger } from "../util/logger.js";
 import { writePrivateFileSync } from "../../util/private-file.js";
 import { sanitizeString } from "../../util/sanitize.js";
 

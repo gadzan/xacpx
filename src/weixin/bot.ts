@@ -23,7 +23,6 @@ import type { PendingFinalChunk } from "./messaging/quota-manager.js";
 import type { RuntimeMediaStore } from "../channels/media-store.js";
 import type { PerfTracer } from "../perf/perf-tracer.js";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
-import { logger } from "./util/logger.js";
 import { t } from "../i18n/index.js";
 
 export type LoginOptions = {
