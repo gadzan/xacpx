@@ -18,6 +18,10 @@ import { permissionModeToFlag } from "../transport/permission-mode-flag";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
+import {
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  DEFAULT_SESSION_INIT_TIMEOUT_MS,
+} from "../transport/command-timeouts";
 import type {
   EnsureSessionProgress,
   MissingOptionalDepErrorData,
@@ -54,9 +58,6 @@ interface CommandResult {
   stdout: string;
   stderr: string;
 }
-
-/** Mirrors the acpx-cli transport's `sessionInitTimeoutMs ?? 120_000` default. */
-const DEFAULT_SESSION_INIT_TIMEOUT_MS = 120_000;
 
 export class CommandTimeoutError extends Error {
   constructor(readonly timeoutMs: number, command: string) {
@@ -129,6 +130,12 @@ interface BridgeRuntimeOptions {
   queueOwnerTtlSeconds?: number;
   /** Time bound for session-creation spawns (ensure/new/resume); defaults to 120s like acpx-cli. */
   sessionInitTimeoutMs?: number;
+  /**
+   * Time bound for one-shot management commands (sessions show/close, cancel,
+   * set-mode, set model, status, history, list). A hung acpx here would
+   * otherwise wedge the session's serial bridge lane forever. Defaults to 30s.
+   */
+  managementCommandTimeoutMs?: number;
   /** Test seam: clock used for the shared session-init deadline. */
   now?: () => number;
 }
@@ -186,7 +193,8 @@ export class BridgeRuntime {
           ...(includeFilterCwd && input.filterCwd ? ["--filter-cwd", input.filterCwd] : []),
           ...(input.cursor ? ["--cursor", input.cursor] : []),
         ], { format: "json" }));
-        return await this.run(spec.command, spec.args);
+        // Mirrors acpx-cli, which bounds sessions list by sessionInitTimeoutMs.
+        return await this.run(spec.command, spec.args, { timeoutMs: this.sessionInitTimeoutMs() });
       },
       formatError: (result) => result.stderr || result.stdout || `sessions list failed with exit code ${result.code}`,
       // Codex's session list leaks native subagent threads; hide them (fail-open).
@@ -233,6 +241,13 @@ export class BridgeRuntime {
       : DEFAULT_SESSION_INIT_TIMEOUT_MS;
   }
 
+  private managementCommandTimeoutMs(): number {
+    const value = this.options.managementCommandTimeoutMs;
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+      ? value
+      : DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS;
+  }
+
   async hasSession(input: {
     agent: string;
     agentCommand?: string;
@@ -244,7 +259,9 @@ export class BridgeRuntime {
       "show",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
 
     return { exists: result.code === 0 };
   }
@@ -264,10 +281,15 @@ export class BridgeRuntime {
       ["sessions", "history", "--name", input.name, "--tail", String(input.lines)],
     ];
 
+    // One shared deadline across all candidate invocations so a hung acpx
+    // bounds the whole method at managementCommandTimeoutMs, not per candidate.
+    const deadline = Date.now() + this.managementCommandTimeoutMs();
     let lastResult: CommandResult | undefined;
     for (const tailArgs of candidates) {
       const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tailArgs));
-      const result = await this.run(spawnSpec.command, spawnSpec.args);
+      const result = await this.run(spawnSpec.command, spawnSpec.args, {
+        timeoutMs: Math.max(deadline - Date.now(), 1),
+      });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
       }
@@ -470,6 +492,8 @@ export class BridgeRuntime {
     const toolEventMode: ToolEventMode =
       input.toolEventMode ?? (input.toolEvents === true ? "structured" : "text");
     try {
+      // Prompts are deliberately NOT bounded by a total-duration timeout:
+      // long agent turns are legitimate (see command-timeouts.ts).
       const result = onEvent
         ? await this.runPromptCommand(spawnSpec.command, spawnSpec.args, onEvent, {
             formatToolCalls,
@@ -507,7 +531,9 @@ export class BridgeRuntime {
       "show",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "sessions show failed");
     }
@@ -557,7 +583,9 @@ export class BridgeRuntime {
       input.name,
       input.modeId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set-mode failed");
@@ -581,7 +609,9 @@ export class BridgeRuntime {
       "model",
       input.modelId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set-model failed");
@@ -601,7 +631,9 @@ export class BridgeRuntime {
       "-s",
       input.name,
     ], { format: "json" }));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "status failed");
@@ -629,7 +661,9 @@ export class BridgeRuntime {
       "-s",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "cancel failed");
@@ -652,7 +686,9 @@ export class BridgeRuntime {
       "close",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args);
+    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+    });
 
     if (result.code === 0) {
       return {};

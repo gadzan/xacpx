@@ -495,7 +495,7 @@ test("ensureSession surfaces the configured total when a later step times out", 
   expect((caught as Error).message).toBe("session initialization timed out after 100s");
 });
 
-test("prompt and other session commands are not subject to the session init timeout", async () => {
+test("prompt is unbounded while management commands get the management timeout", async () => {
   const timeouts: Array<number | undefined> = [];
   const runtime = new BridgeRuntime(
     "acpx",
@@ -507,10 +507,64 @@ test("prompt and other session commands are not subject to the session init time
     { sessionInitTimeoutMs: 50 },
   );
 
+  // Long agent turns are legitimate: no total-duration timeout on prompt.
   await runtime.prompt({ agent: "codex", cwd: "/repo", name: "demo", text: "hello" });
+  // One-shot management commands must be bounded so a hung acpx can't wedge
+  // the session's serial bridge lane forever.
   await runtime.hasSession({ agent: "codex", cwd: "/repo", name: "demo" });
 
-  expect(timeouts).toEqual([undefined, undefined]);
+  expect(timeouts).toEqual([undefined, 30_000]);
+});
+
+test("management commands honor a configured managementCommandTimeoutMs", async () => {
+  const timeouts: Array<number | undefined> = [];
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async (_command, _args, options?: CommandRunnerOptions) => {
+      timeouts.push(options?.timeoutMs);
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    undefined,
+    { managementCommandTimeoutMs: 5_000 },
+  );
+
+  await runtime.hasSession({ agent: "codex", cwd: "/repo", name: "demo" });
+  await runtime.cancel({ agent: "codex", cwd: "/repo", name: "demo" });
+  await runtime.setMode({ agent: "codex", cwd: "/repo", name: "demo", modeId: "plan" });
+  await runtime.removeSession({ agent: "codex", cwd: "/repo", name: "demo" });
+
+  expect(timeouts).toEqual([5_000, 5_000, 5_000, 5_000]);
+});
+
+test("a hung management command kills the spawned tree and rejects with CommandTimeoutError", async () => {
+  // The fake child never emits "close" — equivalent to acpx wedging on
+  // `sessions show`. The management timeout must kill it and reject so the
+  // session's serial bridge lane unblocks.
+  const killed: number[] = [];
+  const spawnFn = (() => makeFakeSpawnChild({ pid: 777 })) as never;
+  const runtime = new BridgeRuntime(
+    "acpx",
+    (command, args, options?: CommandRunnerOptions) =>
+      spawnCapture(command, args, {
+        ...options,
+        spawnFn,
+        killProcessTreeFn: async (pid: number) => {
+          killed.push(pid);
+        },
+      }),
+    undefined,
+    { managementCommandTimeoutMs: 50 },
+  );
+
+  let caught: unknown;
+  try {
+    await runtime.hasSession({ agent: "codex", cwd: "/repo", name: "demo" });
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(caught).toBeInstanceOf(CommandTimeoutError);
+  expect(killed).toEqual([777]);
 });
 
 test("prompt starts queue owner with orchestration MCP identity", async () => {

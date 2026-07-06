@@ -267,6 +267,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
                 ...(typeof config.transport.sessionInitTimeoutMs === "number"
                   ? { sessionInitTimeoutMs: config.transport.sessionInitTimeoutMs }
                   : {}),
+                // A dropped (undecodable) bridge stdout line can be a lost
+                // response; the client-side request timeout unblocks the
+                // caller, but the corruption itself must be visible in logs.
+                onMalformedLine: (line) => {
+                  void logger.error("bridge.protocol.malformed_line", "dropped undecodable bridge output line", {
+                    line: line.length > 500 ? `${line.slice(0, 500)}…` : line,
+                  });
+                },
               }),
             ),
           ))

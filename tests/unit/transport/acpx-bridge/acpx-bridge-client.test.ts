@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 
 import {
   AcpxBridgeClient,
+  bridgeRequestTimeoutMs,
   buildBridgeSpawnEnv,
   buildBridgeSpawnSpec,
   manageBridgeChild,
@@ -331,4 +332,121 @@ describe("AcpxBridgeClient", () => {
     await promise;
     expect(events).toEqual([{ type: "prompt.plan", entries }]);
   });
+});
+
+// ── per-request timeout backstop ─────────────────────────────────────────────
+
+describe("per-request timeout", () => {
+  type ArmedTimer = { fn: () => void; ms: number };
+
+  function makeTimerSeams() {
+    const armed: ArmedTimer[] = [];
+    const cleared: unknown[] = [];
+    return {
+      armed,
+      cleared,
+      setTimeoutFn: (fn: () => void, ms: number) => {
+        const timer = { fn, ms };
+        armed.push(timer);
+        return timer;
+      },
+      clearTimeoutFn: (timer: unknown) => {
+        cleared.push(timer);
+      },
+    };
+  }
+
+  test("a management request whose response never arrives times out and rejects", async () => {
+    const seams = makeTimerSeams();
+    const client = new AcpxBridgeClient(() => {}, seams);
+
+    const pending = client.request("cancel", {});
+    expect(seams.armed).toHaveLength(1);
+    // Management subprocess bound (30s) + client-side grace (15s).
+    expect(seams.armed[0]!.ms).toBe(45_000);
+
+    seams.armed[0]!.fn();
+    await expect(pending).rejects.toThrow('bridge request "cancel" timed out after 45000ms');
+  });
+
+  test("a late response after the timeout fired is ignored (pending entry removed)", async () => {
+    const seams = makeTimerSeams();
+    const client = new AcpxBridgeClient(() => {}, seams);
+
+    const pending = client.request("hasSession", {});
+    seams.armed[0]!.fn();
+    await expect(pending).rejects.toThrow(/timed out/);
+
+    // The pending map entry is gone, so a straggler response must be a no-op.
+    expect(() => client.handleLine('{"id":"1","ok":true,"result":{"exists":true}}')).not.toThrow();
+  });
+
+  test("prompt requests never arm a timeout (long agent turns are legitimate)", async () => {
+    const seams = makeTimerSeams();
+    const client = new AcpxBridgeClient(() => {}, seams);
+
+    const pending = client.request("prompt", {});
+    expect(seams.armed).toHaveLength(0);
+
+    client.handleLine('{"id":"1","ok":true,"result":{"text":"done"}}');
+    await expect(pending).resolves.toEqual({ text: "done" });
+  });
+
+  test("ensureSession timeout derives from sessionInitTimeoutMs plus grace", () => {
+    const seams = makeTimerSeams();
+    const client = new AcpxBridgeClient(() => {}, { ...seams, sessionInitTimeoutMs: 1_000 });
+
+    void client.request("ensureSession", {}).catch(() => {});
+    expect(seams.armed[0]!.ms).toBe(16_000);
+  });
+
+  test("bridgeRequestTimeoutMs tiers match the subprocess-side bounds", () => {
+    expect(bridgeRequestTimeoutMs("prompt")).toBeUndefined();
+    expect(bridgeRequestTimeoutMs("ensureSession")).toBe(135_000);
+    expect(bridgeRequestTimeoutMs("resumeAgentSession")).toBe(135_000);
+    // Two list runs (--filter-cwd capability fallback), each sessionInit-bounded.
+    expect(bridgeRequestTimeoutMs("listAgentSessions")).toBe(255_000);
+    // Two sequential management commands (sessions show + close / owner kill).
+    expect(bridgeRequestTimeoutMs("deleteSession")).toBe(75_000);
+    expect(bridgeRequestTimeoutMs("freeWarmProcess")).toBe(75_000);
+    expect(bridgeRequestTimeoutMs("cancel")).toBe(45_000);
+    expect(bridgeRequestTimeoutMs("hasSession")).toBe(45_000);
+    expect(bridgeRequestTimeoutMs("setMode")).toBe(45_000);
+  });
+
+  test("a response arriving in time clears the armed timer", async () => {
+    const seams = makeTimerSeams();
+    const client = new AcpxBridgeClient(() => {}, seams);
+
+    const pending = client.request("hasSession", {});
+    client.handleLine('{"id":"1","ok":true,"result":{"exists":true}}');
+
+    await expect(pending).resolves.toEqual({ exists: true });
+    expect(seams.cleared).toEqual([seams.armed[0]]);
+  });
+
+  test("a bridge exit rejection clears the armed timer", async () => {
+    const seams = makeTimerSeams();
+    const client = new AcpxBridgeClient(() => {}, seams);
+
+    const pending = client.request("hasSession", {});
+    client.handleExit(new Error("bridge process exited before responding"));
+
+    await expect(pending).rejects.toThrow("bridge process exited before responding");
+    expect(seams.cleared).toEqual([seams.armed[0]]);
+  });
+});
+
+test("reports malformed bridge output lines through onMalformedLine", async () => {
+  const malformed: string[] = [];
+  const client = new AcpxBridgeClient(() => {}, {
+    onMalformedLine: (line) => malformed.push(line),
+  });
+
+  const pending = client.request("ping", {});
+  client.handleLine("garbled-not-json");
+  client.handleLine('{"id":"1","ok":true,"result":{}}');
+
+  await expect(pending).resolves.toEqual({});
+  expect(malformed).toEqual(["garbled-not-json"]);
 });

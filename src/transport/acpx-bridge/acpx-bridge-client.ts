@@ -16,6 +16,11 @@ import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
 import { getLocale } from "../../i18n";
 import { resolveDefaultXacpxCommand } from "../acpx-queue-owner-launcher";
+import {
+  BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  DEFAULT_SESSION_INIT_TIMEOUT_MS,
+} from "../command-timeouts";
 
 // `boolean | void` return mirrors Writable.write: `false` only signals
 // backpressure (the line is still queued and delivered), never failure.
@@ -38,12 +43,69 @@ interface PendingRequest {
   onEvent?: (event: BridgeEvent) => void;
 }
 
+export interface AcpxBridgeClientOptions {
+  /**
+   * Session-init budget the bridge subprocess runs with (XACPX_BRIDGE_SESSION_INIT_TIMEOUT_MS);
+   * used to derive the client-side timeout for ensure/resume/list requests.
+   */
+  sessionInitTimeoutMs?: number;
+  /**
+   * Called when the bridge emits a stdout line that is not valid JSON. Such a
+   * line is dropped — if it was a response, its request would hang without the
+   * per-request timeout — so at minimum it must be observable in logs.
+   */
+  onMalformedLine?: (line: string) => void;
+  /** Test seams for the per-request timeout timer. */
+  setTimeoutFn?: (fn: () => void, ms: number) => unknown;
+  clearTimeoutFn?: (timer: unknown) => void;
+}
+
+/**
+ * Client-side backstop timeout per bridge request. Each value sits
+ * BRIDGE_REQUEST_TIMEOUT_GRACE_MS above the subprocess-side bound for that
+ * method, so the subprocess timeout (better error, kills the hung process
+ * tree) fires first and this only catches lost or undecodable responses.
+ * `prompt` is unbounded: long streaming agent turns are legitimate.
+ */
+export function bridgeRequestTimeoutMs(
+  method: BridgeMethod,
+  sessionInitTimeoutMs: number = DEFAULT_SESSION_INIT_TIMEOUT_MS,
+): number | undefined {
+  switch (method) {
+    case "prompt":
+      return undefined;
+    case "ensureSession":
+    case "resumeAgentSession":
+      return sessionInitTimeoutMs + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
+    case "listAgentSessions":
+      // The subprocess may run the list twice (--filter-cwd capability
+      // fallback), each run bounded by sessionInitTimeoutMs like acpx-cli.
+      return 2 * sessionInitTimeoutMs + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
+    case "deleteSession":
+    case "freeWarmProcess":
+      // Two sequential management commands (sessions show + close/owner kill).
+      return 2 * DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
+    default:
+      return DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
+  }
+}
+
+const defaultSetTimeoutFn = (fn: () => void, ms: number): unknown => {
+  const timer = setTimeout(fn, ms);
+  // Never keep the host process alive just for a request-timeout backstop.
+  (timer as NodeJS.Timeout).unref?.();
+  return timer;
+};
+
 export class AcpxBridgeClient {
   private nextId = 1;
   private readonly pending = new Map<string, PendingRequest>();
   private terminalError: Error | null = null;
 
-  constructor(private readonly writeLine: WriteLine) {}
+  constructor(
+    private readonly writeLine: WriteLine,
+    private readonly options: AcpxBridgeClientOptions = {},
+  ) {}
 
   request<TResult>(
     method: BridgeMethod,
@@ -58,11 +120,38 @@ export class AcpxBridgeClient {
     this.nextId += 1;
 
     return awaitable<TResult>((resolve, reject) => {
+      const setTimeoutFn = this.options.setTimeoutFn ?? defaultSetTimeoutFn;
+      const clearTimeoutFn = this.options.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as NodeJS.Timeout));
+      let timer: unknown;
+      const clearTimer = () => {
+        if (timer !== undefined) {
+          clearTimeoutFn(timer);
+          timer = undefined;
+        }
+      };
       this.pending.set(id, {
-        resolve: (value) => resolve(value as TResult),
-        reject,
+        resolve: (value) => {
+          clearTimer();
+          resolve(value as TResult);
+        },
+        reject: (error) => {
+          clearTimer();
+          reject(error);
+        },
         onEvent,
       });
+
+      // Backstop: a bridge response that never arrives (subprocess wedged in a
+      // way its own timeouts don't cover, or the response line was dropped as
+      // malformed) must not hang this session's serial request lane forever.
+      const timeoutMs = bridgeRequestTimeoutMs(method, this.options.sessionInitTimeoutMs);
+      if (timeoutMs !== undefined) {
+        timer = setTimeoutFn(() => {
+          if (this.pending.delete(id)) {
+            reject(new Error(`bridge request "${method}" timed out after ${timeoutMs}ms`));
+          }
+        }, timeoutMs);
+      }
 
       try {
         // A `false` return only signals backpressure (the line is still
@@ -76,12 +165,14 @@ export class AcpxBridgeClient {
           }),
           (error) => {
             if (error && this.pending.delete(id)) {
+              clearTimer();
               reject(error);
             }
           },
         );
       } catch (error) {
         this.pending.delete(id);
+        clearTimer();
         reject(error);
       }
     });
@@ -92,6 +183,10 @@ export class AcpxBridgeClient {
     try {
       message = JSON.parse(line) as BridgeMessage;
     } catch {
+      // Dropped line: if it carried a response, the per-request timeout is the
+      // safety net that eventually unblocks the caller — but log it so a
+      // protocol corruption is diagnosable instead of silent.
+      this.options.onMalformedLine?.(line);
       return;
     }
 
@@ -214,6 +309,8 @@ interface SpawnedBridgeClientOptions {
   permissionPolicy?: string;
   queueOwnerTtlSeconds?: number;
   sessionInitTimeoutMs?: number;
+  /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
+  onMalformedLine?: (line: string) => void;
 }
 
 export function buildBridgeSpawnEnv(
@@ -278,7 +375,14 @@ export async function spawnAcpxBridgeClient(
     stdio: ["pipe", "pipe", "inherit"],
   });
 
-  const client = manageBridgeChild(child);
+  const client = manageBridgeChild(child, {
+    ...(typeof options.sessionInitTimeoutMs === "number"
+      && Number.isFinite(options.sessionInitTimeoutMs)
+      && options.sessionInitTimeoutMs > 0
+      ? { sessionInitTimeoutMs: options.sessionInitTimeoutMs }
+      : {}),
+    ...(options.onMalformedLine ? { onMalformedLine: options.onMalformedLine } : {}),
+  });
   await client.waitUntilReady();
   return client;
 }
@@ -300,9 +404,13 @@ export interface BridgeChildProcess {
 }
 
 /** Wire a spawned bridge child process into a managed bridge client. */
-export function manageBridgeChild(child: BridgeChildProcess): ManagedBridgeClient {
+export function manageBridgeChild(
+  child: BridgeChildProcess,
+  options: AcpxBridgeClientOptions = {},
+): ManagedBridgeClient {
   const client = new AcpxBridgeClient(
     (line, onWriteError) => child.stdin.write(line, onWriteError),
+    options,
   ) as ManagedBridgeClient;
 
   // Per Node stream semantics a failed stdin write is reported through the
