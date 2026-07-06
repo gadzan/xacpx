@@ -185,6 +185,10 @@ test("parseWebServerEvent rejects malformed session-history events", () => {
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", sessionAlias: "a", messages: [] } })).toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: 1, sessionAlias: "a", messages: [] } })).toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", messages: [] } })).toBeNull();
+  // per-row guards: direction must be "in"/"out" and text must be a string,
+  // or the web's history seed renders junk rows from a buggy connector.
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", sessionAlias: "a", messages: [{ direction: "sideways", text: "x" }] } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", sessionAlias: "a", messages: [{ direction: "in" }] } })).toBeNull();
 });
 
 test("parseWebServerEvent rejects a plan event without entries", () => {
