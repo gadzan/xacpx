@@ -29,6 +29,10 @@ function makeFakeControl(overrides: Record<string, unknown> = {}) {
       return { name, cwd, ...(description ? { description } : {}) };
     },
     prompt: async (input: unknown) => { record("prompt", input); return { ok: true, text: "done" }; },
+    fsWrite: async (workspace: string, path: string, content: string, expected: unknown) => {
+      record("fsWrite", { workspace, path, content, expected });
+      return { path, mtimeMs: 2, size: content.length };
+    },
     cancelTurn: (chatKey: string, alias: string) => { record("cancelTurn", { chatKey, alias }); return true; },
     cancelQueuedItem: (chatKey: string, alias: string, itemId: string) => {
       record("cancelQueuedItem", { chatKey, alias, itemId });
@@ -71,7 +75,7 @@ async function dispatch(bridge: ReturnType<typeof createControlBridge>, envelope
 test("sessions.list / prompt / command.execute dispatch and shape results", async () => {
   const { control, calls } = makeFakeControl();
   const bridge = createControlBridge(control as never);
-  expect(await dispatch(bridge, req(MSG.sessionsList, {}))).toEqual({
+  expect(await dispatch(bridge, req(MSG.sessionsList, { chatKey: "relay:acct" }))).toEqual({
     sessions: [{ alias: "a", agent: "claude", workspace: "/ws", transportSession: "t", running: false }],
   });
   const promptResult = await dispatch(bridge, req(MSG.prompt, {
@@ -204,9 +208,9 @@ test("control.upload dispatches to uploadFile and returns UploadResult", async (
   // happy path: all fields present → returns UploadResult
   expect(await dispatch(bridge, req(MSG.upload, { filename: "photo.png", content: "abc123", mimeType: "image/png" }))).toEqual(uploadResult);
 
-  // bad-request: missing mimeType
+  // missing mimeType fails wire-shape validation (mimeType is a required field) → invalid-payload
   expect(await dispatch(bridge, req(MSG.upload, { filename: "photo.png", content: "abc123" }))).toEqual({
-    error: { code: "bad-request", message: "filename, content and mimeType are required" },
+    error: { code: "invalid-payload", message: expect.stringContaining(MSG.upload) },
   });
 });
 
@@ -243,7 +247,7 @@ test("fs.search passes advanced search options through to control.searchWorkspac
   }]]);
 });
 
-test("fs.search returns bad-request when workspace is missing", async () => {
+test("fs.search rejects a missing workspace (required wire field) as invalid-payload", async () => {
   const { control, calls } = makeFakeControl({
     searchWorkspace: async (workspace: string, opts: unknown) => {
       calls.searchWorkspace ??= [];
@@ -253,7 +257,7 @@ test("fs.search returns bad-request when workspace is missing", async () => {
   });
   const bridge = createControlBridge(control as never);
   expect(await dispatch(bridge, req(MSG.fsSearch, { query: "x" }))).toEqual({
-    error: { code: "bad-request", message: "workspace is required" },
+    error: { code: "invalid-payload", message: expect.stringContaining(MSG.fsSearch) },
   });
   expect(calls.searchWorkspace).toBeUndefined();
 });
@@ -273,7 +277,7 @@ test("unknown type and thrown errors become error payloads", async () => {
   const broken = { ...control, listSessions: () => { throw new Error("boom"); } };
   const bridge = createControlBridge(broken as never);
   expect(await dispatch(bridge, req("control.nope", {}))).toEqual({ error: { code: "unknown-type", message: "unsupported rpc type: control.nope" } });
-  expect(await dispatch(bridge, req(MSG.sessionsList, {}))).toEqual({ error: { code: "internal", message: "boom" } });
+  expect(await dispatch(bridge, req(MSG.sessionsList, { chatKey: "relay:acct" }))).toEqual({ error: { code: "internal", message: "boom" } });
 });
 
 test("subscribeControlEvents forwards events and unsubscribes", () => {
@@ -364,10 +368,38 @@ test("terminal.attach RPC forwards to attachTerminal and returns its result", as
   expect((control.attachTerminal as ReturnType<typeof mock>).mock.calls[0]).toEqual(["t1"]);
 });
 
-test("terminal.attach RPC without terminalId returns bad-request", async () => {
+test("terminal.attach RPC without terminalId is rejected as invalid-payload (terminalId is a required wire field)", async () => {
   const { control } = makeFakeControl({ attachTerminal: mock(() => ({ ok: false })) });
   const bridge = createControlBridge(control as never);
-  expect(await dispatch(bridge, req(MSG.terminalAttach, {}))).toEqual({ error: { code: "bad-request", message: "terminalId is required" } });
+  expect(await dispatch(bridge, req(MSG.terminalAttach, {}))).toEqual({
+    error: { code: "invalid-payload", message: expect.stringContaining(MSG.terminalAttach) },
+  });
+  expect((control.attachTerminal as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
+test("boundary A: malformed fsWrite is rejected and never touches the filesystem", async () => {
+  const { control, calls } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  // missing `content` and `expected` → invalid shape
+  const result = await dispatch(bridge, req(MSG.fsWrite, { workspace: "home", path: "a.txt" }));
+  expect(result).toEqual({ error: { code: "invalid-payload", message: expect.stringContaining(MSG.fsWrite) } });
+  expect(calls.fsWrite).toBeUndefined();
+});
+
+test("boundary A: malformed prompt is rejected and control.prompt is never called", async () => {
+  const { control, calls } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  const result = await dispatch(bridge, req(MSG.prompt, { chatKey: "relay:a1", sessionAlias: "s" /* no text/senderId */ }));
+  expect(result).toEqual({ error: { code: "invalid-payload", message: expect.stringContaining(MSG.prompt) } });
+  expect(calls.prompt).toBeUndefined();
+});
+
+test("boundary A: a well-formed prompt still dispatches to control.prompt", async () => {
+  const { control, calls } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  const result = await dispatch(bridge, req(MSG.prompt, { chatKey: "relay:a1", sessionAlias: "s", text: "hi", senderId: "u" }));
+  expect(result).toEqual({ ok: true, text: "done" });
+  expect(calls.prompt?.length).toBe(1);
 });
 
 // ── connector-side RPC dispatch timeout ──────────────────────────────────────

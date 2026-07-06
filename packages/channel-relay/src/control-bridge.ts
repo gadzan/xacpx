@@ -1,43 +1,11 @@
 import {
   MSG,
   errorPayload,
-  type CommandExecutePayload,
-  type FsDiffPayload,
-  type FsListPayload,
-  type FsReadPayload,
-  type FsSearchPayload,
-  type FsCreatePayload,
-  type FsRenamePayload,
-  type FsDeletePayload,
-  type FsCopyPayload,
-  type FsWritePayload,
-  type FsDownloadPayload,
-  type SessionModelGetPayload,
-  type SessionModelSetPayload,
-  type OrchestrationCancelPayload,
-  type OrchestrationGetPayload,
+  parseControlPayload,
   type OrchestrationTaskDto,
-  type PromptCancelPayload,
-  type PromptPayload,
-  type QueueCancelPayload,
   type RelayEnvelope,
-  type ScheduledCancelPayload,
-  type ScheduledCreatePayload,
-  type ScheduledListPayload,
   type ScheduledTaskDto,
   type SessionHistoryRowDto,
-  type AgentsCreatePayload,
-  type AgentsRemovePayload,
-  type SessionsCreatePayload,
-  type SessionsListPayload,
-  type SessionsNativeListPayload,
-  type SessionsRemovePayload,
-  type SessionsArchivePayload,
-  type SessionsUnarchivePayload,
-  type SessionsRenamePayload,
-  type UploadPayload,
-  type WorkspacesCreatePayload,
-  type WorkspacesRemovePayload,
 } from "@ganglion/xacpx-relay-protocol";
 import type { ControlService } from "xacpx/plugin-api";
 import { toolUseEventToStepDto } from "./tool-presentation";
@@ -152,33 +120,40 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
   const payload = envelope.payload;
   switch (envelope.type) {
     case MSG.sessionsList: {
-      const input = payload as SessionsListPayload;
+      const input = parseControlPayload(MSG.sessionsList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsList}: malformed payload`);
       return { sessions: control.listSessions(input.chatKey) }; // ControlSessionInfo is field-identical to SessionDto
     }
     case MSG.sessionsCreate: {
-      const input = payload as SessionsCreatePayload;
+      const input = parseControlPayload(MSG.sessionsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsCreate}: malformed payload`);
       return await control.createSession(input.chatKey, input.alias, input.agent, input.workspace, input.agentSessionId, input.model);
     }
     case MSG.sessionsNativeList: {
-      const input = payload as SessionsNativeListPayload;
+      const input = parseControlPayload(MSG.sessionsNativeList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsNativeList}: malformed payload`);
       return { sessions: await control.listNativeSessions(input.chatKey, input.agent, input.workspace) };
     }
     case MSG.sessionsRemove: {
-      const input = payload as SessionsRemovePayload;
+      const input = parseControlPayload(MSG.sessionsRemove, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsRemove}: malformed payload`);
       return await control.removeSession(input.chatKey, input.alias);
     }
     case MSG.sessionsArchive: {
-      const input = payload as SessionsArchivePayload;
+      const input = parseControlPayload(MSG.sessionsArchive, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsArchive}: malformed payload`);
       await control.archiveSession(input.chatKey, input.alias);
       return {};
     }
     case MSG.sessionsUnarchive: {
-      const input = payload as SessionsUnarchivePayload;
+      const input = parseControlPayload(MSG.sessionsUnarchive, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsUnarchive}: malformed payload`);
       await control.unarchiveSession(input.chatKey, input.alias);
       return {};
     }
     case MSG.sessionsRename: {
-      const input = payload as SessionsRenamePayload;
+      const input = parseControlPayload(MSG.sessionsRename, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionsRename}: malformed payload`);
       if (!input.alias) return errorPayload("bad-request", "alias is required");
       await control.setSessionDisplayName(input.chatKey, input.alias, input.displayName ?? "");
       return { ok: true };
@@ -188,7 +163,8 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     case MSG.workspacesList:
       return { workspaces: control.listWorkspaces() };
     case MSG.workspacesCreate: {
-      const input = payload as WorkspacesCreatePayload;
+      const input = parseControlPayload(MSG.workspacesCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.workspacesCreate}: malformed payload`);
       const name = typeof input.name === "string" ? input.name.trim() : "";
       const cwd = typeof input.cwd === "string" ? input.cwd.trim() : "";
       if (!name || !cwd) return errorPayload("bad-request", "workspace name and cwd are required");
@@ -197,46 +173,57 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
     case MSG.agentsCatalog:
       return { agents: control.listAgentCatalog() };
     case MSG.agentsCreate: {
-      const input = payload as AgentsCreatePayload;
+      const input = parseControlPayload(MSG.agentsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.agentsCreate}: malformed payload`);
       const name = typeof input.name === "string" ? input.name.trim() : "";
       const driver = typeof input.driver === "string" ? input.driver.trim() : "";
       if (!name || !driver) return errorPayload("bad-request", "agent name and driver are required");
       return { agent: await control.createAgent(name, driver) };
     }
     case MSG.agentsRemove: {
-      const input = payload as AgentsRemovePayload;
+      const input = parseControlPayload(MSG.agentsRemove, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.agentsRemove}: malformed payload`);
       const name = typeof input.name === "string" ? input.name.trim() : "";
       if (!name) return errorPayload("bad-request", "agent name is required");
       await control.removeAgent(name);
       return { ok: true };
     }
     case MSG.workspacesRemove: {
-      const input = payload as WorkspacesRemovePayload;
+      const input = parseControlPayload(MSG.workspacesRemove, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.workspacesRemove}: malformed payload`);
       const name = typeof input.name === "string" ? input.name.trim() : "";
       if (!name) return errorPayload("bad-request", "workspace name is required");
       await control.removeWorkspace(name);
       return { ok: true };
     }
-    case MSG.prompt:
-      return await control.prompt(payload as PromptPayload);
+    case MSG.prompt: {
+      const input = parseControlPayload(MSG.prompt, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.prompt}: malformed payload`);
+      return await control.prompt(input);
+    }
     case MSG.promptCancel: {
-      const input = payload as PromptCancelPayload;
+      const input = parseControlPayload(MSG.promptCancel, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.promptCancel}: malformed payload`);
       return { cancelled: control.cancelTurn(input.chatKey, input.sessionAlias) };
     }
     case MSG.queueCancel: {
-      const input = payload as QueueCancelPayload;
+      const input = parseControlPayload(MSG.queueCancel, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.queueCancel}: malformed payload`);
       return control.cancelQueuedItem(input.chatKey, input.sessionAlias, input.itemId);
     }
     case MSG.commandExecute: {
-      const input = payload as CommandExecutePayload;
+      const input = parseControlPayload(MSG.commandExecute, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.commandExecute}: malformed payload`);
       return { output: await control.executeCommand(input) };
     }
     case MSG.scheduledList: {
-      const input = payload as ScheduledListPayload;
+      const input = parseControlPayload(MSG.scheduledList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.scheduledList}: malformed payload`);
       return { tasks: control.listScheduledTasks(input.chatKey).map(scheduledTaskToDto) };
     }
     case MSG.scheduledCreate: {
-      const input = payload as ScheduledCreatePayload;
+      const input = parseControlPayload(MSG.scheduledCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.scheduledCreate}: malformed payload`);
       const ms = Date.parse(input.executeAt);
       if (Number.isNaN(ms)) return errorPayload("bad-request", "executeAt is not a valid ISO timestamp");
       const task = await control.createScheduledTask({
@@ -248,37 +235,44 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       return scheduledTaskToDto(task);
     }
     case MSG.scheduledCancel: {
-      const input = payload as ScheduledCancelPayload;
+      const input = parseControlPayload(MSG.scheduledCancel, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.scheduledCancel}: malformed payload`);
       return { cancelled: await control.cancelScheduledTask(input.id, input.chatKey) };
     }
     case MSG.orchestrationList:
       return { tasks: (await control.listOrchestrationTasks()).map(orchestrationTaskToDto) };
     case MSG.orchestrationGet: {
-      const input = payload as OrchestrationGetPayload;
+      const input = parseControlPayload(MSG.orchestrationGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.orchestrationGet}: malformed payload`);
       const task = await control.getOrchestrationTask(input.taskId);
       return { task: task ? orchestrationTaskToDto(task) : null };
     }
     case MSG.orchestrationCancel: {
-      const input = payload as OrchestrationCancelPayload;
+      const input = parseControlPayload(MSG.orchestrationCancel, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.orchestrationCancel}: malformed payload`);
       return orchestrationTaskToDto(await control.cancelOrchestrationTask({ taskId: input.taskId }));
     }
     case MSG.fsList: {
-      const input = payload as FsListPayload;
+      const input = parseControlPayload(MSG.fsList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.fsList}: malformed payload`);
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
       return await control.listDirectory(input.workspace, input.path); // DirListing ≅ FsListResult
     }
     case MSG.fsRead: {
-      const input = payload as FsReadPayload;
+      const input = parseControlPayload(MSG.fsRead, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.fsRead}: malformed payload`);
       if (!input.workspace || !input.path) return errorPayload("bad-request", "workspace and path are required");
       return await control.readWorkspaceFile(input.workspace, input.path); // FileContent ≅ FsReadResult
     }
     case MSG.fsDiff: {
-      const input = payload as FsDiffPayload;
+      const input = parseControlPayload(MSG.fsDiff, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.fsDiff}: malformed payload`);
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
       return await control.workspaceGitDiff(input.workspace, input.path); // WorkspaceDiff ≅ FsDiffResult
     }
     case MSG.fsSearch: {
-      const input = payload as FsSearchPayload;
+      const input = parseControlPayload(MSG.fsSearch, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.fsSearch}: malformed payload`);
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
       return await control.searchWorkspace(input.workspace, {
         query: input.query ?? "",
@@ -292,33 +286,39 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       }); // SearchResult ≅ FsSearchResult
     }
     case MSG.fsCreate: {
-      const i = payload as FsCreatePayload;
+      const i = parseControlPayload(MSG.fsCreate, payload);
+      if (!i) return errorPayload("invalid-payload", `${MSG.fsCreate}: malformed payload`);
       if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
       if (i.kind !== "file" && i.kind !== "dir") return errorPayload("bad-request", "kind must be file or dir");
       return await control.fsCreate(i.workspace, i.path, i.kind);
     }
     case MSG.fsRename: {
-      const i = payload as FsRenamePayload;
+      const i = parseControlPayload(MSG.fsRename, payload);
+      if (!i) return errorPayload("invalid-payload", `${MSG.fsRename}: malformed payload`);
       if (!i.workspace || !i.path || !i.newName) return errorPayload("bad-request", "workspace, path and newName are required");
       return await control.fsRename(i.workspace, i.path, i.newName);
     }
     case MSG.fsDelete: {
-      const i = payload as FsDeletePayload;
+      const i = parseControlPayload(MSG.fsDelete, payload);
+      if (!i) return errorPayload("invalid-payload", `${MSG.fsDelete}: malformed payload`);
       if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
       return await control.fsDelete(i.workspace, i.path);
     }
     case MSG.fsCopy: {
-      const i = payload as FsCopyPayload;
+      const i = parseControlPayload(MSG.fsCopy, payload);
+      if (!i) return errorPayload("invalid-payload", `${MSG.fsCopy}: malformed payload`);
       if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
       return await control.fsCopy(i.workspace, i.path);
     }
     case MSG.fsDownload: {
-      const i = payload as FsDownloadPayload;
+      const i = parseControlPayload(MSG.fsDownload, payload);
+      if (!i) return errorPayload("invalid-payload", `${MSG.fsDownload}: malformed payload`);
       if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
       return await control.fsDownload(i.workspace, i.path);
     }
     case MSG.fsWrite: {
-      const i = payload as FsWritePayload;
+      const i = parseControlPayload(MSG.fsWrite, payload);
+      if (!i) return errorPayload("invalid-payload", `${MSG.fsWrite}: malformed payload`);
       if (!i.workspace || !i.path) return errorPayload("bad-request", "workspace and path are required");
       if (typeof i.content !== "string") return errorPayload("bad-request", "content must be a string");
       if (!i.expected || typeof i.expected.mtimeMs !== "number" || typeof i.expected.size !== "number") {
@@ -327,28 +327,33 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       return await control.fsWrite(i.workspace, i.path, i.content, i.expected);
     }
     case MSG.sessionModelGet: {
-      const input = payload as SessionModelGetPayload;
+      const input = parseControlPayload(MSG.sessionModelGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionModelGet}: malformed payload`);
       if (!input.sessionAlias) return errorPayload("bad-request", "sessionAlias is required");
       return await control.getSessionModel(input.chatKey, input.sessionAlias); // ≅ SessionModelResult
     }
     case MSG.sessionModelSet: {
-      const input = payload as SessionModelSetPayload;
+      const input = parseControlPayload(MSG.sessionModelSet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionModelSet}: malformed payload`);
       if (!input.sessionAlias || !input.modelId) return errorPayload("bad-request", "sessionAlias and modelId are required");
       await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
       return { ok: true };
     }
     case MSG.terminalCreate: {
-      const input = payload as { chatKey: string; sessionAlias: string; cols?: number; rows?: number };
+      const input = parseControlPayload(MSG.terminalCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.terminalCreate}: malformed payload`);
       if (!input.sessionAlias) return errorPayload("bad-request", "sessionAlias is required");
       return await control.createTerminal(input.chatKey, input.sessionAlias, input.cols ?? 80, input.rows ?? 24);
     }
     case MSG.terminalAttach: {
-      const input = payload as { terminalId?: string };
+      const input = parseControlPayload(MSG.terminalAttach, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.terminalAttach}: malformed payload`);
       if (!input.terminalId) return errorPayload("bad-request", "terminalId is required");
       return control.attachTerminal(input.terminalId);
     }
     case MSG.upload: {
-      const input = payload as UploadPayload;
+      const input = parseControlPayload(MSG.upload, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.upload}: malformed payload`);
       if (!input.filename || !input.content || !input.mimeType) {
         return errorPayload("bad-request", "filename, content and mimeType are required");
       }
