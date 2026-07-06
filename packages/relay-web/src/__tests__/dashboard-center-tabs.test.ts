@@ -217,7 +217,7 @@ test("closing a terminal tab kills its PTY and clears the persisted id", async (
 });
 
 test("closing a FILE tab does not kill any terminal PTY", async () => {
-  const fileStub = { name: "FileViewer", template: '<div data-test="stub-file" />', emits: ["close", "back", "dirty-change"] };
+  const fileStub = { name: "FileViewer", template: '<div data-test="stub-file" />', emits: ["close", "dirty-change"] };
   const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, FileViewer: fileStub } } });
   await flushPromises();
   const key = selectSession();

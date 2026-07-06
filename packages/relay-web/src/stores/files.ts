@@ -53,7 +53,7 @@ export const useFilesStore = defineStore("files", () => {
   const loadingDirs = ref<Set<string>>(new Set());
   const hits = ref<FsSearchHitDto[]>([]);
   const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string }>({
-    mode: "name", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "",
+    mode: "content", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "",
   });
 
   function reset(): void {

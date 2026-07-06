@@ -22,9 +22,6 @@ describe("files browser i18n", () => {
     const w = mount(FileViewer, { props: { instanceId: "i1", workspace: "ws", path: "src/a.ts" }, global: { plugins: [pinia] } });
     await flushPromises();
     await w.vm.$nextTick();
-    // Back-to-list affordance shows "文件" (Files); desktop Back shows "返回".
-    expect(w.find('[data-test="fv-back-list"]').text()).toContain("文件");
-    expect(w.find('[data-test="fv-back"]').text()).toContain("返回");
     expect(w.find('[data-test="fv-close"]').attributes("aria-label")).toBe("关闭文件");
   });
 

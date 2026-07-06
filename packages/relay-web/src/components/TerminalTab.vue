@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
-import { ArrowLeft, Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
+import { Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
 import { useTerminalStore } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
@@ -10,7 +10,9 @@ import { loadTerminalId, saveTerminalId, clearTerminalId } from "../lib/terminal
 const props = withDefaults(defineProps<{ instanceId: string; sessionAlias: string; autostart?: boolean }>(), {
   autostart: true,
 });
-const emit = defineEmits<{ close: [] }>();
+// A terminal tab is closed from the center tab strip; the parent routes @close to
+// requestCloseTab (which kills the PTY). Declared here, never emitted internally.
+defineEmits<{ close: [] }>();
 const terminals = useTerminalStore();
 const theme = useThemeStore();
 const sessionKey = computed(() => makeSessionKey(props.instanceId, props.sessionAlias));
@@ -396,10 +398,6 @@ onBeforeUnmount(() => {
        :style="keyboardInset ? { paddingBottom: `${keyboardInset}px` } : undefined">
     <!-- header -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
-      <button data-test="term-close" :aria-label="$t('terminal.close')"
-              class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="emit('close')"><ArrowLeft :size="14" class="shrink-0" />{{ $t("terminal.title") }}</button>
-      <span class="h-4 w-px bg-border" aria-hidden="true" />
       <span class="min-w-0 truncate font-mono text-[12.5px] text-fg">{{ props.sessionAlias }}</span>
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <button data-test="toggle-keybar"

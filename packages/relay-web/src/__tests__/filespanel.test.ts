@@ -92,6 +92,8 @@ describe("FilesPanel navigation rail", () => {
 
   it("search placeholder tracks the active mode (name vs content)", async () => {
     const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    files.searchOpts.mode = "name"; // start from name mode; default is now content
     await w.vm.$nextTick();
     const namePh = w.find('[data-test="fs-search"]').attributes("placeholder");
     await w.find('[data-test="search-mode-content"]').trigger("click");
@@ -285,6 +287,7 @@ describe("FilesPanel center-tab routing", () => {
     const centerTabs = useCenterTabsStore();
     vi.spyOn(files, "search").mockResolvedValue();
     const openFile = vi.spyOn(centerTabs, "openFile");
+    files.searchOpts.mode = "name"; // this case exercises the name-mode flat result list
     files.query = "foo";
     files.results = ["src/foo.ts"] as never;
     await w.vm.$nextTick();
