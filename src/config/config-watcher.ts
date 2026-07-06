@@ -8,7 +8,14 @@ export interface ConfigWatcherOptions {
   configPath: string;
   /** Fired (debounced) when the config file is created, replaced, or modified. */
   onChange: () => void;
-  /** Debounce window to coalesce one logical save's burst of fs events. Default 250ms. */
+  /**
+   * Debounce window to coalesce one logical save's burst of fs events.
+   * Default 100ms: since the command router no longer reloads config per
+   * message, this watcher is the only path for out-of-band edits (ownerIds!)
+   * to reach a running daemon — the window must stay well under a human
+   * message round-trip so an edit is live by the next message. 100ms is
+   * still ample to coalesce write-file-atomic's temp-create/rename burst.
+   */
   debounceMs?: number;
   logger?: AppLogger;
   /** Injection seam for tests; defaults to node:fs `watch`. */
@@ -38,7 +45,7 @@ export interface ConfigWatcher {
  * pre-existing "restart to pick up CLI edits" behavior.
  */
 export function startConfigWatcher(options: ConfigWatcherOptions): ConfigWatcher {
-  const { configPath, onChange, debounceMs = 250, logger } = options;
+  const { configPath, onChange, debounceMs = 100, logger } = options;
   const watchFactory = options.watchFactory ?? watch;
   const dir = dirname(configPath);
   const target = basename(configPath);

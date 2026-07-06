@@ -62,7 +62,9 @@ test("emits perf marks for prompt transport lifecycle", async () => {
   await router.handle("wx:user", "hello", async () => {}, undefined, undefined, undefined, undefined, undefined, undefined, undefined, perfSpan);
 
   expect(marks.map((m) => m.event)).toContain("router.authorized");
-  expect(marks.map((m) => m.event)).toContain("router.config_refreshed");
+  // No per-message config reload: out-of-band edits arrive via the config
+  // watcher (main.ts), so the router must not read the store on this path.
+  expect(marks.map((m) => m.event)).not.toContain("router.config_refreshed");
   expect(marks.map((m) => m.event)).toContain("session.ready");
   expect(marks.map((m) => m.event)).toContain("transport.prompt_dispatched");
   expect(marks.filter((m) => m.event === "transport.first_chunk")).toHaveLength(1);
