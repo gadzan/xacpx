@@ -60,57 +60,22 @@ export class InstanceGateway {
     startHeartbeat(socket, this.deps.heartbeatIntervalMs);
 
     socket.on("message", (data) => {
-      const decoded = decodeEnvelope(String(data));
-      if (!decoded.ok) {
-        socket.send(encodeEnvelope({
-          protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "relay.protocol-error",
-          payload: errorPayload(decoded.error, decoded.detail ?? "invalid envelope"),
-        }));
-        if (!authed) socket.close(4400, decoded.error);
-        return;
-      }
-      const envelope = decoded.envelope;
-
-      if (!authed) {
-        authed = this.handleHandshake(socket, envelope);
-        if (authed) {
-          // A reconnect can race the old (often half-open) socket: replace the map
-          // entry FIRST, then close the old socket, whose close handler no-ops
-          // because the entry no longer points at it.
-          const existing = this.connections.get(authed.instanceId);
-          this.connections.set(authed.instanceId, { socket, accountId: authed.accountId });
-          if (existing && existing.socket !== socket) {
-            try {
-              existing.socket.close(4409, "superseded");
-            } catch (err) {
-              console.error("[relay] closing superseded instance socket failed:", err);
-            }
-          }
-          this.deps.onStatusChange?.(authed.instanceId, authed.accountId, true);
-        }
-        return;
-      }
-
-      if (envelope.kind === "res" && envelope.id) {
-        const waiting = this.pending.get(envelope.id);
-        if (waiting) {
-          clearTimeout(waiting.timer);
-          this.pending.delete(envelope.id);
-          waiting.resolve(envelope.payload);
-        }
-        return;
-      }
-      if (envelope.kind === "event") {
-        this.deps.instances.touch(authed.instanceId);
-        this.deps.onEvent?.(authed.instanceId, authed.accountId, envelope);
+      // A single bad frame (or a throwing onEvent consumer, e.g. a DB write) must
+      // not propagate out of the listener and tear down the whole connection.
+      try {
+        this.handleMessage(socket, data, authed, (identity) => {
+          authed = identity;
+        });
+      } catch (err) {
+        console.error("[relay] instance gateway message handling failed:", err);
       }
     });
 
     socket.on("close", () => {
       if (!authed) return;
       // Only the socket that currently owns the map entry may take the instance
-      // offline. A superseded socket's late close would otherwise evict the NEW
-      // connection and reject its in-flight requests.
+      // offline. A superseded socket's late close (see handleMessage) would
+      // otherwise evict the NEW connection and reject its in-flight requests.
       const current = this.connections.get(authed.instanceId);
       if (current?.socket !== socket) return;
       this.connections.delete(authed.instanceId);
@@ -123,6 +88,59 @@ export class InstanceGateway {
       }
       this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
     });
+  }
+
+  private handleMessage(
+    socket: GatewaySocket,
+    data: unknown,
+    authed: { instanceId: string; accountId: string } | null,
+    setAuthed: (identity: { instanceId: string; accountId: string }) => void,
+  ): void {
+    const decoded = decodeEnvelope(String(data));
+    if (!decoded.ok) {
+      socket.send(encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "relay.protocol-error",
+        payload: errorPayload(decoded.error, decoded.detail ?? "invalid envelope"),
+      }));
+      if (!authed) socket.close(4400, decoded.error);
+      return;
+    }
+    const envelope = decoded.envelope;
+
+    if (!authed) {
+      const identity = this.handleHandshake(socket, envelope);
+      if (identity) {
+        setAuthed(identity);
+        // A reconnect can race the old (often half-open) socket: replace the map
+        // entry FIRST, then close the old socket, whose close handler no-ops
+        // because the entry no longer points at it.
+        const existing = this.connections.get(identity.instanceId);
+        this.connections.set(identity.instanceId, { socket, accountId: identity.accountId });
+        if (existing && existing.socket !== socket) {
+          try {
+            existing.socket.close(4409, "superseded");
+          } catch (err) {
+            console.error("[relay] closing superseded instance socket failed:", err);
+          }
+        }
+        this.deps.onStatusChange?.(identity.instanceId, identity.accountId, true);
+      }
+      return;
+    }
+
+    if (envelope.kind === "res" && envelope.id) {
+      const waiting = this.pending.get(envelope.id);
+      if (waiting) {
+        clearTimeout(waiting.timer);
+        this.pending.delete(envelope.id);
+        waiting.resolve(envelope.payload);
+      }
+      return;
+    }
+    if (envelope.kind === "event") {
+      this.deps.instances.touch(authed.instanceId);
+      this.deps.onEvent?.(authed.instanceId, authed.accountId, envelope);
+    }
   }
 
   /** Returns the authed identity, or null (after replying/closing) when the handshake fails. */
