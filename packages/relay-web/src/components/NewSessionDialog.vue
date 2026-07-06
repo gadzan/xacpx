@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertTriangle, ChevronDown } from "lucide-vue-next";
 import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
 import { fmtDateTime } from "../lib/format";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
@@ -14,6 +15,13 @@ const emit = defineEmits<{ created: [alias: string]; close: [] }>();
 const { t } = useI18n();
 const store = useInstancesStore();
 const inst = computed(() => store.byId(props.instanceId));
+
+// Accessibility (shared composable): trap focus inside the dialog, close on Esc, and
+// restore focus to whatever was focused before the dialog opened. The model combobox
+// swallows Escape itself (stopPropagation) while its popup is open, so Esc there only
+// closes the popup — a second Esc closes the dialog.
+const dialogEl = ref<HTMLElement | null>(null);
+useModalA11y(dialogEl, () => emit("close"));
 
 const alias = ref("");
 const agentValue = ref("");           // chosen agent NAME or un-configured driver
@@ -306,9 +314,10 @@ async function submit(): Promise<void> {
        off-canvas) instead of the viewport. -->
   <Teleport to="body">
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
-    <div class="w-full max-w-md rounded-xl border border-border bg-raised shadow-xl" data-test="new-session-dialog">
+    <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="new-session-title"
+         class="w-full max-w-md rounded-xl border border-border bg-raised shadow-xl focus:outline-none" data-test="new-session-dialog">
       <header class="flex items-center justify-between border-b border-border px-5 py-3">
-        <h2 class="text-sm font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted">· {{ instanceName }}</span></h2>
+        <h2 id="new-session-title" class="text-sm font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted">· {{ instanceName }}</span></h2>
         <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")' @click="emit('close')"><X :size="16" /></button>
       </header>
 
