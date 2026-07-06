@@ -2,12 +2,16 @@ import { encodeEnvelope, webEventEnvelope, type WebServerEvent } from "@ganglion
 
 import { startHeartbeat } from "./heartbeat.js";
 
+/** ws readyState OPEN (avoid importing the ws package for one constant). */
+const WS_OPEN = 1;
+
 export interface WebSocketLike {
   send(data: string): void;
   close?(code?: number, reason?: string): void;
   /** Optional (real `ws` sockets have them): enables the keepalive heartbeat. */
   ping?(): void;
   terminate?(): void;
+  readyState?: number;
   on(event: "close", listener: () => void): unknown;
   on(event: "pong", listener: () => void): unknown;
 }
@@ -38,6 +42,14 @@ export class WebGateway {
     const set = this.byAccount.get(accountId);
     if (!set) return;
     const data = encodeEnvelope(webEventEnvelope(event));
-    for (const socket of set) socket.send(data);
+    for (const socket of set) {
+      // One dead/throwing socket must not starve the remaining dashboards.
+      if (typeof socket.readyState === "number" && socket.readyState !== WS_OPEN) continue;
+      try {
+        socket.send(data);
+      } catch (err) {
+        console.error("[relay] web broadcast send failed:", err);
+      }
+    }
   }
 }
