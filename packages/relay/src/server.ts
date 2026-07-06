@@ -227,6 +227,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     sessionCommands: listSessionCommands,
     trustProxy: options.trustProxy,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
+    logger,
   });
   return { db, accounts, instances, messages, gateway, webGateway, app, close: () => db.close() };
 }

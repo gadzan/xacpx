@@ -33,10 +33,12 @@ export class WebGateway {
     const set = this.byAccount.get(accountId) ?? new Set<WebSocketLike>();
     set.add(socket);
     this.byAccount.set(accountId, set);
+    this.options.logger?.debug("relay.web.connected", "web client connected", { accountId });
     startHeartbeat(socket, this.options.heartbeatIntervalMs, undefined, this.options.logger);
     socket.on("close", () => {
       set.delete(socket);
       if (set.size === 0) this.byAccount.delete(accountId);
+      this.options.logger?.debug("relay.web.disconnected", "web client disconnected", { accountId });
     });
   }
 

@@ -110,6 +110,12 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       ? `instance ws :${running.wsPort}`
       : `instance gateway: merged on http :${running.httpPort} (path / or /gateway)`;
     io.print(`xacpx-relay listening: http :${running.httpPort}, ${gatewayDesc}, db ${startOpts.dbPath}, dashboard: ${startOpts.webRoot ?? "(none)"}`);
+    logger.info("relay.start", "relay hub listening", {
+      httpPort: running.httpPort,
+      wsPort: running.wsPort,
+      dbPath: startOpts.dbPath,
+      dashboard: Boolean(startOpts.webRoot),
+    });
     return await new Promise<number>((resolve) => {
       const shutdown = () => {
         void running.close().then(() => resolve(0));

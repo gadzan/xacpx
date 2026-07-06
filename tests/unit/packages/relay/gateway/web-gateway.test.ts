@@ -48,6 +48,24 @@ test("a throwing socket does not prevent delivery to the remaining sockets", () 
   expect(logs.some(([e]) => e === "relay.web.broadcast_failed")).toBe(true);
 });
 
+test("register logs relay.web.connected; the close listener logs relay.web.disconnected, both with accountId", () => {
+  const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const gw = new WebGateway({
+    logger: { debug: (e, m, c) => logs.push([e, m, c]), info: () => {}, error: () => {} },
+  });
+  const a = new FakeSocket();
+  gw.register("a1", a as never);
+
+  const connected = logs.find(([e]) => e === "relay.web.connected");
+  expect(connected).toBeDefined();
+  expect(connected?.[2]).toEqual({ accountId: "a1" });
+
+  a.close();
+  const disconnected = logs.find(([e]) => e === "relay.web.disconnected");
+  expect(disconnected).toBeDefined();
+  expect(disconnected?.[2]).toEqual({ accountId: "a1" });
+});
+
 test("non-open sockets are skipped; sockets without readyState still receive", () => {
   const gw = new WebGateway();
   const closing = new FakeSocket() as FakeSocket & { readyState: number };

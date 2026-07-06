@@ -7,6 +7,7 @@ import { MSG, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type Se
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
+import type { RelayLogger } from "../logging.js";
 import { clientIp } from "./client-ip.js";
 import { readRelayVersion, type UpdateCheck } from "../version.js";
 
@@ -36,6 +37,7 @@ export interface AppDeps {
   checkUpdate?: () => Promise<UpdateCheck>;
   trustProxy?: boolean;
   now?: () => Date;
+  logger?: RelayLogger;
 }
 
 const SESSION_COOKIE = "xrelay_session";
@@ -166,12 +168,14 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const ip = clientIp(c, trustProxy);
 
     if (isRateLimited(ip, nowMs)) {
+      deps.logger?.info("relay.login.rejected", "login rejected", { reason: "rate-limited", ip });
       return c.json({ error: "too-many-attempts" }, 429);
     }
 
     const r = deps.accounts.resolveLoginToken(body.token ?? "");
     if (!r) {
       recordFailure(ip, nowMs);
+      deps.logger?.info("relay.login.rejected", "login rejected", { reason: "invalid-token", ip });
       return c.json({ error: "invalid-token" }, 401);
     }
 
