@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import { draftKey, clearFileDraft } from "../lib/file-drafts";
+import { createDebouncedFlush } from "../lib/debounce-flush";
 
 export type CenterTab =
   // targetLine/targetRev: a scroll-to-line request (e.g. from a content-search hit). rev is
@@ -60,9 +61,15 @@ function persist(v: Record<string, SessionTabs>): void {
 
 export const useCenterTabsStore = defineStore("center-tabs", () => {
   const bySession = ref<Record<string, SessionTabs>>(hydrate());
-  // flush: "sync" — persistence must happen synchronously with the mutation (not on the next
-  // microtask/pre-render flush) so a page unload right after a mutation still sees it saved.
-  watch(bySession, (v) => persist(v), { deep: true, flush: "sync" });
+  // Persistence is debounced: the old `flush:"sync"` watcher JSON.stringify-ed EVERY
+  // session's tab set on each setDirty/tab-switch/reorder, synchronously in the mutation
+  // path. Now mutations only arm a 200ms trailing write; `pagehide` flushes any pending
+  // write synchronously, so a reload/close right after a mutation still sees it saved —
+  // the reload-restore semantics are preserved. (Microtasks drain before the pagehide
+  // task fires, so the pre-flush watcher below has always armed the timer by then.)
+  const persistDebounced = createDebouncedFlush(() => persist(bySession.value), 200);
+  watch(bySession, () => persistDebounced.schedule(), { deep: true });
+  window.addEventListener("pagehide", () => persistDebounced.flush());
 
   function tabsFor(key: string): CenterTab[] {
     return bySession.value[key]?.tabs ?? [];

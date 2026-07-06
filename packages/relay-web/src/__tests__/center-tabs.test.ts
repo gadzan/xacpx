@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { nextTick } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import { useCenterTabsStore, sessionKey, TAB_DROP_END } from "../stores/center-tabs";
 import { draftKey, loadFileDraft, saveFileDraft } from "../lib/file-drafts";
@@ -155,13 +156,61 @@ describe("center-tabs store", () => {
     expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(true);
   });
 
-  it("persists tab state to sessionStorage on mutation", () => {
-    const s = useCenterTabsStore();
-    s.openFile(K, "a.ts");
-    const raw = sessionStorage.getItem("xacpx.center-tabs.v1");
-    expect(raw).toBeTruthy();
-    expect(JSON.parse(raw!)[K].tabs.map((t: { id: string }) => t.id)).toEqual(["file:a.ts"]);
-    expect(JSON.parse(raw!)[K].activeId).toBe("file:a.ts");
+  it("persists tab state to sessionStorage after the debounce window", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = useCenterTabsStore();
+      s.openFile(K, "a.ts");
+      await nextTick(); // the (pre-flush) watcher arms the debounce
+      expect(sessionStorage.getItem("xacpx.center-tabs.v1")).toBeNull(); // not synchronous anymore
+      vi.advanceTimersByTime(200);
+      const raw = sessionStorage.getItem("xacpx.center-tabs.v1");
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw!)[K].tabs.map((t: { id: string }) => t.id)).toEqual(["file:a.ts"]);
+      expect(JSON.parse(raw!)[K].activeId).toBe("file:a.ts");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces a burst of mutations into a single persisted write", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      const s = useCenterTabsStore();
+      s.openFile(K, "a.ts");
+      await nextTick();
+      s.openFile(K, "b.ts");
+      s.setActive(K, "chat");
+      s.setDirty(K, "file:a.ts", true);
+      await nextTick();
+      vi.advanceTimersByTime(200);
+      const writes = spy.mock.calls.filter(([k]) => k === "xacpx.center-tabs.v1");
+      expect(writes.length).toBe(1); // one trailing write for the whole burst
+      const parsed = JSON.parse(writes[0][1])[K];
+      expect(parsed.tabs.map((t: { id: string }) => t.id)).toEqual(["file:a.ts", "file:b.ts"]);
+      expect(parsed.activeId).toBe("chat");
+      expect(parsed.tabs[0].dirty).toBe(true); // final state, nothing lost
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("pagehide flushes a pending write synchronously (reload right after a mutation restores it)", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = useCenterTabsStore();
+      s.openFile(K, "a.ts");
+      await nextTick(); // watcher armed, debounce still pending
+      expect(sessionStorage.getItem("xacpx.center-tabs.v1")).toBeNull();
+      window.dispatchEvent(new Event("pagehide"));
+      const raw = sessionStorage.getItem("xacpx.center-tabs.v1");
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw!)[K].activeId).toBe("file:a.ts");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hydrates tab state from sessionStorage on a fresh store", () => {
