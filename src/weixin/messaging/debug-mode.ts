@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { ensureDirSync } from "../storage/ensure-dir.js";
 import { resolveStateDir } from "../storage/state-dir.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 
 interface DebugModeState {
   accounts: Record<string, boolean>;
@@ -47,7 +47,10 @@ export function toggleDebugMode(accountId: string): boolean {
   try {
     saveState(state);
   } catch (err) {
-    logger.error(`debug-mode: failed to persist state: ${String(err)}`);
+    weixinLog.error("weixin.message.debug_mode_persist_failed", "debug-mode: failed to persist state", {
+      accountId,
+      error: String(err),
+    });
   }
   return next;
 }

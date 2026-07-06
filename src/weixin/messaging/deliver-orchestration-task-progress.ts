@@ -30,7 +30,7 @@ export async function deliverOrchestrationTaskProgress(
 
   if (deps.reserveMidSegment && !deps.reserveMidSegment(normalizeWeixinUserIdFromChatKey(task.chatKey))) {
     await deps.logger.info(
-      "orchestration.progress.deferred",
+      "weixin.message.task_progress_deferred",
       "task progress deferred due to outbound quota",
       {
         taskId: task.taskId,
@@ -70,7 +70,7 @@ export async function deliverOrchestrationTaskProgress(
       return;
     } catch (error) {
       await deps.logger.error(
-        "orchestration.progress.send_failed",
+        "weixin.message.task_progress_send_failed",
         "failed to send progress through candidate weixin account",
         {
           taskId: task.taskId,

@@ -22,7 +22,7 @@ export async function deliverOrchestrationTaskNotice(
 ): Promise<void> {
   if (!task.chatKey || !task.replyContextToken) {
     await deps.logger.debug(
-      "orchestration.notice.skipped",
+      "weixin.message.task_notice_skipped",
       "skipping task notice because notification context is incomplete",
       {
         taskId: task.taskId,
@@ -35,7 +35,7 @@ export async function deliverOrchestrationTaskNotice(
   const candidates = resolveOrchestrationNoticeAccountIds(task, deps.listAccountIds());
   if (candidates.length === 0) {
     await deps.logger.debug(
-      "orchestration.notice.skipped",
+      "weixin.message.task_notice_skipped",
       "skipping task notice because no weixin account is available",
       {
         taskId: task.taskId,
@@ -51,7 +51,7 @@ export async function deliverOrchestrationTaskNotice(
   // pending state so it gets retried after the next inbound resets quota).
   if (deps.reserveFinal && !deps.reserveFinal(normalizeWeixinUserIdFromChatKey(task.chatKey))) {
     await deps.logger.error(
-      "orchestration.notice.final_quota_exhausted",
+      "weixin.message.task_notice_final_quota_exhausted",
       "skipping task notice because final quota is exhausted; will retry on next inbound",
       { taskId: task.taskId, chatKey: task.chatKey },
     );
@@ -68,7 +68,7 @@ export async function deliverOrchestrationTaskNotice(
 
     if (!contextToken) {
       await deps.logger.debug(
-        "orchestration.notice.account_skipped",
+        "weixin.message.task_notice_account_skipped",
         "skipping task notice candidate because no context token is available for that account",
         {
           taskId: task.taskId,
@@ -83,7 +83,7 @@ export async function deliverOrchestrationTaskNotice(
       const account = deps.resolveAccount(candidateAccountId);
       if (!account.token) {
         await deps.logger.debug(
-          "orchestration.notice.account_skipped",
+          "weixin.message.task_notice_account_skipped",
           "skipping task notice candidate because the weixin account has no token",
           {
             taskId: task.taskId,
@@ -104,7 +104,7 @@ export async function deliverOrchestrationTaskNotice(
 
       if (candidateAccountId !== task.accountId && candidateAccountId !== task.deliveryAccountId) {
         await deps.logger.info(
-          "orchestration.notice.fallback",
+          "weixin.message.task_notice_fallback",
           "delivered task notice through fallback weixin account",
           {
             taskId: task.taskId,
@@ -117,7 +117,7 @@ export async function deliverOrchestrationTaskNotice(
     } catch (error) {
       lastError = error;
       await deps.logger.error(
-        "orchestration.notice.account_failed",
+        "weixin.message.task_notice_account_failed",
         "failed to deliver task notice through candidate weixin account",
         {
           taskId: task.taskId,

@@ -82,7 +82,7 @@ test("skips delivery when reserveMidSegment returns false and logs deferred even
 
   expect(sendMessage).not.toHaveBeenCalled();
   expect(logger.info).toHaveBeenCalledTimes(1);
-  expect(logger.info.mock.calls[0]?.[0]).toBe("orchestration.progress.deferred");
+  expect(logger.info.mock.calls[0]?.[0]).toBe("weixin.message.task_progress_deferred");
   expect(logger.info.mock.calls[0]?.[2]).toMatchObject({
     taskId: "task-quota",
     chatKey: "wx:user",

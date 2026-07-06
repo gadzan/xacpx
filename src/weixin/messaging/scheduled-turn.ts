@@ -77,7 +77,7 @@ export async function executeScheduledTurn(
     } catch (error) {
       lastNoticeError = error;
       await deps.logger.error(
-        "scheduled.notice_send_failed",
+        "weixin.message.scheduled_notice_send_failed",
         "failed to send scheduled notice",
         { chatKey: input.chatKey, accountId: candidateAccountId, error: String(error) },
       );
@@ -99,7 +99,7 @@ export async function executeScheduledTurn(
     deliveryAccountId = deliverableAccountId;
     deliveryContextToken = deliverableContextToken;
     await deps.logger.info(
-      "scheduled.notice_skipped",
+      "weixin.message.scheduled_notice_skipped",
       "scheduled trigger notice was not delivered; proceeding with agent turn",
       {
         chatKey: input.chatKey,
@@ -115,7 +115,7 @@ export async function executeScheduledTurn(
 
     // Normal prompt streaming already goes through QuotaGatedReplySink before
     // it invokes this reply callback. Do not reserve mid quota again here.
-    return await sendTextViaAvailableAccount(plainText, "scheduled.mid_send_failed");
+    return await sendTextViaAvailableAccount(plainText, "weixin.message.scheduled_mid_send_failed");
   };
 
   const sendReservedMidText = async (text: string): Promise<boolean> => {
@@ -124,14 +124,14 @@ export async function executeScheduledTurn(
 
     if (!deps.reserveMidSegment(quotaKey)) {
       await deps.logger.info(
-        "scheduled.mid_dropped",
+        "weixin.message.scheduled_mid_dropped",
         "scheduled turn intermediate response dropped due to quota",
         { chatKey: input.chatKey, reason: "quota_exhausted" },
       );
       return false;
     }
 
-    return await sendTextViaAvailableAccount(plainText, "scheduled.mid_send_failed");
+    return await sendTextViaAvailableAccount(plainText, "weixin.message.scheduled_mid_send_failed");
   };
 
   // 2. Execute agent chat turn
@@ -193,7 +193,7 @@ export async function executeScheduledTurn(
         // With a pending-final queue the remaining chunks are parked below,
         // not dropped — label the log accordingly.
         await deps.logger.info(
-          deps.enqueuePendingFinal ? "scheduled.final_parked" : "scheduled.final_dropped",
+          deps.enqueuePendingFinal ? "weixin.message.scheduled_final_parked" : "weixin.message.scheduled_final_dropped",
           deps.enqueuePendingFinal
             ? "scheduled turn final response parked due to quota"
             : "scheduled turn final response dropped due to quota",
@@ -202,7 +202,7 @@ export async function executeScheduledTurn(
         break;
       }
 
-      const delivered = await sendTextViaAvailableAccount(wave[index]!, "scheduled.final_send_failed");
+      const delivered = await sendTextViaAvailableAccount(wave[index]!, "weixin.message.scheduled_final_send_failed");
       if (!delivered) break;
       sent += 1;
     }
@@ -227,11 +227,11 @@ export async function executeScheduledTurn(
         // that /jx cannot deliver.
         const noticeDelivered = await sendTextViaAvailableAccount(
           t().misc.finalAllParked(restToPark.length),
-          "scheduled.final_parked_notice_failed",
+          "weixin.message.scheduled_final_parked_notice_failed",
         );
         if (!noticeDelivered) {
           await deps.logger.info(
-            "scheduled.final_parked_notice_failed",
+            "weixin.message.scheduled_final_parked_notice_failed",
             "scheduled parked-final notice could not be delivered",
             { chatKey: input.chatKey, parked: restToPark.length },
           );
