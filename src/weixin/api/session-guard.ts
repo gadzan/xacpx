@@ -1,4 +1,4 @@
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 
 const SESSION_PAUSE_DURATION_MS = 60 * 60 * 1000;
 
@@ -11,9 +11,11 @@ const pauseUntilMap = new Map<string, number>();
 export function pauseSession(accountId: string): void {
   const until = Date.now() + SESSION_PAUSE_DURATION_MS;
   pauseUntilMap.set(accountId, until);
-  logger.info(
-    `session-guard: paused accountId=${accountId} until=${new Date(until).toISOString()} (${SESSION_PAUSE_DURATION_MS / 1000}s)`,
-  );
+  weixinLog.info("weixin.api.session_paused", "session-guard: paused", {
+    accountId,
+    until: new Date(until).toISOString(),
+    durationSec: SESSION_PAUSE_DURATION_MS / 1000,
+  });
 }
 
 /** Returns `true` when the bot is still within its one-hour cooldown window. */

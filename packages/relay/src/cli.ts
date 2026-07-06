@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { createRelayRuntime, startRelayServer } from "./server.js";
 import { handleRelayUpdate } from "./cli-update.js";
+import { createRelayLogger } from "./logging.js";
 
 export interface RelayCliIo {
   print(line: string): void;
@@ -103,11 +104,18 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
     if (!startOpts.webRoot) {
       startOpts.webRoot = resolveBundledWebRoot();
     }
-    const running = await startRelayServer(startOpts);
+    const logger = createRelayLogger();
+    const running = await startRelayServer({ ...startOpts, logger });
     const gatewayDesc = running.wsPort !== null
       ? `instance ws :${running.wsPort}`
       : `instance gateway: merged on http :${running.httpPort} (path / or /gateway)`;
     io.print(`xacpx-relay listening: http :${running.httpPort}, ${gatewayDesc}, db ${startOpts.dbPath}, dashboard: ${startOpts.webRoot ?? "(none)"}`);
+    logger.info("relay.start", "relay hub listening", {
+      httpPort: running.httpPort,
+      wsPort: running.wsPort,
+      dbPath: startOpts.dbPath,
+      dashboard: Boolean(startOpts.webRoot),
+    });
     return await new Promise<number>((resolve) => {
       const shutdown = () => {
         void running.close().then(() => resolve(0));

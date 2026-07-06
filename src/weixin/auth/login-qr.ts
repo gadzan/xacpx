@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { apiGetFetch, apiPostFetch } from "../api/api.js";
 import { listIndexedWeixinAccountIds, loadWeixinAccount } from "./accounts.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { redactToken } from "../util/redact.js";
 import { t } from "../../i18n/index.js";
 
@@ -92,9 +92,14 @@ function getLocalBotTokenList(): string[] {
 }
 
 async function fetchQRCode(apiBaseUrl: string, botType: string): Promise<QRCodeResponse> {
-  logger.info(`Fetching QR code from: ${apiBaseUrl} bot_type=${botType}`);
+  weixinLog.info("weixin.login.qr_fetch_start", "fetchQRCode: requesting QR code", {
+    apiBaseUrl,
+    botType,
+  });
   const localTokenList = getLocalBotTokenList();
-  logger.info(`fetchQRCode: local_token_list count=${localTokenList.length}`);
+  weixinLog.info("weixin.login.qr_fetch_local_tokens", "fetchQRCode: resolved local token list", {
+    count: localTokenList.length,
+  });
   const rawText = await apiPostFetch({
     baseUrl: apiBaseUrl,
     endpoint: `ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(botType)}`,
@@ -122,7 +127,10 @@ async function pollQRStatus(
   qrcode: string,
   verifyCode?: string,
 ): Promise<StatusResponse> {
-  logger.debug(`Long-poll QR status from: ${apiBaseUrl} qrcode=*** hasVerifyCode=${Boolean(verifyCode)}`);
+  weixinLog.debug("weixin.login.qr_poll_start", "pollQRStatus: starting long-poll", {
+    apiBaseUrl,
+    hasVerifyCode: Boolean(verifyCode),
+  });
   const endpoint = buildPollQRStatusEndpoint(qrcode, verifyCode);
   try {
     const rawText = await apiGetFetch({
@@ -131,15 +139,23 @@ async function pollQRStatus(
       timeoutMs: QR_LONG_POLL_TIMEOUT_MS,
       label: "pollQRStatus",
     });
-    logger.debug(`pollQRStatus: body=${rawText.substring(0, 200)}`);
+    // body may carry bot_token/ilink_user_id once status flips to confirmed —
+    // log only the length, never the raw response text.
+    weixinLog.debug("weixin.login.qr_poll_response", "pollQRStatus: response received", {
+      bodyLen: rawText.length,
+    });
     return JSON.parse(rawText) as StatusResponse;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      logger.debug(`pollQRStatus: client-side timeout after ${QR_LONG_POLL_TIMEOUT_MS}ms, returning wait`);
+      weixinLog.debug("weixin.login.qr_poll_timeout", "pollQRStatus: client-side timeout, returning wait", {
+        timeoutMs: QR_LONG_POLL_TIMEOUT_MS,
+      });
       return { status: "wait" };
     }
     // 网关超时（如 Cloudflare 524）或其他网络错误，视为等待状态继续轮询
-    logger.warn(`pollQRStatus: network/gateway error, will retry: ${String(err)}`);
+    weixinLog.info("weixin.login.qr_poll_network_error", "pollQRStatus: network/gateway error, will retry", {
+      error: String(err),
+    });
     return { status: "wait" };
   }
 }
@@ -206,13 +222,17 @@ export async function startWeixinLoginWithQr(opts: {
 
   try {
     const botType = opts.botType || DEFAULT_ILINK_BOT_TYPE;
-    logger.info(`Starting Weixin login with bot_type=${botType}`);
+    weixinLog.info("weixin.login.qr_start", "startWeixinLoginWithQr: starting", { botType });
 
     const qrResponse = await fetchQRCode(FIXED_BASE_URL, botType);
-    logger.info(
-      `QR code received, qrcode=${redactToken(qrResponse.qrcode)} imgContentLen=${qrResponse.qrcode_img_content?.length ?? 0}`,
-    );
-    logger.info(`QR code URL: ${qrResponse.qrcode_img_content}`);
+    weixinLog.info("weixin.login.qr_received", "startWeixinLoginWithQr: QR code received", {
+      qrcodePreview: redactToken(qrResponse.qrcode),
+      imgContentLen: qrResponse.qrcode_img_content?.length ?? 0,
+    });
+    // qrcode_img_content is a live login URL — never log it verbatim.
+    weixinLog.info("weixin.login.qr_ready", "startWeixinLoginWithQr: QR ready for scanning", {
+      sessionKey,
+    });
 
     const login: ActiveLogin = {
       sessionKey,
@@ -230,7 +250,9 @@ export async function startWeixinLoginWithQr(opts: {
       sessionKey,
     };
   } catch (err) {
-    logger.error(`Failed to start Weixin login: ${String(err)}`);
+    weixinLog.error("weixin.login.qr_start_failed", "startWeixinLoginWithQr: failed", {
+      error: String(err),
+    });
     return {
       message: `Failed to start login: ${String(err)}`,
       sessionKey,
@@ -257,9 +279,11 @@ async function refreshQRCode(
     activeLogin.qrcodeUrl = qrResponse.qrcode_img_content;
     activeLogin.startedAt = Date.now();
     onScannedReset();
-    logger.info(
-      `refreshQRCode: new QR code obtained (${qrRefreshCount}/${MAX_QR_REFRESH_COUNT}) qrcode=${redactToken(qrResponse.qrcode)}`,
-    );
+    weixinLog.info("weixin.login.qr_refresh_success", "refreshQRCode: new QR code obtained", {
+      qrRefreshCount,
+      maxQrRefreshCount: MAX_QR_REFRESH_COUNT,
+      qrcodePreview: redactToken(qrResponse.qrcode),
+    });
     process.stdout.write(t().login.newQrGenerated);
     try {
       const qrterm = await import("qrcode-terminal");
@@ -272,7 +296,9 @@ async function refreshQRCode(
     }
     return { success: true };
   } catch (refreshErr) {
-    logger.error(`refreshQRCode: failed to refresh QR code: ${String(refreshErr)}`);
+    weixinLog.error("weixin.login.qr_refresh_failed", "refreshQRCode: failed to refresh QR code", {
+      error: String(refreshErr),
+    });
     return { success: false, message: t().login.qrRefreshFailed(String(refreshErr)) };
   }
 }
@@ -287,7 +313,11 @@ export async function waitForWeixinLogin(opts: {
   let activeLogin = activeLogins.get(opts.sessionKey);
 
   if (!activeLogin) {
-    logger.warn(`waitForWeixinLogin: no active login sessionKey=${opts.sessionKey}`);
+    weixinLog.error(
+      "weixin.login.wait_no_active_session",
+      "waitForWeixinLogin: no active login found for session",
+      { sessionKey: opts.sessionKey },
+    );
     return {
       connected: false,
       message: t().login.noActiveLogin,
@@ -295,7 +325,11 @@ export async function waitForWeixinLogin(opts: {
   }
 
   if (!isLoginFresh(activeLogin)) {
-    logger.warn(`waitForWeixinLogin: login QR expired sessionKey=${opts.sessionKey}`);
+    weixinLog.error(
+      "weixin.login.wait_qr_expired_before_start",
+      "waitForWeixinLogin: QR expired before wait started",
+      { sessionKey: opts.sessionKey },
+    );
     activeLogins.delete(opts.sessionKey);
     return {
       connected: false,
@@ -311,7 +345,10 @@ export async function waitForWeixinLogin(opts: {
   // Initialize the effective polling base URL; may be updated on IDC redirect.
   activeLogin.currentApiBaseUrl = FIXED_BASE_URL;
 
-  logger.info("Starting to poll QR code status...");
+  weixinLog.info("weixin.login.wait_poll_start", "waitForWeixinLogin: starting to poll QR status", {
+    sessionKey: opts.sessionKey,
+    timeoutMs,
+  });
 
   while (Date.now() < deadline) {
     try {
@@ -321,7 +358,12 @@ export async function waitForWeixinLogin(opts: {
         activeLogin.qrcode,
         activeLogin.pendingVerifyCode,
       );
-      logger.debug(`pollQRStatus: status=${statusResponse.status} hasBotToken=${Boolean(statusResponse.bot_token)} hasBotId=${Boolean(statusResponse.ilink_bot_id)}`);
+      weixinLog.debug("weixin.login.wait_poll_status", "waitForWeixinLogin: poll status received", {
+        sessionKey: opts.sessionKey,
+        status: statusResponse.status,
+        hasBotToken: Boolean(statusResponse.bot_token),
+        hasBotId: Boolean(statusResponse.ilink_bot_id),
+      });
       activeLogin.status = statusResponse.status;
 
       switch (statusResponse.status) {
@@ -332,7 +374,11 @@ export async function waitForWeixinLogin(opts: {
           break;
         case "scaned":
           if (activeLogin.pendingVerifyCode) {
-            logger.info("verify code accepted, resuming polling");
+            weixinLog.info(
+              "weixin.login.verify_code_accepted",
+              "waitForWeixinLogin: verify code accepted, resuming polling",
+              { sessionKey: opts.sessionKey },
+            );
             activeLogin.pendingVerifyCode = undefined;
           }
           if (!scannedPrinted) {
@@ -344,8 +390,10 @@ export async function waitForWeixinLogin(opts: {
           activeLogin.pendingVerifyCode = undefined;
           qrRefreshCount++;
           if (qrRefreshCount > MAX_QR_REFRESH_COUNT) {
-            logger.warn(
-              `waitForWeixinLogin: QR expired ${MAX_QR_REFRESH_COUNT} times, giving up sessionKey=${opts.sessionKey}`,
+            weixinLog.error(
+              "weixin.login.qr_expired_give_up",
+              "waitForWeixinLogin: QR expired too many times, giving up",
+              { sessionKey: opts.sessionKey, qrRefreshCount, maxQrRefreshCount: MAX_QR_REFRESH_COUNT },
             );
             activeLogins.delete(opts.sessionKey);
             return {
@@ -355,8 +403,10 @@ export async function waitForWeixinLogin(opts: {
           }
 
           process.stdout.write(t().login.qrExpiringRefresh(qrRefreshCount, MAX_QR_REFRESH_COUNT));
-          logger.info(
-            `waitForWeixinLogin: QR expired, refreshing (${qrRefreshCount}/${MAX_QR_REFRESH_COUNT})`,
+          weixinLog.info(
+            "weixin.login.qr_expired_refreshing",
+            "waitForWeixinLogin: QR expired, refreshing",
+            { sessionKey: opts.sessionKey, qrRefreshCount, maxQrRefreshCount: MAX_QR_REFRESH_COUNT },
           );
 
           const expiredRefreshResult = await refreshQRCode(
@@ -381,9 +431,17 @@ export async function waitForWeixinLogin(opts: {
           if (redirectHost) {
             const newBaseUrl = `https://${redirectHost}`;
             activeLogin.currentApiBaseUrl = newBaseUrl;
-            logger.info(`waitForWeixinLogin: IDC redirect, switching polling host to ${redirectHost}`);
+            weixinLog.info(
+              "weixin.login.idc_redirect",
+              "waitForWeixinLogin: IDC redirect, switching polling host",
+              { sessionKey: opts.sessionKey, redirectHost },
+            );
           } else {
-            logger.warn(`waitForWeixinLogin: received scaned_but_redirect but redirect_host is missing, continuing with current host`);
+            weixinLog.info(
+              "weixin.login.idc_redirect_missing_host",
+              "waitForWeixinLogin: scaned_but_redirect received without redirect_host, continuing with current host",
+              { sessionKey: opts.sessionKey },
+            );
           }
           break;
         }
@@ -395,7 +453,11 @@ export async function waitForWeixinLogin(opts: {
           try {
             code = await readVerifyCodeFromStdin(verifyPrompt);
           } catch (err) {
-            logger.error(`waitForWeixinLogin: cannot read verify code (no TTY): ${String(err)}`);
+            weixinLog.error(
+              "weixin.login.verify_code_no_tty",
+              "waitForWeixinLogin: cannot read verify code (no TTY)",
+              { sessionKey: opts.sessionKey, error: String(err) },
+            );
             activeLogins.delete(opts.sessionKey);
             return {
               connected: false,
@@ -406,15 +468,19 @@ export async function waitForWeixinLogin(opts: {
           continue; // skip the 1s sleep; poll immediately with new code
         }
         case "verify_code_blocked": {
-          logger.warn(
-            `waitForWeixinLogin: verify code blocked, qrRefreshCount=${qrRefreshCount} sessionKey=${opts.sessionKey}`,
+          weixinLog.error(
+            "weixin.login.verify_code_blocked",
+            "waitForWeixinLogin: verify code blocked",
+            { sessionKey: opts.sessionKey, qrRefreshCount },
           );
           process.stdout.write(t().login.verifyCodeBlocked);
           activeLogin.pendingVerifyCode = undefined;
           qrRefreshCount++;
           if (qrRefreshCount > MAX_QR_REFRESH_COUNT) {
-            logger.warn(
-              `waitForWeixinLogin: verify_code_blocked and QR refresh limit reached, giving up sessionKey=${opts.sessionKey}`,
+            weixinLog.error(
+              "weixin.login.verify_code_blocked_give_up",
+              "waitForWeixinLogin: verify code blocked and refresh limit reached, giving up",
+              { sessionKey: opts.sessionKey, qrRefreshCount, maxQrRefreshCount: MAX_QR_REFRESH_COUNT },
             );
             activeLogins.delete(opts.sessionKey);
             return {
@@ -442,7 +508,11 @@ export async function waitForWeixinLogin(opts: {
         case "confirmed": {
           if (!statusResponse.ilink_bot_id) {
             activeLogins.delete(opts.sessionKey);
-            logger.error("Login confirmed but ilink_bot_id missing from response");
+            weixinLog.error(
+              "weixin.login.confirmed_missing_bot_id",
+              "waitForWeixinLogin: login confirmed but ilink_bot_id missing from response",
+              { sessionKey: opts.sessionKey },
+            );
             return {
               connected: false,
               message: t().login.loginMissingBotId,
@@ -452,9 +522,10 @@ export async function waitForWeixinLogin(opts: {
           activeLogin.botToken = statusResponse.bot_token;
           activeLogins.delete(opts.sessionKey);
 
-          logger.info(
-            `✅ Login confirmed! ilink_bot_id=${statusResponse.ilink_bot_id} ilink_user_id=${redactToken(statusResponse.ilink_user_id)}`,
-          );
+          weixinLog.info("weixin.login.confirmed", "waitForWeixinLogin: login confirmed", {
+            ilinkBotId: statusResponse.ilink_bot_id,
+            ilinkUserIdPreview: redactToken(statusResponse.ilink_user_id),
+          });
 
           return {
             connected: true,
@@ -468,7 +539,10 @@ export async function waitForWeixinLogin(opts: {
       }
 
     } catch (err) {
-      logger.error(`Error polling QR status: ${String(err)}`);
+      weixinLog.error("weixin.login.wait_poll_error", "waitForWeixinLogin: error polling QR status", {
+        sessionKey: opts.sessionKey,
+        error: String(err),
+      });
       activeLogins.delete(opts.sessionKey);
       return {
         connected: false,
@@ -479,9 +553,10 @@ export async function waitForWeixinLogin(opts: {
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  logger.warn(
-    `waitForWeixinLogin: timed out waiting for QR scan sessionKey=${opts.sessionKey} timeoutMs=${timeoutMs}`,
-  );
+  weixinLog.error("weixin.login.wait_timeout", "waitForWeixinLogin: timed out waiting for QR scan", {
+    sessionKey: opts.sessionKey,
+    timeoutMs,
+  });
   activeLogins.delete(opts.sessionKey);
   return {
     connected: false,

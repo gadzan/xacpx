@@ -14,7 +14,7 @@ import type { RuntimeMediaStore } from "../../channels/media-store.js";
 import type { PerfTracer } from "../../perf/perf-tracer.js";
 import { MessageItemType, type MessageItem } from "../api/types.js";
 import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "../storage/sync-buf.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { redactBody } from "../util/redact.js";
 import { resolveWeixinAccount, listWeixinAccountIds } from "../auth/accounts.js";
 import { resetSessionPause } from "../api/session-guard.js";
@@ -113,12 +113,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   const log = opts.log ?? ((msg: string) => console.log(msg));
   const errLog = (msg: string) => {
     log(msg);
-    logger.error(msg);
+    weixinLog.error("weixin.monitor.error", msg, { accountId });
   };
-  let aLog = logger.withAccount(accountId);
 
   log(`[weixin] monitor started (${baseUrl}, account=${accountId})`);
-  aLog.info(`Monitor started: baseUrl=${baseUrl}`);
+  weixinLog.info("weixin.monitor.started", "monitor started", { accountId, baseUrl });
 
   let syncFilePath = getSyncBufFilePath(accountId);
   const previousGetUpdatesBuf = loadGetUpdatesBuf(syncFilePath);
@@ -179,7 +178,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           );
 
           if (recovered === null) {
-            aLog.info("Monitor stopped (aborted during credential recovery)");
+            weixinLog.info(
+              "weixin.monitor.stopped",
+              "monitor stopped (aborted during credential recovery)",
+              { accountId },
+            );
             return;
           }
 
@@ -189,7 +192,6 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           baseUrl = recovered.baseUrl;
           cdnBaseUrl = recovered.cdnBaseUrl;
           token = recovered.token;
-          aLog = logger.withAccount(accountId);
           syncFilePath = getSyncBufFilePath(accountId);
           const previousBuf = loadGetUpdatesBuf(syncFilePath);
           getUpdatesBuf = previousBuf ?? "";
@@ -234,7 +236,10 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         const msgId = full.message_id;
         if (msgId != null) {
           if (seenMessageIds.has(msgId)) {
-            aLog.info(`duplicate message skipped: message_id=${msgId}`);
+            weixinLog.info("weixin.monitor.duplicate_message_skipped", "duplicate message skipped", {
+              accountId,
+              messageId: msgId,
+            });
             continue;
           }
           seenMessageIds.add(msgId);
@@ -244,9 +249,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           }
         }
 
-        aLog.info(
-          `inbound: from=${full.from_user_id} types=${full.item_list?.map((i) => i.type).join(",") ?? "none"}`,
-        );
+        weixinLog.info("weixin.monitor.inbound", "inbound message received", {
+          accountId,
+          from: full.from_user_id,
+          types: full.item_list?.map((i) => i.type).join(",") ?? "none",
+        });
 
         const fromUserId = full.from_user_id ?? "";
         const inboundText = extractInboundText(full.item_list);
@@ -355,7 +362,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       }
     } catch (err) {
       if (abortSignal?.aborted) {
-        aLog.info(`Monitor stopped (aborted)`);
+        weixinLog.info("weixin.monitor.stopped", "monitor stopped (aborted)", { accountId });
         return;
       }
       consecutiveFailures += 1;
@@ -370,7 +377,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       }
     }
   }
-  aLog.info(`Monitor ended`);
+  weixinLog.info("weixin.monitor.ended", "monitor ended", { accountId });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

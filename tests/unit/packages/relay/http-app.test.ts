@@ -10,6 +10,19 @@ import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 import { createApp, GLOBAL_MAX_FAILURES, LOGIN_MAX_FAILURES } from "../../../../packages/relay/src/http/app";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
+import type { RelayLogger } from "../../../../packages/relay/src/logging";
+
+type LogEntry = [string, string, Record<string, unknown> | undefined];
+
+function makeFakeLogger(): { logger: RelayLogger; logs: LogEntry[] } {
+  const logs: LogEntry[] = [];
+  const logger: RelayLogger = {
+    debug: (e, m, c) => logs.push([e, m, c]),
+    info: (e, m, c) => logs.push([e, m, c]),
+    error: (e, m, c) => logs.push([e, m, c]),
+  };
+  return { logger, logs };
+}
 
 async function makeApp(opts: { trustProxy?: boolean; now?: () => Date } = {}) {
   const db = await createSqlDriver(":memory:");
@@ -70,6 +83,52 @@ test("login with bad token → 401 {error:invalid-token}", async () => {
   const { res } = await login("bad-token-value");
   expect(res.status).toBe(401);
   expect(((await res.json()) as { error: string }).error).toBe("invalid-token");
+});
+
+test("login rejected (invalid token) logs relay.login.rejected with reason, never the token itself", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const instances = new InstanceStore(db);
+  const messages = new MessageStore(db);
+  const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
+  const { logger, logs } = makeFakeLogger();
+  const app = createApp({ accounts, instances, gateway, messages, logger });
+
+  const secretToken = "totally-secret-login-token";
+  const res = await app.request("/api/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: secretToken }),
+  });
+  expect(res.status).toBe(401);
+
+  const rejected = logs.find(([e]) => e === "relay.login.rejected");
+  expect(rejected).toBeDefined();
+  expect(rejected?.[2]).toEqual({ reason: "invalid-token", ip: "unknown" });
+  expect(JSON.stringify(logs)).not.toContain(secretToken);
+});
+
+test("login rejected (rate-limited) logs relay.login.rejected with reason 'rate-limited'", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const instances = new InstanceStore(db);
+  const messages = new MessageStore(db);
+  const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
+  const { logger, logs } = makeFakeLogger();
+  const app = createApp({ accounts, instances, gateway, messages, logger });
+
+  const fail = () =>
+    app.request("/api/login", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "bad" }),
+    });
+  for (let i = 0; i < LOGIN_MAX_FAILURES; i++) expect((await fail()).status).toBe(401);
+  const throttled = await fail();
+  expect(throttled.status).toBe(429);
+
+  const rateLimited = logs.find(([e, , c]) => e === "relay.login.rejected" && c?.reason === "rate-limited");
+  expect(rateLimited).toBeDefined();
 });
 
 test("POST /api/register → 404 (route removed)", async () => {

@@ -1,3 +1,5 @@
+import type { RelayLogger } from "../logging.js";
+
 /** Ping cadence for hub-side sockets (instance connectors and web dashboards). */
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Consecutive unanswered pings tolerated before the socket is declared dead. */
@@ -25,6 +27,7 @@ export function startHeartbeat(
   socket: HeartbeatSocket,
   intervalMs = HEARTBEAT_INTERVAL_MS,
   maxMissed = HEARTBEAT_MAX_MISSED_PONGS,
+  logger?: RelayLogger,
 ): void {
   if (typeof socket.ping !== "function") return;
   let missed = 0;
@@ -38,7 +41,7 @@ export function startHeartbeat(
         if (typeof socket.terminate === "function") socket.terminate();
         else socket.close?.(4408, "heartbeat-timeout");
       } catch (err) {
-        console.error("[relay] heartbeat terminate failed:", err);
+        logger?.error("relay.heartbeat.terminate_failed", "heartbeat terminate failed", { error: String(err) });
       }
       return;
     }
@@ -46,7 +49,7 @@ export function startHeartbeat(
     try {
       socket.ping!();
     } catch (err) {
-      console.error("[relay] heartbeat ping failed:", err);
+      logger?.error("relay.heartbeat.ping_failed", "heartbeat ping failed", { error: String(err) });
     }
   }, intervalMs);
   (timer as unknown as { unref?: () => void }).unref?.();

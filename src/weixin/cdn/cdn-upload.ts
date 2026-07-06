@@ -1,6 +1,6 @@
 import { encryptAesEcb } from "./aes-ecb.js";
 import { buildCdnUploadUrl } from "./cdn-url.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { redactUrl } from "../util/redact.js";
 
 /** Maximum retry attempts for CDN upload. */
@@ -32,7 +32,10 @@ export async function uploadBufferToCdn(params: {
   } else {
     throw new Error(`${label}: CDN upload URL missing (need upload_full_url or upload_param)`);
   }
-  logger.debug(`${label}: CDN POST url=${redactUrl(cdnUrl)} ciphertextSize=${ciphertext.length}`);
+  weixinLog.debug("weixin.cdn.upload_post", `${label}: CDN POST`, {
+    url: redactUrl(cdnUrl),
+    ciphertextSize: ciphertext.length,
+  });
 
   let downloadParam: string | undefined;
   let lastError: unknown;
@@ -46,34 +49,46 @@ export async function uploadBufferToCdn(params: {
       });
       if (res.status >= 400 && res.status < 500) {
         const errMsg = res.headers.get("x-error-message") ?? (await res.text());
-        logger.error(
-          `${label}: CDN client error attempt=${attempt} status=${res.status} errMsg=${errMsg}`,
-        );
+        weixinLog.error("weixin.cdn.upload_client_error", `${label}: CDN client error`, {
+          attempt,
+          status: res.status,
+          errMsg,
+        });
         throw new Error(`CDN upload client error ${res.status}: ${errMsg}`);
       }
       if (res.status !== 200) {
         const errMsg = res.headers.get("x-error-message") ?? `status ${res.status}`;
-        logger.error(
-          `${label}: CDN server error attempt=${attempt} status=${res.status} errMsg=${errMsg}`,
-        );
+        weixinLog.error("weixin.cdn.upload_server_error", `${label}: CDN server error`, {
+          attempt,
+          status: res.status,
+          errMsg,
+        });
         throw new Error(`CDN upload server error: ${errMsg}`);
       }
       downloadParam = res.headers.get("x-encrypted-param") ?? undefined;
       if (!downloadParam) {
-        logger.error(
-          `${label}: CDN response missing x-encrypted-param header attempt=${attempt}`,
+        weixinLog.error(
+          "weixin.cdn.upload_missing_param",
+          `${label}: CDN response missing x-encrypted-param header`,
+          { attempt },
         );
         throw new Error("CDN upload response missing x-encrypted-param header");
       }
-      logger.debug(`${label}: CDN upload success attempt=${attempt}`);
+      weixinLog.debug("weixin.cdn.upload_success", `${label}: CDN upload success`, { attempt });
       break;
     } catch (err) {
       lastError = err;
       if (err instanceof Error && err.message.includes("client error")) throw err;
       if (attempt < UPLOAD_MAX_RETRIES) {
-        logger.error(`${label}: attempt ${attempt} failed, retrying... err=${String(err)}`);
+        weixinLog.error("weixin.cdn.upload_retry", `${label}: attempt failed, retrying`, {
+          attempt,
+          err: String(err),
+        });
       } else {
-        logger.error(`${label}: all ${UPLOAD_MAX_RETRIES} attempts failed err=${String(err)}`);
+        weixinLog.error("weixin.cdn.upload_exhausted", `${label}: all attempts failed`, {
+          attempts: UPLOAD_MAX_RETRIES,
+          err: String(err),
+        });
       }
     }
   }

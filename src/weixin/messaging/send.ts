@@ -1,6 +1,6 @@
 import { sendMessage as sendMessageApi } from "../api/api.js";
 import type { WeixinApiOptions } from "../api/api.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { generateId } from "../util/random.js";
 import type { MessageItem, SendMessageReq } from "../api/types.js";
 import { MessageItemType, MessageState, MessageType } from "../api/types.js";
@@ -69,7 +69,9 @@ export async function sendMessageWeixin(params: {
 }): Promise<{ messageId: string }> {
   const { to, text, opts } = params;
   if (!opts.contextToken) {
-    logger.error(`sendMessageWeixin: contextToken missing, refusing to send to=${to}`);
+    weixinLog.error("weixin.message.send_missing_context_token", "sendMessageWeixin: contextToken missing, refusing to send", {
+      to,
+    });
     throw new Error("sendMessageWeixin: contextToken is required");
   }
   const clientId = generateClientId();
@@ -87,7 +89,11 @@ export async function sendMessageWeixin(params: {
       body: req,
     });
   } catch (err) {
-    logger.error(`sendMessageWeixin: failed to=${to} clientId=${clientId} err=${String(err)}`);
+    weixinLog.error("weixin.message.send_failed", "sendMessageWeixin: failed", {
+      to,
+      clientId,
+      error: String(err),
+    });
     throw err;
   }
   return { messageId: clientId };
@@ -134,14 +140,21 @@ async function sendMediaItems(params: {
         body: req,
       });
     } catch (err) {
-      logger.error(
-        `${label}: failed to=${to} clientId=${lastClientId} err=${String(err)}`,
-      );
+      weixinLog.error("weixin.message.media_send_failed", `${label}: failed`, {
+        label,
+        to,
+        clientId: lastClientId,
+        error: String(err),
+      });
       throw err;
     }
   }
 
-  logger.debug(`${label}: success to=${to} clientId=${lastClientId}`);
+  weixinLog.debug("weixin.message.media_send_success", `${label}: success`, {
+    label,
+    to,
+    clientId: lastClientId,
+  });
   return { messageId: lastClientId };
 }
 
@@ -162,12 +175,16 @@ export async function sendImageMessageWeixin(params: {
 }): Promise<{ messageId: string }> {
   const { to, text, uploaded, opts } = params;
   if (!opts.contextToken) {
-    logger.error(`sendImageMessageWeixin: contextToken missing, refusing to send to=${to}`);
+    weixinLog.error("weixin.message.send_image_missing_context_token", "sendImageMessageWeixin: contextToken missing, refusing to send", {
+      to,
+    });
     throw new Error("sendImageMessageWeixin: contextToken is required");
   }
-  logger.debug(
-    `sendImageMessageWeixin: to=${to} filekey=${uploaded.filekey} fileSize=${uploaded.fileSize} aeskey=present`,
-  );
+  weixinLog.debug("weixin.message.send_image_media_ready", "sendImageMessageWeixin", {
+    to,
+    filekey: uploaded.filekey,
+    fileSize: uploaded.fileSize,
+  });
 
   const imageItem: MessageItem = {
     type: MessageItemType.IMAGE,
@@ -197,7 +214,9 @@ export async function sendVideoMessageWeixin(params: {
 }): Promise<{ messageId: string }> {
   const { to, text, uploaded, opts } = params;
   if (!opts.contextToken) {
-    logger.error(`sendVideoMessageWeixin: contextToken missing, refusing to send to=${to}`);
+    weixinLog.error("weixin.message.send_video_missing_context_token", "sendVideoMessageWeixin: contextToken missing, refusing to send", {
+      to,
+    });
     throw new Error("sendVideoMessageWeixin: contextToken is required");
   }
 
@@ -230,7 +249,9 @@ export async function sendFileMessageWeixin(params: {
 }): Promise<{ messageId: string }> {
   const { to, text, fileName, uploaded, opts } = params;
   if (!opts.contextToken) {
-    logger.error(`sendFileMessageWeixin: contextToken missing, refusing to send to=${to}`);
+    weixinLog.error("weixin.message.send_file_missing_context_token", "sendFileMessageWeixin: contextToken missing, refusing to send", {
+      to,
+    });
     throw new Error("sendFileMessageWeixin: contextToken is required");
   }
   const fileItem: MessageItem = {

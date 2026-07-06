@@ -47,6 +47,7 @@ import { MessageChannelRegistry } from "./channels/channel-registry.js";
 import { RuntimeMediaStore } from "./channels/media-store.js";
 import { isQuotaDeferredError } from "./weixin/messaging/quota-errors";
 import { normalizeWeixinUserIdFromChatKey } from "./weixin/messaging/inbound.js";
+import { setWeixinLog } from "./weixin/util/weixin-log";
 import { ProgressLineBuffer } from "./orchestration/progress-line-parser";
 import { renderTaskHeartbeat, renderTaskProgress } from "./formatting/render-text";
 import { QuotaManager } from "./weixin/messaging/quota-manager";
@@ -185,6 +186,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     retentionDays: config.logging.retentionDays,
     now: deps.loggerNow,
   });
+  // Route the weixin subsystem's logs through the DI'd app logger (no more
+  // world-readable /tmp/openclaw). Must run before any weixin activity starts.
+  setWeixinLog(logger);
   await logger.cleanup();
   const perfLogPath = paths.perfLogPath ?? resolvePerfLogPath(paths.configPath);
   const perfTracer: PerfTracer = config.logging.perf.enabled

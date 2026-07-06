@@ -3,7 +3,7 @@ import path from "node:path";
 import { t } from "../../i18n/index.js";
 
 import type { ChannelMediaKind } from "../../channels/media-types.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { generateId } from "../util/random.js";
 import type { WeixinMessage, MessageItem } from "../api/types.js";
 import { MessageItemType } from "../api/types.js";
@@ -69,7 +69,10 @@ function persistContextTokens(accountId: string): void {
   try {
     writePrivateFileSync(filePath, JSON.stringify(tokens));
   } catch (err) {
-    logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
+    weixinLog.error("weixin.message.context_token_persist_failed", "persistContextTokens: failed to write", {
+      filePath,
+      error: String(err),
+    });
   }
 }
 
@@ -94,9 +97,15 @@ export function restoreContextTokens(accountId: string): void {
     }
     pruneContextTokensForAccount(accountId);
     persistContextTokens(accountId);
-    logger.info(`restoreContextTokens: restored ${count} tokens for account=${accountId}`);
+    weixinLog.info("weixin.message.context_token_restored", "restoreContextTokens: restored tokens", {
+      accountId,
+      count,
+    });
   } catch (err) {
-    logger.warn(`restoreContextTokens: failed to read ${filePath}: ${String(err)}`);
+    weixinLog.error("weixin.message.context_token_restore_failed", "restoreContextTokens: failed to read", {
+      filePath,
+      error: String(err),
+    });
   }
 }
 
@@ -113,27 +122,36 @@ export function clearContextTokensForAccount(accountId: string): void {
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   } catch (err) {
-    logger.warn(`clearContextTokensForAccount: failed to remove ${filePath}: ${String(err)}`);
+    weixinLog.error("weixin.message.context_token_clear_failed", "clearContextTokensForAccount: failed to remove", {
+      filePath,
+      error: String(err),
+    });
   }
-  logger.info(`clearContextTokensForAccount: cleared tokens for account=${accountId}`);
+  weixinLog.info("weixin.message.context_token_cleared", "clearContextTokensForAccount: cleared tokens", {
+    accountId,
+  });
 }
 
 /** Store a context token for a given account+user pair (memory + disk). */
 export function setContextToken(accountId: string, userId: string, token: string): void {
   const k = contextTokenKey(accountId, userId);
-  logger.debug(`setContextToken: key=${k}`);
+  weixinLog.debug("weixin.message.context_token_set", "setContextToken", { accountId, userId });
   contextTokenStore.set(k, { token, updatedAt: contextTokenRetention.now() });
   persistContextTokens(accountId);
 }
 
 /** Retrieve the cached context token for a given account+user pair. */
 export function getContextToken(accountId: string, userId: string): string | undefined {
-  const k = contextTokenKey(accountId, normalizeWeixinUserIdFromChatKey(userId));
+  const normalizedUserId = normalizeWeixinUserIdFromChatKey(userId);
+  const k = contextTokenKey(accountId, normalizedUserId);
   pruneContextTokensForAccount(accountId);
   const val = contextTokenStore.get(k)?.token;
-  logger.debug(
-    `getContextToken: key=${k} found=${val !== undefined} storeSize=${contextTokenStore.size}`,
-  );
+  weixinLog.debug("weixin.message.context_token_lookup", "getContextToken", {
+    accountId,
+    userId: normalizedUserId,
+    found: val !== undefined,
+    storeSize: contextTokenStore.size,
+  });
   return val;
 }
 

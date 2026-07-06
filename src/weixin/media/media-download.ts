@@ -1,5 +1,5 @@
 import type { WeixinInboundMediaOpts } from "../messaging/inbound.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { getMimeFromFilename } from "./mime.js";
 import {
   downloadAndDecryptBuffer,
@@ -43,9 +43,12 @@ export async function downloadMediaFromItem(
     const aesKeyBase64 = img.aeskey
       ? Buffer.from(img.aeskey, "hex").toString("base64")
       : img.media.aes_key;
-    logger.debug(
-      `${label} image: encrypt_query_param=${(img.media.encrypt_query_param ?? "").slice(0, 40)}... hasAesKey=${Boolean(aesKeyBase64)} aeskeySource=${img.aeskey ? "image_item.aeskey" : "media.aes_key"} full_url=${Boolean(img.media.full_url)}`,
-    );
+    weixinLog.debug("weixin.media.image_item", `${label} image`, {
+      encryptQueryParamPrefix: (img.media.encrypt_query_param ?? "").slice(0, 40),
+      hasAesKey: Boolean(aesKeyBase64),
+      aeskeySource: img.aeskey ? "image_item.aeskey" : "media.aes_key",
+      hasFullUrl: Boolean(img.media.full_url),
+    });
     try {
       const buf = aesKeyBase64
         ? await downloadAndDecryptBuffer(
@@ -65,9 +68,11 @@ export async function downloadMediaFromItem(
           );
       const saved = await saveMedia(buf, undefined, "inbound", WEIXIN_MEDIA_MAX_BYTES);
       result.decryptedPicPath = saved.path;
-      logger.debug(`${label} image saved: ${saved.path}`);
+      weixinLog.debug("weixin.media.image_saved", `${label} image saved`, { path: saved.path });
     } catch (err) {
-      logger.error(`${label} image download/decrypt failed: ${String(err)}`);
+      weixinLog.error("weixin.media.image_failed", `${label} image download/decrypt failed`, {
+        err: String(err),
+      });
       errLog(`weixin ${label} image download/decrypt failed: ${String(err)}`);
       throw err;
     }
@@ -84,21 +89,33 @@ export async function downloadMediaFromItem(
         voice.media.full_url,
         WEIXIN_MEDIA_MAX_BYTES,
       );
-      logger.debug(`${label} voice: decrypted ${silkBuf.length} bytes, attempting silk transcode`);
+      weixinLog.debug(
+        "weixin.media.voice_decrypted",
+        `${label} voice: decrypted, attempting silk transcode`,
+        { bytes: silkBuf.length },
+      );
       const wavBuf = await silkToWav(silkBuf);
       if (wavBuf) {
         const saved = await saveMedia(wavBuf, "audio/wav", "inbound", WEIXIN_MEDIA_MAX_BYTES);
         result.decryptedVoicePath = saved.path;
         result.voiceMediaType = "audio/wav";
-        logger.debug(`${label} voice: saved WAV to ${saved.path}`);
+        weixinLog.debug("weixin.media.voice_saved_wav", `${label} voice: saved WAV`, {
+          path: saved.path,
+        });
       } else {
         const saved = await saveMedia(silkBuf, "audio/silk", "inbound", WEIXIN_MEDIA_MAX_BYTES);
         result.decryptedVoicePath = saved.path;
         result.voiceMediaType = "audio/silk";
-        logger.debug(`${label} voice: silk transcode unavailable, saved raw SILK to ${saved.path}`);
+        weixinLog.debug(
+          "weixin.media.voice_saved_silk",
+          `${label} voice: silk transcode unavailable, saved raw SILK`,
+          { path: saved.path },
+        );
       }
     } catch (err) {
-      logger.error(`${label} voice download/transcode failed: ${String(err)}`);
+      weixinLog.error("weixin.media.voice_failed", `${label} voice download/transcode failed`, {
+        err: String(err),
+      });
       errLog(`weixin ${label} voice download/transcode failed: ${String(err)}`);
     }
   } else if (item.type === MessageItemType.FILE) {
@@ -124,9 +141,14 @@ export async function downloadMediaFromItem(
       );
       result.decryptedFilePath = saved.path;
       result.fileMediaType = mime;
-      logger.debug(`${label} file: saved to ${saved.path} mime=${mime}`);
+      weixinLog.debug("weixin.media.file_saved", `${label} file: saved`, {
+        path: saved.path,
+        mime,
+      });
     } catch (err) {
-      logger.error(`${label} file download failed: ${String(err)}`);
+      weixinLog.error("weixin.media.file_failed", `${label} file download failed`, {
+        err: String(err),
+      });
       errLog(`weixin ${label} file download failed: ${String(err)}`);
     }
   } else if (item.type === MessageItemType.VIDEO) {
@@ -144,9 +166,11 @@ export async function downloadMediaFromItem(
       );
       const saved = await saveMedia(buf, "video/mp4", "inbound", WEIXIN_MEDIA_MAX_BYTES);
       result.decryptedVideoPath = saved.path;
-      logger.debug(`${label} video: saved to ${saved.path}`);
+      weixinLog.debug("weixin.media.video_saved", `${label} video: saved`, { path: saved.path });
     } catch (err) {
-      logger.error(`${label} video download failed: ${String(err)}`);
+      weixinLog.error("weixin.media.video_failed", `${label} video download failed`, {
+        err: String(err),
+      });
       errLog(`weixin ${label} video download failed: ${String(err)}`);
     }
   }

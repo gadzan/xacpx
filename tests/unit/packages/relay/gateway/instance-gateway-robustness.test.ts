@@ -1,5 +1,5 @@
 // tests/unit/packages/relay/gateway/instance-gateway-robustness.test.ts
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { MSG, RELAY_PROTOCOL_VERSION, decodeEnvelope, encodeEnvelope } from "../../../../../packages/relay-protocol/src/index";
 import { InstanceGateway } from "../../../../../packages/relay/src/gateway/instance-gateway";
 
@@ -72,32 +72,29 @@ test("a reconnect supersedes the old socket; its late close does not evict the n
 });
 
 test("a throwing onEvent consumer does not kill the connection or later events", () => {
-  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-  try {
-    let calls = 0;
-    const gateway = new InstanceGateway({
-      instances: stubInstances,
-      accounts: stubAccounts,
-      onEvent: () => {
-        calls += 1;
-        if (calls === 1) throw new Error("db write boom");
-      },
-    });
-    const socket = new FakeSocket();
-    gateway.handleConnection(socket as never);
-    auth(socket);
+  const logs: Array<[string, string]> = [];
+  let calls = 0;
+  const gateway = new InstanceGateway({
+    instances: stubInstances,
+    accounts: stubAccounts,
+    logger: { debug: () => {}, info: () => {}, error: (e, m) => logs.push([e, m]) },
+    onEvent: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("db write boom");
+    },
+  });
+  const socket = new FakeSocket();
+  gateway.handleConnection(socket as never);
+  auth(socket);
 
-    const event = encodeEnvelope({
-      protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent,
-      payload: { event: { type: "sessions-changed" } },
-    });
-    expect(() => socket.emit("message", event)).not.toThrow();
-    // Connection survives and subsequent events still reach the consumer.
-    expect(gateway.isOnline("i1")).toBe(true);
-    socket.emit("message", event);
-    expect(calls).toBe(2);
-    expect(errorSpy).toHaveBeenCalled();
-  } finally {
-    errorSpy.mockRestore();
-  }
+  const event = encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent,
+    payload: { event: { type: "sessions-changed" } },
+  });
+  expect(() => socket.emit("message", event)).not.toThrow();
+  // Connection survives and subsequent events still reach the consumer.
+  expect(gateway.isOnline("i1")).toBe(true);
+  socket.emit("message", event);
+  expect(calls).toBe(2);
+  expect(logs.some(([e]) => e === "relay.instance.message_failed")).toBe(true);
 });

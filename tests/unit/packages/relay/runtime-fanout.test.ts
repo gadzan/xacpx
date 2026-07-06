@@ -4,6 +4,7 @@ import {
   MSG, RELAY_PROTOCOL_VERSION, decodeEnvelope, parseWebServerEvent,
 } from "../../../../packages/relay-protocol/src/index";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
+import type { RelayLogger } from "../../../../packages/relay/src/logging";
 
 class FakeSocket {
   sent: string[] = [];
@@ -157,6 +158,30 @@ test("session-history seeds a native session's recovered conversation once (idem
   fire(seed);
   cached = runtime.messages.listBySession("a1", "i1", "native1").messages;
   expect(cached.length).toBe(2);
+  runtime.close();
+});
+
+test("a throwing DB write during onEvent logs relay.event.persist_failed with instanceId and error", async () => {
+  const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const logger: RelayLogger = {
+    debug: (e, m, c) => logs.push([e, m, c]),
+    info: (e, m, c) => logs.push([e, m, c]),
+    error: (e, m, c) => logs.push([e, m, c]),
+  };
+  const runtime = await createRelayRuntime(":memory:", { logger });
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
+  runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
+  runtime.messages.append = () => { throw new Error("db boom"); };
+
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+
+  expect(() => fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "hi" })).not.toThrow();
+
+  const failed = logs.find(([e]) => e === "relay.event.persist_failed");
+  expect(failed).toBeDefined();
+  expect(failed?.[2]).toEqual({ instanceId: "i1", error: "Error: db boom" });
   runtime.close();
 });
 

@@ -1,4 +1,4 @@
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { sendMessageWeixin } from "./send.js";
 
 /**
@@ -15,7 +15,10 @@ export async function sendWeixinErrorNotice(params: {
   errLog: (m: string) => void;
 }): Promise<void> {
   if (!params.contextToken) {
-    logger.warn(`sendWeixinErrorNotice: no contextToken for to=${params.to}, cannot notify user`);
+    weixinLog.info("weixin.message.error_notice_skipped", "sendWeixinErrorNotice: no contextToken, cannot notify user", {
+      to: params.to,
+      reason: "missing_context_token",
+    });
     return;
   }
   try {
@@ -24,7 +27,7 @@ export async function sendWeixinErrorNotice(params: {
       token: params.token,
       contextToken: params.contextToken,
     }});
-    logger.debug(`sendWeixinErrorNotice: sent to=${params.to}`);
+    weixinLog.debug("weixin.message.error_notice_sent", "sendWeixinErrorNotice: sent", { to: params.to });
   } catch (err) {
     params.errLog(`[weixin] sendWeixinErrorNotice failed to=${params.to}: ${String(err)}`);
   }

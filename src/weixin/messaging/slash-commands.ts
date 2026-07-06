@@ -10,7 +10,7 @@
  * 凭证的权限；退出登录只能通过 CLI（`xacpx logout`）。
  */
 import type { WeixinApiOptions } from "../api/api.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { t } from "../../i18n/index.js";
 
 import { buildFinalHeadsUp } from "./final-heads-up.js";
@@ -176,7 +176,10 @@ export async function handleSlashCommand(
   const command = spaceIdx === -1 ? trimmed.toLowerCase() : trimmed.slice(0, spaceIdx).toLowerCase();
   const args = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1);
 
-  logger.info(`[weixin] Slash command: ${command}, args: ${args.slice(0, 50)}`);
+  // args may hold user message text (e.g. /echo's payload) — never logged.
+  weixinLog.info("weixin.message.slash_command_received", "Slash command received", {
+    command: command.slice(0, 32),
+  });
 
   try {
     switch (command) {
@@ -211,7 +214,10 @@ export async function handleSlashCommand(
         return { handled: false };
     }
   } catch (err) {
-    logger.error(`[weixin] Slash command error: ${String(err)}`);
+    weixinLog.error("weixin.message.slash_command_failed", "Slash command error", {
+      command: command.slice(0, 32),
+      error: String(err),
+    });
     try {
       await sendReply(ctx, t().weixin.commandFailed(String(err).slice(0, 200)));
     } catch {

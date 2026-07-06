@@ -1,5 +1,6 @@
 import { encodeEnvelope, webEventEnvelope, type WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 
+import type { RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
 
 /** ws readyState OPEN (avoid importing the ws package for one constant). */
@@ -19,6 +20,7 @@ export interface WebSocketLike {
 export interface WebGatewayOptions {
   /** Keepalive ping cadence; overridable for tests. Defaults to HEARTBEAT_INTERVAL_MS. */
   heartbeatIntervalMs?: number;
+  logger?: RelayLogger;
 }
 
 /** Tracks authenticated browser sockets per account and fans events out to them. */
@@ -31,10 +33,12 @@ export class WebGateway {
     const set = this.byAccount.get(accountId) ?? new Set<WebSocketLike>();
     set.add(socket);
     this.byAccount.set(accountId, set);
-    startHeartbeat(socket, this.options.heartbeatIntervalMs);
+    this.options.logger?.debug("relay.web.connected", "web client connected", { accountId });
+    startHeartbeat(socket, this.options.heartbeatIntervalMs, undefined, this.options.logger);
     socket.on("close", () => {
       set.delete(socket);
       if (set.size === 0) this.byAccount.delete(accountId);
+      this.options.logger?.debug("relay.web.disconnected", "web client disconnected", { accountId });
     });
   }
 
@@ -48,7 +52,7 @@ export class WebGateway {
       try {
         socket.send(data);
       } catch (err) {
-        console.error("[relay] web broadcast send failed:", err);
+        this.options.logger?.error("relay.web.broadcast_failed", "broadcast send failed", { error: String(err) });
       }
     }
   }

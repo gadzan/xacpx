@@ -1,4 +1,4 @@
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 
 /** Default sample rate for Weixin voice messages. */
 const SILK_SAMPLE_RATE = 24_000;
@@ -58,17 +58,22 @@ export async function silkToWav(silkBuf: Buffer): Promise<Buffer | null> {
   try {
     const { decode } = await import("silk-wasm");
 
-    logger.debug(`silkToWav: decoding ${silkBuf.length} bytes of SILK`);
+    weixinLog.debug("weixin.media.silk_decode_start", "silkToWav: decoding SILK", {
+      bytes: silkBuf.length,
+    });
     const result = await decode(silkBuf, SILK_SAMPLE_RATE);
-    logger.debug(
-      `silkToWav: decoded duration=${result.duration}ms pcmBytes=${result.data.byteLength}`,
-    );
+    weixinLog.debug("weixin.media.silk_decoded", "silkToWav: decoded", {
+      durationMs: result.duration,
+      pcmBytes: result.data.byteLength,
+    });
 
     const wav = pcmBytesToWav(result.data, SILK_SAMPLE_RATE);
-    logger.debug(`silkToWav: WAV size=${wav.length}`);
+    weixinLog.debug("weixin.media.silk_wav_built", "silkToWav: WAV built", { size: wav.length });
     return wav;
   } catch (err) {
-    logger.warn(`silkToWav: transcode failed, will use raw silk err=${String(err)}`);
+    weixinLog.info("weixin.media.silk_transcode_failed", "silkToWav: transcode failed, will use raw silk", {
+      err: String(err),
+    });
     return null;
   }
 }

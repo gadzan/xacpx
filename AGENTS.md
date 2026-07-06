@@ -148,7 +148,7 @@ Uses **Bun** for development scripts and builds. Dependencies are in `package.js
 - 项目介绍 [README.md](README.md)
 
 # 其它
-xacpx 运行日志：` ~/.xacpx/runtime/app.log`;
+xacpx 运行日志：`~/.xacpx/runtime/app.log`（weixin 子系统日志已统一经 app-logger 写入此文件，不再有独立的 `/tmp/openclaw` 单例 logger）；性能日志：`~/.xacpx/runtime/perf.log`；
 acpx 源码：`../acpx`;
 
 ## 维护 AGENTS.md
