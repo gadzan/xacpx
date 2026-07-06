@@ -3,7 +3,7 @@ import { readVersion } from "../../version.js";
 import { coreEnv } from "../../runtime/core-env.js";
 
 import { loadConfigBotAgent, loadConfigRouteTag } from "../auth/accounts.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { redactBody, redactUrl } from "../util/redact.js";
 import { WeixinSendError } from "../messaging/send-errors.js";
 
@@ -194,9 +194,9 @@ function buildHeaders(opts: { token?: string; body: string }): Record<string, st
   if (opts.token?.trim()) {
     headers.Authorization = `Bearer ${opts.token.trim()}`;
   }
-  logger.debug(
-    `requestHeaders: ${JSON.stringify({ ...headers, Authorization: headers.Authorization ? "Bearer ***" : undefined })}`,
-  );
+  weixinLog.debug("weixin.api.request_headers", "requestHeaders", {
+    headers: JSON.stringify({ ...headers, Authorization: headers.Authorization ? "Bearer ***" : undefined }),
+  });
   return headers;
 }
 
@@ -214,7 +214,7 @@ export async function apiGetFetch(params: {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
   const hdrs = buildCommonHeaders();
-  logger.debug(`GET ${redactUrl(url.toString())}`);
+  weixinLog.debug("weixin.api.get_request", "GET", { url: redactUrl(url.toString()) });
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), params.timeoutMs);
@@ -226,7 +226,10 @@ export async function apiGetFetch(params: {
     });
     clearTimeout(t);
     const rawText = await res.text();
-    logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
+    weixinLog.debug("weixin.api.response", `${params.label} response`, {
+      status: res.status,
+      raw: redactBody(rawText),
+    });
     if (!res.ok) {
       throw new Error(`${params.label} ${res.status}: ${rawText}`);
     }
@@ -254,7 +257,10 @@ export async function apiPostFetch(params: {
   const url = new URL(params.endpoint, base);
   const hdrs = buildCommonHeaders();
   hdrs["Content-Type"] = "application/json";
-  logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
+  weixinLog.debug("weixin.api.post_request", "POST", {
+    url: redactUrl(url.toString()),
+    body: redactBody(params.body),
+  });
 
   const controller = new AbortController();
   const t =
@@ -274,7 +280,10 @@ export async function apiPostFetch(params: {
       signal: controller.signal,
     });
     const rawText = await res.text();
-    logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
+    weixinLog.debug("weixin.api.response", `${params.label} response`, {
+      status: res.status,
+      raw: redactBody(rawText),
+    });
     if (!res.ok) {
       throw new Error(`${params.label} ${res.status}: ${rawText}`);
     }
@@ -308,7 +317,10 @@ async function apiFetch(params: {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
   const hdrs = buildHeaders({ token: params.token, body: params.body });
-  logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
+  weixinLog.debug("weixin.api.post_request", "POST", {
+    url: redactUrl(url.toString()),
+    body: redactBody(params.body),
+  });
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), params.timeoutMs);
@@ -326,7 +338,10 @@ async function apiFetch(params: {
     });
     clearTimeout(t);
     const rawText = await res.text();
-    logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
+    weixinLog.debug("weixin.api.response", `${params.label} response`, {
+      status: res.status,
+      raw: redactBody(rawText),
+    });
     if (!res.ok) {
       throw buildSendError({ endpoint: params.label, httpStatus: res.status, rawText });
     }
@@ -431,7 +446,11 @@ export async function getUpdates(
   } catch (err) {
     // Long-poll timeout is normal; return empty response so caller can retry
     if (err instanceof Error && err.name === "AbortError") {
-      logger.debug(`getUpdates: client-side timeout after ${timeout}ms, returning empty response`);
+      weixinLog.debug(
+        "weixin.api.get_updates_timeout",
+        "getUpdates: client-side timeout, returning empty response",
+        { timeoutMs: timeout },
+      );
       return { ret: 0, msgs: [], get_updates_buf: params.get_updates_buf };
     }
     throw err;

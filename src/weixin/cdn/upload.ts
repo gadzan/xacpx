@@ -6,7 +6,7 @@ import { getUploadUrl } from "../api/api.js";
 import type { WeixinApiOptions } from "../api/api.js";
 import { aesEcbPaddedSize } from "./aes-ecb.js";
 import { uploadBufferToCdn } from "./cdn-upload.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 import { getExtensionFromContentTypeOrUrl } from "../media/mime.js";
 import { tempFileName } from "../util/random.js";
 import { UploadMediaType } from "../api/types.js";
@@ -28,21 +28,27 @@ export type UploadedFileInfo = {
  * Returns the local file path; extension is inferred from Content-Type / URL.
  */
 export async function downloadRemoteImageToTemp(url: string, destDir: string): Promise<string> {
-  logger.debug(`downloadRemoteImageToTemp: fetching url=${url}`);
+  weixinLog.debug("weixin.cdn.remote_fetch", "downloadRemoteImageToTemp: fetching", { url });
   const res = await fetch(url);
   if (!res.ok) {
     const msg = `remote media download failed: ${res.status} ${res.statusText} url=${url}`;
-    logger.error(`downloadRemoteImageToTemp: ${msg}`);
+    weixinLog.error("weixin.cdn.remote_download_failed", `downloadRemoteImageToTemp: ${msg}`, {
+      status: res.status,
+      statusText: res.statusText,
+      url,
+    });
     throw new Error(msg);
   }
   const buf = Buffer.from(await res.arrayBuffer());
-  logger.debug(`downloadRemoteImageToTemp: downloaded ${buf.length} bytes`);
+  weixinLog.debug("weixin.cdn.remote_downloaded", "downloadRemoteImageToTemp: downloaded", {
+    bytes: buf.length,
+  });
   await fs.mkdir(destDir, { recursive: true });
   const ext = getExtensionFromContentTypeOrUrl(res.headers.get("content-type"), url);
   const name = tempFileName("weixin-remote", ext);
   const filePath = path.join(destDir, name);
   await fs.writeFile(filePath, buf);
-  logger.debug(`downloadRemoteImageToTemp: saved to ${filePath} ext=${ext}`);
+  weixinLog.debug("weixin.cdn.remote_saved", "downloadRemoteImageToTemp: saved", { filePath, ext });
   return filePath;
 }
 
@@ -66,9 +72,13 @@ async function uploadMediaToCdn(params: {
   const filekey = crypto.randomBytes(16).toString("hex");
   const aeskey = crypto.randomBytes(16);
 
-  logger.debug(
-    `${label}: file=${filePath} rawsize=${rawsize} filesize=${filesize} md5=${rawfilemd5} filekey=${filekey}`,
-  );
+  weixinLog.debug("weixin.cdn.upload_prepare", `${label}: preparing upload`, {
+    filePath,
+    rawsize,
+    filesize,
+    md5: rawfilemd5,
+    filekey,
+  });
 
   const uploadUrlResp = await getUploadUrl({
     ...opts,
@@ -85,9 +95,9 @@ async function uploadMediaToCdn(params: {
   const uploadFullUrl = uploadUrlResp.upload_full_url?.trim();
   const uploadParam = uploadUrlResp.upload_param;
   if (!uploadFullUrl && !uploadParam) {
-    logger.error(
-      `${label}: getUploadUrl returned no upload URL (need upload_full_url or upload_param), resp=${JSON.stringify(uploadUrlResp)}`,
-    );
+    weixinLog.error("weixin.cdn.upload_url_missing", `${label}: getUploadUrl returned no upload URL`, {
+      resp: JSON.stringify(uploadUrlResp),
+    });
     throw new Error(`${label}: getUploadUrl returned no upload URL`);
   }
 

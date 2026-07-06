@@ -1,6 +1,6 @@
 import { decryptAesEcb } from "./aes-ecb.js";
 import { buildCdnDownloadUrl } from "./cdn-url.js";
-import { logger } from "../util/logger.js";
+import { weixinLog } from "../util/weixin-log";
 
 /**
  * Download raw bytes from the CDN (no decryption).
@@ -12,16 +12,18 @@ async function fetchCdnBytes(url: string, label: string, maxBytes?: number): Pro
   } catch (err) {
     const cause =
       (err as NodeJS.ErrnoException).cause ?? (err as NodeJS.ErrnoException).code ?? "(no cause)";
-    logger.error(
-      `${label}: fetch network error url=${url} err=${String(err)} cause=${String(cause)}`,
-    );
+    weixinLog.error("weixin.cdn.fetch_network_error", `${label}: fetch network error`, {
+      url,
+      err: String(err),
+      cause: String(cause),
+    });
     throw err;
   }
-  logger.debug(`${label}: response status=${res.status} ok=${res.ok}`);
+  weixinLog.debug("weixin.cdn.pic_response", `${label}: response`, { status: res.status, ok: res.ok });
   if (!res.ok) {
     const body = await res.text().catch(() => "(unreadable)");
     const msg = `${label}: CDN download ${res.status} ${res.statusText} body=${body}`;
-    logger.error(msg);
+    weixinLog.error("weixin.cdn.download_failed", msg, { status: res.status, statusText: res.statusText });
     throw new Error(msg);
   }
   const contentLength = res.headers.get("content-length");
@@ -82,7 +84,7 @@ function parseAesKey(aesKeyBase64: string, label: string): Buffer {
     return Buffer.from(decoded.toString("ascii"), "hex");
   }
   const msg = `${label}: aes_key must decode to 16 raw bytes or 32-char hex string, got ${decoded.length} bytes (base64="${aesKeyBase64}")`;
-  logger.error(msg);
+  weixinLog.error("weixin.cdn.pic_decrypt_failed", msg);
   throw new Error(msg);
 }
 
@@ -100,15 +102,17 @@ export async function downloadAndDecryptBuffer(
 ): Promise<Buffer> {
   const key = parseAesKey(aesKeyBase64, label);
   const url = fullUrl || buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
-  logger.debug(`${label}: fetching url=${url}`);
+  weixinLog.debug("weixin.cdn.pic_fetch", `${label}: fetching`, { url });
   const encryptedMaxBytes = maxBytes === undefined ? undefined : maxBytes + 16;
   const encrypted = await fetchCdnBytes(url, label, encryptedMaxBytes);
-  logger.debug(`${label}: downloaded ${encrypted.byteLength} bytes, decrypting`);
+  weixinLog.debug("weixin.cdn.pic_downloaded", `${label}: downloaded, decrypting`, {
+    bytes: encrypted.byteLength,
+  });
   const decrypted = decryptAesEcb(encrypted, key);
   if (maxBytes !== undefined && decrypted.byteLength > maxBytes) {
     throw new Error(`${label}: decrypted media exceeds ${maxBytes} bytes`);
   }
-  logger.debug(`${label}: decrypted ${decrypted.length} bytes`);
+  weixinLog.debug("weixin.cdn.pic_decrypted", `${label}: decrypted`, { bytes: decrypted.length });
   return decrypted;
 }
 
@@ -123,6 +127,6 @@ export async function downloadPlainCdnBuffer(
   maxBytes?: number,
 ): Promise<Buffer> {
   const url = fullUrl || buildCdnDownloadUrl(encryptedQueryParam, cdnBaseUrl);
-  logger.debug(`${label}: fetching url=${url}`);
+  weixinLog.debug("weixin.cdn.pic_fetch_plain", `${label}: fetching`, { url });
   return fetchCdnBytes(url, label, maxBytes);
 }
