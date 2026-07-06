@@ -2647,3 +2647,42 @@ test("loadConfiguredPlugins registers plugin channels usable by createMessageCha
   expect(channels.length).toBe(1);
   expect(channels[0]?.id).toBe("demo-fixture");
 });
+
+test("buildApp wires weixinLog to the app logger", async () => {
+  const { weixinLog, resetWeixinLogForTest } = await import("../../src/weixin/util/weixin-log");
+  resetWeixinLogForTest();
+
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: { codex: { driver: "codex" } },
+      workspaces: {
+        backend: {
+          cwd: "/tmp/backend",
+          allowed_agents: ["codex"],
+        },
+      },
+    }),
+  );
+
+  const runtime = await buildApp({ configPath, statePath });
+
+  // Call weixinLog directly (no setWeixinLog from the test) so the only way
+  // this can land in app.log is if buildApp itself wired the sink. If the
+  // wiring is missing, weixinLog's sink stays null and the write is dropped.
+  weixinLog.info("weixin.probe.ok", "probe");
+  await runtime.logger.flush();
+
+  const logText = await readFile(join(dir, "runtime", "app.log"), "utf8").catch(() => "");
+  expect(logText).toContain("weixin.probe.ok");
+  expect(logText).toContain("message=\"probe\"");
+
+  resetWeixinLogForTest();
+  await runtime.dispose();
+  await rm(dir, { recursive: true, force: true });
+});

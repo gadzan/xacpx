@@ -1,16 +1,17 @@
-type LogFn = (event: string, message: string, context?: Record<string, unknown>) => unknown;
+import type { AppLogger } from "../../logging/app-logger";
+
+// Derived from AppLogger itself (rather than a hand-rolled Record<string, unknown>)
+// so this can never drift out of structural sync with the real sink it forwards to.
+type SinkContext = NonNullable<Parameters<AppLogger["debug"]>[2]>;
+type LogFn = (event: string, message: string, context?: SinkContext) => unknown;
 
 export interface WeixinLog {
-  debug(event: string, message: string, context?: Record<string, unknown>): void;
-  info(event: string, message: string, context?: Record<string, unknown>): void;
-  error(event: string, message: string, context?: Record<string, unknown>): void;
+  debug(event: string, message: string, context?: SinkContext): void;
+  info(event: string, message: string, context?: SinkContext): void;
+  error(event: string, message: string, context?: SinkContext): void;
 }
 
-interface Sink {
-  debug: LogFn;
-  info: LogFn;
-  error: LogFn;
-}
+type Sink = Pick<AppLogger, "debug" | "info" | "error">;
 
 let sink: Sink | null = null;
 
@@ -24,7 +25,7 @@ export function resetWeixinLogForTest(): void {
   sink = null;
 }
 
-function forward(level: keyof Sink, event: string, message: string, context?: Record<string, unknown>): void {
+function forward(level: keyof Sink, event: string, message: string, context?: SinkContext): void {
   if (!sink) return;
   try {
     // Fire-and-forget: the AppLogger returns a never-rejecting Promise, but we
