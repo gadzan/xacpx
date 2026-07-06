@@ -4,6 +4,7 @@ import type { AppConfig } from "../../../src/config/types";
 import { createEmptyState } from "../../../src/state/types";
 import type { AppState } from "../../../src/state/types";
 import type { StateStore } from "../../../src/state/state-store";
+import { DebouncedStateStore } from "../../../src/state/debounced-state-store";
 import { SessionService } from "../../../src/sessions/session-service";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { setLocale, t } from "../../../src/i18n";
@@ -898,4 +899,33 @@ test("relay ignores a reply_mode override and always streams; the raw override i
   const weixin = service.getResolvedSessionByInternalAlias("weixin:bar");
   expect(weixin!.replyMode).toBe("verbose");
   expect(weixin!.effectiveReplyMode).toBeUndefined();
+});
+
+test("mutations under the shared mutex commit immediately and coalesce into one debounced write", async () => {
+  // Regression for the debounce-defeating pattern: SessionService.mutate() holds the
+  // shared state mutex while it awaits persist(). When the debounced store's save()
+  // only resolved after the flush, every mutation serialized on the full debounce
+  // interval (N writes ~= N x 50ms) and coalescing never happened. save() must
+  // resolve at commit time so back-to-back mutations batch into a single write.
+  const inner = new MemoryStateStore();
+  const debounced = new DebouncedStateStore({ delegate: inner, intervalMs: 200 });
+  const service = new SessionService(createConfig(), debounced, createEmptyState());
+
+  const startedAt = Date.now();
+  await service.createSession("api-fix", "codex", "backend");
+  await service.setSessionModel("api-fix", "gpt-5.5");
+  await service.setArchived("api-fix", true);
+  await service.setArchived("api-fix", false);
+
+  // Four awaited mutations must not pay four debounce intervals (>=800ms before).
+  expect(Date.now() - startedAt).toBeLessThan(200);
+  // Nothing has hit the delegate yet: the debounce window is still open.
+  expect(inner.savedStates.length).toBe(0);
+
+  await debounced.flush();
+  expect(inner.savedStates.length).toBe(1);
+  // The single write carries the LAST committed state (all four mutations).
+  expect(inner.savedStates[0]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
+  expect(inner.savedStates[0]!.sessions["api-fix"]!.archived).toBeUndefined();
+  await debounced.dispose();
 });
