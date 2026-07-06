@@ -11,6 +11,7 @@ import {
 
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
+import { startHeartbeat } from "./heartbeat.js";
 
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
@@ -18,14 +19,20 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export interface GatewaySocket {
   send(data: string): void;
   close(code?: number, reason?: string): void;
+  /** Optional (real `ws` sockets have them): enables the keepalive heartbeat. */
+  ping?(): void;
+  terminate?(): void;
   on(event: "message", listener: (data: unknown) => void): unknown;
   on(event: "close", listener: () => void): unknown;
+  on(event: "pong", listener: () => void): unknown;
 }
 
 export interface InstanceGatewayDeps {
   instances: Pick<InstanceStore, "redeemPairingToken" | "registerInstanceForAccount" | "verifyCredential" | "touch">;
   accounts: Pick<AccountStore, "resolveLoginToken">;
   requestTimeoutMs?: number;
+  /** Keepalive ping cadence; overridable for tests. Defaults to HEARTBEAT_INTERVAL_MS. */
+  heartbeatIntervalMs?: number;
   onEvent?: (instanceId: string, accountId: string, envelope: RelayEnvelope) => void;
   onStatusChange?: (instanceId: string, accountId: string, online: boolean) => void;
 }
@@ -50,6 +57,7 @@ export class InstanceGateway {
 
   handleConnection(socket: GatewaySocket): void {
     let authed: { instanceId: string; accountId: string } | null = null;
+    startHeartbeat(socket, this.deps.heartbeatIntervalMs);
 
     socket.on("message", (data) => {
       const decoded = decodeEnvelope(String(data));

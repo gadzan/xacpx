@@ -1,18 +1,33 @@
 import { encodeEnvelope, webEventEnvelope, type WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 
+import { startHeartbeat } from "./heartbeat.js";
+
 export interface WebSocketLike {
   send(data: string): void;
+  close?(code?: number, reason?: string): void;
+  /** Optional (real `ws` sockets have them): enables the keepalive heartbeat. */
+  ping?(): void;
+  terminate?(): void;
   on(event: "close", listener: () => void): unknown;
+  on(event: "pong", listener: () => void): unknown;
+}
+
+export interface WebGatewayOptions {
+  /** Keepalive ping cadence; overridable for tests. Defaults to HEARTBEAT_INTERVAL_MS. */
+  heartbeatIntervalMs?: number;
 }
 
 /** Tracks authenticated browser sockets per account and fans events out to them. */
 export class WebGateway {
   private readonly byAccount = new Map<string, Set<WebSocketLike>>();
 
+  constructor(private readonly options: WebGatewayOptions = {}) {}
+
   register(accountId: string, socket: WebSocketLike): void {
     const set = this.byAccount.get(accountId) ?? new Set<WebSocketLike>();
     set.add(socket);
     this.byAccount.set(accountId, set);
+    startHeartbeat(socket, this.options.heartbeatIntervalMs);
     socket.on("close", () => {
       set.delete(socket);
       if (set.size === 0) this.byAccount.delete(accountId);
