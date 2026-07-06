@@ -1,6 +1,7 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import type { InstanceNoticePayload } from "./messages.js";
+import { isStr, optStr, optNum } from "./validate-primitives.js";
 
 /** Envelope `type` for every relay→web push. */
 export const WEB_EVENT_TYPE = "web.event";
@@ -111,10 +112,6 @@ const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVE
 
 const TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
 const TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
-
-const isStr = (v: unknown): boolean => typeof v === "string";
-const optStr = (v: unknown): boolean => v === undefined || typeof v === "string";
-const optNum = (v: unknown): boolean => v === undefined || typeof v === "number";
 
 /** Validate the inner fields of a ToolDetailDto per its discriminant — a known
  *  tag is not enough; junk/missing fields must be rejected so a buggy connector
