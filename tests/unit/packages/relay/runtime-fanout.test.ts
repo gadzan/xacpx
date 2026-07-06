@@ -185,6 +185,23 @@ test("a throwing DB write during onEvent logs relay.event.persist_failed with in
   runtime.close();
 });
 
+test("boundary B: a malformed control event is dropped, not broadcast or persisted", async () => {
+  const runtime = await seeded();
+  const web = new FakeSocket();
+  runtime.webGateway.register("a1", web as never);
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+
+  // turn-finished missing the required `sessionAlias` (and `ok`) → invalid shape.
+  fire({ type: "turn-finished", chatKey: "relay:a1" });
+
+  expect(web.sent.length).toBe(0); // not broadcast
+  const history = runtime.messages.listBySession("a1", "i1", "backend", { limit: 10 });
+  expect(history.messages.length).toBe(0); // not persisted
+  runtime.close();
+});
+
 test("a finish with no text but with tool steps still persists a structured turn", async () => {
   const runtime = await seeded();
   const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
