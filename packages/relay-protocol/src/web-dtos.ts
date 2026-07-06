@@ -156,7 +156,7 @@ function validToolStep(s: unknown): boolean {
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
-function validControlEvent(e: unknown): boolean {
+export function validControlEvent(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const c = e as Record<string, unknown>;
   if (typeof c.type !== "string" || !CONTROL_EVENT_TYPES.has(c.type)) return false;
