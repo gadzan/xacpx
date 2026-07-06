@@ -768,6 +768,9 @@ export class SessionService {
     return await this.stateMutex.run(critical);
   }
 
+  // Commits the state snapshot to the store; with the production
+  // DebouncedStateStore this resolves at commit time (the disk write happens
+  // debounced, off the mutex), so persisting inside mutate() is cheap.
   private async persist(): Promise<void> {
     await this.stateStore.save(this.state);
   }

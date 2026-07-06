@@ -219,6 +219,9 @@ export class ScheduledTaskService {
     return await this.stateMutex.run(critical);
   }
 
+  // Commits the state snapshot to the store; with the production
+  // DebouncedStateStore this resolves at commit time (the disk write happens
+  // debounced, off the mutex), so saving inside mutate() is cheap.
   private async save(): Promise<void> {
     await this.stateStore.save(this.state);
   }

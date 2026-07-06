@@ -623,7 +623,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     config,
     loadState: async () => JSON.parse(JSON.stringify(state)) as typeof state,
     saveState: async (nextState) => {
-      await debouncedStateStore.save(nextState);
+      // Orchestration is durability-gated: a task transition becomes visible
+      // in memory only AFTER it is persisted (see the "keeps the previous
+      // orchestration snapshot visible until task completion is persisted"
+      // test). saveNow() writes immediately — it does not wait out the
+      // debounce window and does not resolve at commit time like save() —
+      // and rejects on write failure so the mutation fails loudly.
+      await debouncedStateStore.saveNow(nextState);
       replaceRuntimeState(state, nextState);
     },
     stateMutex,

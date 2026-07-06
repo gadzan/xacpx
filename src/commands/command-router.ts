@@ -168,10 +168,14 @@ export class CommandRouter {
       kind: command.kind,
     });
 
-    // Refresh config BEFORE authorization so an ownerIds edit takes effect on
-    // the very next message.
-    await this.refreshConfigFromStore();
-    perfSpan?.mark("router.config_refreshed");
+    // No per-message config reload here. Out-of-band config edits (CLI
+    // `xacpx workspace add`, manual config.json edits — including ownerIds)
+    // are picked up by the config watcher in main.ts, which refreshes this
+    // router's shared AppConfig object in place within ~100ms of the file
+    // change. In-process edits (`/config set`, control-API agent/workspace
+    // writes) update the same object synchronously. Reloading from disk on
+    // every inbound message was a full read + parse + config rebuild on the
+    // hot path for no additional freshness.
 
     // Single seam for channel-turn ownership: the effective metadata (with
     // ownerIds applied) is what gets authorized AND what flows down to the
@@ -862,17 +866,6 @@ export class CommandRouter {
     };
     this.config.language = updated.language;
   }
-
-  private async refreshConfigFromStore(): Promise<void> {
-    if (!this.config || !this.configStore) {
-      return;
-    }
-
-    const updated = await this.configStore.load();
-    this.replaceConfig(updated);
-  }
-
-
 
   private async executeCommand(
     chatKey: string,

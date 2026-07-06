@@ -64,6 +64,21 @@ test("close() clears a pending callback and closes the underlying watcher", asyn
   expect(fake.state.closed).toBe(1);
 });
 
+test("default debounce is short enough for next-message pickup (fires within 200ms)", async () => {
+  // The router no longer reloads config per message; the watcher is the ONLY
+  // path for out-of-band edits (ownerIds!) to reach a running daemon. The
+  // default debounce must stay well under a human message round-trip so an
+  // edit is live by the next message. 200ms would catch a regression back to
+  // the old 250ms default while giving the 100ms timer real margin.
+  const fake = fakeWatch();
+  let fired = 0;
+  const w = startConfigWatcher({ configPath: "/x/config.json", onChange: () => { fired += 1; }, watchFactory: fake.factory });
+  fake.emit("config.json");
+  await delay(200);
+  expect(fired).toBe(1);
+  w.close();
+});
+
 test("a throwing onChange is swallowed and does not crash the watcher", async () => {
   const fake = fakeWatch();
   const w = startConfigWatcher({ configPath: "/x/config.json", onChange: () => { throw new Error("boom"); }, debounceMs: 10, watchFactory: fake.factory });

@@ -496,18 +496,36 @@ test("reuses an existing workspace and session from the workspace shortcut comma
   });
 });
 
-test("workspace shortcut refreshes config saved by another process", async () => {
+test("handle() never reloads config from the store; watcher-style in-place refresh is honored", async () => {
+  // Out-of-band config edits (CLI `xacpx workspace add`, manual file edits) are
+  // picked up by the config watcher in main.ts, which refreshes the SAME shared
+  // AppConfig object in place. The router must not read the config store on the
+  // per-message hot path — that was a full disk read + parse + config rebuild
+  // on EVERY inbound message.
   const runtimeConfig = createConfig();
   const persistedConfig = createConfig();
   persistedConfig.workspaces.agent = { cwd: "E:/agent" };
   const configStore = new MemoryConfigStore(persistedConfig);
+  const loadSpy = mock(configStore.load.bind(configStore));
+  configStore.load = loadSpy as never;
   const sessions = new SessionService(runtimeConfig, new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
   const router = new CommandRouter(sessions, transport, runtimeConfig, configStore);
 
-  const reply = await router.handle("wx:user", "/ss codex --ws agent");
+  // The store knows workspace "agent" but the runtime config does not yet:
+  // the router must NOT consult the store mid-message, so the shortcut fails.
+  const before = await router.handle("wx:user", "/ss codex --ws agent");
+  expect(loadSpy).not.toHaveBeenCalled();
+  expect(before.text).toContain(
+    t().shortcut.workspaceNotRegistered("agent", t().shortcut.workspaceAvailable("backend")),
+  );
 
+  // Simulate the watcher's reloadRuntimeConfig: refresh the shared object in place.
+  Object.assign(runtimeConfig, { workspaces: { ...persistedConfig.workspaces } });
+
+  const reply = await router.handle("wx:user", "/ss codex --ws agent");
   expect(reply.text).toContain(t().shortcut.createdHeader("agent:codex"));
+  expect(loadSpy).not.toHaveBeenCalled();
   expect(await sessions.getCurrentSession("wx:user")).toMatchObject({
     alias: "agent:codex",
     workspace: "agent",
