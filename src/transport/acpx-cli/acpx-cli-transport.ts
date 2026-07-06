@@ -35,10 +35,17 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
+import { DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS } from "../command-timeouts";
 
 interface AcpxCliTransportOptions {
   command?: string;
   sessionInitTimeoutMs?: number;
+  /**
+   * Time bound for one-shot management commands (sessions show/close, cancel,
+   * set-mode, set model, status, history). A hung acpx here would otherwise
+   * wedge the session's serial request lane forever. Defaults to 30s.
+   */
+  managementCommandTimeoutMs?: number;
   permissionMode?: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
   permissionPolicy?: string;
@@ -168,6 +175,7 @@ async function defaultPtyRunner(command: string, args: string[], options?: RunOp
 export class AcpxCliTransport implements SessionTransport {
   private readonly command: string;
   private readonly sessionInitTimeoutMs: number;
+  private readonly managementCommandTimeoutMs: number;
   private permissionMode: PermissionMode;
   private nonInteractivePermissions: NonInteractivePermissions;
   private permissionPolicy: string | undefined;
@@ -186,6 +194,7 @@ export class AcpxCliTransport implements SessionTransport {
   ) {
     this.command = options.command ?? "acpx";
     this.sessionInitTimeoutMs = options.sessionInitTimeoutMs ?? 120_000;
+    this.managementCommandTimeoutMs = options.managementCommandTimeoutMs ?? DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS;
     this.permissionMode = options.permissionMode ?? "approve-all";
     this.nonInteractivePermissions = options.nonInteractivePermissions ?? "deny";
     this.permissionPolicy = options.permissionPolicy;
@@ -268,10 +277,15 @@ export class AcpxCliTransport implements SessionTransport {
       ["sessions", "history", "--name", session.transportSession, "--tail", String(lines)],
     ];
 
+    // One shared deadline across all candidate invocations so a hung acpx
+    // bounds the whole method at managementCommandTimeoutMs, not per candidate.
+    const deadline = Date.now() + this.managementCommandTimeoutMs;
     let lastResult: CommandResult | undefined;
     for (const tail of candidates) {
       const args = this.buildArgs(session, tail);
-      const result = await this.runCommandWithTimeout(this.runCommand, args);
+      const result = await this.runCommandWithTimeout(this.runCommand, args, {
+        timeoutMs: Math.max(deadline - Date.now(), 1),
+      });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
       }
@@ -332,6 +346,8 @@ export class AcpxCliTransport implements SessionTransport {
         // may have been partially or fully dropped from the stream.
         return { text: summary ? `${summary}\n\n${baseText}` : "" };
       }
+      // Prompts are deliberately NOT bounded by a total-duration timeout:
+      // long agent turns are legitimate (see command-timeouts.ts).
       const result = await this.runCommand(this.command, args);
       return { text: getPromptText(result) };
     } finally {
@@ -349,7 +365,7 @@ export class AcpxCliTransport implements SessionTransport {
       "-s",
       session.transportSession,
       modeId,
-    ]));
+    ]), { timeoutMs: this.managementCommandTimeoutMs });
   }
 
   // acpx's generic config setter: `<agent> set -s <name> model '<id>'`. Build args
@@ -363,7 +379,7 @@ export class AcpxCliTransport implements SessionTransport {
       session.transportSession,
       "model",
       modelId,
-    ]));
+    ]), { timeoutMs: this.managementCommandTimeoutMs });
   }
 
   // Read the session's current model and the agent-advertised available ids from
@@ -375,7 +391,9 @@ export class AcpxCliTransport implements SessionTransport {
     const args = session.agentCommand
       ? [...prefix, "--agent", session.agentCommand, ...tail]
       : [...prefix, session.agent, ...tail];
-    const result = await this.runCommandWithTimeout(this.runCommand, args);
+    const result = await this.runCommandWithTimeout(this.runCommand, args, {
+      timeoutMs: this.managementCommandTimeoutMs,
+    });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
@@ -396,7 +414,7 @@ export class AcpxCliTransport implements SessionTransport {
       "cancel",
       "-s",
       session.transportSession,
-    ]));
+    ]), { timeoutMs: this.managementCommandTimeoutMs });
     return {
       cancelled: true,
       message: output.trim(),
@@ -426,11 +444,11 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async removeSession(session: ResolvedSession): Promise<void> {
-    const result = await this.runCommand(this.command, this.buildArgs(session, [
+    const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "close",
       session.transportSession,
-    ]));
+    ]), { timeoutMs: this.managementCommandTimeoutMs });
     if (result.code === 0) {
       return;
     }
@@ -471,11 +489,11 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async hasSession(session: ResolvedSession): Promise<boolean> {
-    const result = await this.runCommand(this.command, this.buildArgs(session, [
+    const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "show",
       session.transportSession,
-    ]));
+    ]), { timeoutMs: this.managementCommandTimeoutMs });
 
     return result.code === 0;
   }
@@ -496,11 +514,11 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async readSessionRecord(session: ResolvedSession): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
-    const result = await this.runCommand(this.command, this.buildArgs(session, [
+    const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "show",
       session.transportSession,
-    ]));
+    ]), { timeoutMs: this.managementCommandTimeoutMs });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);

@@ -247,7 +247,7 @@ test("uses the normal command runner for setMode", async () => {
     "-s",
     "backend:api-fix",
     "plan",
-  ], undefined);
+  ], expect.objectContaining({ timeoutMs: 30_000 }));
   expect(runPty).not.toHaveBeenCalled();
 });
 
@@ -411,7 +411,8 @@ test("tails session history by invoking sessions history quiet", async () => {
     "-s",
     "backend:api-fix",
     "20",
-  ], undefined);
+    // Shared deadline across history candidates: bounded by the management timeout.
+  ], expect.objectContaining({ timeoutMs: expect.any(Number) }));
 });
 
 test("passes default permission policy flags to prompt", async () => {
@@ -851,7 +852,7 @@ test("invokes cancel for the resolved session", async () => {
     "cancel",
     "-s",
     "backend:api-fix",
-  ], undefined);
+  ], expect.objectContaining({ timeoutMs: 30_000 }));
 });
 
 test("checks whether a named session exists", async () => {
@@ -873,7 +874,7 @@ test("checks whether a named session exists", async () => {
     "sessions",
     "show",
     "backend:api-fix",
-  ]);
+  ], expect.objectContaining({ timeoutMs: 30_000 }));
 });
 
 test("returns false when a named session does not exist", async () => {
@@ -881,6 +882,37 @@ test("returns false when a named session does not exist", async () => {
   const transport = new AcpxCliTransport({ command: "acpx" }, run);
 
   await expect(transport.hasSession(session)).resolves.toBe(false);
+});
+
+test("times out a hung management command, aborts the spawn, and rejects", async () => {
+  // A runner that never settles — equivalent to acpx wedging on a one-shot
+  // command. Without the management timeout this would deadlock the session's
+  // serial request lane forever.
+  let aborted = false;
+  const run = mock((_command: string, _args: string[], options?: { signal?: AbortSignal }) => {
+    return new Promise<never>(() => {
+      options?.signal?.addEventListener("abort", () => {
+        aborted = true;
+      }, { once: true });
+    });
+  });
+  const transport = new AcpxCliTransport(
+    { command: "acpx", managementCommandTimeoutMs: 20 },
+    run as never,
+  );
+
+  await expect(transport.cancel(session)).rejects.toThrow(/timed out after 20ms/);
+  expect(aborted).toBe(true);
+});
+
+test("times out a hung sessions close (removeSession) instead of hanging forever", async () => {
+  const run = mock(() => new Promise<never>(() => {}));
+  const transport = new AcpxCliTransport(
+    { command: "acpx", managementCommandTimeoutMs: 20 },
+    run as never,
+  );
+
+  await expect(transport.removeSession(session)).rejects.toThrow(/timed out after 20ms/);
 });
 
 test("concatenates agent message chunks across thought and tool-call boundaries", async () => {
@@ -2141,7 +2173,11 @@ test("getAgentSessionId returns the agentSessionId from sessions show", async ()
   const id = await transport.getAgentSessionId(session);
 
   expect(id).toBe("agent-xyz");
-  expect(run).toHaveBeenCalledWith("acpx", expect.arrayContaining(["sessions", "show", "backend:api-fix"]));
+  expect(run).toHaveBeenCalledWith(
+    "acpx",
+    expect.arrayContaining(["sessions", "show", "backend:api-fix"]),
+    expect.objectContaining({ timeoutMs: 30_000 }),
+  );
 });
 
 test("getAgentSessionId returns undefined when the record has no agentSessionId", async () => {
