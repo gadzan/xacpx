@@ -1,9 +1,68 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { onBeforeUnmount, ref, watch } from "vue";
 import { renderMarkdown } from "../lib/render-markdown";
 
 const props = defineProps<{ text: string; streaming?: boolean }>();
-const html = computed(() => renderMarkdown(props.text, { streaming: props.streaming }));
+
+// While streaming, every appended chunk grows `text`, and re-parsing the WHOLE buffer
+// (healing + markdown-it + DOMPurify) per chunk is O(n²) over the turn. Throttle the parse
+// to one render per THROTTLE_MS with a trailing call, so the last chunk always lands. The
+// non-streaming path renders synchronously on every change, exactly like the old computed.
+const THROTTLE_MS = 80;
+
+const html = ref("");
+let timer: ReturnType<typeof setTimeout> | null = null;
+let lastRenderAt = 0;
+
+function cancelTimer(): void {
+  if (timer !== null) {
+    clearTimeout(timer);
+    timer = null;
+  }
+}
+
+function render(): void {
+  lastRenderAt = Date.now();
+  html.value = renderMarkdown(props.text, { streaming: props.streaming });
+}
+
+render(); // initial synchronous render (also seeds the throttle clock)
+
+watch(
+  () => props.text,
+  () => {
+    if (!props.streaming) {
+      cancelTimer();
+      render();
+      return;
+    }
+    const elapsed = Date.now() - lastRenderAt;
+    if (elapsed >= THROTTLE_MS) {
+      cancelTimer();
+      render();
+      return;
+    }
+    // Trailing edge: one pending render picks up whatever `text` holds when it fires.
+    if (timer === null) {
+      timer = setTimeout(() => {
+        timer = null;
+        render();
+      }, THROTTLE_MS - elapsed);
+    }
+  },
+);
+
+// Streaming ended (or toggled): drop any pending throttled render and paint the
+// final full text immediately — the closing frame must never lag or be skipped.
+watch(
+  () => props.streaming,
+  () => {
+    cancelTimer();
+    render();
+  },
+);
+
+onBeforeUnmount(cancelTimer);
 </script>
 
 <template>
