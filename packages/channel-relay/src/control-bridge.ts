@@ -75,12 +75,79 @@ export function orchestrationTaskToDto(
 
 export type ControlBridge = (envelope: RelayEnvelope, respond: (payload: unknown) => void) => void;
 
-export function createControlBridge(control: ControlService): ControlBridge {
+/**
+ * Default time bound for one control RPC dispatch. A hung `await control.*`
+ * would otherwise leave the hub-side pending entry waiting out its full
+ * request timeout (120s default) with no signal from the connector. The
+ * timeout only bounds the RPC *response* — the underlying control operation
+ * is not cancelled and keeps running.
+ */
+export const CONTROL_RPC_TIMEOUT_MS = 60_000;
+
+/**
+ * Time bound for RPC types that legitimately run long — anything that may
+ * spawn/initialize an agent session (sessionInitTimeoutMs defaults to 120s)
+ * or replay native history. Kept just under the hub's 120s request timeout so
+ * the connector still answers with a descriptive error first.
+ */
+export const CONTROL_RPC_SLOW_TIMEOUT_MS = 110_000;
+
+// May trigger session ensure/resume (agent cold start), command execution
+// (e.g. `/session new`), or native-session listing/import.
+const SLOW_RPC_TYPES: ReadonlySet<string> = new Set([
+  MSG.sessionsCreate,
+  MSG.sessionsNativeList,
+  MSG.sessionsArchive,
+  MSG.sessionsUnarchive,
+  MSG.commandExecute,
+]);
+
+// `prompt` awaits the whole interactive turn; bounding it here would be a
+// turn watchdog (policy-sensitive, out of scope). The hub's own request
+// timeout still caps how long its pending entry waits.
+const UNBOUNDED_RPC_TYPES: ReadonlySet<string> = new Set([MSG.prompt]);
+
+export interface ControlBridgeOptions {
+  timeoutMs?: number;
+  slowTimeoutMs?: number;
+  /** Test seams for the dispatch timeout timer. */
+  setTimeoutFn?: (fn: () => void, ms: number) => unknown;
+  clearTimeoutFn?: (timer: unknown) => void;
+}
+
+function controlRpcTimeoutMs(type: string, options: ControlBridgeOptions): number | undefined {
+  if (UNBOUNDED_RPC_TYPES.has(type)) return undefined;
+  if (SLOW_RPC_TYPES.has(type)) return options.slowTimeoutMs ?? CONTROL_RPC_SLOW_TIMEOUT_MS;
+  return options.timeoutMs ?? CONTROL_RPC_TIMEOUT_MS;
+}
+
+export function createControlBridge(control: ControlService, options: ControlBridgeOptions = {}): ControlBridge {
+  const setTimeoutFn = options.setTimeoutFn ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearTimeoutFn = options.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>));
   return (envelope, respond) => {
+    let settled = false;
+    let timer: unknown;
+    const respondOnce = (payload: unknown) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) {
+        clearTimeoutFn(timer);
+        timer = undefined;
+      }
+      respond(payload);
+    };
+
+    const timeoutMs = controlRpcTimeoutMs(envelope.type, options);
+    if (timeoutMs !== undefined) {
+      timer = setTimeoutFn(() => {
+        respondOnce(errorPayload("timeout", `rpc ${envelope.type} timed out after ${timeoutMs}ms in the connector`));
+      }, timeoutMs);
+    }
+
     void dispatchControlRequest(control, envelope)
-      .then(respond)
+      .then(respondOnce)
       .catch((error: unknown) => {
-        respond(errorPayload("internal", error instanceof Error ? error.message : String(error)));
+        respondOnce(errorPayload("internal", error instanceof Error ? error.message : String(error)));
       });
   };
 }

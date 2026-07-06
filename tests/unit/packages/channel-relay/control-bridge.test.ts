@@ -369,3 +369,123 @@ test("terminal.attach RPC without terminalId returns bad-request", async () => {
   const bridge = createControlBridge(control as never);
   expect(await dispatch(bridge, req(MSG.terminalAttach, {}))).toEqual({ error: { code: "bad-request", message: "terminalId is required" } });
 });
+
+// ── connector-side RPC dispatch timeout ──────────────────────────────────────
+
+type ArmedTimer = { fn: () => void; ms: number };
+
+function makeTimerSeams() {
+  const armed: ArmedTimer[] = [];
+  const cleared: unknown[] = [];
+  return {
+    armed,
+    cleared,
+    setTimeoutFn: (fn: () => void, ms: number) => {
+      const timer = { fn, ms };
+      armed.push(timer);
+      return timer;
+    },
+    clearTimeoutFn: (timer: unknown) => {
+      cleared.push(timer);
+    },
+  };
+}
+
+test("a hung control call responds with a timeout errorPayload instead of hanging the hub pending entry", async () => {
+  const seams = makeTimerSeams();
+  const { control } = makeFakeControl({
+    // Never settles — equivalent to a wedged transport underneath the control API.
+    removeSession: () => new Promise(() => {}),
+  });
+  const bridge = createControlBridge(control as never, seams);
+
+  const responses: unknown[] = [];
+  bridge(req(MSG.sessionsRemove, { chatKey: "relay:acct", alias: "a" }), (payload) => responses.push(payload));
+
+  expect(seams.armed).toHaveLength(1);
+  expect(seams.armed[0]!.ms).toBe(60_000);
+
+  seams.armed[0]!.fn();
+  expect(responses).toEqual([
+    { error: { code: "timeout", message: `rpc ${MSG.sessionsRemove} timed out after 60000ms in the connector` } },
+  ]);
+});
+
+test("slow rpc types (session create / command execute) get the slow timeout tier", async () => {
+  const seams = makeTimerSeams();
+  const { control } = makeFakeControl({
+    createSession: () => new Promise(() => {}),
+    executeCommand: () => new Promise(() => {}),
+  });
+  const bridge = createControlBridge(control as never, seams);
+
+  bridge(req(MSG.sessionsCreate, { chatKey: "relay:acct", alias: "a", agent: "codex", workspace: "ws" }), () => {});
+  bridge(req(MSG.commandExecute, { chatKey: "relay:acct", command: "/status" }), () => {});
+
+  expect(seams.armed.map((timer) => timer.ms)).toEqual([110_000, 110_000]);
+});
+
+test("prompt dispatch is never bounded by the connector timeout (interactive turn)", async () => {
+  const seams = makeTimerSeams();
+  const { control } = makeFakeControl();
+  const bridge = createControlBridge(control as never, seams);
+
+  const result = await dispatch(bridge, req(MSG.prompt, {
+    chatKey: "relay:acct", sessionAlias: "a", text: "hi", senderId: "acct", isOwner: true,
+  }));
+
+  expect(result).toEqual({ ok: true, text: "done" });
+  expect(seams.armed).toHaveLength(0);
+});
+
+test("a dispatch that resolves in time clears its timer and a late timeout fire is a no-op", async () => {
+  const seams = makeTimerSeams();
+  const { control } = makeFakeControl();
+  const bridge = createControlBridge(control as never, seams);
+
+  const responses: unknown[] = [];
+  await new Promise((resolve) => bridge(req(MSG.sessionsList, {}), (payload) => {
+    responses.push(payload);
+    resolve(undefined);
+  }));
+
+  expect(seams.cleared).toEqual([seams.armed[0]]);
+  // Even if the timer somehow fired afterwards, respond must not run twice.
+  seams.armed[0]!.fn();
+  expect(responses).toHaveLength(1);
+});
+
+test("a late resolution after the timeout fired does not respond a second time", async () => {
+  const seams = makeTimerSeams();
+  let settle: ((value: unknown) => void) | undefined;
+  const { control } = makeFakeControl({
+    removeSession: () => new Promise((resolve) => { settle = resolve; }),
+  });
+  const bridge = createControlBridge(control as never, seams);
+
+  const responses: unknown[] = [];
+  bridge(req(MSG.sessionsRemove, { chatKey: "relay:acct", alias: "a" }), (payload) => responses.push(payload));
+
+  seams.armed[0]!.fn();
+  settle!({ wasActive: false });
+  // Let the .then(respondOnce) microtask run.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(responses).toHaveLength(1);
+  expect((responses[0] as { error: { code: string } }).error.code).toBe("timeout");
+});
+
+test("custom timeout values override the defaults", async () => {
+  const seams = makeTimerSeams();
+  const { control } = makeFakeControl({
+    removeSession: () => new Promise(() => {}),
+    executeCommand: () => new Promise(() => {}),
+  });
+  const bridge = createControlBridge(control as never, { ...seams, timeoutMs: 1_000, slowTimeoutMs: 2_000 });
+
+  bridge(req(MSG.sessionsRemove, { chatKey: "relay:acct", alias: "a" }), () => {});
+  bridge(req(MSG.commandExecute, { chatKey: "relay:acct", command: "/status" }), () => {});
+
+  expect(seams.armed.map((timer) => timer.ms)).toEqual([1_000, 2_000]);
+});
