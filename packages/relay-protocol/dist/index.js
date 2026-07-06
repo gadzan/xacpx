@@ -100,34 +100,40 @@ function isErrorPayload(payload) {
   const error = candidate;
   return typeof error.code === "string" && typeof error.message === "string";
 }
+// packages/relay-protocol/src/validate-primitives.ts
+var isObj = (v) => typeof v === "object" && v !== null;
+var isStr = (v) => typeof v === "string";
+var optStr = (v) => v === undefined || typeof v === "string";
+var optNum = (v) => v === undefined || typeof v === "number";
+var optBool = (v) => v === undefined || typeof v === "boolean";
+
 // packages/relay-protocol/src/web-dtos.ts
 var WEB_EVENT_TYPE = "web.event";
 function webEventEnvelope(event) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
 var WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "notice"]);
-var CONTROL_EVENT_TYPES = new Set([
-  "turn-output",
-  "turn-started",
-  "tool-event",
-  "turn-thought",
-  "plan",
-  "turn-usage",
-  "agent-commands",
-  "turn-finished",
-  "queue-updated",
-  "sessions-changed",
-  "workspaces-changed",
-  "scheduled-changed",
-  "orchestration-changed",
-  "terminal-output",
-  "terminal-exit"
-]);
+var CONTROL_EVENT_TYPE_MAP = {
+  "turn-output": true,
+  "turn-started": true,
+  "tool-event": true,
+  "turn-thought": true,
+  plan: true,
+  "turn-usage": true,
+  "agent-commands": true,
+  "turn-finished": true,
+  "queue-updated": true,
+  "sessions-changed": true,
+  "workspaces-changed": true,
+  "scheduled-changed": true,
+  "session-history": true,
+  "orchestration-changed": true,
+  "terminal-output": true,
+  "terminal-exit": true
+};
+var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
 var TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
-var isStr = (v) => typeof v === "string";
-var optStr = (v) => v === undefined || typeof v === "string";
-var optNum = (v) => v === undefined || typeof v === "number";
 function validToolDetail(d) {
   switch (d.type) {
     case "diff":
@@ -172,31 +178,43 @@ function validControlEvent(e) {
   const c = e;
   if (typeof c.type !== "string" || !CONTROL_EVENT_TYPES.has(c.type))
     return false;
-  if (c.type === "turn-output")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
-  if (c.type === "turn-finished")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
-  if (c.type === "scheduled-changed")
-    return typeof c.chatKey === "string";
-  if (c.type === "turn-started")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string";
-  if (c.type === "turn-thought")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
-  if (c.type === "plan")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
-  if (c.type === "turn-usage")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
-  if (c.type === "agent-commands")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every((x) => x !== null && typeof x === "object" && typeof x.name === "string");
-  if (c.type === "queue-updated")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
-  if (c.type === "tool-event")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
-  if (c.type === "terminal-output")
-    return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
-  if (c.type === "terminal-exit")
-    return typeof c.terminalId === "string" && typeof c.code === "number";
-  return true;
+  const type = c.type;
+  switch (type) {
+    case "turn-output":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+    case "turn-finished":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
+    case "scheduled-changed":
+      return typeof c.chatKey === "string";
+    case "turn-started":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string";
+    case "turn-thought":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+    case "plan":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
+    case "turn-usage":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
+    case "agent-commands":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every((x) => x !== null && typeof x === "object" && typeof x.name === "string");
+    case "queue-updated":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
+    case "session-history":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.messages) && c.messages.every((m) => m !== null && typeof m === "object" && (m.direction === "in" || m.direction === "out") && typeof m.text === "string");
+    case "tool-event":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
+    case "terminal-output":
+      return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
+    case "terminal-exit":
+      return typeof c.terminalId === "string" && typeof c.code === "number";
+    case "sessions-changed":
+    case "workspaces-changed":
+    case "orchestration-changed":
+      return true;
+    default: {
+      const _exhaustive = type;
+      return _exhaustive;
+    }
+  }
 }
 var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
 function validNotice(n) {
@@ -245,11 +263,207 @@ function parseWebClientMessage(envelope) {
     return p;
   return null;
 }
+// packages/relay-protocol/src/payload-validators.ts
+var fields = (p) => isObj(p) ? p : null;
+var optArr = (v) => v === undefined || Array.isArray(v);
+var validateSessionsList = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) ? o : null;
+};
+var validateSessionsCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.agent) && isStr(o.workspace) && optStr(o.agentSessionId) && optStr(o.model) ? o : null;
+};
+var validateSessionsNativeList = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.agent) && isStr(o.workspace) ? o : null;
+};
+var validateSessionsRemove = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
+};
+var validateSessionsArchive = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
+};
+var validateSessionsUnarchive = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) ? o : null;
+};
+var validateSessionsRename = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.displayName) ? o : null;
+};
+var validateWorkspacesCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.name) && isStr(o.cwd) && optStr(o.description) ? o : null;
+};
+var validateAgentsCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.name) && isStr(o.driver) ? o : null;
+};
+var validateAgentsRemove = (p) => {
+  const o = fields(p);
+  return o && isStr(o.name) ? o : null;
+};
+var validateWorkspacesRemove = (p) => {
+  const o = fields(p);
+  return o && isStr(o.name) ? o : null;
+};
+var validatePrompt = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner) && optArr(o.media) ? o : null;
+};
+var validatePromptCancel = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
+};
+var validateQueueCancel = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.itemId) ? o : null;
+};
+var validateCommandExecute = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner) ? o : null;
+};
+var validateScheduledList = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) ? o : null;
+};
+var validateScheduledCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.executeAt) && isStr(o.message) ? o : null;
+};
+var validateScheduledCancel = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && isStr(o.chatKey) ? o : null;
+};
+var validateOrchestrationGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.taskId) ? o : null;
+};
+var validateOrchestrationCancel = (p) => {
+  const o = fields(p);
+  return o && isStr(o.taskId) ? o : null;
+};
+var validateFsList = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && optStr(o.path) ? o : null;
+};
+var validateFsRead = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.path) ? o : null;
+};
+var validateFsDiff = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && optStr(o.path) ? o : null;
+};
+var validateFsSearch = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.query) && (o.mode === undefined || o.mode === "name" || o.mode === "content") && optBool(o.matchCase) && optBool(o.wholeWord) && optBool(o.regex) && optStr(o.include) && optStr(o.exclude) && optStr(o.path) ? o : null;
+};
+var validateFsCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.path) && (o.kind === "file" || o.kind === "dir") ? o : null;
+};
+var validateFsRename = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.path) && isStr(o.newName) ? o : null;
+};
+var validateFsDelete = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.path) ? o : null;
+};
+var validateFsCopy = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.path) ? o : null;
+};
+var validateFsDownload = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.path) ? o : null;
+};
+var validateFsWrite = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.workspace) || !isStr(o.path) || !isStr(o.content))
+    return null;
+  const exp = fields(o.expected);
+  if (!exp || typeof exp.mtimeMs !== "number" || typeof exp.size !== "number")
+    return null;
+  return o;
+};
+var validateSessionModelGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
+};
+var validateSessionModelSet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.modelId) ? o : null;
+};
+var validateTerminalCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && optNum(o.cols) && optNum(o.rows) ? o : null;
+};
+var validateTerminalAttach = (p) => {
+  const o = fields(p);
+  return o && isStr(o.terminalId) ? o : null;
+};
+var validateUpload = (p) => {
+  const o = fields(p);
+  return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? o : null;
+};
+var CONTROL_PAYLOAD_VALIDATORS = {
+  [MSG.sessionsList]: validateSessionsList,
+  [MSG.sessionsCreate]: validateSessionsCreate,
+  [MSG.sessionsNativeList]: validateSessionsNativeList,
+  [MSG.sessionsRemove]: validateSessionsRemove,
+  [MSG.sessionsArchive]: validateSessionsArchive,
+  [MSG.sessionsUnarchive]: validateSessionsUnarchive,
+  [MSG.sessionsRename]: validateSessionsRename,
+  [MSG.workspacesCreate]: validateWorkspacesCreate,
+  [MSG.agentsCreate]: validateAgentsCreate,
+  [MSG.agentsRemove]: validateAgentsRemove,
+  [MSG.workspacesRemove]: validateWorkspacesRemove,
+  [MSG.prompt]: validatePrompt,
+  [MSG.promptCancel]: validatePromptCancel,
+  [MSG.queueCancel]: validateQueueCancel,
+  [MSG.commandExecute]: validateCommandExecute,
+  [MSG.scheduledList]: validateScheduledList,
+  [MSG.scheduledCreate]: validateScheduledCreate,
+  [MSG.scheduledCancel]: validateScheduledCancel,
+  [MSG.orchestrationGet]: validateOrchestrationGet,
+  [MSG.orchestrationCancel]: validateOrchestrationCancel,
+  [MSG.fsList]: validateFsList,
+  [MSG.fsRead]: validateFsRead,
+  [MSG.fsDiff]: validateFsDiff,
+  [MSG.fsSearch]: validateFsSearch,
+  [MSG.fsCreate]: validateFsCreate,
+  [MSG.fsRename]: validateFsRename,
+  [MSG.fsDelete]: validateFsDelete,
+  [MSG.fsCopy]: validateFsCopy,
+  [MSG.fsDownload]: validateFsDownload,
+  [MSG.fsWrite]: validateFsWrite,
+  [MSG.sessionModelGet]: validateSessionModelGet,
+  [MSG.sessionModelSet]: validateSessionModelSet,
+  [MSG.terminalCreate]: validateTerminalCreate,
+  [MSG.terminalAttach]: validateTerminalAttach,
+  [MSG.upload]: validateUpload
+};
+function parseControlPayload(type, payload) {
+  const validate = CONTROL_PAYLOAD_VALIDATORS[type];
+  return validate(payload);
+}
 export {
   webEventEnvelope,
   webClientEnvelope,
+  validControlEvent,
   parseWebServerEvent,
   parseWebClientMessage,
+  parseControlPayload,
+  optStr,
+  optNum,
+  optBool,
+  isStr,
+  isObj,
   isErrorPayload,
   errorPayload,
   encodeEnvelope,
@@ -257,5 +471,6 @@ export {
   WEB_EVENT_TYPE,
   WEB_CLIENT_TYPE,
   RELAY_PROTOCOL_VERSION,
-  MSG
+  MSG,
+  CONTROL_PAYLOAD_VALIDATORS
 };
