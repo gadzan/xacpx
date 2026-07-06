@@ -26,12 +26,14 @@ const auth = (socket: FakeSocket) => socket.emit("message", encodeEnvelope({
   payload: { instanceId: "i1", credential: "c" },
 }));
 
-function makeFakeLogger(): { logger: RelayLogger; logs: Array<[string, string]> } {
-  const logs: Array<[string, string]> = [];
+type LogEntry = [string, string, Record<string, unknown> | undefined];
+
+function makeFakeLogger(): { logger: RelayLogger; logs: Array<LogEntry> } {
+  const logs: Array<LogEntry> = [];
   const logger: RelayLogger = {
-    debug: (e, m) => logs.push([e, m]),
-    info: (e, m) => logs.push([e, m]),
-    error: (e, m) => logs.push([e, m]),
+    debug: (e, m, c) => logs.push([e, m, c]),
+    info: (e, m, c) => logs.push([e, m, c]),
+    error: (e, m, c) => logs.push([e, m, c]),
   };
   return { logger, logs };
 }
@@ -72,4 +74,69 @@ test("instance gateway logs superseded-close failures through the injected logge
   expect(() => auth(newSocket)).not.toThrow();
 
   expect(logs.some(([e]) => e === "relay.instance.superseded_close_failed")).toBe(true);
+});
+
+test("a successful handshake logs relay.instance.online with instanceId and accountId", () => {
+  const { logger, logs } = makeFakeLogger();
+  const gateway = new InstanceGateway({ instances: stubInstances, accounts: stubAccounts, logger });
+  const socket = new FakeSocket();
+  gateway.handleConnection(socket as never);
+
+  auth(socket);
+
+  const online = logs.find(([e]) => e === "relay.instance.online");
+  expect(online).toBeDefined();
+  expect(online?.[2]).toEqual({ instanceId: "i1", accountId: "a1" });
+});
+
+test("a superseded reconnect logs relay.instance.superseded", () => {
+  const { logger, logs } = makeFakeLogger();
+  const gateway = new InstanceGateway({ instances: stubInstances, accounts: stubAccounts, logger });
+
+  const oldSocket = new FakeSocket();
+  gateway.handleConnection(oldSocket as never);
+  auth(oldSocket);
+
+  const newSocket = new FakeSocket();
+  gateway.handleConnection(newSocket as never);
+  auth(newSocket);
+
+  const superseded = logs.find(([e]) => e === "relay.instance.superseded");
+  expect(superseded).toBeDefined();
+  expect(superseded?.[2]).toEqual({ instanceId: "i1" });
+});
+
+test("a socket close logs relay.instance.offline with instanceId and accountId", () => {
+  const { logger, logs } = makeFakeLogger();
+  const gateway = new InstanceGateway({ instances: stubInstances, accounts: stubAccounts, logger });
+  const socket = new FakeSocket();
+  gateway.handleConnection(socket as never);
+  auth(socket);
+
+  socket.emit("close");
+
+  const offline = logs.find(([e]) => e === "relay.instance.offline");
+  expect(offline).toBeDefined();
+  expect(offline?.[2]).toEqual({ instanceId: "i1", accountId: "a1" });
+});
+
+test("a failed handshake logs relay.instance.handshake_failed with a reason but never a token", () => {
+  const { logger, logs } = makeFakeLogger();
+  const gateway = new InstanceGateway({ instances: stubInstances, accounts: stubAccounts, logger });
+  const socket = new FakeSocket();
+  gateway.handleConnection(socket as never);
+
+  // Both stubAccounts.resolveLoginToken and stubInstances.redeemPairingToken return
+  // null unconditionally, so any presented pairing token fails the handshake.
+  const secretToken = "super-secret-pairing-token";
+  socket.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "h1", type: MSG.instanceRegister,
+    payload: { pairingToken: secretToken },
+  }));
+
+  const failed = logs.find(([e]) => e === "relay.instance.handshake_failed");
+  expect(failed).toBeDefined();
+  expect(failed?.[2]).toEqual({ reason: "pairing-failed" });
+  const allLogText = JSON.stringify(logs);
+  expect(allLogText).not.toContain(secretToken);
 });

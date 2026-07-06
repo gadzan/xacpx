@@ -143,70 +143,77 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
     },
     onEvent: (instanceId, accountId, envelope: RelayEnvelope) => {
-      if (envelope.type === MSG.instanceEvent) {
-        const event = (envelope.payload as InstanceEventPayload).event as ControlEventDto;
-        webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
-        if (event.type === "turn-started") {
-          turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
-          // A scheduled-origin turn carries its prompt here (a normal web turn persists
-          // its inbound message via the prompt RPC instead). Persist it so the fired
-          // task's prompt shows in history, not just the agent's out-of-context reply.
-          if (event.prompt) messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
-        } else if (event.type === "turn-output") {
-          // Only append to an existing buffer; never lazily resurrect one. A buffer
-          // is created solely by turn-started, so a stray streaming event arriving
-          // after an offline sweep (or with no turn-started) is dropped instead of
-          // leaking a buffer that no turn-finished will ever clear.
-          const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a) { a.text += event.chunk; pushTextPart(a, event.chunk); }
-        } else if (event.type === "tool-event") {
-          const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
-            a.steps.set(event.step.toolCallId, event.step);
-            pushToolPart(a, event.step);
-          }
-        } else if (event.type === "turn-thought") {
-          const a = turnBuffers.get(key(instanceId, event.sessionAlias));
-          if (a) { a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP); pushReasoningPart(a, event.chunk); }
-        } else if (event.type === "turn-finished") {
-          const k = key(instanceId, event.sessionAlias);
-          const a = turnBuffers.get(k);
-          turnBuffers.delete(k);
-          if (!a) return;
-          const steps = [...a.steps.values()];
-          // Treat whitespace-only reasoning as absent: it would otherwise persist as an
-          // empty `structured.reasoning` and render as a blank reasoning panel in history.
-          const hasReasoning = a.reasoning.trim().length > 0;
-          const hasStructured = steps.length > 0 || hasReasoning;
-          if (a.text || hasStructured) {
-            const structured = hasStructured
-              ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
-              : undefined;
-            messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
-          }
-        } else if (event.type === "turn-usage") {
-          // Retain the latest usage per session (replace) so a refreshed web client can
-          // restore the context-usage bar from the active-turns snapshot. Already
-          // broadcast above; this is the persistence the snapshot reads back.
-          sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
-        } else if (event.type === "agent-commands") {
-          // Retain the latest advertised command list per session (replace) so a refreshed
-          // web client can restore the composer's "/" hints from the active-turns snapshot.
-          // Already broadcast above; this is the persistence the snapshot reads back.
-          sessionCommands.set(key(instanceId, event.sessionAlias), event.commands);
-        } else if (event.type === "session-history") {
-          // Seed a freshly-attached native session's recovered prior conversation into
-          // history (one-time). Guard against re-seeding an already-populated session so a
-          // redelivered event can't duplicate the backlog.
-          const existing = messages.listBySession(accountId, instanceId, event.sessionAlias, { limit: 1 });
-          if (existing.messages.length === 0) {
-            for (const row of event.messages) {
-              messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured);
+      // Wraps the whole handler (not just messages.append): a throwing DB write must be
+      // attributed to this instance's event persistence, not surface as the gateway's
+      // generic relay.instance.message_failed (see instance-gateway's outer message guard).
+      try {
+        if (envelope.type === MSG.instanceEvent) {
+          const event = (envelope.payload as InstanceEventPayload).event as ControlEventDto;
+          webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
+          if (event.type === "turn-started") {
+            turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+            // A scheduled-origin turn carries its prompt here (a normal web turn persists
+            // its inbound message via the prompt RPC instead). Persist it so the fired
+            // task's prompt shows in history, not just the agent's out-of-context reply.
+            if (event.prompt) messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+          } else if (event.type === "turn-output") {
+            // Only append to an existing buffer; never lazily resurrect one. A buffer
+            // is created solely by turn-started, so a stray streaming event arriving
+            // after an offline sweep (or with no turn-started) is dropped instead of
+            // leaking a buffer that no turn-finished will ever clear.
+            const a = turnBuffers.get(key(instanceId, event.sessionAlias));
+            if (a) { a.text += event.chunk; pushTextPart(a, event.chunk); }
+          } else if (event.type === "tool-event") {
+            const a = turnBuffers.get(key(instanceId, event.sessionAlias));
+            if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
+              a.steps.set(event.step.toolCallId, event.step);
+              pushToolPart(a, event.step);
+            }
+          } else if (event.type === "turn-thought") {
+            const a = turnBuffers.get(key(instanceId, event.sessionAlias));
+            if (a) { a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP); pushReasoningPart(a, event.chunk); }
+          } else if (event.type === "turn-finished") {
+            const k = key(instanceId, event.sessionAlias);
+            const a = turnBuffers.get(k);
+            turnBuffers.delete(k);
+            if (!a) return;
+            const steps = [...a.steps.values()];
+            // Treat whitespace-only reasoning as absent: it would otherwise persist as an
+            // empty `structured.reasoning` and render as a blank reasoning panel in history.
+            const hasReasoning = a.reasoning.trim().length > 0;
+            const hasStructured = steps.length > 0 || hasReasoning;
+            if (a.text || hasStructured) {
+              const structured = hasStructured
+                ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
+                : undefined;
+              messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
+            }
+          } else if (event.type === "turn-usage") {
+            // Retain the latest usage per session (replace) so a refreshed web client can
+            // restore the context-usage bar from the active-turns snapshot. Already
+            // broadcast above; this is the persistence the snapshot reads back.
+            sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
+          } else if (event.type === "agent-commands") {
+            // Retain the latest advertised command list per session (replace) so a refreshed
+            // web client can restore the composer's "/" hints from the active-turns snapshot.
+            // Already broadcast above; this is the persistence the snapshot reads back.
+            sessionCommands.set(key(instanceId, event.sessionAlias), event.commands);
+          } else if (event.type === "session-history") {
+            // Seed a freshly-attached native session's recovered prior conversation into
+            // history (one-time). Guard against re-seeding an already-populated session so a
+            // redelivered event can't duplicate the backlog.
+            const existing = messages.listBySession(accountId, instanceId, event.sessionAlias, { limit: 1 });
+            if (existing.messages.length === 0) {
+              for (const row of event.messages) {
+                messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured);
+              }
             }
           }
+        } else if (envelope.type === MSG.instanceNotice) {
+          webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });
         }
-      } else if (envelope.type === MSG.instanceNotice) {
-        webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });
+      } catch (err) {
+        logger.error("relay.event.persist_failed", "failed to persist instance event", { instanceId, error: String(err) });
       }
     },
   });
