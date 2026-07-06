@@ -16,6 +16,8 @@ import TerminalTab from "../components/TerminalTab.vue";
 import { createTerminalAdapter } from "../lib/terminal-adapter";
 import { api } from "../api/client";
 import { sendWebClientMessage } from "../api/events";
+import { useTerminalStore } from "../stores/terminal";
+import { saveTerminalId, loadTerminalId } from "../lib/terminal-sessions";
 
 const globalOpts = { mocks: { $t: (k: string) => k } };
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -366,5 +368,84 @@ describe("TerminalTab", () => {
     mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
     expect(createTerminalAdapter).toHaveBeenCalledTimes(1);
+  });
+
+  it("on mount with a persisted terminalId, attaches and replays the buffer (no fresh create)", async () => {
+    saveTerminalId("i1::demo", "term-persisted");
+    vi.mocked(api.rpc).mockImplementation(async (_i, method) => {
+      if (method === "control.terminal.attach") return { ok: true, buffer: "PRIOR SCROLLBACK", lastSeq: 5 } as never;
+      return { terminalId: "should-not-create" } as never;
+    });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick();
+    expect(api.rpc).toHaveBeenCalledWith("i1", "control.terminal.attach", { terminalId: "term-persisted" });
+    expect(adapter.write).toHaveBeenCalledWith("PRIOR SCROLLBACK"); // scrollback replayed
+    // did NOT create a fresh terminal
+    expect(api.rpc).not.toHaveBeenCalledWith("i1", "control.terminal.create", expect.anything());
+  });
+
+  it("drops live output with seq <= lastSeq after attach (dedup)", async () => {
+    saveTerminalId("i1::demo", "term-persisted");
+    vi.mocked(api.rpc).mockImplementation(async (_i, method) =>
+      method === "control.terminal.attach" ? ({ ok: true, buffer: "BUF", lastSeq: 5 } as never) : ({} as never));
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick();
+    adapter.write.mockClear();
+    // deliver live output via the store event path
+    const store = useTerminalStore();
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 5, data: "DUP" } } as never); // <= lastSeq → dropped
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 6, data: "NEW" } } as never); // > lastSeq → written
+    await tick();
+    expect(adapter.write).not.toHaveBeenCalledWith("DUP");
+    expect(adapter.write).toHaveBeenCalledWith("NEW");
+  });
+
+  it("queues live output arriving during attach-in-flight, then flushes seq>lastSeq after the buffer", async () => {
+    saveTerminalId("i1::demo", "term-persisted");
+    let resolveAttach!: (v: unknown) => void;
+    vi.mocked(api.rpc).mockImplementation((_i, method) =>
+      method === "control.terminal.attach"
+        ? new Promise((r) => { resolveAttach = r; })
+        : (Promise.resolve({}) as never));
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick(); // attach now in flight, subscribed + queueing
+    const store = useTerminalStore();
+    // live events arrive WHILE attach is pending → must be queued (not written yet)
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 5, data: "DUP" } } as never); // <= lastSeq → drop
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 6, data: "MID" } } as never); // > lastSeq → flush
+    expect(adapter.write).not.toHaveBeenCalledWith("MID"); // still queued, buffer not replayed yet
+    resolveAttach({ ok: true, buffer: "BUF", lastSeq: 5 });
+    await tick();
+    // order: buffer first, then queued live (MID), DUP dropped
+    expect(adapter.write).toHaveBeenCalledWith("BUF");
+    expect(adapter.write).toHaveBeenCalledWith("MID");
+    expect(adapter.write).not.toHaveBeenCalledWith("DUP");
+  });
+
+  it("attach ok:false clears the id and falls back to the start placeholder", async () => {
+    saveTerminalId("i1::demo", "gone");
+    vi.mocked(api.rpc).mockImplementation(async (_i, method) =>
+      method === "control.terminal.attach" ? ({ ok: false } as never) : ({} as never));
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
+    await tick();
+    expect(w.find('[data-test="term-restore"]').exists()).toBe(true); // placeholder
+    expect(loadTerminalId("i1::demo")).toBeNull(); // stale id cleared
+  });
+
+  it("fresh create persists the terminalId", async () => {
+    vi.mocked(api.rpc).mockResolvedValue({ terminalId: "t-new" } as never);
+    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: true }, global: globalOpts });
+    await tick();
+    expect(loadTerminalId("i1::demo")).toBe("t-new");
+  });
+
+  it("unmount (refresh) does NOT close the PTY", async () => {
+    vi.mocked(api.rpc).mockResolvedValue({ terminalId: "t-new" } as never);
+    const sent: unknown[] = [];
+    vi.mocked(sendWebClientMessage).mockImplementation((m) => { sent.push(m); });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: true }, global: globalOpts });
+    await tick();
+    w.unmount();
+    expect(sent.some((m: any) => m.kind === "terminal-close")).toBe(false); // no close on unmount
   });
 });

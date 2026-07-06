@@ -83,6 +83,7 @@ var MSG = {
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
   terminalCreate: "control.terminal.create",
+  terminalAttach: "control.terminal.attach",
   terminalInput: "instance.terminal.input",
   terminalResize: "instance.terminal.resize",
   terminalClose: "instance.terminal.close"

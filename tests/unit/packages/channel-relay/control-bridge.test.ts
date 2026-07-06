@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, mock } from "bun:test";
 
 import { MSG, RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "../../../../packages/relay-protocol/src/index";
 import {
@@ -355,4 +355,17 @@ test("subscribeControlEvents normalizes tool-event into a step DTO", () => {
   expect(tool.type).toBe("tool-event");
   expect(tool.step).toMatchObject({ toolCallId: "t1", kind: "execute", title: "ls", detail: { type: "command", command: "ls" } });
   expect(tool.event).toBeUndefined();
+});
+
+test("terminal.attach RPC forwards to attachTerminal and returns its result", async () => {
+  const { control } = makeFakeControl({ attachTerminal: mock((id: string) => ({ ok: true, buffer: "SCROLL", lastSeq: 3 })) });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.terminalAttach, { terminalId: "t1" }))).toEqual({ ok: true, buffer: "SCROLL", lastSeq: 3 });
+  expect((control.attachTerminal as ReturnType<typeof mock>).mock.calls[0]).toEqual(["t1"]);
+});
+
+test("terminal.attach RPC without terminalId returns bad-request", async () => {
+  const { control } = makeFakeControl({ attachTerminal: mock(() => ({ ok: false })) });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.terminalAttach, {}))).toEqual({ error: { code: "bad-request", message: "terminalId is required" } });
 });

@@ -884,6 +884,11 @@ export class ControlService {
     return this.deps.terminal.create({ cwd: session.cwd, cols, rows });
   }
 
+  attachTerminal(terminalId: string): import("./terminal-service").TerminalAttachResult {
+    if (!this.deps.terminalEnabled()) throw new Error("terminal-disabled");
+    return this.deps.terminal.attach(terminalId);
+  }
+
   writeTerminal(terminalId: string, data: string): void {
     this.deps.terminal.write(terminalId, data);
   }

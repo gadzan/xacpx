@@ -4,6 +4,8 @@ import { ArrowLeft, Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, Chev
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
 import { useTerminalStore } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
+import { sessionKey as makeSessionKey } from "../stores/center-tabs";
+import { loadTerminalId, saveTerminalId, clearTerminalId } from "../lib/terminal-sessions";
 
 const props = withDefaults(defineProps<{ instanceId: string; sessionAlias: string; autostart?: boolean }>(), {
   autostart: true,
@@ -11,6 +13,7 @@ const props = withDefaults(defineProps<{ instanceId: string; sessionAlias: strin
 const emit = defineEmits<{ close: [] }>();
 const terminals = useTerminalStore();
 const theme = useThemeStore();
+const sessionKey = computed(() => makeSessionKey(props.instanceId, props.sessionAlias));
 const host = ref<HTMLDivElement | null>(null);
 const status = ref<"idle" | "connecting" | "open" | "exited" | "error">("idle");
 const errorKey = ref<string>("");
@@ -223,18 +226,73 @@ function applyFit(myEpoch = epoch) {
   terminals.resize(props.instanceId, terminalId, dim.cols, dim.rows);
 }
 
-function teardown() {
+// Releases front-end resources (adapter, listeners, resize observer) WITHOUT killing the
+// backend PTY — a refresh/tab-close should be able to reattach to the same live terminal
+// later. The PTY is only closed on an explicit user action (the close button), which sends
+// terminal-close itself; this function must never do that.
+function releaseFrontend() {
   epoch++;
   offOutput?.(); offOutput = null;
   offExit?.(); offExit = null;
   resizeObs?.disconnect(); resizeObs = null;
-  if (terminalId) terminals.close(props.instanceId, terminalId);
   adapter?.dispose(); adapter = null; terminalId = "";
   disarmMods();
 }
 
+// Attempt to reattach to a persisted terminalId (e.g. after a page reload). Subscribes to
+// live output BEFORE issuing the attach RPC so no output emitted between the RPC firing and
+// its response is lost — those events are queued and, once the attach resolves, flushed in
+// order after the replayed scrollback buffer (so history never appears out of order relative
+// to live output). Returns true on success (adapter mounted, status "open"), false if the
+// PTY is gone (caller should forget the persisted id and fall back to start()/placeholder).
+async function tryAttach(id: string): Promise<boolean> {
+  if (!host.value) return false;
+  releaseFrontend();
+  const myEpoch = epoch;
+  status.value = "connecting";
+  terminalId = id;
+  const currentAdapter = createTerminalAdapter(host.value, { cols: 80, rows: 24, onData: handleData, theme: currentTheme() });
+  adapter = currentAdapter;
+  const pending: Array<{ data: string; seq: number }> = [];
+  let queueing = true;
+  let ignoreThroughSeq = -1;
+  offOutput = terminals.onOutput((oid, data, seq) => {
+    if (oid !== terminalId) return;
+    if (queueing) { pending.push({ data, seq }); return; }
+    if (seq <= ignoreThroughSeq) return;
+    adapter?.write(data);
+  });
+  offExit = terminals.onExit((oid, code) => { if (oid === terminalId) { status.value = "exited"; errorKey.value = String(code); } });
+  try {
+    const res = await terminals.attach(props.instanceId, id);
+    if (myEpoch !== epoch) {
+      // Superseded while the attach RPC was in flight: the superseding releaseFrontend()
+      // already disposed this adapter when `adapter` still pointed at it, so only dispose
+      // if it wasn't (guard against double-dispose).
+      if (adapter === currentAdapter) currentAdapter.dispose();
+      return true;
+    }
+    if (!res.ok) { releaseFrontend(); status.value = "idle"; return false; }
+    ignoreThroughSeq = res.lastSeq;
+    currentAdapter.write(res.buffer);            // replay scrollback
+    queueing = false;
+    for (const p of pending) if (p.seq > ignoreThroughSeq) currentAdapter.write(p.data); // flush queued live
+    pending.length = 0;
+    started = true; // gate the prop-watch only once attach actually succeeded
+    status.value = "open";
+    resizeObs = new ResizeObserver(() => applyFit());
+    if (host.value) resizeObs.observe(host.value);
+    applyFit(myEpoch);
+    return true;
+  } catch {
+    if (myEpoch !== epoch) return true;
+    releaseFrontend(); status.value = "idle";
+    return false;
+  }
+}
+
 async function start() {
-  teardown();
+  releaseFrontend();
   const myEpoch = epoch;
   if (!props.sessionAlias || !host.value) { status.value = "idle"; return; }
   status.value = "connecting";
@@ -250,14 +308,15 @@ async function start() {
   try {
     const newId = await terminals.create(props.instanceId, props.sessionAlias, currentAdapter.cols(), currentAdapter.rows());
     if (myEpoch !== epoch) {
-      // Superseded by a later start()/teardown: close the just-created orphan PTY. The superseding
-      // teardown already disposed this adapter when `adapter` still pointed at it, so only dispose
-      // if it wasn't (guard against double-dispose).
+      // Superseded by a later start()/releaseFrontend: close the just-created orphan PTY. The
+      // superseding releaseFrontend already disposed this adapter when `adapter` still pointed at
+      // it, so only dispose if it wasn't (guard against double-dispose).
       terminals.close(props.instanceId, newId);
       if (adapter === currentAdapter) currentAdapter.dispose();
       return;
     }
     terminalId = newId;
+    saveTerminalId(sessionKey.value, newId);
     status.value = "open";
     resizeObs = new ResizeObserver(() => applyFit());
     if (host.value) resizeObs.observe(host.value);
@@ -299,8 +358,23 @@ function detachTouch() {
   el.removeEventListener("focusout", onHostFocusOut);
 }
 
-onMounted(() => {
+// On mount, prefer reattaching to a persisted terminalId (survives a reload) over spawning a
+// fresh PTY. Only falls through to start()/the placeholder when there's no persisted id, or
+// the persisted PTY is gone (attach failed) — in which case the stale id is forgotten so a
+// later mount doesn't keep retrying a dead terminal.
+async function mount() {
+  const id = loadTerminalId(sessionKey.value);
+  if (id) {
+    const ok = await tryAttach(id);
+    if (ok) return;
+    clearTerminalId(sessionKey.value); // stale PTY → forget, fall through
+  }
   if (props.autostart) void start();
+  // else: showPlaceholder stays (status idle)
+}
+
+onMounted(() => {
+  void mount();
   attachTouch();
   window.visualViewport?.addEventListener("resize", updateKeyboardInset);
   window.visualViewport?.addEventListener("scroll", updateKeyboardInset);
@@ -313,7 +387,7 @@ onBeforeUnmount(() => {
   detachTouch();
   window.visualViewport?.removeEventListener("resize", updateKeyboardInset);
   window.visualViewport?.removeEventListener("scroll", updateKeyboardInset);
-  teardown();
+  releaseFrontend();
 });
 </script>
 

@@ -9,6 +9,7 @@ import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
+import { killSessionTerminal } from "../lib/session-terminal";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -152,6 +153,9 @@ function keyWorkspace(key: string): string {
 // Route every tab close (file/diff/terminal) through the dirty-aware guard: a clean tab
 // closes immediately, a dirty file tab asks first (native confirm — the store can't show UI).
 function requestCloseTab(key: string, id: string) {
+  // Explicit close of a terminal tab kills its PTY and forgets the id (a refresh does NOT reach here).
+  const tab = centerTabs.tabsFor(key).find((t) => t.id === id);
+  if (tab?.kind === "terminal") killSessionTerminal(key, keyInstance(key), terminals);
   centerTabs.closeTabGuarded(key, id, () => window.confirm(t("files.unsavedConfirm")));
 }
 
@@ -176,7 +180,11 @@ function reconcileCenterTabs() {
   const openKeys = new Set(centerTabs.allOpenTabs().map((t) => t.key));
   for (const key of openKeys) {
     const inst = instances.byId(keyInstance(key));
-    if (inst?.sessionsLoaded && !valid.has(key)) centerTabs.clearSession(key);
+    if (inst?.sessionsLoaded && !valid.has(key)) {
+      const hasTerminal = centerTabs.tabsFor(key).some((t) => t.kind === "terminal");
+      if (hasTerminal) killSessionTerminal(key, keyInstance(key), terminals);
+      centerTabs.clearSession(key);
+    }
   }
 }
 watch(() => instances.instances, reconcileCenterTabs, { deep: true });
@@ -323,7 +331,8 @@ onUnmounted(() => {
     <div class="flex items-center gap-2 border-b border-border bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
-      <CenterTabStrip v-if="currentKey" bare :session-key="currentKey" class="min-w-0 flex-1" />
+      <CenterTabStrip v-if="currentKey" bare :session-key="currentKey" class="min-w-0 flex-1"
+                      @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
       <span v-else class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
       <div class="flex shrink-0 items-center gap-0.5">
         <button data-test="open-files" :aria-label='$t("nav.openFiles")' :title='$t("nav.files")'
@@ -381,7 +390,9 @@ onUnmounted(() => {
         <!-- Desktop-only standalone strip (mobile renders it in the top bar above). The
              wrapper — not a class on the strip — owns the responsive show/hide so the
              strip's own `display:flex` never fights a `hidden`/`lg:flex` on the same node. -->
-        <div v-if="currentKey" class="hidden shrink-0 lg:block"><CenterTabStrip :session-key="currentKey" /></div>
+        <div v-if="currentKey" class="hidden shrink-0 lg:block">
+          <CenterTabStrip :session-key="currentKey" @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
+        </div>
         <div class="relative min-h-0 flex-1">
           <ChatPane class="absolute inset-0"
                     :inert="!!currentKey && centerTabs.activeFor(currentKey) !== 'chat'"

@@ -83,6 +83,51 @@ test("write/resize/close on an unknown terminalId are no-ops (no throw)", () => 
   expect(() => svc.close("nope")).not.toThrow();
 });
 
+// ── attach() / ring buffer (content replay, layer 3) ────────────────────────
+
+test("attach returns ok:false for an unknown terminal", () => {
+  const { svc } = setup();
+  expect(svc.attach("nope")).toEqual({ ok: false });
+});
+
+test("attach returns buffered output + lastSeq for a live terminal", () => {
+  const { svc, pty } = setup();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  pty.emitData("hello\n");
+  pty.emitData("world\n");
+  const res = svc.attach(terminalId);
+  expect(res).toEqual({ ok: true, buffer: "hello\nworld\n", lastSeq: 1 }); // seq 0,1 emitted → lastSeq 1
+});
+
+test("attach on a terminal with no output yet returns lastSeq -1", () => {
+  const { svc } = setup();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  expect(svc.attach(terminalId)).toEqual({ ok: true, buffer: "", lastSeq: -1 });
+});
+
+test("attach returns ok:false after close", () => {
+  const { svc, pty } = setup();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  pty.emitData("x");
+  pty.emitExit(0); // exit deletes the session
+  expect(svc.attach(terminalId)).toEqual({ ok: false });
+});
+
+test("ring buffer trims oldest whole lines past 256KB (keeps tail, cuts at newline)", () => {
+  const { svc, pty } = setup();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  // 300 lines of ~1KB each ≈ 300KB > 256KB cap
+  for (let i = 0; i < 300; i++) pty.emitData("L" + i + ":" + "x".repeat(1000) + "\n");
+  const res = svc.attach(terminalId);
+  if (!res.ok) throw new Error("expected ok");
+  expect(Buffer.byteLength(res.buffer, "utf8")).toBeLessThanOrEqual(256 * 1024);
+  // oldest lines dropped, newest retained; buffer starts at a line boundary (no partial leading line)
+  expect(res.buffer.startsWith("L")).toBe(true);
+  expect(res.buffer.endsWith("\n")).toBe(true);
+  expect(res.buffer).toContain("L299:");
+  expect(res.buffer).not.toContain("L0:");
+});
+
 test("create no longer throws on win32 and spawns the resolved shell", () => {
   const { svc, spawn } = setup({ platform: "win32", shell: () => "C:/win/pwsh.exe" });
   expect(() => svc.create({ cwd: "C:/ws", cols: 80, rows: 24 })).not.toThrow();

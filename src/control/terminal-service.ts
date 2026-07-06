@@ -35,8 +35,13 @@ export type PtySpawn = (
 
 export interface TerminalCreateInput { cwd: string; cols: number; rows: number }
 
+export type TerminalAttachResult =
+  | { ok: false }
+  | { ok: true; buffer: string; lastSeq: number };
+
 export interface TerminalService {
   create(input: TerminalCreateInput): { terminalId: string };
+  attach(terminalId: string): TerminalAttachResult;
   write(terminalId: string, data: string): void;
   resize(terminalId: string, cols: number, rows: number): void;
   close(terminalId: string): void;
@@ -115,7 +120,29 @@ function realPtySpawn(file: string, args: string[], opts: { name: string; cols: 
 }
 
 // idleTimer is typed as unknown so the type is compatible with both Node.js Timeout and Bun Timer.
-interface Session { handle: PtyHandle; seq: number; idleTimer: unknown }
+interface Session { handle: PtyHandle; seq: number; idleTimer: unknown; buffer: string; bufBytes: number }
+
+const MAX_BUFFER_BYTES = 256 * 1024;
+
+function appendToBuffer(session: Session, data: string): void {
+  session.buffer += data;
+  session.bufBytes += Buffer.byteLength(data, "utf8");
+  if (session.bufBytes <= MAX_BUFFER_BYTES) return;
+  // Drop oldest WHOLE lines (cut at "\n") to avoid slicing mid-escape-sequence.
+  while (session.bufBytes > MAX_BUFFER_BYTES) {
+    const nl = session.buffer.indexOf("\n");
+    if (nl === -1) break; // single line longer than the cap → hard-cut below
+    const removed = session.buffer.slice(0, nl + 1);
+    session.buffer = session.buffer.slice(nl + 1);
+    session.bufBytes -= Buffer.byteLength(removed, "utf8");
+  }
+  // Degenerate single huge line: hard-cut leading chars until within cap.
+  while (session.bufBytes > MAX_BUFFER_BYTES && session.buffer.length > 0) {
+    const ch = session.buffer[0]!;
+    session.buffer = session.buffer.slice(1);
+    session.bufBytes -= Buffer.byteLength(ch, "utf8");
+  }
+}
 
 export function createTerminalService(deps: TerminalServiceDeps): TerminalService {
   const spawn = deps.spawn ?? realPtySpawn;
@@ -144,11 +171,11 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       const shell = resolveShell({ platform, env: process.env, shellOverride: deps.shell?.() });
       const terminalId = randomUUID();
       const handle = spawn(shell, [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
-      const session: Session = { handle, seq: 0, idleTimer: null };
+      const session: Session = { handle, seq: 0, idleTimer: null, buffer: "", bufBytes: 0 };
       sessions.set(terminalId, session);
       handle.onData((data) => {
-        // NOTE: resetIdle is intentionally NOT called here.
-        // Output does not count as user interaction; only write/resize do.
+        // NOTE: resetIdle is intentionally NOT called here (output ≠ user interaction).
+        appendToBuffer(session, data);
         deps.events.emit({ type: "terminal-output", terminalId, seq: session.seq++, data });
       });
       handle.onExit(({ exitCode }) => {
@@ -158,6 +185,12 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       });
       resetIdle(terminalId);
       return { terminalId };
+    },
+    attach(terminalId) {
+      const s = sessions.get(terminalId);
+      if (!s) return { ok: false };
+      resetIdle(terminalId); // reattaching counts as activity
+      return { ok: true, buffer: s.buffer, lastSeq: s.seq - 1 };
     },
     write(terminalId, data) {
       const s = sessions.get(terminalId);

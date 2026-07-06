@@ -261,6 +261,16 @@ export type ControlEventDto = {
     sessionAlias: string;
     items: QueueItemDto[];
 };
+export interface TerminalAttachRequest {
+    terminalId: string;
+}
+export type TerminalAttachResult = {
+    ok: false;
+} | {
+    ok: true;
+    buffer: string;
+    lastSeq: number;
+};
 /** One recovered history row (a persisted-shaped message) for a native-session seed. */
 export interface SessionHistoryRowDto {
     direction: "in" | "out";

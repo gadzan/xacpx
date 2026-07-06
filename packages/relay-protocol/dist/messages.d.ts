@@ -42,6 +42,7 @@ export declare const MSG: {
     readonly sessionModelGet: "control.session.model.get";
     readonly sessionModelSet: "control.session.model.set";
     readonly terminalCreate: "control.terminal.create";
+    readonly terminalAttach: "control.terminal.attach";
     readonly terminalInput: "instance.terminal.input";
     readonly terminalResize: "instance.terminal.resize";
     readonly terminalClose: "instance.terminal.close";
