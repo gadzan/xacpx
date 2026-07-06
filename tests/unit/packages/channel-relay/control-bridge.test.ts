@@ -411,18 +411,36 @@ test("a hung control call responds with a timeout errorPayload instead of hangin
   ]);
 });
 
-test("slow rpc types (session create / command execute) get the slow timeout tier", async () => {
+test("core-bounded / long RPC types are exempt from the connector timeout", async () => {
   const seams = makeTimerSeams();
   const { control } = makeFakeControl({
+    // Each of these wraps a core operation with its own ceiling (session-init
+    // 120s) or is prompt-like; a connector timeout would preempt legit slow
+    // work without cancelling it. The hub's 120s request timeout is the backstop.
     createSession: () => new Promise(() => {}),
+    listNativeSessions: () => new Promise(() => {}),
     executeCommand: () => new Promise(() => {}),
   });
   const bridge = createControlBridge(control as never, seams);
 
   bridge(req(MSG.sessionsCreate, { chatKey: "relay:acct", alias: "a", agent: "codex", workspace: "ws" }), () => {});
+  bridge(req(MSG.sessionsNativeList, { chatKey: "relay:acct", agent: "codex", workspace: "ws" }), () => {});
   bridge(req(MSG.commandExecute, { chatKey: "relay:acct", command: "/status" }), () => {});
 
-  expect(seams.armed.map((timer) => timer.ms)).toEqual([110_000, 110_000]);
+  // No timer armed for any exempt type.
+  expect(seams.armed).toHaveLength(0);
+});
+
+test("session archive is bounded by the default connector timeout (core-bounded at 30s)", async () => {
+  const seams = makeTimerSeams();
+  const { control } = makeFakeControl({
+    archiveSession: () => new Promise(() => {}),
+  });
+  const bridge = createControlBridge(control as never, seams);
+
+  bridge(req(MSG.sessionsArchive, { chatKey: "relay:acct", alias: "a" }), () => {});
+
+  expect(seams.armed.map((timer) => timer.ms)).toEqual([60_000]);
 });
 
 test("prompt dispatch is never bounded by the connector timeout (interactive turn)", async () => {
@@ -476,16 +494,16 @@ test("a late resolution after the timeout fired does not respond a second time",
   expect((responses[0] as { error: { code: string } }).error.code).toBe("timeout");
 });
 
-test("custom timeout values override the defaults", async () => {
+test("custom timeout value overrides the default for bounded RPCs", async () => {
   const seams = makeTimerSeams();
   const { control } = makeFakeControl({
     removeSession: () => new Promise(() => {}),
-    executeCommand: () => new Promise(() => {}),
+    archiveSession: () => new Promise(() => {}),
   });
-  const bridge = createControlBridge(control as never, { ...seams, timeoutMs: 1_000, slowTimeoutMs: 2_000 });
+  const bridge = createControlBridge(control as never, { ...seams, timeoutMs: 1_000 });
 
   bridge(req(MSG.sessionsRemove, { chatKey: "relay:acct", alias: "a" }), () => {});
-  bridge(req(MSG.commandExecute, { chatKey: "relay:acct", command: "/status" }), () => {});
+  bridge(req(MSG.sessionsArchive, { chatKey: "relay:acct", alias: "a" }), () => {});
 
-  expect(seams.armed.map((timer) => timer.ms)).toEqual([1_000, 2_000]);
+  expect(seams.armed.map((timer) => timer.ms)).toEqual([1_000, 1_000]);
 });

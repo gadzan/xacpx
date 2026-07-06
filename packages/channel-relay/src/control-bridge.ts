@@ -84,40 +84,36 @@ export type ControlBridge = (envelope: RelayEnvelope, respond: (payload: unknown
  */
 export const CONTROL_RPC_TIMEOUT_MS = 60_000;
 
-/**
- * Time bound for RPC types that legitimately run long — anything that may
- * spawn/initialize an agent session (sessionInitTimeoutMs defaults to 120s)
- * or replay native history. Kept just under the hub's 120s request timeout so
- * the connector still answers with a descriptive error first.
- */
-export const CONTROL_RPC_SLOW_TIMEOUT_MS = 110_000;
-
-// May trigger session ensure/resume (agent cold start), command execution
-// (e.g. `/session new`), or native-session listing/import.
-const SLOW_RPC_TYPES: ReadonlySet<string> = new Set([
+// RPC types the connector must NOT bound, because a dispatch timeout here does
+// not cancel the underlying control operation — it only stops waiting and
+// returns a spurious error while the op keeps running. Bounding these below
+// their real ceiling only preempts legitimate slow work:
+//   - prompt: awaits the whole interactive turn (bounding = a turn watchdog,
+//     policy-sensitive, out of scope).
+//   - sessionsCreate / sessionsNativeList: wrap a core operation that already
+//     carries its own timeout at the hub's 120s ceiling (agent cold start /
+//     session-init defaults to 120s, native-history listing is core-bounded).
+//     A 110s connector bound would fire ~10s early on a slow first-run cold
+//     start, reporting failure while the session still gets created.
+//   - commandExecute: runs a slash command / agent command that is prompt-like
+//     in duration.
+// For all of these the hub's own 120s request timeout is the real backstop.
+const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
+  MSG.prompt,
   MSG.sessionsCreate,
   MSG.sessionsNativeList,
-  MSG.sessionsArchive,
-  MSG.sessionsUnarchive,
   MSG.commandExecute,
 ]);
 
-// `prompt` awaits the whole interactive turn; bounding it here would be a
-// turn watchdog (policy-sensitive, out of scope). The hub's own request
-// timeout still caps how long its pending entry waits.
-const UNBOUNDED_RPC_TYPES: ReadonlySet<string> = new Set([MSG.prompt]);
-
 export interface ControlBridgeOptions {
   timeoutMs?: number;
-  slowTimeoutMs?: number;
   /** Test seams for the dispatch timeout timer. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (timer: unknown) => void;
 }
 
 function controlRpcTimeoutMs(type: string, options: ControlBridgeOptions): number | undefined {
-  if (UNBOUNDED_RPC_TYPES.has(type)) return undefined;
-  if (SLOW_RPC_TYPES.has(type)) return options.slowTimeoutMs ?? CONTROL_RPC_SLOW_TIMEOUT_MS;
+  if (CONNECTOR_TIMEOUT_EXEMPT_TYPES.has(type)) return undefined;
   return options.timeoutMs ?? CONTROL_RPC_TIMEOUT_MS;
 }
 
