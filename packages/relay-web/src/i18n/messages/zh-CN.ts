@@ -137,8 +137,6 @@ export default {
   },
   files: {
     title: "文件",
-    back: "返回",
-    backToList: "返回文件列表",
     closeFile: "关闭文件",
     selectToBrowse: "选择一个会话以浏览其工作区",
     searchPlaceholder: "按名称搜索文件…",
@@ -349,7 +347,6 @@ export default {
     startNew: "启动新终端",
     exited: "终端已退出(退出码 {code})。",
     error: "无法打开终端。",
-    close: "关闭终端",
     keybar: {
       show: "显示快捷键条",
       hide: "隐藏快捷键条",

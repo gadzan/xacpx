@@ -89,12 +89,15 @@ a:focus-visible, button:focus-visible,
 }
 
 /* No focus box-shadow on form fields. Authoritative override so per-component Tailwind
-   `focus-visible:ring-*` utilities (which compile to box-shadow) are neutralized too. */
+   `focus-visible:ring-*` utilities (which compile to box-shadow) are neutralized too.
+   The accent border replaces the removed halo as the visible focus cue (WCAG 2.4.7) —
+   fields otherwise carry only a static `border-border` that doesn't change on focus. */
 input:focus, input:focus-visible,
 textarea:focus, textarea:focus-visible,
 select:focus, select:focus-visible {
   box-shadow: none !important;
   outline: none;
+  border-color: rgb(var(--c-accent));
 }
 
 /* Live run-dot: expanding bright-green ring (matches mockup softpulse). */
