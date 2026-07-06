@@ -149,6 +149,44 @@ test("parseWebServerEvent accepts an agent-commands control event and rejects ma
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "agent-commands", chatKey: "k", sessionAlias: "a", commands: [{ description: "no name" }] } })).toBeNull();
 });
 
+test("parseWebServerEvent accepts a session-history control event and preserves its rows", () => {
+  // The gate (CONTROL_EVENT_TYPES + validControlEvent) must let session-history through,
+  // or recovered native-session conversations are silently dropped and the web
+  // handler for them is dead code.
+  const ev = roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: {
+      type: "session-history", chatKey: "k", sessionAlias: "a",
+      messages: [
+        { direction: "in", text: "hello" },
+        { direction: "out", text: "hi", structured: { reasoning: "r" } },
+      ],
+    },
+  });
+  expect(ev).not.toBeNull();
+  expect((ev as Extract<WebServerEvent, { kind: "control-event" }>).event).toMatchObject({
+    type: "session-history",
+    chatKey: "k",
+    sessionAlias: "a",
+    messages: [
+      { direction: "in", text: "hello" },
+      { direction: "out", text: "hi", structured: { reasoning: "r" } },
+    ],
+  });
+  // an empty recovery is valid (a native session with no prior rows)…
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", sessionAlias: "a", messages: [] } })).not.toBeNull();
+});
+
+test("parseWebServerEvent rejects malformed session-history events", () => {
+  // messages must be an array, or the hub's seed loop has nothing iterable.
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", sessionAlias: "a" } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", sessionAlias: "a", messages: "x" } })).toBeNull();
+  // chatKey/sessionAlias must be strings (routing keys).
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", sessionAlias: "a", messages: [] } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: 1, sessionAlias: "a", messages: [] } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "session-history", chatKey: "k", messages: [] } })).toBeNull();
+});
+
 test("parseWebServerEvent rejects a plan event without entries", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

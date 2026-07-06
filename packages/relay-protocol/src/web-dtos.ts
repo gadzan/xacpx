@@ -83,23 +83,31 @@ export function webEventEnvelope(event: WebServerEvent): RelayEnvelope {
 
 const WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "notice"]);
 
-const CONTROL_EVENT_TYPES = new Set([
-  "turn-output",
-  "turn-started",
-  "tool-event",
-  "turn-thought",
-  "plan",
-  "turn-usage",
-  "agent-commands",
-  "turn-finished",
-  "queue-updated",
-  "sessions-changed",
-  "workspaces-changed",
-  "scheduled-changed",
-  "orchestration-changed",
-  "terminal-output",
-  "terminal-exit",
-]);
+/** Compile-time-exhaustive whitelist of inner control-event discriminants. The
+ *  `satisfies Record<ControlEventDto["type"], true>` clause makes tsc fail if a new
+ *  member is added to the ControlEventDto union without being listed here — the drift
+ *  that once silently dropped `session-history` pushes. When you add a key here, also
+ *  add its per-variant field check to the switch in `validControlEvent` below. */
+const CONTROL_EVENT_TYPE_MAP = {
+  "turn-output": true,
+  "turn-started": true,
+  "tool-event": true,
+  "turn-thought": true,
+  "plan": true,
+  "turn-usage": true,
+  "agent-commands": true,
+  "turn-finished": true,
+  "queue-updated": true,
+  "sessions-changed": true,
+  "workspaces-changed": true,
+  "scheduled-changed": true,
+  "session-history": true,
+  "orchestration-changed": true,
+  "terminal-output": true,
+  "terminal-exit": true,
+} satisfies Record<ControlEventDto["type"], true>;
+
+const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 
 const TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
 const TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
@@ -148,37 +156,59 @@ function validToolStep(s: unknown): boolean {
   return true;
 }
 
-/** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields. */
+/** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
+ *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
+ *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
 function validControlEvent(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const c = e as Record<string, unknown>;
   if (typeof c.type !== "string" || !CONTROL_EVENT_TYPES.has(c.type)) return false;
-  if (c.type === "turn-output")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
-  if (c.type === "turn-finished")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
-  if (c.type === "scheduled-changed") return typeof c.chatKey === "string";
-  if (c.type === "turn-started")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string";
-  if (c.type === "turn-thought")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
-  if (c.type === "plan")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
-  if (c.type === "turn-usage")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
-  if (c.type === "agent-commands")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-      && Array.isArray(c.commands)
-      && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
-  if (c.type === "queue-updated")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
-  if (c.type === "tool-event")
-    return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
-  if (c.type === "terminal-output")
-    return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
-  if (c.type === "terminal-exit")
-    return typeof c.terminalId === "string" && typeof c.code === "number";
-  return true; // sessions-changed / workspaces-changed / orchestration-changed carry no extra fields
+  const type = c.type as ControlEventDto["type"];
+  switch (type) {
+    case "turn-output":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+    case "turn-finished":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
+    case "scheduled-changed":
+      return typeof c.chatKey === "string";
+    case "turn-started":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string";
+    case "turn-thought":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+    case "plan":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
+    case "turn-usage":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
+    case "agent-commands":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && Array.isArray(c.commands)
+        && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
+    case "queue-updated":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
+    case "session-history":
+      // Recovered rows are rendered directly; each must carry a direction + text so
+      // the web's history seed can't crash on a junk row from a buggy connector.
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && Array.isArray(c.messages)
+        && c.messages.every((m) => m !== null && typeof m === "object"
+          && ((m as { direction?: unknown }).direction === "in" || (m as { direction?: unknown }).direction === "out")
+          && typeof (m as { text?: unknown }).text === "string");
+    case "tool-event":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
+    case "terminal-output":
+      return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
+    case "terminal-exit":
+      return typeof c.terminalId === "string" && typeof c.code === "number";
+    case "sessions-changed":
+    case "workspaces-changed":
+    case "orchestration-changed":
+      return true; // no extra fields
+    default: {
+      // Exhaustiveness guard: adding a ControlEventDto member without a case above is a tsc error.
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
+  }
 }
 
 const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
