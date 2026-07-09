@@ -872,8 +872,20 @@ test("concurrency: the state mutex serializes two overlapping delegations", asyn
   gate.resolve();
   await Promise.all([a, b]);
 
-  // The second delegation must not have loaded state before the first one saved.
-  // If the mutex is lost, `load load save save` appears instead.
+  // SUPERSEDED — this assertion is a FALSE-POSITIVE DETECTOR. Do not use it.
+  // `reserveProposedWorkerSession`'s own mutate() calls loadState and never saveState
+  // (orchestration-service.ts:3107-3113 — it only touches the in-memory
+  // pendingWorkerSessions map). So one uncontested delegation already emits
+  // "load load save", and two correctly serialized delegations emit it twice.
+  //
+  // Task 6 shipped the correct form: while A is parked inside its first critical section,
+  // assert B's loadState has fired ZERO times, after churning the event loop to prove B is
+  // durably blocked on the promise chain rather than merely late. See the real
+  // implementation in tests/unit/orchestration/golden/orchestration-concurrency.test.ts.
+  //
+  // Also note: two non-parallel delegations with the SAME targetAgent resolve to the same
+  // deterministic worker-session name, and the second throws "already in use". Use
+  // different targetAgents. And each `parallel: true` delegation mints TWO ids.
   expect(trace.join(" ")).not.toContain("load load save");
 });
 
