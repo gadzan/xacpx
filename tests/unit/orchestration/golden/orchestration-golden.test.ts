@@ -214,3 +214,98 @@ test("golden: reconcileParallelSlots drains a queued task when a slot frees", as
 
   expectMatchesFixture("reconcileparallelslots-drains-a-queued-task-when", harness.snapshot());
 });
+
+test("golden: requestTaskCancellation then completeTaskCancellation", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "cancel me",
+  });
+  await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
+  await service.completeTaskCancellation("task-1");
+
+  expectMatchesFixture("requesttaskcancellation-then-completetaskcancellation", harness.snapshot());
+});
+
+test("golden: failTaskCancellation records the error and leaves the task alive", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "cancel me",
+  });
+  await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
+  await service.failTaskCancellation("task-1", "transport exploded");
+
+  expectMatchesFixture("failtaskcancellation-records-the-error-and-leaves", harness.snapshot());
+});
+
+test("golden: createGroup then cancelGroup cancels its tasks", async () => {
+  // createGroup's real signature is `{ coordinatorSession, title }` — the groupId is
+  // always server-generated via `deps.createId()` (orchestration-service.ts:400-414),
+  // there is no caller-supplied groupId field. Seed the id pool so the generated group
+  // id is the readable "g1", then thread the *returned* group.groupId into the
+  // delegate/cancel calls instead of hardcoding a literal that createGroup would reject.
+  const harness = makeGoldenHarness({ ids: ["g1", "task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  const group = await service.createGroup({ coordinatorSession: "backend:main", title: "review" });
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "in group",
+    groupId: group.groupId,
+  });
+  const result = await service.cancelGroup({ coordinatorSession: "backend:main", groupId: group.groupId });
+
+  expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-result", result);
+  expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-state", harness.snapshot());
+});
+
+test("golden: listGroupSummaries reflects task status rollup", async () => {
+  const harness = makeGoldenHarness({ ids: ["g1", "task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  const group = await service.createGroup({ coordinatorSession: "backend:main", title: "review" });
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "in group",
+    groupId: group.groupId,
+  });
+  // recordWorkerReply requires the caller's sourceHandle to match the task's assigned
+  // workerSession exactly (see the reconcileParallelSlots scenario above) — read it back
+  // from state rather than hardcoding it.
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    summary: "done",
+    resultText: "ok",
+  });
+
+  // listGroupSummaries is async (orchestration-service.ts:451) — the brief's snippet
+  // omitted the `await`, which would have snapshotted an unresolved Promise instead of
+  // the summaries.
+  expectMatchesFixture(
+    "listgroupsummaries-reflects-task-status-rollup",
+    await service.listGroupSummaries({ coordinatorSession: "backend:main" }),
+  );
+});

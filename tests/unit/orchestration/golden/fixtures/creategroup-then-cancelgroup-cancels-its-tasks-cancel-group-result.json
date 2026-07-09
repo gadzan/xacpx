@@ -1,0 +1,58 @@
+{
+  "summary": {
+    "group": {
+      "groupId": "g1",
+      "coordinatorSession": "backend:main",
+      "title": "review",
+      "createdAt": "2026-04-13T10:00:00.000Z",
+      "updatedAt": "2026-04-13T10:00:00.000Z"
+    },
+    "tasks": [
+      {
+        "taskId": "task-1",
+        "sourceHandle": "wx:user-1",
+        "sourceKind": "human",
+        "coordinatorSession": "backend:main",
+        "workerSession": "backend:claude:backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude",
+        "groupId": "g1",
+        "task": "in group",
+        "status": "running",
+        "summary": "",
+        "resultText": "",
+        "createdAt": "2026-04-13T10:00:00.000Z",
+        "updatedAt": "2026-04-13T10:00:00.000Z",
+        "eventSeq": 2,
+        "events": [
+          {
+            "seq": 1,
+            "at": "2026-04-13T10:00:00.000Z",
+            "type": "created",
+            "status": "running",
+            "message": "Task created"
+          },
+          {
+            "seq": 2,
+            "at": "2026-04-13T10:00:00.000Z",
+            "type": "cancel_requested",
+            "status": "running",
+            "message": "Cancellation requested"
+          }
+        ],
+        "cancelRequestedAt": "2026-04-13T10:00:00.000Z"
+      }
+    ],
+    "totalTasks": 1,
+    "pendingApprovalTasks": 0,
+    "runningTasks": 1,
+    "completedTasks": 0,
+    "failedTasks": 0,
+    "cancelledTasks": 0,
+    "terminal": false
+  },
+  "cancelledTaskIds": [
+    "task-1"
+  ],
+  "skippedTaskIds": []
+}
