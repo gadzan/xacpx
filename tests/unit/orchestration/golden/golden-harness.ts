@@ -33,7 +33,7 @@ export interface GoldenHarnessOverrides {
   reusableWorkerSession?: string | null;
   /** Fixed instant for `deps.now`. */
   now?: string;
-  /** Deterministic id sequence for `deps.createId`; cycles the last entry once exhausted. */
+  /** Deterministic id sequence for `deps.createId`; throws once exhausted. */
   ids?: string[];
 }
 
@@ -58,11 +58,31 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
 
   const deps: OrchestrationServiceDeps = {
     now: () => new Date(instant),
-    createId: () => ids[Math.min(idCursor++, ids.length - 1)]!,
+    createId: () => {
+      const id = ids[idCursor++];
+      if (id === undefined) {
+        throw new Error(
+          `golden harness: createId() exhausted its pool of ${ids.length} ids — ` +
+            `pass more via makeGoldenHarness({ ids: [...] })`,
+        );
+      }
+      return id;
+    },
     loadState: async () => cloneState(state),
     saveState: async (nextState) => {
       state = cloneState(nextState);
-      record("saveState", { taskIds: Object.keys(nextState.orchestration.tasks ?? {}).sort() });
+      // Not just the task-id set: successive saves in one call usually mutate fields of the
+      // same tasks, so an id set makes two saves indistinguishable and a reordered save
+      // invisible. The digest changes whenever a task's status/timestamp/event count does.
+      const tasks = nextState.orchestration.tasks ?? {};
+      record("saveState", {
+        tasks: Object.keys(tasks)
+          .sort()
+          .map((id) => {
+            const t = tasks[id] as { status?: unknown; updatedAt?: unknown; eventSeq?: unknown };
+            return { taskId: id, status: t.status, updatedAt: t.updatedAt, eventSeq: t.eventSeq ?? 0 };
+          }),
+      });
     },
     config,
     ensureWorkerSession: async (request) => {
@@ -102,7 +122,7 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     for (const [taskId, task] of Object.entries(current.orchestration.tasks ?? {})) {
       taskEvents[taskId] = (task as { events?: unknown[] }).events ?? [];
     }
-    return { state: current, calls: calls.map((c) => ({ ...c })), taskEvents };
+    return { state: current, calls: JSON.parse(JSON.stringify(calls)) as PortCall[], taskEvents };
   };
 
   return { deps, getState: () => cloneState(state), calls, snapshot };
