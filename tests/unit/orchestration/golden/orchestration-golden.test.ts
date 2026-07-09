@@ -5,13 +5,12 @@
 //
 // DO NOT set GOLDEN_UPDATE=1 outside Tasks 2-6. A failing fixture after a refactor task
 // means the refactor changed observable behaviour.
-import { expect, test } from "bun:test";
+import { test } from "bun:test";
 
 import { createConfig } from "../../commands/command-router-test-support";
 import { OrchestrationService } from "../../../../src/orchestration/orchestration-service";
 import { createEmptyState } from "../../../../src/state/types";
-import type { GoldenHarness } from "./golden-harness";
-import { expectMatchesFixture, makeGoldenHarness } from "./golden-harness";
+import { expectMatchesFixture, makeGoldenHarness, type GoldenHarness } from "./golden-harness";
 
 /**
  * requestDelegateFromRpc's coordinator (autoRun) path fires its worker dispatch via
@@ -21,11 +20,26 @@ import { expectMatchesFixture, makeGoldenHarness } from "./golden-harness";
  * this exact reason (orchestration-service.test.ts, "attaches an rpc-delegated task to an
  * existing group..."). We must poll the same way before snapshotting, or the fixture would
  * be racy: sometimes it would catch the dispatch call, sometimes not.
+ *
+ * Precondition: this only works when the awaited port call is the LAST thing the detached
+ * work does on its success path. The current caller waits for `dispatchWorkerTask`, and
+ * `runAutoRunRpcWorkerTask` (orchestration-service.ts:976-1145) does nothing after
+ * `await this.deps.dispatchWorkerTask(...)` on the non-throwing path — so once that call
+ * lands, the detached work is finished and the snapshot is stable. A future scenario whose
+ * mocked port throws (or that does further work after the awaited call) would need a
+ * different wait, not this poll.
  */
 async function waitForPortCall(harness: GoldenHarness, port: string): Promise<void> {
-  for (let attempt = 0; attempt < 20 && !harness.calls.some((call) => call.port === port); attempt += 1) {
+  const maxAttempts = 20;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (harness.calls.some((call) => call.port === port)) {
+      return;
+    }
     await Bun.sleep(0);
   }
+  throw new Error(
+    `waitForPortCall: timed out waiting for port "${port}" after ${maxAttempts} attempts`,
+  );
 }
 
 test("golden: requestDelegate (human path) creates a running task and dispatches", async () => {

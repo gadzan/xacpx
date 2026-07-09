@@ -12,6 +12,7 @@ import type { OrchestrationServiceDeps } from "../../../../src/orchestration/orc
 import type { OrchestrationTaskRecord } from "../../../../src/orchestration/orchestration-types";
 import { createEmptyState, type AppState } from "../../../../src/state/types";
 import type { AppConfig } from "../../../../src/config/types";
+import type { AppLogger } from "../../../../src/logging/app-logger";
 
 export interface PortCall {
   port: string;
@@ -117,6 +118,24 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       record("findReusableWorkerSession", request);
       return overrides.reusableWorkerSession ?? null;
     },
+    // Recorded (not omitted) so every `logEvent` call site is part of the oracle: without
+    // this, `OrchestrationService.logEvent()` short-circuits on `if (!logger) return;`
+    // (orchestration-service.ts:4372-4373) and a refactor could drop, rename, or reorder an
+    // observability call without any test noticing.
+    logger: (() => {
+      const recordLog = (level: "debug" | "info" | "error") =>
+        async (event: string, message: string, context?: Record<string, unknown>) => {
+          record(`logger.${level}`, { event, message, context: context ?? null });
+        };
+      const logger: AppLogger = {
+        debug: recordLog("debug"),
+        info: recordLog("info"),
+        error: recordLog("error"),
+        cleanup: async () => {},
+        flush: async () => {},
+      };
+      return logger;
+    })(),
   };
 
   const snapshot = (): GoldenSnapshot => {

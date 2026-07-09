@@ -102,6 +102,20 @@
         "targetAgent": "claude",
         "task": "write the migration"
       }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "running",
+          "worker_session": "backend:claude:backend:main"
+        }
+      }
     }
   ],
   "taskEvents": {

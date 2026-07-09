@@ -99,6 +99,20 @@
       }
     },
     {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "codex",
+          "status": "needs_confirmation",
+          "worker_session": "backend:codex:reviewer:backend:main"
+        }
+      }
+    },
+    {
       "port": "ensureWorkerSession",
       "request": {
         "workerSession": "backend:codex:reviewer:backend:main",
@@ -144,6 +158,20 @@
         "targetAgent": "codex",
         "role": "reviewer",
         "task": "dangerous thing"
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.approved",
+        "message": "task approved",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "codex",
+          "status": "running",
+          "worker_session": "backend:codex:reviewer:backend:main"
+        }
       }
     }
   ],

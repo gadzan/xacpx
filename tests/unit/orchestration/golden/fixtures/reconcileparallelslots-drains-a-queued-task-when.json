@@ -140,6 +140,20 @@
       }
     },
     {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "running",
+          "worker_session": "backend:claude:backend:main:p-task-1-slot"
+        }
+      }
+    },
+    {
       "port": "saveState",
       "request": {
         "tasks": [
@@ -178,6 +192,17 @@
             "eventSeq": 1
           }
         ]
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.queued",
+        "message": "parallel task queued at capacity",
+        "context": {
+          "taskId": "task-2",
+          "targetAgent": "claude"
+        }
       }
     },
     {
@@ -220,6 +245,20 @@
             "eventSeq": 1
           }
         ]
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.completed",
+        "message": "task completed",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "completed",
+          "worker_session": "backend:claude:backend:main:p-task-1-slot"
+        }
       }
     },
     {
@@ -380,6 +419,17 @@
             "eventSeq": 2
           }
         ]
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.drained",
+        "message": "parallel task drained from queue",
+        "context": {
+          "taskId": "task-2",
+          "targetAgent": "claude"
+        }
       }
     }
   ],
