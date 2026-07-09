@@ -291,3 +291,21 @@ export function parseControlPayload<T extends ControlRpcType>(type: T, payload: 
   const validate = CONTROL_PAYLOAD_VALIDATORS[type] as unknown as Validator<PayloadFor<T>>;
   return validate(payload);
 }
+
+// --- Type-level binding assertions -------------------------------------------------
+// These live here, not in the test file: `tests/` is outside every tsconfig's `include`,
+// so a type-level assertion written there is never checked by tsc. Compiled by
+// `tsc -p packages/relay-protocol/tsconfig.json` (run by `bun run build:relay-protocol`).
+//
+// What they catch: a registry entry wired to the wrong validator, e.g.
+// `[MSG.fsWrite]: validateFsRead` — `satisfies Record<ControlRpcType, Validator<unknown>>`
+// accepts that, these do not. They cannot catch a validator that skips a field check
+// (each is annotated `Validator<XxxPayload>` and returns through `as unknown`, so its
+// return type is fixed by the annotation); the runtime suite covers that.
+type Expect<T extends true> = T;
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+type _fsWriteBound = Expect<Equal<PayloadFor<typeof MSG.fsWrite>, FsWritePayload>>;
+type _promptBound = Expect<Equal<PayloadFor<typeof MSG.prompt>, PromptPayload>>;
+type _fsReadBound = Expect<Equal<PayloadFor<typeof MSG.fsRead>, FsReadPayload>>;
+type _uploadBound = Expect<Equal<PayloadFor<typeof MSG.upload>, UploadPayload>>;

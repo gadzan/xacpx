@@ -1,13 +1,6 @@
 // tests/unit/packages/relay-protocol/payload-validators.test.ts
 import { expect, test } from "bun:test";
-import {
-  MSG,
-  parseControlPayload,
-  CONTROL_PAYLOAD_VALIDATORS,
-  type PayloadFor,
-  type FsWritePayload,
-  type PromptPayload,
-} from "../../../../packages/relay-protocol/src/index";
+import { MSG, parseControlPayload, CONTROL_PAYLOAD_VALIDATORS } from "../../../../packages/relay-protocol/src/index";
 
 test("parseControlPayload accepts a well-formed fsWrite payload", () => {
   const ok = parseControlPayload(MSG.fsWrite, {
@@ -62,18 +55,5 @@ test("every registered validator returns null for a non-object payload", () => {
   }
 });
 
-// --- Type-level binding (checked by `npx tsc --noEmit`, not at runtime) ---
-type Expect<T extends true> = T;
-type Equal<A, B> =
-  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
-
-// PayloadFor<MSG.fsWrite> is exactly FsWritePayload (not `unknown`, not a widened shape).
-type _fsWriteBound = Expect<Equal<PayloadFor<typeof MSG.fsWrite>, FsWritePayload>>;
-type _promptBound = Expect<Equal<PayloadFor<typeof MSG.prompt>, PromptPayload>>;
-
-test("type-level bindings compile", () => {
-  // The `_fsWriteBound`/`_promptBound` aliases above fail `tsc` if PayloadFor drifts
-  // from the hand-written payload type. This runtime assertion just anchors the test.
-  const _use: [_fsWriteBound, _promptBound] = [true, true];
-  expect(_use).toEqual([true, true]);
-});
+// The type-level `PayloadFor<T>` bindings are asserted in payload-validators.ts itself,
+// where tsc actually sees them — `tests/` is outside every tsconfig's `include`.
