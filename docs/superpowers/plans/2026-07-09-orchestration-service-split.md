@@ -1336,27 +1336,40 @@ test("the facade constructs exactly one WorkerSessionManager", async () => {
   expect(constructions.length).toBe(1);
 });
 
-test("reserveLogicalTransportSession is exclusive until released", async () => {
+test("reserveLogicalTransportSession refcounts; it does not lock", async () => {
+  // Established by the Task 5 golden fixture: there is NO exclusivity guard. The method
+  // increments an in-memory refcount and throws only when the session name collides with a
+  // registered external coordinator. A second reservation of the same session SUCCEEDS.
+  // The release function is async and decrements; it is idempotent (a second call no-ops).
   const harness = makeGoldenHarness();
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const manager = new WorkerSessionManager(harness.deps, kernel);
 
-  const release = await manager.reserveLogicalTransportSession("backend:claude:logical-1");
-  let second: string | undefined;
-  try {
-    await manager.reserveLogicalTransportSession("backend:claude:logical-1");
-  } catch (error) {
-    second = error instanceof Error ? error.message : String(error);
-  }
-  await release();
-  const third = await manager.reserveLogicalTransportSession("backend:claude:logical-1");
-  await third();
+  const first = await manager.reserveLogicalTransportSession("backend:claude:logical-1");
+  const second = await manager.reserveLogicalTransportSession("backend:claude:logical-1");
+  expect(typeof second).toBe("function");
 
-  expect(second).toBeDefined();
+  await first();
+  await first(); // idempotent
+  await second();
+});
+
+test("reserveLogicalTransportSession rejects a name owned by an external coordinator", async () => {
+  const harness = makeGoldenHarness();
+  const state = await harness.deps.loadState();
+  // Seed an external coordinator whose session name is the one we will try to reserve.
+  // Read `registerExternalCoordinator` / `ensureExternalCoordinators` for the exact shape.
+  await harness.deps.saveState(state);
+  const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
+  const manager = new WorkerSessionManager(harness.deps, kernel);
+
+  await expect(
+    manager.reserveLogicalTransportSession("backend:main"),
+  ).rejects.toThrow(/external coordinator/);
 });
 ```
 
-> If `reserveLogicalTransportSession` does not throw on a double reservation, change the second test to assert whatever it actually does. It is one of the four previously-uncovered ranges; characterize, do not specify. Task 6 will already have snapshotted its real behaviour — match that.
+> The second test needs a correctly seeded `externalCoordinators` entry — read `registerExternalCoordinator` for the record shape and seed `initialState` accordingly, or call `registerExternalCoordinator` on a facade first. This is the only branch of `reserveLogicalTransportSession` that throws.
 
 - [ ] **Step 2: Run to verify it fails**
 
