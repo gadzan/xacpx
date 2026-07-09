@@ -134,7 +134,8 @@ Compare the pre-move and post-move extractions; the only permitted differences a
   `GoldenHarness = { deps: OrchestrationServiceDeps; getState(): AppState; calls: PortCall[]; snapshot(): GoldenSnapshot }`,
   `PortCall = { port: string; request: unknown }`,
   `GoldenSnapshot = { state: AppState; calls: PortCall[]; taskEvents: Record<string, unknown[]> }`.
-  Tasks 2-5 consume `makeGoldenHarness` and `snapshot`.
+  Also produces `expectMatchesFixture(name: string, actual: unknown): void`.
+  Tasks 2-6 consume `makeGoldenHarness`, `snapshot`, and `expectMatchesFixture`.
 
 **Why a new harness rather than reusing `makeDeps` from the 9888-line test file:** that file must not be modified, so nothing can be exported from it; and its recorders are *separate arrays per port*, which cannot detect a reordering of calls across ports. The golden oracle needs one interleaved, ordered log.
 
@@ -248,6 +249,43 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
 
   return { deps, getState: () => cloneState(state), calls, snapshot };
 }
+
+// --- Fixture oracle ---------------------------------------------------------------
+// Deliberately not bun's toMatchSnapshot(): `bun test -u` silently rewrites a .snap to
+// whatever the code now does, leaving every test green while the oracle is gone. Writing
+// a fixture here requires GOLDEN_UPDATE=1, which is visible in shell history and review.
+
+const FIXTURE_DIR = new URL("./fixtures/", import.meta.url).pathname;
+
+/** Deep-equals `actual` against the committed fixture `<name>.json`.
+ *  With GOLDEN_UPDATE=1, writes the fixture instead of asserting (Tasks 2-6 only). */
+export function expectMatchesFixture(name: string, actual: unknown): void {
+  const path = `${FIXTURE_DIR}${name}.json`;
+  const serialized = `${JSON.stringify(actual, null, 2)}\n`;
+
+  if (process.env.GOLDEN_UPDATE === "1") {
+    mkdirSync(FIXTURE_DIR, { recursive: true });
+    writeFileSync(path, serialized);
+    return;
+  }
+
+  if (!existsSync(path)) {
+    throw new Error(
+      `golden fixture missing: ${name}.json — run once with GOLDEN_UPDATE=1 to create it`,
+    );
+  }
+  // Compare parsed values, not strings: key order must not be part of the oracle.
+  expect(JSON.parse(serialized) as unknown).toEqual(
+    JSON.parse(readFileSync(path, "utf8")) as unknown,
+  );
+}
+```
+
+Add these imports at the top of the harness file:
+
+```ts
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { expect } from "bun:test";
 ```
 
 - [ ] **Step 2: Verify it typechecks**
@@ -273,7 +311,9 @@ git commit -m "test(orchestration): golden characterization harness with an orde
 - Consumes: `makeGoldenHarness`, `GoldenSnapshot` from Task 1.
 - Produces: the file that Tasks 3-5 append to, and that every task from Task 6 onward must keep green **without regenerating snapshots**.
 
-**Snapshot policy:** these use Bun's `toMatchSnapshot()`, writing `tests/unit/orchestration/golden/__snapshots__/orchestration-golden.test.ts.snap`. That file is the oracle. **Never run `bun test -u` / `--update-snapshots` on it.** If a snapshot fails after a refactor task, the refactor changed behaviour — fix the refactor, not the snapshot.
+**Fixture policy:** these use `expectMatchesFixture(name, actual)` from Task 1, which deep-equals `actual` against a committed JSON file under `tests/unit/orchestration/golden/fixtures/<name>.json`. Those files are the oracle.
+
+Deliberately **not** `toMatchSnapshot()`: a single `bun test -u` silently rewrites a `.snap` to whatever the code now does, leaving every test green while the oracle is destroyed. Rewriting a fixture requires setting `GOLDEN_UPDATE=1` explicitly, which shows up in shell history and in review. **Only Tasks 2-6 may set it, and only to create a fixture that does not yet exist.** From Task 7 onward, a red fixture means the refactor changed behaviour — fix the refactor, not the fixture.
 
 - [ ] **Step 1: Write the golden scenarios**
 
@@ -283,12 +323,12 @@ git commit -m "test(orchestration): golden characterization harness with an orde
 // public entry point and snapshots (a) the resulting AppState, (b) the ORDERED log of
 // outbound port calls, (c) every task's event sequence.
 //
-// DO NOT run this file with `-u` / `--update-snapshots`. A failing snapshot after a
-// refactor task means the refactor changed observable behaviour.
+// DO NOT set GOLDEN_UPDATE=1 outside Tasks 2-6. A failing fixture after a refactor task
+// means the refactor changed observable behaviour.
 import { expect, test } from "bun:test";
 
 import { OrchestrationService } from "../../../../src/orchestration/orchestration-service";
-import { makeGoldenHarness } from "./golden-harness";
+import { expectMatchesFixture, makeGoldenHarness } from "./golden-harness";
 
 test("golden: requestDelegate (human path) creates a running task and dispatches", async () => {
   const harness = makeGoldenHarness({ ids: ["task-1"] });
@@ -302,7 +342,7 @@ test("golden: requestDelegate (human path) creates a running task and dispatches
     task: "write the migration",
   });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("requestdelegate-human-path-creates-a-running", harness.snapshot());
 });
 
 test("golden: requestDelegate (human path) at parallel capacity queues instead of dispatching", async () => {
@@ -326,7 +366,7 @@ test("golden: requestDelegate (human path) at parallel capacity queues instead o
     parallel: true,
   });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("requestdelegate-human-path-at-parallel-capacity", harness.snapshot());
 });
 
 test("golden: requestDelegateFromRpc creates a task and returns its status", async () => {
@@ -339,8 +379,8 @@ test("golden: requestDelegateFromRpc creates a task and returns its status", asy
     task: "run the audit",
   });
 
-  expect(result).toMatchSnapshot("rpc-result");
-  expect(harness.snapshot()).toMatchSnapshot("rpc-state");
+  expectMatchesFixture("requestdelegatefromrpc-creates-a-task-and-returns-rpc-result", result);
+  expectMatchesFixture("requestdelegatefromrpc-creates-a-task-and-returns-rpc-state", harness.snapshot());
 });
 
 test("golden: approveTask starts a needs_confirmation task", async () => {
@@ -355,7 +395,7 @@ test("golden: approveTask starts a needs_confirmation task", async () => {
   });
   await service.approveTask({ coordinatorSession: "backend:main", taskId: "task-1" });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("approvetask-starts-a-needs-confirmation-task", harness.snapshot());
 });
 
 test("golden: reconcileParallelSlots drains a queued task when a slot frees", async () => {
@@ -373,23 +413,23 @@ test("golden: reconcileParallelSlots drains a queued task when a slot frees", as
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "ok" });
   await service.reconcileParallelSlots();
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("reconcileparallelslots-drains-a-queued-task-when", harness.snapshot());
 });
 ```
 
 > The exact `requestDelegate` / `requestDelegateFromRpc` / `approveTask` / `recordWorkerReply` argument shapes are defined by `RequestDelegateInput` (`orchestration-service.ts:36`), `RequestDelegateRpcInput` (`:52`), `ConfirmTaskInput` (`:139`), `RecordWorkerReplyInput` (`:80`). If a field name above does not compile, correct it against those interfaces — do **not** change the assertion style.
 
-- [ ] **Step 2: Run to generate the snapshots**
+- [ ] **Step 2: Run once with `GOLDEN_UPDATE=1` to create the fixtures**
+
+Run: `GOLDEN_UPDATE=1 bun test tests/unit/orchestration/golden/orchestration-golden.test.ts`
+Expected: PASS, 5 tests, and five files appear under `tests/unit/orchestration/golden/fixtures/`.
+
+- [ ] **Step 3: Run WITHOUT the env var to prove the fixtures are stable**
 
 Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts`
-Expected: PASS, 5 tests, and `__snapshots__/orchestration-golden.test.ts.snap` is created.
+Expected: PASS, 5 tests, no file written (`git status --porcelain tests/unit/orchestration/golden/fixtures/` shows only the five new untracked files, unchanged between runs).
 
-- [ ] **Step 3: Run again to prove the snapshots are stable**
-
-Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts`
-Expected: PASS, 5 tests, snapshot file unchanged (`git diff --stat` shows no change to `.snap`).
-
-If the second run produces a diff, `deps.now`/`deps.createId` are not fully deterministic for that scenario — fix the scenario before continuing. Nothing downstream works without a stable oracle.
+Run it a second time. If any fixture assertion now fails, or a fixture file's mtime changes, `deps.now`/`deps.createId` are not fully deterministic for that scenario — fix the scenario before continuing. Nothing downstream works without a stable oracle.
 
 - [ ] **Step 4: Prove the existing oracle is untouched**
 
@@ -402,7 +442,7 @@ Expected: empty output.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/__snapshots__/orchestration-golden.test.ts.snap
+git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/fixtures/
 git commit -m "test(orchestration): golden fixtures for delegation, approval, parallel slots"
 ```
 
@@ -430,7 +470,7 @@ test("golden: requestTaskCancellation then completeTaskCancellation", async () =
   await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
   await service.completeTaskCancellation("task-1");
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("requesttaskcancellation-then-completetaskcancellation", harness.snapshot());
 });
 
 test("golden: failTaskCancellation records the error and leaves the task alive", async () => {
@@ -444,7 +484,7 @@ test("golden: failTaskCancellation records the error and leaves the task alive",
   await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
   await service.failTaskCancellation("task-1", "transport exploded");
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("failtaskcancellation-records-the-error-and-leaves", harness.snapshot());
 });
 
 test("golden: createGroup then cancelGroup cancels its tasks", async () => {
@@ -458,8 +498,8 @@ test("golden: createGroup then cancelGroup cancels its tasks", async () => {
   });
   const result = await service.cancelGroup({ coordinatorSession: "backend:main", groupId: "g1" });
 
-  expect(result).toMatchSnapshot("cancel-group-result");
-  expect(harness.snapshot()).toMatchSnapshot("cancel-group-state");
+  expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-result", result);
+  expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-state", harness.snapshot());
 });
 
 test("golden: listGroupSummaries reflects task status rollup", async () => {
@@ -473,7 +513,7 @@ test("golden: listGroupSummaries reflects task status rollup", async () => {
   });
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "ok" });
 
-  expect(service.listGroupSummaries({ coordinatorSession: "backend:main" })).toMatchSnapshot();
+  expectMatchesFixture("listgroupsummaries-reflects-task-status-rollup", service.listGroupSummaries({ coordinatorSession: "backend:main" }));
 });
 ```
 
@@ -487,7 +527,7 @@ Expected: PASS both times; second run leaves `.snap` unchanged.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/__snapshots__/orchestration-golden.test.ts.snap
+git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/fixtures/
 git commit -m "test(orchestration): golden fixtures for cancellation and groups"
 ```
 
@@ -516,7 +556,7 @@ test("golden: workerRaiseQuestion blocks the task and wakes the coordinator", as
     whatIsNeeded: "a table name",
   });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("workerraisequestion-blocks-the-task-and-wakes", harness.snapshot());
 });
 
 test("golden: coordinatorAnswerQuestion resumes the worker", async () => {
@@ -535,7 +575,7 @@ test("golden: coordinatorAnswerQuestion resumes the worker", async () => {
     coordinatorSession: "backend:main", taskId: "task-1", questionId: "q-1", answer: "users",
   });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("coordinatoranswerquestion-resumes-the-worker", harness.snapshot());
 });
 
 test("golden: coordinatorRequestHumanInput builds and delivers a question package", async () => {
@@ -559,7 +599,7 @@ test("golden: coordinatorRequestHumanInput builds and delivers a question packag
     promptText: "need a decision",
   });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("coordinatorrequesthumaninput-builds-and-delivers-a-question", harness.snapshot());
 });
 
 test("golden: coordinatorRetractAnswer marks the result contested", async () => {
@@ -581,7 +621,7 @@ test("golden: coordinatorRetractAnswer marks the result contested", async () => 
     coordinatorSession: "backend:main", taskId: "task-1", questionId: "q-1",
   });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("coordinatorretractanswer-marks-the-result-contested", harness.snapshot());
 });
 ```
 
@@ -595,7 +635,7 @@ Expected: PASS both times; second run leaves `.snap` unchanged.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/__snapshots__/orchestration-golden.test.ts.snap
+git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/fixtures/
 git commit -m "test(orchestration): golden fixtures for the human question flow"
 ```
 
@@ -619,8 +659,8 @@ test("golden: recordWorkerReply completes the task and marks a notice pending", 
   });
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "the answer" });
 
-  expect(harness.snapshot()).toMatchSnapshot("state");
-  expect(service.listPendingTaskNotices()).toMatchSnapshot("pending-notices");
+  expectMatchesFixture("recordworkerreply-completes-the-task-and-marks-state", harness.snapshot());
+  expectMatchesFixture("recordworkerreply-completes-the-task-and-marks-pending-notices", service.listPendingTaskNotices());
 });
 
 test("golden: notice lifecycle pending -> delivered", async () => {
@@ -634,7 +674,7 @@ test("golden: notice lifecycle pending -> delivered", async () => {
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "the answer" });
   await service.markTaskNoticeDelivered({ taskId: "task-1" });
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("notice-lifecycle-pending-delivered", harness.snapshot());
 });
 
 test("golden: markCoordinatorGroupsInjectionFailed records the failure", async () => {
@@ -649,7 +689,7 @@ test("golden: markCoordinatorGroupsInjectionFailed records the failure", async (
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "ok" });
   await service.markCoordinatorGroupsInjectionFailed("backend:main", ["g1"], "injection blew up");
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("markcoordinatorgroupsinjectionfailed-records-the-failure", harness.snapshot());
 });
 
 test("golden: cleanTasks removes terminal tasks", async () => {
@@ -663,8 +703,8 @@ test("golden: cleanTasks removes terminal tasks", async () => {
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "ok" });
   const result = await service.cleanTasks({ coordinatorSession: "backend:main" });
 
-  expect(result).toMatchSnapshot("clean-result");
-  expect(harness.snapshot()).toMatchSnapshot("clean-state");
+  expectMatchesFixture("cleantasks-removes-terminal-tasks-clean-result", result);
+  expectMatchesFixture("cleantasks-removes-terminal-tasks-clean-state", harness.snapshot());
 });
 
 test("golden: purgeSessionReferences drops bindings and metadata", async () => {
@@ -678,7 +718,7 @@ test("golden: purgeSessionReferences drops bindings and metadata", async () => {
   await service.recordWorkerReply({ taskId: "task-1", summary: "done", resultText: "ok" });
   await service.purgeSessionReferences("backend:main");
 
-  expect(harness.snapshot()).toMatchSnapshot();
+  expectMatchesFixture("purgesessionreferences-drops-bindings-and-metadata", harness.snapshot());
 });
 
 test("golden: reserveLogicalTransportSession reserves and releases", async () => {
@@ -694,7 +734,7 @@ test("golden: reserveLogicalTransportSession reserves and releases", async () =>
     .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
   await release();
 
-  expect(blocked).toMatchSnapshot("second-reservation");
+  expectMatchesFixture("reservelogicaltransportsession-reserves-and-releases-second-reservation", blocked);
 });
 ```
 
@@ -713,7 +753,7 @@ Expected: a coverage line is printed. Record the percentage in the commit body; 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/__snapshots__/orchestration-golden.test.ts.snap
+git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/fixtures/
 git commit -m "test(orchestration): golden fixtures for lifecycle, notices, reservations"
 ```
 
@@ -747,7 +787,7 @@ test("golden: listGroupSummaries covers the previously-unreached branch at 477-4
   // Construct the state that reaches lines 477-480 (read them first; the branch is
   // most likely an empty-group or filter-miss path).
   await service.createGroup({ coordinatorSession: "backend:main", groupId: "g1", title: "empty" });
-  expect(service.listGroupSummaries({ coordinatorSession: "other:main" })).toMatchSnapshot();
+  expectMatchesFixture("listgroupsummaries-covers-the-previously-unreached-branch", service.listGroupSummaries({ coordinatorSession: "other:main" }));
 });
 ```
 
@@ -931,7 +971,7 @@ Run: `npx tsc --noEmit` → 0 errors.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/__snapshots__/orchestration-golden.test.ts.snap tests/unit/orchestration/golden/orchestration-concurrency.test.ts
+git add tests/unit/orchestration/golden/orchestration-golden.test.ts tests/unit/orchestration/golden/fixtures/ tests/unit/orchestration/golden/orchestration-concurrency.test.ts
 git commit -m "test(orchestration): close the four live coverage gaps and pin concurrency behaviour"
 ```
 
@@ -963,7 +1003,7 @@ Run: `bun test tests/unit/orchestration/orchestration-service.test.ts`
 Expected: PASS, 185 tests.
 
 Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts`
-Expected: PASS, **snapshots unchanged**. Run `git diff --stat tests/unit/orchestration/golden/__snapshots__/` — expected: empty.
+Expected: PASS, **fixtures unchanged**. Run `git diff --stat tests/unit/orchestration/golden/fixtures/` — expected: empty.
 
 Run: `npx tsc --noEmit`
 Expected: 0 errors.
@@ -1213,7 +1253,7 @@ Run: `bun test tests/unit/orchestration/orchestration-service.test.ts`
 Expected: PASS, 185 tests. This also exercises the `InterleavingMutex` subclass the suite injects via `deps.stateMutex` — the kernel must pass it through untouched.
 
 Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts`
-Expected: PASS, snapshots unchanged (`git diff --stat tests/unit/orchestration/golden/__snapshots__/` → empty).
+Expected: PASS, fixtures unchanged (`git diff --stat tests/unit/orchestration/golden/fixtures/` → empty).
 
 Run: `bun test tests/unit/orchestration/golden/orchestration-concurrency.test.ts`
 Expected: PASS, 3 tests. **This is the step that proves the guard did not break mutual exclusion.** If the serialization test fails, `mutate` is no longer routing through the injected mutex.
@@ -1273,10 +1313,24 @@ test("pendingParallelStarts is per-instance, and the facade injects exactly one 
   await release();
 });
 
-test("the facade's WorkerSessionManager is a singleton across its services", async () => {
-  // The real invariant: one OrchestrationService must never construct two managers.
-  // A split counter over-dispatches at capacity and turns no existing test red, so assert
-  // it structurally: every `new WorkerSessionManager(` in the facade appears exactly once.
+test("the facade constructs exactly one WorkerSessionManager", async () => {
+  // This asserts on source text, which is normally a smell. It is deliberate, and it is
+  // the only test in this suite that can catch the bug it targets.
+  //
+  // The bug: the facade constructs two WorkerSessionManagers and hands different ones to,
+  // say, HumanDelegationService and TaskApprovalService. Each then keeps its own
+  // pendingParallelStarts counter, so both can pass the capacity gate for the same slot
+  // and the process over-dispatches at capacity.
+  //
+  // Why no behavioural assertion reaches it: pendingParallelStarts only closes the window
+  // *between* the gate mutate and the persist mutate. Reproducing a split counter requires
+  // two delegations to interleave inside that window, on two different services, with the
+  // agent at exactly its cap. Every scheduling detail of that is an implementation choice
+  // the test cannot pin without freezing the very code under refactor. The concurrency
+  // suite catches a *lost* counter; it cannot reliably catch a *duplicated* one.
+  //
+  // If you delete this test, delete the invariant it protects — or find a behavioural
+  // assertion that fails when the facade builds two managers. Do not silently drop it.
   const source = await Bun.file("src/orchestration/orchestration-service.ts").text();
   const constructions = source.match(/new WorkerSessionManager\(/g) ?? [];
   expect(constructions.length).toBe(1);
@@ -1390,7 +1444,7 @@ Run: `bun test tests/unit/orchestration/orchestration-service.test.ts`
 Expected: PASS, 185 tests.
 
 Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts`
-Expected: PASS, snapshots unchanged. **The parallel-capacity and reconcile scenarios from Task 2 are the ones that catch a split `pendingParallelStarts`.** If they diverge, you constructed two managers.
+Expected: PASS, fixtures unchanged. **The parallel-capacity and reconcile scenarios from Task 2 are the ones that catch a split `pendingParallelStarts`.** If they diverge, you constructed two managers.
 
 Run: `bun test tests/unit/orchestration/golden/orchestration-concurrency.test.ts`
 Expected: PASS, 3 tests. **This is the single most important verification in the plan.** The two parallel-slot tests are the only things standing between a split `pendingParallelStarts` and a production over-dispatch that no other test would catch.
@@ -1490,7 +1544,7 @@ Delete the nineteen bodies from `OrchestrationService`; rewrite call sites to `t
 
 Run: `bun test tests/unit/orchestration/service/question-flow-core.test.ts` → PASS.
 Run: `bun test tests/unit/orchestration/orchestration-service.test.ts` → PASS, 185 tests.
-Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts` → PASS, snapshots unchanged.
+Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts` → PASS, fixtures unchanged.
 Run: `bun test tests/unit/orchestration/golden/orchestration-concurrency.test.ts` → PASS, 3 tests.
 Run: `npx tsc --noEmit` → 0 errors.
 
@@ -1647,7 +1701,7 @@ The two private helpers (`canInjectGroupIntoCoordinator`, `canInjectTaskIntoCoor
 
 Run: `bun test tests/unit/orchestration/service/notice-delivery-service.test.ts` → PASS.
 Run: `bun test tests/unit/orchestration/orchestration-service.test.ts` → PASS, 185 tests.
-Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts` → PASS, snapshots unchanged.
+Run: `bun test tests/unit/orchestration/golden/orchestration-golden.test.ts` → PASS, fixtures unchanged.
 Run: `bun test tests/unit/orchestration/golden/orchestration-concurrency.test.ts` → PASS, 3 tests.
 Run: `npx tsc --noEmit` → 0 errors.
 
@@ -1665,7 +1719,7 @@ git commit -m "refactor(orchestration): extract NoticeDeliveryService"
 - [ ] **Step 1: Create `src/orchestration/service/<name>.ts`** with a class whose constructor is `(deps: <Name>Deps, kernel: OrchestrationStateKernel, ...collaborators)`. `<Name>Deps` is a `Pick<OrchestrationServiceDeps, ...>` of only the ports the service actually calls — grep the moved bodies for `this.deps.` to determine the exact set. Move the assigned method bodies verbatim; rewrite `this.<sharedHelper>(` to `this.kernel.<sharedHelper>(`, `this.workerSessions.<m>(`, or `this.questionFlow.<m>(`.
 - [ ] **Step 2: Write a smoke test** at `tests/unit/orchestration/service/<name>.test.ts` that constructs the service in isolation (kernel + `makeGoldenHarness().deps` + collaborators) and drives one representative public method, asserting the observable state change. This is the "isolation testability" deliverable — it must construct **without** the ports the service does not use.
 - [ ] **Step 3: Delete the bodies from `OrchestrationService`** and replace each public method with a one-line delegation.
-- [ ] **Step 4: Verify** — `bun test` the new service test, then `tests/unit/orchestration/orchestration-service.test.ts` (185 tests), then `tests/unit/orchestration/golden/orchestration-golden.test.ts` (snapshots unchanged), then `tests/unit/orchestration/golden/orchestration-concurrency.test.ts`, then `npx tsc --noEmit`.
+- [ ] **Step 4: Verify** — `bun test` the new service test, then `tests/unit/orchestration/orchestration-service.test.ts` (185 tests), then `tests/unit/orchestration/golden/orchestration-golden.test.ts` (fixtures unchanged), then `tests/unit/orchestration/golden/orchestration-concurrency.test.ts`, then `npx tsc --noEmit`.
 - [ ] **Step 5: Commit** with `git add src/orchestration/service/<name>.ts src/orchestration/orchestration-service.ts tests/unit/orchestration/service/<name>.test.ts`.
 
 | # | Service | Depends on | Ports it needs (`Pick<OrchestrationServiceDeps, …>`) | Commit message |
@@ -1758,9 +1812,10 @@ git diff --stat main -- tests/unit/orchestration/orchestration-service.test.ts
 Expected: **empty**. The oracle was never modified.
 
 ```bash
-git diff --stat HEAD~1 -- tests/unit/orchestration/golden/__snapshots__/
+git diff --stat 'HEAD@{task-6}' -- tests/unit/orchestration/golden/fixtures/ 2>/dev/null \
+  || git log --oneline -- tests/unit/orchestration/golden/fixtures/
 ```
-Expected: **empty**. The golden snapshots never changed after Task 6.
+Expected: no commit touches `fixtures/` after Task 6's. The golden fixtures never changed once the refactor began.
 
 - [ ] **Step 5: Confirm the untouched files really are untouched**
 
@@ -1789,7 +1844,7 @@ git commit -m "refactor(orchestration): slim OrchestrationService to a delegatin
 - [ ] `npm test` → PASS.
 - [ ] `git diff --stat main -- tests/unit/orchestration/orchestration-service.test.ts` → empty (the 9888-line oracle was never touched).
 - [ ] `git diff --stat main -- src/main.ts src/commands/router-types.ts src/control/control-service.ts src/scheduled/scheduled-service.ts` → empty.
-- [ ] The golden snapshot file has not changed since Task 6.
+- [ ] No file under `tests/unit/orchestration/golden/fixtures/` has changed since Task 6.
 - [ ] `wc -l src/orchestration/service/*.ts` → no file over 900 lines.
 - [ ] The two dead methods are gone: `grep -rc "assertProposedWorkerSessionDoesNotConflictExternalCoordinator\|getLatestDeliveredPackageMessage" src/` → 0.
 - [ ] The reentrancy guard fires: `bun test tests/unit/orchestration/service/orchestration-state-kernel.test.ts` includes the nested-mutate test.
@@ -1798,7 +1853,7 @@ git commit -m "refactor(orchestration): slim OrchestrationService to a delegatin
 ## Notes for the executor
 
 - **The 9888-line test file is the oracle. If a task tempts you to edit it, the task is wrong.** Stop and report.
-- **Never regenerate the golden snapshots.** A red snapshot after a refactor task means the refactor changed behaviour.
+- **Never set `GOLDEN_UPDATE=1`.** A red fixture after a refactor task means the refactor changed behaviour.
 - **Bodies move verbatim.** The only permitted edits are receiver rewrites (`this.x` → `this.kernel.x`) and visibility changes. Resist every urge to tidy a body while it is in flight — a tidy-up that changes an `events[]` order will pass tests and break production.
 - **One `WorkerSessionManager` instance.** Two would split the parallel-slot accounting and no test would go red.
 - **Do not bump versions or publish.** This is an internal refactor.
