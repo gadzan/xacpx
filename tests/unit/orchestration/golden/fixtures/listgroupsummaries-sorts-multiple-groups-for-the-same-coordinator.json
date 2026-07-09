@@ -1,0 +1,36 @@
+[
+  {
+    "group": {
+      "groupId": "g1",
+      "coordinatorSession": "backend:main",
+      "title": "alpha",
+      "createdAt": "2026-04-13T10:00:00.000Z",
+      "updatedAt": "2026-04-13T10:00:00.000Z"
+    },
+    "tasks": [],
+    "totalTasks": 0,
+    "pendingApprovalTasks": 0,
+    "runningTasks": 0,
+    "completedTasks": 0,
+    "failedTasks": 0,
+    "cancelledTasks": 0,
+    "terminal": false
+  },
+  {
+    "group": {
+      "groupId": "g2",
+      "coordinatorSession": "backend:main",
+      "title": "beta",
+      "createdAt": "2026-04-13T10:00:00.000Z",
+      "updatedAt": "2026-04-13T10:00:00.000Z"
+    },
+    "tasks": [],
+    "totalTasks": 0,
+    "pendingApprovalTasks": 0,
+    "runningTasks": 0,
+    "completedTasks": 0,
+    "failedTasks": 0,
+    "cancelledTasks": 0,
+    "terminal": false
+  }
+]

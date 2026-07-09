@@ -448,6 +448,28 @@ test("golden: listGroupSummaries reflects task status rollup", async () => {
   );
 });
 
+// The scenario above only ever creates ONE group, so `.sort((left, right) => {...})`
+// (orchestration-service.ts:477-483) is called on a single-element array — JS engines do
+// not invoke a sort comparator at all for arrays of length <= 1, so that comparator body
+// (the previously-uncovered range 477-480) never actually ran. Two groups under the same
+// coordinator are the minimum needed to invoke it. Both groups get the identical
+// `createdAt`/`updatedAt` here because `deps.now()` is a fixed instant for the whole
+// test (see the harness doc comment) — ties are a genuine artifact of that, not a gap in
+// this scenario, and Array.prototype.sort is stable (ES2019+), so insertion order (g1,
+// then g2) is preserved through the tie rather than being an accident of engine internals.
+test("golden: listGroupSummaries sorts multiple groups for the same coordinator", async () => {
+  const harness = makeGoldenHarness({ ids: ["g1", "g2"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.createGroup({ coordinatorSession: "backend:main", title: "alpha" });
+  await service.createGroup({ coordinatorSession: "backend:main", title: "beta" });
+
+  expectMatchesFixture(
+    "listgroupsummaries-sorts-multiple-groups-for-the-same-coordinator",
+    await service.listGroupSummaries({ coordinatorSession: "backend:main" }),
+  );
+});
+
 // --- Human question flow ----------------------------------------------------------
 //
 // `WorkerRaiseQuestionInput` (orchestration-service.ts:144-150) is `{ taskId,
@@ -626,6 +648,118 @@ test("golden: coordinatorRetractAnswer on a running task reopens the blocker wit
   expectMatchesFixture("coordinatorretractanswer-on-a-running-task-reopens-the-blocker", harness.snapshot());
 });
 
+/**
+ * Drives a task all the way to the "contested review" branch of coordinatorRetractAnswer
+ * (orchestration-service.ts:1758-1786) — the counterpart to the "still running" scenario
+ * above. That branch only fires when the retracted task is ALREADY `completed` or
+ * `failed` (:1759), has no `reviewPending` yet (:1760), and no `coordinatorInjectedAt`
+ * (:1761). To get there: answer a raised question (this leaves `openQuestion.status ===
+ * "answered"` and resumes the worker back to `running`, per coordinatorAnswerQuestion,
+ * :1657-1665 — answering does NOT clear `openQuestion`), then let the worker reply
+ * complete the task via recordWorkerReply. At that point the task is `completed` but its
+ * stale `openQuestion` (still "answered") is untouched, so retracting that same answer
+ * now takes the contested-review branch instead of the "running" branch: it mints a
+ * `reviewPending` record (reviewId + resultId — 2 ids) and sets `shouldPropagate: false`
+ * (:1782), so — unlike the "running" scenario above — `startWorkerCancellation` is never
+ * fired and there is no detached chain to drain before snapshotting.
+ *
+ * `chatKey`/`replyContextToken` are threaded through from requestDelegate so that
+ * recordWorkerReply sets `noticePending = true` on completion (:1286-1289), which the
+ * contested branch then resets to `false` (:1770-1771) — giving the two
+ * coordinatorReviewContestedResult scenarios below something to observe: the `accept`
+ * decision's `noticeSentAt === undefined` branch (:2171-2179) flips it back to `true`,
+ * while `discard` leaves it `false` (discard instead reopens the question, :2160-2170).
+ */
+async function driveTaskToContestedReview(
+  harness: GoldenHarness,
+): Promise<{ service: OrchestrationService; taskId: string; reviewId: string }> {
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "ask me",
+    chatKey: "wx:room-1",
+    replyContextToken: "ctx-1",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  const raised = await service.workerRaiseQuestion({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    question: "which database?",
+    whyBlocked: "schema ambiguous",
+    whatIsNeeded: "a table name",
+  });
+  await service.coordinatorAnswerQuestion({
+    coordinatorSession: "backend:main",
+    taskId: "task-1",
+    questionId: raised.questionId,
+    answer: "users",
+  });
+  const answered = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: answered.workerSession!,
+    summary: "done",
+    resultText: "the answer",
+  });
+  const retracted = await service.coordinatorRetractAnswer({
+    coordinatorSession: "backend:main",
+    taskId: "task-1",
+    questionId: raised.questionId,
+  });
+
+  if (!retracted.reviewPending) {
+    throw new Error(
+      "test setup drifted: expected coordinatorRetractAnswer to reach the contested-review branch",
+    );
+  }
+
+  return { service, taskId: "task-1", reviewId: retracted.reviewPending.reviewId };
+}
+
+test("golden: coordinatorReviewContestedResult accepts a contested result", async () => {
+  // 4 ids: task-1 (requestDelegate) + q-1 (workerRaiseQuestion) + review-1 + result-1
+  // (coordinatorRetractAnswer's contested branch mints both). The "accept" decision
+  // itself mints no id (only "discard" does, via replacementQuestionId, :2161).
+  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "review-1", "result-1"] });
+  const { service, taskId, reviewId } = await driveTaskToContestedReview(harness);
+
+  // coordinatorReviewContestedResult awaits everything itself — wakeCoordinatorSession
+  // (only reached on "discard"), and reconcileParallelSlots (only reached on "accept",
+  // :2215-2224) — before returning. No detached work to drain here.
+  await service.coordinatorReviewContestedResult({
+    coordinatorSession: "backend:main",
+    taskId,
+    reviewId,
+    decision: "accept",
+  });
+
+  expectMatchesFixture("coordinatorreviewcontestedresult-accepts-a-contested-result", harness.snapshot());
+});
+
+test("golden: coordinatorReviewContestedResult discards a contested result and reopens the question", async () => {
+  // 5 ids: the same 4 as the accept scenario, plus q-2 — "discard" mints a replacement
+  // open-question id (:2161) that "accept" never reaches.
+  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "review-1", "result-1", "q-2"] });
+  const { service, taskId, reviewId } = await driveTaskToContestedReview(harness);
+
+  await service.coordinatorReviewContestedResult({
+    coordinatorSession: "backend:main",
+    taskId,
+    reviewId,
+    decision: "discard",
+  });
+
+  expectMatchesFixture(
+    "coordinatorreviewcontestedresult-discards-a-contested-result-and-reopens-the-question",
+    harness.snapshot(),
+  );
+});
+
 // --- Task lifecycle, notices, and session reservation ------------------------------
 //
 // None of the scenarios below touch any fire-and-forget/detached path: recordWorkerReply,
@@ -698,6 +832,29 @@ test("golden: recordWorkerReply completes the task and marks a notice pending", 
     "recordworkerreply-completes-the-task-and-marks-pending-notices",
     await service.listPendingTaskNotices(),
   );
+});
+
+// No existing scenario anywhere calls `markTaskNoticePending` directly — recordWorkerReply
+// sets `noticePending` as a side effect of completing a task (above), but the standalone
+// entry point (orchestration-service.ts:1330-1344, part of the previously-uncovered range
+// 1327-1342) is otherwise only reachable from call sites outside this service. It has no
+// preconditions beyond "the task exists" — no status check — so a bare requestDelegate is
+// enough to set it up.
+test("golden: markTaskNoticePending marks a task's notice pending", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "do it",
+  });
+  const result = await service.markTaskNoticePending("task-1");
+
+  expectMatchesFixture("marktasknoticepending-marks-a-tasks-notice-pending", result);
 });
 
 test("golden: notice lifecycle pending -> delivered", async () => {
