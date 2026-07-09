@@ -854,7 +854,8 @@ test("golden: markTaskNoticePending marks a task's notice pending", async () => 
   });
   const result = await service.markTaskNoticePending("task-1");
 
-  expectMatchesFixture("marktasknoticepending-marks-a-tasks-notice-pending", result);
+  expectMatchesFixture("marktasknoticepending-marks-a-tasks-notice-pending-result", result);
+  expectMatchesFixture("marktasknoticepending-marks-a-tasks-notice-pending-state", harness.snapshot());
 });
 
 test("golden: notice lifecycle pending -> delivered", async () => {
