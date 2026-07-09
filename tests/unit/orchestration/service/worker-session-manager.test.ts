@@ -46,22 +46,41 @@ test("the facade constructs exactly one WorkerSessionManager", async () => {
   expect(constructions.length).toBe(1);
 });
 
-test("reserveLogicalTransportSession refcounts; it does not lock", async () => {
+test("reserveLogicalTransportSession refcounts, and a double release does not drop a live reservation", async () => {
   // Established by the Task 5 golden fixture: there is NO exclusivity guard. The method
   // increments an in-memory refcount and throws only when the session name collides with a
   // registered external coordinator. A second reservation of the same session SUCCEEDS.
-  // The release function is async and decrements; it is idempotent (a second call no-ops).
+  //
+  // The `released` guard inside the returned closure is what makes a double release safe.
+  // Asserting that the second call "does not throw" would prove nothing: the decrement
+  // floors at `delete`, so with two reservations outstanding the map ends up empty either
+  // way, and the guard's absence is invisible.
+  //
+  // It IS visible mid-sequence. Hold two reservations, release the first one twice: with
+  // the guard the count goes 2 -> 1 and stops; without it, the second call sees 1 and
+  // deletes the key while `second` is still held. `hasPendingLogicalTransportSession` then
+  // reports the session free, and registerExternalCoordinator's guard (which reads exactly
+  // this accessor) would register a coordinator onto a transport session another caller is
+  // still claiming.
+  //
+  // Verified by mutation: deleting both `released` guards flips only the middle assertion
+  // below. All 218 other orchestration tests stay green.
   const harness = makeGoldenHarness();
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const manager = new WorkerSessionManager(harness.deps, kernel);
+  const session = "backend:claude:logical-1";
 
-  const first = await manager.reserveLogicalTransportSession("backend:claude:logical-1");
-  const second = await manager.reserveLogicalTransportSession("backend:claude:logical-1");
+  const first = await manager.reserveLogicalTransportSession(session);
+  const second = await manager.reserveLogicalTransportSession(session);
   expect(typeof second).toBe("function");
+  expect(manager.hasPendingLogicalTransportSession(session)).toBe(true);
 
   await first();
-  await first(); // idempotent
+  await first(); // idempotent: must not consume `second`'s reference
+  expect(manager.hasPendingLogicalTransportSession(session)).toBe(true);
+
   await second();
+  expect(manager.hasPendingLogicalTransportSession(session)).toBe(false);
 });
 
 test("reserveLogicalTransportSession rejects a name owned by an external coordinator", async () => {
