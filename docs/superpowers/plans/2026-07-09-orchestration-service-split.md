@@ -1355,11 +1355,18 @@ test("reserveLogicalTransportSession refcounts; it does not lock", async () => {
 });
 
 test("reserveLogicalTransportSession rejects a name owned by an external coordinator", async () => {
-  const harness = makeGoldenHarness();
-  const state = await harness.deps.loadState();
-  // Seed an external coordinator whose session name is the one we will try to reserve.
-  // Read `registerExternalCoordinator` / `ensureExternalCoordinators` for the exact shape.
-  await harness.deps.saveState(state);
+  // The ONLY branch of reserveLogicalTransportSession that throws. Seed a real
+  // externalCoordinators entry — a bare loadState/saveState round-trip seeds nothing and
+  // the reservation would succeed, failing this test for the wrong reason.
+  const seed = createEmptyState();
+  seed.orchestration.externalCoordinators = {
+    "backend:main": {
+      coordinatorSession: "backend:main",
+      // Read ExternalCoordinatorRecord in orchestration-types.ts for the full required
+      // field set and fill it here. Do not guess.
+    } as never,
+  };
+  const harness = makeGoldenHarness({ initialState: seed });
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const manager = new WorkerSessionManager(harness.deps, kernel);
 
@@ -1367,9 +1374,34 @@ test("reserveLogicalTransportSession rejects a name owned by an external coordin
     manager.reserveLogicalTransportSession("backend:main"),
   ).rejects.toThrow(/external coordinator/);
 });
+
+test("a split pendingLogicalTransportSessions map is caught: reserve then registerExternalCoordinator", async () => {
+  // THIS is the behavioural assertion that catches a facade wiring two WorkerSessionManagers.
+  // `registerExternalCoordinator` (orchestration-service.ts:373-375) is the only place other
+  // than reserveLogicalTransportSession that reads pendingLogicalTransportSessions:
+  //     if ((this.pendingLogicalTransportSessions.get(coordinatorSession) ?? 0) > 0) throw
+  // So: reserve a logical session, do NOT release it, then register an external coordinator
+  // under the same name. With one shared map this throws. With the map split across two
+  // manager instances, the registration sees a count of 0 and silently succeeds.
+  //
+  // Note: after Task 9, `registerExternalCoordinator` lives on CoordinatorRegistryService
+  // (Task 13) while the map lives on WorkerSessionManager. Wire the reservation check through
+  // the injected manager — do NOT copy the map. Until Task 13 exists, drive both calls through
+  // the facade.
+  const harness = makeGoldenHarness();
+  const service = new OrchestrationService(harness.deps);
+
+  const release = await service.reserveLogicalTransportSession("backend:main");
+  await expect(
+    service.registerExternalCoordinator({ coordinatorSession: "backend:main" }),
+  ).rejects.toThrow(/existing logical session/);
+  await release();
+});
 ```
 
-> The second test needs a correctly seeded `externalCoordinators` entry — read `registerExternalCoordinator` for the record shape and seed `initialState` accordingly, or call `registerExternalCoordinator` on a facade first. This is the only branch of `reserveLogicalTransportSession` that throws.
+> Correct `registerExternalCoordinator`'s input shape against `RegisterExternalCoordinatorInput` (`orchestration-service.ts:68`) and `ExternalCoordinatorRecord` against `orchestration-types.ts`. The exact throw message is in `registerExternalCoordinator` — quote it, do not paraphrase.
+>
+> The source-regex singleton test below remains as a cheap backstop, but **this cross-call test is the primary detector** — it fails on behaviour, not on source text.
 
 - [ ] **Step 2: Run to verify it fails**
 
