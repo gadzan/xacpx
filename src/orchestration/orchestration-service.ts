@@ -3781,11 +3781,6 @@ export class OrchestrationService {
     }
   }
 
-  private async assertProposedWorkerSessionDoesNotConflictExternalCoordinator(workerSession: string): Promise<void> {
-    const state = await this.deps.loadState();
-    this.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
-  }
-
   private ensureExternalCoordinators(state: AppState): Record<string, ExternalCoordinatorRecord> {
     if (!("externalCoordinators" in state.orchestration) || !state.orchestration.externalCoordinators) {
       (
@@ -3868,18 +3863,6 @@ export class OrchestrationService {
     if (group) {
       group.updatedAt = now;
     }
-  }
-
-  private getLatestDeliveredPackageMessage(
-    packageRecord: OrchestrationHumanQuestionPackageRecord,
-  ): OrchestrationHumanQuestionPackageMessageRecord | null {
-    for (let index = packageRecord.messages.length - 1; index >= 0; index -= 1) {
-      const message = packageRecord.messages[index];
-      if (message?.deliveredAt) {
-        return message;
-      }
-    }
-    return null;
   }
 
   private snapshotCoordinatorDeliveryRoute(
