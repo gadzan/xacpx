@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect } from "bun:test";
 import { createConfig } from "../../commands/command-router-test-support";
 import type { OrchestrationServiceDeps } from "../../../../src/orchestration/orchestration-service";
+import type { OrchestrationTaskRecord } from "../../../../src/orchestration/orchestration-types";
 import { createEmptyState, type AppState } from "../../../../src/state/types";
 import type { AppConfig } from "../../../../src/config/types";
 
@@ -71,16 +72,18 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     loadState: async () => cloneState(state),
     saveState: async (nextState) => {
       state = cloneState(nextState);
-      // Not just the task-id set: successive saves in one call usually mutate fields of the
-      // same tasks, so an id set makes two saves indistinguishable and a reordered save
-      // invisible. The digest changes whenever a task's status/timestamp/event count does.
+      // Record the full per-task record (minus `events`, whose signal `eventSeq` already
+      // carries). A narrower digest cannot distinguish two saves that only touch bookkeeping
+      // fields — noticePending, injectionPending, summary, openQuestion — and a refactor that
+      // reorders those saves would slip through. `updatedAt` alone is no help: deps.now() is a
+      // fixed instant, so every save in one call stamps the same timestamp.
       const tasks = nextState.orchestration.tasks ?? {};
       record("saveState", {
         tasks: Object.keys(tasks)
           .sort()
           .map((id) => {
-            const t = tasks[id] as { status?: unknown; updatedAt?: unknown; eventSeq?: unknown };
-            return { taskId: id, status: t.status, updatedAt: t.updatedAt, eventSeq: t.eventSeq ?? 0 };
+            const { events: _events, ...rest } = tasks[id] as OrchestrationTaskRecord;
+            return { ...rest, taskId: id };
           }),
       });
     },
