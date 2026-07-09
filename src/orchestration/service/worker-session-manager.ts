@@ -26,7 +26,6 @@ export type WorkerSessionDeps = Pick<
   | "dispatchWorkerTask"
   | "closeWorkerSession"
   | "findReusableWorkerSession"
-  | "logger"
 >;
 
 export class WorkerSessionManager {
