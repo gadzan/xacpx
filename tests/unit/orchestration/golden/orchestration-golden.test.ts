@@ -77,12 +77,27 @@ async function waitForPortCall(harness: GoldenHarness, port: string, afterIndex:
  *    task's reconcile does real async work of its own (`loadState`/`saveState`), so a
  *    caller draining a parallel task's cancellation would still be racing the snapshot
  *    even after this helper resolves.
+ *
+ * `afterIndex` scopes the search to `harness.calls` entries recorded from that index
+ * onward — mirroring `waitForPortCall` above, and for the identical reason. Without it,
+ * this only checks "has this event ever been logged" over the WHOLE accumulated log — a
+ * silent no-op if an earlier action in the same test already logged the same event name,
+ * since the (stale) match would satisfy the poll on its very first check without ever
+ * waiting for the NEW occurrence this invocation actually cares about. This is not
+ * hypothetical: `coordinatorRetractAnswer` on a running task logs
+ * `orchestration.task.correction_requested`, and its detached chain logs
+ * `orchestration.task.correction_reopened` while clearing `correctionPending` — a scenario
+ * that answers and retracts the SAME task twice fires both event names twice in one test,
+ * and a `waitForLogEvent` draining the second detached chain would return instantly on the
+ * first, stale occurrence, snapshotting mid-flight. Callers must capture
+ * `harness.calls.length` immediately BEFORE the action whose detached work they are
+ * draining — not at the top of the test — and pass it here as `afterIndex`.
  */
-async function waitForLogEvent(harness: GoldenHarness, eventName: string): Promise<void> {
+async function waitForLogEvent(harness: GoldenHarness, eventName: string, afterIndex: number): Promise<void> {
   const maxAttempts = 20;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (
-      harness.calls.some(
+      harness.calls.slice(afterIndex).some(
         (call) =>
           call.port.startsWith("logger.") &&
           (call.request as { event?: unknown } | null)?.event === eventName,
@@ -93,7 +108,7 @@ async function waitForLogEvent(harness: GoldenHarness, eventName: string): Promi
     await Bun.sleep(0);
   }
   throw new Error(
-    `waitForLogEvent: timed out waiting for log event "${eventName}" after ${maxAttempts} attempts`,
+    `waitForLogEvent: timed out waiting for log event "${eventName}" after ${maxAttempts} attempts (since index ${afterIndex})`,
   );
 }
 
@@ -290,8 +305,9 @@ test("golden: requestTaskCancellation drains its detached chain to a settled sta
     targetAgent: "claude",
     task: "cancel me",
   });
+  const callsBefore = harness.calls.length;
   await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
-  await waitForLogEvent(harness, "orchestration.task.cancel_completed");
+  await waitForLogEvent(harness, "orchestration.task.cancel_completed", callsBefore);
 
   expectMatchesFixture("requesttaskcancellation-drains-its-detached-chain", harness.snapshot());
 });
@@ -378,6 +394,7 @@ test("golden: createGroup then cancelGroup cancels its tasks", async () => {
     task: "in group",
     groupId: group.groupId,
   });
+  const callsBefore = harness.calls.length;
   const result = await service.cancelGroup({ coordinatorSession: "backend:main", groupId: group.groupId });
 
   // `cancelGroup` (orchestration-service.ts:486-527) awaits `requestTaskCancellation` for
@@ -393,7 +410,7 @@ test("golden: createGroup then cancelGroup cancels its tasks", async () => {
   // The state snapshot below is taken one statement later — drain the detached chain
   // first so it pins a settled state rather than an accident of how many microtask hops
   // happen to elapse between `cancelGroup` returning and this line running.
-  await waitForLogEvent(harness, "orchestration.task.cancel_completed");
+  await waitForLogEvent(harness, "orchestration.task.cancel_completed", callsBefore);
   expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-state", harness.snapshot());
 });
 
@@ -577,6 +594,7 @@ test("golden: coordinatorRetractAnswer on a running task reopens the blocker wit
     questionId: raised.questionId,
     answer: "users",
   });
+  const callsBefore = harness.calls.length;
   await service.coordinatorRetractAnswer({
     coordinatorSession: "backend:main",
     taskId: "task-1",
@@ -603,7 +621,7 @@ test("golden: coordinatorRetractAnswer on a running task reopens the blocker wit
   // `correction_reopened` specifically (not `cancel_completed`, which never fires here, and
   // not `waitForPortCall(harness, "wakeCoordinatorSession")`, which would return immediately
   // since workerRaiseQuestion already recorded one earlier in this same test).
-  await waitForLogEvent(harness, "orchestration.task.correction_reopened");
+  await waitForLogEvent(harness, "orchestration.task.correction_reopened", callsBefore);
 
   expectMatchesFixture("coordinatorretractanswer-on-a-running-task-reopens-the-blocker", harness.snapshot());
 });
