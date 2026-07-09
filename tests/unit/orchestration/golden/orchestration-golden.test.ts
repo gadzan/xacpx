@@ -28,17 +28,25 @@ import { expectMatchesFixture, makeGoldenHarness, type GoldenHarness } from "./g
  * lands, the detached work is finished and the snapshot is stable. A future scenario whose
  * mocked port throws (or that does further work after the awaited call) would need a
  * different wait, not this poll.
+ *
+ * `afterIndex` scopes the search to `harness.calls` entries recorded from that index
+ * onward. Without it, this only checks "has this port ever been called" over the WHOLE
+ * accumulated log — a silent no-op if an earlier action in the same test already called
+ * the same port, since the (stale) match would satisfy the poll on its very first check
+ * without ever waiting for the NEW call this invocation actually cares about. Callers must
+ * capture `harness.calls.length` before triggering the action being awaited and pass it
+ * here as `afterIndex`.
  */
-async function waitForPortCall(harness: GoldenHarness, port: string): Promise<void> {
+async function waitForPortCall(harness: GoldenHarness, port: string, afterIndex: number): Promise<void> {
   const maxAttempts = 20;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (harness.calls.some((call) => call.port === port)) {
+    if (harness.calls.slice(afterIndex).some((call) => call.port === port)) {
       return;
     }
     await Bun.sleep(0);
   }
   throw new Error(
-    `waitForPortCall: timed out waiting for port "${port}" after ${maxAttempts} attempts`,
+    `waitForPortCall: timed out waiting for port "${port}" after ${maxAttempts} attempts (since index ${afterIndex})`,
   );
 }
 
@@ -164,12 +172,13 @@ test("golden: requestDelegateFromRpc creates a task and returns its status", asy
   });
   const service = new OrchestrationService(harness.deps);
 
+  const callsBefore = harness.calls.length;
   const result = await service.requestDelegateFromRpc({
     sourceHandle: "backend:main",
     targetAgent: "claude",
     task: "run the audit",
   });
-  await waitForPortCall(harness, "dispatchWorkerTask");
+  await waitForPortCall(harness, "dispatchWorkerTask", callsBefore);
 
   expectMatchesFixture("requestdelegatefromrpc-creates-a-task-and-returns-rpc-result", result);
   expectMatchesFixture("requestdelegatefromrpc-creates-a-task-and-returns-rpc-state", harness.snapshot());
@@ -597,4 +606,208 @@ test("golden: coordinatorRetractAnswer on a running task reopens the blocker wit
   await waitForLogEvent(harness, "orchestration.task.correction_reopened");
 
   expectMatchesFixture("coordinatorretractanswer-on-a-running-task-reopens-the-blocker", harness.snapshot());
+});
+
+// --- Task lifecycle, notices, and session reservation ------------------------------
+//
+// None of the scenarios below touch any fire-and-forget/detached path: recordWorkerReply,
+// markTaskNoticeDelivered/recordTaskNoticeDelivery, cleanTasks, purgeSessionReferences,
+// markCoordinatorGroupsInjectionFailed, and reserveLogicalTransportSession all run their
+// single `mutate()` block to completion and return — no `waitForPortCall`/`waitForLogEvent`
+// draining is needed here. (`logEvent`'s `void logger.info(...)` call, orchestration-
+// service.ts:4372, is "detached" only in the sense of an unawaited Promise; the harness's
+// stub logger has no internal `await`, so the call still lands synchronously in `calls`
+// before the outer method returns — see the frozen oracle's identical assumption.)
+//
+// The brief's snippets get several real signatures wrong — verified directly against
+// orchestration-service.ts:
+//   - `recordWorkerReply`'s `sourceHandle` is a REQUIRED field (RecordWorkerReplyInput,
+//     :81); the brief's calls omit it. Read the real value back from
+//     `harness.getState().orchestration.tasks[...].workerSession`, per the established
+//     convention elsewhere in this file.
+//   - `createGroup`'s input is exactly `{ coordinatorSession, title }` (:400-403) — no
+//     `groupId` field exists to pass in; the id is always minted via `deps.createId()`.
+//   - `markCoordinatorGroupsInjectionFailed(groupIds: string[], errorMessage: string):
+//     Promise<void>` (:2499) — there is no leading `coordinatorSession` parameter.
+//   - `cleanTasks(coordinatorSession: string): Promise<CleanTasksResult>` (:2254) and
+//     `purgeSessionReferences(transportSession: string): Promise<CleanTasksResult>`
+//     (:2316) both take a bare string, not `{ coordinatorSession }` / an object.
+//   - `markTaskNoticeDelivered(taskId: string, deliveryAccountId: string)` (:1346) is
+//     positional, not `RecordTaskNoticeDeliveryInput`-shaped; `recordTaskNoticeDelivery`
+//     (:1403) is the object-shaped entry point matching `RecordTaskNoticeDeliveryInput`
+//     (:88) and simply forwards to `markTaskNoticeDelivered`. Used below so the fixture
+//     exercises the same shape the brief pointed at.
+//   - `listPendingTaskNotices(): Promise<OrchestrationTaskRecord[]>` (:1395) is async; the
+//     brief's snippet dropped the `await`, which would have snapshotted an unresolved
+//     Promise instead of the notice list.
+//
+// Deliberate deviation from the brief's literal inputs: `recordWorkerReply` only sets
+// `noticePending = true` when the task ALREADY carries both `chatKey` AND
+// `replyContextToken` (orchestration-service.ts:1286 — `if (!isContestedResult &&
+// task.chatKey && task.replyContextToken)`). The brief's `requestDelegate` calls for the
+// two notice scenarios below omit both fields, which would silently produce an EMPTY
+// `listPendingTaskNotices()` result and a task with no `noticePending` key at all —
+// contradicting the scenario names before a single line of test code even runs. Since
+// exercising the notice mechanism is the explicit point of these two scenarios (and Task 5
+// is themed on "notices"), `chatKey`/`replyContextToken` are added to the `requestDelegate`
+// calls below rather than shipping a "marks a notice pending" fixture whose content is `[]`
+// and then discovering the mismatch after the fact.
+
+test("golden: recordWorkerReply completes the task and marks a notice pending", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "do it",
+    chatKey: "wx:room-1",
+    replyContextToken: "ctx-1",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    summary: "done",
+    resultText: "the answer",
+  });
+
+  expectMatchesFixture("recordworkerreply-completes-the-task-and-marks-state", harness.snapshot());
+  expectMatchesFixture(
+    "recordworkerreply-completes-the-task-and-marks-pending-notices",
+    await service.listPendingTaskNotices(),
+  );
+});
+
+test("golden: notice lifecycle pending -> delivered", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "do it",
+    chatKey: "wx:room-1",
+    replyContextToken: "ctx-1",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    summary: "done",
+    resultText: "the answer",
+  });
+  // recordTaskNoticeDelivery is the `RecordTaskNoticeDeliveryInput`-shaped entry point
+  // (`{ taskId, deliveryAccountId }`) that forwards to the positional
+  // `markTaskNoticeDelivered(taskId, deliveryAccountId)`.
+  await service.recordTaskNoticeDelivery({ taskId: "task-1", deliveryAccountId: "acc-1" });
+
+  expectMatchesFixture("notice-lifecycle-pending-delivered", harness.snapshot());
+});
+
+test("golden: markCoordinatorGroupsInjectionFailed records the failure", async () => {
+  const harness = makeGoldenHarness({ ids: ["g1", "task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  const group = await service.createGroup({ coordinatorSession: "backend:main", title: "review" });
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "in group",
+    groupId: group.groupId,
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    summary: "done",
+    resultText: "ok",
+  });
+  // Real signature: markCoordinatorGroupsInjectionFailed(groupIds: string[], errorMessage:
+  // string) — no leading coordinatorSession parameter, unlike the brief's 3-arg call.
+  await service.markCoordinatorGroupsInjectionFailed([group.groupId], "injection blew up");
+
+  expectMatchesFixture("markcoordinatorgroupsinjectionfailed-records-the-failure", harness.snapshot());
+});
+
+test("golden: cleanTasks removes terminal tasks", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "do it",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    summary: "done",
+    resultText: "ok",
+  });
+  // Real signature: cleanTasks(coordinatorSession: string) — a bare string, not
+  // `{ coordinatorSession }`.
+  const result = await service.cleanTasks("backend:main");
+
+  expectMatchesFixture("cleantasks-removes-terminal-tasks-clean-result", result);
+  expectMatchesFixture("cleantasks-removes-terminal-tasks-clean-state", harness.snapshot());
+});
+
+test("golden: purgeSessionReferences drops bindings and metadata", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "do it",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.recordWorkerReply({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    summary: "done",
+    resultText: "ok",
+  });
+  // purgeSessionReferences returns a CleanTasksResult (the brief's snippet discarded it) —
+  // capture it the same way the cleanTasks scenario above does, since it is meaningful
+  // production output of the same shape.
+  const result = await service.purgeSessionReferences("backend:main");
+
+  expectMatchesFixture("purgesessionreferences-drops-bindings-and-metadata-result", result);
+  expectMatchesFixture("purgesessionreferences-drops-bindings-and-metadata-state", harness.snapshot());
+});
+
+test("golden: reserveLogicalTransportSession reserves and releases", async () => {
+  const harness = makeGoldenHarness();
+  const service = new OrchestrationService(harness.deps);
+
+  // Signature: reserveLogicalTransportSession(transportSession: string): Promise<() =>
+  // Promise<void>>. The release function is async — await it. This is one of the four
+  // ranges the frozen oracle never covers; the assertion below is whatever branch the
+  // second reservation actually takes, not an assumption that it throws.
+  const release = await service.reserveLogicalTransportSession("backend:claude:logical-1");
+  const blocked = await service
+    .reserveLogicalTransportSession("backend:claude:logical-1")
+    .then(() => "second reservation succeeded")
+    .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+  await release();
+
+  expectMatchesFixture("reservelogicaltransportsession-reserves-and-releases-second-reservation", blocked);
 });

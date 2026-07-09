@@ -1,0 +1,133 @@
+{
+  "state": {
+    "sessions": {},
+    "chat_contexts": {},
+    "native_session_lists": {},
+    "orchestration": {
+      "tasks": {},
+      "workerBindings": {},
+      "groups": {},
+      "humanQuestionPackages": {},
+      "coordinatorQuestionState": {},
+      "coordinatorRoutes": {},
+      "externalCoordinators": {}
+    },
+    "scheduled_tasks": {}
+  },
+  "calls": [
+    {
+      "port": "findReusableWorkerSession",
+      "request": {
+        "sourceHandle": "wx:user-1",
+        "sourceKind": "human",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "ensureWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main",
+        "sourceHandle": "wx:user-1",
+        "sourceKind": "human",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "taskId": "task-1",
+            "sourceHandle": "wx:user-1",
+            "sourceKind": "human",
+            "coordinatorSession": "backend:main",
+            "workerSession": "backend:claude:backend:main",
+            "workspace": "backend",
+            "targetAgent": "claude",
+            "task": "do it",
+            "status": "running",
+            "summary": "",
+            "resultText": "",
+            "createdAt": "2026-04-13T10:00:00.000Z",
+            "updatedAt": "2026-04-13T10:00:00.000Z",
+            "eventSeq": 1
+          }
+        ]
+      }
+    },
+    {
+      "port": "dispatchWorkerTask",
+      "request": {
+        "taskId": "task-1",
+        "workerSession": "backend:claude:backend:main",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude",
+        "task": "do it"
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "running",
+          "worker_session": "backend:claude:backend:main"
+        }
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "taskId": "task-1",
+            "sourceHandle": "wx:user-1",
+            "sourceKind": "human",
+            "coordinatorSession": "backend:main",
+            "workerSession": "backend:claude:backend:main",
+            "workspace": "backend",
+            "targetAgent": "claude",
+            "task": "do it",
+            "status": "completed",
+            "summary": "done",
+            "resultText": "ok",
+            "createdAt": "2026-04-13T10:00:00.000Z",
+            "updatedAt": "2026-04-13T10:00:00.000Z",
+            "eventSeq": 2,
+            "injectionPending": true
+          }
+        ]
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.completed",
+        "message": "task completed",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "completed",
+          "worker_session": "backend:claude:backend:main"
+        }
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": []
+      }
+    }
+  ],
+  "taskEvents": {}
+}
