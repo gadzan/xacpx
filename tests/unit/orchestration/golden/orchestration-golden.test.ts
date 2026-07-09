@@ -48,13 +48,27 @@ async function waitForPortCall(harness: GoldenHarness, port: string): Promise<vo
  * `startWorkerCancellation` (:4415-4460) spawns a detached `void (async () => {...})()`
  * that runs `loadState -> cancelWorkerTask -> completeTaskCancellation` (or
  * `failTaskCancellation` if `cancelWorkerTask` throws). That chain has no port of its
- * own to poll for — its terminal signal on the success path is the unconditional
- * `this.logEvent("orchestration.task.cancel_completed", ...)` that
- * `completeTaskCancellation` fires right after its `mutate()` resolves
- * (orchestration-service.ts:2844-2848), regardless of which branch inside that mutate
- * ran. Poll for that logged event the same way `waitForPortCall` polls for a port, so a
- * caller can deterministically drain the detached chain before snapshotting instead of
- * racing it.
+ * own to poll for, so this polls the logged event `completeTaskCancellation` fires once
+ * its `mutate()` resolves — but two caveats apply (found while writing the question-flow
+ * fixtures in Task 4):
+ *
+ * 1. The `cancel_completed` log is NOT unconditional. `completeTaskCancellation`
+ *    (:2789-2812) branches on `task.correctionPending?.reason === "misrouted_answer"`:
+ *    that branch instead logs `orchestration.task.correction_reopened` and returns early
+ *    (:2823-2841) WITHOUT ever emitting `cancel_completed`. This helper only resolves on
+ *    the *other* branch — a plain cancellation with no pending correction. A caller
+ *    draining the detached chain kicked off for a correction (e.g. `coordinatorRetractAnswer`
+ *    re-blocking a still-running task, orchestration-service.ts:1794-1796) must poll for
+ *    `orchestration.task.correction_reopened` instead — this helper would time out.
+ * 2. Even on the `cancel_completed` path, that log is not the chain's terminal action:
+ *    `completeTaskCancellation` calls `await this.reconcileParallelSlots()` (line 2853)
+ *    AFTER emitting the log (lines 2844-2848). Draining by polling for the log alone only
+ *    works today because `reconcileParallelSlots` is a no-op for a non-parallel task and
+ *    because this helper's poll loop crosses `await Bun.sleep(0)` macrotask boundaries,
+ *    giving that no-op a chance to settle before the caller resumes. A parallel/queued
+ *    task's reconcile does real async work of its own (`loadState`/`saveState`), so a
+ *    caller draining a parallel task's cancellation would still be racing the snapshot
+ *    even after this helper resolves.
  */
 async function waitForLogEvent(harness: GoldenHarness, eventName: string): Promise<void> {
   const maxAttempts = 20;
@@ -406,4 +420,181 @@ test("golden: listGroupSummaries reflects task status rollup", async () => {
     "listgroupsummaries-reflects-task-status-rollup",
     await service.listGroupSummaries({ coordinatorSession: "backend:main" }),
   );
+});
+
+// --- Human question flow ----------------------------------------------------------
+//
+// `WorkerRaiseQuestionInput` (orchestration-service.ts:144-150) is `{ taskId,
+// sourceHandle, question, whyBlocked, whatIsNeeded }` — there is no `workerSession`
+// field. `sourceHandle` must equal the task's assigned `workerSession` exactly
+// (workerRaiseQuestion asserts `task.workerSession !== input.sourceHandle`, :1568-1570),
+// so it is read back from state below rather than hardcoded, per the brief's own
+// warning that the worker-session name is not guaranteed.
+
+test("golden: workerRaiseQuestion blocks the task and wakes the coordinator", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1", "q-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "ask me",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  await service.workerRaiseQuestion({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    question: "which database?",
+    whyBlocked: "schema ambiguous",
+    whatIsNeeded: "a table name",
+  });
+
+  // workerRaiseQuestion awaits `wakeCoordinatorSession` itself (orchestration-service.ts
+  // :1605-1617) before returning — no detached work to drain here.
+  expectMatchesFixture("workerraisequestion-blocks-the-task-and-wakes", harness.snapshot());
+});
+
+test("golden: coordinatorAnswerQuestion resumes the worker", async () => {
+  const harness = makeGoldenHarness({ ids: ["task-1", "q-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "ask me",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  const raised = await service.workerRaiseQuestion({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    question: "which database?",
+    whyBlocked: "schema ambiguous",
+    whatIsNeeded: "a table name",
+  });
+  await service.coordinatorAnswerQuestion({
+    coordinatorSession: "backend:main",
+    taskId: "task-1",
+    questionId: raised.questionId,
+    answer: "users",
+  });
+
+  // coordinatorAnswerQuestion awaits `resumeWorkerTask` itself (orchestration-service.ts
+  // :1685-1703) before returning — no detached work to drain here.
+  expectMatchesFixture("coordinatoranswerquestion-resumes-the-worker", harness.snapshot());
+});
+
+test("golden: coordinatorRequestHumanInput builds and delivers a question package", async () => {
+  // coordinatorRequestHumanInput's real signature (orchestration-service.ts:1801-1806) is
+  // `{ coordinatorSession, taskQuestions, promptText, expectedActivePackageId? }` — it does
+  // not accept `accountId`/`replyContextToken` directly; delivery is routed through whatever
+  // `recordCoordinatorRouteContext` previously stored for this coordinator
+  // (snapshotCoordinatorDeliveryRoute, :1841-1843). Without a prior route,
+  // `deliverHumanQuestionPackageMessage` throws "does not have a delivery route" (:3957-3966)
+  // — recordCoordinatorRouteContext must run first, as the brief has it.
+  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "pkg-1", "msg-1"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.recordCoordinatorRouteContext({
+    coordinatorSession: "backend:main",
+    chatKey: "wx:room-1",
+  });
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "ask me",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  const raised = await service.workerRaiseQuestion({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    question: "which database?",
+    whyBlocked: "schema ambiguous",
+    whatIsNeeded: "a table name",
+  });
+  await service.coordinatorRequestHumanInput({
+    coordinatorSession: "backend:main",
+    taskQuestions: [{ taskId: "task-1", questionId: raised.questionId }],
+    promptText: "need a decision",
+  });
+
+  // coordinatorRequestHumanInput awaits `deliverHumanQuestionPackageMessage` itself
+  // (line 1933), which awaits `deliverCoordinatorMessage` and the follow-up state save
+  // (recordPackageMessageDeliverySuccess, :3987-3993) — all before returning. No detached
+  // work to drain here.
+  expectMatchesFixture("coordinatorrequesthumaninput-builds-and-delivers-a-question", harness.snapshot());
+});
+
+// coordinatorRetractAnswer's "contested review" branch (reviewPending/resultId minted) only
+// runs when the retracted task is already terminal — orchestration-service.ts:1758-1762 gates
+// it on `(task.status === "completed" || task.status === "failed") && task.reviewPending ===
+// undefined && task.coordinatorInjectedAt === undefined`. The scenario below retracts an
+// answer on a task that is still `running`, so it takes the OTHER branch (:1737-1756) instead:
+// it reopens the blocker with a fresh question id rather than producing a contested review.
+test("golden: coordinatorRetractAnswer on a running task reopens the blocker with a fresh question id", async () => {
+  // Only 3 ids are actually consumed by this sequence (see below) — the brief's 4th id
+  // ("result-1") is never reached, so it is omitted rather than padding the pool with an
+  // id nothing will claim.
+  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "q-2"] });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "ask me",
+  });
+  const task1 = harness.getState().orchestration.tasks["task-1"]!;
+  const raised = await service.workerRaiseQuestion({
+    taskId: "task-1",
+    sourceHandle: task1.workerSession!,
+    question: "which database?",
+    whyBlocked: "schema ambiguous",
+    whatIsNeeded: "a table name",
+  });
+  await service.coordinatorAnswerQuestion({
+    coordinatorSession: "backend:main",
+    taskId: "task-1",
+    questionId: raised.questionId,
+    answer: "users",
+  });
+  await service.coordinatorRetractAnswer({
+    coordinatorSession: "backend:main",
+    taskId: "task-1",
+    questionId: raised.questionId,
+  });
+
+  // At this point the task is still `running` (coordinatorAnswerQuestion put it back there),
+  // so coordinatorRetractAnswer takes its `task.status === "running"` branch
+  // (orchestration-service.ts:1737-1756) — NOT the completed/failed "contested review" branch
+  // (:1758-1784) the brief's ids anticipated. The running branch consumes no id of its own;
+  // it only flags `correctionPending` (reason "misrouted_answer") and fires the *detached*
+  // `startWorkerCancellation(prepared.task)` (line 1795, not awaited).
+  //
+  // That detached chain runs `interruptWorkerTask -> completeTaskCancellation`. Because
+  // `correctionPending.reason === "misrouted_answer"`, completeTaskCancellation
+  // (:2789-2812) takes the branch the corrected `waitForLogEvent` doc comment above
+  // describes: it does NOT cancel the task and does NOT log `cancel_completed`. It mints a
+  // replacement open question (consuming the 3rd id, "q-2"), reopens the task — as `blocked`
+  // here, since no active human-question package exists for `reopenActiveHumanPackageForTask`
+  // to find (:4307-4333) — and logs `orchestration.task.correction_reopened` before waking
+  // the coordinator. The task is NOT left "cancelled" or under contested review by this call
+  // sequence — that only happens when the retracted answer belongs to an already-completed/
+  // failed task (see the module-level comment above this test). Poll for
+  // `correction_reopened` specifically (not `cancel_completed`, which never fires here, and
+  // not `waitForPortCall(harness, "wakeCoordinatorSession")`, which would return immediately
+  // since workerRaiseQuestion already recorded one earlier in this same test).
+  await waitForLogEvent(harness, "orchestration.task.correction_reopened");
+
+  expectMatchesFixture("coordinatorretractanswer-on-a-running-task-reopens-the-blocker", harness.snapshot());
 });
