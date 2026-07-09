@@ -1,0 +1,5 @@
+{
+  "taskId": "task-1",
+  "status": "running",
+  "workerSession": "backend:claude:backend:main"
+}
