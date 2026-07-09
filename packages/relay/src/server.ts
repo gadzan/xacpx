@@ -6,6 +6,7 @@ import { WebSocketServer } from "ws";
 import {
   MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
+  validControlEvent,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -148,7 +149,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       // generic relay.instance.message_failed (see instance-gateway's outer message guard).
       try {
         if (envelope.type === MSG.instanceEvent) {
-          const event = (envelope.payload as InstanceEventPayload).event as ControlEventDto;
+          const raw = (envelope.payload as InstanceEventPayload | undefined)?.event;
+          if (!validControlEvent(raw)) {
+            // A malformed event from a buggy/hostile connector must not broadcast to
+            // browsers or seed history. Drop it; log type + instanceId only (no payload).
+            logger.debug("relay.event.invalid", "dropped malformed instance event", {
+              instanceId,
+              eventType: typeof raw === "object" && raw !== null ? String((raw as { type?: unknown }).type) : "(none)",
+            });
+            return;
+          }
+          const event = raw as ControlEventDto;
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
             turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });

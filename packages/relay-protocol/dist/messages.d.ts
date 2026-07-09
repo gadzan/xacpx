@@ -424,3 +424,12 @@ export interface SessionModelResult {
     /** Agent-advertised model ids the session can switch to (may be empty). */
     available: string[];
 }
+export interface TerminalCreatePayload {
+    chatKey: string;
+    sessionAlias: string;
+    cols?: number;
+    rows?: number;
+}
+export interface TerminalAttachPayload {
+    terminalId: string;
+}

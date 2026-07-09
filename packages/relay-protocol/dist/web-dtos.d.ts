@@ -83,6 +83,10 @@ export type WebServerEvent = {
 };
 /** Wrap a server→web push event in a relay envelope. */
 export declare function webEventEnvelope(event: WebServerEvent): RelayEnvelope;
+/** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
+ *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
+ *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
+export declare function validControlEvent(e: unknown): boolean;
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export declare function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null;
 export declare const WEB_CLIENT_TYPE = "web.client";

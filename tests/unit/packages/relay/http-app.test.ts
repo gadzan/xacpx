@@ -423,6 +423,28 @@ test("rpc prompt persists the inbound message before the turn's out message (his
   expect(cached.messages.map((m) => [m.direction, m.text])).toEqual([["in", "hi"], ["out", "agent reply"]]);
 });
 
+test("rpc boundary C: malformed prompt returns 400 and persists nothing", async () => {
+  const { app, instances, messages, loginToken, login, rpcCalls } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const { instanceId, accountId } = instances.redeemPairingToken(token)!;
+
+  const res = await app.request(`/api/instances/${instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: 123 /* wrong type */ } }),
+  });
+  expect(res.status).toBe(400);
+  expect(((await res.json()) as { error: string }).error).toBe("invalid-payload");
+  expect(rpcCalls.length).toBe(0);
+
+  // history for the session is still empty — nothing persisted ahead of the shape check
+  const history = messages.listBySession(accountId, instanceId, "s");
+  expect(history.messages.length).toBe(0);
+});
+
 test("rpc prompt persists a valid small image previewUrl on the attachment", async () => {
   const { app, instances, loginToken, login } = await makeApp();
   const { cookie } = await login(loginToken);

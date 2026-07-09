@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
 
-import { MSG, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
+import { MSG, parseControlPayload, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
@@ -321,6 +321,18 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       };
     }
     try {
+      // Shape-validate the RPCs the hub persists BEFORE forwarding, so a malformed frame
+      // can't poison history ahead of the connector's own boundary check. Error body carries
+      // no payload contents (privacy). Other control.* types are validated at the connector.
+      if (body.type === MSG.prompt && !parseControlPayload(MSG.prompt, payload)) {
+        return c.json({ error: "invalid-payload" }, 400);
+      }
+      if (body.type === MSG.commandExecute && !parseControlPayload(MSG.commandExecute, payload)) {
+        return c.json({ error: "invalid-payload" }, 400);
+      }
+      if (body.type === MSG.upload && !parseControlPayload(MSG.upload, payload)) {
+        return c.json({ error: "invalid-payload" }, 400);
+      }
       if (body.type === MSG.upload) {
         const up = payload as { content?: string };
         const approxBytes = up.content ? Math.floor((up.content.length * 3) / 4) : 0;
