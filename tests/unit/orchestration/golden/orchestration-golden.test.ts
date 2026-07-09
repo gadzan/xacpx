@@ -9,7 +9,7 @@ import { test } from "bun:test";
 
 import { createConfig } from "../../commands/command-router-test-support";
 import { OrchestrationService } from "../../../../src/orchestration/orchestration-service";
-import { createEmptyState } from "../../../../src/state/types";
+import { createEmptyState, type AppState } from "../../../../src/state/types";
 import { expectMatchesFixture, makeGoldenHarness, type GoldenHarness } from "./golden-harness";
 
 /**
@@ -39,6 +39,39 @@ async function waitForPortCall(harness: GoldenHarness, port: string): Promise<vo
   }
   throw new Error(
     `waitForPortCall: timed out waiting for port "${port}" after ${maxAttempts} attempts`,
+  );
+}
+
+/**
+ * `requestTaskCancellation` (orchestration-service.ts:2678-2775) fires
+ * `this.startWorkerCancellation(prepared.task)` as a bare, unawaited call (line 2753).
+ * `startWorkerCancellation` (:4415-4460) spawns a detached `void (async () => {...})()`
+ * that runs `loadState -> cancelWorkerTask -> completeTaskCancellation` (or
+ * `failTaskCancellation` if `cancelWorkerTask` throws). That chain has no port of its
+ * own to poll for — its terminal signal on the success path is the unconditional
+ * `this.logEvent("orchestration.task.cancel_completed", ...)` that
+ * `completeTaskCancellation` fires right after its `mutate()` resolves
+ * (orchestration-service.ts:2844-2848), regardless of which branch inside that mutate
+ * ran. Poll for that logged event the same way `waitForPortCall` polls for a port, so a
+ * caller can deterministically drain the detached chain before snapshotting instead of
+ * racing it.
+ */
+async function waitForLogEvent(harness: GoldenHarness, eventName: string): Promise<void> {
+  const maxAttempts = 20;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (
+      harness.calls.some(
+        (call) =>
+          call.port.startsWith("logger.") &&
+          (call.request as { event?: unknown } | null)?.event === eventName,
+      )
+    ) {
+      return;
+    }
+    await Bun.sleep(0);
+  }
+  throw new Error(
+    `waitForLogEvent: timed out waiting for log event "${eventName}" after ${maxAttempts} attempts`,
   );
 }
 
@@ -215,7 +248,14 @@ test("golden: reconcileParallelSlots drains a queued task when a slot frees", as
   expectMatchesFixture("reconcileparallelslots-drains-a-queued-task-when", harness.snapshot());
 });
 
-test("golden: requestTaskCancellation then completeTaskCancellation", async () => {
+test("golden: requestTaskCancellation drains its detached chain to a settled state", async () => {
+  // Characterizes the real fire-and-forget behaviour (see the `waitForLogEvent` doc
+  // comment above): `requestTaskCancellation` returns as soon as its own mutate
+  // resolves, well before the detached chain it kicked off has run
+  // `cancelWorkerTask -> completeTaskCancellation`. Drain that chain deterministically
+  // before snapshotting so this fixture pins the settled end state the chain produces,
+  // not an accident of how many microtask hops happened to elapse by the time this test
+  // got around to snapshotting.
   const harness = makeGoldenHarness({ ids: ["task-1"] });
   const service = new OrchestrationService(harness.deps);
 
@@ -228,27 +268,72 @@ test("golden: requestTaskCancellation then completeTaskCancellation", async () =
     task: "cancel me",
   });
   await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
-  await service.completeTaskCancellation("task-1");
+  await waitForLogEvent(harness, "orchestration.task.cancel_completed");
 
-  expectMatchesFixture("requesttaskcancellation-then-completetaskcancellation", harness.snapshot());
+  expectMatchesFixture("requesttaskcancellation-drains-its-detached-chain", harness.snapshot());
 });
 
-test("golden: failTaskCancellation records the error and leaves the task alive", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+/**
+ * `requestTaskCancellation`'s `task.status === "running"` branch (orchestration-service.ts
+ * :2711-2724, the first cancel request on a running task) writes exactly this onto the
+ * task: `cancelRequestedAt` and `updatedAt` stamped to `now`, plus an appended
+ * `cancel_requested` event — status itself stays `running`. Everything else is copied
+ * from the task record `requestDelegate` (human path) would have produced.
+ */
+function seedRunningCancelRequestedState(): AppState {
+  const now = "2026-04-13T10:00:00.000Z";
+  return {
+    ...createEmptyState(),
+    orchestration: {
+      ...createEmptyState().orchestration,
+      tasks: {
+        "task-1": {
+          taskId: "task-1",
+          sourceHandle: "wx:user-1",
+          sourceKind: "human",
+          coordinatorSession: "backend:main",
+          workerSession: "backend:claude:backend:main",
+          workspace: "backend",
+          targetAgent: "claude",
+          task: "cancel me",
+          status: "running",
+          summary: "",
+          resultText: "",
+          createdAt: now,
+          updatedAt: now,
+          cancelRequestedAt: now,
+          eventSeq: 2,
+          events: [
+            { seq: 1, at: now, type: "created", status: "running", message: "Task created" },
+            { seq: 2, at: now, type: "cancel_requested", status: "running", message: "Cancellation requested" },
+          ],
+        },
+      },
+    },
+  };
+}
+
+// The two scenarios below seed the task directly in the state `requestTaskCancellation`
+// would have left it in, instead of calling `requestTaskCancellation` first: that avoids
+// spawning — and then racing — the detached cancellation chain described in the
+// `waitForLogEvent` doc comment above, so these fixtures stay independent of microtask
+// scheduling in that chain.
+test("golden: completeTaskCancellation on a cancel-requested task", async () => {
+  const harness = makeGoldenHarness({ initialState: seedRunningCancelRequestedState() });
   const service = new OrchestrationService(harness.deps);
 
-  await service.requestDelegate({
-    sourceHandle: "wx:user-1",
-    sourceKind: "human",
-    coordinatorSession: "backend:main",
-    workspace: "backend",
-    targetAgent: "claude",
-    task: "cancel me",
-  });
-  await service.requestTaskCancellation({ coordinatorSession: "backend:main", taskId: "task-1" });
+  await service.completeTaskCancellation("task-1");
+
+  expectMatchesFixture("completetaskcancellation-on-a-cancel-requested-task", harness.snapshot());
+});
+
+test("golden: failTaskCancellation on a cancel-requested task records the error and leaves the task running", async () => {
+  const harness = makeGoldenHarness({ initialState: seedRunningCancelRequestedState() });
+  const service = new OrchestrationService(harness.deps);
+
   await service.failTaskCancellation("task-1", "transport exploded");
 
-  expectMatchesFixture("failtaskcancellation-records-the-error-and-leaves", harness.snapshot());
+  expectMatchesFixture("failtaskcancellation-on-a-cancel-requested-task", harness.snapshot());
 });
 
 test("golden: createGroup then cancelGroup cancels its tasks", async () => {
@@ -272,7 +357,20 @@ test("golden: createGroup then cancelGroup cancels its tasks", async () => {
   });
   const result = await service.cancelGroup({ coordinatorSession: "backend:main", groupId: group.groupId });
 
+  // `cancelGroup` (orchestration-service.ts:486-527) awaits `requestTaskCancellation` for
+  // each task, which — per the module doc comment above — returns as soon as its own
+  // mutate resolves, well before the detached cancellation chain it fires actually
+  // finishes. `cancelGroup` then rebuilds `summary` via `getGroupSummary` (a plain
+  // `loadState`, no drain) and returns. So the returned `result.summary` genuinely shows
+  // this task still `running` at the moment `cancelGroup` returns — that staleness is
+  // real production behaviour of `cancelGroup` today, not something the orchestration
+  // split introduces, and this fixture intentionally pins it as-is.
   expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-result", result);
+
+  // The state snapshot below is taken one statement later — drain the detached chain
+  // first so it pins a settled state rather than an accident of how many microtask hops
+  // happen to elapse between `cancelGroup` returning and this line running.
+  await waitForLogEvent(harness, "orchestration.task.cancel_completed");
   expectMatchesFixture("creategroup-then-cancelgroup-cancels-its-tasks-cancel-group-state", harness.snapshot());
 });
 

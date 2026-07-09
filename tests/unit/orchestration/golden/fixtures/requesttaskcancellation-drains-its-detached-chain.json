@@ -218,20 +218,6 @@
           "worker_session": "backend:claude:backend:main"
         }
       }
-    },
-    {
-      "port": "logger.info",
-      "request": {
-        "event": "orchestration.task.cancel_completed",
-        "message": "task cancellation completed",
-        "context": {
-          "task_id": "task-1",
-          "coordinator_session": "backend:main",
-          "target_agent": "claude",
-          "status": "cancelled",
-          "worker_session": "backend:claude:backend:main"
-        }
-      }
     }
   ],
   "taskEvents": {
