@@ -86,24 +86,52 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "task": "do it",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 1,
-            "chatKey": "wx:room-1",
-            "replyContextToken": "ctx-1"
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "do it",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ],
+              "chatKey": "wx:room-1",
+              "replyContextToken": "ctx-1"
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {
@@ -136,26 +164,62 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "task": "do it",
-            "status": "completed",
-            "summary": "done",
-            "resultText": "the answer",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 2,
-            "chatKey": "wx:room-1",
-            "replyContextToken": "ctx-1",
-            "injectionPending": true,
-            "noticePending": true
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "do it",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "the answer",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
+                }
+              ],
+              "chatKey": "wx:room-1",
+              "replyContextToken": "ctx-1",
+              "injectionPending": true,
+              "noticePending": true
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {

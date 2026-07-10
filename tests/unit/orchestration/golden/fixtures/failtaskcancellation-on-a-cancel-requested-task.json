@@ -62,24 +62,56 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "task": "cancel me",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "cancelRequestedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 3,
-            "lastCancelError": "transport exploded"
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "cancel me",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "cancelRequestedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 3,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "cancel_requested",
+                  "status": "running",
+                  "message": "Cancellation requested"
+                },
+                {
+                  "seq": 3,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "progress",
+                  "status": "running",
+                  "message": "Cancellation failed: transport exploded"
+                }
+              ],
+              "lastCancelError": "transport exploded"
+            }
           }
-        ]
+        ],
+        "workerBindings": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {

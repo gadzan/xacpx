@@ -79,23 +79,51 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "backend:claude:backend:main",
-            "sourceKind": "worker",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:codex:reviewer:backend:main",
-            "workspace": "backend",
-            "targetAgent": "codex",
-            "role": "reviewer",
-            "task": "dangerous thing",
-            "status": "needs_confirmation",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 1
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "backend:claude:backend:main",
+              "sourceKind": "worker",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:codex:reviewer:backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer",
+              "task": "dangerous thing",
+              "status": "needs_confirmation",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "needs_confirmation",
+                  "message": "Task created"
+                }
+              ]
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {
@@ -129,23 +157,68 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "backend:claude:backend:main",
-            "sourceKind": "worker",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:codex:reviewer:backend:main",
-            "workspace": "backend",
-            "targetAgent": "codex",
-            "role": "reviewer",
-            "task": "dangerous thing",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 2
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "backend:claude:backend:main",
+              "sourceKind": "worker",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:codex:reviewer:backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer",
+              "task": "dangerous thing",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "needs_confirmation",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "running",
+                  "message": "Task approved"
+                }
+              ]
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          },
+          {
+            "key": "backend:codex:reviewer:backend:main",
+            "value": {
+              "sourceHandle": "backend:codex:reviewer:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {

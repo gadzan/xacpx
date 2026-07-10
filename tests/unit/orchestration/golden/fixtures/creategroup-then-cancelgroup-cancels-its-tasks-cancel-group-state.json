@@ -76,7 +76,24 @@
     {
       "port": "saveState",
       "request": {
-        "tasks": []
+        "tasks": [],
+        "workerBindings": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {
@@ -117,23 +134,62 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "groupId": "g1",
-            "task": "in group",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 1
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "groupId": "g1",
+              "task": "in group",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ]
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {
@@ -167,24 +223,70 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "groupId": "g1",
-            "task": "in group",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 2,
-            "cancelRequestedAt": "2026-04-13T10:00:00.000Z"
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "groupId": "g1",
+              "task": "in group",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "cancel_requested",
+                  "status": "running",
+                  "message": "Cancellation requested"
+                }
+              ],
+              "cancelRequestedAt": "2026-04-13T10:00:00.000Z"
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {
@@ -230,25 +332,78 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "groupId": "g1",
-            "task": "in group",
-            "status": "cancelled",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 3,
-            "cancelRequestedAt": "2026-04-13T10:00:00.000Z",
-            "cancelCompletedAt": "2026-04-13T10:00:00.000Z"
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "groupId": "g1",
+              "task": "in group",
+              "status": "cancelled",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 3,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "cancel_requested",
+                  "status": "running",
+                  "message": "Cancellation requested"
+                },
+                {
+                  "seq": 3,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "cancelled",
+                  "message": "Task cancelled"
+                }
+              ],
+              "cancelRequestedAt": "2026-04-13T10:00:00.000Z",
+              "cancelCompletedAt": "2026-04-13T10:00:00.000Z"
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {

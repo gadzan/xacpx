@@ -92,23 +92,52 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main:p-task-1-slot",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "task": "first",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 1,
-            "ephemeralWorkerSession": true
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ],
+              "ephemeralWorkerSession": true
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-1-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-1-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {
@@ -141,40 +170,81 @@
       "request": {
         "tasks": [
           {
-            "taskId": "task-1",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main:p-task-1-slot",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "task": "first",
-            "status": "running",
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 1,
-            "ephemeralWorkerSession": true
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ],
+              "ephemeralWorkerSession": true
+            }
           },
           {
-            "taskId": "task-2",
-            "sourceHandle": "wx:user-1",
-            "sourceKind": "human",
-            "coordinatorSession": "backend:main",
-            "workerSession": "backend:claude:backend:main:p-task-2-slot",
-            "workspace": "backend",
-            "targetAgent": "claude",
-            "task": "second",
-            "status": "queued",
-            "ephemeralWorkerSession": true,
-            "summary": "",
-            "resultText": "",
-            "createdAt": "2026-04-13T10:00:00.000Z",
-            "updatedAt": "2026-04-13T10:00:00.000Z",
-            "eventSeq": 1
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "queued",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                }
+              ]
+            }
           }
-        ]
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-1-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-1-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
       }
     },
     {

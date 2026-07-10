@@ -9,7 +9,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect } from "bun:test";
 import { createConfig } from "../../commands/command-router-test-support";
 import type { OrchestrationServiceDeps } from "../../../../src/orchestration/orchestration-service";
-import type { OrchestrationTaskRecord } from "../../../../src/orchestration/orchestration-types";
 import { createEmptyState, type AppState } from "../../../../src/state/types";
 import type { AppConfig } from "../../../../src/config/types";
 import type { AppLogger } from "../../../../src/logging/app-logger";
@@ -27,6 +26,25 @@ export interface GoldenSnapshot {
 
 function cloneState(state: AppState): AppState {
   return JSON.parse(JSON.stringify(state)) as AppState;
+}
+
+/**
+ * A collection rendered as `{ key, value }` entries, sorted by key.
+ *
+ * `{ key, value }` rather than `{ ...record, key }` on purpose. Spreading the record and
+ * stamping the map key over it hides any intermediate save where a record's own identity
+ * field disagrees with the key it is stored under — `tasks["t1"].taskId === "t2"` would be
+ * invisible. Keeping the record untouched under `value` makes that observable.
+ *
+ * Sorting fixes the order of collection *entries*. It does not canonicalize the property
+ * order inside each record, and `expectMatchesFixture` compares parsed JSON rather than raw
+ * bytes, so this is not a byte-stability guarantee — it is an entry-order guarantee.
+ */
+function sortedEntries<T>(collection: Record<string, T> | undefined): Array<{ key: string; value: T }> {
+  const entries = collection ?? {};
+  return Object.keys(entries)
+    .sort()
+    .map((key) => ({ key, value: entries[key] as T }));
 }
 
 export interface GoldenHarnessOverrides {
@@ -73,19 +91,32 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     loadState: async () => cloneState(state),
     saveState: async (nextState) => {
       state = cloneState(nextState);
-      // Record the full per-task record (minus `events`, whose signal `eventSeq` already
-      // carries). A narrower digest cannot distinguish two saves that only touch bookkeeping
-      // fields — noticePending, injectionPending, summary, openQuestion — and a refactor that
-      // reorders those saves would slip through. `updatedAt` alone is no help: deps.now() is a
-      // fixed instant, so every save in one call stamps the same timestamp.
-      const tasks = nextState.orchestration.tasks ?? {};
+      // Record the WHOLE orchestration subtree on every save, verbatim: all seven collections,
+      // every record complete, nothing projected away.
+      //
+      // Everything a narrower digest omits is a place a refactor can hide. A digest of task
+      // records alone cannot see a save that moves a package's `awaitingReplyMessageId`, a
+      // coordinator route, or a worker binding from one save to the next. A digest that drops
+      // each task's `events` cannot see a save that writes an event's `message` or `status`
+      // early and corrects it later — `eventSeq` counts appends, it does not describe them. In
+      // every such case the final AppState, the final event log, the save count and the ordered
+      // port-call log all still match; only a crash between the two saves would recover into a
+      // different state.
+      //
+      // `updatedAt` is no help either: deps.now() is a fixed instant, so every save in one call
+      // stamps the same timestamp.
+      //
+      // The seven collection keys are written in a fixed order rather than spread, so the digest
+      // does not depend on the insertion order of the state object.
+      const orch = nextState.orchestration;
       record("saveState", {
-        tasks: Object.keys(tasks)
-          .sort()
-          .map((id) => {
-            const { events: _events, ...rest } = tasks[id] as OrchestrationTaskRecord;
-            return { ...rest, taskId: id };
-          }),
+        tasks: sortedEntries(orch.tasks),
+        workerBindings: sortedEntries(orch.workerBindings),
+        groups: sortedEntries(orch.groups),
+        humanQuestionPackages: sortedEntries(orch.humanQuestionPackages),
+        coordinatorQuestionState: sortedEntries(orch.coordinatorQuestionState),
+        coordinatorRoutes: sortedEntries(orch.coordinatorRoutes),
+        externalCoordinators: sortedEntries(orch.externalCoordinators),
       });
     },
     config,
