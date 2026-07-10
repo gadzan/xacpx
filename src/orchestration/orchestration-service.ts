@@ -14,6 +14,7 @@ import type {
 } from "./orchestration-types";
 import { AsyncMutex } from "./async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "./coordinator-identity";
+import { CoordinatorRegistryService } from "./service/coordinator-registry-service";
 import { NoticeDeliveryService } from "./service/notice-delivery-service";
 import { OrchestrationStateKernel } from "./service/orchestration-state-kernel";
 import { QuestionFlowCore } from "./service/question-flow-core";
@@ -303,6 +304,7 @@ export class OrchestrationService {
   private readonly questionFlow: QuestionFlowCore;
   private readonly notices: NoticeDeliveryService;
   private readonly lifecycle: TaskLifecycleService;
+  private readonly coordinators: CoordinatorRegistryService;
 
   constructor(private readonly deps: OrchestrationServiceDeps) {
     this.kernel = new OrchestrationStateKernel({ logger: deps.logger }, deps.stateMutex);
@@ -310,59 +312,12 @@ export class OrchestrationService {
     this.questionFlow = new QuestionFlowCore(deps, this.kernel);
     this.notices = new NoticeDeliveryService(deps, this.kernel);
     this.lifecycle = new TaskLifecycleService(deps, this.kernel);
+    this.coordinators = new CoordinatorRegistryService(deps, this.kernel, this.workerSessions);
   }
 
 
   async registerExternalCoordinator(input: RegisterExternalCoordinatorInput): Promise<ExternalCoordinatorRecord> {
-    const coordinatorSession = input.coordinatorSession.trim();
-    const workspace = input.workspace?.trim();
-    const defaultTargetAgent = input.defaultTargetAgent?.trim();
-
-    if (!coordinatorSession) {
-      throw new Error("coordinatorSession must be a non-empty string");
-    }
-    if (workspace && !this.deps.config.workspaces[workspace]) {
-      throw new Error(`workspace "${workspace}" is not configured`);
-    }
-
-    return await this.kernel.mutate(async () => {
-      const state = await this.deps.loadState();
-      const externalCoordinators = this.kernel.ensureExternalCoordinators(state);
-      const existing = externalCoordinators[coordinatorSession];
-      if (this.workerSessions.hasPendingWorkerSession(coordinatorSession)) {
-        throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing worker session`);
-      }
-      if (state.orchestration.workerBindings[coordinatorSession]) {
-        throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing worker session`);
-      }
-      if (this.workerSessions.hasActiveTaskWorkerSession(state, coordinatorSession)) {
-        throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing worker session`);
-      }
-      if (this.workerSessions.hasPendingLogicalTransportSession(coordinatorSession)) {
-        throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing logical session`);
-      }
-      if (Object.values(state.sessions).some((session) => session.transport_session === coordinatorSession)) {
-        throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing logical session`);
-      }
-      if (existing?.workspace && workspace && existing.workspace !== workspace) {
-        throw new Error(
-          `coordinatorSession "${coordinatorSession}" is already bound to workspace "${existing.workspace}"; use a new coordinator session for workspace "${workspace}"`,
-        );
-      }
-      const now = this.deps.now().toISOString();
-      const effectiveDefaultTargetAgent = defaultTargetAgent || existing?.defaultTargetAgent;
-      const record: ExternalCoordinatorRecord = {
-        coordinatorSession,
-        ...(workspace ? { workspace } : existing?.workspace ? { workspace: existing.workspace } : {}),
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-        ...(effectiveDefaultTargetAgent ? { defaultTargetAgent: effectiveDefaultTargetAgent } : {}),
-      };
-
-      externalCoordinators[coordinatorSession] = record;
-      await this.deps.saveState(state);
-      return { ...record };
-    });
+    return await this.coordinators.registerExternalCoordinator(input);
   }
 
   async createGroup(input: {
@@ -1234,52 +1189,7 @@ export class OrchestrationService {
     groupId?: string;
     isOwner?: boolean;
   }): Promise<OrchestrationCoordinatorRouteContextRecord> {
-    if (input.coordinatorSession.trim().length === 0) {
-      throw new Error("coordinatorSession must be a non-empty string");
-    }
-    if (input.chatKey.trim().length === 0) {
-      throw new Error("chatKey must be a non-empty string");
-    }
-
-    return await this.kernel.mutate(async () => {
-      const state = await this.deps.loadState();
-      const now = this.deps.now().toISOString();
-      // Key the route by the stable identity so a route recorded before `/clear`
-      // is still found when the coordinator resumes under its rotated transport.
-      const routeKey = stableCoordinatorSession(input.coordinatorSession);
-      const existing = this.kernel.ensureCoordinatorRoutes(state)[routeKey];
-      const sameChat = existing?.chatKey === input.chatKey;
-      const hasAccountId = input.accountId !== undefined;
-      const hasReplyContextToken = input.replyContextToken !== undefined;
-      const hasCompleteReplyRoute = hasAccountId && hasReplyContextToken;
-      const shouldPreserveExistingReplyRoute =
-        !hasAccountId &&
-        !hasReplyContextToken &&
-        sameChat;
-      const replyRoute =
-        hasCompleteReplyRoute
-          ? {
-              accountId: input.accountId,
-              replyContextToken: input.replyContextToken,
-            }
-          : shouldPreserveExistingReplyRoute && existing?.accountId && existing?.replyContextToken
-            ? {
-                accountId: existing.accountId,
-                replyContextToken: existing.replyContextToken,
-              }
-            : undefined;
-      const route: OrchestrationCoordinatorRouteContextRecord = {
-        coordinatorSession: routeKey,
-        chatKey: input.chatKey,
-        ...(input.sessionAlias ? { sessionAlias: input.sessionAlias } : {}),
-        ...(replyRoute ? replyRoute : {}),
-        ...buildCoordinatorRouteChatMetadata(input, sameChat ? existing : undefined),
-        updatedAt: now,
-      };
-      this.kernel.ensureCoordinatorRoutes(state)[routeKey] = route;
-      await this.deps.saveState(state);
-      return { ...route };
-    });
+    return await this.coordinators.recordCoordinatorRouteContext(input);
   }
 
   async workerRaiseQuestion(
@@ -2655,36 +2565,6 @@ export class OrchestrationService {
 
 }
 
-
-function buildCoordinatorRouteChatMetadata(
-  input: {
-    channel?: string;
-    chatType?: "direct" | "group";
-    senderId?: string;
-    senderName?: string;
-    groupId?: string;
-    isOwner?: boolean;
-  },
-  existing?: OrchestrationCoordinatorRouteContextRecord,
-): Pick<
-  OrchestrationCoordinatorRouteContextRecord,
-  "channel" | "chatType" | "senderId" | "senderName" | "groupId" | "isOwner"
-> {
-  const channel = input.channel ?? existing?.channel;
-  const chatType = input.chatType ?? existing?.chatType;
-  const senderId = input.senderId ?? existing?.senderId;
-  const senderName = input.senderName ?? existing?.senderName;
-  const groupId = input.groupId ?? existing?.groupId;
-  const isOwner = input.isOwner ?? existing?.isOwner;
-  return {
-    ...(channel !== undefined ? { channel } : {}),
-    ...(chatType !== undefined ? { chatType } : {}),
-    ...(senderId !== undefined ? { senderId } : {}),
-    ...(senderName !== undefined ? { senderName } : {}),
-    ...(groupId !== undefined ? { groupId } : {}),
-    ...(isOwner !== undefined ? { isOwner } : {}),
-  };
-}
 
 function isRequestDelegateInput(
   input: RequestDelegateInput | RequestDelegateRpcInput,
