@@ -114,6 +114,10 @@ export class TaskCancellationService {
       // critical section. GroupService.cancelGroup depends on how many microtask hops
       // this chain takes before its saveState — see the comment there. Do not change how
       // this statement is written or where it sits.
+      //
+      // Nor may you add an `await` between here and this method's return. Measured: a bare
+      // `await Promise.resolve()` on the next line turns the `cancelGroup cancels its
+      // tasks` golden fixture red while all 185 frozen-oracle tests stay green.
       this.startWorkerCancellation(prepared.task);
     }
     if (prepared.closedPackageId) {

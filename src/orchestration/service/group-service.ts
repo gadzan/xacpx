@@ -135,12 +135,19 @@ export class GroupService {
       }
 
       // Call the collaborator directly, never the facade's requestTaskCancellation
-      // delegation. This is the one call site in the orchestration suite where facade
-      // indirection is observable: requestTaskCancellation fires a detached
-      // startWorkerCancellation chain, and the `group.cancelled` log below is ordered
-      // against that chain's saveState only by how many microtask hops separate them.
-      // One extra hop reorders them and turns the `cancelGroup cancels its tasks`
-      // golden fixture red. The ordering is stable by slack, not by a tick invariant.
+      // delegation. `requestTaskCancellation` fires a detached startWorkerCancellation
+      // chain, and the `group.cancelled` log below is ordered against that chain's
+      // saveState only by how many microtask hops separate them. The ordering is stable
+      // by slack, not by a tick invariant: ONE extra hop anywhere in that resolution
+      // chain reorders them and turns the `cancelGroup cancels its tasks` golden fixture
+      // red — the frozen 185-test oracle stays green, so the fixture is the only witness.
+      //
+      // Going through the facade is one way to add that hop; an `await` added inside
+      // `requestTaskCancellation` after the detached fire is another, and it flips the
+      // same fixture without touching this file. Both were measured. So the constraint
+      // is not "avoid facade indirection here" — it is that the whole chain from this
+      // call site through `startWorkerCancellation` carries a hop budget of zero.
+      // cancelGroup is the only one of the 30 fixtures that can see it.
       await this.cancellation.requestTaskCancellation({
         taskId: task.taskId,
         coordinatorSession: input.coordinatorSession,
