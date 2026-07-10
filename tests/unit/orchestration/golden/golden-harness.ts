@@ -1,7 +1,20 @@
 // tests/unit/orchestration/golden/golden-harness.ts
-// Records everything an OrchestrationService call can observably do: the resulting
-// AppState, the ORDERED log of outbound port calls across every dep, and each task's
-// event sequence. Line coverage cannot see a reordered side effect; this can.
+// Records what an OrchestrationService call observably does: the resulting AppState, an
+// ORDERED log of its outbound EFFECT calls, and each task's event sequence. Line coverage
+// cannot see a reordered side effect; this can.
+//
+// Three deps are deliberately not in that log, and it is worth knowing which:
+//   * `saveState` and every worker/coordinator port ARE recorded, argument included, plus
+//     `logger.*` — so a dropped, renamed or reordered observability call is caught too.
+//   * `loadState`, `now` and `createId` are NOT recorded. `now` is a fixed instant and
+//     `createId` a fixed sequence, so their effect shows up in the state they stamp. But
+//     `loadState` is a genuine gap: the COUNT and POSITION of state reads is invisible to
+//     every fixture, so a change that adds or drops a read cannot turn one red.
+//     Measured, not assumed — instrumenting `loadState` and replaying all 24 golden tests
+//     against the 4539-line monolith at bf767b0 and against the split gives the identical
+//     per-test sequence (2 4 5 6 9 7 3 1 10 11 4 6 7 9 7 3 4 4 5 4 4 2; 117 reads). So this
+//     is a latent hole, not an escape. Closing it means re-recording every fixture from the
+//     baseline; see the follow-up issue rather than doing it inside a behaviour-preserving PR.
 //
 // Deliberately independent of orchestration-service.test.ts: that file is the
 // regression oracle and must stay byte-identical, so nothing can be exported from it.
@@ -103,6 +116,17 @@ function cloneState(state: AppState): AppState {
  * Sorting fixes the order of collection *entries*. It does not canonicalize the property
  * order inside each record, and `expectMatchesFixture` compares parsed JSON rather than raw
  * bytes, so this is not a byte-stability guarantee — it is an entry-order guarantee.
+ *
+ * What the digest deliberately does NOT distinguish: `record()` JSON-round-trips its argument,
+ * and the real `StateStore` persists with `JSON.stringify` (`src/state/state-store.ts:886`).
+ * So a field set to `undefined` and a field that is absent; `NaN`/`Infinity` and `null`; `-0`
+ * and `0`; a record carrying a `toJSON()` and that method's projection; an `Object.create(null)`
+ * collection and a `{}` one — each pair persists to identical bytes on disk, and each pair
+ * digests alike. All five measured. This is not a blind spot: an oracle over persisted state
+ * must not separate states that persist identically. Do not "fix" it.
+ *
+ * (A collection key mapped to `undefined` IS distinguished from an absent key: the entry
+ * survives as `{ key }`. Also measured.)
  */
 function digestOrchestrationState(orchestration: Record<string, unknown>): Record<string, unknown> {
   const digest: Record<string, unknown> = {};
