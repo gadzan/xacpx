@@ -9,8 +9,8 @@
 //   * `loadState`, recorded with a `null` argument because it takes none. Its POSITION in the
 //     log is the signal: a read-modify-write that grows or loses a read, or that reads on the
 //     wrong side of a write, moves a `loadState` entry and turns the affected fixtures red.
-//     Until this was recorded, the count and position of state reads were invisible to all 30
-//     fixtures — the exact dimension a check-then-act race lives in.
+//     Until this was recorded, the count and position of state reads were invisible to every
+//     fixture — the exact dimension a check-then-act race lives in.
 //   * `now` and `createId` are NOT recorded, and need not be: `now` is a fixed instant and
 //     `createId` a fixed sequence, so each leaves its trace in the state it stamps.
 //
@@ -30,7 +30,7 @@
 //   (cd /tmp/baseline && bun test tests/unit/orchestration/golden/orchestration-golden.test.ts)
 //
 // 24 pass, GOLDEN_UPDATE unset. The pre-refactor facade and every refactored unit satisfy
-// the same thirty fixtures.
+// the same fixtures.
 //
 // "Satisfy", not "reproduce byte-for-byte". Three different claims get confused here, so
 // be precise about which one you are making:
