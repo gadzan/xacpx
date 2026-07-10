@@ -109,6 +109,11 @@ export class TaskCancellationService {
     );
 
     if (prepared.shouldPropagate) {
+      // Bare and unawaited on purpose: no `await`, no `void`, no `.catch()`. This fires a
+      // detached chain that later opens its own mutate, so it must stay outside every
+      // critical section. GroupService.cancelGroup depends on how many microtask hops
+      // this chain takes before its saveState — see the comment there. Do not change how
+      // this statement is written or where it sits.
       this.startWorkerCancellation(prepared.task);
     }
     if (prepared.closedPackageId) {

@@ -134,6 +134,13 @@ export class GroupService {
         continue;
       }
 
+      // Call the collaborator directly, never the facade's requestTaskCancellation
+      // delegation. This is the one call site in the orchestration suite where facade
+      // indirection is observable: requestTaskCancellation fires a detached
+      // startWorkerCancellation chain, and the `group.cancelled` log below is ordered
+      // against that chain's saveState only by how many microtask hops separate them.
+      // One extra hop reorders them and turns the `cancelGroup cancels its tasks`
+      // golden fixture red. The ordering is stable by slack, not by a tick invariant.
       await this.cancellation.requestTaskCancellation({
         taskId: task.taskId,
         coordinatorSession: input.coordinatorSession,
@@ -141,6 +148,9 @@ export class GroupService {
       cancelledTaskIds.push(task.taskId);
     }
 
+    // Everything from here to the end runs synchronously against the detached chains
+    // fired above. Adding an `await` — telemetry, an extra state read, anything — moves
+    // the `group.cancelled` log past their saveState and flips the golden fixture.
     const refreshed = await this.getGroupSummary(input);
     if (!refreshed) {
       throw new Error(`group "${input.groupId}" does not exist`);
