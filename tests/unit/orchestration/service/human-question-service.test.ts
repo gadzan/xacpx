@@ -37,12 +37,42 @@ function makeService(initialState = createEmptyState()) {
   return { harness, humanQuestions };
 }
 
-test("constructible with only its six ports and returns null for an empty active package", async () => {
-  const { humanQuestions } = makeService();
+test("constructible with only its six ports, and resolves the awaited active package", async () => {
+  // Asserting `null` against an empty state proves nothing -- a method that constantly
+  // returns `null` passes. Seed a live package whose `awaitingReplyMessageId` points at the
+  // *first* of two messages, so the assertion also pins that the awaited message wins over
+  // the `messages.at(-1)` fallback.
+  //
+  // getActiveHumanQuestionPackage is the only method of the eight that opens no kernel.mutate.
+  const initialState = createEmptyState();
+  initialState.orchestration.coordinatorQuestionState["coord-1"] = {
+    activePackageId: "pkg-1",
+    queuedQuestions: [],
+  };
+  initialState.orchestration.humanQuestionPackages["pkg-1"] = {
+    packageId: "pkg-1",
+    coordinatorSession: "coord-1",
+    status: "active",
+    createdAt: "2026-04-13T09:00:00.000Z",
+    updatedAt: "2026-04-13T09:00:00.000Z",
+    initialTaskIds: [],
+    openTaskIds: [],
+    resolvedTaskIds: [],
+    awaitingReplyMessageId: "msg-1",
+    messages: [
+      { messageId: "msg-1", kind: "initial", promptText: "which db?", createdAt: "2026-04-13T09:00:00.000Z" },
+      { messageId: "msg-2", kind: "follow_up", promptText: "never asked", createdAt: "2026-04-13T09:30:00.000Z" },
+    ],
+  };
 
-  // getActiveHumanQuestionPackage is the only method that opens no kernel.mutate.
-  const result = await humanQuestions.getActiveHumanQuestionPackage("coord-1");
-  expect(result).toBeNull();
+  const { humanQuestions } = makeService(initialState);
+
+  const active = await humanQuestions.getActiveHumanQuestionPackage("coord-1");
+  expect(active?.packageId).toBe("pkg-1");
+  expect(active?.awaitingReplyMessageId).toBe("msg-1");
+  expect(active?.promptText).toBe("which db?");
+
+  expect(await humanQuestions.getActiveHumanQuestionPackage("coord-unknown")).toBeNull();
 });
 
 // The four-way compound guard in coordinatorReviewContestedResult re-arms the pending
