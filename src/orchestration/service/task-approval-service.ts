@@ -75,11 +75,18 @@ export class TaskApprovalService {
     // slot stays claimed until the task is persisted as `running` (where
     // countActiveParallelSlots starts counting it), or until any path between here and
     // there fails. Releasing is idempotent so the failure paths can call it unconditionally.
-    let parallelStartClaimed = false;
+    //
+    // It holds the agent it CLAIMED, not `currentTask.targetAgent`. `currentTask` was read
+    // before the gate's own `loadState`, and the gate claims against the agent it read
+    // inside its critical section. Those are the same string today — nothing assigns
+    // `task.targetAgent` after creation — but a release that re-derives the key can only
+    // ever be wrong, never more right, so it does not re-derive it.
+    let claimedParallelAgent: string | undefined;
     const releaseParallelStartOnce = (): void => {
-      if (!parallelStartClaimed) return;
-      parallelStartClaimed = false;
-      this.workerSessions.releaseParallelStart(currentTask.targetAgent);
+      if (claimedParallelAgent === undefined) return;
+      const agent = claimedParallelAgent;
+      claimedParallelAgent = undefined;
+      this.workerSessions.releaseParallelStart(agent);
     };
 
     if (currentTask.ephemeralWorkerSession === true) {
@@ -97,7 +104,7 @@ export class TaskApprovalService {
           // claim a second concurrent approve reads the same free slot and both dispatch —
           // the agent runs one task over its cap. Mirrors the two delegation gates.
           this.workerSessions.claimParallelStart(task.targetAgent);
-          parallelStartClaimed = true;
+          claimedParallelAgent = task.targetAgent;
           return null; // capacity available — fall through to normal start
         }
         const now = this.deps.now().toISOString();

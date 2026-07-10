@@ -318,6 +318,31 @@ test("approveTask releases its parallel slot after a successful approve", async 
   expect(dispatches).toBe(2);
 });
 
+test("approveTask releases its parallel slot when the dispatch fails and rolls back", async () => {
+  // The last exit path, and the one that pins WHERE the success-path release sits. Moving
+  // that release to after `dispatchWorkerTask` is a legal, type-checking edit that keeps
+  // every other test in this file green and the frozen 185-test oracle green — and leaks a
+  // slot on every failed dispatch, because the rollback restores `needs_confirmation`
+  // (the task stops counting) while the pending claim is never given back.
+  const { harness, service } = await makeTwoPendingParallelApprovals();
+  const baseDispatch = harness.deps.dispatchWorkerTask;
+  let dispatches = 0;
+  harness.deps.dispatchWorkerTask = async (request) => {
+    dispatches += 1;
+    if (dispatches === 1) throw new Error("acpx refused the prompt");
+    await baseDispatch(request);
+  };
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-1" }),
+  ).rejects.toThrow(/acpx refused the prompt/);
+  // The rollback put task-1 back where it started, so the cap is free again.
+  expect(harness.getState().orchestration.tasks["task-1"]!.status).toBe("needs_confirmation");
+
+  const approved = await service.approveTask({ coordinatorSession: "backend:main", taskId: "task-2" });
+  expect(approved.status).toBe("running");
+});
+
 test("approveTask releases its parallel slot when ensureWorkerSession fails", async () => {
   const { harness, service } = await makeTwoPendingParallelApprovals();
   const baseEnsure = harness.deps.ensureWorkerSession;
