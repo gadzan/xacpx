@@ -5,6 +5,23 @@
 //
 // Deliberately independent of orchestration-service.test.ts: that file is the
 // regression oracle and must stay byte-identical, so nothing can be exported from it.
+//
+// The fixtures under ./fixtures were recorded against bf767b0 — the 4539-line
+// pre-refactor OrchestrationService on main — not against the split. That is not a
+// claim you have to take on trust; reproduce it:
+//
+//   git worktree add /tmp/baseline --detach bf767b0
+//   ln -s "$PWD/node_modules" /tmp/baseline/node_modules
+//   cp tests/unit/orchestration/golden/{golden-harness.ts,orchestration-golden.test.ts} \
+//      /tmp/baseline/tests/unit/orchestration/golden/
+//   cp tests/unit/orchestration/golden/fixtures/*.json \
+//      /tmp/baseline/tests/unit/orchestration/golden/fixtures/
+//   (cd /tmp/baseline && bun test tests/unit/orchestration/golden/orchestration-golden.test.ts)
+//
+// 24 pass, GOLDEN_UPDATE unset. The pre-refactor facade and every refactored unit produce
+// the same thirty fixtures. Re-record only ever against that baseline, never against the
+// code under change — recording against the refactor is how a characterization oracle
+// launders a regression into a new baseline.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect } from "bun:test";
 import { createConfig } from "../../commands/command-router-test-support";
@@ -29,6 +46,39 @@ function cloneState(state: AppState): AppState {
 }
 
 /**
+ * The seven collections of `OrchestrationState` (`src/orchestration/orchestration-types.ts`).
+ *
+ * Hand-enumerated, and therefore checked at runtime by `assertKnownCollections` on every
+ * save. An eighth collection added to `OrchestrationState` must make this oracle throw, not
+ * silently go unrecorded: `tests/` is in no tsconfig's `include`, so a type-level
+ * exhaustiveness check here would never run, and the digest would quietly narrow while CI
+ * stayed green. That failure mode has already cost this oracle three separate blind spots.
+ */
+const ORCHESTRATION_COLLECTIONS = [
+  "coordinatorQuestionState",
+  "coordinatorRoutes",
+  "externalCoordinators",
+  "groups",
+  "humanQuestionPackages",
+  "tasks",
+  "workerBindings",
+] as const;
+
+function assertKnownCollections(orchestration: Record<string, unknown>): void {
+  const actual = Object.keys(orchestration).sort();
+  const expected = [...ORCHESTRATION_COLLECTIONS];
+  if (actual.length !== expected.length || actual.some((key, i) => key !== expected[i])) {
+    throw new Error(
+      `golden harness: OrchestrationState collections changed.\n` +
+        `  recorded: ${expected.join(", ")}\n` +
+        `  actual:   ${actual.join(", ")}\n` +
+        `Update ORCHESTRATION_COLLECTIONS and the saveState digest, then re-record the ` +
+        `fixtures against the pre-refactor baseline — never against the code under change.`,
+    );
+  }
+}
+
+/**
  * A collection rendered as `{ key, value }` entries, sorted by key.
  *
  * `{ key, value }` rather than `{ ...record, key }` on purpose. Spreading the record and
@@ -36,15 +86,20 @@ function cloneState(state: AppState): AppState {
  * field disagrees with the key it is stored under — `tasks["t1"].taskId === "t2"` would be
  * invisible. Keeping the record untouched under `value` makes that observable.
  *
+ * The parameter is deliberately non-optional. A `?? {}` fallback would render a *missing*
+ * collection and an *empty* one identically, so a change that deletes
+ * `orchestration.externalCoordinators` before one save and restores it as `{}` before the
+ * next would be invisible — JSON distinguishes the two, and the fallback would throw that
+ * away. A missing collection now throws from `assertKnownCollections` instead.
+ *
  * Sorting fixes the order of collection *entries*. It does not canonicalize the property
  * order inside each record, and `expectMatchesFixture` compares parsed JSON rather than raw
  * bytes, so this is not a byte-stability guarantee — it is an entry-order guarantee.
  */
-function sortedEntries<T>(collection: Record<string, T> | undefined): Array<{ key: string; value: T }> {
-  const entries = collection ?? {};
-  return Object.keys(entries)
+function sortedEntries<T>(collection: Record<string, T>): Array<{ key: string; value: T }> {
+  return Object.keys(collection)
     .sort()
-    .map((key) => ({ key, value: entries[key] as T }));
+    .map((key) => ({ key, value: collection[key] as T }));
 }
 
 export interface GoldenHarnessOverrides {
@@ -109,6 +164,7 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       // The seven collection keys are written in a fixed order rather than spread, so the digest
       // does not depend on the insertion order of the state object.
       const orch = nextState.orchestration;
+      assertKnownCollections(orch as unknown as Record<string, unknown>);
       record("saveState", {
         tasks: sortedEntries(orch.tasks),
         workerBindings: sortedEntries(orch.workerBindings),
