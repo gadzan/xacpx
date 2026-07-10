@@ -92,8 +92,13 @@ function cloneState(state: AppState): AppState {
  *
  * Reading the keys off the object closes that. A collection that appears, disappears, or is
  * added to the type all change the digest's key set, so every fixture that records an
- * affected save goes red. (Adding an eighth collection to `createEmptyOrchestrationState`
- * turns 21 of the 24 golden tests red; the other three never reach a save.)
+ * affected save goes red. Measured: adding an eighth collection to
+ * `createEmptyOrchestrationState` turns all 24 golden tests red — 21 through a save's digest,
+ * and the three query tests (`listGroupSummaries` ×2, `reserveLogicalTransportSession`)
+ * through the `state` in their snapshot. Those three used to be the exception, back when they
+ * asserted only a return value; `reserveLogicalTransportSession` still records no `saveState`
+ * at all and goes red anyway. Do not restate that exception without re-measuring it — it was
+ * true and then a later commit made it false.
  *
  * Each collection becomes `{ key, value }` entries, sorted by key. `{ key, value }` rather
  * than `{ ...record, key }` on purpose: spreading the record and stamping the map key over
