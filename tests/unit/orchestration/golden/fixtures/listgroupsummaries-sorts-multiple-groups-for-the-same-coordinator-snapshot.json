@@ -1,0 +1,127 @@
+{
+  "state": {
+    "sessions": {},
+    "chat_contexts": {},
+    "native_session_lists": {},
+    "orchestration": {
+      "tasks": {},
+      "workerBindings": {},
+      "groups": {
+        "g1": {
+          "groupId": "g1",
+          "coordinatorSession": "backend:main",
+          "title": "alpha",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z"
+        },
+        "g2": {
+          "groupId": "g2",
+          "coordinatorSession": "backend:main",
+          "title": "beta",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z"
+        }
+      },
+      "humanQuestionPackages": {},
+      "coordinatorQuestionState": {},
+      "coordinatorRoutes": {},
+      "externalCoordinators": {}
+    },
+    "scheduled_tasks": {}
+  },
+  "calls": [
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "alpha",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "tasks": [],
+        "workerBindings": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.group.created",
+        "message": "group created",
+        "context": {
+          "group_id": "g1",
+          "coordinator_session": "backend:main",
+          "title": "alpha"
+        }
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "alpha",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          },
+          {
+            "key": "g2",
+            "value": {
+              "groupId": "g2",
+              "coordinatorSession": "backend:main",
+              "title": "beta",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "tasks": [],
+        "workerBindings": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.group.created",
+        "message": "group created",
+        "context": {
+          "group_id": "g2",
+          "coordinator_session": "backend:main",
+          "title": "beta"
+        }
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    }
+  ],
+  "taskEvents": {}
+}

@@ -13,13 +13,14 @@
           "workerSession": "backend:claude:backend:main",
           "workspace": "backend",
           "targetAgent": "claude",
-          "task": "ask me",
-          "status": "running",
-          "summary": "",
-          "resultText": "",
+          "groupId": "g1",
+          "task": "in group",
+          "status": "completed",
+          "summary": "done",
+          "resultText": "ok",
           "createdAt": "2026-04-13T10:00:00.000Z",
           "updatedAt": "2026-04-13T10:00:00.000Z",
-          "eventSeq": 3,
+          "eventSeq": 2,
           "events": [
             {
               "seq": 1,
@@ -31,29 +32,13 @@
             {
               "seq": 2,
               "at": "2026-04-13T10:00:00.000Z",
-              "type": "attention_required",
-              "status": "blocked",
-              "message": "which database?"
-            },
-            {
-              "seq": 3,
-              "at": "2026-04-13T10:00:00.000Z",
               "type": "status_changed",
-              "status": "running",
-              "message": "Blocker question answered"
+              "status": "completed",
+              "summary": "done",
+              "message": "Task completed"
             }
           ],
-          "openQuestion": {
-            "questionId": "q-1",
-            "question": "which database?",
-            "whyBlocked": "schema ambiguous",
-            "whatIsNeeded": "a table name",
-            "askedAt": "2026-04-13T10:00:00.000Z",
-            "status": "answered",
-            "answeredAt": "2026-04-13T10:00:00.000Z",
-            "answerSource": "coordinator",
-            "answerText": "users"
-          }
+          "injectionPending": true
         }
       },
       "workerBindings": {
@@ -64,7 +49,15 @@
           "targetAgent": "claude"
         }
       },
-      "groups": {},
+      "groups": {
+        "g1": {
+          "groupId": "g1",
+          "coordinatorSession": "backend:main",
+          "title": "review",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z"
+        }
+      },
       "humanQuestionPackages": {},
       "coordinatorQuestionState": {},
       "coordinatorRoutes": {},
@@ -73,6 +66,45 @@
     "scheduled_tasks": {}
   },
   "calls": [
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
+        "tasks": [],
+        "workerBindings": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.group.created",
+        "message": "group created",
+        "context": {
+          "group_id": "g1",
+          "coordinator_session": "backend:main",
+          "title": "review"
+        }
+      }
+    },
     {
       "port": "findReusableWorkerSession",
       "request": {
@@ -108,7 +140,18 @@
         "coordinatorQuestionState": [],
         "coordinatorRoutes": [],
         "externalCoordinators": [],
-        "groups": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
         "humanQuestionPackages": [],
         "tasks": [
           {
@@ -121,7 +164,8 @@
               "workerSession": "backend:claude:backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "task": "ask me",
+              "groupId": "g1",
+              "task": "in group",
               "status": "running",
               "summary": "",
               "resultText": "",
@@ -161,7 +205,7 @@
         "coordinatorSession": "backend:main",
         "workspace": "backend",
         "targetAgent": "claude",
-        "task": "ask me"
+        "task": "in group"
       }
     },
     {
@@ -174,6 +218,7 @@
           "coordinator_session": "backend:main",
           "target_agent": "claude",
           "status": "running",
+          "group_id": "g1",
           "worker_session": "backend:claude:backend:main"
         }
       }
@@ -188,7 +233,18 @@
         "coordinatorQuestionState": [],
         "coordinatorRoutes": [],
         "externalCoordinators": [],
-        "groups": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
         "humanQuestionPackages": [],
         "tasks": [
           {
@@ -201,10 +257,11 @@
               "workerSession": "backend:claude:backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "task": "ask me",
-              "status": "blocked",
-              "summary": "",
-              "resultText": "",
+              "groupId": "g1",
+              "task": "in group",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "ok",
               "createdAt": "2026-04-13T10:00:00.000Z",
               "updatedAt": "2026-04-13T10:00:00.000Z",
               "eventSeq": 2,
@@ -219,19 +276,13 @@
                 {
                   "seq": 2,
                   "at": "2026-04-13T10:00:00.000Z",
-                  "type": "attention_required",
-                  "status": "blocked",
-                  "message": "which database?"
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
                 }
               ],
-              "openQuestion": {
-                "questionId": "q-1",
-                "question": "which database?",
-                "whyBlocked": "schema ambiguous",
-                "whatIsNeeded": "a table name",
-                "askedAt": "2026-04-13T10:00:00.000Z",
-                "status": "open"
-              }
+              "injectionPending": true
             }
           }
         ],
@@ -249,101 +300,23 @@
       }
     },
     {
-      "port": "wakeCoordinatorSession",
+      "port": "logger.info",
       "request": {
-        "coordinatorSession": "backend:main"
+        "event": "orchestration.task.completed",
+        "message": "task completed",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "completed",
+          "group_id": "g1",
+          "worker_session": "backend:claude:backend:main"
+        }
       }
     },
     {
       "port": "loadState",
       "request": null
-    },
-    {
-      "port": "saveState",
-      "request": {
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": [],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "tasks": [
-          {
-            "key": "task-1",
-            "value": {
-              "taskId": "task-1",
-              "sourceHandle": "wx:user-1",
-              "sourceKind": "human",
-              "coordinatorSession": "backend:main",
-              "workerSession": "backend:claude:backend:main",
-              "workspace": "backend",
-              "targetAgent": "claude",
-              "task": "ask me",
-              "status": "running",
-              "summary": "",
-              "resultText": "",
-              "createdAt": "2026-04-13T10:00:00.000Z",
-              "updatedAt": "2026-04-13T10:00:00.000Z",
-              "eventSeq": 3,
-              "events": [
-                {
-                  "seq": 1,
-                  "at": "2026-04-13T10:00:00.000Z",
-                  "type": "created",
-                  "status": "running",
-                  "message": "Task created"
-                },
-                {
-                  "seq": 2,
-                  "at": "2026-04-13T10:00:00.000Z",
-                  "type": "attention_required",
-                  "status": "blocked",
-                  "message": "which database?"
-                },
-                {
-                  "seq": 3,
-                  "at": "2026-04-13T10:00:00.000Z",
-                  "type": "status_changed",
-                  "status": "running",
-                  "message": "Blocker question answered"
-                }
-              ],
-              "openQuestion": {
-                "questionId": "q-1",
-                "question": "which database?",
-                "whyBlocked": "schema ambiguous",
-                "whatIsNeeded": "a table name",
-                "askedAt": "2026-04-13T10:00:00.000Z",
-                "status": "answered",
-                "answeredAt": "2026-04-13T10:00:00.000Z",
-                "answerSource": "coordinator",
-                "answerText": "users"
-              }
-            }
-          }
-        ],
-        "workerBindings": [
-          {
-            "key": "backend:claude:backend:main",
-            "value": {
-              "sourceHandle": "backend:claude:backend:main",
-              "coordinatorSession": "backend:main",
-              "workspace": "backend",
-              "targetAgent": "claude"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "port": "resumeWorkerTask",
-      "request": {
-        "taskId": "task-1",
-        "workerSession": "backend:claude:backend:main",
-        "coordinatorSession": "backend:main",
-        "workspace": "backend",
-        "targetAgent": "claude",
-        "answer": "users"
-      }
     }
   ],
   "taskEvents": {
@@ -358,16 +331,10 @@
       {
         "seq": 2,
         "at": "2026-04-13T10:00:00.000Z",
-        "type": "attention_required",
-        "status": "blocked",
-        "message": "which database?"
-      },
-      {
-        "seq": 3,
-        "at": "2026-04-13T10:00:00.000Z",
         "type": "status_changed",
-        "status": "running",
-        "message": "Blocker question answered"
+        "status": "completed",
+        "summary": "done",
+        "message": "Task completed"
       }
     ]
   }

@@ -71,6 +71,10 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "ensureWorkerSession",
       "request": {
         "workerSession": "backend:claude:backend:main",
@@ -82,8 +86,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -126,12 +139,7 @@
               "targetAgent": "claude"
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -160,8 +168,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -214,12 +231,7 @@
               "targetAgent": "claude"
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
