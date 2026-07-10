@@ -18,19 +18,34 @@
 //      /tmp/baseline/tests/unit/orchestration/golden/fixtures/
 //   (cd /tmp/baseline && bun test tests/unit/orchestration/golden/orchestration-golden.test.ts)
 //
-// 24 pass, GOLDEN_UPDATE unset. The pre-refactor facade and every refactored unit produce
+// 24 pass, GOLDEN_UPDATE unset. The pre-refactor facade and every refactored unit satisfy
 // the same thirty fixtures.
 //
-// What is forbidden is re-recording against the implementation currently under test —
-// that is how a characterization oracle launders a regression into a new baseline. It is
-// not a rule that bf767b0 is the baseline forever. Concretely:
+// "Satisfy", not "reproduce byte-for-byte". Three different claims get confused here, so
+// be precise about which one you are making:
 //
-//   * A behaviour-preserving change (this split): the baseline is the commit before it.
-//     Re-record there, then prove the change reproduces the fixtures byte-for-byte.
+//   * The fixture FILES committed in the split PR are byte-identical to the base's. That
+//     is a claim about git, and `git diff <base>..HEAD -- fixtures/` proves it.
+//   * The snapshots the baseline and the refactor produce are structurally EQUAL. That is
+//     what the tests prove — `expectMatchesFixture` compares parsed JSON, deliberately, so
+//     that key order is not part of the oracle.
+//   * Re-serializing the digest today would NOT give the fixture files' bytes: the digest
+//     now emits collections in sorted key order, and the files were written before that.
+//     Nothing depends on it, and nothing should.
+//
+// What is forbidden is silently re-recording against the implementation under test — that
+// is how a characterization oracle launders a regression into a new baseline. bf767b0 is
+// not the baseline forever, and a deliberate change cannot always be recorded anywhere
+// else. The real control is that a fixture diff is reviewed as a specification:
+//
+//   * A behaviour-preserving change (this split): do NOT re-record. Run the existing
+//     fixtures against the change; they must pass untouched.
 //   * A deliberate behaviour or schema change (say, an eighth OrchestrationState
-//     collection, which bf767b0 does not have): the baseline is the last approved
-//     revision. Re-record there where possible, land the fixture diff in its own PR, and
-//     review that diff as the change's specification — because that is what it is.
+//     collection, which bf767b0 does not have): re-recording from the candidate is the
+//     only way to obtain the new expectation. Re-record only the fixtures the change is
+//     meant to affect, land that diff in its own PR, and review it line by line. A blanket
+//     `GOLDEN_UPDATE=1` across the suite accepts every change, including the ones you did
+//     not intend — that is the thing to refuse, not the re-recording itself.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect } from "bun:test";
 import { createConfig } from "../../commands/command-router-test-support";
@@ -65,7 +80,9 @@ function cloneState(state: AppState): AppState {
  * have turned CI green again with the new collection silently unrecorded.
  *
  * Reading the keys off the object closes that. A collection that appears, disappears, or is
- * added to the type all change the digest's key set, and every fixture goes red.
+ * added to the type all change the digest's key set, so every fixture that records an
+ * affected save goes red. (Adding an eighth collection to `createEmptyOrchestrationState`
+ * turns 21 of the 24 golden tests red; the other three never reach a save.)
  *
  * Each collection becomes `{ key, value }` entries, sorted by key. `{ key, value }` rather
  * than `{ ...record, key }` on purpose: spreading the record and stamping the map key over
@@ -143,8 +160,8 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     loadState: async () => cloneState(state),
     saveState: async (nextState) => {
       state = cloneState(nextState);
-      // Record the WHOLE orchestration subtree on every save, verbatim: all seven collections,
-      // every record complete, nothing projected away.
+      // Record the WHOLE orchestration subtree on every save, verbatim: every runtime
+      // collection, every record complete, nothing projected away.
       //
       // Everything a narrower digest omits is a place a refactor can hide. A digest of task
       // records alone cannot see a save that moves a package's `awaitingReplyMessageId`, a
