@@ -208,3 +208,32 @@ test("an empty collection and an empty array do not digest alike", async () => {
   expect(objectDigest["externalCoordinators"]).toEqual([]);
   await expect(arrayHarness.deps.saveState(asArray)).rejects.toThrow(/is not a keyed record/);
 });
+
+test("state reads are recorded, interleaved with the writes they order against", async () => {
+  // A check-then-act race lives in exactly one dimension: where the read sits relative to
+  // the write. While `loadState` went unrecorded, a change that dropped a read, added one,
+  // or moved it to the wrong side of a save left every fixture green. Ports were logged;
+  // the reads between them were not.
+  const harness = makeGoldenHarness();
+
+  await harness.deps.loadState();
+  await harness.deps.saveState(createEmptyState());
+  await harness.deps.loadState();
+
+  expect(harness.calls.map((call) => call.port)).toEqual(["loadState", "saveState", "loadState"]);
+  expect(harness.calls[0]!.request).toBeNull();
+});
+
+test("loadState hands out a copy, so a caller cannot mutate the harness's state", async () => {
+  // `loadState` returns `cloneState(state)`. If it ever returned the live object, a service
+  // could mutate persisted state without a `saveState` — invisible to the digest, which only
+  // renders what a save was given.
+  const harness = makeGoldenHarness();
+  const first = await harness.deps.loadState();
+  first.orchestration.tasks["injected"] = { taskId: "injected" } as never;
+
+  const second = await harness.deps.loadState();
+
+  expect(second.orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.tasks).toEqual({});
+});

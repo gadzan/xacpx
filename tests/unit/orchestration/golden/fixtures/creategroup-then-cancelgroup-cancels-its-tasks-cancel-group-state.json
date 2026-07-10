@@ -74,10 +74,15 @@
   },
   "calls": [
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
-        "tasks": [],
-        "workerBindings": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
         "groups": [
           {
             "key": "g1",
@@ -91,9 +96,8 @@
           }
         ],
         "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        "tasks": [],
+        "workerBindings": []
       }
     },
     {
@@ -119,6 +123,10 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "ensureWorkerSession",
       "request": {
         "workerSession": "backend:claude:backend:main",
@@ -130,8 +138,28 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -173,23 +201,7 @@
               "targetAgent": "claude"
             }
           }
-        ],
-        "groups": [
-          {
-            "key": "g1",
-            "value": {
-              "groupId": "g1",
-              "coordinatorSession": "backend:main",
-              "title": "review",
-              "createdAt": "2026-04-13T10:00:00.000Z",
-              "updatedAt": "2026-04-13T10:00:00.000Z"
-            }
-          }
-        ],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -219,8 +231,32 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -270,23 +306,7 @@
               "targetAgent": "claude"
             }
           }
-        ],
-        "groups": [
-          {
-            "key": "g1",
-            "value": {
-              "groupId": "g1",
-              "coordinatorSession": "backend:main",
-              "title": "review",
-              "createdAt": "2026-04-13T10:00:00.000Z",
-              "updatedAt": "2026-04-13T10:00:00.000Z"
-            }
-          }
-        ],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -305,6 +325,10 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "cancelWorkerTask",
       "request": {
         "taskId": "task-1",
@@ -312,6 +336,14 @@
         "workspace": "backend",
         "targetAgent": "claude"
       }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
     },
     {
       "port": "logger.info",
@@ -330,6 +362,22 @@
     {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [
+          {
+            "key": "g1",
+            "value": {
+              "groupId": "g1",
+              "coordinatorSession": "backend:main",
+              "title": "review",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z"
+            }
+          }
+        ],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -387,23 +435,7 @@
               "targetAgent": "claude"
             }
           }
-        ],
-        "groups": [
-          {
-            "key": "g1",
-            "value": {
-              "groupId": "g1",
-              "coordinatorSession": "backend:main",
-              "title": "review",
-              "createdAt": "2026-04-13T10:00:00.000Z",
-              "updatedAt": "2026-04-13T10:00:00.000Z"
-            }
-          }
-        ],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -420,6 +452,14 @@
           "worker_session": "backend:claude:backend:main"
         }
       }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
     }
   ],
   "taskEvents": {

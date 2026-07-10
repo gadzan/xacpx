@@ -94,6 +94,14 @@
   },
   "calls": [
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "ensureWorkerSession",
       "request": {
         "workerSession": "backend:claude:backend:main:p-task-1-slot",
@@ -105,8 +113,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -149,12 +166,7 @@
               "ephemeral": true
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -183,8 +195,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -256,12 +277,7 @@
               "ephemeral": true
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -276,8 +292,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -358,12 +383,7 @@
               "ephemeral": true
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -381,8 +401,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -453,12 +482,7 @@
             }
           }
         ],
-        "workerBindings": [],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        "workerBindings": []
       }
     },
     {
@@ -471,8 +495,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -554,12 +587,7 @@
               "ephemeral": true
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -585,8 +613,17 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -675,12 +712,7 @@
               "ephemeral": true
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -693,6 +725,10 @@
           "targetAgent": "claude"
         }
       }
+    },
+    {
+      "port": "loadState",
+      "request": null
     }
   ],
   "taskEvents": {

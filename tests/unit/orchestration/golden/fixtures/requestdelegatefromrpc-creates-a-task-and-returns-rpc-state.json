@@ -58,6 +58,10 @@
   },
   "calls": [
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "findReusableWorkerSession",
       "request": {
         "sourceHandle": "backend:main",
@@ -68,8 +72,21 @@
       }
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -110,12 +127,7 @@
               "targetAgent": "claude"
             }
           }
-        ],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        ]
       }
     },
     {
@@ -142,6 +154,14 @@
           "worker_session": "backend:claude:backend:main"
         }
       }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
     },
     {
       "port": "dispatchWorkerTask",

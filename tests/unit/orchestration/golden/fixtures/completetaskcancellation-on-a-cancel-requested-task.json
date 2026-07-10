@@ -58,8 +58,17 @@
   },
   "calls": [
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
         "tasks": [
           {
             "key": "task-1",
@@ -106,12 +115,7 @@
             }
           }
         ],
-        "workerBindings": [],
-        "groups": [],
-        "humanQuestionPackages": [],
-        "coordinatorQuestionState": [],
-        "coordinatorRoutes": [],
-        "externalCoordinators": []
+        "workerBindings": []
       }
     },
     {
@@ -127,6 +131,14 @@
           "worker_session": "backend:claude:backend:main"
         }
       }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
     }
   ],
   "taskEvents": {

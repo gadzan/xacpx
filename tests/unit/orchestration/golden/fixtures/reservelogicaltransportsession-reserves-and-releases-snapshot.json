@@ -1,0 +1,28 @@
+{
+  "state": {
+    "sessions": {},
+    "chat_contexts": {},
+    "native_session_lists": {},
+    "orchestration": {
+      "tasks": {},
+      "workerBindings": {},
+      "groups": {},
+      "humanQuestionPackages": {},
+      "coordinatorQuestionState": {},
+      "coordinatorRoutes": {},
+      "externalCoordinators": {}
+    },
+    "scheduled_tasks": {}
+  },
+  "calls": [
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    }
+  ],
+  "taskEvents": {}
+}

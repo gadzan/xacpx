@@ -3,18 +3,16 @@
 // ORDERED log of its outbound EFFECT calls, and each task's event sequence. Line coverage
 // cannot see a reordered side effect; this can.
 //
-// Three deps are deliberately not in that log, and it is worth knowing which:
-//   * `saveState` and every worker/coordinator port ARE recorded, argument included, plus
-//     `logger.*` — so a dropped, renamed or reordered observability call is caught too.
-//   * `loadState`, `now` and `createId` are NOT recorded. `now` is a fixed instant and
-//     `createId` a fixed sequence, so their effect shows up in the state they stamp. But
-//     `loadState` is a genuine gap: the COUNT and POSITION of state reads is invisible to
-//     every fixture, so a change that adds or drops a read cannot turn one red.
-//     Measured, not assumed — instrumenting `loadState` and replaying all 24 golden tests
-//     against the 4539-line monolith at bf767b0 and against the split gives the identical
-//     per-test sequence (2 4 5 6 9 7 3 1 10 11 4 6 7 9 7 3 4 4 5 4 4 2; 117 reads). So this
-//     is a latent hole, not an escape. Closing it means re-recording every fixture from the
-//     baseline; see the follow-up issue rather than doing it inside a behaviour-preserving PR.
+// Every dep that reads or writes state, and every outbound port, is in that log:
+//   * `saveState` and every worker/coordinator port, argument included, plus `logger.*` — so
+//     a dropped, renamed or reordered observability call is caught too.
+//   * `loadState`, recorded with a `null` argument because it takes none. Its POSITION in the
+//     log is the signal: a read-modify-write that grows or loses a read, or that reads on the
+//     wrong side of a write, moves a `loadState` entry and turns the affected fixtures red.
+//     Until this was recorded, the count and position of state reads were invisible to every
+//     fixture — the exact dimension a check-then-act race lives in.
+//   * `now` and `createId` are NOT recorded, and need not be: `now` is a fixed instant and
+//     `createId` a fixed sequence, so each leaves its trace in the state it stamps.
 //
 // Deliberately independent of orchestration-service.test.ts: that file is the
 // regression oracle and must stay byte-identical, so nothing can be exported from it.
@@ -32,7 +30,7 @@
 //   (cd /tmp/baseline && bun test tests/unit/orchestration/golden/orchestration-golden.test.ts)
 //
 // 24 pass, GOLDEN_UPDATE unset. The pre-refactor facade and every refactored unit satisfy
-// the same thirty fixtures.
+// the same fixtures.
 //
 // "Satisfy", not "reproduce byte-for-byte". Three different claims get confused here, so
 // be precise about which one you are making:
@@ -94,8 +92,13 @@ function cloneState(state: AppState): AppState {
  *
  * Reading the keys off the object closes that. A collection that appears, disappears, or is
  * added to the type all change the digest's key set, so every fixture that records an
- * affected save goes red. (Adding an eighth collection to `createEmptyOrchestrationState`
- * turns 21 of the 24 golden tests red; the other three never reach a save.)
+ * affected save goes red. Measured: adding an eighth collection to
+ * `createEmptyOrchestrationState` turns all 24 golden tests red — 21 through a save's digest,
+ * and the three query tests (`listGroupSummaries` ×2, `reserveLogicalTransportSession`)
+ * through the `state` in their snapshot. Those three used to be the exception, back when they
+ * asserted only a return value; `reserveLogicalTransportSession` still records no `saveState`
+ * at all and goes red anyway. Do not restate that exception without re-measuring it — it was
+ * true and then a later commit made it false.
  *
  * Each collection becomes `{ key, value }` entries, sorted by key. `{ key, value }` rather
  * than `{ ...record, key }` on purpose: spreading the record and stamping the map key over
@@ -200,7 +203,13 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       }
       return id;
     },
-    loadState: async () => cloneState(state),
+    // `loadState` takes no argument, so `null` is all there is to record. The entry's
+    // POSITION in `calls` is the whole point: it pins where each read sits relative to the
+    // saves and effects around it.
+    loadState: async () => {
+      record("loadState", null);
+      return cloneState(state);
+    },
     saveState: async (nextState) => {
       // Record the WHOLE orchestration subtree on every save, verbatim: every runtime
       // collection, every record complete, nothing projected away.

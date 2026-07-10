@@ -5,7 +5,7 @@
 //
 // DO NOT set GOLDEN_UPDATE=1 outside Tasks 2-6. A failing fixture after a refactor task
 // means the refactor changed observable behaviour.
-import { test } from "bun:test";
+import { expect, test } from "bun:test";
 
 import { createConfig } from "../../commands/command-router-test-support";
 import { OrchestrationService } from "../../../../src/orchestration/orchestration-service";
@@ -442,10 +442,23 @@ test("golden: listGroupSummaries reflects task status rollup", async () => {
   // listGroupSummaries is async (orchestration-service.ts:451) — the brief's snippet
   // omitted the `await`, which would have snapshotted an unresolved Promise instead of
   // the summaries.
+  // Everything above is setup, and it writes. Mark the log here so the next assertion can
+  // speak about listGroupSummaries alone.
+  const callsBeforeQuery = harness.calls.length;
+
   expectMatchesFixture(
     "listgroupsummaries-reflects-task-status-rollup",
     await service.listGroupSummaries({ coordinatorSession: "backend:main" }),
   );
+
+  // listGroupSummaries is a query: it must read and persist nothing. A lazily-materialised
+  // rollup that saved on read would slip past the returned value, which is identical either
+  // way. The snapshot below cannot say this on its own — it covers the setup writes too.
+  expect(harness.calls.slice(callsBeforeQuery).map((call) => call.port)).toEqual(["loadState"]);
+
+  // Snapshot as well as the return value: without it, this test's entire port-call log went
+  // unchecked. Three of the 24 golden tests were in that state.
+  expectMatchesFixture("listgroupsummaries-reflects-task-status-rollup-snapshot", harness.snapshot());
 });
 
 // The scenario above only ever creates ONE group, so `.sort((left, right) => {...})`
@@ -464,9 +477,17 @@ test("golden: listGroupSummaries sorts multiple groups for the same coordinator"
   await service.createGroup({ coordinatorSession: "backend:main", title: "alpha" });
   await service.createGroup({ coordinatorSession: "backend:main", title: "beta" });
 
+  const callsBeforeQuery = harness.calls.length;
+
   expectMatchesFixture(
     "listgroupsummaries-sorts-multiple-groups-for-the-same-coordinator",
     await service.listGroupSummaries({ coordinatorSession: "backend:main" }),
+  );
+
+  expect(harness.calls.slice(callsBeforeQuery).map((call) => call.port)).toEqual(["loadState"]);
+  expectMatchesFixture(
+    "listgroupsummaries-sorts-multiple-groups-for-the-same-coordinator-snapshot",
+    harness.snapshot(),
   );
 });
 
@@ -986,4 +1007,7 @@ test("golden: reserveLogicalTransportSession reserves and releases", async () =>
   await release();
 
   expectMatchesFixture("reservelogicaltransportsession-reserves-and-releases-second-reservation", blocked);
+  // The reservation lives in an in-memory map, not in AppState. Snapshotting pins the one
+  // thing a fixture CAN see about it: that reserving and releasing performs no persistence.
+  expectMatchesFixture("reservelogicaltransportsession-reserves-and-releases-snapshot", harness.snapshot());
 });
