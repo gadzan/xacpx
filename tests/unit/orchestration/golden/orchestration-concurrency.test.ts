@@ -29,6 +29,7 @@ import { expect, test } from "bun:test";
 
 import { createConfig } from "../../commands/command-router-test-support";
 import { OrchestrationService } from "../../../../src/orchestration/orchestration-service";
+import { createEmptyState } from "../../../../src/state/types";
 import { makeGoldenHarness } from "./golden-harness";
 
 function deferred<T>() {
@@ -141,6 +142,198 @@ test("concurrency: two parallel delegations at cap 1 dispatch exactly one and qu
   // queued.
   expect(statuses).toEqual(["queued", "running"]);
   expect(dispatches).toBe(statuses.filter((s) => s === "running").length);
+});
+
+test("concurrency: two parallel needs_confirmation tasks approved at cap 1 dispatch exactly one", async () => {
+  // approveTask's parallel gate reads capacity in one mutate() and persists `running` in a
+  // later one, exactly like the two delegation paths — but unlike them it never called
+  // claimParallelStart. countActiveParallelSlots counts tasks persisted as running/blocked/
+  // waiting_for_human, PLUS pendingParallelStarts. Between the gate mutate's exit and the
+  // persist mutate, an approving task belongs to neither set, so a second concurrent
+  // approve saw a free slot that was already spoken for and both dispatched.
+  //
+  // Worker-sourced parallel tasks are the only ones that reach here: rpc-delegation-service
+  // gates only `input.parallel && autoRun`, and autoRun is false for worker-sourced requests
+  // (hence `needs_confirmation`), so their gate is deferred to approveTask.
+  const harness = makeGoldenHarness({
+    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    config: {
+      ...cappedConfig,
+      orchestration: { ...cappedConfig.orchestration, allowWorkerChainedRequests: true },
+    },
+    initialState: {
+      ...createEmptyState(),
+      orchestration: {
+        ...createEmptyState().orchestration,
+        workerBindings: {
+          "backend:claude:backend:main": {
+            sourceHandle: "backend:claude:backend:main",
+            coordinatorSession: "backend:main",
+            workspace: "backend",
+            targetAgent: "claude",
+          },
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  for (const task of ["first", "second"]) {
+    await service.requestDelegateFromRpc({
+      sourceHandle: "backend:claude:backend:main",
+      targetAgent: "codex",
+      role: "reviewer",
+      task,
+      parallel: true,
+    });
+  }
+  expect(
+    Object.values(harness.getState().orchestration.tasks).map((t) => t.status).sort(),
+  ).toEqual(["needs_confirmation", "needs_confirmation"]);
+
+  // Approve both concurrently. Sequentially this already works: the first is persisted
+  // `running` before the second's gate reads capacity.
+  const results = await Promise.allSettled([
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-1" }),
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-2" }),
+  ]);
+
+  const state = harness.getState();
+  const running = Object.values(state.orchestration.tasks).filter((t) => t.status === "running");
+  const dispatches = harness.calls.filter((call) => call.port === "dispatchWorkerTask").length;
+
+  expect(running.length).toBeLessThanOrEqual(cappedConfig.orchestration.maxParallelTasksPerAgent);
+  expect(dispatches).toBe(running.length);
+  // The loser must be parked, not lost: `queued` (gate saw the slot taken) is the intended
+  // outcome. A rejection would also cap the agent, but it would drop the task, so assert on
+  // the status rather than merely on the dispatch count.
+  expect(Object.values(state.orchestration.tasks).map((t) => t.status).sort()).toEqual([
+    "queued",
+    "running",
+  ]);
+  expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+});
+
+/** Two worker-chained parallel tasks, both `needs_confirmation`, ready to approve. */
+async function makeTwoPendingParallelApprovals(maxParallelTasksPerAgent = 1) {
+  const empty = createEmptyState();
+  const harness = makeGoldenHarness({
+    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    config: {
+      ...cappedConfig,
+      orchestration: {
+        ...cappedConfig.orchestration,
+        allowWorkerChainedRequests: true,
+        maxParallelTasksPerAgent,
+      },
+    },
+    initialState: {
+      ...empty,
+      orchestration: {
+        ...empty.orchestration,
+        workerBindings: {
+          "backend:claude:backend:main": {
+            sourceHandle: "backend:claude:backend:main",
+            coordinatorSession: "backend:main",
+            workspace: "backend",
+            targetAgent: "claude",
+          },
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+  for (const task of ["first", "second"]) {
+    await service.requestDelegateFromRpc({
+      sourceHandle: "backend:claude:backend:main",
+      targetAgent: "codex",
+      role: "reviewer",
+      task,
+      parallel: true,
+    });
+  }
+  return { harness, service };
+}
+
+test("approveTask releases its parallel slot when the worker-session reservation fails", async () => {
+  // `reserveProposedWorkerSession` runs after the gate has claimed the slot and outside the
+  // try/catch that guards the rest. A leak here is silent and permanent: the agent's
+  // capacity shrinks by one for the lifetime of the process, and nothing in state shows it.
+  //
+  // Make the reservation throw by parking a running task on task-1's ephemeral worker-session
+  // name. It belongs to a DIFFERENT agent, so it does not consume codex's parallel capacity —
+  // countActiveParallelSlots keys on targetAgent + ephemeralWorkerSession, while
+  // hasActiveTaskWorkerSession keys on the session name alone. Injected after both tasks
+  // exist: requestDelegateFromRpc reserves the proposed session at creation time, so seeding
+  // this into the harness's initial state would make task creation throw instead.
+  const { harness, service } = await makeTwoPendingParallelApprovals();
+  const state = harness.getState();
+  const task1WorkerSession = state.orchestration.tasks["task-1"]!.workerSession!;
+  state.orchestration.tasks["blocker"] = {
+    taskId: "blocker",
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession: task1WorkerSession,
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "holds the session name",
+    status: "running",
+    summary: "",
+    resultText: "",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 0,
+    events: [],
+  } as never;
+  await harness.deps.saveState(state);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-1" }),
+  ).rejects.toThrow(/already in use/);
+
+  // The slot task-1 claimed must be back. If it leaked, task-2's gate reads capacity as
+  // full and parks it as `queued` instead of running it.
+  const approved = await service.approveTask({ coordinatorSession: "backend:main", taskId: "task-2" });
+  expect(approved.status).toBe("running");
+});
+
+test("approveTask releases its parallel slot after a successful approve", async () => {
+  // The success path must release too, once the task is persisted as `running` and
+  // countActiveParallelSlots counts it for real. Holding the pending claim as well would
+  // double-count the task and shrink the agent's capacity by one, permanently.
+  //
+  // Cap 2, not 1: at cap 1 the leak is invisible, because the first task's `running` status
+  // already fills the cap and the second is correctly queued either way. The bug only shows
+  // where a second slot should still be free.
+  const { harness, service } = await makeTwoPendingParallelApprovals(2);
+
+  const first = await service.approveTask({ coordinatorSession: "backend:main", taskId: "task-1" });
+  expect(first.status).toBe("running");
+
+  const second = await service.approveTask({ coordinatorSession: "backend:main", taskId: "task-2" });
+  expect(second.status).toBe("running");
+
+  const dispatches = harness.calls.filter((call) => call.port === "dispatchWorkerTask").length;
+  expect(dispatches).toBe(2);
+});
+
+test("approveTask releases its parallel slot when ensureWorkerSession fails", async () => {
+  const { harness, service } = await makeTwoPendingParallelApprovals();
+  const baseEnsure = harness.deps.ensureWorkerSession;
+  let ensureCalls = 0;
+  harness.deps.ensureWorkerSession = async (request) => {
+    ensureCalls += 1;
+    if (ensureCalls === 1) throw new Error("acpx refused the session");
+    return await baseEnsure(request);
+  };
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-1" }),
+  ).rejects.toThrow(/acpx refused the session/);
+
+  const approved = await service.approveTask({ coordinatorSession: "backend:main", taskId: "task-2" });
+  expect(approved.status).toBe("running");
 });
 
 test("concurrency: reconcileParallelSlots racing a delegation never over-dispatches", async () => {

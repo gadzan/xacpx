@@ -71,6 +71,17 @@ export class TaskApprovalService {
     // (those tasks never enter `needs_confirmation`). We check here, before
     // ensureReservedWorkerSession and dispatch, so those expensive operations are
     // skipped for queued tasks.
+    // Set inside the gate's critical section when this approve takes a parallel slot; the
+    // slot stays claimed until the task is persisted as `running` (where
+    // countActiveParallelSlots starts counting it), or until any path between here and
+    // there fails. Releasing is idempotent so the failure paths can call it unconditionally.
+    let parallelStartClaimed = false;
+    const releaseParallelStartOnce = (): void => {
+      if (!parallelStartClaimed) return;
+      parallelStartClaimed = false;
+      this.workerSessions.releaseParallelStart(currentTask.targetAgent);
+    };
+
     if (currentTask.ephemeralWorkerSession === true) {
       const queuedResult = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
@@ -81,6 +92,12 @@ export class TaskApprovalService {
         this.questionFlow.assertCoordinatorOwnership(task, input.coordinatorSession);
         this.assertNeedsConfirmation(task);
         if (this.workerSessions.canStartParallelTask(state, task.targetAgent)) {
+          // Take the slot inside this critical section. Between here and the persist mutate
+          // below, the task is neither persisted as `running` nor pending, so without this
+          // claim a second concurrent approve reads the same free slot and both dispatch —
+          // the agent runs one task over its cap. Mirrors the two delegation gates.
+          this.workerSessions.claimParallelStart(task.targetAgent);
+          parallelStartClaimed = true;
           return null; // capacity available — fall through to normal start
         }
         const now = this.deps.now().toISOString();
@@ -103,7 +120,16 @@ export class TaskApprovalService {
       }
     }
 
-    const releaseWorkerReservation = await this.workerSessions.reserveProposedWorkerSession(workerSession, input.taskId);
+    // reserveProposedWorkerSession sits outside the try below and can throw (the worker
+    // session is already reserved or bound). Without this guard a claimed slot leaks and the
+    // agent's capacity shrinks permanently.
+    let releaseWorkerReservation: () => Promise<void>;
+    try {
+      releaseWorkerReservation = await this.workerSessions.reserveProposedWorkerSession(workerSession, input.taskId);
+    } catch (error) {
+      releaseParallelStartOnce();
+      throw error;
+    }
     let ensuredWorkerSession = workerSession;
     let prepared: {
       task: OrchestrationTaskRecord;
@@ -166,9 +192,14 @@ export class TaskApprovalService {
       });
     } catch (error) {
       await releaseWorkerReservation();
+      releaseParallelStartOnce();
       throw error;
     }
     await releaseWorkerReservation();
+    // The task is persisted as `running` now, so countActiveParallelSlots counts it and the
+    // pending claim is redundant. Released here rather than after dispatch: the
+    // dispatch-failure path below rolls the status back, which frees the slot on its own.
+    releaseParallelStartOnce();
 
     try {
       await this.deps.dispatchWorkerTask({
