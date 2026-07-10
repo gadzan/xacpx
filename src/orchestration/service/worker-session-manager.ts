@@ -73,6 +73,16 @@ export class WorkerSessionManager {
     }
   }
 
+  /**
+   * Resolves the transport worker-session name for a delegation.
+   *
+   * For parallel delegations a fresh unique name is minted by appending a
+   * `:p-<id>` suffix. That suffix is purely a naming convention for
+   * human/log readability — it MUST NOT be treated as the source of truth
+   * for ephemerality. `WorkerBindingRecord.ephemeral` is the authoritative
+   * marker for whether a session is an ephemeral parallel slot; no code
+   * should detect ephemerality by string-matching the session name.
+   */
   async resolveWorkerSession(input: RequestDelegateInput): Promise<string> {
     const role = this.normalizeRole(input.role);
 

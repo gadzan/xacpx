@@ -28,13 +28,28 @@ test("buildReplacementOpenQuestion preserves the prior question text", async () 
   expect(replacement.status).toBe("open");
 });
 
-test("normalizeFrozenDeliveryRoute is idempotent", async () => {
+test("normalizeFrozenDeliveryRoute keeps the reply pair only when it is complete", async () => {
+  // Asserting only `normalize(normalize(x)) === normalize(x)` proves nothing: an
+  // implementation that constantly returns `{}` is idempotent too, and would drop the
+  // chatKey, the account and the reply token on every frozen route. Pin what the method
+  // actually decides -- accountId and replyContextToken travel together or not at all.
   const harness = makeGoldenHarness();
   const kernel = new OrchestrationStateKernel({});
   const core = new QuestionFlowCore(harness.deps, kernel);
 
-  const route = { chatKey: "wx:room-1", accountId: "acct-1", replyContextToken: "tok" };
-  const once = core.normalizeFrozenDeliveryRoute(route as never);
-  const twice = core.normalizeFrozenDeliveryRoute(once as never);
-  expect(twice).toEqual(once);
+  const complete = core.normalizeFrozenDeliveryRoute({
+    chatKey: "wx:room-1",
+    accountId: "acct-1",
+    replyContextToken: "tok",
+  } as never);
+  expect(complete).toEqual({ chatKey: "wx:room-1", accountId: "acct-1", replyContextToken: "tok" });
+
+  // A half-populated reply pair is dropped entirely; the chatKey survives alone.
+  const halfPair = core.normalizeFrozenDeliveryRoute({
+    chatKey: "wx:room-1",
+    accountId: "acct-1",
+  } as never);
+  expect(halfPair).toEqual({ chatKey: "wx:room-1" });
+
+  expect(core.normalizeFrozenDeliveryRoute(complete as never)).toEqual(complete);
 });
