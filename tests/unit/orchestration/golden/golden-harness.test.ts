@@ -17,6 +17,11 @@
 // only on `event.message` passed against a digest that had thrown `seq`, `at`, `type` and
 // `status` away.
 //
+// A sixth defect was not a projection but an atomicity bug, and belongs here for the same
+// reason: a save that throws must add nothing to `calls` and must not advance `state`.
+// Otherwise a fixture records a save that never landed, or `loadState` hands a service a
+// state that was never persisted.
+//
 // So: pin the digest's contract directly. These tests drive `deps.saveState` and read
 // `harness.calls`; they never go through OrchestrationService. If one of them fails, the
 // oracle has gone blind — the thirty golden fixtures may still pass while no longer proving
@@ -167,6 +172,24 @@ test.each([
 
   // A rejected save commits nothing: a service that catches the error and re-reads through
   // `loadState` must not observe a state that was never persisted.
+  expect(harness.getState()).toEqual(before);
+  expect(harness.calls.filter((call) => call.port === "saveState")).toEqual([]);
+});
+
+test("a save that fails outside the digest also commits nothing", async () => {
+  // The digest guard is not the only thing that can throw. `cloneState` round-trips through
+  // JSON, so a BigInt anywhere in AppState — or a cycle — rejects the save too. Cloning after
+  // `record` left a `saveState` entry in `calls` for a save that never landed: `state` was
+  // correct, the recorded call log was not, and only a fixture would have shown it.
+  const state = createEmptyState();
+  state.orchestration.tasks["t1"] = seedTask("t1") as never;
+  (state as unknown as Record<string, unknown>)["nonOrchestrationProbe"] = 1n;
+
+  const harness = makeGoldenHarness();
+  const before = harness.getState();
+
+  await expect(harness.deps.saveState(state)).rejects.toThrow(TypeError);
+
   expect(harness.getState()).toEqual(before);
   expect(harness.calls.filter((call) => call.port === "saveState")).toEqual([]);
 });

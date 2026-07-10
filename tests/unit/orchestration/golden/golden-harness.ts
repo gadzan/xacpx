@@ -196,19 +196,28 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       // The digest is generated from `state.orchestration`'s own keys — see
       // `digestOrchestrationState`. It is never a hand-written list of collections.
       //
-      // Everything that can throw runs before the harness commits anything. A save that
-      // rejects must leave `state` and `calls` exactly as it found them: a service that
-      // catches the rejection and re-reads via `loadState` would otherwise observe a state
-      // that was never successfully persisted.
+      // A rejected save must leave `state` and `calls` exactly as it found them. `calls` is
+      // the log of saves that HAPPENED: a service that catches the rejection and re-reads via
+      // `loadState` must not observe a state that was never persisted, and a fixture must not
+      // record a save that never landed.
       //
-      // Digest `nextState`, not a clone of it. `cloneState` round-trips through JSON, which
-      // turns a `Map` into `{}` and a `Date` into a string — digesting the clone would hand
-      // the guard a laundered plain object and record a silently empty collection.
+      // Both fallible steps therefore run before either commit, and their order is
+      // load-bearing twice over:
+      //
+      //   * Digest `nextState`, not a clone of it. `cloneState` round-trips through JSON,
+      //     which turns a `Map` into `{}` and a `Date` into a string — digesting the clone
+      //     would hand the guard a laundered plain object and record a silently empty
+      //     collection, defeating the guard entirely.
+      //   * Clone before `record`, not after. `cloneState` throws on anything JSON cannot
+      //     serialize — a `BigInt` anywhere in AppState, a cycle. Cloning after `record` left
+      //     a `saveState` entry in `calls` for a save that then failed.
       const digest = digestOrchestrationState(
         nextState.orchestration as unknown as Record<string, unknown>,
       );
+      const cloned = cloneState(nextState);
+      // Nothing below this line may throw.
       record("saveState", digest);
-      state = cloneState(nextState);
+      state = cloned;
     },
     config,
     ensureWorkerSession: async (request) => {
