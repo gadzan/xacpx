@@ -220,3 +220,16 @@ export function createEmptyOrchestrationState(): OrchestrationState {
     externalCoordinators: {},
   };
 }
+
+export function isTerminalTaskStatus(status: OrchestrationTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+export function isAttentionRequiredTask(task: OrchestrationTaskRecord): boolean {
+  return (
+    task.reviewPending !== undefined ||
+    task.status === "needs_confirmation" ||
+    task.status === "blocked" ||
+    task.status === "waiting_for_human"
+  );
+}
