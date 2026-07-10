@@ -3,14 +3,12 @@ import type { AppLogger } from "../logging/app-logger";
 import type { AppState } from "../state/types";
 import type {
   ExternalCoordinatorRecord,
-  OrchestrationCoordinatorQuestionStateRecord,
   OrchestrationCoordinatorRouteContextRecord,
   OrchestrationGroupRecord,
   OrchestrationGroupSummary,
   OrchestrationHumanQuestionPackageRecord,
   OrchestrationSourceKind,
   OrchestrationTaskEventRecord,
-  OrchestrationTaskEventType,
   OrchestrationTaskRecord,
   OrchestrationTaskStatus,
 } from "./orchestration-types";
