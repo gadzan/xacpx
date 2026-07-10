@@ -94,6 +94,12 @@ function cloneState(state: AppState): AppState {
  * render a *missing* collection and an *empty* one identically, and JSON distinguishes them.
  * Every one of those three was a real blind spot found by review, in that order.
  *
+ * The fourth was the type check. `typeof x === "object"` admits arrays, `Date`s and `Map`s,
+ * and `Object.keys` then renders each of them as a keyed collection: `["a"]` and `{"0":"a"}`
+ * produce an identical digest, and a `Date` or `Map` produces an empty one without
+ * complaint. JSON keeps `[]` and `{}` apart, so the digest must too. Only a plain object
+ * survives the guard; anything else stops the run rather than quietly narrowing the oracle.
+ *
  * Sorting fixes the order of collection *entries*. It does not canonicalize the property
  * order inside each record, and `expectMatchesFixture` compares parsed JSON rather than raw
  * bytes, so this is not a byte-stability guarantee — it is an entry-order guarantee.
@@ -102,18 +108,31 @@ function digestOrchestrationState(orchestration: Record<string, unknown>): Recor
   const digest: Record<string, unknown> = {};
   for (const collectionName of Object.keys(orchestration).sort()) {
     const collection = orchestration[collectionName];
-    if (collection === null || typeof collection !== "object") {
+    if (!isPlainRecord(collection)) {
       throw new Error(
-        `golden harness: state.orchestration.${collectionName} is not a record — ` +
-          `the digest can only render keyed collections`,
+        `golden harness: state.orchestration.${collectionName} is not a keyed record ` +
+          `(got ${describeCollection(collection)}) — the digest can only render plain objects`,
       );
     }
-    const records = collection as Record<string, unknown>;
-    digest[collectionName] = Object.keys(records)
+    digest[collectionName] = Object.keys(collection)
       .sort()
-      .map((key) => ({ key, value: records[key] }));
+      .map((key) => ({ key, value: collection[key] }));
   }
   return digest;
+}
+
+/** A plain `{}`-shaped object: not null, not an array, not a `Date`/`Map`/class instance. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
+}
+
+function describeCollection(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  if (typeof value !== "object") return `a ${typeof value}`;
+  return (value as object).constructor?.name ?? "a non-plain object";
 }
 
 export interface GoldenHarnessOverrides {
@@ -159,7 +178,6 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     },
     loadState: async () => cloneState(state),
     saveState: async (nextState) => {
-      state = cloneState(nextState);
       // Record the WHOLE orchestration subtree on every save, verbatim: every runtime
       // collection, every record complete, nothing projected away.
       //
@@ -177,7 +195,20 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       //
       // The digest is generated from `state.orchestration`'s own keys — see
       // `digestOrchestrationState`. It is never a hand-written list of collections.
-      record("saveState", digestOrchestrationState(nextState.orchestration as unknown as Record<string, unknown>));
+      //
+      // Everything that can throw runs before the harness commits anything. A save that
+      // rejects must leave `state` and `calls` exactly as it found them: a service that
+      // catches the rejection and re-reads via `loadState` would otherwise observe a state
+      // that was never successfully persisted.
+      //
+      // Digest `nextState`, not a clone of it. `cloneState` round-trips through JSON, which
+      // turns a `Map` into `{}` and a `Date` into a string — digesting the clone would hand
+      // the guard a laundered plain object and record a silently empty collection.
+      const digest = digestOrchestrationState(
+        nextState.orchestration as unknown as Record<string, unknown>,
+      );
+      record("saveState", digest);
+      state = cloneState(nextState);
     },
     config,
     ensureWorkerSession: async (request) => {

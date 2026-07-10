@@ -2,15 +2,20 @@
 //
 // The oracle's own oracle.
 //
-// The per-save digest in golden-harness.ts had four blind spots, found one per review
-// round, all of them the same mistake: the digest projected. It recorded only `tasks`; then
-// it dropped each task's `events` and let the map key overwrite a record's identity; then a
+// The per-save digest in golden-harness.ts had five blind spots, found one per review round,
+// all of them the same mistake: the digest projected. It recorded only `tasks`; then it
+// dropped each task's `events` and let the map key overwrite a record's identity; then a
 // `?? {}` fallback rendered a *missing* collection identically to an *empty* one; then the
-// collection list was hand-written twice and could drift from what was emitted.
+// collection list was hand-written twice and could drift from what was emitted; then a
+// `typeof x === "object"` guard admitted arrays, `Date`s and `Map`s, so `[]` and `{}` — which
+// JSON distinguishes — digested alike.
 //
-// Each was demonstrated with a throwaway mutation and fixed. Those mutations proved the fix
-// once, on the day. They do not survive into next year, when someone refactors this harness
-// and reintroduces a projection because it looked redundant.
+// That last one arrived AFTER the first version of this file, and slipped past it: the
+// non-record test only tried a string. A contract test is worth exactly the mutations it can
+// survive, so each assertion below has been checked against the projection it exists to
+// catch. Weaken one and it must go red. The events test earned its keep this way — asserting
+// only on `event.message` passed against a digest that had thrown `seq`, `at`, `type` and
+// `status` away.
 //
 // So: pin the digest's contract directly. These tests drive `deps.saveState` and read
 // `harness.calls`; they never go through OrchestrationService. If one of them fails, the
@@ -111,19 +116,21 @@ test("a record's own identity survives the map key that stores it", async () => 
 test("task events are recorded in full, not summarised by eventSeq", async () => {
   // `eventSeq` counts appends; it does not describe them. Dropping `events` from the digest
   // hid a change that wrote an event's message early and corrected it before the next save.
+  //
+  // Assert the events deep-equal, field for field. Comparing only `message` would let a
+  // digest that projected `events.map(({ message }) => ({ message }))` pass a test named
+  // "recorded in full" while `seq`, `at`, `type` and `status` all went missing.
+  const expectedEvents = [
+    { seq: 1, at: "2026-04-13T09:00:00.000Z", type: "created", status: "running", message: "first" },
+    { seq: 2, at: "2026-04-13T09:30:00.000Z", type: "progress", status: "running", message: "second" },
+  ];
   const state = createEmptyState();
-  state.orchestration.tasks["t1"] = seedTask("t1", {
-    eventSeq: 2,
-    events: [
-      { seq: 1, at: "2026-04-13T09:00:00.000Z", type: "created", status: "running", message: "first" },
-      { seq: 2, at: "2026-04-13T09:30:00.000Z", type: "progress", status: "running", message: "second" },
-    ],
-  }) as never;
+  state.orchestration.tasks["t1"] = seedTask("t1", { eventSeq: 2, events: expectedEvents }) as never;
 
   const digest = await digestOf(state);
 
-  const task = digest["tasks"]![0]!.value as { events: Array<{ message: string }> };
-  expect(task.events.map((event) => event.message)).toEqual(["first", "second"]);
+  const task = digest["tasks"]![0]!.value as { events: unknown[] };
+  expect(task.events).toEqual(expectedEvents);
 });
 
 test("collection entries are sorted by key, so entry order is not the insertion order", async () => {
@@ -136,12 +143,45 @@ test("collection entries are sorted by key, so entry order is not the insertion 
   expect(digest["tasks"]!.map((entry) => entry.key)).toEqual(["t-a", "t-b"]);
 });
 
-test("a collection that is not a keyed record fails loudly", async () => {
-  // Silently skipping it would narrow the digest. There is no `?? {}`, and no `typeof` check
-  // that shrugs.
+test.each([
+  ["a string", "not a record"],
+  // `typeof [] === "object"`, so a bare typeof check admits arrays — and `Object.keys` then
+  // renders `["a"]` and `{"0": "a"}` into the same digest, empty `[]` and `{}` likewise,
+  // while JSON keeps them apart.
+  ["an empty array", []],
+  ["a non-empty array", ["a"]],
+  // `Date` and `Map` have no own enumerable keys, so they would digest as empty collections.
+  ["a Date", new Date(0)],
+  ["a Map", new Map([["k", "v"]])],
+])("a collection that is %s fails loudly and does not commit the save", async (_label, value) => {
+  // Silently skipping it, or rendering it as a keyed collection, would narrow the digest.
+  // There is no `?? {}` and no `typeof` check that shrugs.
   const state = createEmptyState();
-  (state.orchestration as unknown as Record<string, unknown>)["tasks"] = "not a record";
+  state.orchestration.tasks["t1"] = seedTask("t1") as never;
+  (state.orchestration as unknown as Record<string, unknown>)["externalCoordinators"] = value;
 
   const harness = makeGoldenHarness();
-  await expect(harness.deps.saveState(state)).rejects.toThrow(/is not a record/);
+  const before = harness.getState();
+
+  await expect(harness.deps.saveState(state)).rejects.toThrow(/is not a keyed record/);
+
+  // A rejected save commits nothing: a service that catches the error and re-reads through
+  // `loadState` must not observe a state that was never persisted.
+  expect(harness.getState()).toEqual(before);
+  expect(harness.calls.filter((call) => call.port === "saveState")).toEqual([]);
+});
+
+test("an empty collection and an empty array do not digest alike", async () => {
+  // The regression this pins: `externalCoordinators` written as `[]` before one save and
+  // restored to `{}` before the next. Same final AppState, same port-call log, same save
+  // count — and, under a `typeof` guard, the same digest on both saves.
+  const asObject = createEmptyState();
+  const asArray = createEmptyState();
+  (asArray.orchestration as unknown as Record<string, unknown>)["externalCoordinators"] = [];
+
+  const objectDigest = await digestOf(asObject);
+  const arrayHarness = makeGoldenHarness();
+
+  expect(objectDigest["externalCoordinators"]).toEqual([]);
+  await expect(arrayHarness.deps.saveState(asArray)).rejects.toThrow(/is not a keyed record/);
 });
