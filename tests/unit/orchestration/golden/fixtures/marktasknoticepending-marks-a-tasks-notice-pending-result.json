@@ -1,0 +1,26 @@
+{
+  "taskId": "task-1",
+  "sourceHandle": "wx:user-1",
+  "sourceKind": "human",
+  "coordinatorSession": "backend:main",
+  "workerSession": "backend:claude:backend:main",
+  "workspace": "backend",
+  "targetAgent": "claude",
+  "task": "do it",
+  "status": "running",
+  "summary": "",
+  "resultText": "",
+  "createdAt": "2026-04-13T10:00:00.000Z",
+  "updatedAt": "2026-04-13T10:00:00.000Z",
+  "eventSeq": 1,
+  "events": [
+    {
+      "seq": 1,
+      "at": "2026-04-13T10:00:00.000Z",
+      "type": "created",
+      "status": "running",
+      "message": "Task created"
+    }
+  ],
+  "noticePending": true
+}

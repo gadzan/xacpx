@@ -23,6 +23,7 @@ import type {
 import { AsyncMutex } from "./async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "./coordinator-identity";
 import { sanitizeProgressSummary, stripProgressLines } from "./progress-line-parser";
+import { OrchestrationStateKernel } from "./service/orchestration-state-kernel";
 import { isQuotaDeferredError } from "../weixin/messaging/quota-errors";
 import {
   DEFAULT_TASK_WATCH_POLL_INTERVAL_MS,
@@ -30,8 +31,6 @@ import {
   MAX_TASK_WATCH_POLL_INTERVAL_MS,
   MAX_TASK_WATCH_TIMEOUT_MS,
 } from "./task-watch-timeouts";
-
-const MAX_TASK_EVENTS_PER_TASK = 200;
 
 export interface RequestDelegateInput {
   sourceHandle: string;
@@ -324,7 +323,7 @@ export interface OrchestrationGroupListFilter {
 }
 
 export class OrchestrationService {
-  private readonly stateMutex: AsyncMutex;
+  private readonly kernel: OrchestrationStateKernel;
   private readonly pendingWorkerSessions = new Map<string, number>();
   private readonly pendingLogicalTransportSessions = new Map<string, number>();
   /**
@@ -337,11 +336,7 @@ export class OrchestrationService {
   private readonly pendingParallelStarts = new Map<string, number>();
 
   constructor(private readonly deps: OrchestrationServiceDeps) {
-    this.stateMutex = deps.stateMutex ?? new AsyncMutex();
-  }
-
-  private async mutate<T>(critical: () => Promise<T>): Promise<T> {
-    return await this.stateMutex.run(critical);
+    this.kernel = new OrchestrationStateKernel({ logger: deps.logger }, deps.stateMutex);
   }
 
 
@@ -357,9 +352,9 @@ export class OrchestrationService {
       throw new Error(`workspace "${workspace}" is not configured`);
     }
 
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const externalCoordinators = this.ensureExternalCoordinators(state);
+      const externalCoordinators = this.kernel.ensureExternalCoordinators(state);
       const existing = externalCoordinators[coordinatorSession];
       if ((this.pendingWorkerSessions.get(coordinatorSession) ?? 0) > 0) {
         throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing worker session`);
@@ -408,7 +403,7 @@ export class OrchestrationService {
       throw new Error("title must be a non-empty string");
     }
 
-    const group = await this.mutate(async () => {
+    const group = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const now = this.deps.now().toISOString();
       const groupId = this.deps.createId();
@@ -420,14 +415,14 @@ export class OrchestrationService {
         updatedAt: now,
       };
 
-      const groups = this.ensureGroups(state);
+      const groups = this.kernel.ensureGroups(state);
       groups[groupId] = nextGroup;
       await this.deps.saveState(state);
 
       return { ...nextGroup };
     });
 
-    this.logEvent("orchestration.group.created", "group created", this.groupContext(group));
+    this.kernel.logEvent("orchestration.group.created", "group created", this.kernel.groupContext(group));
 
     return group;
   }
@@ -437,7 +432,7 @@ export class OrchestrationService {
     coordinatorSession: string;
   }): Promise<OrchestrationGroupSummary | null> {
     const state = await this.deps.loadState();
-    const group = this.ensureGroups(state)[input.groupId];
+    const group = this.kernel.ensureGroups(state)[input.groupId];
     if (!group || !sameCoordinatorSession(group.coordinatorSession, input.coordinatorSession)) {
       return null;
     }
@@ -456,7 +451,7 @@ export class OrchestrationService {
     const sortField = input.sort ?? "updatedAt";
     const order = input.order ?? "desc";
 
-    return Object.values(this.ensureGroups(state))
+    return Object.values(this.kernel.ensureGroups(state))
       .filter((group) => sameCoordinatorSession(group.coordinatorSession, input.coordinatorSession))
       .map((group) => ({
         group,
@@ -496,7 +491,7 @@ export class OrchestrationService {
     const skippedTaskIds: string[] = [];
 
     for (const task of summary.tasks) {
-      if (this.isTerminalStatus(task.status)) {
+      if (this.kernel.isTerminalStatus(task.status)) {
         skippedTaskIds.push(task.taskId);
         continue;
       }
@@ -513,8 +508,8 @@ export class OrchestrationService {
       throw new Error(`group "${input.groupId}" does not exist`);
     }
 
-    this.logEvent("orchestration.group.cancelled", "group cancelled", {
-      ...this.groupContext(refreshed.group),
+    this.kernel.logEvent("orchestration.group.cancelled", "group cancelled", {
+      ...this.kernel.groupContext(refreshed.group),
       cancelled_count: cancelledTaskIds.length,
       skipped_count: skippedTaskIds.length,
     });
@@ -542,7 +537,7 @@ export class OrchestrationService {
     this.validateRequest(input);
 
     const role = this.normalizeRole(input.role);
-    const normalizedGroupId = this.normalizeGroupId(input.groupId);
+    const normalizedGroupId = this.kernel.normalizeGroupId(input.groupId);
     const taskId = this.deps.createId();
     const workerSession = await this.resolveWorkerSession(input);
 
@@ -550,7 +545,7 @@ export class OrchestrationService {
     // If at capacity, persist the task as "queued" and return immediately — no
     // session reservation, no ensureReservedWorkerSession, no dispatchWorkerTask.
     if (input.parallel) {
-      const queuedResult = await this.mutate(async () => {
+      const queuedResult = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         if (this.canStartParallelTask(state, input.targetAgent)) {
           // Slot available — increment the pending counter atomically with this
@@ -601,7 +596,7 @@ export class OrchestrationService {
         return { taskId, status: "queued" as const, workerSession };
       });
       if (queuedResult) {
-        this.logEvent("orchestration.task.queued", "parallel task queued at capacity", { taskId, targetAgent: input.targetAgent });
+        this.kernel.logEvent("orchestration.task.queued", "parallel task queued at capacity", { taskId, targetAgent: input.targetAgent });
         return queuedResult;
       }
     }
@@ -641,11 +636,11 @@ export class OrchestrationService {
           targetAgent: input.targetAgent,
           role,
         });
-        prepared = await this.mutate(async () => {
+        prepared = await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           const now = this.deps.now().toISOString();
           if (normalizedGroupId) {
-            this.assertGroupOwnership(this.ensureGroups(state)[normalizedGroupId], normalizedGroupId, input.coordinatorSession);
+            this.kernel.assertGroupOwnership(this.kernel.ensureGroups(state)[normalizedGroupId], normalizedGroupId, input.coordinatorSession);
           }
           const task: OrchestrationTaskRecord = {
             taskId,
@@ -674,7 +669,7 @@ export class OrchestrationService {
 
           let previousGroup: OrchestrationGroupRecord | undefined;
           if (normalizedGroupId) {
-            const group = this.ensureGroups(state)[normalizedGroupId]!;
+            const group = this.kernel.ensureGroups(state)[normalizedGroupId]!;
             previousGroup = { ...group };
             group.updatedAt = now;
             group.coordinatorInjectedAt = undefined;
@@ -729,7 +724,7 @@ export class OrchestrationService {
         task: input.task,
       });
     } catch (error) {
-      await this.mutate(async () => {
+      await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         delete state.orchestration.tasks[taskId];
         if (prepared.previousBinding) {
@@ -738,14 +733,14 @@ export class OrchestrationService {
           delete state.orchestration.workerBindings[ensuredWorkerSession];
         }
         if (prepared.normalizedGroupId && prepared.previousGroup) {
-          this.ensureGroups(state)[prepared.normalizedGroupId] = prepared.previousGroup;
+          this.kernel.ensureGroups(state)[prepared.normalizedGroupId] = prepared.previousGroup;
         }
         await this.deps.saveState(state);
       });
       throw error;
     }
 
-    this.logEvent("orchestration.task.created", "delegated task created", this.taskContext(prepared.task));
+    this.kernel.logEvent("orchestration.task.created", "delegated task created", this.kernel.taskContext(prepared.task));
 
     return {
       taskId,
@@ -757,7 +752,7 @@ export class OrchestrationService {
   async requestDelegateFromRpc(input: RequestDelegateRpcInput): Promise<RequestDelegateRpcResult> {
     this.validateRpcRequest(input);
 
-    const preflight = await this.mutate(async () => {
+    const preflight = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const sourceContext = this.resolveRpcSourceContext(state, input.sourceHandle);
       const targetLocation = this.resolveRpcTargetLocation(sourceContext, input.cwd);
@@ -769,10 +764,10 @@ export class OrchestrationService {
         input.targetAgent,
         role,
       );
-      const normalizedGroupId = this.normalizeGroupId(input.groupId);
+      const normalizedGroupId = this.kernel.normalizeGroupId(input.groupId);
       if (normalizedGroupId) {
-        this.assertGroupOwnership(
-          this.ensureGroups(state)[normalizedGroupId],
+        this.kernel.assertGroupOwnership(
+          this.kernel.ensureGroups(state)[normalizedGroupId],
           normalizedGroupId,
           sourceContext.coordinatorSession,
         );
@@ -805,7 +800,7 @@ export class OrchestrationService {
     // Worker-sourced (autoRun === false) parallel tasks are NOT gated here because
     // they hold no session yet; the gate runs in approveTask instead.
     if (input.parallel && autoRun) {
-      const queuedResult = await this.mutate(async () => {
+      const queuedResult = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         if (this.canStartParallelTask(state, input.targetAgent)) {
           // Slot available — increment the pending counter atomically with this
@@ -849,7 +844,7 @@ export class OrchestrationService {
         return { taskId, status: "queued" as const, workerSession: workerSessionName };
       });
       if (queuedResult) {
-        this.logEvent("orchestration.task.queued", "parallel task queued at capacity", { taskId, targetAgent: input.targetAgent });
+        this.kernel.logEvent("orchestration.task.queued", "parallel task queued at capacity", { taskId, targetAgent: input.targetAgent });
         return queuedResult;
       }
     }
@@ -878,7 +873,7 @@ export class OrchestrationService {
     const releaseWorkerReservation = await this.reserveProposedWorkerSession(workerSessionName);
     try {
       try {
-        prepared = await this.mutate(async () => {
+        prepared = await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           this.assertRpcRequestAllowed(
             state,
@@ -912,7 +907,7 @@ export class OrchestrationService {
           };
 
           if (preflight.normalizedGroupId) {
-            const group = this.ensureGroups(state)[preflight.normalizedGroupId]!;
+            const group = this.kernel.ensureGroups(state)[preflight.normalizedGroupId]!;
             group.updatedAt = now;
             group.coordinatorInjectedAt = undefined;
             group.injectionPending = undefined;
@@ -960,10 +955,10 @@ export class OrchestrationService {
       });
     }
 
-    this.logEvent(
+    this.kernel.logEvent(
       "orchestration.task.created",
       "delegated task created",
-      this.taskContext(prepared.task),
+      this.kernel.taskContext(prepared.task),
     );
 
     return {
@@ -989,7 +984,7 @@ export class OrchestrationService {
         targetAgent: task.targetAgent,
         ...(task.role ? { role: task.role } : {}),
       });
-      const startupAction = await this.mutate(async () => {
+      const startupAction = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const current = state.orchestration.tasks[task.taskId];
         if (
@@ -1011,8 +1006,8 @@ export class OrchestrationService {
           previousBinding: input.previousBinding,
         });
         if (completed) {
-          this.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
-            ...this.taskContext(task),
+          this.kernel.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
+            ...this.kernel.taskContext(task),
             status: "cancelled",
           });
         }
@@ -1025,7 +1020,7 @@ export class OrchestrationService {
         });
         return;
       }
-      const preDispatchAction = await this.mutate(async () => {
+      const preDispatchAction = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const current = state.orchestration.tasks[task.taskId];
         if (
@@ -1047,8 +1042,8 @@ export class OrchestrationService {
           previousBinding: input.previousBinding,
         });
         if (completed) {
-          this.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
-            ...this.taskContext(task),
+          this.kernel.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
+            ...this.kernel.taskContext(task),
             status: "cancelled",
           });
         }
@@ -1078,13 +1073,13 @@ export class OrchestrationService {
         previousBinding: input.previousBinding,
       });
       if (completedCancellation) {
-        this.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
-          ...this.taskContext(task),
+        this.kernel.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
+          ...this.kernel.taskContext(task),
           status: "cancelled",
         });
         return;
       }
-      const taskMarkedFailed = await this.mutate(async () => {
+      const taskMarkedFailed = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const current = state.orchestration.tasks[task.taskId];
         const workerSession = task.workerSession!;
@@ -1100,7 +1095,7 @@ export class OrchestrationService {
         const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
           candidate.taskId !== task.taskId &&
           candidate.workerSession === workerSession &&
-          (!this.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
+          (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
         );
         const restoreOrDeleteBinding = () => {
           if (!bindingStillBelongsToThisStartup || otherActiveOwner) {
@@ -1121,14 +1116,14 @@ export class OrchestrationService {
           current &&
           taskStillOwnsWorkerSession &&
           current.cancelRequestedAt === undefined &&
-          !this.isTerminalStatus(current.status)
+          !this.kernel.isTerminalStatus(current.status)
         ) {
           const now = this.deps.now().toISOString();
           current.status = "failed";
           current.summary = message;
           current.resultText = "";
           current.updatedAt = now;
-          this.appendTaskEvent(current, now, "status_changed", {
+          this.kernel.appendTaskEvent(current, now, "status_changed", {
             status: "failed",
             summary: message,
             message: "Task failed during startup",
@@ -1141,8 +1136,8 @@ export class OrchestrationService {
         return false;
       });
       if (taskMarkedFailed) {
-        this.logEvent("orchestration.task.failed", "task failed", {
-          ...this.taskContext(task),
+        this.kernel.logEvent("orchestration.task.failed", "task failed", {
+          ...this.kernel.taskContext(task),
           error: message,
         });
       }
@@ -1154,7 +1149,7 @@ export class OrchestrationService {
     previousBinding?: AppState["orchestration"]["workerBindings"][string];
   }): Promise<boolean> {
     const { task } = input;
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const workerSession = task.workerSession!;
       const current = state.orchestration.tasks[task.taskId];
@@ -1172,7 +1167,7 @@ export class OrchestrationService {
       current.cancelCompletedAt = now;
       current.lastCancelError = undefined;
       current.updatedAt = now;
-      this.bumpGroupUpdated(state, current.groupId, now);
+      this.kernel.bumpGroupUpdated(state, current.groupId, now);
 
       const currentBinding = state.orchestration.workerBindings[workerSession];
       const bindingStillBelongsToThisStartup =
@@ -1185,7 +1180,7 @@ export class OrchestrationService {
       const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
         candidate.taskId !== task.taskId &&
         candidate.workerSession === workerSession &&
-        (!this.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
+        (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
       );
       if (bindingStillBelongsToThisStartup && !otherActiveOwner) {
         if (input.previousBinding) {
@@ -1204,7 +1199,7 @@ export class OrchestrationService {
     previousBinding?: AppState["orchestration"]["workerBindings"][string];
   }): Promise<boolean> {
     const { task } = input;
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const workerSession = task.workerSession!;
       const currentBinding = state.orchestration.workerBindings[workerSession];
@@ -1221,7 +1216,7 @@ export class OrchestrationService {
       const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
         candidate.taskId !== task.taskId &&
         candidate.workerSession === workerSession &&
-        (!this.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
+        (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
       );
       if (otherActiveOwner) {
         return false;
@@ -1237,7 +1232,7 @@ export class OrchestrationService {
   }
 
   async recordWorkerReply(input: RecordWorkerReplyInput): Promise<OrchestrationTaskRecord> {
-    const task = await this.mutate(async () => {
+    const task = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -1255,7 +1250,7 @@ export class OrchestrationService {
         );
       }
 
-      if (this.isTerminalStatus(task.status)) {
+      if (this.kernel.isTerminalStatus(task.status)) {
         throw new Error(`task "${input.taskId}" is already ${task.status}`);
       }
 
@@ -1268,13 +1263,13 @@ export class OrchestrationService {
       task.status = input.status ?? "completed";
       task.summary = input.summary ?? "";
       task.resultText = stripProgressLines(input.resultText ?? "");
-      this.appendTaskEvent(task, updatedAt, "status_changed", {
+      this.kernel.appendTaskEvent(task, updatedAt, "status_changed", {
         status: task.status,
         summary: task.summary,
         message: task.status === "completed" ? "Task completed" : task.status === "failed" ? "Task failed" : "Task cancelled",
       });
       if (task.status === "completed" || task.status === "failed") {
-        if (!this.isExternalCoordinatorSession(state, task.coordinatorSession)) {
+        if (!this.kernel.isExternalCoordinatorSession(state, task.coordinatorSession)) {
           task.injectionPending = true;
           task.injectionAppliedAt = undefined;
           task.lastInjectionError = undefined;
@@ -1301,7 +1296,7 @@ export class OrchestrationService {
           resultId: this.deps.createId(),
           resultText: task.resultText,
         };
-        this.appendTaskEvent(task, updatedAt, "attention_required", {
+        this.kernel.appendTaskEvent(task, updatedAt, "attention_required", {
           status: task.status,
           message: "Task result requires contested review",
         });
@@ -1311,7 +1306,7 @@ export class OrchestrationService {
         task.lastCancelError = undefined;
       }
       task.updatedAt = updatedAt;
-      this.bumpGroupUpdated(state, task.groupId, updatedAt);
+      this.kernel.bumpGroupUpdated(state, task.groupId, updatedAt);
 
       await this.deps.saveState(state);
 
@@ -1319,16 +1314,16 @@ export class OrchestrationService {
     });
 
     if (task.status === "completed") {
-      this.logEvent("orchestration.task.completed", "task completed", this.taskContext(task));
+      this.kernel.logEvent("orchestration.task.completed", "task completed", this.kernel.taskContext(task));
     } else if (task.status === "failed") {
-      this.logEvent("orchestration.task.failed", "task failed", this.taskContext(task));
+      this.kernel.logEvent("orchestration.task.failed", "task failed", this.kernel.taskContext(task));
     }
 
     return task;
   }
 
   async markTaskNoticePending(taskId: string): Promise<OrchestrationTaskRecord> {
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task) {
@@ -1344,7 +1339,7 @@ export class OrchestrationService {
   }
 
   async markTaskNoticeDelivered(taskId: string, deliveryAccountId: string): Promise<OrchestrationTaskRecord> {
-    const task = await this.mutate(async () => {
+    const task = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task) {
@@ -1361,8 +1356,8 @@ export class OrchestrationService {
       return { ...task };
     });
 
-    this.logEvent("orchestration.notice.sent", "task notice delivered", {
-      ...this.taskContext(task),
+    this.kernel.logEvent("orchestration.notice.sent", "task notice delivered", {
+      ...this.kernel.taskContext(task),
       delivery_account_id: deliveryAccountId,
     });
 
@@ -1370,7 +1365,7 @@ export class OrchestrationService {
   }
 
   async markTaskNoticeFailed(input: MarkTaskErrorInput): Promise<OrchestrationTaskRecord> {
-    const task = await this.mutate(async () => {
+    const task = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -1384,8 +1379,8 @@ export class OrchestrationService {
       return { ...task };
     });
 
-    this.logEvent("orchestration.notice.failed", "task notice delivery failed", {
-      ...this.taskContext(task),
+    this.kernel.logEvent("orchestration.notice.failed", "task notice delivery failed", {
+      ...this.kernel.taskContext(task),
       error: input.errorMessage,
     });
 
@@ -1496,13 +1491,13 @@ export class OrchestrationService {
       throw new Error("chatKey must be a non-empty string");
     }
 
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const now = this.deps.now().toISOString();
       // Key the route by the stable identity so a route recorded before `/clear`
       // is still found when the coordinator resumes under its rotated transport.
       const routeKey = stableCoordinatorSession(input.coordinatorSession);
-      const existing = this.ensureCoordinatorRoutes(state)[routeKey];
+      const existing = this.kernel.ensureCoordinatorRoutes(state)[routeKey];
       const sameChat = existing?.chatKey === input.chatKey;
       const hasAccountId = input.accountId !== undefined;
       const hasReplyContextToken = input.replyContextToken !== undefined;
@@ -1531,7 +1526,7 @@ export class OrchestrationService {
         ...buildCoordinatorRouteChatMetadata(input, sameChat ? existing : undefined),
         updatedAt: now,
       };
-      this.ensureCoordinatorRoutes(state)[routeKey] = route;
+      this.kernel.ensureCoordinatorRoutes(state)[routeKey] = route;
       await this.deps.saveState(state);
       return { ...route };
     });
@@ -1556,7 +1551,7 @@ export class OrchestrationService {
       throw new Error("whatIsNeeded must be a non-empty string");
     }
 
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -1587,18 +1582,18 @@ export class OrchestrationService {
         status: "open",
       };
       task.updatedAt = now;
-      this.appendTaskEvent(task, now, "attention_required", {
+      this.kernel.appendTaskEvent(task, now, "attention_required", {
         status: "blocked",
         message: input.question.trim(),
       });
-      this.bumpGroupUpdated(state, task.groupId, now);
+      this.kernel.bumpGroupUpdated(state, task.groupId, now);
       await this.deps.saveState(state);
 
       return {
         taskId: task.taskId,
         questionId,
         coordinatorSession: task.coordinatorSession,
-        externalCoordinator: this.isExternalCoordinatorSession(state, task.coordinatorSession),
+        externalCoordinator: this.kernel.isExternalCoordinatorSession(state, task.coordinatorSession),
       };
     });
 
@@ -1634,7 +1629,7 @@ export class OrchestrationService {
       throw new Error("answer must be a non-empty string");
     }
 
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -1664,11 +1659,11 @@ export class OrchestrationService {
         lastResumeError: undefined,
       };
       task.updatedAt = now;
-      this.appendTaskEvent(task, now, "status_changed", {
+      this.kernel.appendTaskEvent(task, now, "status_changed", {
         status: "running",
         message: "Blocker question answered",
       });
-      this.bumpGroupUpdated(state, task.groupId, now);
+      this.kernel.bumpGroupUpdated(state, task.groupId, now);
       await this.deps.saveState(state);
 
       return {
@@ -1714,7 +1709,7 @@ export class OrchestrationService {
     taskId: string;
     questionId: string;
   }): Promise<OrchestrationTaskRecord> {
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -1742,11 +1737,11 @@ export class OrchestrationService {
         };
         task.cancelRequestedAt = task.cancelRequestedAt ?? now;
         task.updatedAt = now;
-        this.appendTaskEvent(task, now, "cancel_requested", {
+        this.kernel.appendTaskEvent(task, now, "cancel_requested", {
           status: task.status,
           message: "Correction requested for misrouted answer",
         });
-        this.bumpGroupUpdated(state, task.groupId, now);
+        this.kernel.bumpGroupUpdated(state, task.groupId, now);
         await this.deps.saveState(state);
 
         return {
@@ -1770,11 +1765,11 @@ export class OrchestrationService {
         task.noticePending = false;
         task.lastNoticeError = undefined;
         task.updatedAt = now;
-        this.appendTaskEvent(task, now, "attention_required", {
+        this.kernel.appendTaskEvent(task, now, "attention_required", {
           status: task.status,
           message: "Task result requires contested review",
         });
-        this.bumpGroupUpdated(state, task.groupId, now);
+        this.kernel.bumpGroupUpdated(state, task.groupId, now);
         await this.deps.saveState(state);
 
         return {
@@ -1786,8 +1781,8 @@ export class OrchestrationService {
       throw new Error(`task "${input.taskId}" is ${task.status}, not running or contestable`);
     });
 
-    this.logEvent("orchestration.task.correction_requested", "task answer marked for correction", {
-      ...this.taskContext(prepared.task),
+    this.kernel.logEvent("orchestration.task.correction_requested", "task answer marked for correction", {
+      ...this.kernel.taskContext(prepared.task),
       question_id: input.questionId,
     });
 
@@ -1812,12 +1807,12 @@ export class OrchestrationService {
       throw new Error("taskQuestions must contain at least one question");
     }
 
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      if (this.isExternalCoordinatorSession(state, input.coordinatorSession)) {
+      if (this.kernel.isExternalCoordinatorSession(state, input.coordinatorSession)) {
         throw new Error("human input routing is not configured for external coordinator");
       }
-      const coordinatorState = this.ensureCoordinatorQuestionState(state, input.coordinatorSession);
+      const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, input.coordinatorSession);
       if (input.expectedActivePackageId !== undefined && coordinatorState.activePackageId !== input.expectedActivePackageId) {
         throw new Error(
           `coordinator "${input.coordinatorSession}" active package is "${coordinatorState.activePackageId ?? ""}", not "${input.expectedActivePackageId}"`,
@@ -1839,10 +1834,10 @@ export class OrchestrationService {
 
       const now = this.deps.now().toISOString();
       const route = this.snapshotCoordinatorDeliveryRoute(
-        this.ensureCoordinatorRoutes(state)[stableCoordinatorSession(input.coordinatorSession)],
+        this.kernel.ensureCoordinatorRoutes(state)[stableCoordinatorSession(input.coordinatorSession)],
       );
       if (coordinatorState.activePackageId) {
-        const activePackage = this.ensureHumanQuestionPackages(state)[coordinatorState.activePackageId];
+        const activePackage = this.kernel.ensureHumanQuestionPackages(state)[coordinatorState.activePackageId];
         if (!activePackage) {
           throw new Error(`active package "${coordinatorState.activePackageId}" does not exist`);
         }
@@ -1859,7 +1854,7 @@ export class OrchestrationService {
             });
           }
           task.updatedAt = now;
-          this.bumpGroupUpdated(state, task.groupId, now);
+          this.kernel.bumpGroupUpdated(state, task.groupId, now);
         }
 
         await this.deps.saveState(state);
@@ -1902,14 +1897,14 @@ export class OrchestrationService {
           packageId,
         };
         task.updatedAt = now;
-        this.appendTaskEvent(task, now, "attention_required", {
+        this.kernel.appendTaskEvent(task, now, "attention_required", {
           status: "waiting_for_human",
           message: task.openQuestion.question,
         });
-        this.bumpGroupUpdated(state, task.groupId, now);
+        this.kernel.bumpGroupUpdated(state, task.groupId, now);
       }
 
-      this.ensureHumanQuestionPackages(state)[packageId] = packageRecord;
+      this.kernel.ensureHumanQuestionPackages(state)[packageId] = packageRecord;
       coordinatorState.activePackageId = packageId;
       await this.deps.saveState(state);
 
@@ -1942,19 +1937,19 @@ export class OrchestrationService {
     packageId: string;
     messageId: string;
   }): Promise<RetryHumanQuestionPackageDeliveryResult> {
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      if (this.isExternalCoordinatorSession(state, input.coordinatorSession)) {
+      if (this.kernel.isExternalCoordinatorSession(state, input.coordinatorSession)) {
         throw new Error("human input routing is not configured for external coordinator");
       }
-      const coordinatorState = this.ensureCoordinatorQuestionState(state, input.coordinatorSession);
+      const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, input.coordinatorSession);
       if (coordinatorState.activePackageId !== input.packageId) {
         throw new Error(
           `package "${input.packageId}" is not the active package for coordinator "${input.coordinatorSession}"`,
         );
       }
 
-      const packageRecord = this.ensureHumanQuestionPackages(state)[input.packageId];
+      const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[input.packageId];
       if (!packageRecord) {
         throw new Error(`package "${input.packageId}" does not exist`);
       }
@@ -1978,7 +1973,7 @@ export class OrchestrationService {
       let route: FrozenCoordinatorDeliveryRoute | null = this.resolveFrozenPackageMessageRoute(message);
       if (!route) {
         route = this.snapshotCoordinatorDeliveryRoute(
-          this.ensureCoordinatorRoutes(state)[stableCoordinatorSession(input.coordinatorSession)],
+          this.kernel.ensureCoordinatorRoutes(state)[stableCoordinatorSession(input.coordinatorSession)],
         ) ?? null;
         if (route) {
           Object.assign(message, this.serializeFrozenDeliveryRoute(route));
@@ -2012,17 +2007,17 @@ export class OrchestrationService {
     accountId?: string;
     replyContextToken?: string;
   }): Promise<ClaimedActiveHumanReply | null> {
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      if (this.isExternalCoordinatorSession(state, input.coordinatorSession)) {
+      if (this.kernel.isExternalCoordinatorSession(state, input.coordinatorSession)) {
         return null;
       }
-      const coordinatorState = this.ensureCoordinatorQuestionState(state, input.coordinatorSession);
+      const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, input.coordinatorSession);
       if (!coordinatorState.activePackageId || coordinatorState.activePackageId !== input.packageId) {
         return null;
       }
 
-      const packageRecord = this.ensureHumanQuestionPackages(state)[coordinatorState.activePackageId];
+      const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[coordinatorState.activePackageId];
       if (!packageRecord?.awaitingReplyMessageId || packageRecord.awaitingReplyMessageId !== input.messageId) {
         return null;
       }
@@ -2064,7 +2059,7 @@ export class OrchestrationService {
     coordinatorSession: string,
   ): Promise<ActiveHumanQuestionPackage | null> {
     const state = await this.deps.loadState();
-    if (this.isExternalCoordinatorSession(state, coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, coordinatorSession)) {
       return null;
     }
     const coordinatorState =
@@ -2137,7 +2132,7 @@ export class OrchestrationService {
       throw new Error(`unsupported contested-result decision "${input.decision}"`);
     }
 
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -2164,7 +2159,7 @@ export class OrchestrationService {
         task.summary = "";
         task.resultText = "";
         task.openQuestion = this.buildReplacementOpenQuestion(task, replacementQuestionId, now, packageId);
-        this.appendTaskEvent(task, now, "attention_required", {
+        this.kernel.appendTaskEvent(task, now, "attention_required", {
           status: task.status,
           message: task.openQuestion.question,
         });
@@ -2180,18 +2175,18 @@ export class OrchestrationService {
 
       task.updatedAt = now;
       if (input.decision === "accept") {
-        this.appendTaskEvent(task, now, "status_changed", {
+        this.kernel.appendTaskEvent(task, now, "status_changed", {
           status: task.status,
           message: "Contested result accepted",
         });
       }
-      this.bumpGroupUpdated(state, task.groupId, now);
+      this.kernel.bumpGroupUpdated(state, task.groupId, now);
       await this.deps.saveState(state);
 
       return {
         task: { ...task },
         replacementQuestionId,
-        externalCoordinator: this.isExternalCoordinatorSession(state, task.coordinatorSession),
+        externalCoordinator: this.kernel.isExternalCoordinatorSession(state, task.coordinatorSession),
       };
     });
 
@@ -2216,7 +2211,7 @@ export class OrchestrationService {
       try {
         await this.reconcileParallelSlots();
       } catch (error) {
-        this.logEvent("orchestration.parallel.reconcile_failed", "reconcile failed after contested result accepted", {
+        this.kernel.logEvent("orchestration.parallel.reconcile_failed", "reconcile failed after contested result accepted", {
           taskId: prepared.task.taskId,
           message: error instanceof Error ? error.message : String(error),
         });
@@ -2252,7 +2247,7 @@ export class OrchestrationService {
   }
 
   async cleanTasks(coordinatorSession: string): Promise<CleanTasksResult> {
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const tasks = state.orchestration.tasks;
       const bindings = state.orchestration.workerBindings;
@@ -2261,7 +2256,7 @@ export class OrchestrationService {
       for (const [taskId, task] of Object.entries(tasks)) {
         if (
           sameCoordinatorSession(task.coordinatorSession, coordinatorSession) &&
-          this.isTerminalStatus(task.status) &&
+          this.kernel.isTerminalStatus(task.status) &&
           task.reviewPending === undefined
         ) {
           terminalTaskIds.push(taskId);
@@ -2305,7 +2300,7 @@ export class OrchestrationService {
     return Object.values(state.orchestration.tasks)
       .filter(
         (task) =>
-          (!this.isTerminalStatus(task.status) || task.reviewPending !== undefined) &&
+          (!this.kernel.isTerminalStatus(task.status) || task.reviewPending !== undefined) &&
           (sameCoordinatorSession(task.coordinatorSession, transportSession) ||
             (task.workerSession !== undefined &&
               sameCoordinatorSession(task.workerSession, transportSession))),
@@ -2314,7 +2309,7 @@ export class OrchestrationService {
   }
 
   async purgeSessionReferences(transportSession: string): Promise<CleanTasksResult> {
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const sessionIdentity = stableCoordinatorSession(transportSession);
       const tasks = state.orchestration.tasks;
@@ -2323,7 +2318,7 @@ export class OrchestrationService {
       const removedTaskIds: string[] = [];
       for (const [taskId, task] of Object.entries(tasks)) {
         if (
-          this.isTerminalStatus(task.status) &&
+          this.kernel.isTerminalStatus(task.status) &&
           task.reviewPending === undefined &&
           (sameCoordinatorSession(task.coordinatorSession, transportSession) ||
             (task.workerSession !== undefined &&
@@ -2367,7 +2362,7 @@ export class OrchestrationService {
 
   async listPendingCoordinatorResults(coordinatorSession: string): Promise<OrchestrationTaskRecord[]> {
     const state = await this.deps.loadState();
-    if (this.isExternalCoordinatorSession(state, coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, coordinatorSession)) {
       return [];
     }
     return Object.values(state.orchestration.tasks)
@@ -2383,7 +2378,7 @@ export class OrchestrationService {
 
   async listPendingCoordinatorBlockers(coordinatorSession: string): Promise<OrchestrationTaskRecord[]> {
     const state = await this.deps.loadState();
-    if (this.isExternalCoordinatorSession(state, coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, coordinatorSession)) {
       return [];
     }
     const coordinatorState =
@@ -2405,7 +2400,7 @@ export class OrchestrationService {
 
   async listContestedCoordinatorResults(coordinatorSession: string): Promise<OrchestrationTaskRecord[]> {
     const state = await this.deps.loadState();
-    if (this.isExternalCoordinatorSession(state, coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, coordinatorSession)) {
       return [];
     }
     return Object.values(state.orchestration.tasks)
@@ -2416,10 +2411,10 @@ export class OrchestrationService {
 
   async listPendingCoordinatorGroups(coordinatorSession: string): Promise<OrchestrationGroupRecord[]> {
     const state = await this.deps.loadState();
-    if (this.isExternalCoordinatorSession(state, coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, coordinatorSession)) {
       return [];
     }
-    const groups = this.ensureGroups(state);
+    const groups = this.kernel.ensureGroups(state);
     const tasks = Object.values(state.orchestration.tasks);
 
     return Object.values(groups)
@@ -2441,9 +2436,9 @@ export class OrchestrationService {
       return;
     }
 
-    const appliedTasks = await this.mutate(async () => {
+    const appliedTasks = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const groups = this.ensureGroups(state);
+      const groups = this.kernel.ensureGroups(state);
       const injectedAt = this.deps.now().toISOString();
       let changed = false;
       const appliedTasks: OrchestrationTaskRecord[] = [];
@@ -2488,10 +2483,10 @@ export class OrchestrationService {
     });
 
     for (const task of appliedTasks) {
-      this.logEvent(
+      this.kernel.logEvent(
         "orchestration.injection.applied",
         "coordinator injection applied",
-        this.taskContext(task),
+        this.kernel.taskContext(task),
       );
     }
   }
@@ -2501,9 +2496,9 @@ export class OrchestrationService {
       return;
     }
 
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const groups = this.ensureGroups(state);
+      const groups = this.kernel.ensureGroups(state);
       const failedAt = this.deps.now().toISOString();
       let changed = false;
 
@@ -2533,7 +2528,7 @@ export class OrchestrationService {
       return;
     }
 
-    const applied = await this.mutate(async () => {
+    const applied = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const injectedAt = this.deps.now().toISOString();
       let changed = false;
@@ -2570,10 +2565,10 @@ export class OrchestrationService {
     });
 
     for (const task of applied) {
-      this.logEvent(
+      this.kernel.logEvent(
         "orchestration.injection.applied",
         "coordinator injection applied",
-        this.taskContext(task),
+        this.kernel.taskContext(task),
       );
     }
   }
@@ -2583,7 +2578,7 @@ export class OrchestrationService {
       return;
     }
 
-    const failed = await this.mutate(async () => {
+    const failed = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const failedAt = this.deps.now().toISOString();
       let changed = false;
@@ -2614,15 +2609,15 @@ export class OrchestrationService {
     });
 
     for (const task of failed) {
-      this.logEvent("orchestration.injection.failed", "coordinator injection failed", {
-        ...this.taskContext(task),
+      this.kernel.logEvent("orchestration.injection.failed", "coordinator injection failed", {
+        ...this.kernel.taskContext(task),
         error: errorMessage,
       });
     }
   }
 
   async recordTaskProgress(taskId: string, summary?: string): Promise<OrchestrationTaskRecord> {
-    return await this.mutate(async () => {
+    return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task) {
@@ -2634,13 +2629,13 @@ export class OrchestrationService {
         const cleaned = sanitizeProgressSummary(summary);
         if (cleaned.length > 0) {
           task.lastProgressSummary = cleaned;
-          this.appendTaskEvent(task, task.lastProgressAt, "progress", {
+          this.kernel.appendTaskEvent(task, task.lastProgressAt, "progress", {
             status: task.status,
             summary: cleaned,
           });
         }
       } else {
-        this.appendTaskEvent(task, task.lastProgressAt, "progress", {
+        this.kernel.appendTaskEvent(task, task.lastProgressAt, "progress", {
           status: task.status,
           message: "heartbeat",
         });
@@ -2676,7 +2671,7 @@ export class OrchestrationService {
   }
 
   async requestTaskCancellation(input: CancelTaskInput): Promise<OrchestrationTaskRecord> {
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
       if (!task) {
@@ -2702,7 +2697,7 @@ export class OrchestrationService {
         );
       }
 
-      if (this.isTerminalStatus(task.status)) {
+      if (this.kernel.isTerminalStatus(task.status)) {
         return { task: { ...task }, shouldPropagate: false, closedPackageId: undefined as string | undefined };
       }
 
@@ -2713,12 +2708,12 @@ export class OrchestrationService {
         task.cancelRequestedAt = task.cancelRequestedAt ?? now;
         task.updatedAt = now;
         if (shouldPropagate) {
-          this.appendTaskEvent(task, now, "cancel_requested", {
+          this.kernel.appendTaskEvent(task, now, "cancel_requested", {
             status: task.status,
             message: "Cancellation requested",
           });
         }
-        this.bumpGroupUpdated(state, task.groupId, now);
+        this.kernel.bumpGroupUpdated(state, task.groupId, now);
         await this.deps.saveState(state);
         return { task: { ...task }, shouldPropagate, closedPackageId: undefined as string | undefined };
       }
@@ -2734,19 +2729,19 @@ export class OrchestrationService {
       task.cancelCompletedAt = now;
       task.lastCancelError = undefined;
       task.updatedAt = now;
-      this.appendTaskEvent(task, now, "status_changed", {
+      this.kernel.appendTaskEvent(task, now, "status_changed", {
         status: "cancelled",
         message: "Task cancelled",
       });
-      this.bumpGroupUpdated(state, task.groupId, now);
+      this.kernel.bumpGroupUpdated(state, task.groupId, now);
       await this.deps.saveState(state);
       return { task: { ...task }, shouldPropagate: false, closedPackageId };
     });
 
-    this.logEvent(
+    this.kernel.logEvent(
       "orchestration.task.cancel_requested",
       "task cancellation requested",
-      this.taskContext(prepared.task),
+      this.kernel.taskContext(prepared.task),
     );
 
     if (prepared.shouldPropagate) {
@@ -2760,11 +2755,11 @@ export class OrchestrationService {
     // going through launchWorkerTurn. Fire reconcile so the ephemeral acpx session
     // is closed promptly and any queued parallel tasks can drain. This also fires
     // for non-parallel tasks — reconcile is idempotent and cheap in that case.
-    if (!prepared.shouldPropagate && this.isTerminalStatus(prepared.task.status)) {
+    if (!prepared.shouldPropagate && this.kernel.isTerminalStatus(prepared.task.status)) {
       try {
         await this.reconcileParallelSlots();
       } catch (error) {
-        this.logEvent("orchestration.parallel.reconcile_failed", "reconcile failed after non-running cancel", {
+        this.kernel.logEvent("orchestration.parallel.reconcile_failed", "reconcile failed after non-running cancel", {
           taskId: prepared.task.taskId,
           message: error instanceof Error ? error.message : String(error),
         });
@@ -2775,14 +2770,14 @@ export class OrchestrationService {
   }
 
   async completeTaskCancellation(taskId: string): Promise<OrchestrationTaskRecord> {
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task) {
         throw new Error(`task "${taskId}" does not exist`);
       }
 
-      if (this.isTerminalStatus(task.status)) {
+      if (this.kernel.isTerminalStatus(task.status)) {
         return { task: { ...task } };
       }
 
@@ -2797,7 +2792,7 @@ export class OrchestrationService {
         task.cancelRequestedAt = undefined;
         task.cancelCompletedAt = undefined;
         task.lastCancelError = undefined;
-        this.appendTaskEvent(task, now, "attention_required", {
+        this.kernel.appendTaskEvent(task, now, "attention_required", {
           status: task.status,
           message: task.openQuestion.question,
         });
@@ -2805,24 +2800,24 @@ export class OrchestrationService {
         task.status = "cancelled";
         task.cancelCompletedAt = now;
         task.lastCancelError = undefined;
-        this.appendTaskEvent(task, now, "status_changed", {
+        this.kernel.appendTaskEvent(task, now, "status_changed", {
           status: "cancelled",
           message: "Task cancelled",
         });
       }
       task.updatedAt = now;
-      this.bumpGroupUpdated(state, task.groupId, now);
+      this.kernel.bumpGroupUpdated(state, task.groupId, now);
       await this.deps.saveState(state);
       return {
         task: { ...task },
         replacementQuestionId,
-        externalCoordinator: this.isExternalCoordinatorSession(state, task.coordinatorSession),
+        externalCoordinator: this.kernel.isExternalCoordinatorSession(state, task.coordinatorSession),
       };
     });
 
     if (prepared.replacementQuestionId) {
-      this.logEvent("orchestration.task.correction_reopened", "task correction reopened blocker", {
-        ...this.taskContext(prepared.task),
+      this.kernel.logEvent("orchestration.task.correction_reopened", "task correction reopened blocker", {
+        ...this.kernel.taskContext(prepared.task),
         replacement_question_id: prepared.replacementQuestionId,
       });
       if (!prepared.externalCoordinator) {
@@ -2841,10 +2836,10 @@ export class OrchestrationService {
       return prepared.task;
     }
 
-    this.logEvent(
+    this.kernel.logEvent(
       "orchestration.task.cancel_completed",
       "task cancellation completed",
-      this.taskContext(prepared.task),
+      this.kernel.taskContext(prepared.task),
     );
 
     // I-2: running-task cancel completes here. Fire reconcile so the ephemeral acpx
@@ -2852,7 +2847,7 @@ export class OrchestrationService {
     try {
       await this.reconcileParallelSlots();
     } catch (error) {
-      this.logEvent("orchestration.parallel.reconcile_failed", "reconcile failed after cancel completion", {
+      this.kernel.logEvent("orchestration.parallel.reconcile_failed", "reconcile failed after cancel completion", {
         taskId: prepared.task.taskId,
         message: error instanceof Error ? error.message : String(error),
       });
@@ -2862,20 +2857,20 @@ export class OrchestrationService {
   }
 
   async failTaskCancellation(taskId: string, errorMessage: string): Promise<OrchestrationTaskRecord> {
-    const task = await this.mutate(async () => {
+    const task = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task) {
         throw new Error(`task "${taskId}" does not exist`);
       }
 
-      if (this.isTerminalStatus(task.status)) {
+      if (this.kernel.isTerminalStatus(task.status)) {
         return { ...task };
       }
 
       task.lastCancelError = errorMessage;
       task.updatedAt = this.deps.now().toISOString();
-      this.appendTaskEvent(task, task.updatedAt, "progress", {
+      this.kernel.appendTaskEvent(task, task.updatedAt, "progress", {
         status: task.status,
         message: `Cancellation failed: ${errorMessage}`,
       });
@@ -2883,8 +2878,8 @@ export class OrchestrationService {
       return { ...task };
     });
 
-    this.logEvent("orchestration.task.cancel_failed", "task cancellation failed", {
-      ...this.taskContext(task),
+    this.kernel.logEvent("orchestration.task.cancel_failed", "task cancellation failed", {
+      ...this.kernel.taskContext(task),
       error: errorMessage,
     });
 
@@ -2926,7 +2921,7 @@ export class OrchestrationService {
     // ensureReservedWorkerSession and dispatch, so those expensive operations are
     // skipped for queued tasks.
     if (currentTask.ephemeralWorkerSession === true) {
-      const queuedResult = await this.mutate(async () => {
+      const queuedResult = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[input.taskId];
         if (!task) {
@@ -2944,7 +2939,7 @@ export class OrchestrationService {
         task.workerSession = workerSession;
         task.status = "queued";
         task.updatedAt = now;
-        this.appendTaskEvent(task, now, "status_changed", {
+        this.kernel.appendTaskEvent(task, now, "status_changed", {
           status: "queued",
           message: "Task queued at parallel capacity",
         });
@@ -2952,7 +2947,7 @@ export class OrchestrationService {
         return { ...task };
       });
       if (queuedResult) {
-        this.logEvent("orchestration.task.queued", "parallel task queued at capacity on approve", { taskId: input.taskId, targetAgent: currentTask.targetAgent });
+        this.kernel.logEvent("orchestration.task.queued", "parallel task queued at capacity on approve", { taskId: input.taskId, targetAgent: currentTask.targetAgent });
         return queuedResult;
       }
     }
@@ -2977,7 +2972,7 @@ export class OrchestrationService {
         targetAgent: currentTask.targetAgent,
         role: currentTask.role,
       });
-      prepared = await this.mutate(async () => {
+      prepared = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[input.taskId];
         if (!task) {
@@ -2994,7 +2989,7 @@ export class OrchestrationService {
         task.workerSession = ensuredWorkerSession;
         task.status = "running";
         task.updatedAt = this.deps.now().toISOString();
-        this.appendTaskEvent(task, task.updatedAt, "status_changed", {
+        this.kernel.appendTaskEvent(task, task.updatedAt, "status_changed", {
           status: "running",
           message: "Task approved",
         });
@@ -3036,7 +3031,7 @@ export class OrchestrationService {
         task: prepared.task.task,
       });
     } catch (error) {
-      await this.mutate(async () => {
+      await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[input.taskId];
         if (task) {
@@ -3058,7 +3053,7 @@ export class OrchestrationService {
       throw error;
     }
 
-    this.logEvent("orchestration.task.approved", "task approved", this.taskContext(prepared.task));
+    this.kernel.logEvent("orchestration.task.approved", "task approved", this.kernel.taskContext(prepared.task));
 
     return prepared.task;
   }
@@ -3105,7 +3100,7 @@ export class OrchestrationService {
   }
 
   private async reserveProposedWorkerSession(workerSession: string, excludingTaskId?: string): Promise<() => Promise<void>> {
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       this.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
       this.assertWorkerSessionAvailable(state, workerSession, excludingTaskId);
@@ -3118,7 +3113,7 @@ export class OrchestrationService {
         return;
       }
       released = true;
-      await this.mutate(async () => {
+      await this.kernel.mutate(async () => {
         const count = this.pendingWorkerSessions.get(workerSession) ?? 0;
         if (count <= 1) {
           this.pendingWorkerSessions.delete(workerSession);
@@ -3140,9 +3135,9 @@ export class OrchestrationService {
   }
 
   async reserveLogicalTransportSession(transportSession: string): Promise<() => Promise<void>> {
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      if (this.isExternalCoordinatorSession(state, transportSession)) {
+      if (this.kernel.isExternalCoordinatorSession(state, transportSession)) {
         throw new Error(`transport session "${transportSession}" conflicts with an external coordinator`);
       }
       this.pendingLogicalTransportSessions.set(
@@ -3157,7 +3152,7 @@ export class OrchestrationService {
         return;
       }
       released = true;
-      await this.mutate(async () => {
+      await this.kernel.mutate(async () => {
         const count = this.pendingLogicalTransportSessions.get(transportSession) ?? 0;
         if (count <= 1) {
           this.pendingLogicalTransportSessions.delete(transportSession);
@@ -3197,7 +3192,7 @@ export class OrchestrationService {
       terminal:
         sortedTasks.length > 0 &&
         sortedTasks.every((task) => task.reviewPending === undefined) &&
-        sortedTasks.every((task) => this.isTerminalStatus(task.status)),
+        sortedTasks.every((task) => this.kernel.isTerminalStatus(task.status)),
     };
   }
 
@@ -3206,11 +3201,11 @@ export class OrchestrationService {
     groupId: string,
     groupTasks = Object.values(state.orchestration.tasks).filter((task) => task.groupId === groupId),
   ): boolean {
-    const group = this.ensureGroups(state)[groupId];
+    const group = this.kernel.ensureGroups(state)[groupId];
     if (!group) {
       return false;
     }
-    if (this.isExternalCoordinatorSession(state, group.coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, group.coordinatorSession)) {
       return false;
     }
     if (groupTasks.length === 0) {
@@ -3226,7 +3221,7 @@ export class OrchestrationService {
   }
 
   private canInjectTaskIntoCoordinator(state: AppState, task: OrchestrationTaskRecord): boolean {
-    if (this.isExternalCoordinatorSession(state, task.coordinatorSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, task.coordinatorSession)) {
       return false;
     }
     if ((task.status !== "completed" && task.status !== "failed") || task.reviewPending !== undefined) {
@@ -3263,7 +3258,7 @@ export class OrchestrationService {
       };
     }
 
-    const externalCoordinator = this.ensureExternalCoordinators(state)[sourceHandle];
+    const externalCoordinator = this.kernel.ensureExternalCoordinators(state)[sourceHandle];
     if (externalCoordinator) {
       return {
         sourceKind: "coordinator",
@@ -3395,11 +3390,6 @@ export class OrchestrationService {
     return normalized && normalized.length > 0 ? normalized : undefined;
   }
 
-  private normalizeGroupId(groupId: string | undefined): string | undefined {
-    const normalized = groupId?.trim();
-    return normalized && normalized.length > 0 ? normalized : undefined;
-  }
-
   private assertCoordinatorQuestionMatch(task: OrchestrationTaskRecord, questionId: string): OrchestrationOpenQuestionRecord {
     const openQuestion = task.openQuestion;
     if (!openQuestion) {
@@ -3428,12 +3418,12 @@ export class OrchestrationService {
       return;
     }
 
-    const coordinatorState = this.ensureCoordinatorQuestionState(state, task.coordinatorSession);
+    const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, task.coordinatorSession);
     if (coordinatorState.activePackageId !== packageId) {
       return;
     }
 
-    const packageRecord = this.ensureHumanQuestionPackages(state)[packageId];
+    const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[packageId];
     const awaitingMessageId = packageRecord?.awaitingReplyMessageId;
     if (!packageRecord || !awaitingMessageId) {
       return;
@@ -3466,10 +3456,6 @@ export class OrchestrationService {
     );
   }
 
-  private isTerminalStatus(status: OrchestrationTaskStatus): boolean {
-    return status === "completed" || status === "failed" || status === "cancelled";
-  }
-
   private assertCoordinatorOwnership(task: OrchestrationTaskRecord, coordinatorSession: string): void {
     if (!sameCoordinatorSession(task.coordinatorSession, coordinatorSession)) {
       throw new Error(
@@ -3484,73 +3470,8 @@ export class OrchestrationService {
     }
   }
 
-  private assertGroupOwnership(
-    group: OrchestrationGroupRecord | undefined,
-    groupId: string,
-    coordinatorSession: string,
-  ): void {
-    if (!group) {
-      throw new Error(`group "${groupId}" does not exist`);
-    }
-    if (!sameCoordinatorSession(group.coordinatorSession, coordinatorSession)) {
-      throw new Error(
-        `group "${groupId}" belongs to coordinator "${group.coordinatorSession}", not "${coordinatorSession}"`,
-      );
-    }
-  }
-
-  private ensureHumanQuestionPackages(state: AppState): Record<string, OrchestrationHumanQuestionPackageRecord> {
-    if (!("humanQuestionPackages" in state.orchestration) || !state.orchestration.humanQuestionPackages) {
-      (
-        state.orchestration as AppState["orchestration"] & {
-          humanQuestionPackages: Record<string, OrchestrationHumanQuestionPackageRecord>;
-        }
-      ).humanQuestionPackages = {};
-    }
-    return state.orchestration.humanQuestionPackages;
-  }
-
-  private ensureCoordinatorQuestionState(
-    state: AppState,
-    coordinatorSession: string,
-  ): OrchestrationCoordinatorQuestionStateRecord {
-    // Key the question-state map by the stable identity so a coordinator that
-    // delegated before `/clear` and asks/answers after it lands in the same slot.
-    const key = stableCoordinatorSession(coordinatorSession);
-    if (!("coordinatorQuestionState" in state.orchestration) || !state.orchestration.coordinatorQuestionState) {
-      (
-        state.orchestration as AppState["orchestration"] & {
-          coordinatorQuestionState: Record<string, OrchestrationCoordinatorQuestionStateRecord>;
-        }
-      ).coordinatorQuestionState = {};
-    }
-
-    state.orchestration.coordinatorQuestionState[key] ??= {
-      queuedQuestions: [],
-    };
-
-    return state.orchestration.coordinatorQuestionState[key]!;
-  }
-
-  private ensureCoordinatorRoutes(state: AppState): Record<string, OrchestrationCoordinatorRouteContextRecord> {
-    if (!("coordinatorRoutes" in state.orchestration) || !state.orchestration.coordinatorRoutes) {
-      (
-        state.orchestration as AppState["orchestration"] & {
-          coordinatorRoutes: Record<string, OrchestrationCoordinatorRouteContextRecord>;
-        }
-      ).coordinatorRoutes = {};
-    }
-    return state.orchestration.coordinatorRoutes;
-  }
-
-
-
-  private isExternalCoordinatorSession(state: AppState, coordinatorSession: string): boolean {
-    return this.ensureExternalCoordinators(state)[coordinatorSession] !== undefined;
-  }
-
   private assertWorkerSessionDoesNotConflictExternalCoordinator(state: AppState, workerSession: string): void {
-    if (this.isExternalCoordinatorSession(state, workerSession)) {
+    if (this.kernel.isExternalCoordinatorSession(state, workerSession)) {
       throw new Error(`worker session "${workerSession}" conflicts with an external coordinator`);
     }
   }
@@ -3576,7 +3497,7 @@ export class OrchestrationService {
       (task) =>
         task.taskId !== excludingTaskId &&
         task.workerSession === workerSession &&
-        (!this.isTerminalStatus(task.status) || task.reviewPending !== undefined),
+        (!this.kernel.isTerminalStatus(task.status) || task.reviewPending !== undefined),
     );
   }
 
@@ -3620,7 +3541,7 @@ export class OrchestrationService {
    */
   async reconcileParallelSlots(): Promise<void> {
     // Phase 1: collect + mark sessions to close (mutex-guarded state change).
-    const toClose = await this.mutate(async () => {
+    const toClose = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const collected: Array<{
         workerSession: string;
@@ -3636,7 +3557,7 @@ export class OrchestrationService {
           task.ephemeralWorkerSessionClosed !== true &&
           task.workerSession &&
           task.reviewPending === undefined &&
-          this.isTerminalStatus(task.status)
+          this.kernel.isTerminalStatus(task.status)
         ) {
           // I-3: Only close (and delete the binding for) sessions that were actually
           // started — i.e., the worker binding exists in state. Queued tasks that were
@@ -3670,7 +3591,7 @@ export class OrchestrationService {
       try {
         await this.deps.closeWorkerSession?.(req);
       } catch (error) {
-        this.logEvent("orchestration.parallel.close_failed", "failed to close ephemeral worker session", {
+        this.kernel.logEvent("orchestration.parallel.close_failed", "failed to close ephemeral worker session", {
           workerSession: req.workerSession,
           message: error instanceof Error ? error.message : String(error),
         });
@@ -3679,7 +3600,7 @@ export class OrchestrationService {
 
     // Phase 3: drain queued parallel tasks, oldest first, up to capacity.
     for (;;) {
-      const next = await this.mutate(async () => {
+      const next = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const queued = Object.values(state.orchestration.tasks)
           .filter((t) => t.status === "queued" && t.ephemeralWorkerSession === true)
@@ -3738,7 +3659,7 @@ export class OrchestrationService {
         // it does not permanently consume a slot with no worker. Break (do NOT
         // continue) — a re-queued task would be re-picked and loop forever within
         // this single reconcile call; the next reconcile trigger retries it.
-        await this.mutate(async () => {
+        await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           const task = state.orchestration.tasks[next.taskId];
           if (task && task.status === "running") {
@@ -3747,14 +3668,14 @@ export class OrchestrationService {
             delete state.orchestration.workerBindings[next.workerSession!];
             // Audit-trail parity with the success path: record the running→queued
             // revert as a status_changed event, persisted in this same mutate.
-            this.appendTaskEvent(task, task.updatedAt, "status_changed", {
+            this.kernel.appendTaskEvent(task, task.updatedAt, "status_changed", {
               status: "queued",
               message: "Task re-queued after drain failure",
             });
             await this.deps.saveState(state);
           }
         });
-        this.logEvent("orchestration.parallel.drain_failed", "failed to drain queued parallel task", {
+        this.kernel.logEvent("orchestration.parallel.drain_failed", "failed to drain queued parallel task", {
           taskId: next.taskId,
           workerSession: next.workerSession,
           message: error instanceof Error ? error.message : String(error),
@@ -3763,50 +3684,26 @@ export class OrchestrationService {
       }
       // Dispatch succeeded — persist the queued→running status_changed event
       // (mirrors approveTask's queued/needs_confirmation→running transition).
-      await this.mutate(async () => {
+      await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[next.taskId];
         if (task && task.status === "running") {
-          this.appendTaskEvent(task, task.updatedAt, "status_changed", {
+          this.kernel.appendTaskEvent(task, task.updatedAt, "status_changed", {
             status: "running",
             message: "Task drained from parallel queue",
           });
           await this.deps.saveState(state);
         }
       });
-      this.logEvent("orchestration.task.drained", "parallel task drained from queue", {
+      this.kernel.logEvent("orchestration.task.drained", "parallel task drained from queue", {
         taskId: next.taskId,
         targetAgent: next.targetAgent,
       });
     }
   }
 
-  private async assertProposedWorkerSessionDoesNotConflictExternalCoordinator(workerSession: string): Promise<void> {
-    const state = await this.deps.loadState();
-    this.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
-  }
-
-  private ensureExternalCoordinators(state: AppState): Record<string, ExternalCoordinatorRecord> {
-    if (!("externalCoordinators" in state.orchestration) || !state.orchestration.externalCoordinators) {
-      (
-        state.orchestration as AppState["orchestration"] & {
-          externalCoordinators: Record<string, ExternalCoordinatorRecord>;
-        }
-      ).externalCoordinators = {};
-    }
-    return state.orchestration.externalCoordinators;
-  }
-
-  private ensureGroups(state: AppState): Record<string, OrchestrationGroupRecord> {
-    if (!("groups" in state.orchestration) || !state.orchestration.groups) {
-      (state.orchestration as AppState["orchestration"] & { groups: Record<string, OrchestrationGroupRecord> }).groups =
-        {};
-    }
-    return state.orchestration.groups;
-  }
-
   private removeEmptyGroupsForCoordinator(state: AppState, coordinatorSession: string): boolean {
-    const groups = this.ensureGroups(state);
+    const groups = this.kernel.ensureGroups(state);
     const referencedGroupIds = new Set(
       Object.values(state.orchestration.tasks)
         .map((task) => task.groupId)
@@ -3839,7 +3736,7 @@ export class OrchestrationService {
 
     let removedAny = false;
 
-    const packages = this.ensureHumanQuestionPackages(state);
+    const packages = this.kernel.ensureHumanQuestionPackages(state);
     for (const [packageId, packageRecord] of Object.entries(packages)) {
       if (sameCoordinatorSession(packageRecord.coordinatorSession, coordinatorSession)) {
         delete packages[packageId];
@@ -3858,28 +3755,6 @@ export class OrchestrationService {
     }
 
     return removedAny;
-  }
-
-  private bumpGroupUpdated(state: AppState, groupId: string | undefined, now: string): void {
-    if (!groupId) {
-      return;
-    }
-    const group = this.ensureGroups(state)[groupId];
-    if (group) {
-      group.updatedAt = now;
-    }
-  }
-
-  private getLatestDeliveredPackageMessage(
-    packageRecord: OrchestrationHumanQuestionPackageRecord,
-  ): OrchestrationHumanQuestionPackageMessageRecord | null {
-    for (let index = packageRecord.messages.length - 1; index >= 0; index -= 1) {
-      const message = packageRecord.messages[index];
-      if (message?.deliveredAt) {
-        return message;
-      }
-    }
-    return null;
   }
 
   private snapshotCoordinatorDeliveryRoute(
@@ -4018,14 +3893,14 @@ export class OrchestrationService {
     route: FrozenCoordinatorDeliveryRoute;
     deliveryAccountId?: string;
   }): Promise<void> {
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const coordinatorState = this.ensureCoordinatorQuestionState(state, input.coordinatorSession);
+      const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, input.coordinatorSession);
       if (coordinatorState.activePackageId !== input.packageId) {
         return;
       }
 
-      const packageRecord = this.ensureHumanQuestionPackages(state)[input.packageId];
+      const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[input.packageId];
       if (!packageRecord || packageRecord.status !== "active") {
         return;
       }
@@ -4055,14 +3930,14 @@ export class OrchestrationService {
     messageId: string,
     errorMessage: string,
   ): Promise<void> {
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const coordinatorState = this.ensureCoordinatorQuestionState(state, coordinatorSession);
+      const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, coordinatorSession);
       if (coordinatorState.activePackageId !== packageId) {
         return;
       }
 
-      const packageRecord = this.ensureHumanQuestionPackages(state)[packageId];
+      const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[packageId];
       if (!packageRecord || packageRecord.status !== "active") {
         return;
       }
@@ -4083,7 +3958,7 @@ export class OrchestrationService {
   }
 
   private async recordOpenQuestionWakeError(taskId: string, questionId: string, errorMessage: string): Promise<void> {
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task || task.openQuestion?.questionId !== questionId || task.openQuestion.status !== "open") {
@@ -4100,11 +3975,11 @@ export class OrchestrationService {
   }
 
   private async handoffQueuedQuestions(coordinatorSession: string, closedPackageId: string): Promise<void> {
-    const prepared = await this.mutate(async () => {
+    const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const coordinatorState = this.ensureCoordinatorQuestionState(state, coordinatorSession);
+      const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, coordinatorSession);
       if (coordinatorState.activePackageId === closedPackageId) {
-        return { externalCoordinator: this.isExternalCoordinatorSession(state, coordinatorSession), queuedQuestions: [] };
+        return { externalCoordinator: this.kernel.isExternalCoordinatorSession(state, coordinatorSession), queuedQuestions: [] };
       }
 
       const validQueuedQuestions = coordinatorState.queuedQuestions.filter((entry) => {
@@ -4122,7 +3997,7 @@ export class OrchestrationService {
         await this.deps.saveState(state);
       }
       return {
-        externalCoordinator: this.isExternalCoordinatorSession(state, coordinatorSession),
+        externalCoordinator: this.kernel.isExternalCoordinatorSession(state, coordinatorSession),
         queuedQuestions: validQueuedQuestions,
       };
     });
@@ -4135,9 +4010,9 @@ export class OrchestrationService {
       await this.deps.wakeCoordinatorSession?.({
         coordinatorSession,
       });
-      await this.mutate(async () => {
+      await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
-        const coordinatorState = this.ensureCoordinatorQuestionState(state, coordinatorSession);
+        const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, coordinatorSession);
         coordinatorState.queuedQuestions = coordinatorState.queuedQuestions.filter(
           (entry) =>
             !prepared.queuedQuestions.some(
@@ -4171,7 +4046,7 @@ export class OrchestrationService {
       activePackageId?: string;
     },
   ): Promise<void> {
-    await this.mutate(async () => {
+    await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[taskId];
       if (!task || task.openQuestion?.questionId !== questionId || task.openQuestion.status !== "answered") {
@@ -4198,8 +4073,8 @@ export class OrchestrationService {
           messages: packageRestore.packageRecord.messages.map((message) => ({ ...message })),
           updatedAt: now,
         };
-        this.ensureHumanQuestionPackages(state)[packageRestore.packageId] = packageRecord;
-        const coordinatorState = this.ensureCoordinatorQuestionState(state, task.coordinatorSession);
+        this.kernel.ensureHumanQuestionPackages(state)[packageRestore.packageId] = packageRecord;
+        const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, task.coordinatorSession);
         coordinatorState.activePackageId = packageRestore.activePackageId;
       }
       await this.deps.saveState(state);
@@ -4221,12 +4096,12 @@ export class OrchestrationService {
       return undefined;
     }
 
-    const packageRecord = this.ensureHumanQuestionPackages(state)[packageId];
+    const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[packageId];
     if (!packageRecord) {
       return undefined;
     }
 
-    const coordinatorState = this.ensureCoordinatorQuestionState(state, task.coordinatorSession);
+    const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, task.coordinatorSession);
     return {
       packageId,
       packageRecord: {
@@ -4246,7 +4121,7 @@ export class OrchestrationService {
       return;
     }
 
-    const packageRecord = this.ensureHumanQuestionPackages(state)[packageId];
+    const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[packageId];
     if (!packageRecord) {
       return;
     }
@@ -4257,7 +4132,7 @@ export class OrchestrationService {
     }
     packageRecord.updatedAt = now;
 
-    const coordinatorState = this.ensureCoordinatorQuestionState(state, task.coordinatorSession);
+    const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, task.coordinatorSession);
     if (packageRecord.openTaskIds.length === 0) {
       packageRecord.status = "closed";
       packageRecord.closedAt = now;
@@ -4270,7 +4145,7 @@ export class OrchestrationService {
 
   private detachTaskFromQuestionFlows(state: AppState, task: OrchestrationTaskRecord, now: string): string | undefined {
     const questionId = task.openQuestion?.questionId;
-    const coordinatorState = this.ensureCoordinatorQuestionState(state, task.coordinatorSession);
+    const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, task.coordinatorSession);
     if (questionId) {
       coordinatorState.queuedQuestions = coordinatorState.queuedQuestions.filter(
         (entry) => !(entry.taskId === task.taskId && entry.questionId === questionId),
@@ -4282,7 +4157,7 @@ export class OrchestrationService {
       return undefined;
     }
 
-    const packageRecord = this.ensureHumanQuestionPackages(state)[packageId];
+    const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[packageId];
     if (!packageRecord) {
       return undefined;
     }
@@ -4314,12 +4189,12 @@ export class OrchestrationService {
       return undefined;
     }
 
-    const coordinatorState = this.ensureCoordinatorQuestionState(state, task.coordinatorSession);
+    const coordinatorState = this.kernel.ensureCoordinatorQuestionState(state, task.coordinatorSession);
     if (coordinatorState.activePackageId !== packageId) {
       return undefined;
     }
 
-    const packageRecord = this.ensureHumanQuestionPackages(state)[packageId];
+    const packageRecord = this.kernel.ensureHumanQuestionPackages(state)[packageId];
     if (!packageRecord || packageRecord.status !== "active") {
       return undefined;
     }
@@ -4368,50 +4243,6 @@ export class OrchestrationService {
       .map((entry) => ({ ...entry }));
   }
 
-  private logEvent(event: string, message: string, context: Record<string, unknown>): void {
-    const logger = this.deps.logger;
-    if (!logger) return;
-    const cleaned: Record<string, string | number | boolean | null | undefined> = {};
-    for (const [key, value] of Object.entries(context)) {
-      if (value === undefined) continue;
-      if (
-        typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean" ||
-        value === null
-      ) {
-        cleaned[key] = value;
-      } else {
-        cleaned[key] = String(value);
-      }
-    }
-    void logger.info(event, message, cleaned);
-  }
-
-  private taskContext(task: OrchestrationTaskRecord): Record<string, unknown> {
-    const context: Record<string, unknown> = {
-      task_id: task.taskId,
-      coordinator_session: task.coordinatorSession,
-      target_agent: task.targetAgent,
-      status: task.status,
-    };
-    if (task.groupId !== undefined) {
-      context.group_id = task.groupId;
-    }
-    if (task.workerSession !== undefined) {
-      context.worker_session = task.workerSession;
-    }
-    return context;
-  }
-
-  private groupContext(group: OrchestrationGroupRecord): Record<string, unknown> {
-    return {
-      group_id: group.groupId,
-      coordinator_session: group.coordinatorSession,
-      title: group.title,
-    };
-  }
-
   private startWorkerCancellation(task: OrchestrationTaskRecord): void {
     const resolveCancelFn =
       task.correctionPending?.reason === "misrouted_answer"
@@ -4422,7 +4253,7 @@ export class OrchestrationService {
         try {
           await this.completeTaskCancellation(task.taskId);
         } catch (error) {
-          this.logEvent("orchestration.task.cancel_early_fail", "early cancellation completion failed", {
+          this.kernel.logEvent("orchestration.task.cancel_early_fail", "early cancellation completion failed", {
             task_id: task.taskId,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -4459,29 +4290,6 @@ export class OrchestrationService {
     })();
   }
 
-  private appendTaskEvent(
-    task: OrchestrationTaskRecord,
-    at: string,
-    type: OrchestrationTaskEventType,
-    details: {
-      status?: OrchestrationTaskStatus;
-      summary?: string;
-      message?: string;
-    } = {},
-  ): void {
-    const nextSeq = (task.eventSeq ?? 0) + 1;
-    task.eventSeq = nextSeq;
-    const events = task.events ?? [];
-    events.push({
-      seq: nextSeq,
-      at,
-      type,
-      ...(details.status ? { status: details.status } : {}),
-      ...(details.summary ? { summary: details.summary } : {}),
-      ...(details.message ? { message: details.message } : {}),
-    });
-    task.events = events.slice(-MAX_TASK_EVENTS_PER_TASK);
-  }
 }
 
 

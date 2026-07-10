@@ -1,0 +1,733 @@
+{
+  "state": {
+    "sessions": {},
+    "chat_contexts": {},
+    "native_session_lists": {},
+    "orchestration": {
+      "tasks": {
+        "task-1": {
+          "taskId": "task-1",
+          "sourceHandle": "wx:user-1",
+          "sourceKind": "human",
+          "coordinatorSession": "backend:main",
+          "workerSession": "backend:claude:backend:main:p-task-1-slot",
+          "workspace": "backend",
+          "targetAgent": "claude",
+          "task": "first",
+          "status": "completed",
+          "summary": "done",
+          "resultText": "ok",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z",
+          "eventSeq": 2,
+          "events": [
+            {
+              "seq": 1,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "created",
+              "status": "running",
+              "message": "Task created"
+            },
+            {
+              "seq": 2,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "status_changed",
+              "status": "completed",
+              "summary": "done",
+              "message": "Task completed"
+            }
+          ],
+          "ephemeralWorkerSession": true,
+          "injectionPending": true,
+          "ephemeralWorkerSessionClosed": true
+        },
+        "task-2": {
+          "taskId": "task-2",
+          "sourceHandle": "wx:user-1",
+          "sourceKind": "human",
+          "coordinatorSession": "backend:main",
+          "workerSession": "backend:claude:backend:main:p-task-2-slot",
+          "workspace": "backend",
+          "targetAgent": "claude",
+          "task": "second",
+          "status": "running",
+          "ephemeralWorkerSession": true,
+          "summary": "",
+          "resultText": "",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z",
+          "eventSeq": 2,
+          "events": [
+            {
+              "seq": 1,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "created",
+              "status": "queued",
+              "message": "Task queued at parallel capacity"
+            },
+            {
+              "seq": 2,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "status_changed",
+              "status": "running",
+              "message": "Task drained from parallel queue"
+            }
+          ]
+        }
+      },
+      "workerBindings": {
+        "backend:claude:backend:main:p-task-2-slot": {
+          "sourceHandle": "backend:claude:backend:main:p-task-2-slot",
+          "coordinatorSession": "backend:main",
+          "workspace": "backend",
+          "targetAgent": "claude",
+          "ephemeral": true
+        }
+      },
+      "groups": {},
+      "humanQuestionPackages": {},
+      "coordinatorQuestionState": {},
+      "coordinatorRoutes": {},
+      "externalCoordinators": {}
+    },
+    "scheduled_tasks": {}
+  },
+  "calls": [
+    {
+      "port": "ensureWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main:p-task-1-slot",
+        "sourceHandle": "wx:user-1",
+        "sourceKind": "human",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ],
+              "ephemeralWorkerSession": true
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-1-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-1-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "dispatchWorkerTask",
+      "request": {
+        "taskId": "task-1",
+        "workerSession": "backend:claude:backend:main:p-task-1-slot",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude",
+        "task": "first"
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "running",
+          "worker_session": "backend:claude:backend:main:p-task-1-slot"
+        }
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ],
+              "ephemeralWorkerSession": true
+            }
+          },
+          {
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "queued",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-1-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-1-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.queued",
+        "message": "parallel task queued at capacity",
+        "context": {
+          "taskId": "task-2",
+          "targetAgent": "claude"
+        }
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "ok",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
+                }
+              ],
+              "ephemeralWorkerSession": true,
+              "injectionPending": true
+            }
+          },
+          {
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "queued",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-1-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-1-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.completed",
+        "message": "task completed",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "completed",
+          "worker_session": "backend:claude:backend:main:p-task-1-slot"
+        }
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "ok",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
+                }
+              ],
+              "ephemeralWorkerSession": true,
+              "injectionPending": true,
+              "ephemeralWorkerSessionClosed": true
+            }
+          },
+          {
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "queued",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "closeWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main:p-task-1-slot",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "ok",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
+                }
+              ],
+              "ephemeralWorkerSession": true,
+              "injectionPending": true,
+              "ephemeralWorkerSessionClosed": true
+            }
+          },
+          {
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "running",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-2-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-2-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "ensureWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main:p-task-2-slot",
+        "sourceHandle": "wx:user-1",
+        "sourceKind": "human",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "dispatchWorkerTask",
+      "request": {
+        "taskId": "task-2",
+        "workerSession": "backend:claude:backend:main:p-task-2-slot",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude",
+        "task": "second"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "ok",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
+                }
+              ],
+              "ephemeralWorkerSession": true,
+              "injectionPending": true,
+              "ephemeralWorkerSessionClosed": true
+            }
+          },
+          {
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "running",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "running",
+                  "message": "Task drained from parallel queue"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-2-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-2-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "ephemeral": true
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.drained",
+        "message": "parallel task drained from queue",
+        "context": {
+          "taskId": "task-2",
+          "targetAgent": "claude"
+        }
+      }
+    }
+  ],
+  "taskEvents": {
+    "task-1": [
+      {
+        "seq": 1,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "created",
+        "status": "running",
+        "message": "Task created"
+      },
+      {
+        "seq": 2,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "status_changed",
+        "status": "completed",
+        "summary": "done",
+        "message": "Task completed"
+      }
+    ],
+    "task-2": [
+      {
+        "seq": 1,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "created",
+        "status": "queued",
+        "message": "Task queued at parallel capacity"
+      },
+      {
+        "seq": 2,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "status_changed",
+        "status": "running",
+        "message": "Task drained from parallel queue"
+      }
+    ]
+  }
+}

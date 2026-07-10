@@ -1,0 +1,169 @@
+{
+  "state": {
+    "sessions": {
+      "main": {
+        "alias": "main",
+        "agent": "codex",
+        "workspace": "backend",
+        "transport_session": "backend:main",
+        "created_at": "2026-04-13T10:00:00.000Z",
+        "last_used_at": "2026-04-13T10:00:00.000Z"
+      }
+    },
+    "chat_contexts": {},
+    "native_session_lists": {},
+    "orchestration": {
+      "tasks": {
+        "task-1": {
+          "taskId": "task-1",
+          "sourceHandle": "backend:main",
+          "sourceKind": "coordinator",
+          "coordinatorSession": "backend:main",
+          "workerSession": "backend:claude:backend:main",
+          "workspace": "backend",
+          "targetAgent": "claude",
+          "task": "run the audit",
+          "status": "running",
+          "summary": "",
+          "resultText": "",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z",
+          "eventSeq": 1,
+          "events": [
+            {
+              "seq": 1,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "created",
+              "status": "running",
+              "message": "Task created"
+            }
+          ]
+        }
+      },
+      "workerBindings": {
+        "backend:claude:backend:main": {
+          "sourceHandle": "backend:claude:backend:main",
+          "coordinatorSession": "backend:main",
+          "workspace": "backend",
+          "targetAgent": "claude"
+        }
+      },
+      "groups": {},
+      "humanQuestionPackages": {},
+      "coordinatorQuestionState": {},
+      "coordinatorRoutes": {},
+      "externalCoordinators": {}
+    },
+    "scheduled_tasks": {}
+  },
+  "calls": [
+    {
+      "port": "findReusableWorkerSession",
+      "request": {
+        "sourceHandle": "backend:main",
+        "sourceKind": "coordinator",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "backend:main",
+              "sourceKind": "coordinator",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "run the audit",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "ensureWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main",
+        "sourceHandle": "backend:main",
+        "sourceKind": "coordinator",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "claude",
+          "status": "running",
+          "worker_session": "backend:claude:backend:main"
+        }
+      }
+    },
+    {
+      "port": "dispatchWorkerTask",
+      "request": {
+        "taskId": "task-1",
+        "workerSession": "backend:claude:backend:main",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude",
+        "task": "run the audit"
+      }
+    }
+  ],
+  "taskEvents": {
+    "task-1": [
+      {
+        "seq": 1,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "created",
+        "status": "running",
+        "message": "Task created"
+      }
+    ]
+  }
+}

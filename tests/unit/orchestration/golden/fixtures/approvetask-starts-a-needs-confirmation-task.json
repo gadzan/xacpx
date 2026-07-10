@@ -1,0 +1,269 @@
+{
+  "state": {
+    "sessions": {},
+    "chat_contexts": {},
+    "native_session_lists": {},
+    "orchestration": {
+      "tasks": {
+        "task-1": {
+          "taskId": "task-1",
+          "sourceHandle": "backend:claude:backend:main",
+          "sourceKind": "worker",
+          "coordinatorSession": "backend:main",
+          "workerSession": "backend:codex:reviewer:backend:main",
+          "workspace": "backend",
+          "targetAgent": "codex",
+          "role": "reviewer",
+          "task": "dangerous thing",
+          "status": "running",
+          "summary": "",
+          "resultText": "",
+          "createdAt": "2026-04-13T10:00:00.000Z",
+          "updatedAt": "2026-04-13T10:00:00.000Z",
+          "eventSeq": 2,
+          "events": [
+            {
+              "seq": 1,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "created",
+              "status": "needs_confirmation",
+              "message": "Task created"
+            },
+            {
+              "seq": 2,
+              "at": "2026-04-13T10:00:00.000Z",
+              "type": "status_changed",
+              "status": "running",
+              "message": "Task approved"
+            }
+          ]
+        }
+      },
+      "workerBindings": {
+        "backend:claude:backend:main": {
+          "sourceHandle": "backend:claude:backend:main",
+          "coordinatorSession": "backend:main",
+          "workspace": "backend",
+          "targetAgent": "claude"
+        },
+        "backend:codex:reviewer:backend:main": {
+          "sourceHandle": "backend:codex:reviewer:backend:main",
+          "coordinatorSession": "backend:main",
+          "workspace": "backend",
+          "targetAgent": "codex",
+          "role": "reviewer"
+        }
+      },
+      "groups": {},
+      "humanQuestionPackages": {},
+      "coordinatorQuestionState": {},
+      "coordinatorRoutes": {},
+      "externalCoordinators": {}
+    },
+    "scheduled_tasks": {}
+  },
+  "calls": [
+    {
+      "port": "findReusableWorkerSession",
+      "request": {
+        "sourceHandle": "backend:claude:backend:main",
+        "sourceKind": "worker",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "codex",
+        "role": "reviewer"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "backend:claude:backend:main",
+              "sourceKind": "worker",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:codex:reviewer:backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer",
+              "task": "dangerous thing",
+              "status": "needs_confirmation",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "needs_confirmation",
+                  "message": "Task created"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.created",
+        "message": "delegated task created",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "codex",
+          "status": "needs_confirmation",
+          "worker_session": "backend:codex:reviewer:backend:main"
+        }
+      }
+    },
+    {
+      "port": "ensureWorkerSession",
+      "request": {
+        "workerSession": "backend:codex:reviewer:backend:main",
+        "sourceHandle": "backend:claude:backend:main",
+        "sourceKind": "worker",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "codex",
+        "role": "reviewer"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "backend:claude:backend:main",
+              "sourceKind": "worker",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:codex:reviewer:backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer",
+              "task": "dangerous thing",
+              "status": "running",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "needs_confirmation",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "running",
+                  "message": "Task approved"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          },
+          {
+            "key": "backend:codex:reviewer:backend:main",
+            "value": {
+              "sourceHandle": "backend:codex:reviewer:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer"
+            }
+          }
+        ],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": []
+      }
+    },
+    {
+      "port": "dispatchWorkerTask",
+      "request": {
+        "taskId": "task-1",
+        "workerSession": "backend:codex:reviewer:backend:main",
+        "coordinatorSession": "backend:main",
+        "workspace": "backend",
+        "targetAgent": "codex",
+        "role": "reviewer",
+        "task": "dangerous thing"
+      }
+    },
+    {
+      "port": "logger.info",
+      "request": {
+        "event": "orchestration.task.approved",
+        "message": "task approved",
+        "context": {
+          "task_id": "task-1",
+          "coordinator_session": "backend:main",
+          "target_agent": "codex",
+          "status": "running",
+          "worker_session": "backend:codex:reviewer:backend:main"
+        }
+      }
+    }
+  ],
+  "taskEvents": {
+    "task-1": [
+      {
+        "seq": 1,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "created",
+        "status": "needs_confirmation",
+        "message": "Task created"
+      },
+      {
+        "seq": 2,
+        "at": "2026-04-13T10:00:00.000Z",
+        "type": "status_changed",
+        "status": "running",
+        "message": "Task approved"
+      }
+    ]
+  }
+}
