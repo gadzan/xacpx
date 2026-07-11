@@ -1,0 +1,105 @@
+[
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "queue-updated",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "items": [
+        {
+          "id": "<id-1>",
+          "textPreview": "second",
+          "enqueuedAt": "<ts>"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "return",
+    "label": "q2",
+    "value": {
+      "ok": true,
+      "queued": true,
+      "queueItemId": "<id-1>"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "queue-updated",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "items": [
+        {
+          "id": "<id-1>",
+          "textPreview": "second",
+          "enqueuedAt": "<ts>"
+        },
+        {
+          "id": "<id-2>",
+          "textPreview": "third",
+          "enqueuedAt": "<ts>"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-output",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "chunk": "done"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-finished",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "ok": true
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "queue-updated",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "items": [
+        {
+          "id": "<id-2>",
+          "textPreview": "third",
+          "enqueuedAt": "<ts>"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "return",
+    "label": "q3",
+    "value": {
+      "ok": true,
+      "queued": true,
+      "queueItemId": "<id-2>"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "queueItemId": "<id-1>"
+    }
+  }
+]

@@ -1,0 +1,63 @@
+[
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-finished",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "ok": false,
+      "errorMessage": "boom",
+      "cancelled": true
+    }
+  },
+  {
+    "kind": "return",
+    "label": "first",
+    "value": {
+      "ok": false,
+      "errorMessage": "boom"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-output",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "chunk": "done"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-finished",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "ok": true
+    }
+  },
+  {
+    "kind": "return",
+    "label": "second",
+    "value": {
+      "ok": true,
+      "text": "done"
+    }
+  }
+]
