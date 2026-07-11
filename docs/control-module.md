@@ -3,15 +3,29 @@
 `ControlService` 是面向结构化消费者（首个是 relay 连接器，见
 [docs/superpowers/specs/2026-06-13-relay-hub-design.md](superpowers/specs/2026-06-13-relay-hub-design.md)）的核心控制门面。
 它聚合了 `SessionService` / `ActiveTurnRegistry` / `ScheduledTaskService` /
-`OrchestrationService` / `ConsoleAgent`（ChatAgent），自身无持久状态——仅在内存里
-跟踪 in-flight turn（通过私有 `Map<string, AbortController>`）。
+`OrchestrationService` / `ConsoleAgent`（ChatAgent），自身无持久状态。每轮对话的
+并发闸门与执行体已从门面里拆出：并发生命周期（in-flight / 队列 / drain 三态）由
+`TurnQueue` 持有，单轮执行体由 `SessionTurnRunner` 承担，`ControlService.prompt` 只是把
+调用转交给 `TurnQueue.submit`。
 
 ## 文件
 
 - **`src/control/control-service.ts`** — 门面主体：sessions / scheduler /
   orchestration / prompt / executeCommand。导出类型：`ControlServiceDeps`、
   `ControlSessionInfo`、`ControlPromptInput`、`ControlPromptResult`、
-  `ControlExecuteCommandInput`。
+  `ControlExecuteCommandInput`。`prompt` / `runScheduledTurn` / `cancelTurn` /
+  `cancelQueuedItem` 都转发给 `TurnQueue`。
+- **`src/control/turn-queue.ts`** — `TurnQueue`：三态并发闸门
+  （`inFlight` / `queues` / `draining`）。构造时注入 `{ runTurn, emitQueueUpdated,
+  detectSessionsChanged }`。**无会话依赖**——回合结束后的 `sessions-changed` 检测经
+  `detectSessionsChanged` 回调穿入，而非让 `TurnQueue` 自持 `SessionService`。
+- **`src/control/session-turn-runner.ts`** — `SessionTurnRunner`：单轮执行体（会话绑定、
+  turn-started、媒体沙箱、stream/batched 段落重建、`agent.chat` 驱动与全部事件发射、
+  turn-finished）。契约是**永不 reject**——失败以 `{ ok: false, errorMessage }` resolve，
+  使 `TurnQueue` 能在纯 `finally` 里结算/推进队列而无需 catch。不持任何并发状态。
+- **`src/control/turn-support.ts`** — 中立值模块：`turnKey` / `toErrorMessage` /
+  `buildControlMetadata` / `raceWithTimeout` 与相关常量、`QueuedPrompt` 接口。被
+  `control-service` / `turn-queue` / `session-turn-runner` 以值导入，避免运行时环依赖。
 - **`src/control/control-event-bus.ts`** — `ControlEventBus` 接口与
   `createControlEventBus` 工厂：支持 `turn-output` / `turn-finished` /
   `sessions-changed` / `scheduled-changed` / `orchestration-changed` 五类事件；
@@ -49,13 +63,26 @@
 
 ## 语义要点
 
-### prompt 并发保护
+### prompt 并发保护（`TurnQueue`）
 
-`prompt` 在注册 in-flight 条目之后才调用 `useSession(chatKey, alias)` 绑定当前会话。
-同一 `(chatKey, sessionAlias)` 组合同时只允许一个 in-flight turn——若 key 已存在则立即返回
-`{ ok: false, errorMessage: "turn-already-running" }`，不走 agent。
-这一顺序（先写注册，再调 useSession）刻意闭合了并发竞态窗口。
-`cancelTurn` 通过已保存的 `AbortController.abort()` 中止 turn。
+`prompt` 把调用转交给 `TurnQueue.submit`。闸门按 `(chatKey, sessionAlias)` 组合隔离，
+围绕三个状态运转：
+
+- **`inFlight`** — 每个 key 至多一个进行中的 turn。`submit` 的「忙判定 + `inFlight.set`」
+  是一段**零 await 的同步前缀**，`SessionTurnRunner.run` 是正常路径上唯一的 turn-body
+  await；这样同一 tick 内的第二个 `submit` 一定能读到已注册的忙态。绑定当前会话的
+  `useSession` 由 runner 在这之后调用，闭合了「先注册、后绑定」的竞态窗口。
+- **`queues`** — 交互式 `prompt`（`queueable: true`）遇忙时把提示词追加进 per-session FIFO
+  队列并回 `{ ok: true, queued: true, queueItemId }`；定时轮次（非 `queueable`）遇忙则直接回
+  `{ ok: false, errorMessage: "turn-already-running" }`，不入队。turn 结束时按 FIFO 依次
+  drain，每个队列头作为下一轮 turn 运行。
+- **`draining`** — 一轮结束到下一轮（drained head）重新注册 `inFlight` 之间的短暂交接窗口
+  里，`submit` 把 `draining.has(key)` 也视为忙态，防止有提示词在这个缝隙里起并行 turn。
+
+`cancelTurn` 经保存的 `AbortController.abort()` 中止进行中的 turn；`cancelQueuedItem`
+按 id 移除尚未 drain 的排队项（已 drain 进 turn 的则 no-op）。这些同步时序不变量由
+`tests/unit/control/turn-queue.test.ts`（白盒）与
+`tests/unit/control/golden/turn-oracle.test.ts`（黑盒事件-日志 oracle）共同钉住。
 
 ### turn-output 与 turn-finished 事件
 
@@ -89,9 +116,13 @@ control 通道是 GUI-first 的：relay-web 通过看板按钮驱动会话操作
 只会静默 no-op；而 reset 对 xacpx 会话模型是有副作用的（重建 transport 会话，并保持
 native 标记），不能当作文本发给 agent。见 `src/commands/command-router.ts` 的透传分支。
 
-reset 在回合内重建了 transport 会话，但 reset handler 不发事件，所以 `control.prompt`
-会在回合结束后比较 `transportSession` 前后值，若变化则补发 `sessions-changed`（与 archived
-徽标的兜底刷新同理），否则看板会一直显示旧的 transport id / native 绑定直到下次无关刷新。
+reset 在回合内重建了 transport 会话，但 reset handler 不发事件，所以需要在回合结束后比较
+`transportSession` 前后值，若变化则补发 `sessions-changed`（与 archived 徽标的兜底刷新同理），
+否则看板会一直显示旧的 transport id / native 绑定直到下次无关刷新。`SessionTurnRunner` 只
+捕获回合前的会话状态并作为 `postTurnDetection` 返回，真正的 `getSession` 比较由 `TurnQueue`
+在 `draining.add` **之后**、`resolveSettled` 之前经 `detectSessionsChanged` 回调执行——那个
+await 必须留在 draining 守护窗口内，否则一个被中止且带排队项的回合会让新提示词插进来抢跑
+（由 golden fixture `aborted-queue-sessions-window` 钉住）。
 
 ### 事件总线覆盖范围
 

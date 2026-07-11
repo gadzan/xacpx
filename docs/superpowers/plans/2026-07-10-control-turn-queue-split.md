@@ -420,15 +420,18 @@ constructor(private readonly deps: ControlServiceDeps) {
 
 - [ ] **Step 6: 白盒补测 —— 三处 wedge + FIFO drain + Stop-followup + stranded tail**
 
-在 `turn-queue.test.ts` 追加白盒用例（喂假 `runTurn`，逐个 resolve）：busy→enqueue、FIFO drain 各自成 turn、drain 窗口入队、drained 头 runTurn reject 仍 drain 后续（stranded tail）、cancel 清空队列清 draining（wedge #3，断言后续 submit 不 enqueue）、Stop 后 followup 等 drain（wedge #2，`cancelTurn` 后 submit 走 `raceWithTimeout` 分支）。每条用可控 `runTurn` 驱动。
+在 `turn-queue.test.ts` 追加白盒用例（喂假 `runTurn`，逐个 resolve）：busy→enqueue、FIFO drain 各自成 turn、drain 窗口入队、drained 头执行失败仍 drain 后续（stranded tail）、cancel 清空队列清 draining（wedge #3，断言后续 submit 不 enqueue）、Stop 后 followup 等 drain（wedge #2，`cancelTurn` 后 submit 走 `raceWithTimeout` 分支）。每条用可控 `runTurn` 驱动。**契约说明**：`SessionTurnRunner.run` 永不 reject——session-bind / agent-drive 失败在内部 catch 后以 `{ ok:false, errorMessage }` resolve（见 runner 类注释）。所以假 `runTurn` 只 resolve、无 reject 路径；stranded-tail 用例用 `{ ok:false }` 模拟失败头，正是这个契约的忠实建模，而非绕过真实 reject。
 
 - [ ] **Step 7: 变异验证三处不变量真承重**
 
 对每个变异：`cp` 备份 `turn-queue.ts` → 施加 → `grep` 确认应用 → 跑白盒+oracle → 还原。
-  - 变异 A：删 `advanceQueue` 里的 `draining.add` → wedge #3 相关白盒用例或 oracle 场景 6 必红。
+  - 变异 A（drain 守护窗口顺序）：把 `submit` finally 里的 `draining.add` 挪到 `detectSessionsChanged` await **之后** → golden fixture `aborted-queue-sessions-window`（第 9 个）必红。
   - 变异 B：`submit` 里把 `inFlight.set` 挪到首个 await 后 → 同 tick 同步断言（Step 1）必红。
   - 变异 C：busy 判定跨一个 `await Promise.resolve()` → 同 tick 同步断言必红。
+  - 变异 D（wedge #3 泄漏守护）：删 `advanceQueue` 空 `else` 分支里的 `draining.delete(key)` → cancel-empties-queue-clears-draining 白盒用例（+ oracle 场景 6）必红。
 记录每个变异命中的具体用例；任一变异全绿 = 该处无测试守护，补测。
+
+> **修订（2026-07-11，评审反馈）：原变异 A「删 `advanceQueue` 里的 `draining.add`」是错的验收标准。** 实测该 `draining.add` 相对 `submit` finally 里的写入是**冗余**的（同一 finally 同步调用 advanceQueue，`draining` 已被 finally 设好），单独删它三套件全绿——不满足「必红」。据此已**删除**这个被证明冗余的写入（YAGNI），`draining` 的守护改由 `submit` finally 作为单一写入点承担。真正承重的守护是上面修订后的变异 A（顺序）与变异 D（泄漏），二者均经变异验证必红。
 
 - [ ] **Step 8: oracle + 现有测试 + 白盒全绿**
 

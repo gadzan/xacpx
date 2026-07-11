@@ -11,11 +11,6 @@ export interface TurnRequest {
   senderId: string;
   isOwner?: boolean;
   accountId?: string;
-  // External abort (e.g. the scheduler's per-dispatch timeout) linked to this turn.
-  // Unused by run() itself — the caller links it into the AbortController whose
-  // .signal is passed as run()'s second argument — kept here only for call-shape
-  // symmetry with executeTurn's params.
-  abortSignal?: AbortSignal;
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string };
@@ -36,10 +31,17 @@ export interface TurnResult {
 
 // Runs the per-turn execution body: session bind, turn-started, media sandboxing,
 // stream/batched paragraph reconstruction, the agent.chat drive with all event
-// emissions, turn-finished, and the sessions-changed detection for a transport
-// session that moved (archived-session restore or `/clear`) during the turn.
-// Holds no concurrency state of its own — the queue/inFlight/draining lifecycle
-// stays in ControlService, which decides whether to call run() at all.
+// emissions, and turn-finished. It also captures the pre-turn session state and
+// returns it (postTurnDetection) so the CALLER can detect a transport session that
+// moved (archived-session restore or `/clear`) during the turn — run() does not do
+// that compare itself, see TurnResult.postTurnDetection.
+//
+// Contract: run() signals turn failure by RESOLVING with { ok: false, errorMessage }
+// (session-bind and agent-drive failures are caught internally), never by rejecting —
+// so TurnQueue can settle/advance the queue in a plain finally without a catch.
+//
+// Holds no concurrency state of its own — the inFlight/queues/draining lifecycle
+// lives in TurnQueue, which decides whether to call run() at all.
 export class SessionTurnRunner {
   constructor(
     private readonly deps: Pick<ControlServiceDeps, "agent" | "sessions" | "events" | "uploadStore">,

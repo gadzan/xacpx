@@ -180,10 +180,11 @@ export class TurnQueue {
       // If a queued head is waiting, mark `draining` synchronously NOW — before the slot is
       // handed off, and before the awaited post-turn detection below — so nothing starts a
       // parallel turn during the release→drain window, even for an *aborted* turn whose
-      // lingering inFlight entry no longer reads as busy. advanceQueue re-adds it harmlessly;
-      // the drained turn clears it once it re-registers its own inFlight. When the queue is
-      // empty, this turn's still-present inFlight entry is itself the busy marker (a normally-
-      // finished turn's controller is not aborted), so no drain is possible.
+      // lingering inFlight entry no longer reads as busy. This is the single writer of the
+      // hand-off guard; advanceQueue (called synchronously below) relies on it already being
+      // set and the drained turn clears it once it re-registers its own inFlight. When the
+      // queue is empty, this turn's still-present inFlight entry is itself the busy marker (a
+      // normally-finished turn's controller is not aborted), so no drain is possible.
       if ((this.queues.get(key)?.length ?? 0) > 0) {
         this.draining.add(key);
       }
@@ -224,15 +225,12 @@ export class TurnQueue {
     const next = q?.shift();
     if (q && q.length === 0) this.queues.delete(key);
     if (next) {
-      // Mark `draining` BEFORE the fire-and-forget drained submit below, so a submit landing
-      // between this frame and the drained turn's own inFlight.set sees a busy gate rather than
-      // starting a parallel turn. NOTE this is belt-and-suspenders: on the normal drain path
-      // submit's finally already set `draining` (line ~181) before calling advanceQueue
-      // synchronously, so removing THIS add alone reddens nothing (verified: oracle/turn-queue/
-      // queue all stay green). It is kept as a local invariant for the direct call site — the
-      // hand-off enqueue behavior itself is pinned by turn-queue.test.ts "a submit arriving
-      // during the drain hand-off enqueues (no parallel turn)".
-      this.draining.add(key);
+      // `draining` is already set here: this runs synchronously inside submit's finally, which
+      // set `draining` (when the queue was non-empty) before calling advanceQueue. That guard
+      // stays up across the fire-and-forget drained submit below until the drained turn
+      // re-registers its own inFlight, so a submit landing in that gap sees a busy gate rather
+      // than starting a parallel turn — pinned by turn-queue.test.ts "a submit arriving during
+      // the drain hand-off enqueues (no parallel turn)".
       // The head was already popped above; emit the shorter snapshot.
       this.emitQueueUpdated(chatKey, sessionAlias);
       // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses the

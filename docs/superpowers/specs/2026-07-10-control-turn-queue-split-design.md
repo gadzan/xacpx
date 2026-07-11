@@ -32,7 +32,7 @@
 
 - 持有 `inFlight` / `queues` / `draining` 三态。
 - **所有 microtask 同步时序不变量内聚在这**：`inFlight.set` 在首个 `await` 前、`advanceQueue` 里 `draining.add` 在 fire-and-forget 的 drained turn 之前。
-- 构造接收 `{ runTurn(req, signal): Promise<Result>, emitQueueUpdated(key) }`。`runTurn` 是 `submit` 内**唯一的 await 点**（除 Stop-followup 分支的 `raceWithTimeout`，见下）。
+- 构造接收 `{ runTurn(req, signal): Promise<Result>, emitQueueUpdated(key), detectSessionsChanged(detection) }`（`detectSessionsChanged` 见下方 2026-07-11 修订）。`runTurn` 是 `submit` 内正常路径的主 await 点（另有 Stop-followup 分支的 `raceWithTimeout`，以及回合结束后 `draining` 守护窗口内的 `detectSessionsChanged`，均见下）。
 - API：
   - `submit(key, req, { queueable }): Promise<Result | { queued: true, queueItemId }>` —— 含 busy 判定、排队、drain 交接、`CANCEL_DRAIN_TIMEOUT` 等待。
   - `cancelTurn(key): boolean`
@@ -58,6 +58,22 @@
 - `queue-updated` 由 **TurnQueue** 发（它是排队状态变化的唯一来源）。
 - `turn-started` / `turn-finished` / `turn-output` / `turn-thought` / `plan` / `turn-usage` / `agent-commands` / `tool-event` / `sessions-changed` 由 **SessionTurnRunner** 发（一次执行的生命周期）。
 - **数据流，非归属冲突**：`turn-started` 事件始终由 runner 发；当它是一个 drained 队列头时，其 `queueItemId` 字段的值由 TurnQueue 通过 `req` 传入（TurnQueue 知道哪个队列项正在 drain，runner 只是把它盖进事件）。同理 drained 头**不**重发 `prompt` 字段（hub 已在入队时持久化，重发会双持久化）——这条约束随 `req` 从 TurnQueue 流向 runner。
+
+> **修订（2026-07-11，实现落地）：`sessions-changed` 归属拆成两半。**
+> 上面的原始边界把整个 `sessions-changed` 检测划给 runner。实现时发现回合结束后的
+> **transport-session-moved 检测**（`/clear` reset 重建了 transport 会话）必须在
+> `TurnQueue` 设置 `draining.add` **之后**、`resolveSettled` 之前执行——那个 `getSession`
+> await 必须留在 draining 守护窗口内，否则一个被中止且带排队项的回合会让新提示词插进来抢跑。
+> 若把它整个留在 runner 里（runTurn 之内），`draining.add` 必然排在 `getSession` await 之后，
+> 重开这个竞态（Task 1 用探针实测：朴素版把窗口内新 prompt 从「立即入队」变成 5000ms 阻塞）。
+>
+> 因此最终边界是：
+> - **archived-restore** 的 `sessions-changed` 仍由 runner 在回合开始（`useSession` 之后）发。
+> - **transport-moved** 的检测由 runner 只**捕获回合前状态并作为 `TurnResult.postTurnDetection` 返回**，
+>   真正的 `getSession` 比较 + emit 由 `TurnQueue` 经注入的 `detectSessionsChanged(detection)` 回调
+>   在 draining 守护窗口内执行。`TurnQueue` 因此仍**零 session 依赖**（检测经回调穿入，不自持 `SessionService`）。
+> - 这个额外 await 由第 9 个 golden fixture `aborted-queue-sessions-window` 钉住（基线录、变异验证：
+>   把 `draining.add` 移到该 await 之后 → 仅该 fixture 变红）。原始 8 场景不覆盖这个窗口，所以朴素抽取才溜过。
 
 ---
 
