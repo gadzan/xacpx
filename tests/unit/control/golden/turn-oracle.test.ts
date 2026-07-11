@@ -166,3 +166,46 @@ test("oracle: a follow-up after Stop waits for the cancelled turn to drain, then
   await tick();
   expectMatchesFixture("stop-then-followup", o.log);
 });
+
+test("oracle: an aborted turn's queued item — draining guards the post-turn sessions-changed window", async () => {
+  // The post-turn sessions-changed detection takes a getSession await, and it must run with
+  // `draining` already set. Otherwise an aborted turn (its inFlight entry no longer reads
+  // busy) with a queued item leaves the session looking free during that await, and a fresh
+  // prompt races in — enqueue turns into a block/reject. This fixture pins the guarded
+  // ordering: the fresh "third" prompt arriving mid-window must ENQUEUE. The getSession
+  // override holds ONLY the post-turn call open (armed right before the abort settles),
+  // mirroring the cancel-empties scenario's arming technique.
+  let armGate = false;
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((r) => {
+    releaseGate = r;
+  });
+  const o = makeTurnOracle({
+    getSession: async (a: string) => {
+      if (armGate) {
+        armGate = false;
+        await gate;
+      }
+      return { alias: a, transportSession: "t1" };
+    },
+  });
+  const p1 = o.record("first", o.service.prompt({ ...C, text: "first" }));
+  await tick();
+  await o.record("second", o.service.prompt({ ...C, text: "second" })); // queued behind turn 1
+  o.service.cancelTurn("c", "s"); // abort turn 1
+  armGate = true; // the next getSession (turn 1's post-turn detection) holds open
+  o.controls.rejectChat(); // turn 1 unwinds → finally sets draining, then awaits the gated getSession
+  await tick();
+  await tick();
+  const third = o.record("third", o.service.prompt({ ...C, text: "third" })); // mid-window → must enqueue
+  await tick();
+  releaseGate(); // close the window
+  await tick();
+  o.controls.resolveChat(); // drain "second"
+  await tick();
+  o.controls.resolveChat(); // drain "third"
+  await tick();
+  await Promise.all([p1, third]);
+  await tick();
+  expectMatchesFixture("aborted-queue-sessions-window", o.log);
+});

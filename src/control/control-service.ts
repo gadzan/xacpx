@@ -1,7 +1,6 @@
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import type { Agent as ChatAgent, ChatRequestMetadata } from "../weixin/agent/interface";
+import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry";
@@ -27,6 +26,16 @@ import type { AgentCatalogEntry } from "../config/agent-catalog";
 import { WorkspaceFs, type DirListing, type FileContent, type SearchOptions, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
+import { SessionTurnRunner, type TurnResult } from "./session-turn-runner";
+import {
+  turnKey,
+  toErrorMessage,
+  buildControlMetadata,
+  raceWithTimeout,
+  CANCEL_DRAIN_TIMEOUT_MS,
+  QUEUE_PREVIEW_MAX,
+  type QueuedPrompt,
+} from "./turn-support";
 
 export interface ControlSessionInfo {
   alias: string;
@@ -143,18 +152,6 @@ export interface ControlPromptResult {
   queueItemId?: string;
 }
 
-/** A prompt held in the per-session server-side queue while a turn is in flight.
- *  Runs through the same `executeTurn` machinery as a manual prompt once drained. */
-export interface QueuedPrompt {
-  id: string;
-  text: string;
-  enqueuedAt: string;
-  senderId: string;
-  isOwner?: boolean;
-  accountId?: string;
-  media?: PromptAttachmentRef[];
-}
-
 /** A turn started by a fired scheduled task. Runs through the same agent + turn-event
  *  machinery as a normal prompt, so it streams live and persists to history — but it
  *  also carries the prompt text + schedule origin in turn-started, so the hub can
@@ -180,7 +177,11 @@ export interface ControlExecuteCommandInput {
 // Thin structured facade over core services for non-text consumers (the relay
 // connector first). Holds no state of its own beyond in-flight turn tracking.
 export class ControlService {
-  constructor(private readonly deps: ControlServiceDeps) {}
+  private readonly runner: SessionTurnRunner;
+
+  constructor(private readonly deps: ControlServiceDeps) {
+    this.runner = new SessionTurnRunner(deps);
+  }
 
   // Read-only workspace file browser, scoped to configured workspace roots. Lazily
   // reads the live workspace list so newly-created workspaces are immediately browsable.
@@ -582,204 +583,47 @@ export class ControlService {
     if (params.drained) {
       this.draining.delete(key);
     }
-    // Sending to an archived session restores it (useSession clears `archived`), and
-    // `/clear` (session.reset) recreates the transport session under the same alias — both
-    // mutate the session row, but neither useSession nor the reset handler emits an event.
-    // Capture the pre-turn state here so we can detect the transition afterwards and emit
-    // `sessions-changed`, otherwise the dashboard keeps showing a stale archived badge /
-    // transport+native binding on the row until the next unrelated refresh.
-    let internalAlias: string | undefined;
-    let wasArchived = false;
-    let priorTransportSession: string | undefined;
+    // The per-turn execution body (session bind, turn-started, media sandboxing,
+    // stream/batched reconstruction, the agent.chat drive, turn-finished, and the
+    // sessions-changed detection for a transport session that moved mid-turn) lives in
+    // SessionTurnRunner — this method keeps only the concurrency gate + inFlight/settled
+    // lifecycle around it.
+    let result: TurnResult | undefined;
     try {
-      internalAlias = await this.deps.sessions.resolveAliasForChat(params.chatKey, params.sessionAlias);
-      const prior = await this.deps.sessions.getSession(internalAlias);
-      wasArchived = prior?.archived === true;
-      priorTransportSession = prior?.transportSession;
-    } catch {
-      /* best-effort: a detection failure just means no badge refresh */
-    }
-    try {
-      await this.deps.sessions.useSession(params.chatKey, params.sessionAlias);
-    } catch (error) {
-      // This turn never really started, but it still holds the slot. Settle it and advance the
-      // queue so a transient bind failure on a *drained* head does not strand the items behind
-      // it (which would otherwise only run when a future unrelated prompt arrives, reordering
-      // FIFO). advanceQueue releases inFlight itself when the queue is empty and hands the slot
-      // to the next drained turn otherwise — so we must NOT delete inFlight here (no
-      // double-release, no double-drain).
-      resolveSettled();
-      this.advanceQueue(key, params.chatKey, params.sessionAlias);
-      return { ok: false, errorMessage: toErrorMessage(error) };
-    }
-    if (wasArchived) {
-      this.deps.events.emit({ type: "sessions-changed" });
-    }
-    this.deps.events.emit({
-      type: "turn-started",
-      chatKey: params.chatKey,
-      sessionAlias: params.sessionAlias,
-      ...(params.turnStarted?.prompt ? { prompt: params.turnStarted.prompt } : {}),
-      ...(params.turnStarted?.scheduled ? { scheduled: params.turnStarted.scheduled } : {}),
-      ...(params.turnStarted?.queueItemId ? { queueItemId: params.turnStarted.queueItemId } : {}),
-    });
-    // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
-    // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.
-    // Batched sessions get pre-split, trimmed paragraph segments instead — there the
-    // original "\n\n" is gone, and both turn-output consumers (web live view + hub
-    // history buffer) simply concatenate, running paragraphs together on one line. For
-    // those we re-insert the break between segments so live and history stay identical.
-    let streamMode = false;
-    try {
-      const resolved = await this.resolveControlSession(params.chatKey, params.sessionAlias);
-      streamMode = (resolved?.effectiveReplyMode ?? resolved?.replyMode) === "stream";
-    } catch {
-      // Best-effort: fall back to batched paragraph reconstruction.
-    }
-    let emittedChunk = false;
-    const emitChunk = (chunk: string) => {
-      if (!chunk) return;
-      this.deps.events.emit({
-        type: "turn-output",
-        chatKey: params.chatKey,
-        sessionAlias: params.sessionAlias,
-        chunk: !streamMode && emittedChunk ? `\n\n${chunk}` : chunk,
-      });
-      emittedChunk = true;
-    };
-    // Defense-in-depth: the two-phase upload sandbox is meant to be the only source of
-    // attachment bytes (the web flow echoes back the path control.upload returned, which
-    // lives under the sandbox root). Drop any media ref whose resolved filePath escapes
-    // that root so a caller cannot point the agent at an arbitrary absolute path. Only
-    // touch the upload store when a turn actually carries media — a plain prompt turn
-    // has no attachments and must not depend on the store being present.
-    const incomingMedia = params.media ?? [];
-    const sandboxedMedia = incomingMedia.length
-      ? (() => {
-          const uploadRoot = path.resolve(this.deps.uploadStore.root);
-          const kept = incomingMedia.filter((ref) => {
-            const resolved = path.resolve(ref.filePath);
-            return resolved === uploadRoot || resolved.startsWith(uploadRoot + path.sep);
-          });
-          const dropped = incomingMedia.length - kept.length;
-          if (dropped > 0) {
-            console.warn(
-              `[control] dropped ${dropped} media ref(s) with filePath outside the upload sandbox`,
-            );
-          }
-          return kept;
-        })()
-      : incomingMedia;
-    const chatMedia = sandboxedMedia.map((ref) => ({
-      kind: ref.kind,
-      filePath: ref.filePath,
-      mimeType: ref.mimeType,
-      ...(ref.fileName ? { fileName: ref.fileName } : {}),
-      sizeBytes: ref.size,
-      source: {
-        channelId: "relay",
-        accountId: params.accountId ?? "control",
-        chatKey: params.chatKey,
-        messageId: ref.id,
-      },
-    }));
-    try {
-      const response = await this.deps.agent.chat({
-        accountId: params.accountId ?? "control",
-        conversationId: params.chatKey,
-        text: params.text,
-        metadata: buildControlMetadata(params.senderId, params.isOwner),
-        abortSignal: controller.signal,
-        ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
-        reply: async (chunk) => {
-          emitChunk(chunk);
+      result = await this.runner.run(
+        {
+          chatKey: params.chatKey,
+          sessionAlias: params.sessionAlias,
+          text: params.text,
+          senderId: params.senderId,
+          ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+          ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
+          ...(params.turnStarted ? { turnStarted: params.turnStarted } : {}),
+          ...(params.media !== undefined ? { media: params.media } : {}),
         },
-        onToolEvent: (event) => {
-          this.deps.events.emit({
-            type: "tool-event",
-            chatKey: params.chatKey,
-            sessionAlias: params.sessionAlias,
-            event,
-          });
-        },
-        onThought: (chunk) => {
-          this.deps.events.emit({
-            type: "turn-thought",
-            chatKey: params.chatKey,
-            sessionAlias: params.sessionAlias,
-            chunk,
-          });
-        },
-        onPlan: (entries) => {
-          this.deps.events.emit({
-            type: "plan",
-            chatKey: params.chatKey,
-            sessionAlias: params.sessionAlias,
-            entries,
-          });
-        },
-        onUsage: (usage) => {
-          this.deps.events.emit({
-            type: "turn-usage",
-            chatKey: params.chatKey,
-            sessionAlias: params.sessionAlias,
-            used: usage.used,
-            size: usage.size,
-            ...(usage.cost ? { cost: usage.cost } : {}),
-            ...(usage.breakdown ? { breakdown: usage.breakdown } : {}),
-          });
-        },
-        onCommands: (commands) => {
-          this.deps.events.emit({
-            type: "agent-commands",
-            chatKey: params.chatKey,
-            sessionAlias: params.sessionAlias,
-            commands,
-          });
-        },
-      });
-      if (response.text) {
-        emitChunk(response.text);
-      }
-      this.deps.events.emit({
-        type: "turn-finished",
-        chatKey: params.chatKey,
-        sessionAlias: params.sessionAlias,
-        ok: true,
-      });
-      return { ok: true, text: response.text };
-    } catch (error) {
-      const errorMessage = toErrorMessage(error);
-      this.deps.events.emit({
-        type: "turn-finished",
-        chatKey: params.chatKey,
-        sessionAlias: params.sessionAlias,
-        ok: false,
-        errorMessage,
-        ...(controller.signal.aborted ? { cancelled: true } : {}),
-      });
-      return { ok: false, errorMessage };
+        controller.signal,
+      );
     } finally {
-      // If a queued head is waiting, mark `draining` synchronously NOW — before the awaited
-      // sessions-changed detection below and before the slot is handed off — so nothing starts
-      // a parallel turn during the release→drain window, even for an *aborted* turn whose
+      // If a queued head is waiting, mark `draining` synchronously NOW — before the slot is
+      // handed off, and before the awaited post-turn detection below — so nothing starts a
+      // parallel turn during the release→drain window, even for an *aborted* turn whose
       // lingering inFlight entry no longer reads as busy. advanceQueue re-adds it harmlessly;
       // the drained turn clears it once it re-registers its own inFlight. When the queue is
-      // empty, this turn's still-present inFlight entry is itself the busy marker across the
-      // await (a normally-finished turn's controller is not aborted), so no drain is possible
-      // and none is needed.
+      // empty, this turn's still-present inFlight entry is itself the busy marker (a
+      // normally-finished turn's controller is not aborted), so no drain is possible.
       if ((this.queues.get(key)?.length ?? 0) > 0) {
         this.draining.add(key);
       }
-      // `/clear` (session.reset) recreated the transport session during the turn (and may
-      // have re-bound a fresh native agentSessionId). Emit `sessions-changed` so the
-      // dashboard refreshes the row; best-effort, and only when the binding actually moved.
-      // Kept inline (NOT inside advanceQueue): it is async/awaited and specific to THIS
-      // just-completed turn. inFlight is still held here, so it stays busy across the await.
-      if (internalAlias && priorTransportSession) {
+      // Post-turn `sessions-changed` detection runs HERE, after `draining` is set — not inside
+      // the runner. A transport session that moved during the turn (archived-restore or
+      // `/clear`) needs a dashboard refresh, but the getSession await it takes must stay inside
+      // the draining-guarded window, or an aborted turn with a queued item lets a fresh prompt
+      // race in. The runner returns the captured inputs via postTurnDetection.
+      const detection = result?.postTurnDetection;
+      if (detection) {
         try {
-          const after = await this.deps.sessions.getSession(internalAlias);
-          if (after && after.transportSession !== priorTransportSession) {
+          const after = await this.deps.sessions.getSession(detection.internalAlias);
+          if (after && after.transportSession !== detection.priorTransportSession) {
             this.deps.events.emit({ type: "sessions-changed" });
           }
         } catch {
@@ -787,10 +631,18 @@ export class ControlService {
         }
       }
       resolveSettled();
-      // Single decision point (shared with the useSession-failure path): start the next queued
-      // head as the drained turn while holding the slot, or release inFlight if empty.
+      // Single decision point (shared whether the runner failed at useSession or at the chat
+      // drive): start the next queued head as the drained turn while holding the slot, or
+      // release inFlight if empty.
       this.advanceQueue(key, params.chatKey, params.sessionAlias);
     }
+    // Strip the internal postTurnDetection so ControlPromptResult stays exactly
+    // {ok, text?, errorMessage?} — the golden fixtures record this return value.
+    return {
+      ok: result!.ok,
+      ...(result!.text !== undefined ? { text: result!.text } : {}),
+      ...(result!.errorMessage !== undefined ? { errorMessage: result!.errorMessage } : {}),
+    };
   }
 
   // Advances the per-session FIFO queue after a turn ends. If a head exists, starts it as the
@@ -900,43 +752,4 @@ export class ControlService {
   closeTerminal(terminalId: string): void {
     this.deps.terminal.close(terminalId);
   }
-}
-
-// Upper bound on how long a follow-up prompt waits for a just-cancelled turn to
-// finish tearing down before giving up and reporting the session still busy.
-const CANCEL_DRAIN_TIMEOUT_MS = 5000;
-
-// Server-side truncation for a queued item's textPreview on the queue-updated wire
-// event, so a very long queued prompt doesn't bloat the snapshot payload.
-const QUEUE_PREVIEW_MAX = 120;
-
-// Resolve when `promise` settles or `ms` elapses, whichever comes first. The timer
-// is cleared on the winning path so a fast drain doesn't keep the event loop alive.
-async function raceWithTimeout(promise: Promise<void>, ms: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, ms);
-  });
-  try {
-    await Promise.race([promise, timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-function turnKey(chatKey: string, sessionAlias: string): string {
-  return `${chatKey} ${sessionAlias}`;
-}
-
-function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function buildControlMetadata(senderId: string, isOwner: boolean | undefined): ChatRequestMetadata {
-  return {
-    channel: "control",
-    chatType: "direct",
-    senderId,
-    ...(isOwner === undefined ? {} : { isOwner }),
-  };
 }
