@@ -147,6 +147,13 @@ export class TurnQueue {
     }
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    // SYNCHRONOUS PREFIX: everything from the busy-decision above through this inFlight.set runs
+    // with no await, so two submits in the same tick see a consistent gate — the first registers
+    // inFlight, the second reads it as busy and enqueues. Moving this set (or the busy-check
+    // above) behind the runTurn await opens a same-tick window where the second submit starts a
+    // parallel turn. Pinned by turn-queue.test.ts "submit's busy-decision + enqueue is a
+    // synchronous prefix (same tick, zero await)": that mutation reddens its zero-await
+    // queueLength===1 / isBusy===true assertions.
     this.inFlight.set(key, { controller, settled });
     // A drained head turn has now re-registered its own inFlight synchronously (no await since
     // the finished turn's finally). Clear the hand-off guard: the slot is genuinely held again,
@@ -183,7 +190,10 @@ export class TurnQueue {
       // Post-turn `sessions-changed` detection runs HERE, after `draining` is set. A transport
       // session that moved during the turn (archived-restore or `/clear`) needs a dashboard
       // refresh, but the await it takes must stay inside the draining-guarded window, or an
-      // aborted turn with a queued item lets a fresh prompt race in.
+      // aborted turn with a queued item lets a fresh prompt race in. Moving the draining.add
+      // above to AFTER this await reddens the golden fixture `aborted-queue-sessions-window`
+      // (turn-oracle.test.ts): during that window an aborted turn's lingering inFlight no longer
+      // reads as busy, so a fresh prompt would start a parallel turn instead of queueing.
       const detection = result?.postTurnDetection;
       if (detection) {
         await this.deps.detectSessionsChanged(detection);
@@ -214,6 +224,14 @@ export class TurnQueue {
     const next = q?.shift();
     if (q && q.length === 0) this.queues.delete(key);
     if (next) {
+      // Mark `draining` BEFORE the fire-and-forget drained submit below, so a submit landing
+      // between this frame and the drained turn's own inFlight.set sees a busy gate rather than
+      // starting a parallel turn. NOTE this is belt-and-suspenders: on the normal drain path
+      // submit's finally already set `draining` (line ~181) before calling advanceQueue
+      // synchronously, so removing THIS add alone reddens nothing (verified: oracle/turn-queue/
+      // queue all stay green). It is kept as a local invariant for the direct call site — the
+      // hand-off enqueue behavior itself is pinned by turn-queue.test.ts "a submit arriving
+      // during the drain hand-off enqueues (no parallel turn)".
       this.draining.add(key);
       // The head was already popped above; emit the shorter snapshot.
       this.emitQueueUpdated(chatKey, sessionAlias);
