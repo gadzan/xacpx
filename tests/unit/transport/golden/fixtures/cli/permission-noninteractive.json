@@ -1,0 +1,6 @@
+{
+  "record": [
+    "runCommand(acpx --format quiet --cwd /tmp/backend --deny-all --non-interactive-permissions fail codex set-mode -s backend:demo plan @30000)"
+  ],
+  "outcome": {}
+}

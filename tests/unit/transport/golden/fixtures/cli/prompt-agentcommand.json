@@ -1,0 +1,10 @@
+{
+  "record": [
+    "spawnPrompt(acpx --format json --json-strict --cwd /tmp/backend --approve-all --non-interactive-permissions deny --agent ./node_modules/.bin/codex-acp prompt -s backend:demo hello there)"
+  ],
+  "outcome": {
+    "ok": {
+      "text": ""
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "record": [
+    "runCommand(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --permission-policy /etc/policy.json codex set-mode -s backend:demo plan @30000)"
+  ],
+  "outcome": {}
+}

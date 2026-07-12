@@ -1,0 +1,14 @@
+{
+  "record": [
+    "run(acpx --format json --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex status -s backend:demo @30000)"
+  ],
+  "outcome": {
+    "ok": {
+      "current": "gpt-5.2[high]",
+      "available": [
+        "gpt-5.2[high]",
+        "gpt-5.1"
+      ]
+    }
+  }
+}

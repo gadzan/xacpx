@@ -1,0 +1,8 @@
+{
+  "record": [
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --model gpt-5.2[high] --verbose codex sessions ensure --name backend:demo @120000)"
+  ],
+  "outcome": {
+    "ok": {}
+  }
+}

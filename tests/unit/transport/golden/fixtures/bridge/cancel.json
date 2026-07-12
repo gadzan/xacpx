@@ -1,0 +1,11 @@
+{
+  "record": [
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex cancel -s backend:demo @30000)"
+  ],
+  "outcome": {
+    "ok": {
+      "cancelled": true,
+      "message": "cancelled ok"
+    }
+  }
+}

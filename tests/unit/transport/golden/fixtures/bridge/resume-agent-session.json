@@ -1,0 +1,8 @@
+{
+  "record": [
+    "runSessionCreate(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --agent ./node_modules/.bin/codex-acp sessions new --name backend:demo --resume-session acp-sess-42 @120000 cwd=/tmp/backend)"
+  ],
+  "outcome": {
+    "ok": {}
+  }
+}
