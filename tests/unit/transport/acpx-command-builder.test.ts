@@ -70,5 +70,8 @@ describe("parseAcpxSessionRecordId", () => {
   test("bare first line when JSON.parse throws", () =>
     expect(parseAcpxSessionRecordId("abcd1234\nrest")).toEqual({ acpxRecordId: "abcd1234" }));
   test("too-short id → undefined", () => expect(parseAcpxSessionRecordId('{"id":"x"}')).toBeUndefined());
+  // Pins the >=8 length floor at its boundary: a 6-char id (valid charset) must still be
+  // rejected, so loosening the guard below 8 reddens here (nothing else exercises 4–7 chars).
+  test("6-char id below the 8-char floor → undefined", () => expect(parseAcpxSessionRecordId('{"id":"abc123"}')).toBeUndefined());
   test("malformed non-json → undefined", () => expect(parseAcpxSessionRecordId("!!")).toBeUndefined());
 });
