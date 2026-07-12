@@ -97,6 +97,13 @@ test("prompt-text", () =>
     run: (t) => t.prompt({ ...makeBridgeInput(), text: "hello there" }, noop),
   }));
 
+// model set → `--model` in the prompt argv too (guards buildPromptArgs' model spread).
+test("prompt-model", () =>
+  check({
+    name: "prompt-model",
+    run: (t) => t.prompt({ ...makeBridgeInput({ model: "gpt-5.2[high]" }), text: "hello there" }, noop),
+  }));
+
 test("prompt-ttl", () =>
   check({
     name: "prompt-ttl",

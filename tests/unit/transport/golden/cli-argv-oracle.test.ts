@@ -74,6 +74,16 @@ test("prompt-text", () =>
     run: (t) => t.prompt(makeCliSession(), "hello there", undefined, undefined, { onSegment: async () => {} }),
   }));
 
+// model set → `--model` in the prompt argv too (guards buildPromptArgs' model spread).
+test("prompt-model", () =>
+  check({
+    name: "prompt-model",
+    run: (t) =>
+      t.prompt(makeCliSession({ model: "gpt-5.2[high]" }), "hello there", undefined, undefined, {
+        onSegment: async () => {},
+      }),
+  }));
+
 // queueOwnerTtlSeconds set → `--ttl` in the prompt argv.
 test("prompt-ttl", () =>
   check({
