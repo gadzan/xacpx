@@ -1,0 +1,96 @@
+[
+  {
+    "kind": "event",
+    "event": {
+      "type": "queue-updated",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "items": [
+        {
+          "id": "<id-1>",
+          "textPreview": "B",
+          "enqueuedAt": "<ts>"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s"
+    }
+  },
+  {
+    "kind": "return",
+    "label": "promptB",
+    "value": {
+      "ok": true,
+      "queued": true,
+      "queueItemId": "<id-1>"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-output",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "chunk": "done"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-finished",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "ok": true
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "queue-updated",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "items": []
+    }
+  },
+  {
+    "kind": "return",
+    "label": "promptA",
+    "value": {
+      "ok": true,
+      "text": "done"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "queueItemId": "<id-1>"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-output",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "chunk": "done"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-finished",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "ok": true
+    }
+  }
+]

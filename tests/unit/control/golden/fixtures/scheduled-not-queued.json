@@ -1,0 +1,36 @@
+[
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-started",
+      "chatKey": "c",
+      "sessionAlias": "s"
+    }
+  },
+  {
+    "kind": "return",
+    "label": "scheduled",
+    "value": {
+      "ok": false,
+      "errorMessage": "turn-already-running"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-output",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "chunk": "done"
+    }
+  },
+  {
+    "kind": "event",
+    "event": {
+      "type": "turn-finished",
+      "chatKey": "c",
+      "sessionAlias": "s",
+      "ok": true
+    }
+  }
+]
