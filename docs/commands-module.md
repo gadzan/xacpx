@@ -40,9 +40,11 @@ units below; the router no longer owns them, it just wires them into the handler
 ops and forwards the CRUD calls.
 
 ### `transport-invoker.ts`
-`TransportInvoker` — the transport-call wrapping layer. Wraps every `SessionTransport`
-call with perf/timing logging, progress-heartbeat, cooperative abort, and error
-diagnostics.
+`TransportInvoker` — the transport-call wrapping layer for the **handler-facing**
+transport operations. Wraps these specific calls with perf/timing logging (via
+`measureTransportCall`), progress-heartbeat, cooperative abort, and error diagnostics.
+It does NOT wrap every `SessionTransport` method — the CRUD lifecycle in
+`SessionControlService` still calls some transport methods directly (see below).
 
 Responsibilities:
 - `ensureTransportSession` / `checkTransportSession` (with `createProgressHandler`
@@ -71,8 +73,12 @@ Responsibilities:
 
 Composes a `TransportInvoker` (uses its `ensureTransportSession`/`checkTransportSession`/
 `refreshSessionTransportAgentCommand`) and takes `reserveLogicalTransportSession` as an
-injected callback. The router keeps byte-identical public forwarders for all six methods,
-so `main.ts` / control API / `console-agent.ts` call sites are unchanged.
+injected callback. For the CRUD teardown/setup steps it also calls the transport
+**directly** — `deleteSession`, `cancel`, `freeWarmProcess`, `resumeAgentSession`,
+`listAgentSessions` — rather than through the invoker (these are one-shot lifecycle calls,
+not the repeatedly-wrapped handler operations). The router keeps byte-identical public
+forwarders for all six methods, so `main.ts` / control API / `console-agent.ts` call sites
+are unchanged.
 
 Both units are guarded by a black-box golden oracle
 (`tests/unit/commands/golden/`) that records the router's ordered collaborator-call

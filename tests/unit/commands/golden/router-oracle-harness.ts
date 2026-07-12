@@ -55,6 +55,20 @@ function summ(v: unknown): string {
   return String(v);
 }
 
+// `listAgentSessions` receives ONE query object whose `cwd`/`filterCwd` are the whole point
+// of the native-listing scenario (proving the query is scoped to the workspace cwd) — but
+// `summ` collapses it to `{…}`, so corrupting/deleting those keys wouldn't redden the fixture.
+// Render ONLY those two deterministic keys (whitelist). The same query ALSO carries
+// `agentCommand` (resolved off disk via resolveRuntimeAgentCommand → ~/.acpx, machine-dependent)
+// and `driver`; both stay hidden so the fixture is byte-stable across machines/CI.
+const LISTED_QUERY_KEYS = ["cwd", "filterCwd"] as const;
+function summListQuery(v: unknown): string {
+  if (typeof v !== "object" || v === null) return summ(v);
+  const o = v as Record<string, unknown>;
+  const parts = LISTED_QUERY_KEYS.filter((k) => k in o).map((k) => `${k}:${summ(o[k])}`);
+  return `{${parts.join(", ")}}`;
+}
+
 // Wrap any collaborator so every method call appends `label.method(args)` before delegating
 // to the real implementation (keeps behaviour real = faithful characterization).
 function recordProxy<T extends object>(label: string, target: T, push: (l: string) => void): T {
@@ -62,8 +76,11 @@ function recordProxy<T extends object>(label: string, target: T, push: (l: strin
     get(obj, prop, receiver) {
       const orig = Reflect.get(obj, prop, receiver);
       if (typeof orig !== "function" || typeof prop === "symbol") return orig;
+      // `listAgentSessions`'s query object needs whitelist rendering (see summListQuery);
+      // every other method renders each arg with the generic `summ`.
+      const render = prop === "listAgentSessions" ? summListQuery : summ;
       return (...args: unknown[]) => {
-        push(`${label}.${String(prop)}(${args.map(summ).join(", ")})`);
+        push(`${label}.${String(prop)}(${args.map(render).join(", ")})`);
         return (orig as (...a: unknown[]) => unknown).apply(obj, args);
       };
     },

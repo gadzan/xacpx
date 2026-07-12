@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, jest } from "bun:test";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runRouterOracle, type RouterOracleScenario } from "./router-oracle-harness";
@@ -156,19 +156,30 @@ test("list-native-none", () =>
 
 // 14. Full handle() path for `/session new` (parse → authorize → ensure/verify/attach lifecycle).
 //     The ensureSession fake drives its progress-handler argument (createProgressHandler) so the
-//     progress/heartbeat reply path is recorded: `spawn` emits an agent-spawning reply; the
-//     immediately-following `initializing` is deterministically suppressed by the 3s debounce
-//     (0ms < DEBOUNCE_MS), so exactly one reply lands regardless of wall-clock.
+//     progress + heartbeat reply paths are recorded: `spawn` emits an agent-spawning reply; then
+//     bun's fake timers advance exactly one 30s tick while the progress handler's setInterval is
+//     still alive (createProgressHandler runs before ensureSession; `dispose`/clearInterval runs
+//     after it resolves) so EXACTLY ONE `agentHeartbeat` reply fires (time-scrubbed to `waited
+//     <n>s`); the immediately-following `initializing` is then suppressed by the 3s debounce.
 test("handle-session-new", () =>
   check({
     name: "handle-session-new",
     transport: {
       ensureSession: async (_session, onProgress) => {
         onProgress?.("spawn");
+        // Fire one 30s heartbeat interval deterministically (fake timers installed in `run`).
+        jest.advanceTimersByTime(30_000);
         onProgress?.("initializing");
       },
     },
-    run: (r, reply) => r.handle("wx:user", "/session new demo --agent codex --ws backend", reply),
+    run: async (r, reply) => {
+      jest.useFakeTimers();
+      try {
+        return await r.handle("wx:user", "/session new demo --agent codex --ws backend", reply);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
   }));
 
 // 15. handle() `/mode plan`: getCurrentSession → transport.setMode → setCurrentSessionMode.
@@ -185,10 +196,18 @@ test("handle-mode-set", () =>
 // 16. handle() plain prompt with a current session: reaches transport.prompt. A recording
 //     perfSpan is threaded into handle() (11th positional arg) so the spec's perf-mark order
 //     (router.authorized → transport.prompt_dispatched → transport.prompt_done) is pinned.
-//     transport.first_chunk never marks: the prompt fake resolves without invoking onSegment.
+//     The prompt fake drives its `onSegment` twice ("chunk-a"/"chunk-b") to exercise the
+//     one-shot `firstChunkFired` guard: `transport.first_chunk` must mark EXACTLY ONCE.
 test("handle-prompt-normal", () =>
   check({
     name: "handle-prompt-normal",
+    transport: {
+      prompt: async (s, text, _reply, _replyContext, options) => {
+        await options?.onSegment?.("chunk-a");
+        await options?.onSegment?.("chunk-b");
+        return { text: `agent:${s.alias}:${text}` };
+      },
+    },
     seed: async (s) => {
       await s.createSession("demo", "codex", "backend");
       await s.useSession("wx:user", "demo");

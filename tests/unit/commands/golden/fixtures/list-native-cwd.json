@@ -1,6 +1,6 @@
 {
   "record": [
-    "transport.listAgentSessions({…})"
+    "transport.listAgentSessions({cwd:\"/tmp/backend\", filterCwd:\"/tmp/backend\"})"
   ],
   "outcome": {
     "ok": [
