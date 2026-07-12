@@ -36,36 +36,36 @@ function scrubText(text: string): string {
 // Compact one arg into a stable, human-diffable token. Sessions/objects collapse to a
 // short shape; long strings truncate; the volatile transportSession id is kept verbatim
 // because it IS behaviourally load-bearing (dedup / reserve keying).
-function summ(v: unknown): string {
-  if (v === undefined) return "∅";
-  if (v === null) return "null";
-  if (typeof v === "string") {
-    const scrubbed = scrubText(v);
+function renderArg(value: unknown): string {
+  if (value === undefined) return "∅";
+  if (value === null) return "null";
+  if (typeof value === "string") {
+    const scrubbed = scrubText(value);
     return scrubbed.length > 40 ? JSON.stringify(scrubbed.slice(0, 40) + "…") : JSON.stringify(scrubbed);
   }
-  if (typeof v === "function") return "fn";
-  if (typeof v === "object") {
-    const o = v as Record<string, unknown>;
+  if (typeof value === "function") return "fn";
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
     // Scrub inside the session token too: the transportSession can embed a
     // `reset-<Date.now()>` suffix (from `/clear`), which would otherwise leak raw epoch ms here
     // even though string-arg rendering already scrubs it.
-    if ("alias" in o && "transportSession" in o) return `session(${scrubText(String(o.alias))}/${scrubText(String(o.transportSession))})`;
+    if ("alias" in obj && "transportSession" in obj) return `session(${scrubText(String(obj.alias))}/${scrubText(String(obj.transportSession))})`;
     return "{…}";
   }
-  return String(v);
+  return String(value);
 }
 
 // `listAgentSessions` receives ONE query object whose `cwd`/`filterCwd` are the whole point
 // of the native-listing scenario (proving the query is scoped to the workspace cwd) — but
-// `summ` collapses it to `{…}`, so corrupting/deleting those keys wouldn't redden the fixture.
+// `renderArg` collapses it to `{…}`, so corrupting/deleting those keys wouldn't redden the fixture.
 // Render ONLY those two deterministic keys (whitelist). The same query ALSO carries
 // `agentCommand` (resolved off disk via resolveRuntimeAgentCommand → ~/.acpx, machine-dependent)
 // and `driver`; both stay hidden so the fixture is byte-stable across machines/CI.
 const LISTED_QUERY_KEYS = ["cwd", "filterCwd"] as const;
-function summListQuery(v: unknown): string {
-  if (typeof v !== "object" || v === null) return summ(v);
-  const o = v as Record<string, unknown>;
-  const parts = LISTED_QUERY_KEYS.filter((k) => k in o).map((k) => `${k}:${summ(o[k])}`);
+function renderListQuery(value: unknown): string {
+  if (typeof value !== "object" || value === null) return renderArg(value);
+  const obj = value as Record<string, unknown>;
+  const parts = LISTED_QUERY_KEYS.filter((key) => key in obj).map((key) => `${key}:${renderArg(obj[key])}`);
   return `{${parts.join(", ")}}`;
 }
 
@@ -76,9 +76,9 @@ function recordProxy<T extends object>(label: string, target: T, push: (l: strin
     get(obj, prop, receiver) {
       const orig = Reflect.get(obj, prop, receiver);
       if (typeof orig !== "function" || typeof prop === "symbol") return orig;
-      // `listAgentSessions`'s query object needs whitelist rendering (see summListQuery);
-      // every other method renders each arg with the generic `summ`.
-      const render = prop === "listAgentSessions" ? summListQuery : summ;
+      // `listAgentSessions`'s query object needs whitelist rendering (see renderListQuery);
+      // every other method renders each arg with the generic `renderArg`.
+      const render = prop === "listAgentSessions" ? renderListQuery : renderArg;
       return (...args: unknown[]) => {
         push(`${label}.${String(prop)}(${args.map(render).join(", ")})`);
         return (orig as (...a: unknown[]) => unknown).apply(obj, args);
@@ -146,7 +146,7 @@ export async function runRouterOracle(
   const config = createConfig();
   const baseTransport: SessionTransport = {
     ensureSession: async () => {},
-    prompt: async (s: ResolvedSession, text: string) => ({ text: `agent:${s.alias}:${text}` }),
+    prompt: async (session: ResolvedSession, text: string) => ({ text: `agent:${session.alias}:${text}` }),
     setMode: async () => {},
     cancel: async () => ({ cancelled: true, message: "cancelled" }),
     hasSession: async () => true,
@@ -195,7 +195,7 @@ export async function runRouterOracle(
     activeTurns,
   );
   const reply = async (t: string) => {
-    push(`reply(${summ(t)})`);
+    push(`reply(${renderArg(t)})`);
   };
   const perfSpan = recordingPerfSpan(push);
   let outcome: unknown;
@@ -208,10 +208,10 @@ export async function runRouterOracle(
 }
 
 // Strip nondeterminism from the returned value (timestamps, generated ids the fixture
-// shouldn't pin). Records themselves already avoid time via recordingLogger/summ.
-function normalize(v: unknown): unknown {
+// shouldn't pin). Records themselves already avoid time via recordingLogger/renderArg.
+function normalize(value: unknown): unknown {
   return JSON.parse(
-    JSON.stringify(v, (_k, val) =>
+    JSON.stringify(value, (_key, val) =>
       typeof val === "string" ? val.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<ts>") : val,
     ),
   );

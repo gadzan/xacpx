@@ -26,7 +26,7 @@ async function check(scenario: RouterOracleScenario) {
 test("create-normal", () =>
   check({
     name: "create-normal",
-    run: (r) => r.createSessionWithTransport("relay:demo", "codex", "backend"),
+    run: (router) => router.createSessionWithTransport("relay:demo", "codex", "backend"),
   }));
 
 // 2. Create whose best-effort agent-command refresh throws: the create still succeeds and the
@@ -37,66 +37,66 @@ test("create-refresh-fails", () =>
     resolveSessionAgentCommand: async () => {
       throw new Error("refresh boom");
     },
-    run: (r) => r.createSessionWithTransport("relay:demo", "codex", "backend"),
+    run: (router) => router.createSessionWithTransport("relay:demo", "codex", "backend"),
   }));
 
 // 3. Create onto an already-bound alias: throws before any transport work.
 test("create-alias-exists", () =>
   check({
     name: "create-alias-exists",
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
-    run: (r) => r.createSessionWithTransport("relay:demo", "codex", "backend"),
+    run: (router) => router.createSessionWithTransport("relay:demo", "codex", "backend"),
   }));
 
 // 4. Remove blocked by an in-flight orchestration task: throws before sessions.removeSession.
 test("remove-blocking-guard", () =>
   check({
     name: "remove-blocking-guard",
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
     orchestration: {
       listSessionBlockingTasks: async () => [{}] as never,
     },
-    run: (r) => r.removeSessionWithTransport("relay:demo"),
+    run: (router) => router.removeSessionWithTransport("relay:demo"),
   }));
 
 // 5. Normal remove: guard → count → removeSession → purge → transport.deleteSession.
 test("remove-normal", () =>
   check({
     name: "remove-normal",
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
-    run: (r) => r.removeSessionWithTransport("relay:demo"),
+    run: (router) => router.removeSessionWithTransport("relay:demo"),
   }));
 
 // 6. Remove of an alias whose transport session is shared by another alias: no transport teardown.
 test("remove-shared", () =>
   check({
     name: "remove-shared",
-    seed: async (s) => {
-      await s.attachSession("relay:demo", "codex", "backend", "backend:shared");
-      await s.attachSession("relay:other", "codex", "backend", "backend:shared");
+    seed: async (sessions) => {
+      await sessions.attachSession("relay:demo", "codex", "backend", "backend:shared");
+      await sessions.attachSession("relay:other", "codex", "backend", "backend:shared");
     },
-    run: (r) => r.removeSessionWithTransport("relay:demo"),
+    run: (router) => router.removeSessionWithTransport("relay:demo"),
   }));
 
 // 7. Remove whose orchestration purge throws: error is logged, teardown still runs, no rethrow.
 test("remove-purge-throws", () =>
   check({
     name: "remove-purge-throws",
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
     orchestration: {
       purgeSessionReferences: async () => {
         throw new Error("purge boom");
       },
     },
-    run: (r) => r.removeSessionWithTransport("relay:demo"),
+    run: (router) => router.removeSessionWithTransport("relay:demo"),
   }));
 
 // 8. Archive refused while a turn is running: throws before cancel / setArchived.
@@ -104,31 +104,31 @@ test("archive-active-turn", () =>
   check({
     name: "archive-active-turn",
     activeTurnsRunning: true,
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
-    run: (r) => r.archiveSessionWithTransport("relay:demo"),
+    run: (router) => router.archiveSessionWithTransport("relay:demo"),
   }));
 
 // 9. Normal archive of a non-shared session: cancel → freeWarmProcess → setArchived(true).
 test("archive-normal", () =>
   check({
     name: "archive-normal",
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
-    run: (r) => r.archiveSessionWithTransport("relay:demo"),
+    run: (router) => router.archiveSessionWithTransport("relay:demo"),
   }));
 
 // 10. Archive of a shared session: skips cancel/freeWarmProcess, only setArchived(true).
 test("archive-shared", () =>
   check({
     name: "archive-shared",
-    seed: async (s) => {
-      await s.attachSession("relay:demo", "codex", "backend", "backend:shared");
-      await s.attachSession("relay:other", "codex", "backend", "backend:shared");
+    seed: async (sessions) => {
+      await sessions.attachSession("relay:demo", "codex", "backend", "backend:shared");
+      await sessions.attachSession("relay:other", "codex", "backend", "backend:shared");
     },
-    run: (r) => r.archiveSessionWithTransport("relay:demo"),
+    run: (router) => router.archiveSessionWithTransport("relay:demo"),
   }));
 
 // 11. Native attach when the transport can't resume native sessions: throws immediately.
@@ -136,14 +136,14 @@ test("attach-native-unsupported", () =>
   check({
     name: "attach-native-unsupported",
     transport: { resumeAgentSession: undefined },
-    run: (r) => r.attachNativeSessionWithTransport("relay:demo", "codex", "backend", "sess-1"),
+    run: (router) => router.attachNativeSessionWithTransport("relay:demo", "codex", "backend", "sess-1"),
   }));
 
 // 12. Normal native attach: reserve → resumeAgentSession → verify → attachNativeSession → refresh.
 test("attach-native-normal", () =>
   check({
     name: "attach-native-normal",
-    run: (r) => r.attachNativeSessionWithTransport("relay:demo", "codex", "backend", "sess-1"),
+    run: (router) => router.attachNativeSessionWithTransport("relay:demo", "codex", "backend", "sess-1"),
   }));
 
 // 13. Native listing when the transport can't list: returns [] without touching config/transport.
@@ -151,7 +151,7 @@ test("list-native-none", () =>
   check({
     name: "list-native-none",
     transport: { listAgentSessions: undefined },
-    run: (r) => r.listNativeSessionsForControl("codex", "backend"),
+    run: (router) => router.listNativeSessionsForControl("codex", "backend"),
   }));
 
 // 14. Full handle() path for `/session new` (parse → authorize → ensure/verify/attach lifecycle).
@@ -172,10 +172,10 @@ test("handle-session-new", () =>
         onProgress?.("initializing");
       },
     },
-    run: async (r, reply) => {
+    run: async (router, reply) => {
       jest.useFakeTimers();
       try {
-        return await r.handle("wx:user", "/session new demo --agent codex --ws backend", reply);
+        return await router.handle("wx:user", "/session new demo --agent codex --ws backend", reply);
       } finally {
         jest.useRealTimers();
       }
@@ -186,11 +186,11 @@ test("handle-session-new", () =>
 test("handle-mode-set", () =>
   check({
     name: "handle-mode-set",
-    seed: async (s) => {
-      await s.createSession("demo", "codex", "backend");
-      await s.useSession("wx:user", "demo");
+    seed: async (sessions) => {
+      await sessions.createSession("demo", "codex", "backend");
+      await sessions.useSession("wx:user", "demo");
     },
-    run: (r) => r.handle("wx:user", "/mode plan"),
+    run: (router) => router.handle("wx:user", "/mode plan"),
   }));
 
 // 16. handle() plain prompt with a current session: reaches transport.prompt. A recording
@@ -208,12 +208,12 @@ test("handle-prompt-normal", () =>
         return { text: `agent:${s.alias}:${text}` };
       },
     },
-    seed: async (s) => {
-      await s.createSession("demo", "codex", "backend");
-      await s.useSession("wx:user", "demo");
+    seed: async (sessions) => {
+      await sessions.createSession("demo", "codex", "backend");
+      await sessions.useSession("wx:user", "demo");
     },
-    run: (r, reply, perfSpan) =>
-      r.handle(
+    run: (router, reply, perfSpan) =>
+      router.handle(
         "wx:user",
         "hello there",
         reply,
@@ -232,14 +232,14 @@ test("handle-prompt-normal", () =>
 test("handle-prompt-preaborted", () =>
   check({
     name: "handle-prompt-preaborted",
-    seed: async (s) => {
-      await s.createSession("demo", "codex", "backend");
-      await s.useSession("wx:user", "demo");
+    seed: async (sessions) => {
+      await sessions.createSession("demo", "codex", "backend");
+      await sessions.useSession("wx:user", "demo");
     },
-    run: (r, reply) => {
+    run: (router, reply) => {
       const controller = new AbortController();
       controller.abort();
-      return r.handle(
+      return router.handle(
         "wx:user",
         "hello there",
         reply,
@@ -270,13 +270,13 @@ test("handle-ensure-autoinstall", () => {
         }
       },
     },
-    run: async (r, reply) => {
-      r.__setDiscoverPathsForTest(async (_pkg, seed) => (seed ? [{ path: seed, manager: "npm" as const }] : []));
-      r.__setAutoInstallForTest(async (_pkg, _paths, opts) => {
+    run: async (router, reply) => {
+      router.__setDiscoverPathsForTest(async (_pkg, seed) => (seed ? [{ path: seed, manager: "npm" as const }] : []));
+      router.__setAutoInstallForTest(async (_pkg, _paths, opts) => {
         const verified = opts?.verify ? await opts.verify() : true;
         return { ok: verified, errors: [], logPath: "/log" };
       });
-      return await r.handle("wx:user", "/session new demo --agent codex --ws backend", reply);
+      return await router.handle("wx:user", "/session new demo --agent codex --ws backend", reply);
     },
   });
 });
@@ -288,11 +288,11 @@ test("handle-ensure-autoinstall", () => {
 test("unarchive-normal", () =>
   check({
     name: "unarchive-normal",
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
-      await s.setArchived("relay:demo", true);
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
+      await sessions.setArchived("relay:demo", true);
     },
-    run: (r) => r.unarchiveSession("relay:demo"),
+    run: (router) => router.unarchiveSession("relay:demo"),
   }));
 
 // 20. listNativeSessionsForControl when the transport CAN list: resolves cwd from config and
@@ -307,7 +307,7 @@ test("list-native-cwd", () =>
         sessions: [{ sessionId: "sess-1", cwd: "/tmp/backend", title: "demo", updatedAt: "<ts>" }],
       }),
     },
-    run: (r) => r.listNativeSessionsForControl("codex", "backend"),
+    run: (router) => router.listNativeSessionsForControl("codex", "backend"),
   }));
 
 // 21. handle() `/model <id>`: getCurrentSession → setModelTransportSession (measureTransportCall
@@ -319,11 +319,11 @@ test("handle-model-set", () =>
       setModel: async () => {},
       getSessionModel: async () => ({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] }),
     },
-    seed: async (s) => {
-      await s.createSession("demo", "codex", "backend");
-      await s.useSession("wx:user", "demo");
+    seed: async (sessions) => {
+      await sessions.createSession("demo", "codex", "backend");
+      await sessions.useSession("wx:user", "demo");
     },
-    run: (r) => r.handle("wx:user", "/model gpt-5.2[high]"),
+    run: (router) => router.handle("wx:user", "/model gpt-5.2[high]"),
   }));
 
 // 22. handle() `/cancel`: getCurrentSession → cancelTransportSession (measureTransportCall →
@@ -331,11 +331,11 @@ test("handle-model-set", () =>
 test("handle-cancel", () =>
   check({
     name: "handle-cancel",
-    seed: async (s) => {
-      await s.createSession("demo", "codex", "backend");
-      await s.useSession("wx:user", "demo");
+    seed: async (sessions) => {
+      await sessions.createSession("demo", "codex", "backend");
+      await sessions.useSession("wx:user", "demo");
     },
-    run: (r) => r.handle("wx:user", "/cancel"),
+    run: (router) => router.handle("wx:user", "/cancel"),
   }));
 
 // 23. handle() `/clear` (session.reset): resolve fresh reset session → ensure/verify via invoker
@@ -344,11 +344,11 @@ test("handle-cancel", () =>
 test("handle-session-reset", () =>
   check({
     name: "handle-session-reset",
-    seed: async (s) => {
-      await s.createSession("demo", "codex", "backend");
-      await s.useSession("wx:user", "demo");
+    seed: async (sessions) => {
+      await sessions.createSession("demo", "codex", "backend");
+      await sessions.useSession("wx:user", "demo");
     },
-    run: (r) => r.handle("wx:user", "/clear"),
+    run: (router) => router.handle("wx:user", "/clear"),
   }));
 
 // 24. archiveSessionWithTransport, non-shared, where transport.freeWarmProcess THROWS: the
@@ -362,8 +362,8 @@ test("archive-freewarm-fails", () =>
         throw new Error("free warm boom");
       },
     },
-    seed: async (s) => {
-      await s.createSession("relay:demo", "codex", "backend");
+    seed: async (sessions) => {
+      await sessions.createSession("relay:demo", "codex", "backend");
     },
-    run: (r) => r.archiveSessionWithTransport("relay:demo"),
+    run: (router) => router.archiveSessionWithTransport("relay:demo"),
   }));
