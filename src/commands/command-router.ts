@@ -4,7 +4,7 @@ import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
 import { createNoopAppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
-import type { AgentCommand, PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
+import type { AgentCommand, PromptMediaInput, PromptUsage, SessionTransport } from "../transport/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
 import type { PerfSpan } from "../perf/perf-tracer";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
@@ -53,10 +53,6 @@ import {
   handleTaskReject,
   handleTasksClean,
 } from "./handlers/orchestration-handler";
-import {
-  isPartialPromptOutputError,
-  summarizeTransportError,
-} from "./transport-diagnostics";
 import { handleHelp, handleInvalidCommand } from "./handlers/help-handler";
 import { handleAgents, handleAgentAdd, handleAgentRemove } from "./handlers/agent-handler";
 import { handleWorkspaces, handleWorkspaceCreate, handleWorkspaceRemove } from "./handlers/workspace-handler";
