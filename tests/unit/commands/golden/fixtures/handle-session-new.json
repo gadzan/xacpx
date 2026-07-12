@@ -5,6 +5,7 @@
     "sessions.resolveSession(\"demo\", \"codex\", \"backend\", \"backend:demo\")",
     "orchestration.reserveLogicalTransportSession(\"backend:demo\")",
     "transport.ensureSession(session(demo/backend:demo), fn)",
+    "reply(\"🚀 Starting `codex`…\")",
     "logger.info(transport.ensure_session)",
     "transport.hasSession(session(demo/backend:demo))",
     "logger.info(transport.has_session)",

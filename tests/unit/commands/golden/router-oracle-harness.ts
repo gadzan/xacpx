@@ -5,6 +5,7 @@ import type { AppLogger } from "../../../../src/logging/app-logger";
 import type { SessionTransport, ResolvedSession } from "../../../../src/transport/types";
 import type { SessionAgentCommandResolver } from "../../../../src/transport/acpx-session-index";
 import type { OrchestrationRouterOps } from "../../../../src/commands/router-types";
+import type { PerfSpan } from "../../../../src/perf/perf-tracer";
 import { createConfig } from "../command-router-test-support";
 
 // One ordered log across every collaborator the router touches. Call order = execution
@@ -24,7 +25,12 @@ function scrubText(text: string): string {
   return text
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<ts>")
     .replace(/\belapsed \d+/g, "elapsed <n>")
-    .replace(/\b\d+s\b/g, "<n>s");
+    .replace(/\b\d+s\b/g, "<n>s")
+    // `/clear` builds a fresh transport session named `<ws>:<alias>:reset-<Date.now()>`
+    // (session-reset-handler.buildResetTransportSessionName). The embedded epoch ms is
+    // machine/run-varying and is NOT injectable from the harness (the ops factory hardcodes
+    // `now: () => Date.now()`), so scrub it to keep the reset fixture byte-stable.
+    .replace(/reset-\d+/g, "reset-<n>");
 }
 
 // Compact one arg into a stable, human-diffable token. Sessions/objects collapse to a
@@ -40,7 +46,10 @@ function summ(v: unknown): string {
   if (typeof v === "function") return "fn";
   if (typeof v === "object") {
     const o = v as Record<string, unknown>;
-    if ("alias" in o && "transportSession" in o) return `session(${String(o.alias)}/${String(o.transportSession)})`;
+    // Scrub inside the session token too: the transportSession can embed a
+    // `reset-<Date.now()>` suffix (from `/clear`), which would otherwise leak raw epoch ms here
+    // even though string-arg rendering already scrubs it.
+    if ("alias" in o && "transportSession" in o) return `session(${scrubText(String(o.alias))}/${scrubText(String(o.transportSession))})`;
     return "{…}";
   }
   return String(v);
@@ -76,6 +85,19 @@ function recordingLogger(push: (l: string) => void): AppLogger {
   } as unknown as AppLogger;
 }
 
+// A PerfSpan whose `mark` appends `perfSpan.mark(<event>)` to the ordered record (event name
+// only — the context object carries transportKind/localOutcome/decision noise and time-varying
+// fields, so it is dropped; the event name is scrubbed like every other recorded token). Lets a
+// scenario forward it into `handle(...)` to pin the spec's "perf 标记序" without leaking numbers.
+// setOutcome is a no-op: nothing in the dispatch path records it, and it would only add noise.
+function recordingPerfSpan(push: (l: string) => void): PerfSpan {
+  return {
+    traceId: "-",
+    mark: (event: string) => push(`perfSpan.mark(${scrubText(event)})`),
+    setOutcome: () => {},
+  };
+}
+
 export interface RouterOracleScenario {
   name: string;
   // Seed the real SessionService before the run (attach existing sessions, mark archived…).
@@ -90,8 +112,14 @@ export interface RouterOracleScenario {
   // production default reads ~/.acpx/sessions/index.json off disk, which is nondeterministic
   // across machines/CI — the clean-baseline behaviour is "no cached command found").
   resolveSessionAgentCommand?: SessionAgentCommandResolver;
-  // The action under test. Receives the router + a recording `reply`.
-  run: (router: CommandRouter, reply: (t: string) => Promise<void>) => Promise<unknown>;
+  // The action under test. Receives the router, a recording `reply`, and a recording
+  // `perfSpan` (forward it into `handle(...)` to record the perf-mark sequence; scenarios that
+  // ignore it record nothing extra, so existing fixtures stay byte-identical).
+  run: (
+    router: CommandRouter,
+    reply: (t: string) => Promise<void>,
+    perfSpan: PerfSpan,
+  ) => Promise<unknown>;
 }
 
 export async function runRouterOracle(
@@ -152,9 +180,10 @@ export async function runRouterOracle(
   const reply = async (t: string) => {
     push(`reply(${summ(t)})`);
   };
+  const perfSpan = recordingPerfSpan(push);
   let outcome: unknown;
   try {
-    outcome = { ok: await scenario.run(router, reply) };
+    outcome = { ok: await scenario.run(router, reply, perfSpan) };
   } catch (err) {
     outcome = { threw: err instanceof Error ? err.message : String(err) };
   }

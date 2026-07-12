@@ -1,0 +1,15 @@
+{
+  "record": [
+    "logger.debug(command.parsed)",
+    "sessions.getCurrentSession(\"wx:user\")",
+    "transport.setModel(session(demo/backend:demo), \"gpt-5.2[high]\")",
+    "logger.info(transport.set_model)",
+    "sessions.setCurrentSessionModel(\"wx:user\", \"gpt-5.2[high]\")",
+    "logger.info(command.completed)"
+  ],
+  "outcome": {
+    "ok": {
+      "text": "Current session model switched to: gpt-5.2[high]"
+    }
+  }
+}

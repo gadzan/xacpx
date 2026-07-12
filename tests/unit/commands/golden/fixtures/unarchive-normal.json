@@ -1,0 +1,6 @@
+{
+  "record": [
+    "sessions.setArchived(\"relay:demo\", false)"
+  ],
+  "outcome": {}
+}

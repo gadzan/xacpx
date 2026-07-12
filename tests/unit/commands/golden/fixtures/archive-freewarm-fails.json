@@ -1,0 +1,11 @@
+{
+  "record": [
+    "sessions.getSession(\"relay:demo\")",
+    "sessions.countAliasesSharingTransport(\"backend:relay:demo\", \"relay:demo\")",
+    "transport.cancel(session(relay:demo/backend:relay:demo))",
+    "transport.freeWarmProcess(session(relay:demo/backend:relay:demo))",
+    "logger.error(session.free_warm_process_failed)",
+    "sessions.setArchived(\"relay:demo\", true)"
+  ],
+  "outcome": {}
+}

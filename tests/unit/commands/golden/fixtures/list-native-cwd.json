@@ -1,0 +1,15 @@
+{
+  "record": [
+    "transport.listAgentSessions({…})"
+  ],
+  "outcome": {
+    "ok": [
+      {
+        "sessionId": "sess-1",
+        "cwd": "/tmp/backend",
+        "title": "demo",
+        "updatedAt": "<ts>"
+      }
+    ]
+  }
+}

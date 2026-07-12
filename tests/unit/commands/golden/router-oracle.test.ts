@@ -155,9 +155,19 @@ test("list-native-none", () =>
   }));
 
 // 14. Full handle() path for `/session new` (parse → authorize → ensure/verify/attach lifecycle).
+//     The ensureSession fake drives its progress-handler argument (createProgressHandler) so the
+//     progress/heartbeat reply path is recorded: `spawn` emits an agent-spawning reply; the
+//     immediately-following `initializing` is deterministically suppressed by the 3s debounce
+//     (0ms < DEBOUNCE_MS), so exactly one reply lands regardless of wall-clock.
 test("handle-session-new", () =>
   check({
     name: "handle-session-new",
+    transport: {
+      ensureSession: async (_session, onProgress) => {
+        onProgress?.("spawn");
+        onProgress?.("initializing");
+      },
+    },
     run: (r, reply) => r.handle("wx:user", "/session new demo --agent codex --ws backend", reply),
   }));
 
@@ -172,7 +182,10 @@ test("handle-mode-set", () =>
     run: (r) => r.handle("wx:user", "/mode plan"),
   }));
 
-// 16. handle() plain prompt with a current session: reaches transport.prompt.
+// 16. handle() plain prompt with a current session: reaches transport.prompt. A recording
+//     perfSpan is threaded into handle() (11th positional arg) so the spec's perf-mark order
+//     (router.authorized → transport.prompt_dispatched → transport.prompt_done) is pinned.
+//     transport.first_chunk never marks: the prompt fake resolves without invoking onSegment.
 test("handle-prompt-normal", () =>
   check({
     name: "handle-prompt-normal",
@@ -180,7 +193,20 @@ test("handle-prompt-normal", () =>
       await s.createSession("demo", "codex", "backend");
       await s.useSession("wx:user", "demo");
     },
-    run: (r, reply) => r.handle("wx:user", "hello there", reply),
+    run: (r, reply, perfSpan) =>
+      r.handle(
+        "wx:user",
+        "hello there",
+        reply,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        perfSpan,
+      ),
   }));
 
 // 17. handle() plain prompt with an already-aborted signal: throws AbortError before transport.prompt.
@@ -235,3 +261,90 @@ test("handle-ensure-autoinstall", () => {
     },
   });
 });
+
+// --- Coverage-gap scenarios added after Codex review (spec §等价性判据 场景集). ---
+
+// 19. unarchiveSession on a seeded-archived session: single sessions.setArchived(alias, false).
+//     (Spec "6 CRUD 直接驱动" — unarchive had no scenario.)
+test("unarchive-normal", () =>
+  check({
+    name: "unarchive-normal",
+    seed: async (s) => {
+      await s.createSession("relay:demo", "codex", "backend");
+      await s.setArchived("relay:demo", true);
+    },
+    run: (r) => r.unarchiveSession("relay:demo"),
+  }));
+
+// 20. listNativeSessionsForControl when the transport CAN list: resolves cwd from config and
+//     records the `transport.listAgentSessions({… cwd, filterCwd …})` query. (Spec scenario 13's
+//     "有则按 cwd 过滤查询" branch — only the empty `list-native-none` existed.)
+test("list-native-cwd", () =>
+  check({
+    name: "list-native-cwd",
+    transport: {
+      listAgentSessions: async () => ({
+        source: "agent" as const,
+        sessions: [{ sessionId: "sess-1", cwd: "/tmp/backend", title: "demo", updatedAt: "<ts>" }],
+      }),
+    },
+    run: (r) => r.listNativeSessionsForControl("codex", "backend"),
+  }));
+
+// 21. handle() `/model <id>`: getCurrentSession → setModelTransportSession (measureTransportCall
+//     → transport.setModel) → setCurrentSessionModel. Valid id per parse-command-model.test.ts.
+test("handle-model-set", () =>
+  check({
+    name: "handle-model-set",
+    transport: {
+      setModel: async () => {},
+      getSessionModel: async () => ({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] }),
+    },
+    seed: async (s) => {
+      await s.createSession("demo", "codex", "backend");
+      await s.useSession("wx:user", "demo");
+    },
+    run: (r) => r.handle("wx:user", "/model gpt-5.2[high]"),
+  }));
+
+// 22. handle() `/cancel`: getCurrentSession → cancelTransportSession (measureTransportCall →
+//     transport.cancel).
+test("handle-cancel", () =>
+  check({
+    name: "handle-cancel",
+    seed: async (s) => {
+      await s.createSession("demo", "codex", "backend");
+      await s.useSession("wx:user", "demo");
+    },
+    run: (r) => r.handle("wx:user", "/cancel"),
+  }));
+
+// 23. handle() `/clear` (session.reset): resolve fresh reset session → ensure/verify via invoker
+//     → attachSession → refresh → useSession. The reset transport session name embeds Date.now();
+//     the harness scrubs `reset-<n>` so the fixture is byte-stable.
+test("handle-session-reset", () =>
+  check({
+    name: "handle-session-reset",
+    seed: async (s) => {
+      await s.createSession("demo", "codex", "backend");
+      await s.useSession("wx:user", "demo");
+    },
+    run: (r) => r.handle("wx:user", "/clear"),
+  }));
+
+// 24. archiveSessionWithTransport, non-shared, where transport.freeWarmProcess THROWS: the
+//     best-effort catch swallows it, logs session.free_warm_process_failed, and still reaches
+//     sessions.setArchived(alias, true). (Spec scenario 9's best-effort branch.)
+test("archive-freewarm-fails", () =>
+  check({
+    name: "archive-freewarm-fails",
+    transport: {
+      freeWarmProcess: async () => {
+        throw new Error("free warm boom");
+      },
+    },
+    seed: async (s) => {
+      await s.createSession("relay:demo", "codex", "backend");
+    },
+    run: (r) => r.archiveSessionWithTransport("relay:demo"),
+  }));
