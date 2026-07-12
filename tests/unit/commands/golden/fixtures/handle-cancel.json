@@ -1,0 +1,14 @@
+{
+  "record": [
+    "logger.debug(command.parsed)",
+    "sessions.getCurrentSession(\"wx:user\")",
+    "transport.cancel(session(demo/backend:demo))",
+    "logger.info(transport.cancel)",
+    "logger.info(command.completed)"
+  ],
+  "outcome": {
+    "ok": {
+      "text": "cancelled"
+    }
+  }
+}

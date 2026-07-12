@@ -1,0 +1,15 @@
+{
+  "record": [
+    "transport.listAgentSessions({cwd:\"/tmp/backend\", filterCwd:\"/tmp/backend\"})"
+  ],
+  "outcome": {
+    "ok": [
+      {
+        "sessionId": "sess-1",
+        "cwd": "/tmp/backend",
+        "title": "demo",
+        "updatedAt": "<ts>"
+      }
+    ]
+  }
+}

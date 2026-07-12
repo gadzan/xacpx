@@ -1,0 +1,19 @@
+{
+  "record": [
+    "logger.debug(command.parsed)",
+    "perfSpan.mark(router.authorized)",
+    "sessions.getCurrentSession(\"wx:user\")",
+    "logger.error(orchestration.coordinator_results.load_failed)",
+    "perfSpan.mark(transport.prompt_dispatched)",
+    "transport.prompt(session(demo/backend:demo), \"hello there\", fn, ∅, {…})",
+    "perfSpan.mark(transport.first_chunk)",
+    "logger.info(transport.prompt)",
+    "perfSpan.mark(transport.prompt_done)",
+    "logger.info(command.completed)"
+  ],
+  "outcome": {
+    "ok": {
+      "text": "agent:demo:hello there"
+    }
+  }
+}

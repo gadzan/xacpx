@@ -30,11 +30,59 @@ The module's main entry.
 
 Responsibilities:
 - Call `parseCommand()` to parse the input.
-- Do the overall dispatch based on `command.kind`.
-- Assemble the context and ops the handler needs.
-- Catch transport-layer errors, logs, and diagnostic info.
+- Do the overall dispatch based on `command.kind` (the 54-case switch).
+- Assemble the context and ops the handler needs (the `createXxxOps` factories).
+- Compose and delegate to `TransportInvoker` and `SessionControlService` (see below); keep public forwarders for the session-CRUD methods.
 
-You can think of it as: **a thin router + a context assembler**.
+You can think of it as: **a thin router + a composition root**. The transport-call
+wrapping and the session-CRUD-with-transport logic were extracted into the two
+units below; the router no longer owns them, it just wires them into the handlers'
+ops and forwards the CRUD calls.
+
+### `transport-invoker.ts`
+`TransportInvoker` — the transport-call wrapping layer for the **handler-facing**
+transport operations. Wraps these specific calls with perf/timing logging (via
+`measureTransportCall`), progress-heartbeat, cooperative abort, and error diagnostics.
+It does NOT wrap every `SessionTransport` method — the CRUD lifecycle in
+`SessionControlService` still calls some transport methods directly (see below).
+
+Responsibilities:
+- `ensureTransportSession` / `checkTransportSession` (with `createProgressHandler`
+  heartbeat + auto-install recovery of missing optional deps).
+- `promptTransportSession` (abort-before-dispatch handling, perf marks).
+- `setMode` / `setModel` / `getModel` / `cancelTransportSession`.
+- `refreshSessionTransportAgentCommand`.
+- `measureTransportCall` (the shared timing + success/failure log + `PromptCommandError`
+  diagnostic wrapper).
+
+Holds no session-CRUD or dispatch state. The router constructs one and the
+`createSessionLifecycleOps`/`createSessionInteractionOps`/… factories delegate to it.
+
+### `session-control-service.ts`
+`SessionControlService` — the session-CRUD-with-transport lifecycle, coordinating
+`SessionService` + `SessionTransport` + `OrchestrationService`.
+
+Responsibilities:
+- `createSessionWithTransport` / `attachNativeSessionWithTransport` (resolve → reserve
+  → ensure/resume → verify → bind → refresh, best-effort refresh).
+- `removeSessionWithTransport` (orchestration blocking-task guard → logical remove →
+  best-effort reference purge → transport delete only when no other alias shares it).
+- `archiveSessionWithTransport` (active-turn guard → cancel + free warm process when
+  unshared → flag archived) / `unarchiveSession`.
+- `listNativeSessionsForControl`.
+
+Composes a `TransportInvoker` (uses its `ensureTransportSession`/`checkTransportSession`/
+`refreshSessionTransportAgentCommand`) and takes `reserveLogicalTransportSession` as an
+injected callback. For the CRUD teardown/setup steps it also calls the transport
+**directly** — `deleteSession`, `cancel`, `freeWarmProcess`, `resumeAgentSession`,
+`listAgentSessions` — rather than through the invoker (these are one-shot lifecycle calls,
+not the repeatedly-wrapped handler operations). The router keeps byte-identical public
+forwarders for all six methods, so `main.ts` / control API / `console-agent.ts` call sites
+are unchanged.
+
+Both units are guarded by a black-box golden oracle
+(`tests/unit/commands/golden/`) that records the router's ordered collaborator-call
+log; see the oracle test for the covered scenarios.
 
 ### `parse-command.ts`
 The command parser.

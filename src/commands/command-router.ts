@@ -1,16 +1,14 @@
 
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
-import type { AppConfig, TransportConfig } from "../config/types";
+import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
 import { createNoopAppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
-import type { AgentCommand, PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
+import type { AgentCommand, PromptMediaInput, PromptUsage, SessionTransport } from "../transport/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
-import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
 import type { PerfSpan } from "../perf/perf-tracer";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import { resolveSessionAgentCommandFromIndex, type SessionAgentCommandResolver } from "../transport/acpx-session-index";
-import { PromptCommandError } from "../transport/prompt-output";
 import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
@@ -55,13 +53,6 @@ import {
   handleTaskReject,
   handleTasksClean,
 } from "./handlers/orchestration-handler";
-import {
-  isPartialPromptOutputError,
-  summarizeTransportDiagnostic,
-  summarizeTransportDiagnosticTail,
-  summarizeTransportError,
-  summarizeTransportNdjson,
-} from "./transport-diagnostics";
 import { handleHelp, handleInvalidCommand } from "./handlers/help-handler";
 import { handleAgents, handleAgentAdd, handleAgentRemove } from "./handlers/agent-handler";
 import { handleWorkspaces, handleWorkspaceCreate, handleWorkspaceRemove } from "./handlers/workspace-handler";
@@ -72,9 +63,7 @@ import { t } from "../i18n";
 import { renderSessionCreationError, renderSessionCreationVerificationError, renderTransportError, tryRecoverMissingSession } from "./handlers/session-recovery-handler";
 import { autoInstallOptionalDep as defaultAutoInstall } from "../recovery/auto-install-optional-dep";
 import { discoverParentPackagePaths as defaultDiscoverPaths } from "../recovery/discover-parent-package-paths";
-import { AutoInstallFailedError, MissingOptionalDepError } from "../recovery/errors";
-import type { EnsureSessionProgress } from "../transport/types";
-import { translateAcpxNote } from "./translate-acpx-note";
+import { AutoInstallFailedError } from "../recovery/errors";
 import { handleSessionResetCommand } from "./handlers/session-reset-handler";
 import type {
   CommandRouterContext,
@@ -91,7 +80,8 @@ import type {
   WritableConfigStore,
 } from "./router-types";
 import { renderLaterUnsupportedChannel } from "../scheduled/scheduled-render";
-import { stableCoordinatorSession } from "../orchestration/coordinator-identity";
+import { TransportInvoker } from "./transport-invoker";
+import { SessionControlService } from "./session-control-service";
 
 type AutoInstallFn = typeof defaultAutoInstall;
 type DiscoverPathsFn = typeof defaultDiscoverPaths;
@@ -110,6 +100,8 @@ export class CommandRouter {
   }
 
   private readonly activeTurns?: ActiveTurnRegistry;
+  private readonly transportInvoker: TransportInvoker;
+  private readonly sessionControl: SessionControlService;
 
   constructor(
     private readonly sessions: SessionService,
@@ -127,6 +119,29 @@ export class CommandRouter {
   ) {
     this.logger = logger ?? createNoopAppLogger();
     this.activeTurns = activeTurns;
+    // Late-binding forwarding lambdas (not direct field references): autoInstall/
+    // discoverPaths are mutable fields swapped post-construction by
+    // __setAutoInstallForTest/__setDiscoverPathsForTest (recovery tests, oracle
+    // scenario 18). Capturing the values here would freeze the pre-swap default.
+    this.transportInvoker = new TransportInvoker({
+      transport: this.transport,
+      logger: this.logger,
+      config: this.config,
+      sessions: this.sessions,
+      resolveSessionAgentCommand: this.resolveSessionAgentCommand,
+      autoInstall: (...a) => this.autoInstall(...a),
+      discoverPaths: (...a) => this.discoverPaths(...a),
+    });
+    this.sessionControl = new SessionControlService({
+      sessions: this.sessions,
+      transport: this.transport,
+      orchestration: this.orchestration,
+      activeTurns: this.activeTurns,
+      config: this.config,
+      logger: this.logger,
+      invoker: this.transportInvoker,
+      reserveLogicalTransportSession: (ts) => this.reserveLogicalTransportSession(ts),
+    });
   }
 
   async handle(
@@ -500,8 +515,8 @@ export class CommandRouter {
     return {
       resolveSession: (alias, agent, workspace, transportSession) =>
         this.sessions.resolveSession(alias, agent, workspace, transportSession),
-      ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
-      checkTransportSession: (session) => this.checkTransportSession(session),
+      ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
+      checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       markSessionReady: () => perfSpan?.mark("session.ready"),
       reserveTransportSession: (transportSession) => this.reserveLogicalTransportSession(transportSession),
       handleSessionShortcut: async (chatKey, agent, target, createNew, replyOverride) => {
@@ -517,7 +532,7 @@ export class CommandRouter {
         }
       },
       resetCurrentSession: (chatKey, replyOverride) => handleSessionResetCommand(this.createHandlerContext(), this.createSessionResetOps(replyOverride ?? reply, perfSpan), chatKey),
-      refreshSessionTransportAgentCommand: (alias) => this.refreshSessionTransportAgentCommand(alias),
+      refreshSessionTransportAgentCommand: (alias) => this.transportInvoker.refreshSessionTransportAgentCommand(alias),
     };
   }
 
@@ -534,53 +549,7 @@ export class CommandRouter {
     workspace: string,
     model?: string,
   ): Promise<ResolvedSession> {
-    // Refuse to overwrite an existing alias: silently re-pointing it would either
-    // reuse the old transport session (stale history) or orphan it, and a native
-    // session's agent_session_id would be silently dropped. Mirrors handleSessionNew.
-    const existing = this.sessions.getResolvedSessionByInternalAlias(internalAlias);
-    if (existing) {
-      throw new Error(`session "${internalAlias}" already exists`);
-    }
-
-    const session = this.sessions.resolveSession(
-      internalAlias,
-      agent,
-      workspace,
-      `${workspace}:${internalAlias}`,
-    );
-    // An explicit model override must be on the ResolvedSession BEFORE
-    // ensureTransportSession so acpx creates the session under that model
-    // (it carries through as `--model`). Mirrors handleSessionNew.
-    const normalizedModel = model?.trim();
-    if (normalizedModel) {
-      session.model = normalizedModel;
-    }
-    const release = await this.reserveLogicalTransportSession(session.transportSession);
-    try {
-      await this.ensureTransportSession(session);
-      const exists = await this.checkTransportSession(session);
-      if (!exists) {
-        throw new Error(`transport session "${session.transportSession}" could not be verified`);
-      }
-      await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
-      if (normalizedModel) {
-        await this.sessions.setSessionModel(internalAlias, normalizedModel);
-      }
-      // Best-effort: a transient refresh failure must not fail a create that has
-      // already succeeded, bound, and verified. Mirrors the chat paths' use of
-      // refreshSessionTransportAgentCommandBestEffort.
-      try {
-        await this.refreshSessionTransportAgentCommand(internalAlias);
-      } catch (error) {
-        await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
-          alias: internalAlias,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return session;
-    } finally {
-      await release();
-    }
+    return this.sessionControl.createSessionWithTransport(internalAlias, agent, workspace, model);
   }
 
   /** Real delete: logical removal + acpx history delete, guarded so a transport
@@ -591,55 +560,7 @@ export class CommandRouter {
     transportTornDown: boolean;
     transportTeardownWarning?: string;
   }> {
-    const session = await this.sessions.getSession(internalAlias);
-    if (!session) {
-      throw new Error(`session "${internalAlias}" does not exist`);
-    }
-    // Both delete entry points (this web/control path and chat `handleSessionRemove`)
-    // MUST enforce the orchestration blocking-task guard + reference purge, or a
-    // coordinator session with in-flight delegated tasks can be irreversibly wiped.
-    if (this.orchestration) {
-      const blocking = await this.orchestration.listSessionBlockingTasks(session.transportSession);
-      if (blocking.length > 0) {
-        throw new Error(`session "${internalAlias}" has ${blocking.length} blocking task(s); cancel them before deleting`);
-      }
-    }
-    const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
-    const { wasActive } = await this.sessions.removeSession(internalAlias);
-
-    if (this.orchestration) {
-      try {
-        await this.orchestration.purgeSessionReferences(session.transportSession);
-      } catch (error) {
-        await this.logger.error("session.orchestration_purge_failed", "failed to purge orchestration references after web remove", {
-          alias: internalAlias,
-          transportSession: session.transportSession,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    let transportTornDown = false;
-    let transportTeardownWarning: string | undefined;
-    if (sharedAliasCount === 0 && this.transport.deleteSession) {
-      try {
-        await this.transport.deleteSession(session);
-        transportTornDown = true;
-      } catch (error) {
-        transportTeardownWarning = error instanceof Error ? error.message : String(error);
-        await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
-          alias: internalAlias,
-          transportSession: session.transportSession,
-          message: transportTeardownWarning,
-        });
-      }
-    }
-    return {
-      wasActive,
-      sharedAliasCount,
-      transportTornDown,
-      ...(transportTeardownWarning ? { transportTeardownWarning } : {}),
-    };
+    return this.sessionControl.removeSessionWithTransport(internalAlias);
   }
 
   /** Archive: cancel any in-flight turn and free the warm queue-owner process
@@ -648,51 +569,13 @@ export class CommandRouter {
    *  resumes the same conversation with full history; the first post-archive
    *  prompt cold-starts a fresh queue owner. */
   async archiveSessionWithTransport(internalAlias: string): Promise<void> {
-    const session = await this.sessions.getSession(internalAlias);
-    if (!session) {
-      throw new Error(`session "${internalAlias}" does not exist`);
-    }
-    // Archiving cancels any in-flight turn but deliberately KEEPS the acpx session
-    // alive, so re-prompting later resumes the same conversation with full agent
-    // context + history. Refuse while a turn is in flight so we don't race (and
-    // silently abort) the running prompt.
-    if (this.activeTurns?.isActiveAnywhere(internalAlias)) {
-      throw new Error(`session "${internalAlias}" has a running turn; stop it before archiving`);
-    }
-    const shared = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias) > 0;
-    if (!shared) {
-      try {
-        await this.transport.cancel(session);
-      } catch {
-        /* best-effort */
-      }
-      // Free the warm queue-owner process now instead of waiting for acpx's TTL to
-      // idle it out. freeWarmProcess kills ONLY the owner process — it does NOT
-      // `sessions close` the record (no `closed` flag), so the session stays open
-      // and the next prompt resumes the same conversation with full history,
-      // repeatably across archive→restore cycles. Best-effort: on failure the
-      // process simply lingers until TTL (the prior behavior), never a regression.
-      try {
-        await this.transport.freeWarmProcess?.(session);
-      } catch (error) {
-        await this.logger.error(
-          "session.free_warm_process_failed",
-          "failed to free warm queue-owner on archive",
-          {
-            alias: internalAlias,
-            transportSession: session.transportSession,
-            message: error instanceof Error ? error.message : String(error),
-          },
-        );
-      }
-    }
-    await this.sessions.setArchived(internalAlias, true);
+    return this.sessionControl.archiveSessionWithTransport(internalAlias);
   }
 
   /** Explicit un-archive (web undo / manual). No process action — it resumes on the
    *  next message via useSession. */
   async unarchiveSession(internalAlias: string): Promise<void> {
-    await this.sessions.setArchived(internalAlias, false);
+    return this.sessionControl.unarchiveSession(internalAlias);
   }
 
   /**
@@ -702,26 +585,7 @@ export class CommandRouter {
    * Returns [] when the transport doesn't support native listing.
    */
   async listNativeSessionsForControl(agent: string, workspace: string): Promise<AgentSession[]> {
-    const listAgentSessions = this.transport.listAgentSessions?.bind(this.transport);
-    if (!listAgentSessions) return [];
-    const agentConfig = this.config?.agents[agent];
-    const workspaceConfig = this.config?.workspaces[workspace];
-    if (!agentConfig || !workspaceConfig) {
-      throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
-    }
-    const agentCommand = resolveRuntimeAgentCommand(
-      agentConfig.driver,
-      agentConfig.command,
-      this.config?.transport.preferLocalAgents !== false,
-    );
-    const result = await listAgentSessions({
-      agent,
-      ...(agentCommand ? { agentCommand } : {}),
-      ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
-      cwd: workspaceConfig.cwd,
-      filterCwd: workspaceConfig.cwd,
-    });
-    return result?.sessions ?? [];
+    return this.sessionControl.listNativeSessionsForControl(agent, workspace);
   }
 
   /**
@@ -737,59 +601,17 @@ export class CommandRouter {
     agentSessionId: string,
     nativeMeta?: { title?: string | null; updatedAt?: string },
   ): Promise<ResolvedSession> {
-    if (!this.transport.resumeAgentSession) {
-      throw new Error("the active transport does not support native sessions");
-    }
-    const existing = this.sessions.getResolvedSessionByInternalAlias(internalAlias);
-    if (existing) {
-      throw new Error(`session "${internalAlias}" already exists`);
-    }
-    const session = this.sessions.resolveSession(
-      internalAlias,
-      agent,
-      workspace,
-      `${workspace}:${internalAlias}`,
-    );
-    const release = await this.reserveLogicalTransportSession(session.transportSession);
-    try {
-      await this.transport.resumeAgentSession(session, agentSessionId);
-      const exists = await this.checkTransportSession(session);
-      if (!exists) {
-        throw new Error(`transport session "${session.transportSession}" could not be verified`);
-      }
-      await this.sessions.attachNativeSession({
-        alias: internalAlias,
-        agent,
-        workspace,
-        transportSession: session.transportSession,
-        agentSessionId,
-        ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
-        ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
-      });
-      // Best-effort: a transient refresh failure must not fail an attach that already
-      // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
-      try {
-        await this.refreshSessionTransportAgentCommand(internalAlias);
-      } catch (error) {
-        await this.logger.error("session.native.agent_command_refresh_failed", "failed to refresh native session agent command", {
-          alias: internalAlias,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return session;
-    } finally {
-      await release();
-    }
+    return this.sessionControl.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId, nativeMeta);
   }
 
   private createSessionInteractionOps(perfSpan?: PerfSpan): SessionInteractionOps {
     return {
-      setModeTransportSession: (session, modeId) => this.setModeTransportSession(session, modeId),
-      setModelTransportSession: (session, modelId) => this.setModelTransportSession(session, modelId),
-      getModelTransportSession: (session) => this.getModelTransportSession(session),
-      cancelTransportSession: (session) => this.cancelTransportSession(session),
+      setModeTransportSession: (session, modeId) => this.transportInvoker.setModeTransportSession(session, modeId),
+      setModelTransportSession: (session, modelId) => this.transportInvoker.setModelTransportSession(session, modelId),
+      getModelTransportSession: (session) => this.transportInvoker.getModelTransportSession(session),
+      cancelTransportSession: (session) => this.transportInvoker.cancelTransportSession(session),
       promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride, onPlan, onUsage, onCommands) =>
-        this.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan, onUsage, onCommands),
+        this.transportInvoker.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan, onUsage, onCommands),
     };
   }
 
@@ -804,12 +626,12 @@ export class CommandRouter {
 
   private createSessionResetOps(reply?: (text: string) => Promise<void>, perfSpan?: PerfSpan): SessionResetOps {
     return {
-      ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
-      checkTransportSession: (session) => this.checkTransportSession(session),
+      ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
+      checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       reserveTransportSession: (transportSession) => this.reserveLogicalTransportSession(transportSession),
       resolveSession: (alias, agent, workspace, transportSession) =>
         this.sessions.resolveSession(alias, agent, workspace, transportSession),
-      refreshSessionTransportAgentCommand: (alias) => this.refreshSessionTransportAgentCommand(alias),
+      refreshSessionTransportAgentCommand: (alias) => this.transportInvoker.refreshSessionTransportAgentCommand(alias),
       now: () => Date.now(),
     };
   }
@@ -826,10 +648,10 @@ export class CommandRouter {
     return {
       resolveSession: (alias, agent, workspace, transportSession) =>
         this.sessions.resolveSession(alias, agent, workspace, transportSession),
-      ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
-      checkTransportSession: (session) => this.checkTransportSession(session),
+      ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
+      checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       reserveTransportSession: (transportSession) => this.reserveLogicalTransportSession(transportSession),
-      refreshSessionTransportAgentCommand: (alias) => this.refreshSessionTransportAgentCommand(alias),
+      refreshSessionTransportAgentCommand: (alias) => this.transportInvoker.refreshSessionTransportAgentCommand(alias),
     };
   }
 
@@ -891,299 +713,4 @@ export class CommandRouter {
       throw error;
     }
   }
-
-  private async ensureTransportSession(
-    session: ResolvedSession,
-    reply?: (text: string) => Promise<void>,
-    perfSpan?: PerfSpan,
-  ): Promise<void> {
-    const attemptSession = (operation: string): Promise<void> => {
-      const { handler, dispose } = this.createProgressHandler(session, reply);
-      return this.measureTransportCall(operation, session, () =>
-        this.transport.ensureSession(session, handler),
-      ).finally(dispose);
-    };
-
-    try {
-      await attemptSession("ensure_session");
-      perfSpan?.mark("session.ready");
-    } catch (err) {
-      if (!(err instanceof MissingOptionalDepError)) throw err;
-      await reply?.(t().router.depMissing(err.package));
-
-      const paths = await this.discoverPaths(err.package, err.parentPackagePath, {
-        cwd: session.cwd,
-      });
-      const result = await this.autoInstall(err.package, paths, {
-        verify: async () => {
-          await reply?.(t().router.depInstallVerifying);
-          try {
-            await attemptSession("ensure_session.verify");
-            perfSpan?.mark("session.ready");
-            return true;
-          } catch (retryErr) {
-            if (retryErr instanceof MissingOptionalDepError) return false;
-            throw retryErr;
-          }
-        },
-      });
-
-      if (!result.ok) {
-        throw new AutoInstallFailedError(err, result.errors, result.logPath);
-      }
-    }
-  }
-
-  private createProgressHandler(
-    session: ResolvedSession,
-    reply?: (text: string) => Promise<void>,
-  ): { handler: (progress: EnsureSessionProgress) => void; dispose: () => void } {
-    const startedAt = Date.now();
-    let lastMessageAt = 0;
-    const DEBOUNCE_MS = 3000;
-    const HEARTBEAT_MS = 30_000;
-    // Suppression window smaller than the interval: a message sent within the
-    // last HEARTBEAT_SUPPRESS_MS silences the next heartbeat. Using `<
-    // HEARTBEAT_MS` here would skip the first heartbeat at t=30s because the
-    // `spawn` message near t=0 falls just inside a 30s window due to timer jitter.
-    const HEARTBEAT_SUPPRESS_MS = 10_000;
-
-    const sendHeartbeat = (): void => {
-      if (!reply) return;
-      const now = Date.now();
-      if (now - lastMessageAt < HEARTBEAT_SUPPRESS_MS) return;
-      const elapsed = Math.floor((now - startedAt) / 1000);
-      void reply(t().router.agentHeartbeat(session.agent, elapsed)).catch(() => {});
-      lastMessageAt = now;
-    };
-    const heartbeatTimer = reply
-      ? setInterval(sendHeartbeat, HEARTBEAT_MS)
-      : undefined;
-
-    const handler = (progress: EnsureSessionProgress): void => {
-      if (!reply) return;
-      const now = Date.now();
-      if (typeof progress === "string") {
-        if (progress === "spawn") {
-          void reply(t().router.agentSpawning(session.agent)).catch(() => {});
-          lastMessageAt = now;
-        } else if (progress === "initializing") {
-          if (now - lastMessageAt >= DEBOUNCE_MS) {
-            const elapsed = Math.floor((now - startedAt) / 1000);
-            void reply(t().router.agentInitializing(session.agent, elapsed)).catch(() => {});
-            lastMessageAt = now;
-          }
-        }
-        return;
-      }
-      // progress.kind === "note"
-      if (now - lastMessageAt < DEBOUNCE_MS) return;
-      const translated = translateAcpxNote(progress.text);
-      if (!translated) return;
-      const elapsed = Math.floor((now - startedAt) / 1000);
-      void reply(t().router.acpxNoteElapsed(translated, elapsed)).catch(() => {});
-      lastMessageAt = now;
-    };
-
-    const dispose = (): void => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-    };
-
-    return { handler, dispose };
-  }
-
-
-  private async checkTransportSession(session: ResolvedSession): Promise<boolean> {
-    return await this.measureTransportCall("has_session", session, () => this.transport.hasSession(session));
-  }
-
-  private async promptTransportSession(
-    session: ResolvedSession,
-    text: string,
-    reply?: (text: string) => Promise<void>,
-    replyContext?: ReplyQuotaContext,
-    media?: PromptMediaInput,
-    abortSignal?: AbortSignal,
-    onToolEvent?: (event: ToolUseEvent) => void | Promise<void>,
-    onThought?: (chunk: string) => void | Promise<void>,
-    perfSpan?: PerfSpan,
-    onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
-    onUsage?: (usage: PromptUsage) => void | Promise<void>,
-    onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
-  ) {
-    session.mcpCoordinatorSession ??= stableCoordinatorSession(session.transportSession);
-    // `done` closes the race window between prompt resolving and the abort
-    // listener firing: once we're in finally we suppress any late abort so
-    // it can't cancel a *follow-up* prompt that happens to reuse this session.
-    let done = false;
-    let abortRequested = false;
-    let cancelOnAbort: (() => void) | undefined;
-    const fireCancel = (): void => {
-      abortRequested = true;
-      if (done) return;
-      try {
-        const result = this.transport.cancel(session);
-        if (result && typeof (result as { catch?: unknown }).catch === "function") {
-          (result as Promise<unknown>).catch(async (error) => {
-            await this.logger.error("transport.cancel_on_abort_failed", "transport cancel triggered by abort signal failed", {
-              agent: session.agent,
-              workspace: session.workspace,
-              alias: session.alias,
-              message: error instanceof Error ? error.message : String(error),
-            });
-          });
-        }
-      } catch (error) {
-        void this.logger.error("transport.cancel_on_abort_failed", "transport cancel triggered by abort signal threw synchronously", {
-          agent: session.agent,
-          workspace: session.workspace,
-          alias: session.alias,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
-    let localOutcome: "ok" | "error" | "aborted" = "ok";
-    if (abortSignal) {
-      if (abortSignal.aborted) {
-        // Already aborted before we even started — don't pre-emptively call
-        // cancel (the transport hasn't seen a prompt yet on this session
-        // necessarily, and some transports throw on cancel-without-active).
-        // Instead, enter the unified try/finally path so perf records the
-        // aborted prompt lifecycle, then throw before dispatching transport.prompt.
-        abortRequested = true;
-      } else {
-        cancelOnAbort = fireCancel;
-        abortSignal.addEventListener("abort", cancelOnAbort, { once: true });
-      }
-    }
-    let firstChunkFired = false;
-    const onSegment = (_segment: string): void => {
-      if (!firstChunkFired) {
-        firstChunkFired = true;
-        perfSpan?.mark("transport.first_chunk");
-      }
-    };
-    try {
-      if (abortRequested) {
-        throw new DOMException("Aborted before prompt started", "AbortError");
-      }
-      perfSpan?.mark("transport.prompt_dispatched", {
-        transportKind: this.config?.transport.type ?? inferTransportKind(this.transport),
-      });
-      return await this.measureTransportCall("prompt", session, () =>
-        this.transport.prompt(session, text, reply, replyContext, {
-          ...(media ? { media } : {}),
-          ...(reply ? { onSegment } : {}),
-          ...(onToolEvent ? { onToolEvent } : {}),
-          ...(onThought ? { onThought } : {}),
-          ...(onPlan ? { onPlan } : {}),
-          ...(onUsage ? { onUsage } : {}),
-          ...(onCommands ? { onCommands } : {}),
-        }),
-      );
-    } catch (error) {
-      localOutcome = isAbortError(error) || abortRequested ? "aborted" : "error";
-      throw error;
-    } finally {
-      if (abortRequested && localOutcome === "ok") {
-        localOutcome = "aborted";
-      }
-      perfSpan?.mark("transport.prompt_done", { localOutcome });
-      done = true;
-      if (cancelOnAbort && abortSignal) {
-        abortSignal.removeEventListener("abort", cancelOnAbort);
-      }
-    }
-  }
-
-  private async setModeTransportSession(session: ResolvedSession, modeId: string) {
-    return await this.measureTransportCall("set_mode", session, () => this.transport.setMode(session, modeId));
-  }
-
-  private async setModelTransportSession(session: ResolvedSession, modelId: string) {
-    if (!this.transport.setModel) {
-      throw new Error("the active transport does not support switching models");
-    }
-    const setModel = this.transport.setModel.bind(this.transport);
-    return await this.measureTransportCall("set_model", session, () => setModel(session, modelId));
-  }
-
-  private async getModelTransportSession(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
-    if (!this.transport.getSessionModel) {
-      // Transport can't query acpx; fall back to the resolved model with no catalog.
-      return { current: session.model, available: [] };
-    }
-    const getSessionModel = this.transport.getSessionModel.bind(this.transport);
-    return await this.measureTransportCall("get_model", session, () => getSessionModel(session));
-  }
-
-  private async cancelTransportSession(session: ResolvedSession) {
-    return await this.measureTransportCall("cancel", session, () => this.transport.cancel(session));
-  }
-
-  private async refreshSessionTransportAgentCommand(alias: string): Promise<void> {
-    const session = await this.sessions.getSession(alias);
-    if (!session) {
-      return;
-    }
-
-    const transportAgentCommand = await this.resolveSessionAgentCommand(session);
-    if (!transportAgentCommand) {
-      return;
-    }
-
-    await this.sessions.setSessionTransportAgentCommand(alias, transportAgentCommand);
-  }
-
-
-  private async measureTransportCall<T>(
-    operation: string,
-    session: ResolvedSession,
-    callback: () => Promise<T>,
-  ): Promise<T> {
-    const startedAt = Date.now();
-    try {
-      const result = await callback();
-      await this.logger.info(`transport.${operation}`, "transport operation completed", {
-        operation,
-        agent: session.agent,
-        workspace: session.workspace,
-        alias: session.alias,
-        durationMs: Date.now() - startedAt,
-      });
-      return result;
-    } catch (error) {
-      const diagnosticContext = error instanceof PromptCommandError
-        ? {
-            exitCode: error.exitCode,
-            stdoutPreview: summarizeTransportDiagnostic(error.stdout),
-            stdoutTailPreview: summarizeTransportDiagnosticTail(error.stdout),
-            stdoutLength: error.stdout.length,
-            ...summarizeTransportNdjson(error.stdout, "stdout"),
-            stderrPreview: summarizeTransportDiagnostic(error.stderr),
-            stderrTailPreview: summarizeTransportDiagnosticTail(error.stderr),
-            stderrLength: error.stderr.length,
-            ...summarizeTransportNdjson(error.stderr, "stderr"),
-          }
-        : {};
-      await this.logger.error(`transport.${operation}.failed`, "transport operation failed", {
-        operation,
-        agent: session.agent,
-        workspace: session.workspace,
-        alias: session.alias,
-        durationMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-        ...diagnosticContext,
-      });
-      throw error;
-    }
-  }
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-function inferTransportKind(transport: SessionTransport): TransportConfig["type"] {
-  return transport.constructor.name.includes("Bridge") ? "acpx-bridge" : "acpx-cli";
 }

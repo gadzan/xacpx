@@ -1,0 +1,11 @@
+{
+  "record": [
+    "logger.debug(command.parsed)",
+    "sessions.getCurrentSession(\"wx:user\")",
+    "logger.error(orchestration.coordinator_results.load_failed)",
+    "logger.error(command.failed)"
+  ],
+  "outcome": {
+    "threw": "Aborted before prompt started"
+  }
+}
