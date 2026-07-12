@@ -37,8 +37,6 @@ import { deleteAcpxSessionFiles } from "../acpx-session-files";
 import { DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS } from "../command-timeouts";
 import {
   buildPermissionArgs as sharedBuildPermissionArgs,
-  buildModelArgs as sharedBuildModelArgs,
-  buildQueueOwnerTtlArgs as sharedBuildQueueOwnerTtlArgs,
   buildSessionArgs as sharedBuildSessionArgs,
   buildAgentQueryArgs as sharedBuildAgentQueryArgs,
   buildPromptArgs as sharedBuildPromptArgs,
@@ -864,19 +862,6 @@ export class AcpxCliTransport implements SessionTransport {
       { ...this.sessionInput(session), queueOwnerTtlSeconds: this.queueOwnerTtlSeconds },
       tail,
     );
-  }
-
-  // The session's resolved model id as a global `--model` flag (empty when unset).
-  // acpx persists it into the session record and re-applies it on each turn, so
-  // passing it on both create and prompt keeps warm and cold paths consistent.
-  private buildModelArgs(session: ResolvedSession): string[] {
-    return sharedBuildModelArgs(session.model);
-  }
-
-  // `--ttl` only governs the prompt path's queue owner warm window, so it is
-  // intentionally limited to buildPromptArgs (not the shared session args).
-  private buildQueueOwnerTtlArgs(): string[] {
-    return sharedBuildQueueOwnerTtlArgs(this.queueOwnerTtlSeconds);
   }
 
   private buildPermissionArgs(): string[] {

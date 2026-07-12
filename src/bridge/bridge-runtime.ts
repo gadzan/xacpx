@@ -29,8 +29,6 @@ import type { AgentSessionListResult, PromptMediaInput } from "../transport/type
 import type { ToolEventMode } from "../transport/tool-event-mode.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import {
-  buildPermissionArgs as sharedBuildPermissionArgs,
-  buildQueueOwnerTtlArgs as sharedBuildQueueOwnerTtlArgs,
   buildSessionArgs as sharedBuildSessionArgs,
   buildPromptArgs as sharedBuildPromptArgs,
   isMissingAcpxSessionError,
@@ -773,20 +771,6 @@ export class BridgeRuntime {
       },
       tail,
     );
-  }
-
-  // `--ttl` only governs the prompt path's queue owner warm window, so it is
-  // intentionally limited to buildPromptArgs (not the shared session args).
-  private buildQueueOwnerTtlArgs(): string[] {
-    return sharedBuildQueueOwnerTtlArgs(this.options.queueOwnerTtlSeconds);
-  }
-
-  private buildPermissionArgs(): string[] {
-    return sharedBuildPermissionArgs({
-      permissionMode: this.options.permissionMode ?? DEFAULT_PERMISSION_MODE,
-      nonInteractivePermissions: this.options.nonInteractivePermissions ?? DEFAULT_NON_INTERACTIVE,
-      permissionPolicy: this.options.permissionPolicy,
-    });
   }
 
   private permissionInput() {

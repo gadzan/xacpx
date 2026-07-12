@@ -251,6 +251,8 @@ Two implementations:
 - `acpx-cli`: [src/transport/acpx-cli](../src/transport/acpx-cli)
 - `acpx-bridge`: [src/transport/acpx-bridge](../src/transport/acpx-bridge)
 
+argv construction for both implementations is centralized in the pure, dependency-free shared module [acpx-command-builder.ts](../src/transport/acpx-command-builder.ts): permission/ttl/model/session/prompt/query args plus `isMissingAcpxSessionError` and `parseAcpxSessionRecordId`, including the permission defaults (`DEFAULT_PERMISSION_MODE`, `DEFAULT_NON_INTERACTIVE`). It is the single source of truth for what flags acpx receives; `acpx-cli-transport.ts` and `bridge-runtime.ts` each call into it and keep only their own I/O plumbing (PTY/`child_process` spawning vs. the bridge subprocess).
+
 ### 5.8 Bridge (src/bridge/*)
 
 The Bridge's goal is to isolate the acpx driving into a subprocess and provide a more controllable concurrency/event channel.
