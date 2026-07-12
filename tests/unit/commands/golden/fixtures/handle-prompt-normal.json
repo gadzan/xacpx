@@ -1,0 +1,15 @@
+{
+  "record": [
+    "logger.debug(command.parsed)",
+    "sessions.getCurrentSession(\"wx:user\")",
+    "logger.error(orchestration.coordinator_results.load_failed)",
+    "transport.prompt(session(demo/backend:demo), \"hello there\", fn, ∅, {…})",
+    "logger.info(transport.prompt)",
+    "logger.info(command.completed)"
+  ],
+  "outcome": {
+    "ok": {
+      "text": "agent:demo:hello there"
+    }
+  }
+}

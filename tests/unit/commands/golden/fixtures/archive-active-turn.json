@@ -1,0 +1,8 @@
+{
+  "record": [
+    "sessions.getSession(\"relay:demo\")"
+  ],
+  "outcome": {
+    "threw": "session \"relay:demo\" has a running turn; stop it before archiving"
+  }
+}

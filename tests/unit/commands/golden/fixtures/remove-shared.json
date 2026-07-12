@@ -1,0 +1,16 @@
+{
+  "record": [
+    "sessions.getSession(\"relay:demo\")",
+    "orchestration.listSessionBlockingTasks(\"backend:shared\")",
+    "sessions.countAliasesSharingTransport(\"backend:shared\", \"relay:demo\")",
+    "sessions.removeSession(\"relay:demo\")",
+    "orchestration.purgeSessionReferences(\"backend:shared\")"
+  ],
+  "outcome": {
+    "ok": {
+      "wasActive": false,
+      "sharedAliasCount": 1,
+      "transportTornDown": false
+    }
+  }
+}

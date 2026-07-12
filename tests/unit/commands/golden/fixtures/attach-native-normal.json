@@ -1,0 +1,22 @@
+{
+  "record": [
+    "sessions.getResolvedSessionByInternalAlias(\"relay:demo\")",
+    "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo\")",
+    "orchestration.reserveLogicalTransportSession(\"backend:relay:demo\")",
+    "transport.resumeAgentSession(session(relay:demo/backend:relay:demo), \"sess-1\")",
+    "transport.hasSession(session(relay:demo/backend:relay:demo))",
+    "logger.info(transport.has_session)",
+    "sessions.attachNativeSession(session(relay:demo/backend:relay:demo))",
+    "sessions.getSession(\"relay:demo\")"
+  ],
+  "outcome": {
+    "ok": {
+      "alias": "relay:demo",
+      "agent": "codex",
+      "workspace": "backend",
+      "transportSession": "backend:relay:demo",
+      "cwd": "/tmp/backend",
+      "archived": false
+    }
+  }
+}

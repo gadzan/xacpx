@@ -1,0 +1,9 @@
+{
+  "record": [
+    "sessions.getSession(\"relay:demo\")",
+    "orchestration.listSessionBlockingTasks(\"backend:relay:demo\")"
+  ],
+  "outcome": {
+    "threw": "session \"relay:demo\" has 1 blocking task(s); cancel them before deleting"
+  }
+}

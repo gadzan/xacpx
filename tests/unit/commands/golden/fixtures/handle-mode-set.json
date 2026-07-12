@@ -1,0 +1,15 @@
+{
+  "record": [
+    "logger.debug(command.parsed)",
+    "sessions.getCurrentSession(\"wx:user\")",
+    "transport.setMode(session(demo/backend:demo), \"plan\")",
+    "logger.info(transport.set_mode)",
+    "sessions.setCurrentSessionMode(\"wx:user\", \"plan\")",
+    "logger.info(command.completed)"
+  ],
+  "outcome": {
+    "ok": {
+      "text": "Current session mode set to: plan"
+    }
+  }
+}
