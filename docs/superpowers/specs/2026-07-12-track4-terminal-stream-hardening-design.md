@@ -102,11 +102,24 @@ contract — the final output must not arrive after / be lost to the exit event)
 (d) `disposeAll` (best-effort flush is optional but the timer MUST be cleared).
 
 Preserved contracts:
-- Every byte still lands in `buffer` → `attach` replay unchanged.
+- Every byte still lands in `buffer` → `attach` replay stays byte-complete.
 - `seq` stays strictly monotonic; it now counts coalesced events, not chunks.
-  `attach` returns `{ buffer, lastSeq: seq - 1 }` exactly as before.
+- **`attach` must flush pending before snapshotting `buffer`/`lastSeq`.** The
+  client (`TerminalTab.vue:258-281`) reconciles by seq: it queues live events
+  during the attach RPC, replays `res.buffer`, then applies only queued events
+  with `seq > res.lastSeq` (and the live handler drops `seq <= lastSeq`). The
+  invariant it relies on is **`buffer` = output through `lastSeq`; any live event
+  with `seq > lastSeq` is genuinely new**. Without a flush, `attach` would return
+  a `buffer` containing un-emitted `pending` bytes while `lastSeq = seq-1` has not
+  covered them, so the later pending-flush event (`seq > lastSeq`) would
+  double-render. Flushing first assigns the pending bytes `seq = N`, sets
+  `lastSeq = N`, and the client's `seq > lastSeq` filter then correctly drops that
+  same flush event (which it queued during the RPC). Verified correct for other
+  already-attached clients too: the flush event is the first time they see those
+  bytes, so they render them exactly once.
 - Idle timer semantics unchanged (still reset only by input, never by output —
-  coalescing does not touch `resetIdle`).
+  coalescing does not touch `resetIdle`). `attach` still counts as activity
+  (`resetIdle`), unchanged.
 
 ### Component 2 — Hub-side backpressure (`packages/relay/src/gateway/web-gateway.ts`)
 
@@ -164,8 +177,12 @@ Test files (all under `tests/unit/`, run per-file by the root bun runner
 - A burst ≥ `COALESCE_MAX_BYTES` flushes **immediately** (before the timer),
   emitting its own event.
 - `onExit` flushes pending **before** `terminal-exit` (assert event order).
-- Regression guard: after a coalesced sequence, `attach` returns a byte-complete
-  buffer (every input byte present) and `lastSeq === seq - 1`.
+- **`attach` flushes pending first**: with un-flushed pending output, `attach`
+  emits exactly one coalesced `terminal-output` (seq = N) *before* returning, and
+  the returned `lastSeq === N` so the emitted flush event is not `> lastSeq`
+  (the client would drop it) — i.e. no double-render. Buffer is byte-complete.
+- Regression guard: after a coalesced sequence with no pending, `attach` returns a
+  byte-complete buffer and `lastSeq === seq - 1`.
 - Regression guard: `disposeAll` clears the flush timer (no dangling handle).
 
 **Backpressure** (fake `WebSocketLike` with settable `bufferedAmount`):
