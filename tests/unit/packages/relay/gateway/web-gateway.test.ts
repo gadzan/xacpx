@@ -16,6 +16,12 @@ class FakeSocket {
 
 const evt = (online: boolean): WebServerEvent => ({ kind: "instance-status", instanceId: "i1", online });
 
+const ctrl = (instanceId: string): WebServerEvent => ({
+  kind: "control-event",
+  instanceId,
+  event: { type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "hi" },
+});
+
 test("broadcast reaches only that account's sockets", () => {
   const gw = new WebGateway();
   const a = new FakeSocket(); const b = new FakeSocket(); const other = new FakeSocket();
@@ -133,4 +139,80 @@ test("one slow socket does not starve the healthy sockets in the same account", 
   expect(slow.sent.length).toBe(0);
   expect(slow.terminated).toBe(true);
   expect(good.sent.length).toBe(1);
+});
+
+test("a socket with no subscription receives all control-events (backward-compat)", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  gw.register("a1", s as never);
+  gw.broadcast("a1", ctrl("iA"));
+  gw.broadcast("a1", ctrl("iB"));
+  expect(s.sent.length).toBe(2);
+});
+
+test("after subscribe([iA]) a socket gets iA control-events but not iB", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  gw.register("a1", s as never);
+  gw.setSubscription(s as never, ["iA"]);
+  gw.broadcast("a1", ctrl("iA"));
+  gw.broadcast("a1", ctrl("iB"));
+  expect(s.sent.length).toBe(1);
+  const decoded = decodeEnvelope(s.sent[0]!);
+  expect(decoded.ok && parseWebServerEvent(decoded.envelope)).toEqual(ctrl("iA"));
+});
+
+test("instance-status and notice reach a subscribed socket regardless of subscription", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  gw.register("a1", s as never);
+  gw.setSubscription(s as never, ["iA"]);
+  gw.broadcast("a1", { kind: "instance-status", instanceId: "iB", online: false });
+  gw.broadcast("a1", { kind: "notice", instanceId: "iB", notice: { kind: "info", text: "hi" } as never });
+  expect(s.sent.length).toBe(2);
+});
+
+test("subscribe([]) blocks all control-events but still delivers status/notice", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  gw.register("a1", s as never);
+  gw.setSubscription(s as never, []);
+  gw.broadcast("a1", ctrl("iA"));
+  gw.broadcast("a1", { kind: "instance-status", instanceId: "iA", online: true });
+  expect(s.sent.length).toBe(1);
+});
+
+test("setSubscription replaces the prior set", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  gw.register("a1", s as never);
+  gw.setSubscription(s as never, ["iA"]);
+  gw.setSubscription(s as never, ["iB"]);
+  gw.broadcast("a1", ctrl("iA"));
+  gw.broadcast("a1", ctrl("iB"));
+  expect(s.sent.length).toBe(1); // only iB now
+});
+
+test("closing a socket clears its subscription (no leak)", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  gw.register("a1", s as never);
+  gw.setSubscription(s as never, ["iA"]);
+  s.close(); // fires the close handler → removes from byAccount AND subscriptions
+  // Re-register a fresh socket at the same account: with no subscription it defaults to all.
+  const s2 = new FakeSocket();
+  gw.register("a1", s2 as never);
+  gw.broadcast("a1", ctrl("iZ"));
+  expect(s2.sent.length).toBe(1);
+});
+
+test("backpressure still evicts an over-threshold socket for a subscribed control-event", () => {
+  const gw = new WebGateway();
+  const s = new FakeSocket();
+  s.bufferedAmount = 4 * 1024 * 1024 + 1;
+  gw.register("a1", s as never);
+  gw.setSubscription(s as never, ["iA"]);
+  gw.broadcast("a1", ctrl("iA"));
+  expect(s.sent.length).toBe(0);
+  expect(s.terminated).toBe(true);
 });

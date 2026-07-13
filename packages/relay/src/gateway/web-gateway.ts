@@ -33,6 +33,9 @@ export interface WebGatewayOptions {
 /** Tracks authenticated browser sockets per account and fans events out to them. */
 export class WebGateway {
   private readonly byAccount = new Map<string, Set<WebSocketLike>>();
+  // Per-socket instance subscription. ABSENT from this map = "all" (a freshly-registered
+  // socket, or a legacy client that never sends `subscribe`) → backward-compatible.
+  private readonly subscriptions = new Map<WebSocketLike, Set<string>>();
 
   constructor(private readonly options: WebGatewayOptions = {}) {}
 
@@ -44,16 +47,31 @@ export class WebGateway {
     startHeartbeat(socket, this.options.heartbeatIntervalMs, undefined, this.options.logger);
     socket.on("close", () => {
       set.delete(socket);
+      this.subscriptions.delete(socket);
       if (set.size === 0) this.byAccount.delete(accountId);
       this.options.logger?.debug("relay.web.disconnected", "web client disconnected", { accountId });
     });
+  }
+
+  /** Replace a socket's instance subscription (full-set, idempotent). A socket not present
+   *  in the map receives every control-event; call with [] to receive none. */
+  setSubscription(socket: WebSocketLike, instanceIds: string[]): void {
+    this.subscriptions.set(socket, new Set(instanceIds));
   }
 
   broadcast(accountId: string, event: WebServerEvent): void {
     const set = this.byAccount.get(accountId);
     if (!set) return;
     const data = encodeEnvelope(webEventEnvelope(event));
+    // control-events are scoped to the socket's instance subscription; a socket with no
+    // subscription (absent from the map) receives all. instance-status / notice are
+    // account-wide (the global instance list needs them regardless of the active instance).
+    const scoped = event.kind === "control-event";
     for (const socket of set) {
+      if (scoped) {
+        const sub = this.subscriptions.get(socket);
+        if (sub && !sub.has(event.instanceId)) continue;
+      }
       // One dead/throwing socket must not starve the remaining dashboards.
       if (typeof socket.readyState === "number" && socket.readyState !== WS_OPEN) continue;
       // Backpressure: a stalled client's send buffer grows without bound. Evict it (it
