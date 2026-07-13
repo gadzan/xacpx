@@ -98,11 +98,16 @@ test("subscribes to the active instance on connect and on instance change", asyn
   captured.onStatus?.(true);
   expect(sendSubscribe).toHaveBeenLastCalledWith([]);
 
+  // Clear the mount-time loadActiveTurns call (onMounted seeds it once) so the assertion below
+  // isolates the SWITCH-triggered re-seed — otherwise the check passes even if the watch's
+  // loadActiveTurns call were reverted.
+  loadActiveTurns.mockClear();
+
   // Selecting an instance re-scopes the socket to it, and re-seeds any in-flight turns that
   // were dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the
   // global in-flight snapshot — the real self-heal on switch).
   chat.select("iA", "backend");
   await flushPromises();
   expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
-  expect(loadActiveTurns).toHaveBeenCalled();
+  expect(loadActiveTurns).toHaveBeenCalledTimes(1);
 });
