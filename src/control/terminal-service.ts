@@ -120,9 +120,17 @@ function realPtySpawn(file: string, args: string[], opts: { name: string; cols: 
 }
 
 // idleTimer is typed as unknown so the type is compatible with both Node.js Timeout and Bun Timer.
-interface Session { handle: PtyHandle; seq: number; idleTimer: unknown; buffer: string; bufBytes: number }
+interface Session { handle: PtyHandle; seq: number; idleTimer: unknown; buffer: string; bufBytes: number; pending: string; flushTimer: unknown }
 
 const MAX_BUFFER_BYTES = 256 * 1024;
+
+// Output coalescing: accumulate PTY output into ~one-frame windows and emit a single
+// terminal-output per window instead of one per chunk. A noisy process (yes, tail -f,
+// a build log) otherwise produces a firehose of tiny events across every downstream hop.
+const COALESCE_MS = 16;
+// Flush a large burst immediately rather than sit on it and add latency. Well under the
+// 256KB replay cap so a single window never dominates the buffer.
+const COALESCE_MAX_BYTES = 64 * 1024;
 
 function appendToBuffer(session: Session, data: string): void {
   session.buffer += data;
@@ -166,19 +174,44 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
     if (typeof t.unref === "function") t.unref();
   };
 
+  // Emit the coalesced output window as a single terminal-output event. Disarms the
+  // window timer FIRST so a throwing consumer cannot strand it (state stays clean:
+  // pending cleared, timer null). No-op when nothing is pending. Callers: the window
+  // timer, the size-cap in onData, attach (flush-before-snapshot), and onExit.
+  const flushOutput = (terminalId: string) => {
+    const s = sessions.get(terminalId);
+    if (!s) return;
+    if (s.flushTimer) { clearTimer(s.flushTimer); s.flushTimer = null; }
+    if (s.pending.length === 0) return;
+    const data = s.pending;
+    s.pending = "";
+    deps.events.emit({ type: "terminal-output", terminalId, seq: s.seq++, data });
+  };
+
   return {
     create({ cwd, cols, rows }) {
       const shell = resolveShell({ platform, env: process.env, shellOverride: deps.shell?.() });
       const terminalId = randomUUID();
       const handle = spawn(shell, [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
-      const session: Session = { handle, seq: 0, idleTimer: null, buffer: "", bufBytes: 0 };
+      const session: Session = { handle, seq: 0, idleTimer: null, buffer: "", bufBytes: 0, pending: "", flushTimer: null };
       sessions.set(terminalId, session);
       handle.onData((data) => {
         // NOTE: resetIdle is intentionally NOT called here (output ≠ user interaction).
-        appendToBuffer(session, data);
-        deps.events.emit({ type: "terminal-output", terminalId, seq: session.seq++, data });
+        appendToBuffer(session, data); // every byte still lands in the replay buffer
+        // Coalesce: accumulate and emit one event per window instead of per chunk.
+        session.pending += data;
+        if (Buffer.byteLength(session.pending, "utf8") >= COALESCE_MAX_BYTES) {
+          flushOutput(terminalId); // large burst: flush now, don't add window latency
+          return;
+        }
+        if (!session.flushTimer) {
+          session.flushTimer = setTimer(() => flushOutput(terminalId), COALESCE_MS);
+          const t = session.flushTimer as { unref?: () => void };
+          if (typeof t.unref === "function") t.unref();
+        }
       });
       handle.onExit(({ exitCode }) => {
+        flushOutput(terminalId); // emit any coalesced-but-unflushed output BEFORE the exit event
         if (session.idleTimer) clearTimer(session.idleTimer);
         sessions.delete(terminalId);
         deps.events.emit({ type: "terminal-exit", terminalId, code: exitCode });
@@ -189,6 +222,11 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
     attach(terminalId) {
       const s = sessions.get(terminalId);
       if (!s) return { ok: false };
+      // Assign the pending bytes a seq BEFORE snapshotting buffer/lastSeq, so the
+      // returned lastSeq covers the whole buffer. The client queues live events during
+      // the attach RPC and applies only those with seq > lastSeq, so this flush event
+      // (seq === returned lastSeq) is correctly dropped — the bytes render once.
+      flushOutput(terminalId);
       resetIdle(terminalId); // reattaching counts as activity
       return { ok: true, buffer: s.buffer, lastSeq: s.seq - 1 };
     },
@@ -212,6 +250,7 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
     disposeAll() {
       for (const s of sessions.values()) {
         if (s.idleTimer) clearTimer(s.idleTimer);
+        if (s.flushTimer) clearTimer(s.flushTimer);
         try { s.handle.kill(); } catch { /* ignore */ }
       }
       sessions.clear();
