@@ -113,6 +113,16 @@ test("a socket at/under the threshold receives normally", () => {
   expect(ok.terminated).toBe(false);
 });
 
+test("a socket without bufferedAmount (undefined) is unaffected and receives normally", () => {
+  const gw = new WebGateway();
+  const noProp = new FakeSocket() as FakeSocket & { bufferedAmount?: number };
+  delete noProp.bufferedAmount; // genuinely absent → typeof !== "number" → guard skipped
+  gw.register("a1", noProp as never);
+  gw.broadcast("a1", evt(true));
+  expect(noProp.sent.length).toBe(1);
+  expect(noProp.terminated).toBe(false);
+});
+
 test("one slow socket does not starve the healthy sockets in the same account", () => {
   const gw = new WebGateway();
   const slow = new FakeSocket(); slow.bufferedAmount = BACKPRESSURE_MAX + 1;

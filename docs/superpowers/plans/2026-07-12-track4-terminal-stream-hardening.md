@@ -420,7 +420,7 @@ test("one slow socket does not starve the healthy sockets in the same account", 
 });
 ```
 
-The existing "sockets without readyState still receive" test (lines 69-83) already covers the `bufferedAmount === undefined` path implicitly via `FakeSocket`'s default `bufferedAmount = 0`; no separate undefined-case test is needed since 0 is under threshold and behaves identically.
+Note: `bufferedAmount = 0` (the FakeSocket default) exercises the `typeof===number` TRUE branch under threshold; a separate test with `bufferedAmount` genuinely absent covers the FALSE short-circuit branch (added below).
 
 - [ ] **Step 2: Run the gateway test file to verify the new tests FAIL**
 

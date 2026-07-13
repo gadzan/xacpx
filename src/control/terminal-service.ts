@@ -120,7 +120,7 @@ function realPtySpawn(file: string, args: string[], opts: { name: string; cols: 
 }
 
 // idleTimer is typed as unknown so the type is compatible with both Node.js Timeout and Bun Timer.
-interface Session { handle: PtyHandle; seq: number; idleTimer: unknown; buffer: string; bufBytes: number; pending: string; flushTimer: unknown }
+interface Session { handle: PtyHandle; seq: number; idleTimer: unknown; buffer: string; bufBytes: number; pending: string; pendingBytes: number; flushTimer: unknown }
 
 const MAX_BUFFER_BYTES = 256 * 1024;
 
@@ -185,6 +185,7 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
     if (s.pending.length === 0) return;
     const data = s.pending;
     s.pending = "";
+    s.pendingBytes = 0;
     deps.events.emit({ type: "terminal-output", terminalId, seq: s.seq++, data });
   };
 
@@ -193,14 +194,15 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       const shell = resolveShell({ platform, env: process.env, shellOverride: deps.shell?.() });
       const terminalId = randomUUID();
       const handle = spawn(shell, [], { name: "xterm-256color", cols, rows, cwd, env: scrubEnv() });
-      const session: Session = { handle, seq: 0, idleTimer: null, buffer: "", bufBytes: 0, pending: "", flushTimer: null };
+      const session: Session = { handle, seq: 0, idleTimer: null, buffer: "", bufBytes: 0, pending: "", pendingBytes: 0, flushTimer: null };
       sessions.set(terminalId, session);
       handle.onData((data) => {
         // NOTE: resetIdle is intentionally NOT called here (output ≠ user interaction).
         appendToBuffer(session, data); // every byte still lands in the replay buffer
         // Coalesce: accumulate and emit one event per window instead of per chunk.
         session.pending += data;
-        if (Buffer.byteLength(session.pending, "utf8") >= COALESCE_MAX_BYTES) {
+        session.pendingBytes += Buffer.byteLength(data, "utf8");
+        if (session.pendingBytes >= COALESCE_MAX_BYTES) {
           flushOutput(terminalId); // large burst: flush now, don't add window latency
           return;
         }
