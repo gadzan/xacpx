@@ -77,6 +77,7 @@
 | `nonInteractivePermissions` | `"deny"` \| `"fail"` | 否 | 非交互场景权限策略，默认 `"deny"` |
 | `permissionPolicy` | `string` | 否 | acpx permission policy 文件路径（透传为 `acpx --permission-policy <value>`）；不填则不启用 |
 | `queueOwnerTtlSeconds` | `number` | 否 | acpx queue owner 空闲存活时长（秒），透传为 prompt 命令的 `acpx --ttl <value>`。默认 `1800`（30 分钟）；`0` = 永久存活。详见下方“减少 agent 冷启动”说明 |
+| `turnIdleTimeoutSeconds` | `number` | 否 | 正在执行的 agent 回合的空闲看门狗。若一个回合在这么多秒内没有产生任何流式 agent 活动（output/tool/thought/usage/plan/command 事件），就会被中止并报告为 `Turn timed out due to inactivity`，回收其占用的执行槽位。计时器会在每次流式事件时重置，因此耗时较长但持续活跃工作的回合不受影响——**但如果某次工具调用在整个窗口期内都保持静默（例如 `sleep`、没有中间输出的长时间编译/clone），仍会触发超时**；存在长时间静默操作的场景，请调大该值或设为 `0`。默认 `600`（10 分钟）；`0` 禁用该看门狗 |
 
 ### `type` 可选值
 

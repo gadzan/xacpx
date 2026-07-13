@@ -191,6 +191,11 @@ Test files:
   the same settled/drain path a Stop already uses.
 - Uniform scope means a scheduled turn may be aborted by whichever of its dispatch
   cap or the idle watchdog fires first — both are cooperative aborts, no conflict.
+- The watchdog is a **cooperative** abort — the same mechanism as a user Stop — so its
+  headline case (an adapter `initialize` that never resolves) is only reclaimed if the
+  transport honors `abortSignal` during cold-start; where a user Stop cannot interrupt
+  a wedged turn on some adapter, neither will the watchdog (a pre-existing transport
+  limitation, not introduced here).
 
 ## Out of scope / follow-ups
 

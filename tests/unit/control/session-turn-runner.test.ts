@@ -30,10 +30,21 @@ test("onActivity is invoked on each agent event", async () => {
     await opts.reply("chunk");
     opts.onThought("t");
     opts.onToolEvent({ id: "x" });
+    opts.onUsage({ used: 1, size: 2 });
+    opts.onPlan([]);
+    opts.onCommands([]);
     return { text: "done" };
   });
   await runner.run(REQ as never, new AbortController().signal, () => { calls++; });
-  expect(calls).toBeGreaterThanOrEqual(3);
+  expect(calls).toBeGreaterThanOrEqual(6);
+});
+
+test("a clean turn with no abort emits turn-finished ok:true", async () => {
+  const { runner, captured } = makeRunner(async () => ({ text: "final" }));
+  const result = await runner.run(REQ as never, new AbortController().signal);
+  expect(result.ok).toBe(true);
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
+  expect(fin.ok).toBe(true);
 });
 
 test("a TURN_IDLE_TIMEOUT abort surfaces as ok:false + timeout errorMessage, NOT cancelled", async () => {
