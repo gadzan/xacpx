@@ -253,6 +253,9 @@ function parseWebClientMessage(envelope) {
   if (typeof p !== "object" || p === null)
     return null;
   const c = p;
+  if (c.kind === "subscribe") {
+    return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string") ? p : null;
+  }
   if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string")
     return null;
   if (c.kind === "terminal-input")

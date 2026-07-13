@@ -105,6 +105,9 @@ export type WebClientMessage = {
     kind: "terminal-close";
     instanceId: string;
     terminalId: string;
+} | {
+    kind: "subscribe";
+    instanceIds: string[];
 };
 export declare function webClientEnvelope(msg: WebClientMessage): RelayEnvelope;
 export declare function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage | null;
