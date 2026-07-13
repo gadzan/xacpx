@@ -211,14 +211,16 @@ test("delete-session-json-record", () =>
 // sessions show → JSON with only `id` (no acpxRecordId) → id→acpxRecordId
 // fallback → close. Pins parseAcpxSessionRecordId's `id` branch through the
 // public method (spec-mandated).
-test("delete-session-id-only", () =>
+// sessions show → JSON with only `id` → id→acpxRecordId fallback resolves the record.
+// Driven via getAgentSessionId, NOT deleteSession: deleteSession's argv+outcome are
+// byte-identical whether the id came from `id` or `acpxRecordId` (resolved id only feeds an
+// unrecorded file delete), so it cannot pin the fallback. getAgentSessionId returns the
+// record's agentSessionId, so the outcome reddens if the `id` branch is removed (spec-mandated).
+test("record-id-only-fallback", () =>
   check({
-    name: "delete-session-id-only",
-    results: [
-      { code: 0, stdout: '{"id":"abcd1234"}', stderr: "" },
-      { code: 0, stdout: "", stderr: "" },
-    ],
-    run: (runtime) => runtime.deleteSession(makeBridgeInput()),
+    name: "record-id-only-fallback",
+    results: [{ code: 0, stdout: '{"id":"abcd1234","agentSessionId":"agent-from-id"}', stderr: "" }],
+    run: (runtime) => runtime.getAgentSessionId(makeBridgeInput()),
   }));
 
 test("delete-session-bare-id", () =>

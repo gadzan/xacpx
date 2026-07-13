@@ -1,0 +1,10 @@
+{
+  "record": [
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions show backend:demo @30000)"
+  ],
+  "outcome": {
+    "ok": {
+      "agentSessionId": "agent-from-id"
+    }
+  }
+}
