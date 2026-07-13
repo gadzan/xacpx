@@ -35,6 +35,11 @@ export async function raceWithTimeout(promise: Promise<void>, ms: number): Promi
   }
 }
 
+// Abort reason a turn's watchdog uses (via controller.abort(TURN_IDLE_TIMEOUT)) to mark
+// an inactivity-timeout abort, so SessionTurnRunner can surface it distinctly from a user
+// Stop (which aborts with no reason). Read via signal.reason in the runner's catch.
+export const TURN_IDLE_TIMEOUT = Symbol("turn-idle-timeout");
+
 export function turnKey(chatKey: string, sessionAlias: string): string {
   return `${chatKey} ${sessionAlias}`;
 }

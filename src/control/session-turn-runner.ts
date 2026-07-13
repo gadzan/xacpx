@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
-import { toErrorMessage, buildControlMetadata } from "./turn-support";
+import { toErrorMessage, buildControlMetadata, TURN_IDLE_TIMEOUT } from "./turn-support";
 
 export interface TurnRequest {
   chatKey: string;
@@ -47,7 +47,7 @@ export class SessionTurnRunner {
     private readonly deps: Pick<ControlServiceDeps, "agent" | "sessions" | "events" | "uploadStore">,
   ) {}
 
-  async run(req: TurnRequest, signal: AbortSignal): Promise<TurnResult> {
+  async run(req: TurnRequest, signal: AbortSignal, onActivity?: () => void): Promise<TurnResult> {
     // Sending to an archived session restores it (useSession clears `archived`), and
     // `/clear` (session.reset) recreates the transport session under the same alias — both
     // mutate the session row, but neither useSession nor the reset handler emits an event.
@@ -148,9 +148,11 @@ export class SessionTurnRunner {
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {
+          onActivity?.();
           emitChunk(chunk);
         },
         onToolEvent: (event) => {
+          onActivity?.();
           this.deps.events.emit({
             type: "tool-event",
             chatKey: req.chatKey,
@@ -159,6 +161,7 @@ export class SessionTurnRunner {
           });
         },
         onThought: (chunk) => {
+          onActivity?.();
           this.deps.events.emit({
             type: "turn-thought",
             chatKey: req.chatKey,
@@ -167,6 +170,7 @@ export class SessionTurnRunner {
           });
         },
         onPlan: (entries) => {
+          onActivity?.();
           this.deps.events.emit({
             type: "plan",
             chatKey: req.chatKey,
@@ -175,6 +179,7 @@ export class SessionTurnRunner {
           });
         },
         onUsage: (usage) => {
+          onActivity?.();
           this.deps.events.emit({
             type: "turn-usage",
             chatKey: req.chatKey,
@@ -186,6 +191,7 @@ export class SessionTurnRunner {
           });
         },
         onCommands: (commands) => {
+          onActivity?.();
           this.deps.events.emit({
             type: "agent-commands",
             chatKey: req.chatKey,
@@ -211,14 +217,18 @@ export class SessionTurnRunner {
           : {}),
       };
     } catch (error) {
-      const errorMessage = toErrorMessage(error);
+      // A watchdog inactivity-timeout abort (controller.abort(TURN_IDLE_TIMEOUT)) surfaces
+      // as an error with a fixed timeout message and is NOT flagged `cancelled` — that keeps
+      // it distinct from a user Stop (which aborts with no reason → cancelled:true).
+      const timedOut = signal.reason === TURN_IDLE_TIMEOUT;
+      const errorMessage = timedOut ? "Turn timed out due to inactivity" : toErrorMessage(error);
       this.deps.events.emit({
         type: "turn-finished",
         chatKey: req.chatKey,
         sessionAlias: req.sessionAlias,
         ok: false,
         errorMessage,
-        ...(signal.aborted ? { cancelled: true } : {}),
+        ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
       });
       return {
         ok: false,
