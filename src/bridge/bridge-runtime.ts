@@ -14,7 +14,6 @@ import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
-import { permissionModeToFlag } from "../transport/permission-mode-flag";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
@@ -29,6 +28,14 @@ import type {
 import type { AgentSessionListResult, PromptMediaInput } from "../transport/types";
 import type { ToolEventMode } from "../transport/tool-event-mode.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
+import {
+  buildSessionArgs as sharedBuildSessionArgs,
+  buildPromptArgs as sharedBuildPromptArgs,
+  isMissingAcpxSessionError,
+  parseAcpxSessionRecordId,
+  DEFAULT_PERMISSION_MODE,
+  DEFAULT_NON_INTERACTIVE,
+} from "../transport/acpx-command-builder";
 
 type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
@@ -88,12 +95,6 @@ interface BridgeSessionInput {
   media?: PromptMediaInput;
   toolEvents?: boolean;
   toolEventMode?: ToolEventMode;
-}
-
-/** A global `--model <id>` flag when a model is set, else nothing. */
-function modelArgs(model?: string): string[] {
-  const trimmed = model?.trim();
-  return trimmed ? ["--model", trimmed] : [];
 }
 
 interface StreamingPromptRunnerOptions {
@@ -537,26 +538,8 @@ export class BridgeRuntime {
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "sessions show failed");
     }
-    try {
-      const parsed = JSON.parse(result.stdout) as { acpxRecordId?: unknown; id?: unknown; agentSessionId?: unknown };
-      let acpxRecordId: string | undefined;
-      if (typeof parsed.acpxRecordId === "string") {
-        acpxRecordId = parsed.acpxRecordId;
-      } else if (typeof parsed.id === "string") {
-        acpxRecordId = parsed.id;
-      }
-      const agentSessionId = typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
-      // Guard the parsed id with the same format check the parse-failure fallback
-      // applies, so a malformed/empty id from acpx never flows into file deletion.
-      if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
-        return { acpxRecordId, agentSessionId };
-      }
-    } catch {
-      const firstLine = result.stdout.trim().split(/\r?\n/, 1)[0];
-      if (firstLine && /^[\w.:-]+$/.test(firstLine) && firstLine.length >= 8) {
-        return { acpxRecordId: firstLine };
-      }
-    }
+    const record = parseAcpxSessionRecordId(result.stdout);
+    if (record) return record;
     throw new Error("failed to resolve acpx session record id");
   }
 
@@ -693,7 +676,7 @@ export class BridgeRuntime {
     if (result.code === 0) {
       return {};
     }
-    if (isMissingBridgeSessionError(result.stderr, result.stdout)) {
+    if (isMissingAcpxSessionError(result.stderr, result.stdout)) {
       return {};
     }
     throw new Error(result.stderr || result.stdout || "sessions close failed");
@@ -754,22 +737,17 @@ export class BridgeRuntime {
     tail: string[],
     options: { verbose?: boolean; format?: "quiet" | "json" } = {},
   ): string[] {
-    const prefix: string[] = [
-      "--format",
-      options.format ?? "quiet",
-      "--cwd",
-      input.cwd,
-      ...this.buildPermissionArgs(),
-      ...modelArgs(input.model),
-    ];
-    if (options.verbose) {
-      prefix.push("--verbose");
-    }
-    if (input.agentCommand) {
-      return [...prefix, "--agent", input.agentCommand, ...tail];
-    }
-
-    return [...prefix, input.agent, ...tail];
+    return sharedBuildSessionArgs(
+      {
+        agent: input.agent,
+        agentCommand: input.agentCommand,
+        cwd: input.cwd,
+        model: input.model,
+        permission: this.permissionInput(),
+      },
+      tail,
+      options,
+    );
   }
 
   private buildPromptArgs(
@@ -782,43 +760,25 @@ export class BridgeRuntime {
     },
     tail: string[],
   ): string[] {
-    const prefix = [
-      "--format",
-      "json",
-      "--json-strict",
-      "--cwd",
-      input.cwd,
-      ...this.buildPermissionArgs(),
-      ...modelArgs(input.model),
-      ...this.buildQueueOwnerTtlArgs(),
-    ];
-    if (input.agentCommand) {
-      return [...prefix, "--agent", input.agentCommand, ...tail];
-    }
-
-    return [...prefix, input.agent, ...tail];
+    return sharedBuildPromptArgs(
+      {
+        agent: input.agent,
+        agentCommand: input.agentCommand,
+        cwd: input.cwd,
+        model: input.model,
+        permission: this.permissionInput(),
+        queueOwnerTtlSeconds: this.options.queueOwnerTtlSeconds,
+      },
+      tail,
+    );
   }
 
-  // `--ttl` only governs the prompt path's queue owner warm window, so it is
-  // intentionally limited to buildPromptArgs (not the shared session args).
-  private buildQueueOwnerTtlArgs(): string[] {
-    const ttl = this.options.queueOwnerTtlSeconds;
-    if (typeof ttl !== "number" || !Number.isFinite(ttl)) {
-      return [];
-    }
-    return ["--ttl", String(ttl)];
-  }
-
-  private buildPermissionArgs(): string[] {
-    const permissionMode = this.options.permissionMode ?? "approve-all";
-    const nonInteractivePermissions = this.options.nonInteractivePermissions ?? "deny";
-    const modeFlag = permissionModeToFlag(permissionMode);
-
-    const args = [modeFlag, "--non-interactive-permissions", nonInteractivePermissions];
-    if (typeof this.options.permissionPolicy === "string" && this.options.permissionPolicy.trim().length > 0) {
-      args.push("--permission-policy", this.options.permissionPolicy);
-    }
-    return args;
+  private permissionInput() {
+    return {
+      permissionMode: this.options.permissionMode ?? DEFAULT_PERMISSION_MODE,
+      nonInteractivePermissions: this.options.nonInteractivePermissions ?? DEFAULT_NON_INTERACTIVE,
+      permissionPolicy: this.options.permissionPolicy,
+    };
   }
 }
 
@@ -1079,15 +1039,4 @@ function isUnknownVerboseOption(stderr: string, stdout: string): boolean {
   const combined = `${stderr}\n${stdout}`;
   // Commander-style ("error: unknown option '--verbose'"), yargs, and generic "unrecognized".
   return /(unknown|unrecognized)\b[^\n]*--verbose/i.test(combined);
-}
-
-function isMissingBridgeSessionError(stderr: string, stdout: string): boolean {
-  const combined = `${stderr}\n${stdout}`.toLowerCase();
-  return (
-    combined.includes("no named session") ||
-    combined.includes("no cwd session") ||
-    combined.includes("session not found") ||
-    combined.includes("unknown session") ||
-    combined.includes("no acpx session found")
-  );
 }

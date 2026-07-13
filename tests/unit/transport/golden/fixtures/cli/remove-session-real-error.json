@@ -1,0 +1,8 @@
+{
+  "record": [
+    "runCommand(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions close backend:demo @30000)"
+  ],
+  "outcome": {
+    "threw": "EACCES: permission denied"
+  }
+}

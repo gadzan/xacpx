@@ -1,0 +1,7 @@
+{
+  "record": [
+    "runPty(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --model gpt-fake codex sessions new --name backend:demo @120000)",
+    "runPty(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions new --name backend:demo @120000)"
+  ],
+  "outcome": {}
+}

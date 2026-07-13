@@ -1,0 +1,6 @@
+{
+  "record": [
+    "runCommand(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --model gpt-5.2[high] codex set -s backend:demo model gpt-5.2[high] @30000)"
+  ],
+  "outcome": {}
+}

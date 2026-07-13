@@ -1,0 +1,11 @@
+{
+  "record": [
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --model gpt-fake --verbose codex sessions ensure --name backend:demo @120000)",
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --model gpt-fake codex sessions show backend:demo @120000)",
+    "runSessionCreate(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --model gpt-fake --verbose codex sessions new --name backend:demo @120000 cwd=/tmp/backend)",
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny --verbose codex sessions ensure --name backend:demo @120000)"
+  ],
+  "outcome": {
+    "ok": {}
+  }
+}

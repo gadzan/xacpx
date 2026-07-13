@@ -30,12 +30,21 @@ import {
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
 import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../acpx-queue-owner-launcher";
-import { permissionModeToFlag } from "../permission-mode-flag";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
 import { DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS } from "../command-timeouts";
+import {
+  buildPermissionArgs as sharedBuildPermissionArgs,
+  buildSessionArgs as sharedBuildSessionArgs,
+  buildAgentQueryArgs as sharedBuildAgentQueryArgs,
+  buildPromptArgs as sharedBuildPromptArgs,
+  isMissingAcpxSessionError,
+  parseAcpxSessionRecordId,
+  DEFAULT_PERMISSION_MODE,
+  DEFAULT_NON_INTERACTIVE,
+} from "../acpx-command-builder";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -195,8 +204,8 @@ export class AcpxCliTransport implements SessionTransport {
     this.command = options.command ?? "acpx";
     this.sessionInitTimeoutMs = options.sessionInitTimeoutMs ?? 120_000;
     this.managementCommandTimeoutMs = options.managementCommandTimeoutMs ?? DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS;
-    this.permissionMode = options.permissionMode ?? "approve-all";
-    this.nonInteractivePermissions = options.nonInteractivePermissions ?? "deny";
+    this.permissionMode = options.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    this.nonInteractivePermissions = options.nonInteractivePermissions ?? DEFAULT_NON_INTERACTIVE;
     this.permissionPolicy = options.permissionPolicy;
     this.queueOwnerTtlSeconds = options.queueOwnerTtlSeconds;
     this.runCommand = runCommand;
@@ -523,25 +532,8 @@ export class AcpxCliTransport implements SessionTransport {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
     }
-    try {
-      const parsed = JSON.parse(result.stdout) as { acpxRecordId?: unknown; id?: unknown; agentSessionId?: unknown };
-      const acpxRecordId = typeof parsed.acpxRecordId === "string"
-        ? parsed.acpxRecordId
-        : typeof parsed.id === "string"
-          ? parsed.id
-          : undefined;
-      const agentSessionId = typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
-      // Guard the parsed id with the same format check the parse-failure fallback
-      // applies, so a malformed/empty id from acpx never flows into file deletion.
-      if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
-        return { acpxRecordId, agentSessionId };
-      }
-    } catch {
-      const firstLine = result.stdout.trim().split(/\r?\n/, 1)[0];
-      if (firstLine && /^[\w.:-]+$/.test(firstLine) && firstLine.length >= 8) {
-        return { acpxRecordId: firstLine };
-      }
-    }
+    const record = parseAcpxSessionRecordId(result.stdout);
+    if (record) return record;
     throw new Error("failed to resolve acpx session record id");
   }
 
@@ -831,89 +823,50 @@ export class AcpxCliTransport implements SessionTransport {
     });
   }
 
-  private buildArgs(session: ResolvedSession, tail: string[]): string[] {
-    const prefix = [
-      "--format",
-      "quiet",
-      "--cwd",
-      session.cwd,
-      ...this.buildPermissionArgs(),
-      ...this.buildModelArgs(session),
-    ];
-    if (session.agentCommand) {
-      return [...prefix, "--agent", session.agentCommand, ...tail];
-    }
+  private permissionInput() {
+    return {
+      permissionMode: this.permissionMode,
+      nonInteractivePermissions: this.nonInteractivePermissions,
+      permissionPolicy: this.permissionPolicy,
+    };
+  }
 
-    return [...prefix, session.agent, ...tail];
+  private sessionInput(session: ResolvedSession) {
+    return {
+      agent: session.agent,
+      agentCommand: session.agentCommand,
+      cwd: session.cwd,
+      model: session.model,
+      permission: this.permissionInput(),
+    };
+  }
+
+  private buildArgs(session: ResolvedSession, tail: string[]): string[] {
+    return sharedBuildSessionArgs(this.sessionInput(session), tail, { format: "quiet" });
   }
 
   private buildAgentQueryArgs(query: AgentSessionListQuery, format: "json" | "quiet", tail: string[]): string[] {
-    const prefix = ["--format", format, "--cwd", query.cwd, ...this.buildPermissionArgs()];
-    if (query.agentCommand) {
-      return [...prefix, "--agent", query.agentCommand, ...tail];
-    }
-    return [...prefix, query.agent, ...tail];
+    return sharedBuildAgentQueryArgs(
+      { agent: query.agent, agentCommand: query.agentCommand, cwd: query.cwd, permission: this.permissionInput() },
+      format,
+      tail,
+    );
   }
 
   private buildPromptArgs(session: ResolvedSession, text: string, promptFile?: string): string[] {
-    const prefix = [
-      "--format",
-      "json",
-      "--json-strict",
-      "--cwd",
-      session.cwd,
-      ...this.buildPermissionArgs(),
-      ...this.buildModelArgs(session),
-      ...this.buildQueueOwnerTtlArgs(),
-    ];
     const tail = promptFile
       ? ["prompt", "-s", session.transportSession, "--file", promptFile]
       : ["prompt", "-s", session.transportSession, text];
 
-    if (session.agentCommand) {
-      return [...prefix, "--agent", session.agentCommand, ...tail];
-    }
-
-    return [...prefix, session.agent, ...tail];
-  }
-
-  // The session's resolved model id as a global `--model` flag (empty when unset).
-  // acpx persists it into the session record and re-applies it on each turn, so
-  // passing it on both create and prompt keeps warm and cold paths consistent.
-  private buildModelArgs(session: ResolvedSession): string[] {
-    const model = session.model?.trim();
-    return model ? ["--model", model] : [];
-  }
-
-  // `--ttl` only governs the prompt path's queue owner warm window, so it is
-  // intentionally limited to buildPromptArgs (not the shared session args).
-  private buildQueueOwnerTtlArgs(): string[] {
-    if (typeof this.queueOwnerTtlSeconds !== "number" || !Number.isFinite(this.queueOwnerTtlSeconds)) {
-      return [];
-    }
-    return ["--ttl", String(this.queueOwnerTtlSeconds)];
+    return sharedBuildPromptArgs(
+      { ...this.sessionInput(session), queueOwnerTtlSeconds: this.queueOwnerTtlSeconds },
+      tail,
+    );
   }
 
   private buildPermissionArgs(): string[] {
-    const modeFlag = permissionModeToFlag(this.permissionMode);
-
-    const args = [modeFlag, "--non-interactive-permissions", this.nonInteractivePermissions];
-    if (typeof this.permissionPolicy === "string" && this.permissionPolicy.trim().length > 0) {
-      args.push("--permission-policy", this.permissionPolicy);
-    }
-    return args;
+    return sharedBuildPermissionArgs(this.permissionInput());
   }
-}
-
-function isMissingAcpxSessionError(stderr: string, stdout: string): boolean {
-  const combined = `${stderr}\n${stdout}`.toLowerCase();
-  return (
-    combined.includes("no named session") ||
-    combined.includes("no cwd session") ||
-    combined.includes("session not found") ||
-    combined.includes("unknown session") ||
-    combined.includes("no acpx session found")
-  );
 }
 
 function renderCommandForError(args: string[]): string {

@@ -1,0 +1,16 @@
+{
+  "record": [
+    "run(acpx --format json --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions list --filter-cwd /tmp/backend --cursor cur-1 @120000)"
+  ],
+  "outcome": {
+    "ok": {
+      "source": "agent",
+      "sessions": [
+        {
+          "sessionId": "sess-1",
+          "cwd": "/tmp/backend"
+        }
+      ]
+    }
+  }
+}
