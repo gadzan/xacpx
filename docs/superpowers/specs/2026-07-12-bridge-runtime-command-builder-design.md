@@ -180,18 +180,36 @@ The predicates are pinned indirectly, with runner stubs returning crafted output
   throws → first-line fallback), (d) malformed/short → the caller's throw fires. The
   fixture pins the subsequent delete argv AND the throw.
 - `isMissingAcpxSessionError` via **`removeSession`** — stub to return a
-  "no named session" stderr and assert the method swallows (no throw), vs a real error
-  that propagates.
+  "no named session" stderr and assert the method swallows (no throw), vs a real
+  non-missing error that propagates. This golden scenario pins the **delegation** (that
+  `removeSession` routes a missing-session error to swallow and any other error to
+  propagate), with one representative string per branch. The predicate's full five-marker
+  truth table is exhaustively mutation-guarded by the **module unit test**
+  (`acpx-command-builder.test.ts` "matches the 5 markers"): deleting ANY single term
+  reddens that test. Because the predicate is a pure shared function, its per-term guard
+  belongs at the unit level — re-testing all five strings through the transport
+  delegation would be redundant, since every one routes to the same swallow.
 
 Every recorded scenario also captures the method's **return value or thrown message**,
 scrubbed (timestamps, generated ids) exactly as the prior blocks' harnesses did.
 
 ### Mutation verification
 
-Every builder branch and predicate term must be shown to redden at least one fixture:
+Every builder branch and predicate term must be shown to redden at least one test:
 flip a `--verbose`, drop a permission term, corrupt an id-guard, swap a default — grep-
-confirm the mutation applied, run, confirm ≥1 fixture drifts, revert. A branch that no
-mutation can redden is an untested branch and needs a scenario.
+confirm the mutation applied, run, confirm ≥1 fixture/test drifts, revert. A branch that
+no mutation can redden is an untested branch and needs a scenario.
+
+**Layering** — the guard for a given branch lives at the layer that owns it. The golden
+oracles guard the transports' *composed* argv and their *delegation* (which method calls
+which builder/predicate, and how it routes the result). The pure shared module's own
+internal branches — each `isMissingAcpxSessionError` marker, the `parseAcpxSessionRecordId`
+guards, each builder's agent/verbose/format branch — are mutation-guarded by the direct
+module unit test `acpx-command-builder.test.ts`. A predicate term that reddens the module
+unit test (rather than a golden fixture) fully satisfies this requirement: routing all
+five missing-session strings through the transport delegation would be redundant ceremony,
+since the delegation itself is already pinned by the `remove-session-missing` (swallow)
+and `remove-session-real-error` (propagate) golden scenarios.
 
 ### Baseline cross-check
 

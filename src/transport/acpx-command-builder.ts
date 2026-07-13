@@ -36,6 +36,18 @@ export interface SessionArgsInput {
   permission: PermissionArgsInput;
 }
 
+// Agent selection: `--agent <cmd>` when an explicit adapter command is set, else the
+// bare agent name — appended after the flag prefix, before the operation tail. Shared by
+// all three arg builders so the branch lives in exactly one place.
+function appendAgentAndTail(
+  prefix: string[],
+  input: { agent: string; agentCommand?: string },
+  tail: string[],
+): string[] {
+  if (input.agentCommand) return [...prefix, "--agent", input.agentCommand, ...tail];
+  return [...prefix, input.agent, ...tail];
+}
+
 export function buildSessionArgs(
   input: SessionArgsInput,
   tail: string[],
@@ -48,8 +60,7 @@ export function buildSessionArgs(
     ...buildModelArgs(input.model),
   ];
   if (options.verbose) prefix.push("--verbose");
-  if (input.agentCommand) return [...prefix, "--agent", input.agentCommand, ...tail];
-  return [...prefix, input.agent, ...tail];
+  return appendAgentAndTail(prefix, input, tail);
 }
 
 export function buildPromptArgs(
@@ -63,8 +74,7 @@ export function buildPromptArgs(
     ...buildModelArgs(input.model),
     ...buildQueueOwnerTtlArgs(input.queueOwnerTtlSeconds),
   ];
-  if (input.agentCommand) return [...prefix, "--agent", input.agentCommand, ...tail];
-  return [...prefix, input.agent, ...tail];
+  return appendAgentAndTail(prefix, input, tail);
 }
 
 export function buildAgentQueryArgs(
@@ -73,8 +83,7 @@ export function buildAgentQueryArgs(
   tail: string[],
 ): string[] {
   const prefix = ["--format", format, "--cwd", input.cwd, ...buildPermissionArgs(input.permission)];
-  if (input.agentCommand) return [...prefix, "--agent", input.agentCommand, ...tail];
-  return [...prefix, input.agent, ...tail];
+  return appendAgentAndTail(prefix, input, tail);
 }
 
 export function isMissingAcpxSessionError(stderr: string, stdout: string): boolean {
