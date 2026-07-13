@@ -6,14 +6,14 @@ import {
   isMissingAcpxSessionError, parseAcpxSessionRecordId,
 } from "../../../src/transport/acpx-command-builder";
 
-const perm = { permissionMode: DEFAULT_PERMISSION_MODE, nonInteractivePermissions: DEFAULT_NON_INTERACTIVE };
+const permission = { permissionMode: DEFAULT_PERMISSION_MODE, nonInteractivePermissions: DEFAULT_NON_INTERACTIVE };
 
 describe("buildPermissionArgs", () => {
   test("defaults, no policy", () => {
-    expect(buildPermissionArgs(perm)).toEqual(["--approve-all", "--non-interactive-permissions", "deny"]);
+    expect(buildPermissionArgs(permission)).toEqual(["--approve-all", "--non-interactive-permissions", "deny"]);
   });
   test("with policy appends --permission-policy", () => {
-    expect(buildPermissionArgs({ ...perm, permissionPolicy: "p.json" }))
+    expect(buildPermissionArgs({ ...permission, permissionPolicy: "p.json" }))
       .toEqual(["--approve-all", "--non-interactive-permissions", "deny", "--permission-policy", "p.json"]);
   });
 });
@@ -31,33 +31,33 @@ describe("buildModelArgs", () => {
 
 describe("buildSessionArgs", () => {
   test("bare agent, quiet default", () => {
-    expect(buildSessionArgs({ agent: "codex", cwd: "/w", permission: perm }, ["sessions", "new"]))
+    expect(buildSessionArgs({ agent: "codex", cwd: "/w", permission }, ["sessions", "new"]))
       .toEqual(["--format", "quiet", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "codex", "sessions", "new"]);
   });
   test("agentCommand branch + model + verbose + json format", () => {
-    expect(buildSessionArgs({ agent: "codex", agentCommand: "my-codex", cwd: "/w", model: "m", permission: perm }, ["x"], { verbose: true, format: "json" }))
+    expect(buildSessionArgs({ agent: "codex", agentCommand: "my-codex", cwd: "/w", model: "m", permission }, ["x"], { verbose: true, format: "json" }))
       .toEqual(["--format", "json", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "--model", "m", "--verbose", "--agent", "my-codex", "x"]);
   });
 });
 
 describe("buildPromptArgs", () => {
   test("prefix carries model+ttl, agent branch", () => {
-    expect(buildPromptArgs({ agent: "codex", cwd: "/w", model: "m", permission: perm, queueOwnerTtlSeconds: 900 }, ["prompt", "-s", "s", "hi"]))
+    expect(buildPromptArgs({ agent: "codex", cwd: "/w", model: "m", permission, queueOwnerTtlSeconds: 900 }, ["prompt", "-s", "s", "hi"]))
       .toEqual(["--format", "json", "--json-strict", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "--model", "m", "--ttl", "900", "codex", "prompt", "-s", "s", "hi"]);
   });
 });
 
 describe("buildAgentQueryArgs", () => {
   test("never adds model", () => {
-    expect(buildAgentQueryArgs({ agent: "codex", cwd: "/w", permission: perm }, "json", ["sessions", "list"]))
+    expect(buildAgentQueryArgs({ agent: "codex", cwd: "/w", permission }, "json", ["sessions", "list"]))
       .toEqual(["--format", "json", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "codex", "sessions", "list"]);
   });
 });
 
 describe("isMissingAcpxSessionError", () => {
   test("matches the 5 markers", () => {
-    for (const m of ["no named session", "no cwd session", "session not found", "unknown session", "no acpx session found"])
-      expect(isMissingAcpxSessionError(m.toUpperCase(), "")).toBe(true);
+    for (const marker of ["no named session", "no cwd session", "session not found", "unknown session", "no acpx session found"])
+      expect(isMissingAcpxSessionError(marker.toUpperCase(), "")).toBe(true);
   });
   test("non-match", () => expect(isMissingAcpxSessionError("boom", "nope")).toBe(false));
 });

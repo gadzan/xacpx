@@ -52,8 +52,8 @@ function scrub(text: string): string {
 }
 
 function renderArgv(command: string, args: string[], timeoutMs?: number): string {
-  const t = timeoutMs === undefined ? "" : ` @${timeoutMs}`;
-  return `${scrub(command)} ${args.map((a) => scrub(String(a))).join(" ")}${t}`;
+  const timeoutSuffix = timeoutMs === undefined ? "" : ` @${timeoutMs}`;
+  return `${scrub(command)} ${args.map((arg) => scrub(String(arg))).join(" ")}${timeoutSuffix}`;
 }
 
 /** Neutral bridge session input; overrides tailor per-scenario axes. */

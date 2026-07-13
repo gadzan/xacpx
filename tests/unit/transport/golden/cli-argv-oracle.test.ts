@@ -38,21 +38,21 @@ const MODEL_NOT_ADVERTISED =
 test("ensure-agent", () =>
   check({
     name: "ensure-agent",
-    run: (t) => t.ensureSession(makeCliSession()),
+    run: (transport) => transport.ensureSession(makeCliSession()),
   }));
 
 // agentCommand set → the plain runCommand seam (NOT pty — see harness note).
 test("ensure-agentcommand", () =>
   check({
     name: "ensure-agentcommand",
-    run: (t) => t.ensureSession(makeCliSession({ agentCommand: "./node_modules/.bin/codex-acp" })),
+    run: (transport) => transport.ensureSession(makeCliSession({ agentCommand: "./node_modules/.bin/codex-acp" })),
   }));
 
 // model set → global `--model` in the create argv.
 test("ensure-model", () =>
   check({
     name: "ensure-model",
-    run: (t) => t.ensureSession(makeCliSession({ model: "gpt-5.2[high]" })),
+    run: (transport) => transport.ensureSession(makeCliSession({ model: "gpt-5.2[high]" })),
   }));
 
 // First ensure fails model-not-advertised → retry once WITHOUT `--model`.
@@ -63,7 +63,7 @@ test("ensure-model-not-advertised", () =>
       { code: 1, stdout: MODEL_NOT_ADVERTISED, stderr: "" },
       { code: 0, stdout: "", stderr: "" },
     ],
-    run: (t) => t.ensureSession(makeCliSession({ model: "gpt-fake" })),
+    run: (transport) => transport.ensureSession(makeCliSession({ model: "gpt-fake" })),
   }));
 
 // --- prompt × axis (captured via the streamingHooks.spawnPrompt seam) ------
@@ -71,15 +71,15 @@ test("ensure-model-not-advertised", () =>
 test("prompt-text", () =>
   check({
     name: "prompt-text",
-    run: (t) => t.prompt(makeCliSession(), "hello there", undefined, undefined, { onSegment: async () => {} }),
+    run: (transport) => transport.prompt(makeCliSession(), "hello there", undefined, undefined, { onSegment: async () => {} }),
   }));
 
 // model set → `--model` in the prompt argv too (guards buildPromptArgs' model spread).
 test("prompt-model", () =>
   check({
     name: "prompt-model",
-    run: (t) =>
-      t.prompt(makeCliSession({ model: "gpt-5.2[high]" }), "hello there", undefined, undefined, {
+    run: (transport) =>
+      transport.prompt(makeCliSession({ model: "gpt-5.2[high]" }), "hello there", undefined, undefined, {
         onSegment: async () => {},
       }),
   }));
@@ -89,14 +89,14 @@ test("prompt-ttl", () =>
   check({
     name: "prompt-ttl",
     options: { queueOwnerTtlSeconds: 1800 },
-    run: (t) => t.prompt(makeCliSession(), "hello there", undefined, undefined, { onSegment: async () => {} }),
+    run: (transport) => transport.prompt(makeCliSession(), "hello there", undefined, undefined, { onSegment: async () => {} }),
   }));
 
 test("prompt-agentcommand", () =>
   check({
     name: "prompt-agentcommand",
-    run: (t) =>
-      t.prompt(makeCliSession({ agentCommand: "./node_modules/.bin/codex-acp" }), "hello there", undefined, undefined, {
+    run: (transport) =>
+      transport.prompt(makeCliSession({ agentCommand: "./node_modules/.bin/codex-acp" }), "hello there", undefined, undefined, {
         onSegment: async () => {},
       }),
   }));
@@ -105,8 +105,8 @@ test("prompt-agentcommand", () =>
 test("prompt-media", () =>
   check({
     name: "prompt-media",
-    run: (t) =>
-      t.prompt(makeCliSession(), "look at this", undefined, undefined, {
+    run: (transport) =>
+      transport.prompt(makeCliSession(), "look at this", undefined, undefined, {
         onSegment: async () => {},
         media: { type: "file", filePath: "/tmp/backend/notes.txt", mimeType: "text/plain", fileName: "notes.txt" },
       }),
@@ -117,13 +117,13 @@ test("prompt-media", () =>
 test("set-mode", () =>
   check({
     name: "set-mode",
-    run: (t) => t.setMode(makeCliSession(), "plan"),
+    run: (transport) => transport.setMode(makeCliSession(), "plan"),
   }));
 
 test("set-model", () =>
   check({
     name: "set-model",
-    run: (t) => t.setModel(makeCliSession(), "gpt-5.2[high]"),
+    run: (transport) => transport.setModel(makeCliSession(), "gpt-5.2[high]"),
   }));
 
 test("get-session-model", () =>
@@ -132,22 +132,22 @@ test("get-session-model", () =>
     results: [
       { code: 0, stdout: '{"model":"gpt-5.2[high]","availableModels":["gpt-5.2[high]","gpt-5.1"]}', stderr: "" },
     ],
-    run: (t) => t.getSessionModel(makeCliSession()),
+    run: (transport) => transport.getSessionModel(makeCliSession()),
   }));
 
 test("cancel", () =>
   check({
     name: "cancel",
     results: [{ code: 0, stdout: "cancelled ok", stderr: "" }],
-    run: (t) => t.cancel(makeCliSession()),
+    run: (transport) => transport.cancel(makeCliSession()),
   }));
 
 // agentCommand set → resume via the plain runCommand seam.
 test("resume-agent-session", () =>
   check({
     name: "resume-agent-session",
-    run: (t) =>
-      t.resumeAgentSession(makeCliSession({ agentCommand: "./node_modules/.bin/codex-acp" }), "acp-sess-42"),
+    run: (transport) =>
+      transport.resumeAgentSession(makeCliSession({ agentCommand: "./node_modules/.bin/codex-acp" }), "acp-sess-42"),
   }));
 
 // listAgentSessions: cwd, filter-cwd (filterCwd set), cursor (cursor set); NO --model.
@@ -155,8 +155,8 @@ test("list-native", () =>
   check({
     name: "list-native",
     results: [{ code: 0, stdout: '{"source":"agent","sessions":[{"sessionId":"sess-1","cwd":"/tmp/backend"}]}', stderr: "" }],
-    run: (t) =>
-      t.listAgentSessions!({ agent: "codex", cwd: "/tmp/backend", filterCwd: "/tmp/backend", cursor: "cur-1" }),
+    run: (transport) =>
+      transport.listAgentSessions!({ agent: "codex", cwd: "/tmp/backend", filterCwd: "/tmp/backend", cursor: "cur-1" }),
   }));
 
 // tailSessionHistory: every candidate argv (all fail → method throws).
@@ -170,7 +170,7 @@ test("tail-history", () =>
       { code: 1, stdout: "", stderr: "" },
       { code: 1, stdout: "", stderr: "" },
     ],
-    run: (t) => t.tailSessionHistory(makeCliSession(), 20),
+    run: (transport) => transport.tailSessionHistory(makeCliSession(), 20),
   }));
 
 // --- record-id parse predicates -------------------------------------------
@@ -183,7 +183,20 @@ test("delete-session-json-record", () =>
       { code: 0, stdout: '{"acpxRecordId":"abcd1234"}', stderr: "" },
       { code: 0, stdout: "", stderr: "" },
     ],
-    run: (t) => t.deleteSession!(makeCliSession()),
+    run: (transport) => transport.deleteSession!(makeCliSession()),
+  }));
+
+// sessions show → JSON with only `id` (no acpxRecordId) → id→acpxRecordId
+// fallback → close. Pins parseAcpxSessionRecordId's `id` branch through the
+// public method (spec-mandated).
+test("delete-session-id-only", () =>
+  check({
+    name: "delete-session-id-only",
+    results: [
+      { code: 0, stdout: '{"id":"abcd1234"}', stderr: "" },
+      { code: 0, stdout: "", stderr: "" },
+    ],
+    run: (transport) => transport.deleteSession!(makeCliSession()),
   }));
 
 // sessions show → bare non-JSON line → first-line fallback → close.
@@ -194,7 +207,7 @@ test("delete-session-bare-id", () =>
       { code: 0, stdout: "abcd1234", stderr: "" },
       { code: 0, stdout: "", stderr: "" },
     ],
-    run: (t) => t.deleteSession!(makeCliSession()),
+    run: (transport) => transport.deleteSession!(makeCliSession()),
   }));
 
 // sessions show → too-short id → readSessionRecord throws. Driven via
@@ -203,7 +216,7 @@ test("delete-session-malformed", () =>
   check({
     name: "delete-session-malformed",
     results: [{ code: 0, stdout: "x", stderr: "" }],
-    run: (t) => t.getAgentSessionId(makeCliSession()),
+    run: (transport) => transport.getAgentSessionId(makeCliSession()),
   }));
 
 // removeSession: `no named session` → swallowed, no throw.
@@ -211,7 +224,15 @@ test("remove-session-missing", () =>
   check({
     name: "remove-session-missing",
     results: [{ code: 1, stdout: "", stderr: "no named session" }],
-    run: (t) => t.removeSession!(makeCliSession()),
+    run: (transport) => transport.removeSession!(makeCliSession()),
+  }));
+
+// removeSession: a real (NON-missing) error → propagates (method throws).
+test("remove-session-real-error", () =>
+  check({
+    name: "remove-session-real-error",
+    results: [{ code: 1, stdout: "", stderr: "EACCES: permission denied" }],
+    run: (transport) => transport.removeSession!(makeCliSession()),
   }));
 
 // --- permission axes -------------------------------------------------------
@@ -220,12 +241,12 @@ test("permission-policy", () =>
   check({
     name: "permission-policy",
     options: { permissionPolicy: "/etc/policy.json" },
-    run: (t) => t.setMode(makeCliSession(), "plan"),
+    run: (transport) => transport.setMode(makeCliSession(), "plan"),
   }));
 
 test("permission-noninteractive", () =>
   check({
     name: "permission-noninteractive",
     options: { permissionMode: "deny-all", nonInteractivePermissions: "fail" },
-    run: (t) => t.setMode(makeCliSession(), "plan"),
+    run: (transport) => transport.setMode(makeCliSession(), "plan"),
   }));

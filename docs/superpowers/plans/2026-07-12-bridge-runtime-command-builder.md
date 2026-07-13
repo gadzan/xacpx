@@ -20,6 +20,13 @@
 
 ---
 
+## Post-review amendments (2026-07-12, PR #156 review)
+
+- The **bridge** oracle's final home is `tests/unit/bridge/golden/` (harness + test + `fixtures/*.json`), mirroring `src/bridge/` per the AGENTS.md test-layout convention — not `tests/unit/transport/golden/` as the path references below say. The CLI oracle stays under `tests/unit/transport/golden/`.
+- Two spec-mandated oracle scenarios were added per side after the initial pass: `delete-session-id-only` (JSON `{"id":…}` fallback) and `remove-session-real-error` (non-missing error propagates → throws). Final counts: CLI 24, bridge 26.
+
+---
+
 ## File Structure
 
 - **Create** `src/transport/acpx-command-builder.ts` — the pure shared module (Task 1).

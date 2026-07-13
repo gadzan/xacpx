@@ -70,8 +70,8 @@ function scrub(text: string): string {
 }
 
 function renderArgv(command: string, args: string[], timeoutMs?: number): string {
-  const t = timeoutMs === undefined ? "" : ` @${timeoutMs}`;
-  return `${scrub(command)} ${args.map((a) => scrub(String(a))).join(" ")}${t}`;
+  const timeoutSuffix = timeoutMs === undefined ? "" : ` @${timeoutMs}`;
+  return `${scrub(command)} ${args.map((arg) => scrub(String(arg))).join(" ")}${timeoutSuffix}`;
 }
 
 // A fake streaming child: emit the canned stdout, then close, after the transport
@@ -91,7 +91,7 @@ function makeFakeStream(stdout: string, code: number): PromptStreamProcess {
       // Registration order in runStreamingPrompt: stdout.on("data") precedes
       // on("close"), so the data handler is set by the time close registers.
       if (event === "close") {
-        closeHandler = handler as unknown as (c: number | null) => void;
+        closeHandler = handler as unknown as (code: number | null) => void;
         setImmediate(() => {
           if (stdout.length > 0) dataHandler?.(stdout);
           closeHandler?.(code);
