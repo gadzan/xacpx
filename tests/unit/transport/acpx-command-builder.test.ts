@@ -41,9 +41,15 @@ describe("buildSessionArgs", () => {
 });
 
 describe("buildPromptArgs", () => {
-  test("prefix carries model+ttl, agent branch", () => {
+  test("prefix carries model+ttl, bare agent branch", () => {
     expect(buildPromptArgs({ agent: "codex", cwd: "/w", model: "m", permission, queueOwnerTtlSeconds: 900 }, ["prompt", "-s", "s", "hi"]))
       .toEqual(["--format", "json", "--json-strict", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "--model", "m", "--ttl", "900", "codex", "prompt", "-s", "s", "hi"]);
+  });
+  // Directly pins buildPromptArgs's agentCommand branch (`--agent <cmd>` vs bare agent) so
+  // a mutation to how the prompt path selects the agent reddens at the module layer.
+  test("agentCommand branch", () => {
+    expect(buildPromptArgs({ agent: "codex", agentCommand: "my-codex", cwd: "/w", model: "m", permission, queueOwnerTtlSeconds: 900 }, ["prompt", "-s", "s", "hi"]))
+      .toEqual(["--format", "json", "--json-strict", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "--model", "m", "--ttl", "900", "--agent", "my-codex", "prompt", "-s", "s", "hi"]);
   });
 });
 
@@ -51,6 +57,13 @@ describe("buildAgentQueryArgs", () => {
   test("never adds model", () => {
     expect(buildAgentQueryArgs({ agent: "codex", cwd: "/w", permission }, "json", ["sessions", "list"]))
       .toEqual(["--format", "json", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "codex", "sessions", "list"]);
+  });
+  // Pins buildAgentQueryArgs's agentCommand branch AND its `quiet` format branch — neither is
+  // exercised elsewhere (production's list path always passes "json" + no agentCommand), so this
+  // is the only guard against a mutation that hardcodes the format or drops the agent selection.
+  test("agentCommand branch + quiet format", () => {
+    expect(buildAgentQueryArgs({ agent: "codex", agentCommand: "my-codex", cwd: "/w", permission }, "quiet", ["sessions", "list"]))
+      .toEqual(["--format", "quiet", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "--agent", "my-codex", "sessions", "list"]);
   });
 });
 

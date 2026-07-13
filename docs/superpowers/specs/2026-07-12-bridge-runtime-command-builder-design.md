@@ -121,7 +121,8 @@ export function parseAcpxSessionRecordId(
 
 Neither transport changes its public API. `main.ts`, `bridge-server.ts`, and every
 existing consumer stay untouched. No new value-import cycle is introduced (the shared
-module imports only `config/types`; the transports import the shared module — a DAG).
+module imports only `config/types` and the shared `permission-mode-flag` helper; the
+transports import the shared module — a DAG).
 
 ## Equivalence Oracle
 
@@ -175,10 +176,15 @@ Each public method is driven under the axes that flow into the builders:
 
 The predicates are pinned indirectly, with runner stubs returning crafted output:
 
-- `parseAcpxSessionRecordId` via **`deleteSession`** — stub `sessions show` to return
-  (a) JSON with `acpxRecordId`, (b) JSON with only `id`, (c) a bare id line (JSON.parse
-  throws → first-line fallback), (d) malformed/short → the caller's throw fires. The
-  fixture pins the subsequent delete argv AND the throw.
+- `parseAcpxSessionRecordId` — stub `sessions show` to return each parse shape.
+  (a) JSON with `acpxRecordId` and (c) a bare id line (JSON.parse throws → first-line
+  fallback) are driven via **`deleteSession`**, pinning the subsequent `sessions close`
+  argv. (b) JSON with only `id` and (d) malformed/short are driven via
+  **`getAgentSessionId`**, NOT `deleteSession`: `deleteSession` swallows the parse-failure
+  throw, and — because the resolved id only feeds an unrecorded file delete — its argv is
+  byte-identical whether the id came from `id` or `acpxRecordId`, so it cannot pin those
+  two shapes. `getAgentSessionId` returns the record's `agentSessionId` (observably
+  distinct outcome for the `id` fallback) and surfaces the throw for the malformed case.
 - `isMissingAcpxSessionError` via **`removeSession`** — stub to return a
   "no named session" stderr and assert the method swallows (no throw), vs a real
   non-missing error that propagates. This golden scenario pins the **delegation** (that
@@ -241,7 +247,8 @@ both oracle fixture sets byte-identical.
   `GOLDEN_UPDATE=1` is used only to record the Task-0 baseline.
 - Public API preserved: `main.ts`, `bridge-server.ts`, `bridge-main.ts`, and all
   transport consumers are untouched.
-- The shared module is pure: no `this`, no I/O, imports only `config/types`. No
+- The shared module is pure: no `this`, no I/O, imports only `config/types` and the
+  shared `permission-mode-flag` helper. No
   value-import back into either transport (no runtime cycle).
 - Per-file `bun test` for verification (never whole-directory — state leak). `TZ=UTC`
   where a test asserts time-derived text.
