@@ -7,6 +7,7 @@
 import { expect, test } from "bun:test";
 import { TurnQueue, type TurnQueueDeps } from "../../../src/control/turn-queue";
 import type { TurnRequest, TurnResult } from "../../../src/control/session-turn-runner";
+import { TURN_IDLE_TIMEOUT } from "../../../src/control/turn-support";
 
 // Wires a TurnQueue to a controllable deferred runTurn. `runTurn` records each turn's text into
 // `started` (so drain-order tests can assert it) and parks on a pending promise the test resolves
@@ -16,14 +17,23 @@ import type { TurnRequest, TurnResult } from "../../../src/control/session-turn-
 // failure), so there is no reject path to fake.
 function makeQueue(overrides?: Partial<TurnQueueDeps>) {
   const started: string[] = [];
-  const pending: Array<{ req: TurnRequest; resolve: (r: TurnResult) => void }> = [];
+  const pending: Array<{ req: TurnRequest; resolve: (r: TurnResult) => void; signal: AbortSignal; onActivity?: () => void }> = [];
+  // Single-slot fake idle timer (the watchdog arms at most one live timer per turn),
+  // with call counters so a reset (clear old + arm new) is observable.
+  let idleFn: (() => void) | null = null;
+  let setCount = 0;
+  let clearCount = 0;
+  const setTimer = (fn: () => void, _ms: number): unknown => { idleFn = fn; setCount++; return 1; };
+  const clearTimer = (_id: unknown) => { idleFn = null; clearCount++; };
   const queue = new TurnQueue({
-    runTurn: (req: TurnRequest, _s: AbortSignal) => {
+    runTurn: (req: TurnRequest, signal: AbortSignal, onActivity?: () => void) => {
       started.push(req.text);
-      return new Promise<TurnResult>((resolve) => pending.push({ req, resolve }));
+      return new Promise<TurnResult>((resolve) => pending.push({ req, resolve, signal, onActivity }));
     },
     emitQueueUpdated: () => {},
     detectSessionsChanged: async () => {},
+    setTimer,
+    clearTimer,
     ...overrides,
   });
   return {
@@ -32,6 +42,11 @@ function makeQueue(overrides?: Partial<TurnQueueDeps>) {
     resolveNext: (r: TurnResult = { ok: true }) => pending.shift()?.resolve(r),
     pendingCount: () => pending.length,
     pendingReqs: () => pending.map((p) => p.req),
+    head: () => pending[0],
+    fireIdle: () => { const fn = idleFn; idleFn = null; fn?.(); },
+    idleArmed: () => idleFn !== null,
+    setCount: () => setCount,
+    clearCount: () => clearCount,
   };
 }
 
@@ -189,4 +204,48 @@ test("Stop-then-followup: a submit after cancelTurn waits (raceWithTimeout) then
   const [r1, r2] = await Promise.all([first, second]);
   expect(r1).toEqual({ ok: false, errorMessage: "aborted" });
   expect((r2 as TurnResult).ok).toBe(true);
+});
+
+test("watchdog: a turn silent past the idle timeout is aborted with TURN_IDLE_TIMEOUT", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(q.idleArmed()).toBe(true);     // armed at submit
+  q.fireIdle();                          // no activity → watchdog fires
+  expect(h.signal.aborted).toBe(true);
+  expect(h.signal.reason).toBe(TURN_IDLE_TIMEOUT);
+});
+
+test("watchdog: onActivity resets the timer (clears the old, arms a new one)", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(q.setCount()).toBe(1);          // armed once at submit
+  expect(q.clearCount()).toBe(0);
+  h.onActivity!();                        // agent activity → clear old + arm new
+  expect(q.clearCount()).toBe(1);
+  expect(q.setCount()).toBe(2);
+  expect(q.idleArmed()).toBe(true);
+  expect(h.signal.aborted).toBe(false);  // not aborted — the deadline was pushed out
+});
+
+test("watchdog: turnIdleTimeoutMs 0 disables it (no timer armed)", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 0 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  expect(q.idleArmed()).toBe(false);
+});
+
+test("watchdog: the idle timer is cleared when the turn settles normally", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  expect(q.idleArmed()).toBe(true);
+  q.resolveNext({ ok: true });           // turn finishes
+  await tick();
+  expect(q.idleArmed()).toBe(false);     // no dangling timer
+});
+
+test("watchdog: absent turnIdleTimeoutMs dep = disabled (no timer, backward-compat)", async () => {
+  const q = makeQueue();                 // no turnIdleTimeoutMs override
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  expect(q.idleArmed()).toBe(false);
 });

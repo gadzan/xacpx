@@ -119,6 +119,9 @@ export interface ControlServiceDeps {
   terminal: import("./terminal-service").TerminalService;
   terminalEnabled: () => boolean;
   filesWriteEnabled: () => boolean;
+  // Inactivity watchdog threshold in ms for in-flight turns; absent ⇒ disabled. Wired in
+  // main.ts from transport.turnIdleTimeoutSeconds. Optional so existing tests need no change.
+  turnIdleTimeoutMs?: () => number;
 }
 
 export interface ControlPromptInput {
@@ -174,7 +177,8 @@ export class ControlService {
   constructor(private readonly deps: ControlServiceDeps) {
     this.runner = new SessionTurnRunner(deps);
     this.turnQueue = new TurnQueue({
-      runTurn: (req, signal) => this.runner.run(req, signal),
+      runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
+      ...(this.deps.turnIdleTimeoutMs ? { turnIdleTimeoutMs: this.deps.turnIdleTimeoutMs } : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items }),
       detectSessionsChanged: async (detection) => {
