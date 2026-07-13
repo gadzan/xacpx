@@ -138,10 +138,13 @@ possible, so no authorization check is required on `subscribe`.
 Seams (verified): the single socket is created in `api/events.ts`
 `connectEvents(onEvent, onStatus?)`; `onStatus(true)` fires on the initial open
 **and every reconnect** (`socket.onopen`). The active instance is `chat.instanceId`
-(the chat store's selected instance). `DashboardView.vue` already `watch`es
-`chat.instanceId`/`chat.sessionAlias` and runs `loadSessions` + `tasks.loadFor` on
-change (~:187-214) — the refetch that self-heals staleness accrued while
-unsubscribed already exists.
+(the chat store's selected instance). The real self-heal on switch is
+`InstanceTree`'s `onSelect` handler, which calls `chat.loadHistory()` (the
+persisted transcript for the newly-viewed session), **plus** the newly-added
+`chat.loadActiveTurns()` on the instance-change watch below (the global in-flight
+snapshot, which re-seeds any live turn + "working" dots that were dropped for this
+socket while it was subscribed elsewhere). There is no separate
+`loadSessions`/`loadFor` watch that serves as the self-heal.
 
 - `api/events.ts`: add `sendSubscribe(instanceIds: string[])` mirroring
   `sendWebClientMessage` (encode a `subscribe` `WebClientMessage` on the active
@@ -150,9 +153,10 @@ unsubscribed already exists.
   - Pass an `onStatus` to `connectEvents` (or extend the existing one) that, on
     `online === true`, calls `sendSubscribe(chat.instanceId ? [chat.instanceId] : [])`
     — re-subscribes after every (re)connect.
-  - Add a `watch(() => chat.instanceId)` that calls the same `sendSubscribe(...)` so
-    switching instances re-scopes the socket. (The existing `loadSessions`/`loadFor`
-    watch is the self-heal; no new refetch logic is needed.)
+  - Add a `watch(() => chat.instanceId)` that calls the same `sendSubscribe(...)`
+    **and**, when an instance is selected, `chat.loadActiveTurns()` — so switching
+    instances both re-scopes the socket and re-seeds any in-flight turn that
+    streamed while unsubscribed.
 - Before an instance is selected, `chat.instanceId` is empty → `sendSubscribe([])`,
   so the socket gets only `instance-status`/`notice` until the user selects an
   instance. Pre-selection data loads over RPC, not the socket, so nothing is lost.
@@ -211,6 +215,15 @@ relay-web tests run under `vitest`, not bun):
 - **Documented behaviour change:** non-viewed instances' control-events (session
   list refresh, per-session unread) go stale until the user switches to them;
   `instance-status`/`notice` keep the instance list's online/notice state fresh.
+  This also affects cross-instance **in-flight turn buffering**: a turn streaming
+  on a non-viewed instance is no longer pre-buffered live — it is re-seeded from
+  the global active-turns snapshot (`chat.loadActiveTurns()`) when the user
+  switches to that instance, not streamed incrementally while unsubscribed. More
+  importantly, a turn that **finishes** on a non-viewed instance while
+  unsubscribed produces **no unread dot**: its `turn-finished` event is dropped
+  by the subscription filter, and the active-turns snapshot only seeds in-flight
+  (not-yet-finished) turns, so that unread affordance is missed entirely — not
+  merely delayed — until the session is next opened directly.
 - **Composes with A:** the subscription filter sits in front of A's per-socket
   `bufferedAmount` backpressure + `readyState` guards in the same `broadcast` loop.
 

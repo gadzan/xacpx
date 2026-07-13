@@ -223,9 +223,13 @@ function onStatus(online: boolean) {
   }
 }
 
-// Re-scope the hub fan-out whenever the viewed instance changes. The existing
-// loadSessions/loadFor watch is the self-heal for state that went stale while unsubscribed.
-watch(() => chat.instanceId, (id) => sendSubscribe(id ? [id] : []));
+// Re-scope the hub fan-out to the viewed instance, and re-seed any in-flight turns that were
+// dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the global
+// in-flight snapshot — the real self-heal, alongside onSelect's loadHistory).
+watch(() => chat.instanceId, (id) => {
+  sendSubscribe(id ? [id] : []);
+  if (id) void chat.loadActiveTurns().catch(() => {});
+});
 
 onMounted(async () => {
   window.addEventListener("keydown", onGlobalKey);

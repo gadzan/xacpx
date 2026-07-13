@@ -90,6 +90,7 @@ test("re-pulls the snapshot on reconnect", async () => {
 
 test("subscribes to the active instance on connect and on instance change", async () => {
   const chat = useChatStore();
+  const loadActiveTurns = vi.spyOn(chat, "loadActiveTurns").mockResolvedValue(undefined);
   mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
   await flushPromises();
 
@@ -97,8 +98,11 @@ test("subscribes to the active instance on connect and on instance change", asyn
   captured.onStatus?.(true);
   expect(sendSubscribe).toHaveBeenLastCalledWith([]);
 
-  // Selecting an instance re-scopes the socket to it.
+  // Selecting an instance re-scopes the socket to it, and re-seeds any in-flight turns that
+  // were dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the
+  // global in-flight snapshot — the real self-heal on switch).
   chat.select("iA", "backend");
   await flushPromises();
   expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
+  expect(loadActiveTurns).toHaveBeenCalled();
 });

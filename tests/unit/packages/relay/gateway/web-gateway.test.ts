@@ -193,17 +193,17 @@ test("setSubscription replaces the prior set", () => {
   expect(s.sent.length).toBe(1); // only iB now
 });
 
-test("closing a socket clears its subscription (no leak)", () => {
+test("closing a socket clears its subscription (re-registering the same socket defaults to all)", () => {
   const gw = new WebGateway();
   const s = new FakeSocket();
   gw.register("a1", s as never);
   gw.setSubscription(s as never, ["iA"]);
-  s.close(); // fires the close handler → removes from byAccount AND subscriptions
-  // Re-register a fresh socket at the same account: with no subscription it defaults to all.
-  const s2 = new FakeSocket();
-  gw.register("a1", s2 as never);
+  s.close(); // fires close handler → removes from byAccount AND subscriptions
+  // Re-register the SAME socket: if the ["iA"] entry leaked, it would still be scoped to iA
+  // and drop an iZ control-event. With the entry deleted, it defaults to "all" and receives it.
+  gw.register("a1", s as never);
   gw.broadcast("a1", ctrl("iZ"));
-  expect(s2.sent.length).toBe(1);
+  expect(s.sent.length).toBe(1);
 });
 
 test("backpressure still evicts an over-threshold socket for a subscribed control-event", () => {
