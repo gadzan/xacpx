@@ -45,6 +45,13 @@ export interface TransportConfig {
    * acpx's default resolution. A per-agent `command` override still takes precedence.
    */
   preferLocalAgents?: boolean;
+  /**
+   * Inactivity watchdog: abort a turn that produces NO agent activity (no streamed
+   * output/tool/thought/usage event) for this many seconds, reclaiming its in-flight
+   * slot. Reset on every agent event, so long but actively-working turns are unaffected.
+   * `0` disables the watchdog. Defaults to 600 (10 min).
+   */
+  turnIdleTimeoutSeconds?: number;
 }
 
 export interface TerminalConfig {
@@ -144,6 +151,13 @@ export function terminalEnabled(config: AppConfig): boolean {
 export function terminalIdleTimeoutSeconds(config: AppConfig): number {
   const v = config.terminal?.idleTimeoutSeconds;
   return typeof v === "number" && v > 0 ? v : 900;
+}
+
+export function turnIdleTimeoutSeconds(config: AppConfig): number {
+  const v = config.transport?.turnIdleTimeoutSeconds;
+  // NB: unlike terminalIdleTimeoutSeconds, 0 is a valid "disabled" value (>= 0), not a
+  // fall-through to the default — only a negative/absent value uses the 600 default.
+  return typeof v === "number" && v >= 0 ? v : 600;
 }
 
 export function terminalShell(config: AppConfig): string | undefined {
