@@ -6,7 +6,10 @@ import { WebGateway } from "../../../../../packages/relay/src/gateway/web-gatewa
 class FakeSocket {
   sent: string[] = [];
   closeListeners: (() => void)[] = [];
+  bufferedAmount = 0;
+  terminated = false;
   send(data: string) { this.sent.push(data); }
+  terminate() { this.terminated = true; this.close(); } // real ws: terminate -> close -> drop
   on(event: string, listener: () => void) { if (event === "close") this.closeListeners.push(listener); return this; }
   close() { this.closeListeners.forEach((l) => l()); }
 }
@@ -80,4 +83,44 @@ test("non-open sockets are skipped; sockets without readyState still receive", (
   expect(closing.sent.length).toBe(0);
   expect(open.sent.length).toBe(1);
   expect(bare.sent.length).toBe(1);
+});
+
+const BACKPRESSURE_MAX = 4 * 1024 * 1024;
+
+test("a socket over the bufferedAmount threshold is terminated and skipped, not sent", () => {
+  const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const gw = new WebGateway({ logger: { debug: () => {}, info: (e, m, c) => logs.push([e, m, c]), error: () => {} } });
+  const slow = new FakeSocket();
+  slow.bufferedAmount = BACKPRESSURE_MAX + 1;
+  gw.register("a1", slow as never);
+  gw.broadcast("a1", evt(true));
+  expect(slow.sent.length).toBe(0);
+  expect(slow.terminated).toBe(true);
+  // the terminate-triggered close dropped it from the account set: a second broadcast is a no-op
+  slow.bufferedAmount = 0;
+  gw.broadcast("a1", evt(false));
+  expect(slow.sent.length).toBe(0);
+  expect(logs.some(([e]) => e === "relay.web.backpressure_evict")).toBe(true);
+});
+
+test("a socket at/under the threshold receives normally", () => {
+  const gw = new WebGateway();
+  const ok = new FakeSocket();
+  ok.bufferedAmount = BACKPRESSURE_MAX; // exactly at the cap is NOT over it
+  gw.register("a1", ok as never);
+  gw.broadcast("a1", evt(true));
+  expect(ok.sent.length).toBe(1);
+  expect(ok.terminated).toBe(false);
+});
+
+test("one slow socket does not starve the healthy sockets in the same account", () => {
+  const gw = new WebGateway();
+  const slow = new FakeSocket(); slow.bufferedAmount = BACKPRESSURE_MAX + 1;
+  const good = new FakeSocket();
+  gw.register("a1", slow as never); // slow first, so its eviction must not skip `good`
+  gw.register("a1", good as never);
+  gw.broadcast("a1", evt(true));
+  expect(slow.sent.length).toBe(0);
+  expect(slow.terminated).toBe(true);
+  expect(good.sent.length).toBe(1);
 });
