@@ -7,12 +7,18 @@ import { mount, flushPromises } from "@vue/test-utils";
 // Capture the (onEvent, onStatus) callbacks so tests can drive reconnects.
 const disconnect = vi.fn();
 const captured: { onEvent?: (e: unknown) => void; onStatus?: (online: boolean) => void } = {};
+// `sendSubscribe` is read directly (not inside a deferred closure) when the
+// factory below builds its returned object, so — unlike `disconnect`, which is
+// only touched later inside a nested arrow function — it must be produced via
+// `vi.hoisted` to avoid a TDZ ReferenceError against the hoisted `vi.mock` call.
+const { sendSubscribe } = vi.hoisted(() => ({ sendSubscribe: vi.fn() }));
 vi.mock("../api/events", () => ({
   connectEvents: (onEvent: (e: unknown) => void, onStatus?: (online: boolean) => void) => {
     captured.onEvent = onEvent;
     captured.onStatus = onStatus;
     return disconnect;
   },
+  sendSubscribe,
 }));
 
 // DashboardView now uses useRouter()/<router-link>; mock to avoid a real router.
@@ -27,6 +33,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   captured.onEvent = undefined;
   captured.onStatus = undefined;
+  sendSubscribe.mockClear();
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
 });
 
@@ -79,4 +86,19 @@ test("re-pulls the snapshot on reconnect", async () => {
   captured.onStatus?.(true);
   await flushPromises();
   expect(spy).toHaveBeenCalled();
+});
+
+test("subscribes to the active instance on connect and on instance change", async () => {
+  const chat = useChatStore();
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+
+  // On connect, with no instance selected yet, subscribe to the empty set.
+  captured.onStatus?.(true);
+  expect(sendSubscribe).toHaveBeenLastCalledWith([]);
+
+  // Selecting an instance re-scopes the socket to it.
+  chat.select("iA", "backend");
+  await flushPromises();
+  expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
 });

@@ -8,6 +8,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 vi.mock("../api/events", () => ({
   connectEvents: () => vi.fn(),
   sendWebClientMessage: vi.fn(),
+  sendSubscribe: vi.fn(),
 }));
 // DashboardView uses useRouter()/<router-link>; mock to avoid a real router.
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));

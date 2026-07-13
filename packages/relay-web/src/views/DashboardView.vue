@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { connectEvents } from "../api/events";
+import { connectEvents, sendSubscribe } from "../api/events";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
@@ -217,10 +217,15 @@ async function reloadSnapshot() {
 function onStatus(online: boolean) {
   conn.setOnline(online);
   if (online) {
+    sendSubscribe(chat.instanceId ? [chat.instanceId] : []);
     if (everOnline) void reloadSnapshot();
     everOnline = true;
   }
 }
+
+// Re-scope the hub fan-out whenever the viewed instance changes. The existing
+// loadSessions/loadFor watch is the self-heal for state that went stale while unsubscribed.
+watch(() => chat.instanceId, (id) => sendSubscribe(id ? [id] : []));
 
 onMounted(async () => {
   window.addEventListener("keydown", onGlobalKey);

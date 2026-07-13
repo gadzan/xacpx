@@ -6,6 +6,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 const disconnect = vi.fn();
 vi.mock("../api/events", () => ({
   connectEvents: () => disconnect,
+  sendSubscribe: vi.fn(),
 }));
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 

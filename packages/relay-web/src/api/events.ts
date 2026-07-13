@@ -9,6 +9,11 @@ export function sendWebClientMessage(msg: WebClientMessage): void {
   }
 }
 
+/** Tell the hub which instance(s) this socket is viewing, so it scopes control-events. */
+export function sendSubscribe(instanceIds: string[]): void {
+  sendWebClientMessage({ kind: "subscribe", instanceIds });
+}
+
 /** Connects to the relay /ws fan-out and invokes `onEvent` for each web event. Auto-reconnects. */
 export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus?: (online: boolean) => void): () => void {
   let socket: WebSocket | null = null;
