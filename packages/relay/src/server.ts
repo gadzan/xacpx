@@ -321,7 +321,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       if (!account) { socket.destroy(); return; }
       webWss.handleUpgrade(req, socket, head, (ws) => {
         runtime.webGateway.register(account.id, ws);
-        ws.on("message", (data: unknown) => handleWebClientMessage({ instances: runtime.instances, gateway: runtime.gateway }, account.id, String(data)));
+        ws.on("message", (data: unknown) => handleWebClientMessage({ instances: runtime.instances, gateway: runtime.gateway, webGateway: runtime.webGateway }, account.id, ws, String(data)));
       });
       return;
     }
