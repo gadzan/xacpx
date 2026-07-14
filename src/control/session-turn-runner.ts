@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
-import { toErrorMessage, buildControlMetadata, TURN_IDLE_TIMEOUT } from "./turn-support";
+import { toErrorMessage, buildControlMetadata, TURN_IDLE_TIMEOUT_REASON } from "./turn-support";
 
 export interface TurnRequest {
   chatKey: string;
@@ -217,10 +217,10 @@ export class SessionTurnRunner {
           : {}),
       };
     } catch (error) {
-      // A watchdog inactivity-timeout abort (controller.abort(TURN_IDLE_TIMEOUT)) surfaces
+      // A watchdog inactivity-timeout abort (controller.abort(TURN_IDLE_TIMEOUT_REASON)) surfaces
       // as an error with a fixed timeout message and is NOT flagged `cancelled` — that keeps
       // it distinct from a user Stop (which aborts with no reason → cancelled:true).
-      const timedOut = signal.reason === TURN_IDLE_TIMEOUT;
+      const timedOut = signal.reason === TURN_IDLE_TIMEOUT_REASON;
       const errorMessage = timedOut ? "Turn timed out due to inactivity" : toErrorMessage(error);
       this.deps.events.emit({
         type: "turn-finished",

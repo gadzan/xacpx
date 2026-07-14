@@ -87,7 +87,7 @@ what makes the pre-first-event window safe.
 ### The watchdog lifecycle in `submit`
 
 After `this.inFlight.set(key, {controller, settled})`:
-- If `turnIdleTimeoutMs() > 0`, arm `idleTimer = setTimer(() => controller.abort(TURN_IDLE_TIMEOUT), ms)` (`unref`'d).
+- If `turnIdleTimeoutMs() > 0`, arm `idleTimer = setTimer(() => controller.abort(TURN_IDLE_TIMEOUT_REASON), ms)` (`unref`'d).
 - Define `onActivity = () => { if (idleTimer) { clearTimer(idleTimer); idleTimer = setTimer(sameAbortFn, ms); } }` — reset on activity.
 - Pass `onActivity` into `runTurn(...)`.
 - In the `finally` (turn settled), `clearTimer(idleTimer)` so a completed/aborted
@@ -98,8 +98,8 @@ Per-activity reset (`clearTimer` + `setTimer` on each `onActivity`) mirrors
 often, but the ops are cheap and this keeps tests deterministic with injected timers
 (no injectable wall-clock needed, unlike a `lastActivityAt`-timestamp approach).
 
-`TURN_IDLE_TIMEOUT` is a module-level sentinel exported from `turn-support.ts`
-(e.g. `export const TURN_IDLE_TIMEOUT = Symbol("turn-idle-timeout")`), passed as the
+`TURN_IDLE_TIMEOUT_REASON` is a module-level sentinel exported from `turn-support.ts`
+(e.g. `export const TURN_IDLE_TIMEOUT_REASON = Symbol("turn-idle-timeout")`), passed as the
 `AbortController.abort(reason)` argument so the runner can distinguish a watchdog
 abort from a user Stop via `signal.reason`.
 
@@ -108,7 +108,7 @@ abort from a user Stop via `signal.reason`.
 The runner's `catch` (around `session-turn-runner.ts:213-230`) currently emits
 `turn-finished { ok:false, errorMessage, ...(signal.aborted ? {cancelled:true} : {}) }`.
 Change the `cancelled` derivation to read `signal.reason`:
-- `signal.reason === TURN_IDLE_TIMEOUT` → emit
+- `signal.reason === TURN_IDLE_TIMEOUT_REASON` → emit
   `turn-finished { ok:false, errorMessage: "Turn timed out after <N>s of inactivity" }`
   **without** `cancelled` — the web renders it as an error with a clear timeout
   message, distinct from a user Stop.
@@ -121,10 +121,15 @@ renders `errorMessage`. The web `chat` store maps `turn-finished`: `cancelled` �
 shows as an error carrying the timeout text.
 
 The runner emits a **fixed** message — `"Turn timed out due to inactivity"` — on
-`signal.reason === TURN_IDLE_TIMEOUT`. The concrete threshold N is a config/log
+`signal.reason === TURN_IDLE_TIMEOUT_REASON`. The concrete threshold N is a config/log
 detail, not required in the user-facing string, so the runner stays free of any
 config dependency (it only reads `signal.reason`). TurnQueue, which owns the
-threshold, logs the concrete N when it fires the abort.
+threshold, logs the concrete N when it fires the abort — via an injected
+`onIdleTimeout({ chatKey, sessionAlias, idleMs })` seam (kept as a callback to
+preserve TurnQueue's session-free, timer-injected DI style; the real sink is the
+app logger, wired in `main.ts` as `control.turn.idle_timeout`). The seam is invoked
+at the fire site, immediately before `controller.abort`, so the reclaim is
+observable even though the abort itself carries no config.
 
 ### Config
 
@@ -147,8 +152,8 @@ falls back to its 900 default), but here `0` must mean **disabled**. So:
 submit → inFlight.set → arm idle timer (if enabled)
   → runTurn(req, signal, onActivity)
       → runner emits turn-started / streams events → each event calls onActivity → resets timer
-  → [no activity for N s] → timer fires → controller.abort(TURN_IDLE_TIMEOUT)
-      → agent.chat throws (aborted) → runner catch: reason===TURN_IDLE_TIMEOUT
+  → [no activity for N s] → timer fires → controller.abort(TURN_IDLE_TIMEOUT_REASON)
+      → agent.chat throws (aborted) → runner catch: reason===TURN_IDLE_TIMEOUT_REASON
           → turn-finished { ok:false, errorMessage:<timeout> }
   → finally: clearTimer; settled resolves; advanceQueue frees/drains the slot
 ```
@@ -157,23 +162,28 @@ submit → inFlight.set → arm idle timer (if enabled)
 
 Test files:
 - `tests/unit/control/turn-queue.test.ts` (extend — the existing TurnQueue harness constructs `TurnQueue` directly with a stub `runTurn`; add watchdog arm/reset/expiry, disabled, timer cleared on settle, drained head re-arms).
-- `tests/unit/control/session-turn-runner.test.ts` (**NEW** — no runner unit test exists today; the runner is only exercised via `control-service-*`/golden. Add a focused unit test constructing `SessionTurnRunner` with stub deps: `onActivity` called on each agent event; `signal.reason === TURN_IDLE_TIMEOUT` → `turn-finished { ok:false, errorMessage }`, no `cancelled`; a plain aborted signal (user Stop) still → `cancelled:true`; happy-path unchanged).
+- `tests/unit/control/session-turn-runner.test.ts` (**NEW** — no runner unit test exists today; the runner is only exercised via `control-service-*`/golden. Add a focused unit test constructing `SessionTurnRunner` with stub deps: `onActivity` called on each agent event; `signal.reason === TURN_IDLE_TIMEOUT_REASON` → `turn-finished { ok:false, errorMessage }`, no `cancelled`; a plain aborted signal (user Stop) still → `cancelled:true`; happy-path unchanged).
 - Config resolver test alongside the existing config-type resolver tests (`tests/unit/config/*` — the `0`=disabled vs default-600 boundary).
 
 **TurnQueue (fake timers):**
 - A turn with no `onActivity` for the threshold → `controller.abort` fires with
-  `TURN_IDLE_TIMEOUT`; the `inFlight` slot releases and a queued item drains.
+  `TURN_IDLE_TIMEOUT_REASON`; the `inFlight` slot releases and a queued item drains.
 - `onActivity()` before the threshold defers the abort; repeated activity keeps the
   turn alive past multiple thresholds (no abort).
 - `turnIdleTimeoutMs() === 0` → no timer armed; a silent turn runs unbounded (no abort).
 - The idle timer is cleared when the turn settles normally (no dangling handle);
   the drained head turn arms its **own** fresh watchdog.
+- `onIdleTimeout` fires exactly once with the concrete threshold
+  (`{ chatKey, sessionAlias, idleMs }`) at the moment the watchdog reclaims a turn.
+- These lifecycle guards are mutation-live: disabling the drained-head watchdog, or
+  letting only the first `onActivity` reset the deadline, each reddens exactly its
+  own test.
 - Regression: the existing concurrency/queue/draining invariants (busy gate,
   drain hand-off, cancel) are unaffected — the watchdog only adds an abort trigger.
 
 **SessionTurnRunner:**
 - `onActivity` is invoked on each of `reply`/`onToolEvent`/`onThought`/`onUsage`/`onPlan`/`onCommands`.
-- On abort with `signal.reason === TURN_IDLE_TIMEOUT` → `turn-finished { ok:false, errorMessage:<timeout> }`, **no** `cancelled`.
+- On abort with `signal.reason === TURN_IDLE_TIMEOUT_REASON` → `turn-finished { ok:false, errorMessage:<timeout> }`, **no** `cancelled`.
 - On abort without that reason (user Stop) → `turn-finished { ..., cancelled:true }` (regression, unchanged).
 - Happy-path turn-finished (ok:true) unchanged.
 

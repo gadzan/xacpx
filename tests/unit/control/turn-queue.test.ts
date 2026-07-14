@@ -7,7 +7,7 @@
 import { expect, test } from "bun:test";
 import { TurnQueue, type TurnQueueDeps } from "../../../src/control/turn-queue";
 import type { TurnRequest, TurnResult } from "../../../src/control/session-turn-runner";
-import { TURN_IDLE_TIMEOUT } from "../../../src/control/turn-support";
+import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
 
 // Wires a TurnQueue to a controllable deferred runTurn. `runTurn` records each turn's text into
 // `started` (so drain-order tests can assert it) and parks on a pending promise the test resolves
@@ -206,14 +206,14 @@ test("Stop-then-followup: a submit after cancelTurn waits (raceWithTimeout) then
   expect((r2 as TurnResult).ok).toBe(true);
 });
 
-test("watchdog: a turn silent past the idle timeout is aborted with TURN_IDLE_TIMEOUT", async () => {
+test("watchdog: a turn silent past the idle timeout is aborted with TURN_IDLE_TIMEOUT_REASON", async () => {
   const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
   void q.queue.submit({ ...BASE, text: "A", queueable: true });
   const h = q.head()!;
   expect(q.idleArmed()).toBe(true);     // armed at submit
   q.fireIdle();                          // no activity → watchdog fires
   expect(h.signal.aborted).toBe(true);
-  expect(h.signal.reason).toBe(TURN_IDLE_TIMEOUT);
+  expect(h.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
 });
 
 test("watchdog: onActivity resets the timer (clears the old, arms a new one)", async () => {
@@ -248,4 +248,58 @@ test("watchdog: absent turnIdleTimeoutMs dep = disabled (no timer, backward-comp
   const q = makeQueue();                 // no turnIdleTimeoutMs override
   void q.queue.submit({ ...BASE, text: "A", queueable: true });
   expect(q.idleArmed()).toBe(false);
+});
+
+test("watchdog lifecycle: a timed-out turn releases its slot and drains the queued head", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  await tick();
+  void q.queue.submit({ ...BASE, text: "B", queueable: true }); // enqueued behind the running A
+  expect(q.queue.queueLength("c", "s")).toBe(1);
+  const hA = q.head()!;
+  q.fireIdle();                                    // A silent → its watchdog fires
+  expect(hA.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+  // The runner (faked) resolves ok:false when its signal aborts — unwinds A's turn.
+  q.resolveNext({ ok: false, errorMessage: "Turn timed out due to inactivity" });
+  await tick();
+  expect(q.started).toEqual(["A", "B"]);           // B drained only AFTER A's timeout freed the slot
+  expect(q.queue.queueLength("c", "s")).toBe(0);
+});
+
+test("watchdog lifecycle: repeated activity across many windows keeps renewing (never aborts)", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  // Three activity beats, each clearing the prior timer and arming a fresh one. A mutation that
+  // let only the FIRST activity reset the deadline would stop re-arming after beat 1.
+  h.onActivity!();
+  h.onActivity!();
+  h.onActivity!();
+  expect(q.setCount()).toBe(4);          // 1 arm at submit + 3 re-arms
+  expect(q.clearCount()).toBe(3);        // each beat cleared the prior timer
+  expect(q.idleArmed()).toBe(true);      // a live deadline is still pending
+  expect(h.signal.aborted).toBe(false);  // never aborted — the deadline kept moving out
+});
+
+test("watchdog lifecycle: a drained head arms its OWN fresh watchdog", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  await tick();
+  void q.queue.submit({ ...BASE, text: "B", queueable: true }); // queued behind A
+  q.resolveNext({ ok: true });           // A finishes normally → hands off / drains B
+  await tick();
+  expect(q.started).toEqual(["A", "B"]); // B is now the in-flight drained turn
+  expect(q.idleArmed()).toBe(true);      // it armed its own timer (not inherited from A, which was cleared)
+  const hB = q.head()!;
+  q.fireIdle();                          // B silent → its independent watchdog fires
+  expect(hB.signal.aborted).toBe(true);
+  expect(hB.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+});
+
+test("watchdog: onIdleTimeout fires with the concrete threshold when it reclaims a turn", async () => {
+  const fired: Array<{ chatKey: string; sessionAlias: string; idleMs: number }> = [];
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000, onIdleTimeout: (d) => fired.push(d) });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  q.fireIdle();
+  expect(fired).toEqual([{ chatKey: "c", sessionAlias: "s", idleMs: 1000 }]);
 });

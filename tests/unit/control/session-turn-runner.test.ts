@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
-import { TURN_IDLE_TIMEOUT } from "../../../src/control/turn-support";
+import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
 import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
 
 // Minimal deps: a fake agent whose chat() invokes the streaming callbacks we want to
@@ -47,10 +47,10 @@ test("a clean turn with no abort emits turn-finished ok:true", async () => {
   expect(fin.ok).toBe(true);
 });
 
-test("a TURN_IDLE_TIMEOUT abort surfaces as ok:false + timeout errorMessage, NOT cancelled", async () => {
+test("a TURN_IDLE_TIMEOUT_REASON abort surfaces as ok:false + timeout errorMessage, NOT cancelled", async () => {
   const controller = new AbortController();
   const { runner, captured } = makeRunner(async () => {
-    controller.abort(TURN_IDLE_TIMEOUT); // simulate the watchdog firing mid-chat
+    controller.abort(TURN_IDLE_TIMEOUT_REASON); // simulate the watchdog firing mid-chat
     throw new Error("aborted");           // the transport throws on abort
   });
   await runner.run(REQ as never, controller.signal);

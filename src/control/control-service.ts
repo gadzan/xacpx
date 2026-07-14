@@ -122,6 +122,9 @@ export interface ControlServiceDeps {
   // Inactivity watchdog threshold in ms for in-flight turns; absent ⇒ disabled. Wired in
   // main.ts from transport.turnIdleTimeoutSeconds. Optional so existing tests need no change.
   turnIdleTimeoutMs?: () => number;
+  // Observability hook fired when the inactivity watchdog reclaims a wedged turn, carrying the
+  // concrete threshold. main.ts wires this to the app logger. Optional ⇒ no logging.
+  onTurnIdleTimeout?: (detail: { chatKey: string; sessionAlias: string; idleMs: number }) => void;
 }
 
 export interface ControlPromptInput {
@@ -179,6 +182,7 @@ export class ControlService {
     this.turnQueue = new TurnQueue({
       runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
       ...(this.deps.turnIdleTimeoutMs ? { turnIdleTimeoutMs: this.deps.turnIdleTimeoutMs } : {}),
+      ...(this.deps.onTurnIdleTimeout ? { onIdleTimeout: this.deps.onTurnIdleTimeout } : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items }),
       detectSessionsChanged: async (detection) => {

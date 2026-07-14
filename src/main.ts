@@ -856,6 +856,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     terminalEnabled: () => terminalEnabled(config),
     filesWriteEnabled: () => filesWriteEnabled(config),
     turnIdleTimeoutMs: () => turnIdleTimeoutSeconds(config) * 1000,
+    onTurnIdleTimeout: ({ chatKey, sessionAlias, idleMs }) => {
+      void logger.info("control.turn.idle_timeout", "reclaimed a wedged turn after inactivity", {
+        chatKey,
+        sessionAlias,
+        idleMs,
+      });
+    },
   });
 
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`

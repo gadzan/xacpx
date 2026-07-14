@@ -7,7 +7,7 @@ import {
   raceWithTimeout,
   CANCEL_DRAIN_TIMEOUT_MS,
   QUEUE_PREVIEW_MAX,
-  TURN_IDLE_TIMEOUT,
+  TURN_IDLE_TIMEOUT_REASON,
   type QueuedPrompt,
 } from "./turn-support";
 
@@ -29,6 +29,10 @@ export interface TurnQueueDeps {
   detectSessionsChanged(detection: NonNullable<TurnResult["postTurnDetection"]>): Promise<void>;
   // Inactivity watchdog threshold in ms; <= 0 (or absent) disables it. Read per-submit.
   turnIdleTimeoutMs?: () => number;
+  // Invoked at the moment the inactivity watchdog fires an abort, carrying the concrete
+  // threshold (idleMs) and the session it fired for, so the caller can log the reclaim
+  // (main wires this to the app logger). Absent = no observability hook.
+  onIdleTimeout?: (detail: { chatKey: string; sessionAlias: string; idleMs: number }) => void;
   // Injectable timers (default setTimeout/clearTimeout), for deterministic tests.
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (id: unknown) => void;
@@ -180,7 +184,12 @@ export class TurnQueue {
     let idleTimer: unknown;
     const armIdle = () => {
       if (idleMs <= 0) return;
-      idleTimer = this.setTimer(() => controller.abort(TURN_IDLE_TIMEOUT), idleMs);
+      idleTimer = this.setTimer(() => {
+        // Log the concrete threshold that reclaimed this wedged turn BEFORE aborting, so the
+        // reclaim is observable (spec: TurnQueue owns the threshold and logs the concrete N).
+        this.deps.onIdleTimeout?.({ chatKey: params.chatKey, sessionAlias: params.sessionAlias, idleMs });
+        controller.abort(TURN_IDLE_TIMEOUT_REASON);
+      }, idleMs);
       const t = idleTimer as { unref?: () => void };
       if (typeof t.unref === "function") t.unref();
     };
