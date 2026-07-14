@@ -61,13 +61,19 @@
 - **`messages` 缓存表（§5）+ `MessageStore`**：聊天回显缓存
   （`instance_id, session_alias, direction, text, created_at`）。`append()` 写入，
   `listBySession(accountId, ...)` 按 account 隔离、oldest-first 取最近若干条。
-- **`WebGateway` 按账号扇出**：跟踪每个账号已鉴权的浏览器 socket，把 `WebServerEvent`
-  编码为 `web.event` 信封 `broadcast(accountId, event)` 给该账号所有连接。
+- **`WebGateway` 按账号扇出，并按 socket 的实例订阅过滤 `control-event`**：跟踪每个账号
+  已鉴权的浏览器 socket，把 `WebServerEvent` 编码为 `web.event` 信封
+  `broadcast(accountId, event)`。**订阅路由**（`subscribe` 帧 → `setSubscription`）：
+  - `control-event` 只发给订阅了该 `event.instanceId` 的 socket。**未在订阅表里的 socket
+    （刚注册、或从不发 `subscribe` 的旧客户端）= 订阅“全部”**（向后兼容）；显式 `subscribe []`
+    = 订阅“无”，一条 `control-event` 都收不到。
+  - `instance-status` / `notice` **不受订阅过滤，始终按账号全量广播**（看板需要感知任意实例
+    的上下线与通知，与当前查看的是哪个实例无关）。
 - **实例网关 `onStatusChange`/`onEvent` 接线**（server.ts `createRelayRuntime`）：
-  - `onStatusChange` → web 广播 `instance-status`；离线时清空该实例的 turn 缓冲。
-  - `onEvent`（instance.event）→ web 广播 `control-event`；其中 `turn-output` 分片按
-    (instance, session) 累积进内存缓冲，`turn-finished` 时 flush 为一条 `out` 历史消息
-    写入 `MessageStore`；instance.notice → 广播 `notice`。
+  - `onStatusChange` → web 广播 `instance-status`（账号全量）；离线时清空该实例的 turn 缓冲。
+  - `onEvent`（instance.event）→ web 广播 `control-event`（按上面的实例订阅过滤）；其中
+    `turn-output` 分片按 (instance, session) 累积进内存缓冲，`turn-finished` 时 flush 为一条
+    `out` 历史消息写入 `MessageStore`；instance.notice → 广播 `notice`（账号全量）。
 - **cookie 鉴权的 `/ws` web 扇出端点**：挂在 HTTP server 的 upgrade 上，按路径与实例网关分流
   （默认单端口时实例网关合并在同一 upgrade handler 的根 `/`；传 `--ws-port` 时网关另起专用端口），
   校验 `xrelay_session` cookie → 账号后 `webGateway.register(accountId, ws)`。

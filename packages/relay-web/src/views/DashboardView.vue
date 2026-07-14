@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { connectEvents } from "../api/events";
+import { connectEvents, sendSubscribe } from "../api/events";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
@@ -217,10 +217,19 @@ async function reloadSnapshot() {
 function onStatus(online: boolean) {
   conn.setOnline(online);
   if (online) {
+    sendSubscribe(chat.instanceId ? [chat.instanceId] : []);
     if (everOnline) void reloadSnapshot();
     everOnline = true;
   }
 }
+
+// Re-scope the hub fan-out to the viewed instance, and re-seed any in-flight turns that were
+// dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the global
+// in-flight snapshot — the real self-heal, alongside onSelect's loadHistory).
+watch(() => chat.instanceId, (id) => {
+  sendSubscribe(id ? [id] : []);
+  if (id) void chat.loadActiveTurns().catch(() => {});
+});
 
 onMounted(async () => {
   window.addEventListener("keydown", onGlobalKey);

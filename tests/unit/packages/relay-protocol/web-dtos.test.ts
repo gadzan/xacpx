@@ -1,10 +1,13 @@
 // tests/unit/packages/relay-protocol/web-dtos.test.ts
 import { expect, test } from "bun:test";
 import {
+  WEB_CLIENT_TYPE,
   WEB_EVENT_TYPE,
   decodeEnvelope,
   encodeEnvelope,
+  parseWebClientMessage,
   parseWebServerEvent,
+  webClientEnvelope,
   webEventEnvelope,
   type FsEntryDto,
   type FsListResult,
@@ -258,4 +261,33 @@ test("fs DTOs carry the tree-browser additions", () => {
   expect(list.sep).toBe("/");
   expect(payload.mode).toBe("content");
   expect(result.hits[0].line).toBe(3);
+});
+
+test("parseWebClientMessage round-trips a subscribe frame", () => {
+  const wire = encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["a", "b"] }));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  expect(parseWebClientMessage(decoded.envelope)).toEqual({ kind: "subscribe", instanceIds: ["a", "b"] });
+});
+
+test("parseWebClientMessage accepts an empty subscribe set", () => {
+  const wire = encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: [] }));
+  const decoded = decodeEnvelope(wire);
+  if (!decoded.ok) throw new Error("decode failed");
+  expect(parseWebClientMessage(decoded.envelope)).toEqual({ kind: "subscribe", instanceIds: [] });
+});
+
+test("parseWebClientMessage rejects subscribe with a non-array / non-string instanceIds", () => {
+  const bad1 = { protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE, payload: { kind: "subscribe", instanceIds: "nope" } } as never;
+  const bad2 = { protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE, payload: { kind: "subscribe", instanceIds: [1, 2] } } as never;
+  expect(parseWebClientMessage(bad1)).toBeNull();
+  expect(parseWebClientMessage(bad2)).toBeNull();
+});
+
+test("parseWebClientMessage still round-trips terminal-input (regression)", () => {
+  const wire = encodeEnvelope(webClientEnvelope({ kind: "terminal-input", instanceId: "i1", terminalId: "t1", data: "ls\n" }));
+  const decoded = decodeEnvelope(wire);
+  if (!decoded.ok) throw new Error("decode failed");
+  expect(parseWebClientMessage(decoded.envelope)).toEqual({ kind: "terminal-input", instanceId: "i1", terminalId: "t1", data: "ls\n" });
 });

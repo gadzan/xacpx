@@ -7,12 +7,18 @@ import { mount, flushPromises } from "@vue/test-utils";
 // Capture the (onEvent, onStatus) callbacks so tests can drive reconnects.
 const disconnect = vi.fn();
 const captured: { onEvent?: (e: unknown) => void; onStatus?: (online: boolean) => void } = {};
+// `sendSubscribe` is read directly (not inside a deferred closure) when the
+// factory below builds its returned object, so — unlike `disconnect`, which is
+// only touched later inside a nested arrow function — it must be produced via
+// `vi.hoisted` to avoid a TDZ ReferenceError against the hoisted `vi.mock` call.
+const { sendSubscribe } = vi.hoisted(() => ({ sendSubscribe: vi.fn() }));
 vi.mock("../api/events", () => ({
   connectEvents: (onEvent: (e: unknown) => void, onStatus?: (online: boolean) => void) => {
     captured.onEvent = onEvent;
     captured.onStatus = onStatus;
     return disconnect;
   },
+  sendSubscribe,
 }));
 
 // DashboardView now uses useRouter()/<router-link>; mock to avoid a real router.
@@ -27,6 +33,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   captured.onEvent = undefined;
   captured.onStatus = undefined;
+  sendSubscribe.mockClear();
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
 });
 
@@ -79,4 +86,51 @@ test("re-pulls the snapshot on reconnect", async () => {
   captured.onStatus?.(true);
   await flushPromises();
   expect(spy).toHaveBeenCalled();
+});
+
+test("subscribes to the active instance on connect and on instance change", async () => {
+  const chat = useChatStore();
+  const loadActiveTurns = vi.spyOn(chat, "loadActiveTurns").mockResolvedValue(undefined);
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+
+  // On connect, with no instance selected yet, subscribe to the empty set.
+  captured.onStatus?.(true);
+  expect(sendSubscribe).toHaveBeenLastCalledWith([]);
+
+  // Clear the mount-time loadActiveTurns call (onMounted seeds it once) so the assertion below
+  // isolates the SWITCH-triggered re-seed — otherwise the check passes even if the watch's
+  // loadActiveTurns call were reverted.
+  loadActiveTurns.mockClear();
+
+  // Selecting an instance re-scopes the socket to it, and re-seeds any in-flight turns that
+  // were dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the
+  // global in-flight snapshot — the real self-heal on switch).
+  chat.select("iA", "backend");
+  await flushPromises();
+  expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
+  expect(loadActiveTurns).toHaveBeenCalledTimes(1);
+});
+
+test("re-subscribes on reconnect, not only on the first connect", async () => {
+  const chat = useChatStore();
+  vi.spyOn(chat, "loadActiveTurns").mockResolvedValue(undefined);
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+
+  // Establish a selected instance so the re-sent subscription payload is observable and non-empty.
+  chat.select("iA", "backend");
+  await flushPromises();
+  captured.onStatus?.(true);   // initial connect
+  sendSubscribe.mockClear();
+
+  // Drop, then reconnect. onStatus(true) on a RECONNECT must re-send the current subscription so
+  // the hub re-scopes the fresh socket — otherwise a reconnected client silently receives every
+  // instance's control-events (or none). A mutation that subscribed only on the first connect
+  // would leave sendSubscribe uncalled here.
+  captured.onStatus?.(false);
+  captured.onStatus?.(true);
+  await flushPromises();
+  expect(sendSubscribe).toHaveBeenCalledTimes(1);
+  expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
 });

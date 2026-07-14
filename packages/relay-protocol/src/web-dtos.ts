@@ -238,7 +238,8 @@ export const WEB_CLIENT_TYPE = "web.client";
 export type WebClientMessage =
   | { kind: "terminal-input"; instanceId: string; terminalId: string; data: string }
   | { kind: "terminal-resize"; instanceId: string; terminalId: string; cols: number; rows: number }
-  | { kind: "terminal-close"; instanceId: string; terminalId: string };
+  | { kind: "terminal-close"; instanceId: string; terminalId: string }
+  | { kind: "subscribe"; instanceIds: string[] };
 
 export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
@@ -249,6 +250,12 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
   const p = envelope.payload;
   if (typeof p !== "object" || p === null) return null;
   const c = p as Record<string, unknown>;
+  if (c.kind === "subscribe") {
+    return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string")
+      ? (p as WebClientMessage)
+      : null;
+  }
+  // terminal-* frames all require instanceId + terminalId strings.
   if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string") return null;
   if (c.kind === "terminal-input") return typeof c.data === "string" ? (p as WebClientMessage) : null;
   if (c.kind === "terminal-resize") return typeof c.cols === "number" && typeof c.rows === "number" ? (p as WebClientMessage) : null;
