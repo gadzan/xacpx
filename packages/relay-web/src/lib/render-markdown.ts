@@ -2,6 +2,7 @@ import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
 import remend from "remend";
 import { normalizeMarkdownTables } from "./normalize-markdown";
+import { encodeMermaidSource } from "./mermaid-source";
 
 // Single shared parser. html:false escapes any raw HTML in the markdown source,
 // so agent output cannot inject markup; DOMPurify is a second, defense-in-depth pass
@@ -17,6 +18,24 @@ const md = new MarkdownIt({
 // which would collapse its column layout into a stacked single column.
 md.renderer.rules.table_open = () => '<div class="md-table-wrap"><table>';
 md.renderer.rules.table_close = () => "</table></div>";
+
+// Intercept ```mermaid fences: emit a placeholder carrying the diagram source as
+// attribute-safe base64. render-mermaid hydrates it into SVG after the HTML is mounted.
+// The escaped <code> is the fallback shown before hydration, while streaming, and on
+// render error. All other fences fall through to markdown-it's default renderer.
+const defaultFence =
+  md.renderer.rules.fence ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx]!;
+  const info = token.info.trim().split(/\s+/g)[0]?.toLowerCase() ?? "";
+  if (info !== "mermaid") {
+    return defaultFence(tokens, idx, options, env, self);
+  }
+  const encoded = encodeMermaidSource(token.content);
+  const fallback = md.utils.escapeHtml(token.content);
+  return `<pre class="mermaid-block" data-mermaid="${encoded}"><code>${fallback}</code></pre>`;
+};
 
 // Force every surviving link to open safely in a new tab. Registered once at module
 // load; DOMPurify is a singleton and this app only sanitizes through this module.
