@@ -7,7 +7,9 @@ import {
   raceWithTimeout,
   CANCEL_DRAIN_TIMEOUT_MS,
   QUEUE_PREVIEW_MAX,
+  TURN_IDLE_TIMEOUT_REASON,
   type QueuedPrompt,
+  type TurnIdleTimeoutDetail,
 } from "./turn-support";
 
 export interface QueuedItemSnapshot {
@@ -17,15 +19,24 @@ export interface QueuedItemSnapshot {
 }
 
 export interface TurnQueueDeps {
-  // Runs the per-turn execution body (SessionTurnRunner.run in production). TurnQueue
-  // owns only the concurrency gate + inFlight/settled lifecycle around this call.
-  runTurn(req: TurnRequest, signal: AbortSignal): Promise<TurnResult>;
+  // Runs the per-turn execution body (SessionTurnRunner.run in production). `onActivity` is
+  // invoked by the runner on every agent event; TurnQueue uses it to reset the idle watchdog.
+  runTurn(req: TurnRequest, signal: AbortSignal, onActivity: () => void): Promise<TurnResult>;
   emitQueueUpdated(chatKey: string, sessionAlias: string, items: QueuedItemSnapshot[]): void;
   // Post-turn `sessions-changed` detection (a transport session that moved during the turn —
   // archived-restore or `/clear`). Called AFTER `draining.add` and BEFORE `resolveSettled`, so
   // the await it takes stays inside the draining-guarded window (see submit's finally). Must be
   // best-effort itself — TurnQueue does not catch on its behalf.
   detectSessionsChanged(detection: NonNullable<TurnResult["postTurnDetection"]>): Promise<void>;
+  // Inactivity watchdog threshold in ms; <= 0 (or absent) disables it. Read per-submit.
+  turnIdleTimeoutMs?: () => number;
+  // Invoked at the moment the inactivity watchdog fires an abort, carrying the concrete
+  // threshold (idleMs) and the session it fired for, so the caller can log the reclaim
+  // (main wires this to the app logger). Absent = no observability hook.
+  onIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
+  // Injectable timers (default setTimeout/clearTimeout), for deterministic tests.
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (id: unknown) => void;
 }
 
 export interface SubmitParams {
@@ -58,7 +69,13 @@ export type SubmitResult = TurnResult | { ok: true; queued: true; queueItemId: s
 // threaded in via TurnQueueDeps.detectSessionsChanged rather than TurnQueue reaching for a
 // sessions dependency itself.
 export class TurnQueue {
-  constructor(private readonly deps: TurnQueueDeps) {}
+  private readonly setTimer: (fn: () => void, ms: number) => unknown;
+  private readonly clearTimer: (id: unknown) => void;
+
+  constructor(private readonly deps: TurnQueueDeps) {
+    this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+    this.clearTimer = deps.clearTimer ?? ((id) => clearTimeout(id as ReturnType<typeof setTimeout>));
+  }
 
   // Each in-flight turn carries its AbortController plus a `settled` promise that resolves
   // once the turn has fully unwound (transport cancelled, inFlight cleared).
@@ -161,6 +178,39 @@ export class TurnQueue {
     if (params.drained) {
       this.draining.delete(key);
     }
+    // Inactivity watchdog: abort a turn that produces no agent activity for turnIdleTimeoutMs.
+    // Armed here (covers the silent cold-start / agent-init window), reset on each onActivity,
+    // cleared in the finally when the turn settles. `<= 0`/absent disables it.
+    const idleMs = this.deps.turnIdleTimeoutMs?.() ?? 0;
+    let idleTimer: unknown;
+    // Exactly-once latch. The abort is cooperative, so a final agent event can still arrive AFTER
+    // the watchdog fires (or after a user Stop) and drive onActivity → armIdle again — that would
+    // arm a second timer and fire a second onIdleTimeout / abort. Once fired (or once the turn is
+    // aborted for any reason), the watchdog is done: neither arm nor reset does anything more.
+    let watchdogFired = false;
+    const armIdle = () => {
+      if (idleMs <= 0 || watchdogFired || controller.signal.aborted) return;
+      idleTimer = this.setTimer(() => {
+        if (watchdogFired || controller.signal.aborted) return; // lost a race with a prior fire/Stop
+        watchdogFired = true;
+        // Log the concrete threshold that reclaimed this wedged turn BEFORE aborting, so the
+        // reclaim is observable (spec: TurnQueue owns the threshold and logs the concrete N). The
+        // abort runs in `finally` so a throwing log hook can never leave the wedged turn un-aborted.
+        try {
+          this.deps.onIdleTimeout?.({ chatKey: params.chatKey, sessionAlias: params.sessionAlias, idleMs });
+        } finally {
+          controller.abort(TURN_IDLE_TIMEOUT_REASON);
+        }
+      }, idleMs);
+      const t = idleTimer as { unref?: () => void };
+      if (typeof t.unref === "function") t.unref();
+    };
+    const onActivity = () => {
+      if (idleMs <= 0 || watchdogFired || controller.signal.aborted) return;
+      if (idleTimer) this.clearTimer(idleTimer);
+      armIdle();
+    };
+    armIdle();
     let result: TurnResult | undefined;
     try {
       result = await this.deps.runTurn(
@@ -175,8 +225,10 @@ export class TurnQueue {
           ...(params.media !== undefined ? { media: params.media } : {}),
         },
         controller.signal,
+        onActivity,
       );
     } finally {
+      if (idleTimer) this.clearTimer(idleTimer);
       // If a queued head is waiting, mark `draining` synchronously NOW — before the slot is
       // handed off, and before the awaited post-turn detection below — so nothing starts a
       // parallel turn during the release→drain window, even for an *aborted* turn whose

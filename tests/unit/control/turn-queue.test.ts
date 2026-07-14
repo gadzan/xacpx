@@ -7,6 +7,7 @@
 import { expect, test } from "bun:test";
 import { TurnQueue, type TurnQueueDeps } from "../../../src/control/turn-queue";
 import type { TurnRequest, TurnResult } from "../../../src/control/session-turn-runner";
+import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
 
 // Wires a TurnQueue to a controllable deferred runTurn. `runTurn` records each turn's text into
 // `started` (so drain-order tests can assert it) and parks on a pending promise the test resolves
@@ -16,14 +17,23 @@ import type { TurnRequest, TurnResult } from "../../../src/control/session-turn-
 // failure), so there is no reject path to fake.
 function makeQueue(overrides?: Partial<TurnQueueDeps>) {
   const started: string[] = [];
-  const pending: Array<{ req: TurnRequest; resolve: (r: TurnResult) => void }> = [];
+  const pending: Array<{ req: TurnRequest; resolve: (r: TurnResult) => void; signal: AbortSignal; onActivity?: () => void }> = [];
+  // Single-slot fake idle timer (the watchdog arms at most one live timer per turn),
+  // with call counters so a reset (clear old + arm new) is observable.
+  let idleFn: (() => void) | null = null;
+  let setCount = 0;
+  let clearCount = 0;
+  const setTimer = (fn: () => void, _ms: number): unknown => { idleFn = fn; setCount++; return 1; };
+  const clearTimer = (_id: unknown) => { idleFn = null; clearCount++; };
   const queue = new TurnQueue({
-    runTurn: (req: TurnRequest, _s: AbortSignal) => {
+    runTurn: (req: TurnRequest, signal: AbortSignal, onActivity?: () => void) => {
       started.push(req.text);
-      return new Promise<TurnResult>((resolve) => pending.push({ req, resolve }));
+      return new Promise<TurnResult>((resolve) => pending.push({ req, resolve, signal, onActivity }));
     },
     emitQueueUpdated: () => {},
     detectSessionsChanged: async () => {},
+    setTimer,
+    clearTimer,
     ...overrides,
   });
   return {
@@ -32,6 +42,11 @@ function makeQueue(overrides?: Partial<TurnQueueDeps>) {
     resolveNext: (r: TurnResult = { ok: true }) => pending.shift()?.resolve(r),
     pendingCount: () => pending.length,
     pendingReqs: () => pending.map((p) => p.req),
+    head: () => pending[0],
+    fireIdle: () => { const fn = idleFn; idleFn = null; fn?.(); },
+    idleArmed: () => idleFn !== null,
+    setCount: () => setCount,
+    clearCount: () => clearCount,
   };
 }
 
@@ -189,4 +204,161 @@ test("Stop-then-followup: a submit after cancelTurn waits (raceWithTimeout) then
   const [r1, r2] = await Promise.all([first, second]);
   expect(r1).toEqual({ ok: false, errorMessage: "aborted" });
   expect((r2 as TurnResult).ok).toBe(true);
+});
+
+test("watchdog: a turn silent past the idle timeout is aborted with TURN_IDLE_TIMEOUT_REASON", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(q.idleArmed()).toBe(true);     // armed at submit
+  q.fireIdle();                          // no activity → watchdog fires
+  expect(h.signal.aborted).toBe(true);
+  expect(h.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+});
+
+test("watchdog: onActivity resets the timer (clears the old, arms a new one)", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(q.setCount()).toBe(1);          // armed once at submit
+  expect(q.clearCount()).toBe(0);
+  h.onActivity!();                        // agent activity → clear old + arm new
+  expect(q.clearCount()).toBe(1);
+  expect(q.setCount()).toBe(2);
+  expect(q.idleArmed()).toBe(true);
+  expect(h.signal.aborted).toBe(false);  // not aborted — the deadline was pushed out
+});
+
+test("watchdog: turnIdleTimeoutMs 0 disables it (no timer armed)", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 0 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  expect(q.idleArmed()).toBe(false);
+});
+
+test("watchdog: the idle timer is cleared when the turn settles normally", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  expect(q.idleArmed()).toBe(true);
+  q.resolveNext({ ok: true });           // turn finishes
+  await tick();
+  expect(q.idleArmed()).toBe(false);     // no dangling timer
+});
+
+test("watchdog: absent turnIdleTimeoutMs dep = disabled (no timer, backward-compat)", async () => {
+  const q = makeQueue();                 // no turnIdleTimeoutMs override
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  expect(q.idleArmed()).toBe(false);
+});
+
+test("watchdog lifecycle: a timed-out turn releases its slot and drains the queued head", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  await tick();
+  void q.queue.submit({ ...BASE, text: "B", queueable: true }); // enqueued behind the running A
+  expect(q.queue.queueLength("c", "s")).toBe(1);
+  const hA = q.head()!;
+  q.fireIdle();                                    // A silent → its watchdog fires
+  expect(hA.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+  // The runner (faked) resolves ok:false when its signal aborts — unwinds A's turn.
+  q.resolveNext({ ok: false, errorMessage: "Turn timed out due to inactivity" });
+  await tick();
+  expect(q.started).toEqual(["A", "B"]);           // B drained only AFTER A's timeout freed the slot
+  expect(q.queue.queueLength("c", "s")).toBe(0);
+});
+
+test("watchdog lifecycle: repeated activity across many windows keeps renewing (never aborts)", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  // Three activity beats, each clearing the prior timer and arming a fresh one. A mutation that
+  // let only the FIRST activity reset the deadline would stop re-arming after beat 1.
+  h.onActivity!();
+  h.onActivity!();
+  h.onActivity!();
+  expect(q.setCount()).toBe(4);          // 1 arm at submit + 3 re-arms
+  expect(q.clearCount()).toBe(3);        // each beat cleared the prior timer
+  expect(q.idleArmed()).toBe(true);      // a live deadline is still pending
+  expect(h.signal.aborted).toBe(false);  // never aborted — the deadline kept moving out
+});
+
+test("watchdog lifecycle: a drained head arms its OWN fresh watchdog", async () => {
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  await tick();
+  void q.queue.submit({ ...BASE, text: "B", queueable: true }); // queued behind A
+  q.resolveNext({ ok: true });           // A finishes normally → hands off / drains B
+  await tick();
+  expect(q.started).toEqual(["A", "B"]); // B is now the in-flight drained turn
+  expect(q.idleArmed()).toBe(true);      // it armed its own timer (not inherited from A, which was cleared)
+  const hB = q.head()!;
+  q.fireIdle();                          // B silent → its independent watchdog fires
+  expect(hB.signal.aborted).toBe(true);
+  expect(hB.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+});
+
+test("watchdog: onIdleTimeout fires with the concrete threshold when it reclaims a turn", async () => {
+  const fired: Array<{ chatKey: string; sessionAlias: string; idleMs: number }> = [];
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000, onIdleTimeout: (d) => fired.push(d) });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  q.fireIdle();
+  expect(fired).toEqual([{ chatKey: "c", sessionAlias: "s", idleMs: 1000 }]);
+});
+
+test("watchdog exactly-once: a late onActivity after the timeout fires neither re-arms nor re-logs", async () => {
+  // The abort is cooperative, so a final agent event can still land AFTER the watchdog fired.
+  // It must NOT arm a second timer or emit a second onIdleTimeout — the watchdog is one-shot.
+  const fired: number[] = [];
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000, onIdleTimeout: () => fired.push(1) });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  q.fireIdle();                       // watchdog fires: onIdleTimeout once + abort
+  expect(fired.length).toBe(1);
+  expect(h.signal.aborted).toBe(true);
+  h.onActivity!();                    // a late event arrives during the cooperative unwind
+  expect(q.idleArmed()).toBe(false); // it did NOT arm a second watchdog
+  q.fireIdle();                       // and even a stray fire is a no-op
+  expect(fired.length).toBe(1);      // still exactly once
+});
+
+test("watchdog: a throwing onIdleTimeout still aborts the turn (abort runs in finally)", async () => {
+  // The observability hook is untrusted: if it throws, the wedged turn must STILL be aborted —
+  // the abort lives in a `finally` around the hook. Moving it after the hook (out of finally)
+  // would let a throwing observer strand the wedged turn forever.
+  const q = makeQueue({
+    turnIdleTimeoutMs: () => 1000,
+    onIdleTimeout: () => { throw new Error("observer boom"); },
+  });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(() => q.fireIdle()).toThrow("observer boom"); // the hook throws out of the timer...
+  expect(h.signal.aborted).toBe(true);                 // ...but the finally aborted first
+  expect(h.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+});
+
+test("watchdog: after a user Stop, a late onActivity does not re-arm or surface an idle timeout", async () => {
+  // A user Stop aborts the controller with no reason. A final agent event arriving during the
+  // unwind must NOT re-arm the watchdog (the `signal.aborted` guard) — otherwise the turn would
+  // later be reported as an idle timeout, mislabelling a user cancel.
+  const fired: number[] = [];
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000, onIdleTimeout: () => fired.push(1) });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(q.setCount()).toBe(1);                    // armed once at submit
+  expect(q.queue.cancelTurn("c", "s")).toBe(true); // user Stop → controller aborted (no reason)
+  h.onActivity!();                                 // a late agent event during the cooperative unwind
+  expect(q.setCount()).toBe(1);                    // did NOT arm a second watchdog after the Stop
+  q.fireIdle();                                    // firing the stale submit-time timer is a no-op
+  expect(fired.length).toBe(0);                    // a Stop never surfaces as an idle timeout
+});
+
+test("watchdog: a turn whose external abortSignal is already aborted arms no watchdog", async () => {
+  // The scheduled path links an external abortSignal; if it is already aborted at submit, the
+  // controller aborts synchronously before armIdle runs, so the `signal.aborted` guard must keep
+  // armIdle from arming a timer for an already-doomed turn.
+  const pre = new AbortController();
+  pre.abort();
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true, abortSignal: pre.signal });
+  expect(q.setCount()).toBe(0);      // armIdle short-circuited on the already-aborted controller
+  expect(q.idleArmed()).toBe(false);
 });

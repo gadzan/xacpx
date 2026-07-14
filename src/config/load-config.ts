@@ -195,6 +195,14 @@ export function parseConfig(
   ) {
     throw new Error("transport.queueOwnerTtlSeconds must be a non-negative number (0 = keep alive forever)");
   }
+  if (
+    "turnIdleTimeoutSeconds" in transport &&
+    (typeof transport.turnIdleTimeoutSeconds !== "number" ||
+      !Number.isFinite(transport.turnIdleTimeoutSeconds) ||
+      transport.turnIdleTimeoutSeconds < 0)
+  ) {
+    throw new Error("transport.turnIdleTimeoutSeconds must be a non-negative number (0 disables the turn watchdog)");
+  }
   if ("preferLocalAgents" in transport && typeof transport.preferLocalAgents !== "boolean") {
     throw new Error("transport.preferLocalAgents must be a boolean");
   }
@@ -336,6 +344,9 @@ export function parseConfig(
         : {}),
       ...(typeof transport.permissionPolicy === "string" ? { permissionPolicy: transport.permissionPolicy } : {}),
       ...(typeof transport.preferLocalAgents === "boolean" ? { preferLocalAgents: transport.preferLocalAgents } : {}),
+      ...(typeof transport.turnIdleTimeoutSeconds === "number"
+        ? { turnIdleTimeoutSeconds: transport.turnIdleTimeoutSeconds }
+        : {}),
       type: transportType,
       permissionMode,
       nonInteractivePermissions,

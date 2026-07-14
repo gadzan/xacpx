@@ -205,6 +205,66 @@ test("rejects a negative transport.queueOwnerTtlSeconds", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("threads an explicit transport.turnIdleTimeoutSeconds through (including 0 = disabled)", async () => {
+  // Regression: the loader whitelists transport fields into a new object, so an
+  // un-copied turnIdleTimeoutSeconds would be dropped and the watchdog knob would be dead.
+  for (const value of [0, 300]) {
+    const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
+    const path = join(dir, "config.json");
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx", turnIdleTimeoutSeconds: value },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+
+    const config = await loadConfig(path);
+    expect(config.transport.turnIdleTimeoutSeconds).toBe(value);
+
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("leaves transport.turnIdleTimeoutSeconds undefined when omitted (resolver owns the default)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
+  const path = join(dir, "config.json");
+
+  await writeFile(
+    path,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+
+  const config = await loadConfig(path);
+  expect(config.transport.turnIdleTimeoutSeconds).toBeUndefined();
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("rejects a negative transport.turnIdleTimeoutSeconds", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
+  const path = join(dir, "config.json");
+
+  await writeFile(
+    path,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx", turnIdleTimeoutSeconds: -5 },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+
+  await expect(loadConfig(path)).rejects.toThrow("transport.turnIdleTimeoutSeconds");
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("defaults transport permission policy to approve-all and deny", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
   const path = join(dir, "config.json");

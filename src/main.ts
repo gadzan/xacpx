@@ -14,7 +14,7 @@ import { resolveAcpxCommand } from "./config/resolve-acpx-command";
 import { resolveRuntimeAgentCommand } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
-import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled } from "./config/types";
+import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
 import { resolveDaemonOrchestrationSocketPath, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
 import type { OrchestrationTaskRecord } from "./orchestration/orchestration-types";
@@ -855,6 +855,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     terminal: terminalService,
     terminalEnabled: () => terminalEnabled(config),
     filesWriteEnabled: () => filesWriteEnabled(config),
+    turnIdleTimeoutMs: () => turnIdleTimeoutSeconds(config) * 1000,
+    onTurnIdleTimeout: ({ chatKey, sessionAlias, idleMs }) => {
+      void logger.info("control.turn.idle_timeout", "reclaimed a wedged turn after inactivity", {
+        chatKey,
+        sessionAlias,
+        idleMs,
+      });
+    },
   });
 
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`

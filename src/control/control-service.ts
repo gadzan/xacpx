@@ -26,7 +26,7 @@ import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
 import { TurnQueue } from "./turn-queue";
-import { buildControlMetadata } from "./turn-support";
+import { buildControlMetadata, type TurnIdleTimeoutDetail } from "./turn-support";
 
 export interface ControlSessionInfo {
   alias: string;
@@ -119,6 +119,12 @@ export interface ControlServiceDeps {
   terminal: import("./terminal-service").TerminalService;
   terminalEnabled: () => boolean;
   filesWriteEnabled: () => boolean;
+  // Inactivity watchdog threshold in ms for in-flight turns; absent ⇒ disabled. Wired in
+  // main.ts from transport.turnIdleTimeoutSeconds. Optional so existing tests need no change.
+  turnIdleTimeoutMs?: () => number;
+  // Observability hook fired when the inactivity watchdog reclaims a wedged turn, carrying the
+  // concrete threshold. main.ts wires this to the app logger. Optional ⇒ no logging.
+  onTurnIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
 }
 
 export interface ControlPromptInput {
@@ -174,7 +180,9 @@ export class ControlService {
   constructor(private readonly deps: ControlServiceDeps) {
     this.runner = new SessionTurnRunner(deps);
     this.turnQueue = new TurnQueue({
-      runTurn: (req, signal) => this.runner.run(req, signal),
+      runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
+      ...(this.deps.turnIdleTimeoutMs ? { turnIdleTimeoutMs: this.deps.turnIdleTimeoutMs } : {}),
+      ...(this.deps.onTurnIdleTimeout ? { onIdleTimeout: this.deps.onTurnIdleTimeout } : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items }),
       detectSessionsChanged: async (detection) => {
