@@ -197,3 +197,29 @@ test("active-message fallback returns the last message when NOTHING is delivered
   const active = await humanQuestions.getActiveHumanQuestionPackage("coord-2");
   expect(active?.promptText).toBe("pending, not delivered"); // last resort: not hidden
 });
+
+test("active-message fallback ignores a STALE awaitingReplyMessageId and still prefers the last delivered (#151 edge)", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.coordinatorQuestionState["coord-3"] = {
+    activePackageId: "pkg-3",
+    queuedQuestions: [],
+  };
+  initialState.orchestration.humanQuestionPackages["pkg-3"] = {
+    packageId: "pkg-3",
+    coordinatorSession: "coord-3",
+    status: "active",
+    createdAt: "2026-04-13T09:00:00.000Z",
+    updatedAt: "2026-04-13T09:00:00.000Z",
+    initialTaskIds: [],
+    openTaskIds: [],
+    resolvedTaskIds: [],
+    awaitingReplyMessageId: "does-not-exist", // stale pointer → no match
+    messages: [
+      { messageId: "m1", kind: "initial", promptText: "delivered one", createdAt: "2026-04-13T09:00:00.000Z", deliveredAt: "2026-04-13T09:00:01.000Z" },
+      { messageId: "m2", kind: "follow_up", promptText: "failed later", createdAt: "2026-04-13T09:30:00.000Z" },
+    ],
+  };
+  const { humanQuestions } = makeService(initialState);
+  const active = await humanQuestions.getActiveHumanQuestionPackage("coord-3");
+  expect(active?.promptText).toBe("delivered one");
+});
