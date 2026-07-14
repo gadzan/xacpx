@@ -4,7 +4,7 @@
 
 **Goal:** Bound the two unbounded paths in terminal streaming — coalesce PTY output bursts into ~one-frame windows, and evict a slow web socket by `bufferedAmount` — with **zero wire-format change**.
 
-**Architecture:** Two independent changes. (1) Core `terminal-service.ts` debounces its per-chunk `terminal-output` emit into a 16ms / 64KB coalescing window, flushing on window/size-cap/attach/exit/dispose; every byte still lands in the replay buffer, and `attach` flushes-then-snapshots so the client's `seq > lastSeq` reconciliation stays correct. (2) Hub `WebGateway.broadcast` terminates any socket whose `bufferedAmount` exceeds 4MB (self-healing via the existing re-attach path) instead of growing its send buffer without bound.
+**Architecture:** Two independent changes. (1) Core `terminal-service.ts` debounces its per-chunk `terminal-output` emit into a 16ms / 64KB coalescing window, flushing on window/size-cap/attach/exit (`disposeAll` is a hard teardown: it clears the timers and drops any unflushed pending — not a flush); every byte still lands in the replay buffer, and `attach` flushes-then-snapshots so the client's `seq > lastSeq` reconciliation stays correct. (2) Hub `WebGateway.broadcast` terminates any socket whose `bufferedAmount` exceeds 4MB (self-healing via the existing re-attach path) instead of growing its send buffer without bound.
 
 **Tech Stack:** TypeScript, Bun test runner, `node-pty` (PTY), `ws` (hub sockets). Core tests under `tests/unit/control/`, hub tests under `tests/unit/packages/relay/`, both run per-file by `scripts/run-tests.mjs` (never whole-dir — state-leak rule).
 
@@ -339,7 +339,7 @@ Expected: no errors.
 feat(control): coalesce terminal output into ~one-frame windows
 
 Debounce terminal-service's per-chunk terminal-output emit into a 16ms /
-64KB coalescing window (flush on window/size-cap/attach/exit/dispose).
+64KB coalescing window (flush on window/size-cap/attach/exit; dispose is teardown, clears timers).
 attach flushes pending before snapshotting so the client's seq>lastSeq
 reconciliation stays correct (no double-render). Every byte still lands in
 the replay buffer; seq stays monotonic. Track 4 · A (1/2).
@@ -496,7 +496,7 @@ dashboard no longer starves the others or OOMs the hub. Track 4 · A (2/2).
 ## Self-Review
 
 **Spec coverage:**
-- Coalescing (window/size-cap/exit/dispose flush, byte-complete buffer, monotonic seq) → Task 1 Steps 4-15. ✔
+- Coalescing (window/size-cap/attach/exit flush; dispose clears timers, drops pending; byte-complete buffer, monotonic seq) → Task 1 Steps 4-15. ✔
 - `attach` flush-before-snapshot (the seq-reconciliation correctness fix) → Task 1 Steps 5, 13. ✔
 - Hub-side `bufferedAmount` backpressure (terminate + skip, one-slow-doesn't-starve, undefined = under) → Task 2. ✔
 - Constants `COALESCE_MS=16`, `COALESCE_MAX_BYTES=64*1024`, `BACKPRESSURE_MAX=4*1024*1024`, module-level, no config keys → Task 1 Step 7, Task 2 Step 4. ✔
