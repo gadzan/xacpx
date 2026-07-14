@@ -111,3 +111,26 @@ test("subscribes to the active instance on connect and on instance change", asyn
   expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
   expect(loadActiveTurns).toHaveBeenCalledTimes(1);
 });
+
+test("re-subscribes on reconnect, not only on the first connect", async () => {
+  const chat = useChatStore();
+  vi.spyOn(chat, "loadActiveTurns").mockResolvedValue(undefined);
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+
+  // Establish a selected instance so the re-sent subscription payload is observable and non-empty.
+  chat.select("iA", "backend");
+  await flushPromises();
+  captured.onStatus?.(true);   // initial connect
+  sendSubscribe.mockClear();
+
+  // Drop, then reconnect. onStatus(true) on a RECONNECT must re-send the current subscription so
+  // the hub re-scopes the fresh socket — otherwise a reconnected client silently receives every
+  // instance's control-events (or none). A mutation that subscribed only on the first connect
+  // would leave sendSubscribe uncalled here.
+  captured.onStatus?.(false);
+  captured.onStatus?.(true);
+  await flushPromises();
+  expect(sendSubscribe).toHaveBeenCalledTimes(1);
+  expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
+});

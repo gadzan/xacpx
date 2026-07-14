@@ -41,6 +41,12 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `tasksStore.applyEvent`（`scheduled-changed`/`orchestration-changed` 信号触发重拉）、
   `noticesStore.applyEvent`（`instance.notice` toast）；并把 `connectEvents` 的 `onStatus`
   回调接到 `connectionStore.setOnline`，驱动连接徽标。
+- **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe([instanceId])`
+  告诉 hub 本 socket 当前查看的实例，hub 据此只把该实例的 `control-event` 发给它
+  （`instance-status`/`notice` 仍账号全量）。触发点：连接/重连成功（`onStatus(true)` 每次都重发，
+  所以断线重连会自动重新订阅）、切换实例（`watch(chat.instanceId)`）。切换实例后还会
+  `loadActiveTurns()` 重新补种在别处订阅期间漏掉的在飞回合。**未发过 `subscribe` = 收全部**
+  （向后兼容），空数组 `[]` = 收无。
 
 ## 右栏任务面板（阶段四）
 
