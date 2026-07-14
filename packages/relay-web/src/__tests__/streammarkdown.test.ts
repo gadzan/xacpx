@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
+import { createPinia, setActivePinia } from "pinia";
 import StreamMarkdown from "../components/StreamMarkdown.vue";
 import { renderMarkdown } from "../lib/render-markdown";
+import { useThemeStore } from "../stores/theme";
 
 // Count parses without paying for the real pipeline (healing + markdown-it + DOMPurify).
 vi.mock("../lib/render-markdown", () => ({
@@ -10,8 +12,18 @@ vi.mock("../lib/render-markdown", () => ({
 }));
 const renderSpy = vi.mocked(renderMarkdown);
 
+// Explicit rest-param signatures (rather than 0-arity) so the `(...a) => fn(...a)` spread
+// wrappers below typecheck: TS rejects spreading a non-tuple array into a fixed-arity call.
+const hydrate = vi.fn(async (..._args: unknown[]) => {});
+const reset = vi.fn((..._args: unknown[]) => {});
+vi.mock("../lib/render-mermaid", () => ({
+  hydrateMermaidBlocks: (...a: unknown[]) => hydrate(...a),
+  resetMermaidBlocks: (...a: unknown[]) => reset(...a),
+}));
+
 beforeEach(() => {
   vi.useFakeTimers();
+  setActivePinia(createPinia());
   renderSpy.mockClear();
 });
 afterEach(() => {
@@ -75,5 +87,59 @@ describe("StreamMarkdown streaming throttle", () => {
     const calls = renderSpy.mock.calls.length;
     vi.advanceTimersByTime(200);
     expect(renderSpy).toHaveBeenCalledTimes(calls);
+  });
+});
+
+describe("StreamMarkdown mermaid hydration", () => {
+  test("does not hydrate mermaid while streaming", async () => {
+    hydrate.mockClear();
+    const wrapper = mount(StreamMarkdown, { props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: true } });
+    await nextTick();
+    await nextTick();
+    expect(hydrate).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  test("hydrates mermaid once streaming ends", async () => {
+    hydrate.mockClear();
+    const wrapper = mount(StreamMarkdown, { props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: true } });
+    await nextTick();
+    await wrapper.setProps({ streaming: false });
+    await nextTick();
+    await nextTick();
+    expect(hydrate).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  test("hydrates a non-streaming (finalized) message on mount", async () => {
+    hydrate.mockClear();
+    const wrapper = mount(StreamMarkdown, { props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false } });
+    await nextTick();
+    await nextTick();
+    expect(hydrate).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  // Amendment: hydrateMermaidBlocks is async, and two overlapping schedule triggers on the
+  // same root (e.g. rapid theme toggles) could otherwise run concurrently. scheduleHydrate
+  // chains through a per-instance promise so only one hydration pass runs at a time.
+  test("serializes hydration — overlapping triggers never run concurrently", async () => {
+    vi.useRealTimers(); // this test drives real async timing via the mocked hydrate's setTimeout
+    let inFlight = 0;
+    let maxInFlight = 0;
+    hydrate.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight -= 1;
+    });
+    const themeStore = useThemeStore();
+    const wrapper = mount(StreamMarkdown, { props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false } });
+    themeStore.set("light");
+    themeStore.set("dark"); // two rapid re-hydrate triggers
+    await new Promise((r) => setTimeout(r, 40));
+    expect(maxInFlight).toBe(1);
+    hydrate.mockImplementation(async () => {}); // restore for other tests
+    wrapper.unmount();
   });
 });

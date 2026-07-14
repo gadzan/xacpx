@@ -135,6 +135,16 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   自带非 scoped 的 `.stream-md` 样式（Tailwind preflight 会清掉元素样式，需手动补回标题/列表/代码块等）。
 - `MessageList.vue`：**`out` 方向（agent 输出）与流气泡走 `StreamMarkdown`**；`in`（用户输入）保持纯文本 `<pre>` 不渲染 markdown。
 
+### Mermaid diagrams
+
+` ```mermaid ` fences render to SVG. Pipeline: `render-markdown` emits a
+`<pre class="mermaid-block" data-mermaid="<base64 source>">` placeholder (fence override);
+`render-mermaid` lazily `import('mermaid')`s, renders each placeholder to SVG under
+`securityLevel: "strict"`, DOMPurifies it (svg profile), and caches by `theme+source`;
+`StreamMarkdown.vue` hydrates after `v-html` patches — never mid-stream (a partial fence
+would fail to parse), re-hydrating on theme change. Malformed diagrams keep the source as a
+code fallback. Non-relay-web channels (WeChat/terminal) remain text-only.
+
 ## 响应式 / 移动端布局
 
 - `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局；窄屏下：

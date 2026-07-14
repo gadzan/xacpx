@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { renderMarkdown } from "../lib/render-markdown";
+import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
+import { useThemeStore } from "../stores/theme";
 
 const props = defineProps<{ text: string; streaming?: boolean }>();
 
@@ -10,9 +12,12 @@ const props = defineProps<{ text: string; streaming?: boolean }>();
 // non-streaming path renders synchronously on every change, exactly like the old computed.
 const THROTTLE_MS = 80;
 
+const theme = useThemeStore();
+const rootEl = ref<HTMLElement | null>(null);
 const html = ref("");
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastRenderAt = 0;
+let disposed = false;
 
 function cancelTimer(): void {
   if (timer !== null) {
@@ -21,12 +26,34 @@ function cancelTimer(): void {
   }
 }
 
+// Mermaid blocks are hydrated only when NOT streaming: a mid-stream fence (auto-closed by
+// remend) holds a partial diagram that mermaid would fail to parse. During streaming the
+// block shows its source (the <code> fallback); the finalized render hydrates it to SVG.
+//
+// hydrateMermaidBlocks is async, so two overlapping triggers on the same root (e.g. rapid
+// theme toggles) could otherwise run concurrently. Chain every call through a per-instance
+// promise so only one hydration pass runs at a time; a failed pass must not break the chain.
+let hydrateChain: Promise<void> = Promise.resolve();
+function scheduleHydrate(reset: boolean): void {
+  if (props.streaming) return;
+  hydrateChain = hydrateChain
+    .then(async () => {
+      await nextTick();
+      if (disposed || rootEl.value === null) return;
+      if (reset) resetMermaidBlocks(rootEl.value);
+      await hydrateMermaidBlocks(rootEl.value, theme.mode);
+    })
+    .catch(() => {}); // one failed pass must not break the chain
+}
+
 function render(): void {
   lastRenderAt = Date.now();
   html.value = renderMarkdown(props.text, { streaming: props.streaming });
+  scheduleHydrate(false);
 }
 
 render(); // initial synchronous render (also seeds the throttle clock)
+onMounted(() => scheduleHydrate(false)); // rootEl exists only after mount
 
 watch(
   () => props.text,
@@ -62,12 +89,21 @@ watch(
   },
 );
 
-onBeforeUnmount(cancelTimer);
+// Theme switched: re-theme any already-rendered diagrams (the SVG cache is theme-keyed).
+watch(
+  () => theme.mode,
+  () => scheduleHydrate(true),
+);
+
+onBeforeUnmount(() => {
+  disposed = true;
+  cancelTimer();
+});
 </script>
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
-  <div class="stream-md text-sm" v-html="html" />
+  <div ref="rootEl" class="stream-md text-sm" v-html="html" />
 </template>
 
 <style>
@@ -202,5 +238,22 @@ onBeforeUnmount(cancelTimer);
   border: none;
   border-top: 1px solid rgb(var(--c-border));
   margin: 0.8em 0;
+}
+/* Mermaid: the pre.mermaid-block is a code-styled fallback until hydrated. Once rendered,
+   center the SVG and let a wide diagram scroll like a wide table instead of overflowing. */
+.stream-md .mermaid-block.mermaid-rendered {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.stream-md .mermaid-block.mermaid-rendered svg {
+  max-width: 100%;
+  height: auto;
+}
+.stream-md .mermaid-block.mermaid-error {
+  border-color: rgb(var(--c-danger, var(--c-border)));
 }
 </style>

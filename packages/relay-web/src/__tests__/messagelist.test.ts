@@ -1,9 +1,16 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 import MessageList from "../components/MessageList.vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
+
+// StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
+// diagrams on theme change, so every mount here needs an active Pinia instance.
+beforeEach(() => {
+  setActivePinia(createPinia());
+});
 
 function msg(partial: Partial<ChatMessage>): ChatMessage {
   return {
