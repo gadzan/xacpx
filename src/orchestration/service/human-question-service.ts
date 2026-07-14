@@ -592,7 +592,12 @@ export class HumanQuestionService {
     const activeMessage =
       (packageRecord.awaitingReplyMessageId
         ? packageRecord.messages.find((message) => message.messageId === packageRecord.awaitingReplyMessageId)
-        : undefined) ?? packageRecord.messages.at(-1);
+        : undefined)
+      // #151: prefer the last DELIVERED message so a failed later message no longer shadows a
+      // delivered earlier one. Fall back to the last message only when nothing has delivered yet,
+      // so a pending-but-undelivered question is surfaced (not hidden) to the coordinator prompt.
+      ?? [...packageRecord.messages].reverse().find((message) => message.deliveredAt !== undefined)
+      ?? packageRecord.messages.at(-1);
     if (!activeMessage) {
       return null;
     }

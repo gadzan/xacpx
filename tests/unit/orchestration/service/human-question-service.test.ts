@@ -146,3 +146,54 @@ test("accepting a contested result does not re-arm noticePending when a notice w
   expect(persisted.noticePending).toBeFalsy();
   expect(persisted.noticeSentAt).toBe("2026-04-13T09:45:00.000Z");
 });
+
+test("active-message fallback prefers the last DELIVERED message over a later failed one (#151)", async () => {
+  // awaitingReplyMessageId is absent. msg-2 (the last message) FAILED delivery (no deliveredAt);
+  // msg-1 was delivered. The active message must be msg-1, not the undelivered msg-2.
+  const initialState = createEmptyState();
+  initialState.orchestration.coordinatorQuestionState["coord-1"] = {
+    activePackageId: "pkg-1",
+    queuedQuestions: [],
+  };
+  initialState.orchestration.humanQuestionPackages["pkg-1"] = {
+    packageId: "pkg-1",
+    coordinatorSession: "coord-1",
+    status: "active",
+    createdAt: "2026-04-13T09:00:00.000Z",
+    updatedAt: "2026-04-13T09:00:00.000Z",
+    initialTaskIds: [],
+    openTaskIds: [],
+    resolvedTaskIds: [],
+    messages: [
+      { messageId: "msg-1", kind: "initial", promptText: "delivered one", createdAt: "2026-04-13T09:00:00.000Z", deliveredAt: "2026-04-13T09:00:01.000Z" },
+      { messageId: "msg-2", kind: "follow_up", promptText: "failed one", createdAt: "2026-04-13T09:30:00.000Z" },
+    ],
+  };
+  const { humanQuestions } = makeService(initialState);
+  const active = await humanQuestions.getActiveHumanQuestionPackage("coord-1");
+  expect(active?.promptText).toBe("delivered one");
+});
+
+test("active-message fallback returns the last message when NOTHING is delivered yet (#151 edge)", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.coordinatorQuestionState["coord-2"] = {
+    activePackageId: "pkg-2",
+    queuedQuestions: [],
+  };
+  initialState.orchestration.humanQuestionPackages["pkg-2"] = {
+    packageId: "pkg-2",
+    coordinatorSession: "coord-2",
+    status: "active",
+    createdAt: "2026-04-13T09:00:00.000Z",
+    updatedAt: "2026-04-13T09:00:00.000Z",
+    initialTaskIds: [],
+    openTaskIds: [],
+    resolvedTaskIds: [],
+    messages: [
+      { messageId: "m1", kind: "initial", promptText: "pending, not delivered", createdAt: "2026-04-13T09:00:00.000Z" },
+    ],
+  };
+  const { humanQuestions } = makeService(initialState);
+  const active = await humanQuestions.getActiveHumanQuestionPackage("coord-2");
+  expect(active?.promptText).toBe("pending, not delivered"); // last resort: not hidden
+});
