@@ -35,6 +35,21 @@ export class TaskCancellationService {
   }
 
   async requestTaskCancellation(input: CancelTaskInput): Promise<OrchestrationTaskRecord> {
+    const { task, shouldPropagate } = await this.applyCancellationRequest(input);
+    if (shouldPropagate) {
+      // Detached, bare, unawaited on purpose: this fires a chain that opens its own mutate,
+      // so it must stay outside every critical section. It is fired LAST (after applyCancellationRequest's
+      // awaited tail) so a group caller can log group.cancelled before any chain begins.
+      this.startWorkerCancellation(task);
+    }
+    return task;
+  }
+
+  /** The awaited, deterministic half of a cancellation: state transition + cancel_requested log +
+   *  queued-question handoff + post-terminal reconcile — WITHOUT firing the detached
+   *  startWorkerCancellation chain. `requestTaskCancellation` fires it right after; `cancelGroup`
+   *  fires it AFTER its group.cancelled log so the log/save order is provable, not hop-lucky (#150). */
+  async applyCancellationRequest(input: CancelTaskInput): Promise<{ task: OrchestrationTaskRecord; shouldPropagate: boolean }> {
     const prepared = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const task = state.orchestration.tasks[input.taskId];
@@ -108,26 +123,12 @@ export class TaskCancellationService {
       this.kernel.taskContext(prepared.task),
     );
 
-    if (prepared.shouldPropagate) {
-      // Bare and unawaited on purpose: no `await`, no `void`, no `.catch()`. This fires a
-      // detached chain that later opens its own mutate, so it must stay outside every
-      // critical section. GroupService.cancelGroup depends on how many microtask hops
-      // this chain takes before its saveState — see the comment there. Do not change how
-      // this statement is written or where it sits.
-      //
-      // Nor may you add an `await` between here and this method's return. Measured: a bare
-      // `await Promise.resolve()` on the next line turns the `cancelGroup cancels its
-      // tasks` golden fixture red while all 185 frozen-oracle tests stay green.
-      this.startWorkerCancellation(prepared.task);
-    }
     if (prepared.closedPackageId) {
       await this.questionFlow.handoffQueuedQuestions(prepared.task.coordinatorSession, prepared.closedPackageId);
     }
 
-    // I-2: non-running cancel transitions the task directly to `cancelled` without
-    // going through launchWorkerTurn. Fire reconcile so the ephemeral acpx session
-    // is closed promptly and any queued parallel tasks can drain. This also fires
-    // for non-parallel tasks — reconcile is idempotent and cheap in that case.
+    // I-2: non-running cancel transitions directly to a terminal state without launchWorkerTurn.
+    // Fire reconcile so the ephemeral acpx session closes and queued parallel tasks drain.
     if (!prepared.shouldPropagate && this.kernel.isTerminalStatus(prepared.task.status)) {
       try {
         await this.workerSessions.reconcileParallelSlots();
@@ -139,7 +140,7 @@ export class TaskCancellationService {
       }
     }
 
-    return prepared.task;
+    return { task: prepared.task, shouldPropagate: prepared.shouldPropagate };
   }
 
   async completeTaskCancellation(taskId: string): Promise<OrchestrationTaskRecord> {

@@ -10,7 +10,7 @@ import type {
   OrchestrationTaskRecord,
 } from "../../../../src/orchestration/orchestration-types";
 import { createEmptyState } from "../../../../src/state/types";
-import { makeGoldenHarness } from "../golden/golden-harness";
+import { makeGoldenHarness, type GoldenHarness } from "../golden/golden-harness";
 
 // Construct the service from a bare object literal of exactly its five ports — never
 // `harness.deps` wholesale — plus the kernel and a TaskCancellationService collaborator.
@@ -138,4 +138,86 @@ test("summarizes a group with mixed terminal and non-terminal tasks", async () =
   expect(summary.completedTasks).toBe(1);
   expect(summary.pendingApprovalTasks).toBe(1);
   expect(summary.terminal).toBe(false);
+});
+
+// Local copy — the frozen golden harness exports nothing (see its header comment).
+async function waitForLogEvent(harness: GoldenHarness, eventName: string, afterIndex: number): Promise<void> {
+  for (let i = 0; i < 40; i += 1) {
+    if (
+      harness.calls.slice(afterIndex).some(
+        (c) => c.port.startsWith("logger.") && (c.request as { event?: unknown } | null)?.event === eventName,
+      )
+    ) return;
+    await Bun.sleep(0);
+  }
+  throw new Error(`waitForLogEvent timed out waiting for "${eventName}"`);
+}
+
+test("cancelGroup logs group.cancelled BEFORE dispatching any worker-cancellation chain (#150)", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.groups["g1"] = {
+    groupId: "g1",
+    coordinatorSession: "backend:coordinator",
+    title: "T",
+    createdAt: "2026-04-13T09:00:00.000Z",
+    updatedAt: "2026-04-13T09:00:00.000Z",
+  };
+  initialState.orchestration.tasks["t-run"] = {
+    taskId: "t-run",
+    sourceHandle: "worker:w1",
+    sourceKind: "worker",
+    coordinatorSession: "backend:coordinator",
+    workspace: "backend",
+    targetAgent: "codex",
+    task: "do the thing",
+    status: "running",
+    summary: "",
+    resultText: "",
+    groupId: "g1",
+    workerSession: "w1-session", // assigned worker → cancellation propagates a detached chain
+    createdAt: "2026-04-13T09:00:00.000Z",
+    updatedAt: "2026-04-13T09:00:00.000Z",
+  };
+
+  const harness = makeGoldenHarness({ initialState });
+  const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
+  const workerSessions = new WorkerSessionManager(harness.deps, kernel);
+  const questionFlow = new QuestionFlowCore(harness.deps, kernel);
+  const cancellation = new TaskCancellationService(
+    {
+      now: harness.deps.now,
+      createId: harness.deps.createId,
+      loadState: harness.deps.loadState,
+      saveState: harness.deps.saveState,
+      cancelWorkerTask: harness.deps.cancelWorkerTask,
+      interruptWorkerTask: harness.deps.interruptWorkerTask,
+      wakeCoordinatorSession: harness.deps.wakeCoordinatorSession,
+    },
+    kernel,
+    workerSessions,
+    questionFlow,
+  );
+  const groups = new GroupService(
+    {
+      now: harness.deps.now,
+      createId: harness.deps.createId,
+      loadState: harness.deps.loadState,
+      saveState: harness.deps.saveState,
+      config: harness.deps.config,
+    },
+    kernel,
+    cancellation,
+  );
+
+  const before = harness.calls.length;
+  await groups.cancelGroup({ groupId: "g1", coordinatorSession: "backend:coordinator" });
+  await waitForLogEvent(harness, "orchestration.task.cancel_completed", before); // drain the detached chain
+
+  const window = harness.calls.slice(before);
+  const groupCancelledIdx = window.findIndex(
+    (c) => c.port.startsWith("logger.") && (c.request as { event?: unknown } | null)?.event === "orchestration.group.cancelled",
+  );
+  const dispatchIdx = window.findIndex((c) => c.port === "cancelWorkerTask");
+  expect(groupCancelledIdx).toBeGreaterThanOrEqual(0);
+  expect(dispatchIdx).toBeGreaterThan(groupCancelledIdx); // dispatch deferred until AFTER the log — provable, not hop-luck
 });

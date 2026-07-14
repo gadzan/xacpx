@@ -1,9 +1,11 @@
 // src/orchestration/service/group-service.ts
 // Group lifecycle: create groups, summarize them, list them, and cancel a whole group.
 // One collaborator beyond the kernel: TaskCancellationService (one-way edge). Only
-// `createGroup` opens `kernel.mutate`; `cancelGroup` opens none — it delegates each task
-// cancellation to `requestTaskCancellation`, which opens its own. The kernel guard is
-// non-reentrant, so wrapping `cancelGroup` in a mutate would throw on the first task.
+// `createGroup` opens `kernel.mutate`; `cancelGroup` opens none — it delegates each task's
+// state transition to `applyCancellationRequest` (which opens its own mutate), then fires
+// any detached worker-cancellation chains itself, after logging `group.cancelled`. The
+// kernel guard is non-reentrant, so wrapping `cancelGroup` in a mutate would throw on the
+// first task.
 import { sameCoordinatorSession } from "../coordinator-identity";
 import type {
   OrchestrationGroupRecord,
@@ -127,47 +129,42 @@ export class GroupService {
 
     const cancelledTaskIds: string[] = [];
     const skippedTaskIds: string[] = [];
+    const toPropagate: OrchestrationTaskRecord[] = [];
 
+    // Phase 1 — apply every task's cancellation STATE transition (awaited, deterministic). Do NOT
+    // fire the detached worker-cancellation chains here: collect the tasks that need one.
     for (const task of summary.tasks) {
       if (this.kernel.isTerminalStatus(task.status)) {
         skippedTaskIds.push(task.taskId);
         continue;
       }
-
-      // Call the collaborator directly, never the facade's requestTaskCancellation
-      // delegation. `requestTaskCancellation` fires a detached startWorkerCancellation
-      // chain, and the `group.cancelled` log below is ordered against that chain's
-      // saveState only by how many microtask hops separate them. The ordering is stable
-      // by slack, not by a tick invariant: ONE extra hop anywhere in that resolution
-      // chain reorders them and turns the `cancelGroup cancels its tasks` golden fixture
-      // red — the frozen 185-test oracle stays green, so the fixture is the only witness.
-      //
-      // Going through the facade is one way to add that hop; an `await` added inside
-      // `requestTaskCancellation` after the detached fire is another, and it flips the
-      // same fixture without touching this file. Both were measured. So the constraint
-      // is not "avoid facade indirection here" — it is that the whole chain from this
-      // call site through `startWorkerCancellation` carries a hop budget of zero.
-      // cancelGroup is the only one of the 30 fixtures that can see it.
-      await this.cancellation.requestTaskCancellation({
+      const { task: cancelled, shouldPropagate } = await this.cancellation.applyCancellationRequest({
         taskId: task.taskId,
         coordinatorSession: input.coordinatorSession,
       });
       cancelledTaskIds.push(task.taskId);
+      if (shouldPropagate) {
+        toPropagate.push(cancelled);
+      }
     }
 
-    // Everything from here to the end runs synchronously against the detached chains
-    // fired above. Adding an `await` — telemetry, an extra state read, anything — moves
-    // the `group.cancelled` log past their saveState and flips the golden fixture.
     const refreshed = await this.getGroupSummary(input);
     if (!refreshed) {
       throw new Error(`group "${input.groupId}" does not exist`);
     }
 
+    // group.cancelled is logged with ZERO detached chains yet fired, so every chain's terminal
+    // saveState provably follows it — a structural invariant, not a microtask-hop budget (#150).
     this.kernel.logEvent("orchestration.group.cancelled", "group cancelled", {
       ...this.kernel.groupContext(refreshed.group),
       cancelled_count: cancelledTaskIds.length,
       skipped_count: skippedTaskIds.length,
     });
+
+    // Phase 2 — NOW fire the detached worker-cancellation chains, after the log.
+    for (const task of toPropagate) {
+      this.cancellation.startWorkerCancellation(task);
+    }
 
     return {
       summary: refreshed,
