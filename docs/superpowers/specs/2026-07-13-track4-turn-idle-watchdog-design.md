@@ -93,6 +93,16 @@ After `this.inFlight.set(key, {controller, settled})`:
 - In the `finally` (turn settled), `clearTimer(idleTimer)` so a completed/aborted
   turn leaves no dangling handle.
 
+**Exactly-once (one-shot).** The abort is cooperative, so a final agent event can
+still land *after* the watchdog fires (or after a user Stop) and drive
+`onActivity → armIdle` again — which would arm a second timer and emit a second
+`onIdleTimeout` / abort. A `watchdogFired` latch (set inside the timer callback,
+also short-circuiting on `controller.signal.aborted`) makes both `armIdle` and
+`onActivity` no-ops once the turn has fired or been aborted for any reason, so
+`onIdleTimeout` fires **at most once per turn**. The `onIdleTimeout` hook is invoked
+inside a `try`, with the `controller.abort` in the matching `finally`, so a throwing
+log hook can never leave a wedged turn un-aborted.
+
 Per-activity reset (`clearTimer` + `setTimer` on each `onActivity`) mirrors
 `terminal-service`'s `resetIdle`. A high-frequency streaming turn resets the timer
 often, but the ops are cheap and this keeps tests deterministic with injected timers
@@ -175,6 +185,9 @@ Test files:
   the drained head turn arms its **own** fresh watchdog.
 - `onIdleTimeout` fires exactly once with the concrete threshold
   (`{ chatKey, sessionAlias, idleMs }`) at the moment the watchdog reclaims a turn.
+- Exactly-once/one-shot: a late `onActivity` arriving after the watchdog has already
+  fired neither re-arms a second timer nor emits a second `onIdleTimeout` (guards the
+  cooperative-abort race — the test reproduces the pre-fix double-fire).
 - These lifecycle guards are mutation-live: disabling the drained-head watchdog, or
   letting only the first `onActivity` reset the deadline, each reddens exactly its
   own test.

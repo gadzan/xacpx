@@ -9,6 +9,7 @@ import {
   QUEUE_PREVIEW_MAX,
   TURN_IDLE_TIMEOUT_REASON,
   type QueuedPrompt,
+  type TurnIdleTimeoutDetail,
 } from "./turn-support";
 
 export interface QueuedItemSnapshot {
@@ -32,7 +33,7 @@ export interface TurnQueueDeps {
   // Invoked at the moment the inactivity watchdog fires an abort, carrying the concrete
   // threshold (idleMs) and the session it fired for, so the caller can log the reclaim
   // (main wires this to the app logger). Absent = no observability hook.
-  onIdleTimeout?: (detail: { chatKey: string; sessionAlias: string; idleMs: number }) => void;
+  onIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
   // Injectable timers (default setTimeout/clearTimeout), for deterministic tests.
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (id: unknown) => void;
@@ -182,19 +183,30 @@ export class TurnQueue {
     // cleared in the finally when the turn settles. `<= 0`/absent disables it.
     const idleMs = this.deps.turnIdleTimeoutMs?.() ?? 0;
     let idleTimer: unknown;
+    // Exactly-once latch. The abort is cooperative, so a final agent event can still arrive AFTER
+    // the watchdog fires (or after a user Stop) and drive onActivity → armIdle again — that would
+    // arm a second timer and fire a second onIdleTimeout / abort. Once fired (or once the turn is
+    // aborted for any reason), the watchdog is done: neither arm nor reset does anything more.
+    let watchdogFired = false;
     const armIdle = () => {
-      if (idleMs <= 0) return;
+      if (idleMs <= 0 || watchdogFired || controller.signal.aborted) return;
       idleTimer = this.setTimer(() => {
+        if (watchdogFired || controller.signal.aborted) return; // lost a race with a prior fire/Stop
+        watchdogFired = true;
         // Log the concrete threshold that reclaimed this wedged turn BEFORE aborting, so the
-        // reclaim is observable (spec: TurnQueue owns the threshold and logs the concrete N).
-        this.deps.onIdleTimeout?.({ chatKey: params.chatKey, sessionAlias: params.sessionAlias, idleMs });
-        controller.abort(TURN_IDLE_TIMEOUT_REASON);
+        // reclaim is observable (spec: TurnQueue owns the threshold and logs the concrete N). The
+        // abort runs in `finally` so a throwing log hook can never leave the wedged turn un-aborted.
+        try {
+          this.deps.onIdleTimeout?.({ chatKey: params.chatKey, sessionAlias: params.sessionAlias, idleMs });
+        } finally {
+          controller.abort(TURN_IDLE_TIMEOUT_REASON);
+        }
       }, idleMs);
       const t = idleTimer as { unref?: () => void };
       if (typeof t.unref === "function") t.unref();
     };
     const onActivity = () => {
-      if (idleMs <= 0) return;
+      if (idleMs <= 0 || watchdogFired || controller.signal.aborted) return;
       if (idleTimer) this.clearTimer(idleTimer);
       armIdle();
     };

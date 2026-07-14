@@ -26,7 +26,7 @@ import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
 import { TurnQueue } from "./turn-queue";
-import { buildControlMetadata } from "./turn-support";
+import { buildControlMetadata, type TurnIdleTimeoutDetail } from "./turn-support";
 
 export interface ControlSessionInfo {
   alias: string;
@@ -124,7 +124,7 @@ export interface ControlServiceDeps {
   turnIdleTimeoutMs?: () => number;
   // Observability hook fired when the inactivity watchdog reclaims a wedged turn, carrying the
   // concrete threshold. main.ts wires this to the app logger. Optional ⇒ no logging.
-  onTurnIdleTimeout?: (detail: { chatKey: string; sessionAlias: string; idleMs: number }) => void;
+  onTurnIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
 }
 
 export interface ControlPromptInput {

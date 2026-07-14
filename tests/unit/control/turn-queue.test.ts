@@ -303,3 +303,19 @@ test("watchdog: onIdleTimeout fires with the concrete threshold when it reclaims
   q.fireIdle();
   expect(fired).toEqual([{ chatKey: "c", sessionAlias: "s", idleMs: 1000 }]);
 });
+
+test("watchdog exactly-once: a late onActivity after the timeout fires neither re-arms nor re-logs", async () => {
+  // The abort is cooperative, so a final agent event can still land AFTER the watchdog fired.
+  // It must NOT arm a second timer or emit a second onIdleTimeout — the watchdog is one-shot.
+  const fired: number[] = [];
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000, onIdleTimeout: () => fired.push(1) });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  q.fireIdle();                       // watchdog fires: onIdleTimeout once + abort
+  expect(fired.length).toBe(1);
+  expect(h.signal.aborted).toBe(true);
+  h.onActivity!();                    // a late event arrives during the cooperative unwind
+  expect(q.idleArmed()).toBe(false); // it did NOT arm a second watchdog
+  q.fireIdle();                       // and even a stray fire is a no-op
+  expect(fired.length).toBe(1);      // still exactly once
+});

@@ -41,6 +41,15 @@ export async function raceWithTimeout(promise: Promise<void>, ms: number): Promi
 // abort-REASON sentinel, not a duration — the threshold in ms lives in config/TurnQueue.
 export const TURN_IDLE_TIMEOUT_REASON = Symbol("turn-idle-timeout");
 
+/** Detail handed to the idle-timeout observability hook when the inactivity watchdog reclaims a
+ *  wedged turn: the session it fired for and the concrete threshold (ms) that tripped. Shared by
+ *  TurnQueue's `onIdleTimeout` seam and ControlService's `onTurnIdleTimeout` passthrough. */
+export interface TurnIdleTimeoutDetail {
+  chatKey: string;
+  sessionAlias: string;
+  idleMs: number;
+}
+
 export function turnKey(chatKey: string, sessionAlias: string): string {
   return `${chatKey} ${sessionAlias}`;
 }
