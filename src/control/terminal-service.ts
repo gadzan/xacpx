@@ -250,6 +250,11 @@ export function createTerminalService(deps: TerminalServiceDeps): TerminalServic
       try { s.handle.kill(); } catch { /* already gone */ }
     },
     disposeAll() {
+      // Hard teardown (daemon shutdown): clear-only, NOT flush. Unlike onExit/attach — which
+      // flush so no output is lost mid-lifecycle — disposeAll is tearing every PTY and the
+      // event sink down together, so any coalesced-but-unflushed `pending` is intentionally
+      // dropped rather than emitted into a closing bus. Both timers are cleared so no armed
+      // handle survives the process's last moments.
       for (const s of sessions.values()) {
         if (s.idleTimer) clearTimer(s.idleTimer);
         if (s.flushTimer) clearTimer(s.flushTimer);

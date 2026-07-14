@@ -98,8 +98,11 @@ On `onData(data)`:
 
 Flush triggers: (a) timer fires; (b) `pending` ≥ `COALESCE_MAX_BYTES`;
 (c) **`onExit` flushes pending *before* emitting `terminal-exit`** (ordering
-contract — the final output must not arrive after / be lost to the exit event);
-(d) `disposeAll` (best-effort flush is optional but the timer MUST be cleared).
+contract — the final output must not arrive after / be lost to the exit event).
+`disposeAll` is **NOT** a flush trigger: it is a hard teardown (daemon shutdown)
+that clears both timers and kills every PTY — any coalesced-but-unflushed `pending`
+is intentionally dropped rather than emitted into a bus that is closing at the same
+moment. It only guarantees no armed timer survives.
 
 Preserved contracts:
 - Every byte still lands in `buffer` → `attach` replay stays byte-complete.
@@ -146,7 +149,8 @@ scoped to the one slow client.
 ```
 PTY chunk
   → appendToBuffer (per byte)  +  pending (accumulate)
-  → flush on [16ms window | 64KB cap | exit | dispose]  →  ONE terminal-output{seq++}
+  → flush on [16ms window | 64KB cap | attach | exit]  →  ONE terminal-output{seq++}
+    (disposeAll is teardown: clears timers, drops pending — not a flush)
   → connector → hub → broadcast(bufferedAmount > 4MB ? terminate+skip : send)
   → web
 ```
