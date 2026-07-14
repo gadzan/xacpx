@@ -135,15 +135,14 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   自带非 scoped 的 `.stream-md` 样式（Tailwind preflight 会清掉元素样式，需手动补回标题/列表/代码块等）。
 - `MessageList.vue`：**`out` 方向（agent 输出）与流气泡走 `StreamMarkdown`**；`in`（用户输入）保持纯文本 `<pre>` 不渲染 markdown。
 
-### Mermaid diagrams
+### Mermaid 图表渲染
 
-` ```mermaid ` fences render to SVG. Pipeline: `render-markdown` emits a
-`<pre class="mermaid-block" data-mermaid="<base64 source>">` placeholder (fence override);
-`render-mermaid` lazily `import('mermaid')`s, renders each placeholder to SVG under
-`securityLevel: "strict"`, DOMPurifies it (svg profile), and caches by `theme+source`;
-`StreamMarkdown.vue` hydrates after `v-html` patches — never mid-stream (a partial fence
-would fail to parse), re-hydrating on theme change. Malformed diagrams keep the source as a
-code fallback. Non-relay-web channels (WeChat/terminal) remain text-only.
+` ```mermaid ` 代码块会渲染成 SVG 图表。管线：`render-markdown` 通过 fence 覆写发出
+`<pre class="mermaid-block" data-mermaid="<base64 源码>">` 占位符；`render-mermaid` 按需
+`import('mermaid')` 懒加载，在 `securityLevel: "strict"` 下把每个占位符渲染为 SVG，再经
+DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdown.vue` 在 `v-html`
+打补丁之后再水合——绝不在流式中途做（半截 fence 会解析失败），并在主题切换时重新水合。
+非法图表保留源码作为代码块兜底。非 relay-web 频道（微信/终端）仍为纯文本。
 
 ## 响应式 / 移动端布局
 
