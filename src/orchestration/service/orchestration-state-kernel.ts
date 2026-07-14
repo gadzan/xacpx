@@ -26,10 +26,15 @@ export interface KernelDeps {
 }
 
 export class OrchestrationStateKernel {
-  /** Marks the async context that currently owns the state mutex. A boolean would be
-   *  observed as `true` by a concurrent (non-nested) caller queued in `await previous`,
-   *  and would reject it; reentrancy is a property of the async context, not of time. */
-  private readonly held = new AsyncLocalStorage<true>();
+  /** Token of the enclosing critical section, propagated through the async context. A per-call
+   *  token (not a bare `true`) lets `mutate` tell a genuinely re-entrant caller — still inside
+   *  the section that is running right now — apart from a chain that merely INHERITED a section's
+   *  context but outlives it. A bare boolean also can't distinguish a concurrent queued caller,
+   *  which is why this was never a plain field. */
+  private readonly held = new AsyncLocalStorage<object>();
+  /** Token of the critical section whose `critical()` body is executing at this instant, or
+   *  undefined when none. The mutex serialises sections, so at most one is ever live. */
+  private runningToken: object | undefined;
   private readonly stateMutex: AsyncMutex;
 
   constructor(
@@ -39,16 +44,29 @@ export class OrchestrationStateKernel {
     this.stateMutex = stateMutex ?? new AsyncMutex();
   }
 
-  /** AsyncMutex is strict-FIFO and non-reentrant: a nested run() awaits a tail promise
-   *  that only resolves after the outer critical section returns. Throw instead of hanging. */
+  /** AsyncMutex is strict-FIFO and non-reentrant: an AWAITED nested run() awaits a tail promise
+   *  that only resolves after the outer section returns → deadlock. Throw for that case only.
+   *  A detached chain that inherited a section's token but reaches mutate() AFTER that section
+   *  has returned (`enclosing !== runningToken`) is not re-entrant — it queues on the now-free
+   *  mutex and runs. */
   async mutate<T>(critical: () => Promise<T>): Promise<T> {
-    if (this.held.getStore()) {
+    const enclosing = this.held.getStore();
+    if (enclosing !== undefined && enclosing === this.runningToken) {
       throw new Error(
         "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
           "Call the collaborator outside the critical section.",
       );
     }
-    return await this.stateMutex.run(() => this.held.run(true, critical));
+    const token = {};
+    return await this.stateMutex.run(async () => {
+      const previous = this.runningToken; // always undefined (mutex serialises); restored defensively
+      this.runningToken = token;
+      try {
+        return await this.held.run(token, critical);
+      } finally {
+        this.runningToken = previous;
+      }
+    });
   }
 
   normalizeGroupId(groupId: string | undefined): string | undefined {
