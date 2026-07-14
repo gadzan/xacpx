@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Post-implementation note (PR #159 review):** the abort-reason sentinel this plan
+> calls `TURN_IDLE_TIMEOUT` was renamed to **`TURN_IDLE_TIMEOUT_REASON`** during review
+> (it names an abort *reason*, not a duration). The shipped code and the design spec use
+> the new name; the code snippets below retain the original name as a historical record.
+
 **Goal:** Abort an interactive turn that produces no agent activity for `turnIdleTimeoutSeconds` (default 600, 0=off), cooperatively and surfaced distinctly as a timeout — so a wedged turn no longer holds its `inFlight` slot forever.
 
 **Architecture:** A per-turn inactivity timer in `TurnQueue` (which owns `inFlight` + the `AbortController`), armed at submit, reset on each agent activity, cleared on settle. The activity signal is a callback threaded `TurnQueue.submit → runTurn → SessionTurnRunner.run(onActivity)`, invoked on every agent event. On expiry the watchdog does `controller.abort(TURN_IDLE_TIMEOUT)`; the runner reads `signal.reason` to emit `turn-finished { ok:false, errorMessage }` (distinct from a user Stop's `cancelled`) — no protocol change. Uniform across all in-flight turns.
