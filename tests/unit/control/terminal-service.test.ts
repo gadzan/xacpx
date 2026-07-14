@@ -50,16 +50,58 @@ test("create spawns a PTY with scrubbed env + cwd and returns a terminalId", () 
   delete process.env.ANTHROPIC_API_KEY;
 });
 
-test("PTY data emits terminal-output with monotonic seq", () => {
-  const { svc, pty, captured } = setup();
+test("coalesces multiple output chunks within a window into one terminal-output", () => {
+  const { svc, pty, captured, fireFlush } = setupWithFakeTimer();
   const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
-  pty.emitData("hello");
-  pty.emitData("world");
+  pty.emitData("foo"); pty.emitData("bar"); pty.emitData("baz");
+  // Still inside the coalesce window — nothing emitted yet.
+  expect(captured.filter((e) => e.type === "terminal-output").length).toBe(0);
+  fireFlush();
   const outs = captured.filter((e) => e.type === "terminal-output") as Extract<ControlEvent, { type: "terminal-output" }>[];
-  expect(outs.map((o) => [o.terminalId, o.seq, o.data])).toEqual([
-    [terminalId, 0, "hello"],
-    [terminalId, 1, "world"],
-  ]);
+  expect(outs.length).toBe(1);
+  expect(outs[0]).toEqual({ type: "terminal-output", terminalId, seq: 0, data: "foobarbaz" });
+});
+
+test("seq is monotonic across coalesced windows", () => {
+  const { svc, pty, captured, fireFlush } = setupWithFakeTimer();
+  svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  pty.emitData("a"); fireFlush();
+  pty.emitData("b"); fireFlush();
+  const outs = captured.filter((e) => e.type === "terminal-output") as Extract<ControlEvent, { type: "terminal-output" }>[];
+  expect(outs.map((o) => [o.seq, o.data])).toEqual([[0, "a"], [1, "b"]]);
+});
+
+test("a burst >= COALESCE_MAX_BYTES flushes immediately (no window wait)", () => {
+  const { svc, pty, captured } = setupWithFakeTimer();
+  svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  const big = "x".repeat(64 * 1024); // 64KB of ascii == COALESCE_MAX_BYTES
+  pty.emitData(big);
+  const outs = captured.filter((e) => e.type === "terminal-output") as Extract<ControlEvent, { type: "terminal-output" }>[];
+  expect(outs.length).toBe(1); // emitted synchronously, before any fireFlush()
+  expect(outs[0]!.seq).toBe(0);
+  expect(outs[0]!.data).toBe(big);
+});
+
+test("exit flushes pending output before emitting terminal-exit", () => {
+  const { svc, pty, captured } = setupWithFakeTimer();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  pty.emitData("tail-end"); // armed in the window, not yet flushed
+  pty.emitExit(0);
+  const types = captured.map((e) => e.type);
+  const outIdx = types.indexOf("terminal-output");
+  const exitIdx = types.indexOf("terminal-exit");
+  expect(outIdx).toBeGreaterThanOrEqual(0);
+  expect(exitIdx).toBeGreaterThan(outIdx); // output strictly BEFORE exit
+  expect(captured[outIdx]).toEqual({ type: "terminal-output", terminalId, seq: 0, data: "tail-end" });
+});
+
+test("disposeAll clears a pending flush timer (no stale flush after dispose)", () => {
+  const { svc, pty, hasFlushPending } = setupWithFakeTimer();
+  svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  pty.emitData("pending"); // arms a flush timer
+  expect(hasFlushPending()).toBe(true);
+  svc.disposeAll();
+  expect(hasFlushPending()).toBe(false);
 });
 
 test("write/resize/close proxy to the PTY; exit emits terminal-exit", () => {
@@ -90,13 +132,27 @@ test("attach returns ok:false for an unknown terminal", () => {
   expect(svc.attach("nope")).toEqual({ ok: false });
 });
 
-test("attach returns buffered output + lastSeq for a live terminal", () => {
-  const { svc, pty } = setup();
+test("attach returns buffered output + lastSeq for a live terminal (coalesced)", () => {
+  const { svc, pty } = setupWithFakeTimer();
   const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
   pty.emitData("hello\n");
-  pty.emitData("world\n");
+  pty.emitData("world\n"); // both pending; attach flushes them as ONE event (seq 0)
   const res = svc.attach(terminalId);
-  expect(res).toEqual({ ok: true, buffer: "hello\nworld\n", lastSeq: 1 }); // seq 0,1 emitted → lastSeq 1
+  expect(res).toEqual({ ok: true, buffer: "hello\nworld\n", lastSeq: 0 });
+});
+
+test("attach flushes pending first so lastSeq covers the buffer (no double-render)", () => {
+  const { svc, pty, captured } = setupWithFakeTimer();
+  const { terminalId } = svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
+  pty.emitData("live-"); pty.emitData("bytes"); // pending, window not fired
+  const res = svc.attach(terminalId);
+  // attach emitted exactly one coalesced event at seq 0...
+  const outs = captured.filter((e) => e.type === "terminal-output") as Extract<ControlEvent, { type: "terminal-output" }>[];
+  expect(outs.length).toBe(1);
+  expect(outs[0]).toEqual({ type: "terminal-output", terminalId, seq: 0, data: "live-bytes" });
+  // ...and lastSeq === that seq, so the client's `seq > lastSeq` filter drops the flush
+  // event it queued during the attach RPC — the bytes render once (from the buffer), not twice.
+  expect(res).toEqual({ ok: true, buffer: "live-bytes", lastSeq: 0 });
 });
 
 test("attach on a terminal with no output yet returns lastSeq -1", () => {
@@ -149,21 +205,34 @@ test("create uses resolveShell (darwin default /bin/zsh) when no override", () =
 // Uses fake timer injection so tests are deterministic, not real-time.
 
 function setupWithFakeTimer(opts?: { idle?: number; platform?: NodeJS.Platform }) {
-  let pendingFn: (() => void) | null = null;
+  // Multiple timers can be live at once: the idle timer (idleTimeoutSeconds*1000,
+  // i.e. >=1000ms) and the coalesce flush timer (COALESCE_MS = 16ms). Track them by
+  // id and split on ms so a test can fire/inspect each kind independently.
+  const timers = new Map<number, { fn: () => void; ms: number }>();
   let timerId = 0;
-  let setTimerCount = 0;
-  const setTimer = (fn: () => void, _ms: number): unknown => {
-    pendingFn = fn;
-    setTimerCount++;
-    return ++timerId;
+  let idleSetCount = 0;
+  const setTimer = (fn: () => void, ms: number): unknown => {
+    const id = ++timerId;
+    timers.set(id, { fn, ms });
+    if (ms >= 1000) idleSetCount++; // idle timer only; the 16ms flush timer is excluded
+    return id;
   };
-  const clearTimer = (_id: unknown) => { pendingFn = null; };
-  /** Fire the currently pending idle timer, if any. */
-  const tick = () => { const fn = pendingFn; pendingFn = null; fn?.(); };
-  /** True when a pending timer exists. */
-  const hasPending = () => pendingFn !== null;
+  const clearTimer = (id: unknown) => { timers.delete(id as number); };
+  const fireWhere = (pred: (ms: number) => boolean) => {
+    for (const [id, t] of [...timers]) if (pred(t.ms)) { timers.delete(id); t.fn(); }
+  };
+  /** Fire the pending idle timer(s) (>=1000ms). */
+  const tick = () => fireWhere((ms) => ms >= 1000);
+  /** Fire the pending coalesce flush timer(s) (<1000ms). */
+  const fireFlush = () => fireWhere((ms) => ms < 1000);
+  /** True when an idle timer is pending. */
+  const hasPending = () => [...timers.values()].some((t) => t.ms >= 1000);
+  /** True when a coalesce flush timer is pending. */
+  const hasFlushPending = () => [...timers.values()].some((t) => t.ms < 1000);
 
   const events = createControlEventBus();
+  const captured: ControlEvent[] = [];
+  events.subscribe((e) => captured.push(e));
   const pty = fakePty();
   const spawn = mock(() => pty);
   const svc = createTerminalService({
@@ -174,24 +243,21 @@ function setupWithFakeTimer(opts?: { idle?: number; platform?: NodeJS.Platform }
     setTimer,
     clearTimer,
   });
-  return { svc, pty, spawn, tick, hasPending, getSetTimerCount: () => setTimerCount };
+  return { svc, pty, spawn, captured, tick, fireFlush, hasPending, hasFlushPending, getIdleSetCount: () => idleSetCount };
 }
 
 test("idle: PTY output (onData) does NOT reset the idle timer", () => {
-  // Create a terminal — this queues the initial idle timer.
-  const { svc, pty, tick, getSetTimerCount } = setupWithFakeTimer();
+  const { svc, pty, tick, getIdleSetCount } = setupWithFakeTimer();
   svc.create({ cwd: "/tmp/ws", cols: 80, rows: 24 });
 
-  // Emit several output frames — must NOT replace the pending idle timer.
   pty.emitData("line1\r\n");
   pty.emitData("line2\r\n");
   pty.emitData("line3\r\n");
 
-  // Verify that setTimer was called exactly once (at create), not again on output.
-  // If output handler incorrectly calls resetIdle, this count would be >1.
-  expect(getSetTimerCount()).toBe(1);
+  // The IDLE timer is armed exactly once (at create); output must not re-arm it.
+  // (Output DOES arm a separate coalesce flush timer — excluded from this count.)
+  expect(getIdleSetCount()).toBe(1);
 
-  // The original idle timer is still pending; firing it kills the PTY.
   tick();
   expect((pty.kill as ReturnType<typeof mock>).mock.calls.length).toBe(1);
 });
