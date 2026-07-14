@@ -30,7 +30,17 @@ export class OrchestrationStateKernel {
    *  token (not a bare `true`) lets `mutate` tell a genuinely re-entrant caller — still inside
    *  the section that is running right now — apart from a chain that merely INHERITED a section's
    *  context but outlives it. A bare boolean also can't distinguish a concurrent queued caller,
-   *  which is why this was never a plain field. */
+   *  which is why this was never a plain field.
+   *
+   *  Known limitation of ALS-token detection: an inherited token is only observed as "not
+   *  re-entrant" once the enclosing section's async machinery has FULLY settled — in practice,
+   *  past a macrotask boundary, NOT merely once the section's `critical()` body has returned.
+   *  A detached chain that inherited the token and resumes within the SAME microtask turn as the
+   *  section's return still sees `runningToken` set (its first-resumption microtask is enqueued
+   *  before the section's `finally` reset runs) and is (conservatively) rejected as re-entrant.
+   *  This is a false positive, but a safe one: such a chain is racing the section's teardown so
+   *  tightly that treating it as nested costs nothing real. See the "OUTLIVES its critical
+   *  section" test, which must cross a macrotask boundary for exactly this reason. */
   private readonly held = new AsyncLocalStorage<object>();
   /** Token of the critical section whose `critical()` body is executing at this instant, or
    *  undefined when none. The mutex serialises sections, so at most one is ever live. */
@@ -46,9 +56,10 @@ export class OrchestrationStateKernel {
 
   /** AsyncMutex is strict-FIFO and non-reentrant: an AWAITED nested run() awaits a tail promise
    *  that only resolves after the outer section returns → deadlock. Throw for that case only.
-   *  A detached chain that inherited a section's token but reaches mutate() AFTER that section
-   *  has returned (`enclosing !== runningToken`) is not re-entrant — it queues on the now-free
-   *  mutex and runs. */
+   *  A detached chain that inherited a section's token but reaches mutate() once that section has
+   *  FULLY settled (`enclosing !== runningToken`, which holds only past a macrotask boundary —
+   *  see the `held` field's note on why a same-microtask-turn resumption is still rejected) is not
+   *  re-entrant — it queues on the now-free mutex and runs. */
   async mutate<T>(critical: () => Promise<T>): Promise<T> {
     const enclosing = this.held.getStore();
     if (enclosing !== undefined && enclosing === this.runningToken) {

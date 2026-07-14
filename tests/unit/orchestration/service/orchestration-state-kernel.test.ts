@@ -83,12 +83,17 @@ test("mutate lets a chain that OUTLIVES its critical section call mutate (no fal
   expect(await detached).toBe("ran-after");
 });
 
-test("mutate still throws on a genuinely nested (awaited) reentry", async () => {
+test("mutate still throws on a nested reentry issued after an INTERNAL await inside the section", async () => {
+  // Guards the reset-in-finally contract: runningToken must stay set until critical() has fully
+  // settled. If the reset were moved to run synchronously right after invoking held.run (instead
+  // of in the finally after `await`), this nested call — issued after the section suspends and
+  // resumes — would slip through and deadlock. The synchronous-nested test above cannot catch that.
   const kernel = new OrchestrationStateKernel({});
   let message = "no throw";
   await kernel.mutate(async () => {
+    await new Promise((r) => setTimeout(r, 0)); // suspend the section, then re-enter
     try {
-      await kernel.mutate(async () => "inner"); // awaited inside → would deadlock → must throw
+      await kernel.mutate(async () => "inner");
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
