@@ -319,3 +319,46 @@ test("watchdog exactly-once: a late onActivity after the timeout fires neither r
   q.fireIdle();                       // and even a stray fire is a no-op
   expect(fired.length).toBe(1);      // still exactly once
 });
+
+test("watchdog: a throwing onIdleTimeout still aborts the turn (abort runs in finally)", async () => {
+  // The observability hook is untrusted: if it throws, the wedged turn must STILL be aborted —
+  // the abort lives in a `finally` around the hook. Moving it after the hook (out of finally)
+  // would let a throwing observer strand the wedged turn forever.
+  const q = makeQueue({
+    turnIdleTimeoutMs: () => 1000,
+    onIdleTimeout: () => { throw new Error("observer boom"); },
+  });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(() => q.fireIdle()).toThrow("observer boom"); // the hook throws out of the timer...
+  expect(h.signal.aborted).toBe(true);                 // ...but the finally aborted first
+  expect(h.signal.reason).toBe(TURN_IDLE_TIMEOUT_REASON);
+});
+
+test("watchdog: after a user Stop, a late onActivity does not re-arm or surface an idle timeout", async () => {
+  // A user Stop aborts the controller with no reason. A final agent event arriving during the
+  // unwind must NOT re-arm the watchdog (the `signal.aborted` guard) — otherwise the turn would
+  // later be reported as an idle timeout, mislabelling a user cancel.
+  const fired: number[] = [];
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000, onIdleTimeout: () => fired.push(1) });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true });
+  const h = q.head()!;
+  expect(q.setCount()).toBe(1);                    // armed once at submit
+  expect(q.queue.cancelTurn("c", "s")).toBe(true); // user Stop → controller aborted (no reason)
+  h.onActivity!();                                 // a late agent event during the cooperative unwind
+  expect(q.setCount()).toBe(1);                    // did NOT arm a second watchdog after the Stop
+  q.fireIdle();                                    // firing the stale submit-time timer is a no-op
+  expect(fired.length).toBe(0);                    // a Stop never surfaces as an idle timeout
+});
+
+test("watchdog: a turn whose external abortSignal is already aborted arms no watchdog", async () => {
+  // The scheduled path links an external abortSignal; if it is already aborted at submit, the
+  // controller aborts synchronously before armIdle runs, so the `signal.aborted` guard must keep
+  // armIdle from arming a timer for an already-doomed turn.
+  const pre = new AbortController();
+  pre.abort();
+  const q = makeQueue({ turnIdleTimeoutMs: () => 1000 });
+  void q.queue.submit({ ...BASE, text: "A", queueable: true, abortSignal: pre.signal });
+  expect(q.setCount()).toBe(0);      // armIdle short-circuited on the already-aborted controller
+  expect(q.idleArmed()).toBe(false);
+});

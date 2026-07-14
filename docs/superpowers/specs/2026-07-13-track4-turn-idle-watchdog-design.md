@@ -188,6 +188,12 @@ Test files:
 - Exactly-once/one-shot: a late `onActivity` arriving after the watchdog has already
   fired neither re-arms a second timer nor emits a second `onIdleTimeout` (guards the
   cooperative-abort race — the test reproduces the pre-fix double-fire).
+- A throwing `onIdleTimeout` still aborts the turn with `TURN_IDLE_TIMEOUT_REASON`
+  (pins the `finally`; moving the abort out reddens it).
+- After a user Stop, a late `onActivity` does not re-arm the watchdog and never
+  surfaces an idle timeout; a turn whose external `abortSignal` is already aborted at
+  submit arms no timer (both pin the `signal.aborted` short-circuit — deleting it
+  reddens exactly these two).
 - These lifecycle guards are mutation-live: disabling the drained-head watchdog, or
   letting only the first `onActivity` reset the deadline, each reddens exactly its
   own test.
