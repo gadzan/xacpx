@@ -2,6 +2,8 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { renderMarkdown } from "../lib/render-markdown";
 import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
+import { enhanceMermaidBlock } from "../lib/inline-mermaid";
+import MermaidViewer from "./MermaidViewer.vue";
 import { useThemeStore } from "../stores/theme";
 
 const props = defineProps<{ text: string; streaming?: boolean }>();
@@ -34,14 +36,42 @@ function cancelTimer(): void {
 // theme toggles) could otherwise run concurrently. Chain every call through a per-instance
 // promise so only one hydration pass runs at a time; a failed pass must not break the chain.
 let hydrateChain: Promise<void> = Promise.resolve();
+
+const viewerSvg = ref<string | null>(null);
+let enhanceDetachers: Array<() => void> = [];
+function detachEnhancers(): void {
+  for (const d of enhanceDetachers) d();
+  enhanceDetachers = [];
+}
+// After hydration, give each freshly-rendered diagram inline pan/zoom + a ⤢ that opens the
+// fullscreen viewer. `data-mmd-enhanced` keeps a re-hydration from wrapping the same block twice.
+function enhanceRenderedBlocks(root: HTMLElement): void {
+  root
+    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-rendered:not([data-mmd-enhanced])")
+    .forEach((block) => {
+      block.setAttribute("data-mmd-enhanced", "1");
+      enhanceDetachers.push(
+        enhanceMermaidBlock(block, {
+          onExpand: () => {
+            viewerSvg.value = block.querySelector("svg")?.outerHTML ?? null;
+          },
+        }),
+      );
+    });
+}
+
 function scheduleHydrate(reset: boolean): void {
   if (props.streaming) return;
   hydrateChain = hydrateChain
     .then(async () => {
       await nextTick();
       if (disposed || rootEl.value === null) return;
-      if (reset) resetMermaidBlocks(rootEl.value);
+      if (reset) {
+        detachEnhancers();
+        resetMermaidBlocks(rootEl.value);
+      }
       await hydrateMermaidBlocks(rootEl.value, theme.mode);
+      if (!disposed && rootEl.value !== null) enhanceRenderedBlocks(rootEl.value);
     })
     .catch(() => {}); // one failed pass must not break the chain
 }
@@ -98,12 +128,14 @@ watch(
 onBeforeUnmount(() => {
   disposed = true;
   cancelTimer();
+  detachEnhancers();
 });
 </script>
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
   <div ref="rootEl" class="stream-md text-sm" v-html="html" />
+  <MermaidViewer v-if="viewerSvg" :svg="viewerSvg" @close="viewerSvg = null" />
 </template>
 
 <style>
@@ -255,5 +287,64 @@ onBeforeUnmount(() => {
 }
 .stream-md .mermaid-block.mermaid-error {
   border-color: rgb(var(--c-danger, var(--c-border)));
+}
+/* Inline pan/zoom: the enhancer replaces the rendered <pre> content with a bounded viewport + a
+   controls bar. The <pre> is the positioning context for the controls. */
+.stream-md .mermaid-block.mermaid-rendered {
+  position: relative;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.stream-md .mmd-viewport {
+  max-height: 420px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--c-border));
+  border-radius: 8px;
+  background: rgb(var(--c-bg));
+  box-shadow: var(--shadow-e1);
+  touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
+  cursor: grab;
+}
+.stream-md .mmd-viewport:active {
+  cursor: grabbing;
+}
+.stream-md .mmd-transform {
+  transform-origin: 0 0;
+  width: max-content;
+}
+.stream-md .mmd-transform svg {
+  display: block;
+}
+.stream-md .mmd-controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+.stream-md .mermaid-block.mermaid-rendered:hover .mmd-controls,
+.stream-md .mermaid-block.mermaid-rendered:focus-within .mmd-controls {
+  opacity: 1;
+}
+.stream-md .mmd-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 6px;
+  border: 1px solid rgb(var(--c-border));
+  background: rgb(var(--c-surface));
+  color: rgb(var(--c-fg));
+}
+.stream-md .mmd-controls button:hover {
+  background: rgb(var(--c-bg-raised, var(--c-surface)));
 }
 </style>

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import StreamMarkdown from "../components/StreamMarkdown.vue";
+import MermaidViewer from "../components/MermaidViewer.vue";
 import { renderMarkdown } from "../lib/render-markdown";
 import { useThemeStore } from "../stores/theme";
 
@@ -90,6 +91,23 @@ describe("StreamMarkdown streaming throttle", () => {
   });
 });
 
+// renderMarkdown is mocked to a bare `<p>` (see top of file), so no real pre.mermaid-block ever
+// lands in the DOM from the render step. This stands one up itself the first time hydrate runs,
+// then marks it rendered + injects an svg — mirroring the real hydrateMermaidBlocks' idempotency
+// (only touch un-rendered blocks) so a second, overlapping hydrate pass (module-level render() +
+// onMounted both schedule one on initial mount) does not re-clobber an already-enhanced block.
+function renderFirstMermaidBlock(root: HTMLElement): void {
+  if (root.querySelectorAll("pre.mermaid-block").length === 0) {
+    const b = document.createElement("pre");
+    b.className = "mermaid-block";
+    root.appendChild(b);
+  }
+  root.querySelectorAll("pre.mermaid-block:not(.mermaid-rendered)").forEach((b) => {
+    b.classList.add("mermaid-rendered");
+    b.innerHTML = '<svg data-test="d"><text>x</text></svg>';
+  });
+}
+
 describe("StreamMarkdown mermaid hydration", () => {
   test("does not hydrate mermaid while streaming", async () => {
     hydrate.mockClear();
@@ -140,6 +158,55 @@ describe("StreamMarkdown mermaid hydration", () => {
     await new Promise((r) => setTimeout(r, 40));
     expect(maxInFlight).toBe(1);
     hydrate.mockImplementation(async () => {}); // restore for other tests
+    wrapper.unmount();
+  });
+
+  test("a rendered mermaid block is enhanced with an inline pan/zoom viewport + controls", async () => {
+    // Mount schedules hydrate through a chained promise with several microtask hops, so — like
+    // the "serializes hydration" test above — use real timers + flushPromises to reliably drain
+    // it instead of guessing a fixed nextTick count.
+    vi.useRealTimers();
+    // hydrate's inferred type is `(..._args: unknown[]) => Promise<void>` (see the file's rest-
+    // param note up top), so the mock body takes rest args and casts internally rather than
+    // declaring a concrete `root: HTMLElement` param, which fails typecheck as a param variance
+    // violation.
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    expect(wrapper.element.querySelector(".mmd-viewport")).not.toBeNull();
+    expect(wrapper.element.querySelectorAll(".mmd-controls button").length).toBe(4);
+    // idempotent: a second hydrate pass must not double-enhance
+    await wrapper.setProps({ streaming: false });
+    await flushPromises();
+    expect(wrapper.element.querySelectorAll(".mmd-viewport").length).toBe(1);
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  test("clicking the ⤢ button opens the fullscreen viewer with the diagram svg", async () => {
+    // Same rationale as above: real timers + flushPromises to drain the chained hydrate, and the
+    // rest-args form to keep hydrate.mockImplementation typechecking.
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(MermaidViewer).exists()).toBe(false);
+    (wrapper.element.querySelector('[aria-label="Fullscreen"]') as HTMLElement).click();
+    await nextTick();
+    const viewer = wrapper.findComponent(MermaidViewer);
+    expect(viewer.exists()).toBe(true);
+    expect(viewer.props("svg")).toContain('data-test="d"');
+    hydrate.mockImplementation(async () => {});
     wrapper.unmount();
   });
 });

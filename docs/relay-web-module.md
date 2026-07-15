@@ -144,6 +144,11 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 打补丁之后再水合——绝不在流式中途做（半截 fence 会解析失败），并在主题切换时重新水合。
 非法图表保留源码作为代码块兜底。非 relay-web 频道（微信/终端）仍为纯文本。
 
+已渲染的图表支持平移/缩放：**内联**（`inline-mermaid.ts` 就地增强——Ctrl/⌘+滚轮缩放、鼠标拖拽平移、
+双指捏合；单指仍滚动页面）配一条 − / 复位 / + / ⤢ 控件条；点 ⤢ 打开**全屏**查看器（`MermaidViewer.vue`，
+平滑滚轮/单指拖拽/双指缩放 + Esc/✕/点空白关闭）。两种模式共用纯 `pan-zoom.ts` 控制器与
+`pan-zoom-gestures.ts` 手势装配；均复用已注入 DOM 的（已净化）SVG，不重新解析。
+
 ## 响应式 / 移动端布局
 
 - `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局；窄屏下：
