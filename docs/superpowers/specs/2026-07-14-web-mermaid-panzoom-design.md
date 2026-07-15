@@ -1,70 +1,92 @@
 # Web Mermaid Pan/Zoom — Design
 
-**Date:** 2026-07-14
-**Status:** Approved (standing autonomy directive)
-**Scope:** `packages/relay-web` — make rendered Mermaid diagrams pan/zoomable. Extends the Mermaid rendering feature (branch `feat/relay-web-mermaid`, PR #161); this was the explicit "out of scope / YAGNI" item there, now requested.
+**Date:** 2026-07-14 (revised 2026-07-15: inline + fullscreen, per user)
+**Status:** Approved (standing autonomy directive; UX shape confirmed by user = inline **and** fullscreen)
+**Scope:** `packages/relay-web` — make rendered Mermaid diagrams pan/zoomable both **inline** and in a **fullscreen** viewer. Extends the Mermaid rendering feature (branch `feat/relay-web-mermaid`, PR #161).
 
 ## Goal
 
-Let a user inspect a complex Mermaid diagram by panning and zooming it. Clicking a rendered diagram opens a fullscreen **viewer overlay** with drag-to-pan, wheel-zoom, pinch-zoom, on-screen zoom controls, and reset; Esc / ✕ / backdrop closes it. Inline diagrams render exactly as today (static, horizontally scrollable) but gain a `zoom-in` cursor and a subtle hint that they are clickable.
+A rendered Mermaid diagram is pan/zoomable **in place** (inline), and can be opened **fullscreen** for deeper inspection:
 
-## Why a fullscreen viewer (not inline gestures)
+- **Inline:** drag to pan (mouse), **Ctrl/⌘+wheel** to zoom (plain wheel still scrolls the page; trackpad pinch, which the browser reports as `ctrlKey` wheel, zooms naturally), two-finger pinch to zoom on touch (one-finger touch still scrolls the page). A small controls bar (− / reset / + / ⤢ expand) appears on the diagram.
+- **Fullscreen:** clicking ⤢ opens an overlay where the diagram fills the screen — drag-pan (mouse or one finger), plain wheel-zoom, pinch-zoom, the same − / reset / + controls, and close via Esc / ✕ / background click.
 
-Inline pan/zoom in a scrolling chat fights the page: wheel-zoom hijacks page scroll, and one-finger drag-to-pan blocks touch scrolling (a known, painful conflict). A fullscreen overlay has no competing page scroll, so wheel-zoom, one-finger drag-pan, and pinch-zoom are all natural and unambiguous. It is also the conventional pattern for diagrams/images in a feed. Inline diagrams stay simple and readable.
+Both modes share one transform controller and one gesture-wiring module, differing only in a few flags.
+
+## Conflict avoidance (why the two modes differ)
+
+Inline lives inside a scrolling chat, so it must never hijack the page: wheel zooms **only** with a modifier, and one-finger touch is left to the browser (`touch-action: pan-y`) so vertical scrolling still works; only two-finger pinch and mouse-drag are captured. Fullscreen has no page behind it (`touch-action: none`), so plain wheel, one-finger drag, and pinch are all free.
 
 ## Architecture
 
-Three additive seams. `render-mermaid.ts` is **unchanged** — the viewer reads the SVG already injected into the DOM.
+Four seams; `render-mermaid.ts` is **unchanged** — inline enhancement and the viewer both read the SVG it already injected.
 
-### 1. `lib/pan-zoom.ts` — a pure, framework-free transform controller
+### 1. `lib/pan-zoom.ts` — pure transform controller (DONE, Task 1, committed)
+
+`createPanZoom(opts?) → { state, zoomAt(factor,cx,cy), panBy(dx,dy), reset(), toTransform() }`. Pure, DOM-free, unit-tested.
+
+### 2. `lib/pan-zoom-gestures.ts` — shared DOM gesture wiring
 
 ```ts
-export interface PanZoomState { scale: number; x: number; y: number; }
-export interface PanZoom {
-  readonly state: PanZoomState;
-  /** Multiply scale by `factor`, keeping viewport point (cx, cy) stationary. Clamps scale. */
-  zoomAt(factor: number, cx: number, cy: number): void;
-  panBy(dx: number, dy: number): void;
-  reset(): void;
-  /** CSS transform for a `transform-origin: 0 0` element: `translate(Xpx, Ypx) scale(S)`. */
-  toTransform(): string;
+export interface GestureOptions {
+  /** Zoom on wheel only when Ctrl/⌘ is held (inline). Default false (fullscreen: always zoom). */
+  wheelRequiresModifier?: boolean;
+  /** Pan on a single touch (fullscreen). Default false (inline: one finger scrolls the page). */
+  oneFingerTouchPan?: boolean;
 }
-export function createPanZoom(opts?: { minScale?: number; maxScale?: number }): PanZoom;
+/** Attach wheel/pointer/touch gestures on `el`, driving `pz` and calling `onChange` after every
+ *  change. Returns a detach function that removes every listener. Mouse-drag always pans. */
+export function attachPanZoomGestures(
+  el: HTMLElement,
+  pz: PanZoom,
+  onChange: () => void,
+  opts?: GestureOptions,
+): () => void;
 ```
 
-- `state` starts at `{ scale: 1, x: 0, y: 0 }`.
-- `zoomAt`: `next = clamp(scale * factor, min, max)`; `x = cx - (cx - x) * (next / scale)` (same for y); then `scale = next`. Keeps the point under the cursor fixed. Defaults `minScale = 0.2`, `maxScale = 8`.
-- Pure and synchronous → fully unit-testable without a DOM.
+- **Wheel:** if `wheelRequiresModifier` and neither Ctrl nor ⌘ is held → do nothing (page scrolls). Otherwise `preventDefault` and `zoomAt(deltaY<0 ? 1.1 : 1/1.1, x, y)` where `(x,y)` is the pointer relative to `el`'s bounding rect.
+- **Mouse drag** (`pointerdown`/`move`/`up`, `pointerType === "mouse"`): pan by pointer delta; capture the pointer.
+- **Touch:** two touches → pinch (`zoomAt(dist/prevDist, midX, midY)`, `preventDefault`); one touch → pan **only if** `oneFingerTouchPan` (else ignored so the page scrolls).
+- Returns `detach()` removing all listeners. Guards `setPointerCapture` (may be absent in jsdom).
 
-### 2. `components/MermaidViewer.vue` — the fullscreen overlay
+### 3. `components/MermaidViewer.vue` — fullscreen overlay
 
-- **Props:** `svg: string | null` (non-null ⇒ open). **Emits:** `close`.
-- `Teleport` to `body`. A backdrop covers the screen; a full-size **stage** hosts a wrapper `<div>` whose `transform` is bound to `panzoom.toTransform()` (with `transform-origin: 0 0`), containing the diagram via `v-html="svg"` (already DOMPurify-sanitized upstream — no re-sanitize needed, but the value is only ever an app-produced SVG string).
-- **Interactions on the stage:**
-  - `wheel` → `preventDefault`; `zoomAt(factor, e.clientX - rectLeft, e.clientY - rectTop)` where `factor = e.deltaY < 0 ? 1.1 : 1/1.1`.
-  - Pointer drag (mouse or single touch via Pointer Events) → `panBy(dx, dy)`.
-  - Two-finger touch → pinch-zoom: track the two touches, `zoomAt(newDist / prevDist, midX, midY)`; the midpoint also pans naturally.
-- **Controls** (fixed corner, always visible): zoom − / reset / zoom + / close ✕. Zoom buttons call `zoomAt(1.25|0.8, viewportCenterX, viewportCenterY)`.
-- **Keyboard:** `Esc` closes; `+` / `-` / `0` (reset) optional.
-- **Lifecycle:** while open, lock body scroll (`overflow: hidden`) and restore on close; `reset()` the controller on open; move focus to the close button; `role="dialog"` `aria-modal="true"`. All listeners are removed on unmount / close.
-- Theme-aware backdrop (light/dark), consistent with the app.
+- Prop `svg: string`, emit `close`; rendered only while open (parent `v-if`) so mount/unmount = open/close.
+- `Teleport` to `body`; a full-screen stage holds a `transform`-bound wrapper with `v-html="svg"` (already sanitized upstream). Uses `createPanZoom` + `attachPanZoomGestures(stage, pz, apply, { oneFingerTouchPan: true })` (plain wheel, one-finger drag, pinch).
+- Controls (− / reset / + / ✕). `useModalA11y` (Esc + focus trap + focus restore). Body-scroll lock while open. Background (non-diagram) click closes. `role="dialog" aria-modal="true"`.
+- Theme-aware backdrop.
 
-### 3. `StreamMarkdown.vue` — open the viewer on click
+### 4. `lib/inline-mermaid.ts` — inline enhancement of a rendered block
 
-- Add one delegated `@click` on the root: if `event.target.closest("pre.mermaid-block.mermaid-rendered")` exists, read its `querySelector("svg")?.outerHTML`, set `viewerSvg.value` to it (opens the viewer). Non-mermaid clicks are ignored. Only fully-rendered blocks match (not `mermaid-error`, not the un-hydrated fallback).
-- Render `<MermaidViewer :svg="viewerSvg" @close="viewerSvg = null" />` once per instance (it teleports; only one is open at a time in practice).
-- CSS: `.mermaid-block.mermaid-rendered { cursor: zoom-in; }` plus a subtle hover affordance (a small ⤢ badge or outline) signalling "click to zoom". The existing hydration/streaming/theme logic is untouched.
+```ts
+/** Wrap a rendered `pre.mermaid-block`'s SVG in a pan/zoom viewport with an inline controls bar
+ *  (− / reset / + / ⤢). Returns a detach function. `onExpand` is called by the ⤢ button. */
+export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => void }): () => void;
+```
+
+- Moves the injected `<svg>` into `<div class="mmd-viewport"><div class="mmd-transform">…svg…</div></div>` (viewport: bounded height, `overflow: hidden`, `touch-action: pan-y`; transform wrapper: `transform-origin: 0 0`).
+- `createPanZoom` + `attachPanZoomGestures(viewport, pz, apply, { wheelRequiresModifier: true })` (Ctrl+wheel, mouse-drag, pinch; one-finger scrolls).
+- Appends a controls bar (− / reset / + / ⤢). ⤢ calls `opts.onExpand()`.
+- `detach()` removes listeners; the wrapper DOM is discarded when StreamMarkdown next re-renders the markdown.
+
+### 5. `components/StreamMarkdown.vue` — wire both modes
+
+- After each hydration pass, for every `pre.mermaid-block.mermaid-rendered:not([data-mmd-enhanced])`: `enhanceMermaidBlock(block, { onExpand: () => openViewer(block) })`, mark `data-mmd-enhanced`, and keep its detach fn. `openViewer` reads the block's `svg` outerHTML into `viewerSvg` (opens `<MermaidViewer v-if="viewerSvg">`).
+- Detach all enhancers on unmount and before re-hydrating (a fresh v-html render replaces the nodes).
+- The existing hydration / streaming / theme logic is otherwise untouched; the mermaid `render-mermaid.ts` module is untouched.
 
 ## Security
 
-No new surface: the viewer displays the SAME SVG string `render-mermaid` already produced and DOMPurified before injecting inline. The click handler reads it back from the live DOM and re-displays it; it is not re-parsed or re-fetched. mermaid still runs `securityLevel: "strict"`.
+No new surface: inline enhancement and the viewer both operate on the SAME SVG `render-mermaid` already produced and DOMPurified before injection. It is moved/re-displayed, never re-parsed or re-fetched. mermaid still runs `securityLevel: "strict"`.
 
 ## Testing
 
-- **`pan-zoom` (pure):** `zoomAt` keeps the target point fixed (assert resulting x/y math); scale clamps at min/max; `panBy` adds to x/y; `reset` returns to `{1,0,0}`; `toTransform()` formats correctly.
-- **`MermaidViewer` (jsdom + @vue/test-utils):** with a non-null `svg` it teleports and renders the SVG; a `wheel` event changes the wrapper's `transform`; a pointer drag pans (transform x/y change); the zoom-in / zoom-out / reset controls update the transform; `Esc`, backdrop click, and ✕ each emit `close`; body scroll is locked while open and restored after; `svg = null` renders nothing.
-- **`StreamMarkdown`:** clicking a rendered `.mermaid-block.mermaid-rendered` opens the viewer with that block's SVG; clicking ordinary text does not; clicking a `mermaid-error` block does not.
+- **`pan-zoom`** (pure): done.
+- **`pan-zoom-gestures`** (jsdom): on a test element — Ctrl+wheel zooms while plain wheel is a no-op when `wheelRequiresModifier`; plain wheel zooms when not; mouse pointer drag pans; a two-touch move pinch-zooms; `detach()` stops all of them.
+- **`MermaidViewer`** (jsdom + @vue/test-utils, querying `document.body` for teleported nodes): renders the svg; wheel and the +/reset controls change the transform; a pointer drag pans; Esc / ✕ / background click emit `close`; body scroll locked while open and restored after.
+- **`inline-mermaid`** (jsdom): enhancing a rendered block wraps the svg and adds a controls bar; Ctrl+wheel zooms (transform changes) but plain wheel does not; the +/reset controls work; ⤢ calls `onExpand`; `detach()` removes listeners.
+- **`StreamMarkdown`**: a rendered block gets enhanced (viewport + controls appear) once; clicking ⤢ opens the viewer with the block's svg; ordinary text clicks do not; enhancement is not duplicated across re-hydrations.
 
 ## Out of Scope (YAGNI)
 
-Inline (non-overlay) gestures; fit-to-screen auto-scaling on open (start at scale 1, centered; reset returns there); export/download; minimap; rotation; per-diagram zoom persistence. Non-relay-web channels (WeChat/terminal) remain text-only.
+Fit-to-screen auto-scale on open (start at scale 1; reset returns there); export/download; minimap; rotation; zoom persistence across renders. Non-relay-web channels (WeChat/terminal) remain text-only.

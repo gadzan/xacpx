@@ -1,213 +1,328 @@
-# Web Mermaid Pan/Zoom Implementation Plan
+# Web Mermaid Pan/Zoom Implementation Plan (inline + fullscreen)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Make rendered Mermaid diagrams pan/zoomable — clicking a diagram opens a fullscreen viewer with drag-pan, wheel-zoom, pinch-zoom, on-screen controls, and reset.
+**Goal:** Rendered Mermaid diagrams are pan/zoomable **inline** (Ctrl/⌘+wheel zoom, mouse-drag pan, two-finger pinch; one-finger touch still scrolls the page) and **fullscreen** via a ⤢ button (plain wheel, one-finger drag, pinch).
 
-**Architecture:** Three additive seams in `packages/relay-web`. A pure `pan-zoom` transform controller; a `MermaidViewer.vue` fullscreen overlay that wires DOM gestures to it; and a click handler in `StreamMarkdown.vue` that opens the viewer with a rendered block's SVG. `render-mermaid.ts` is unchanged.
+**Architecture:** `pan-zoom.ts` (pure controller, DONE) + `pan-zoom-gestures.ts` (shared DOM gesture wiring, mode flags) + `MermaidViewer.vue` (fullscreen overlay) + `inline-mermaid.ts` (in-place enhancement of a rendered block) + `StreamMarkdown.vue` wiring. `render-mermaid.ts` is unchanged.
 
-**Tech Stack:** Vue 3, `lucide-vue-next` icons, the existing `useModalA11y` composable, Vitest (jsdom) + @vue/test-utils.
+**Tech Stack:** Vue 3, `lucide-vue-next` icons, existing `useModalA11y`, Vitest (jsdom) + @vue/test-utils.
 
 ## Global Constraints
 
-- All code in `packages/relay-web`. Tests run with `npx vitest run` **from `packages/relay-web`** — never `bun test` (jsdom-dependent).
-- No new npm dependency (pan/zoom is hand-rolled; icons come from the existing `lucide-vue-next`).
-- Security: the viewer displays the SAME SVG string `render-mermaid` already produced and DOMPurified before injecting inline — read back from the live DOM, never re-parsed or re-fetched.
-- The existing mermaid hydration / streaming / theme logic in `StreamMarkdown.vue` and all of `render-mermaid.ts` must stay unchanged.
-- Overlay conventions: use `useModalA11y(dialogEl, close)` (Esc + focus trap + focus restore); the panel needs `ref`, `tabindex="-1" role="dialog" aria-modal="true"`. The viewer is rendered under `v-if` in the parent so it mounts on open / unmounts on close.
-- YAGNI: no inline gestures, no fit-to-screen auto-scale, no export, no minimap.
+- All code in `packages/relay-web`. Tests: `npx vitest run` from `packages/relay-web` — never `bun test`.
+- No new npm dependency.
+- Security: inline enhancement and the viewer operate on the SVG `render-mermaid` already produced and DOMPurified — moved/re-displayed, never re-parsed. mermaid stays `securityLevel: "strict"`.
+- `render-mermaid.ts` and the existing hydration/streaming/theme logic in `StreamMarkdown.vue` stay behaviourally unchanged (StreamMarkdown gains only the enhance + viewer wiring).
+- Inline must never hijack the page: wheel zoom requires Ctrl/⌘; one-finger touch is left to the browser (`touch-action: pan-y`). Fullscreen owns all gestures (`touch-action: none`).
+- Task 1 (`pan-zoom.ts`) is already implemented and committed — do not touch it.
 
 ---
 
-### Task 1: `pan-zoom` transform controller
+### Task 2: `pan-zoom-gestures.ts` — shared gesture wiring
 
 **Files:**
-- Create: `packages/relay-web/src/lib/pan-zoom.ts`
-- Test: `packages/relay-web/src/__tests__/pan-zoom.test.ts`
+- Create: `packages/relay-web/src/lib/pan-zoom-gestures.ts`
+- Test: `packages/relay-web/src/__tests__/pan-zoom-gestures.test.ts`
 
 **Interfaces:**
-- Produces: `createPanZoom(opts?: { minScale?: number; maxScale?: number }): PanZoom` where `PanZoom` has `readonly state: { scale; x; y }`, `zoomAt(factor, cx, cy)`, `panBy(dx, dy)`, `reset()`, `toTransform(): string`. Consumed by Task 2.
+- Consumes: `PanZoom` type from `./pan-zoom`.
+- Produces: `attachPanZoomGestures(el, pz, onChange, opts?): () => void` and `interface GestureOptions { wheelRequiresModifier?: boolean; oneFingerTouchPan?: boolean }`. Consumed by Tasks 3 and 4.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `packages/relay-web/src/__tests__/pan-zoom.test.ts`:
+Create `packages/relay-web/src/__tests__/pan-zoom-gestures.test.ts`:
 ```ts
-import { expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import { createPanZoom } from "../lib/pan-zoom";
+import { attachPanZoomGestures } from "../lib/pan-zoom-gestures";
 
-test("starts at identity and formats a transform-origin:0,0 transform", () => {
+let detach: (() => void) | null = null;
+afterEach(() => { detach?.(); detach = null; document.body.innerHTML = ""; });
+
+// jsdom lacks real WheelEvent/PointerEvent/TouchEvent ergonomics; dispatch a bare Event with the
+// properties the handlers read assigned onto it.
+function fire(el: EventTarget, type: string, props: Record<string, unknown>): void {
+  const e = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(e, props);
+  el.dispatchEvent(e);
+}
+function el(): HTMLElement {
+  const d = document.createElement("div");
+  document.body.appendChild(d);
+  return d;
+}
+
+test("wheelRequiresModifier: plain wheel is a no-op, Ctrl+wheel zooms", () => {
+  const target = el();
   const pz = createPanZoom();
-  expect(pz.state).toEqual({ scale: 1, x: 0, y: 0 });
-  expect(pz.toTransform()).toBe("translate(0px, 0px) scale(1)");
+  detach = attachPanZoomGestures(target, pz, () => {}, { wheelRequiresModifier: true });
+  fire(target, "wheel", { deltaY: -100, clientX: 0, clientY: 0 });
+  expect(pz.state.scale).toBe(1); // plain wheel ignored → page scrolls
+  fire(target, "wheel", { deltaY: -100, ctrlKey: true, clientX: 0, clientY: 0 });
+  expect(pz.state.scale).toBeCloseTo(1.1);
 });
 
-test("zoomAt keeps the point under the cursor stationary", () => {
+test("without wheelRequiresModifier a plain wheel zooms", () => {
+  const target = el();
   const pz = createPanZoom();
-  pz.zoomAt(2, 100, 0); // zoom 2x centered on viewport x=100
-  // content point that was under x=100 must still be under x=100: x = 100 - (100-0)*(2/1) = -100
-  expect(pz.state.scale).toBe(2);
-  expect(pz.state.x).toBe(-100);
-  expect(pz.state.y).toBe(0);
+  detach = attachPanZoomGestures(target, pz, () => {});
+  fire(target, "wheel", { deltaY: 100, clientX: 0, clientY: 0 });
+  expect(pz.state.scale).toBeCloseTo(1 / 1.1);
 });
 
-test("zoomAt clamps scale to [minScale, maxScale]", () => {
-  const pz = createPanZoom({ minScale: 0.5, maxScale: 4 });
-  pz.zoomAt(100, 0, 0);
-  expect(pz.state.scale).toBe(4);
-  pz.zoomAt(0.0001, 0, 0);
-  expect(pz.state.scale).toBe(0.5);
+test("mouse pointer drag pans", () => {
+  const target = el();
+  const pz = createPanZoom();
+  detach = attachPanZoomGestures(target, pz, () => {});
+  fire(target, "pointerdown", { pointerType: "mouse", pointerId: 1, clientX: 0, clientY: 0 });
+  fire(target, "pointermove", { pointerType: "mouse", pointerId: 1, clientX: 25, clientY: 40 });
+  fire(target, "pointerup", { pointerType: "mouse", pointerId: 1 });
+  expect(pz.state.x).toBe(25);
+  expect(pz.state.y).toBe(40);
 });
 
-test("panBy accumulates and reset returns to identity", () => {
+test("two-finger touch pinch zooms", () => {
+  const target = el();
   const pz = createPanZoom();
-  pz.panBy(10, 20);
-  pz.panBy(5, -5);
-  expect(pz.state).toEqual({ scale: 1, x: 15, y: 15 });
-  pz.zoomAt(2, 50, 50);
-  pz.reset();
-  expect(pz.state).toEqual({ scale: 1, x: 0, y: 0 });
-  expect(pz.toTransform()).toBe("translate(0px, 0px) scale(1)");
+  detach = attachPanZoomGestures(target, pz, () => {});
+  fire(target, "touchstart", { touches: [{ clientX: 0, clientY: 0 }, { clientX: 10, clientY: 0 }] });
+  fire(target, "touchmove", { touches: [{ clientX: 0, clientY: 0 }, { clientX: 20, clientY: 0 }] });
+  expect(pz.state.scale).toBeCloseTo(2); // distance 10 → 20
+});
+
+test("detach stops all gestures", () => {
+  const target = el();
+  const pz = createPanZoom();
+  const d = attachPanZoomGestures(target, pz, () => {});
+  d();
+  fire(target, "wheel", { deltaY: -100, clientX: 0, clientY: 0 });
+  expect(pz.state.scale).toBe(1);
 });
 ```
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `cd packages/relay-web && npx vitest run src/__tests__/pan-zoom.test.ts`
-Expected: FAIL — `../lib/pan-zoom` does not exist.
+Run: `cd packages/relay-web && npx vitest run src/__tests__/pan-zoom-gestures.test.ts`
+Expected: FAIL — module does not exist.
 
-- [ ] **Step 3: Implement `pan-zoom.ts`**
+- [ ] **Step 3: Implement `pan-zoom-gestures.ts`**
 
-Create `packages/relay-web/src/lib/pan-zoom.ts`:
+Create `packages/relay-web/src/lib/pan-zoom-gestures.ts`:
 ```ts
-// Pure, framework-free pan/zoom transform state. The consumer applies `toTransform()` to an
-// element with `transform-origin: 0 0`. Kept DOM-free so the geometry is unit-testable.
-export interface PanZoomState {
-  scale: number;
-  x: number;
-  y: number;
+import type { PanZoom } from "./pan-zoom";
+
+export interface GestureOptions {
+  /** Zoom on wheel only when Ctrl/⌘ is held (inline). Default false. */
+  wheelRequiresModifier?: boolean;
+  /** Pan on a single touch (fullscreen). Default false — one finger scrolls the page. */
+  oneFingerTouchPan?: boolean;
 }
 
-export interface PanZoom {
-  readonly state: PanZoomState;
-  /** Multiply scale by `factor`, keeping viewport point (cx, cy) stationary. Clamps scale. */
-  zoomAt(factor: number, cx: number, cy: number): void;
-  panBy(dx: number, dy: number): void;
-  reset(): void;
-  /** CSS transform for a `transform-origin: 0 0` element. */
-  toTransform(): string;
+interface Pointish {
+  clientX: number;
+  clientY: number;
 }
 
-export function createPanZoom(opts: { minScale?: number; maxScale?: number } = {}): PanZoom {
-  const minScale = opts.minScale ?? 0.2;
-  const maxScale = opts.maxScale ?? 8;
-  const state: PanZoomState = { scale: 1, x: 0, y: 0 };
+/**
+ * Attach wheel/pointer/touch pan-zoom gestures on `el`, driving `pz` and calling `onChange` after
+ * every state change. Mouse drag always pans; touch panning is one-finger only when opted in;
+ * wheel zoom can require a modifier. Returns a detach function that removes every listener.
+ */
+export function attachPanZoomGestures(
+  el: HTMLElement,
+  pz: PanZoom,
+  onChange: () => void,
+  opts: GestureOptions = {},
+): () => void {
+  const wheelRequiresModifier = opts.wheelRequiresModifier ?? false;
+  const oneFingerTouchPan = opts.oneFingerTouchPan ?? false;
 
-  return {
-    state,
-    zoomAt(factor, cx, cy) {
-      const next = Math.min(maxScale, Math.max(minScale, state.scale * factor));
-      if (next === state.scale) return;
-      // Solve for the translation that pins content point ((cx - x)/scale) under (cx, cy).
-      state.x = cx - (cx - state.x) * (next / state.scale);
-      state.y = cy - (cy - state.y) * (next / state.scale);
-      state.scale = next;
-    },
-    panBy(dx, dy) {
-      state.x += dx;
-      state.y += dy;
-    },
-    reset() {
-      state.scale = 1;
-      state.x = 0;
-      state.y = 0;
-    },
-    toTransform() {
-      return `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;
-    },
+  function origin(): { left: number; top: number } {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top };
+  }
+  function pinchDistance(a: Pointish, b: Pointish): number {
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+
+  function onWheel(e: WheelEvent): void {
+    if (wheelRequiresModifier && !e.ctrlKey && !e.metaKey) return; // let the page scroll
+    e.preventDefault();
+    const { left, top } = origin();
+    pz.zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - left, e.clientY - top);
+    onChange();
+  }
+
+  let dragging = false;
+  let dragId: number | null = null;
+  let lastX = 0;
+  let lastY = 0;
+  function onPointerDown(e: PointerEvent): void {
+    if (e.pointerType !== "mouse") return; // touch handled below
+    dragging = true;
+    dragId = e.pointerId;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    try {
+      el.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* jsdom / unsupported */
+    }
+  }
+  function onPointerMove(e: PointerEvent): void {
+    if (!dragging || e.pointerId !== dragId) return;
+    pz.panBy(e.clientX - lastX, e.clientY - lastY);
+    lastX = e.clientX;
+    lastY = e.clientY;
+    onChange();
+  }
+  function onPointerUp(e: PointerEvent): void {
+    if (e.pointerId === dragId) {
+      dragging = false;
+      dragId = null;
+    }
+  }
+
+  let pinching = false;
+  let prevDist = 0;
+  let touchPanning = false;
+  let touchX = 0;
+  let touchY = 0;
+  function onTouchStart(e: TouchEvent): void {
+    if (e.touches.length === 2) {
+      pinching = true;
+      touchPanning = false;
+      prevDist = pinchDistance(e.touches[0]!, e.touches[1]!);
+    } else if (e.touches.length === 1 && oneFingerTouchPan) {
+      touchPanning = true;
+      touchX = e.touches[0]!.clientX;
+      touchY = e.touches[0]!.clientY;
+    }
+  }
+  function onTouchMove(e: TouchEvent): void {
+    if (pinching && e.touches.length === 2) {
+      e.preventDefault();
+      const { left, top } = origin();
+      const dist = pinchDistance(e.touches[0]!, e.touches[1]!);
+      if (prevDist > 0) {
+        const midX = (e.touches[0]!.clientX + e.touches[1]!.clientX) / 2 - left;
+        const midY = (e.touches[0]!.clientY + e.touches[1]!.clientY) / 2 - top;
+        pz.zoomAt(dist / prevDist, midX, midY);
+        onChange();
+      }
+      prevDist = dist;
+    } else if (touchPanning && e.touches.length === 1) {
+      e.preventDefault();
+      pz.panBy(e.touches[0]!.clientX - touchX, e.touches[0]!.clientY - touchY);
+      touchX = e.touches[0]!.clientX;
+      touchY = e.touches[0]!.clientY;
+      onChange();
+    }
+  }
+  function onTouchEnd(e: TouchEvent): void {
+    if (e.touches.length < 2) {
+      pinching = false;
+      prevDist = 0;
+    }
+    if (e.touches.length === 0) {
+      touchPanning = false;
+    }
+  }
+
+  el.addEventListener("wheel", onWheel, { passive: false });
+  el.addEventListener("pointerdown", onPointerDown);
+  el.addEventListener("pointermove", onPointerMove);
+  el.addEventListener("pointerup", onPointerUp);
+  el.addEventListener("pointercancel", onPointerUp);
+  el.addEventListener("touchstart", onTouchStart, { passive: false });
+  el.addEventListener("touchmove", onTouchMove, { passive: false });
+  el.addEventListener("touchend", onTouchEnd);
+
+  return () => {
+    el.removeEventListener("wheel", onWheel);
+    el.removeEventListener("pointerdown", onPointerDown);
+    el.removeEventListener("pointermove", onPointerMove);
+    el.removeEventListener("pointerup", onPointerUp);
+    el.removeEventListener("pointercancel", onPointerUp);
+    el.removeEventListener("touchstart", onTouchStart);
+    el.removeEventListener("touchmove", onTouchMove);
+    el.removeEventListener("touchend", onTouchEnd);
   };
 }
 ```
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `cd packages/relay-web && npx vitest run src/__tests__/pan-zoom.test.ts`
-Expected: PASS (4 tests).
+Run: `cd packages/relay-web && npx vitest run src/__tests__/pan-zoom-gestures.test.ts`
+Expected: PASS (5 tests). jsdom's `getBoundingClientRect` returns zeros, so origins are (0,0) — the assertions account for that.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Typecheck + commit**
 
 ```bash
-git add packages/relay-web/src/lib/pan-zoom.ts packages/relay-web/src/__tests__/pan-zoom.test.ts
-git commit -m "feat(relay-web): pure pan/zoom transform controller"
+cd packages/relay-web && npx vue-tsc --noEmit && cd ../..
+git add packages/relay-web/src/lib/pan-zoom-gestures.ts packages/relay-web/src/__tests__/pan-zoom-gestures.test.ts
+git commit -m "feat(relay-web): shared pan/zoom gesture wiring (wheel/drag/pinch)"
 ```
 
 ---
 
-### Task 2: `MermaidViewer.vue` fullscreen overlay
+### Task 3: `MermaidViewer.vue` — fullscreen overlay
 
 **Files:**
 - Create: `packages/relay-web/src/components/MermaidViewer.vue`
 - Test: `packages/relay-web/src/__tests__/mermaidviewer.test.ts`
 
 **Interfaces:**
-- Consumes: `createPanZoom` (Task 1); `useModalA11y` from `../lib/use-modal-a11y`; icons from `lucide-vue-next`.
-- Produces: a component with prop `svg: string` and emit `close`. Rendered only when open (parent `v-if`).
+- Consumes: `createPanZoom` (`../lib/pan-zoom`), `attachPanZoomGestures` (`../lib/pan-zoom-gestures`), `useModalA11y` (`../lib/use-modal-a11y`), icons from `lucide-vue-next`.
+- Produces: component with prop `svg: string`, emit `close`. Rendered only while open (parent `v-if`).
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `packages/relay-web/src/__tests__/mermaidviewer.test.ts`:
+Create `packages/relay-web/src/__tests__/mermaidviewer.test.ts`. NOTE: Teleport puts the overlay in `document.body`, so query there (NOT `wrapper.get`):
 ```ts
 import { afterEach, expect, test } from "vitest";
 import { mount } from "@vue/test-utils";
 import MermaidViewer from "../components/MermaidViewer.vue";
 
 const SVG = '<svg data-test="diagram"><text>hi</text></svg>';
+afterEach(() => { document.body.innerHTML = ""; document.body.style.overflow = ""; });
 
-afterEach(() => {
-  document.body.innerHTML = "";
-  document.body.style.overflow = "";
-});
-
-function content(): HTMLElement | null {
-  return document.body.querySelector(".mv-content");
+const q = (sel: string) => document.body.querySelector(sel) as HTMLElement | null;
+function fire(el: EventTarget, type: string, props: Record<string, unknown>): void {
+  const e = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(e, props);
+  el.dispatchEvent(e);
 }
 
 test("teleports and renders the svg; locks body scroll while open", () => {
   const wrapper = mount(MermaidViewer, { props: { svg: SVG } });
-  expect(document.body.querySelector('[data-test="diagram"]')).not.toBeNull();
+  expect(q('[data-test="diagram"]')).not.toBeNull();
   expect(document.body.style.overflow).toBe("hidden");
   wrapper.unmount();
-  expect(document.body.style.overflow).toBe(""); // restored
+  expect(document.body.style.overflow).toBe("");
 });
 
-test("wheel and the zoom-in control change the transform; reset restores it", async () => {
+test("wheel changes the transform; reset restores it", async () => {
   const wrapper = mount(MermaidViewer, { props: { svg: SVG } });
-  const before = content()!.style.transform;
-  const stage = document.body.querySelector(".mv-stage")!;
-  stage.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, cancelable: true }));
+  const content = q(".mv-content")!;
+  const before = content.style.transform;
+  fire(q(".mv-stage")!, "wheel", { deltaY: -100, clientX: 0, clientY: 0 });
   await wrapper.vm.$nextTick();
-  expect(content()!.style.transform).not.toBe(before);
-  await wrapper.get('[aria-label="Reset"]').trigger("click");
-  expect(content()!.style.transform).toBe("translate(0px, 0px) scale(1)");
+  expect(content.style.transform).not.toBe(before);
+  q('[aria-label="Reset"]')!.click();
+  await wrapper.vm.$nextTick();
+  expect(content.style.transform).toBe("translate(0px, 0px) scale(1)");
   wrapper.unmount();
 });
 
-test("pointer drag pans the content", async () => {
+test("Escape, close button, and background click each emit close", async () => {
   const wrapper = mount(MermaidViewer, { props: { svg: SVG } });
-  const stage = wrapper.get(".mv-stage");
-  await stage.trigger("pointerdown", { pointerId: 1, clientX: 0, clientY: 0 });
-  await stage.trigger("pointermove", { pointerId: 1, clientX: 30, clientY: 40 });
-  await stage.trigger("pointerup", { pointerId: 1 });
-  expect(content()!.style.transform).toBe("translate(30px, 40px) scale(1)");
-  wrapper.unmount();
-});
-
-test("close button, backdrop click, and Escape each emit close", async () => {
-  const wrapper = mount(MermaidViewer, { props: { svg: SVG } });
-  await wrapper.get('[aria-label="Close"]').trigger("click");
-  expect(wrapper.emitted("close")).toHaveLength(1);
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  q('[aria-label="Close"]')!.click();
+  q(".mv-stage")!.click(); // background (target === stage)
   await wrapper.vm.$nextTick();
-  expect(wrapper.emitted("close")!.length).toBeGreaterThanOrEqual(2);
+  expect(wrapper.emitted("close")!.length).toBeGreaterThanOrEqual(3);
   wrapper.unmount();
 });
 ```
@@ -215,7 +330,7 @@ test("close button, backdrop click, and Escape each emit close", async () => {
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cd packages/relay-web && npx vitest run src/__tests__/mermaidviewer.test.ts`
-Expected: FAIL — `../components/MermaidViewer.vue` does not exist.
+Expected: FAIL — component does not exist.
 
 - [ ] **Step 3: Implement `MermaidViewer.vue`**
 
@@ -225,10 +340,10 @@ Create `packages/relay-web/src/components/MermaidViewer.vue`:
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { X, ZoomIn, ZoomOut, RotateCcw } from "lucide-vue-next";
 import { createPanZoom } from "../lib/pan-zoom";
+import { attachPanZoomGestures } from "../lib/pan-zoom-gestures";
 import { useModalA11y } from "../lib/use-modal-a11y";
 
-// Rendered only while open (parent v-if), so mount/unmount === open/close: useModalA11y and the
-// body-scroll lock hook straight into the component lifecycle.
+// Rendered only while open (parent v-if) → mount/unmount == open/close.
 defineProps<{ svg: string }>();
 const emit = defineEmits<{ close: [] }>();
 
@@ -236,112 +351,38 @@ const dialogEl = ref<HTMLElement | null>(null);
 const stageEl = ref<HTMLElement | null>(null);
 const transform = ref("translate(0px, 0px) scale(1)");
 const pz = createPanZoom();
-
 function apply(): void {
   transform.value = pz.toTransform();
 }
 
 useModalA11y(dialogEl, () => emit("close"));
 
-function stageRect(): DOMRect | null {
-  return stageEl.value?.getBoundingClientRect() ?? null;
-}
-
-function onWheel(e: WheelEvent): void {
-  e.preventDefault();
-  const rect = stageRect();
-  if (!rect) return;
-  pz.zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top);
-  apply();
-}
-
-// Pointer drag (mouse or a single touch). A two-finger pinch takes over via the touch handlers.
-let dragging = false;
-let activePointer: number | null = null;
-let lastX = 0;
-let lastY = 0;
-function onPointerDown(e: PointerEvent): void {
-  if (pinchActive) return;
-  dragging = true;
-  activePointer = e.pointerId;
-  lastX = e.clientX;
-  lastY = e.clientY;
-  stageEl.value?.setPointerCapture?.(e.pointerId);
-}
-function onPointerMove(e: PointerEvent): void {
-  if (!dragging || e.pointerId !== activePointer) return;
-  pz.panBy(e.clientX - lastX, e.clientY - lastY);
-  lastX = e.clientX;
-  lastY = e.clientY;
-  apply();
-}
-function onPointerUp(e: PointerEvent): void {
-  if (e.pointerId === activePointer) {
-    dragging = false;
-    activePointer = null;
+let detach: (() => void) | null = null;
+let prevOverflow = "";
+onMounted(() => {
+  if (stageEl.value) {
+    detach = attachPanZoomGestures(stageEl.value, pz, apply, { oneFingerTouchPan: true });
   }
-}
-
-// Pinch zoom (two touches).
-let pinchActive = false;
-let pinchDist = 0;
-function dist(t: TouchList): number {
-  return Math.hypot(t[0]!.clientX - t[1]!.clientX, t[0]!.clientY - t[1]!.clientY);
-}
-function onTouchStart(e: TouchEvent): void {
-  if (e.touches.length === 2) {
-    pinchActive = true;
-    dragging = false;
-    pinchDist = dist(e.touches);
-  }
-}
-function onTouchMove(e: TouchEvent): void {
-  if (!pinchActive || e.touches.length !== 2) return;
-  e.preventDefault();
-  const rect = stageRect();
-  if (!rect || pinchDist === 0) {
-    pinchDist = e.touches.length === 2 ? dist(e.touches) : 0;
-    return;
-  }
-  const d = dist(e.touches);
-  const midX = (e.touches[0]!.clientX + e.touches[1]!.clientX) / 2 - rect.left;
-  const midY = (e.touches[0]!.clientY + e.touches[1]!.clientY) / 2 - rect.top;
-  pz.zoomAt(d / pinchDist, midX, midY);
-  pinchDist = d;
-  apply();
-}
-function onTouchEnd(e: TouchEvent): void {
-  if (e.touches.length < 2) {
-    pinchActive = false;
-    pinchDist = 0;
-  }
-}
+  prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+});
+onBeforeUnmount(() => {
+  detach?.();
+  document.body.style.overflow = prevOverflow;
+});
 
 function zoomButton(factor: number): void {
-  const rect = stageRect();
-  pz.zoomAt(factor, rect ? rect.width / 2 : 0, rect ? rect.height / 2 : 0);
+  const r = stageEl.value?.getBoundingClientRect();
+  pz.zoomAt(factor, r ? r.width / 2 : 0, r ? r.height / 2 : 0);
   apply();
 }
 function reset(): void {
   pz.reset();
   apply();
 }
-
-// Background (not the diagram) click closes, but only when it wasn't a drag.
-function onStagePointerUp(e: PointerEvent): void {
-  const wasDrag = e.pointerId === activePointer && (Math.abs(e.clientX - lastX) > 4 || Math.abs(e.clientY - lastY) > 4);
-  onPointerUp(e);
-  if (!wasDrag && e.target === stageEl.value) emit("close");
+function onStageClick(e: MouseEvent): void {
+  if (e.target === stageEl.value) emit("close"); // background, not the diagram
 }
-
-let prevOverflow = "";
-onMounted(() => {
-  prevOverflow = document.body.style.overflow;
-  document.body.style.overflow = "hidden";
-});
-onBeforeUnmount(() => {
-  document.body.style.overflow = prevOverflow;
-});
 </script>
 
 <template>
@@ -354,18 +395,7 @@ onBeforeUnmount(() => {
       aria-modal="true"
       aria-label="Diagram viewer"
     >
-      <div
-        ref="stageEl"
-        class="mv-stage"
-        @wheel="onWheel"
-        @pointerdown="onPointerDown"
-        @pointermove="onPointerMove"
-        @pointerup="onStagePointerUp"
-        @pointercancel="onPointerUp"
-        @touchstart="onTouchStart"
-        @touchmove="onTouchMove"
-        @touchend="onTouchEnd"
-      >
+      <div ref="stageEl" class="mv-stage" @click="onStageClick">
         <!-- eslint-disable-next-line vue/no-v-html -- SVG already DOMPurify-sanitized by render-mermaid -->
         <div class="mv-content" :style="{ transform }" v-html="svg" />
       </div>
@@ -392,7 +422,7 @@ onBeforeUnmount(() => {
   inset: 0;
   overflow: hidden;
   cursor: grab;
-  touch-action: none; /* the overlay owns all gestures; no page scroll behind it */
+  touch-action: none;
 }
 .mv-stage:active {
   cursor: grabbing;
@@ -429,17 +459,12 @@ onBeforeUnmount(() => {
 </style>
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [ ] **Step 4: Run tests + typecheck**
 
-Run: `cd packages/relay-web && npx vitest run src/__tests__/mermaidviewer.test.ts`
-Expected: PASS (4 tests). If jsdom's `getBoundingClientRect` returns zeros, wheel/zoom still change scale (center at 0,0), so the transform still differs from identity — the assertions hold.
+Run: `cd packages/relay-web && npx vitest run src/__tests__/mermaidviewer.test.ts && npx vue-tsc --noEmit`
+Expected: PASS (3 tests) + clean typecheck.
 
-- [ ] **Step 5: Typecheck**
-
-Run: `cd packages/relay-web && npx vue-tsc --noEmit`
-Expected: clean.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add packages/relay-web/src/components/MermaidViewer.vue packages/relay-web/src/__tests__/mermaidviewer.test.ts
@@ -448,7 +473,188 @@ git commit -m "feat(relay-web): fullscreen mermaid viewer with pan/zoom"
 
 ---
 
-### Task 3: Open the viewer from `StreamMarkdown` on click (+ affordance CSS + docs)
+### Task 4: `inline-mermaid.ts` — in-place enhancement
+
+**Files:**
+- Create: `packages/relay-web/src/lib/inline-mermaid.ts`
+- Test: `packages/relay-web/src/__tests__/inline-mermaid.test.ts`
+
+**Interfaces:**
+- Consumes: `createPanZoom`, `attachPanZoomGestures`.
+- Produces: `enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => void }): () => void`. Consumed by Task 5.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/relay-web/src/__tests__/inline-mermaid.test.ts`:
+```ts
+import { afterEach, expect, test } from "vitest";
+import { enhanceMermaidBlock } from "../lib/inline-mermaid";
+
+afterEach(() => { document.body.innerHTML = ""; });
+function fire(el: EventTarget, type: string, props: Record<string, unknown>): void {
+  const e = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(e, props);
+  el.dispatchEvent(e);
+}
+function makeBlock(): HTMLElement {
+  const block = document.createElement("pre");
+  block.className = "mermaid-block mermaid-rendered";
+  block.innerHTML = '<svg data-test="d"><text>x</text></svg>';
+  document.body.appendChild(block);
+  return block;
+}
+
+test("wraps the svg in a viewport and adds a 4-button controls bar", () => {
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {} });
+  expect(block.querySelector('.mmd-viewport .mmd-transform svg[data-test="d"]')).not.toBeNull();
+  expect(block.querySelectorAll(".mmd-controls button").length).toBe(4);
+});
+
+test("Ctrl+wheel zooms; a plain wheel does not (page keeps scrolling)", () => {
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {} });
+  const viewport = block.querySelector(".mmd-viewport")!;
+  const wrap = block.querySelector(".mmd-transform") as HTMLElement;
+  fire(viewport, "wheel", { deltaY: -100, clientX: 0, clientY: 0 });
+  expect(wrap.style.transform === "" || wrap.style.transform === "translate(0px, 0px) scale(1)").toBe(true);
+  fire(viewport, "wheel", { deltaY: -100, ctrlKey: true, clientX: 0, clientY: 0 });
+  expect(wrap.style.transform).toContain("scale(1.1)");
+});
+
+test("reset restores the transform; the ⤢ button calls onExpand", () => {
+  let expanded = 0;
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => { expanded += 1; } });
+  (block.querySelector('[aria-label="Zoom in"]') as HTMLElement).click();
+  (block.querySelector('[aria-label="Reset"]') as HTMLElement).click();
+  expect((block.querySelector(".mmd-transform") as HTMLElement).style.transform).toBe("translate(0px, 0px) scale(1)");
+  (block.querySelector('[aria-label="Fullscreen"]') as HTMLElement).click();
+  expect(expanded).toBe(1);
+});
+
+test("detach removes gesture listeners", () => {
+  const block = makeBlock();
+  const detach = enhanceMermaidBlock(block, { onExpand: () => {} });
+  detach();
+  const wrap = block.querySelector(".mmd-transform") as HTMLElement;
+  const before = wrap.style.transform;
+  fire(block.querySelector(".mmd-viewport")!, "wheel", { deltaY: -100, ctrlKey: true, clientX: 0, clientY: 0 });
+  expect(wrap.style.transform).toBe(before);
+});
+
+test("a block with no svg is a no-op returning a safe detach", () => {
+  const block = document.createElement("pre");
+  block.className = "mermaid-block mermaid-rendered";
+  document.body.appendChild(block);
+  const detach = enhanceMermaidBlock(block, { onExpand: () => {} });
+  expect(block.querySelector(".mmd-viewport")).toBeNull();
+  expect(() => detach()).not.toThrow();
+});
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd packages/relay-web && npx vitest run src/__tests__/inline-mermaid.test.ts`
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement `inline-mermaid.ts`**
+
+Create `packages/relay-web/src/lib/inline-mermaid.ts`:
+```ts
+import { createPanZoom } from "./pan-zoom";
+import { attachPanZoomGestures } from "./pan-zoom-gestures";
+
+interface ZoomControl {
+  label: string;
+  glyph: string;
+  factor: number; // 0 === reset
+}
+const ZOOM_CONTROLS: ZoomControl[] = [
+  { label: "Zoom out", glyph: "−", factor: 0.8 }, // −
+  { label: "Reset", glyph: "↺", factor: 0 }, // ↺
+  { label: "Zoom in", glyph: "+", factor: 1.25 },
+];
+
+/**
+ * Enhance a rendered `pre.mermaid-block`: move its injected `<svg>` into a bounded pan/zoom
+ * viewport (Ctrl/⌘+wheel zoom, mouse-drag pan, two-finger pinch; one finger still scrolls the
+ * page), and add a controls bar (− / reset / + / ⤢). The ⤢ button calls `onExpand`. Returns a
+ * detach that removes every listener. A block without an `<svg>` is a no-op.
+ */
+export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => void }): () => void {
+  const svg = block.querySelector("svg");
+  if (!svg) return () => {};
+
+  const viewport = document.createElement("div");
+  viewport.className = "mmd-viewport";
+  const wrapper = document.createElement("div");
+  wrapper.className = "mmd-transform";
+  wrapper.appendChild(svg); // moves the svg out of the <pre>
+  viewport.appendChild(wrapper);
+
+  const pz = createPanZoom();
+  const apply = (): void => {
+    wrapper.style.transform = pz.toTransform();
+  };
+
+  const bar = document.createElement("div");
+  bar.className = "mmd-controls";
+  const buttonDetachers: Array<() => void> = [];
+
+  const addButton = (label: string, glyph: string, handler: (e: Event) => void): void => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("aria-label", label);
+    b.textContent = glyph;
+    b.addEventListener("click", handler);
+    buttonDetachers.push(() => b.removeEventListener("click", handler));
+    bar.appendChild(b);
+  };
+
+  for (const control of ZOOM_CONTROLS) {
+    addButton(control.label, control.glyph, (e) => {
+      e.stopPropagation();
+      if (control.factor === 0) {
+        pz.reset();
+      } else {
+        const r = viewport.getBoundingClientRect();
+        pz.zoomAt(control.factor, r.width / 2, r.height / 2);
+      }
+      apply();
+    });
+  }
+  addButton("Fullscreen", "⤢", (e) => {
+    e.stopPropagation();
+    opts.onExpand();
+  });
+
+  block.replaceChildren(viewport, bar);
+
+  const detachGestures = attachPanZoomGestures(viewport, pz, apply, { wheelRequiresModifier: true });
+
+  return () => {
+    detachGestures();
+    for (const d of buttonDetachers) d();
+  };
+}
+```
+
+- [ ] **Step 4: Run tests + typecheck**
+
+Run: `cd packages/relay-web && npx vitest run src/__tests__/inline-mermaid.test.ts && npx vue-tsc --noEmit`
+Expected: PASS (5 tests) + clean typecheck.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/relay-web/src/lib/inline-mermaid.ts packages/relay-web/src/__tests__/inline-mermaid.test.ts
+git commit -m "feat(relay-web): inline pan/zoom enhancement for rendered mermaid blocks"
+```
+
+---
+
+### Task 5: Wire inline + fullscreen into `StreamMarkdown` (+ CSS + docs)
 
 **Files:**
 - Modify: `packages/relay-web/src/components/StreamMarkdown.vue`
@@ -456,137 +662,237 @@ git commit -m "feat(relay-web): fullscreen mermaid viewer with pan/zoom"
 - Modify: `docs/relay-web-module.md`
 
 **Interfaces:**
-- Consumes: `MermaidViewer.vue` (Task 2). Opens it with a rendered block's `svg` outerHTML.
+- Consumes: `enhanceMermaidBlock` (`../lib/inline-mermaid`), `MermaidViewer.vue`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `packages/relay-web/src/__tests__/streammarkdown.test.ts`. Make the mocked `hydrateMermaidBlocks` mark blocks rendered and inject an SVG so a click has something to read; stub `MermaidViewer` so the assertion is on its `svg` prop, not teleported DOM:
+Add to `packages/relay-web/src/__tests__/streammarkdown.test.ts`. The existing file mocks `../lib/render-mermaid` with a `hydrate` `vi.fn`. For these cases, give that mock a body that marks blocks rendered and injects an svg, so there is a rendered block to enhance:
 ```ts
-// In the existing vi.mock("../lib/render-mermaid", ...), make hydrate mark blocks rendered:
-//   hydrateMermaidBlocks: async (root: HTMLElement) => {
+import MermaidViewer from "../components/MermaidViewer.vue";
+
+// In a test that needs a rendered block, set the shared hydrate mock to actually render:
+//   hydrate.mockImplementation(async (root: HTMLElement) => {
 //     root.querySelectorAll("pre.mermaid-block").forEach((b) => {
 //       b.classList.add("mermaid-rendered");
 //       b.innerHTML = '<svg data-test="d"><text>x</text></svg>';
 //     });
-//   },
-//   resetMermaidBlocks: () => {},
+//   });
 
-import MermaidViewer from "../components/MermaidViewer.vue";
-
-test("clicking a rendered mermaid block opens the viewer with its svg", async () => {
+test("a rendered mermaid block is enhanced with an inline pan/zoom viewport + controls", async () => {
+  hydrate.mockImplementation(async (root: HTMLElement) => {
+    root.querySelectorAll("pre.mermaid-block").forEach((b) => {
+      b.classList.add("mermaid-rendered");
+      b.innerHTML = '<svg data-test="d"><text>x</text></svg>';
+    });
+  });
   const wrapper = mount(StreamMarkdown, {
     props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
     global: { stubs: { MermaidViewer: true } },
   });
   await nextTick();
   await nextTick();
-  expect(wrapper.findComponent(MermaidViewer).exists()).toBe(false); // closed initially
-  await wrapper.get("pre.mermaid-block.mermaid-rendered").trigger("click");
-  const viewer = wrapper.findComponent(MermaidViewer);
-  expect(viewer.exists()).toBe(true);
-  expect(viewer.props("svg")).toContain('data-test="d"');
+  expect(wrapper.element.querySelector(".mmd-viewport")).not.toBeNull();
+  expect(wrapper.element.querySelectorAll(".mmd-controls button").length).toBe(4);
+  // idempotent: a second hydrate pass must not double-enhance
+  await wrapper.setProps({ streaming: false });
+  await nextTick();
+  expect(wrapper.element.querySelectorAll(".mmd-viewport").length).toBe(1);
+  hydrate.mockImplementation(async () => {});
   wrapper.unmount();
 });
 
-test("clicking ordinary rendered text does not open the viewer", async () => {
+test("clicking the ⤢ button opens the fullscreen viewer with the diagram svg", async () => {
+  hydrate.mockImplementation(async (root: HTMLElement) => {
+    root.querySelectorAll("pre.mermaid-block").forEach((b) => {
+      b.classList.add("mermaid-rendered");
+      b.innerHTML = '<svg data-test="d"><text>x</text></svg>';
+    });
+  });
   const wrapper = mount(StreamMarkdown, {
-    props: { text: "just some **text**", streaming: false },
+    props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
     global: { stubs: { MermaidViewer: true } },
   });
   await nextTick();
-  await wrapper.get(".stream-md").trigger("click");
+  await nextTick();
   expect(wrapper.findComponent(MermaidViewer).exists()).toBe(false);
+  (wrapper.element.querySelector('[aria-label="Fullscreen"]') as HTMLElement).click();
+  await nextTick();
+  const viewer = wrapper.findComponent(MermaidViewer);
+  expect(viewer.exists()).toBe(true);
+  expect(viewer.props("svg")).toContain('data-test="d"');
+  hydrate.mockImplementation(async () => {});
   wrapper.unmount();
 });
 ```
-(If the file's `vi.mock("../lib/render-mermaid", ...)` is currently a no-op hydrate, update it to the rendering mock shown in the comment above so `.mermaid-rendered` blocks exist to click. Keep any other existing streammarkdown tests working — the streaming-guard tests only assert hydrate was/ wasn't called, which the new mock still supports if you keep the `vi.fn()` wrapper; wrap the rendering body inside the existing `hydrate` mock fn.)
+(Keep the pre-existing streammarkdown tests working: they rely on `hydrate` being a `vi.fn` — restore `hydrate.mockImplementation(async () => {})` at the end of each new test, or set it in a `beforeEach`. If the shared mock isn't a resettable `vi.fn`, adapt to whatever the file already uses; the key is that the default hydrate does nothing so the streaming/theme tests are unaffected.)
 
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cd packages/relay-web && npx vitest run src/__tests__/streammarkdown.test.ts`
-Expected: FAIL — StreamMarkdown neither imports MermaidViewer nor opens it on click.
+Expected: FAIL — StreamMarkdown does not enhance blocks or render the viewer.
 
-- [ ] **Step 3: Wire the click handler into `StreamMarkdown.vue`**
+- [ ] **Step 3: Wire `StreamMarkdown.vue`**
 
-In `<script setup>`, add the import and state, and a click handler:
+Add imports:
 ```ts
+import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import MermaidViewer from "./MermaidViewer.vue";
 ```
-Add near the other refs:
+Add state + helpers near the other refs (after `let hydrateChain`):
 ```ts
-// Clicking a fully-rendered mermaid diagram opens the fullscreen pan/zoom viewer. Delegated on the
-// root so it survives v-html re-renders; reads the SVG already in the DOM (no re-parse).
 const viewerSvg = ref<string | null>(null);
-function onRootClick(event: MouseEvent): void {
-  const target = event.target as HTMLElement | null;
-  const block = target?.closest?.("pre.mermaid-block.mermaid-rendered");
-  const svg = block?.querySelector("svg")?.outerHTML;
-  if (svg) viewerSvg.value = svg;
+let enhanceDetachers: Array<() => void> = [];
+function detachEnhancers(): void {
+  for (const d of enhanceDetachers) d();
+  enhanceDetachers = [];
+}
+// After hydration, give each freshly-rendered diagram inline pan/zoom + a ⤢ that opens the
+// fullscreen viewer. `data-mmd-enhanced` keeps a re-hydration from wrapping the same block twice.
+function enhanceRenderedBlocks(root: HTMLElement): void {
+  root
+    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-rendered:not([data-mmd-enhanced])")
+    .forEach((block) => {
+      block.setAttribute("data-mmd-enhanced", "1");
+      enhanceDetachers.push(
+        enhanceMermaidBlock(block, {
+          onExpand: () => {
+            viewerSvg.value = block.querySelector("svg")?.outerHTML ?? null;
+          },
+        }),
+      );
+    });
 }
 ```
-Update the template root and add the viewer:
+Change `scheduleHydrate` to detach enhancers on reset and enhance after hydration:
+```ts
+function scheduleHydrate(reset: boolean): void {
+  if (props.streaming) return;
+  hydrateChain = hydrateChain
+    .then(async () => {
+      await nextTick();
+      if (disposed || rootEl.value === null) return;
+      if (reset) {
+        detachEnhancers();
+        resetMermaidBlocks(rootEl.value);
+      }
+      await hydrateMermaidBlocks(rootEl.value, theme.mode);
+      if (!disposed && rootEl.value !== null) enhanceRenderedBlocks(rootEl.value);
+    })
+    .catch(() => {});
+}
+```
+Extend the unmount hook to detach enhancers:
+```ts
+onBeforeUnmount(() => {
+  disposed = true;
+  cancelTimer();
+  detachEnhancers();
+});
+```
+(If the existing `onBeforeUnmount` only calls `cancelTimer()`, add `detachEnhancers()` and keep the `disposed = true` that is already there.)
+
+Update the template to render the viewer (the root `<div>` stays exactly as-is):
 ```html
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
-  <div ref="rootEl" class="stream-md text-sm" v-html="html" @click="onRootClick" />
+  <div ref="rootEl" class="stream-md text-sm" v-html="html" />
   <MermaidViewer v-if="viewerSvg" :svg="viewerSvg" @close="viewerSvg = null" />
 </template>
 ```
-(Note: the template currently has a single self-closing root `<div>`. Vue 3 allows multiple root nodes, so adding the sibling `<MermaidViewer>` is fine.)
 
-- [ ] **Step 4: Add the click affordance CSS**
+- [ ] **Step 4: Add inline CSS to the same file's non-scoped `<style>`**
 
-Append to the `<style>` block in `StreamMarkdown.vue` (after the `.mermaid-error` rule from the base feature):
+Append after the `.mermaid-error` rule:
 ```css
-/* A rendered diagram is clickable → opens the pan/zoom viewer. Signal it with a zoom cursor and
-   a hover ⤢ badge (on the <pre>, which is a real element, so ::after is safe over v-html SVG). */
+/* Inline pan/zoom: the enhancer replaces the rendered <pre> content with a bounded viewport + a
+   controls bar. The <pre> is the positioning context for the controls. */
 .stream-md .mermaid-block.mermaid-rendered {
-  cursor: zoom-in;
   position: relative;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
 }
-.stream-md .mermaid-block.mermaid-rendered::after {
-  content: "⤢";
+.stream-md .mmd-viewport {
+  max-height: 420px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--c-border));
+  border-radius: 8px;
+  background: rgb(var(--c-bg));
+  box-shadow: var(--shadow-e1);
+  touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
+  cursor: grab;
+}
+.stream-md .mmd-viewport:active {
+  cursor: grabbing;
+}
+.stream-md .mmd-transform {
+  transform-origin: 0 0;
+  width: max-content;
+}
+.stream-md .mmd-transform svg {
+  display: block;
+}
+.stream-md .mmd-controls {
   position: absolute;
   top: 6px;
-  right: 8px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+.stream-md .mermaid-block.mermaid-rendered:hover .mmd-controls,
+.stream-md .mermaid-block.mermaid-rendered:focus-within .mmd-controls {
+  opacity: 1;
+}
+.stream-md .mmd-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
   font-size: 14px;
   line-height: 1;
-  color: rgb(var(--c-fg-muted));
-  opacity: 0;
-  transition: opacity 0.12s;
-  pointer-events: none;
+  border-radius: 6px;
+  border: 1px solid rgb(var(--c-border));
+  background: rgb(var(--c-surface));
+  color: rgb(var(--c-fg));
 }
-.stream-md .mermaid-block.mermaid-rendered:hover::after {
-  opacity: 0.85;
+.stream-md .mmd-controls button:hover {
+  background: rgb(var(--c-bg-raised, var(--c-surface)));
 }
 ```
 
 - [ ] **Step 5: Run the full relay-web suite + typecheck**
 
 Run: `cd packages/relay-web && npx vitest run && npx vue-tsc --noEmit`
-Expected: new StreamMarkdown cases pass; all pre-existing tests still pass; typecheck clean.
+Expected: new cases pass; all pre-existing tests still pass; typecheck clean.
 
 - [ ] **Step 6: Document it**
 
-In `docs/relay-web-module.md`, extend the `### Mermaid 图表渲染` subsection with one line:
+In `docs/relay-web-module.md`, extend the `### Mermaid 图表渲染` subsection with:
 ```markdown
-点击已渲染的图表会打开全屏查看器（`MermaidViewer.vue` + 纯 `pan-zoom.ts` 控制器）：拖拽平移、
-滚轮/双指缩放、缩放/复位按钮、Esc/✕/点空白关闭。查看器复用已注入 DOM 的（已净化）SVG，不重新解析。
+已渲染的图表支持平移/缩放：**内联**（`inline-mermaid.ts` 就地增强——Ctrl/⌘+滚轮缩放、鼠标拖拽平移、
+双指捏合；单指仍滚动页面）配一条 − / 复位 / + / ⤢ 控件条；点 ⤢ 打开**全屏**查看器（`MermaidViewer.vue`，
+平滑滚轮/单指拖拽/双指缩放 + Esc/✕/点空白关闭）。两种模式共用纯 `pan-zoom.ts` 控制器与
+`pan-zoom-gestures.ts` 手势装配；均复用已注入 DOM 的（已净化）SVG，不重新解析。
 ```
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add packages/relay-web/src/components/StreamMarkdown.vue packages/relay-web/src/__tests__/streammarkdown.test.ts docs/relay-web-module.md
-git commit -m "feat(relay-web): open pan/zoom viewer when a mermaid diagram is clicked"
+git commit -m "feat(relay-web): inline + fullscreen pan/zoom for mermaid diagrams"
 ```
 
 ---
 
 ## Self-Review
 
-**Spec coverage:** pure controller (Task 1) ✓; fullscreen viewer with drag/wheel/pinch/controls/close/scroll-lock/a11y (Task 2) ✓; click-to-open from StreamMarkdown + affordance + docs (Task 3) ✓.
+**Spec coverage:** gestures module (Task 2) ✓; fullscreen viewer (Task 3) ✓; inline enhancer (Task 4) ✓; StreamMarkdown wiring both modes + CSS + docs (Task 5) ✓. `pan-zoom.ts` (Task 1) already done.
 
 **Placeholder scan:** every code step has complete code; no TBD.
 
-**Type consistency:** `createPanZoom(): PanZoom` used identically in Task 1 (def) and Task 2 (consumer). `MermaidViewer` prop `svg: string` / emit `close` identical across Task 2 (def + tests) and Task 3 (usage + tests). The click handler reads `pre.mermaid-block.mermaid-rendered` — the exact class `render-mermaid` sets on success.
+**Type consistency:** `attachPanZoomGestures(el, pz, onChange, opts?)` and `GestureOptions` identical across Task 2 (def), Task 3, Task 4. `PanZoom` from `pan-zoom.ts` consumed unchanged. `enhanceMermaidBlock(block, { onExpand })` identical in Task 4 (def) and Task 5 (call). `MermaidViewer` prop `svg: string` / emit `close` identical in Task 3 and Task 5. The enhancer/viewer select `pre.mermaid-block.mermaid-rendered` — the class `render-mermaid` sets on success.
