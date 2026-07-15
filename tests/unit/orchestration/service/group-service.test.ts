@@ -349,10 +349,15 @@ test("cancelGroup propagates an already-committed cancellation even when a later
   await groups.cancelGroup({ groupId: "g1", coordinatorSession: "backend:coordinator" });
   await waitForPort(harness, "cancelWorkerTask", (r) => (r as { taskId?: string }).taskId === "t2");
 
-  const cancelledWorkers = new Set(
-    harness.calls
-      .filter((c) => c.port === "cancelWorkerTask")
-      .map((c) => (c.request as { taskId: string }).taskId),
-  );
-  expect(cancelledWorkers).toEqual(new Set(["t1", "t2"]));
+  // Count per taskId, not a Set: both workers must be cancelled AND neither more than once — the
+  // retry must not re-fire t1 (already cancel-requested → shouldPropagate=false). A Set would
+  // dedupe away a double-dispatch regression.
+  const cancelCounts = new Map<string, number>();
+  for (const call of harness.calls.filter((c) => c.port === "cancelWorkerTask")) {
+    const id = (call.request as { taskId: string }).taskId;
+    cancelCounts.set(id, (cancelCounts.get(id) ?? 0) + 1);
+  }
+  expect(cancelCounts.get("t1")).toBe(1);
+  expect(cancelCounts.get("t2")).toBe(1);
+  expect(cancelCounts.size).toBe(2);
 });
