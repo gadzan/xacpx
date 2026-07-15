@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { X, ZoomIn, ZoomOut, RotateCcw } from "lucide-vue-next";
-import { createPanZoom } from "../lib/pan-zoom";
+import { createPanZoom, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "../lib/pan-zoom";
 import { attachPanZoomGestures } from "../lib/pan-zoom-gestures";
 import { useModalA11y } from "../lib/use-modal-a11y";
 
@@ -72,9 +72,9 @@ function onStageClick(e: MouseEvent): void {
         <div class="mv-content" :style="{ transform }" v-html="svg" />
       </div>
       <div class="mv-controls">
-        <button type="button" aria-label="Zoom out" @click="zoomButton(0.8)"><ZoomOut :size="18" /></button>
+        <button type="button" aria-label="Zoom out" @click="zoomButton(ZOOM_OUT_FACTOR)"><ZoomOut :size="18" /></button>
         <button type="button" aria-label="Reset" @click="reset()"><RotateCcw :size="18" /></button>
-        <button type="button" aria-label="Zoom in" @click="zoomButton(1.25)"><ZoomIn :size="18" /></button>
+        <button type="button" aria-label="Zoom in" @click="zoomButton(ZOOM_IN_FACTOR)"><ZoomIn :size="18" /></button>
         <button type="button" aria-label="Close" @click="emit('close')"><X :size="18" /></button>
       </div>
     </div>

@@ -75,11 +75,21 @@ test("with oneFingerTouchPan a single-finger drag pans", () => {
   expect(pz.state.y).toBe(40);
 });
 
-test("detach stops all gestures", () => {
+test("detach stops all gestures — wheel, pointer-drag, and pinch listeners are all removed", () => {
   const target = el();
   const pz = createPanZoom();
-  const d = attachPanZoomGestures(target, pz, () => {});
+  const d = attachPanZoomGestures(target, pz, () => {}, { oneFingerTouchPan: true });
   d();
+  // Wheel: no zoom.
   fire(target, "wheel", { deltaY: -100, clientX: 0, clientY: 0 });
+  expect(pz.state.scale).toBe(1);
+  // Mouse pointer drag: no pan (pointerdown listener gone, so move/up were never armed).
+  fire(target, "pointerdown", { pointerType: "mouse", pointerId: 1, clientX: 0, clientY: 0 });
+  fire(target, "pointermove", { pointerType: "mouse", pointerId: 1, clientX: 25, clientY: 40 });
+  expect(pz.state.x).toBe(0);
+  expect(pz.state.y).toBe(0);
+  // Two-finger pinch: no zoom (touchstart listener gone).
+  fire(target, "touchstart", { touches: [{ clientX: 0, clientY: 0 }, { clientX: 10, clientY: 0 }] });
+  fire(target, "touchmove", { touches: [{ clientX: 0, clientY: 0 }, { clientX: 20, clientY: 0 }] });
   expect(pz.state.scale).toBe(1);
 });

@@ -111,6 +111,24 @@ describe("renderMarkdown", () => {
     expect(html).not.toContain("<script>alert(1)</script>"); // escaped in fallback, raw source only in base64
   });
 
+  it("encodeMermaidSource is total on a lone surrogate (byte-safe, does not throw)", () => {
+    // `unescape(encodeURIComponent(...))` throws URIError on an unpaired surrogate; TextEncoder
+    // substitutes U+FFFD instead. This must never throw — it runs with no error isolation.
+    expect(() => encodeMermaidSource("\uD800")).not.toThrow();
+    expect(decodeMermaidSource(encodeMermaidSource("\uD800"))).toBe("�");
+  });
+
+  it("a mermaid fence containing a lone surrogate does not crash the whole render", () => {
+    const src = "graph TD\n  A[stray \uD800 unit] --> B";
+    // Old encoding threw here, taking down the entire message render, not just the diagram.
+    expect(() => renderMarkdown("```mermaid\n" + src + "\n```")).not.toThrow();
+    const html = renderMarkdown("```mermaid\n" + src + "\n```");
+    expect(html).toContain('class="mermaid-block"');
+    const match = html.match(/data-mermaid="([^"]+)"/);
+    expect(match).not.toBeNull();
+    expect(decodeMermaidSource(match![1]!)).toBe("graph TD\n  A[stray � unit] --> B\n");
+  });
+
   it("a non-mermaid fence is rendered unchanged (no mermaid-block class)", () => {
     const html = renderMarkdown("```ts\nconst a = 1;\n```");
     expect(html).not.toContain("mermaid-block");

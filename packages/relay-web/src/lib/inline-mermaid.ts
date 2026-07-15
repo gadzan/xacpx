@@ -1,4 +1,4 @@
-import { createPanZoom } from "./pan-zoom";
+import { createPanZoom, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "./pan-zoom";
 import { attachPanZoomGestures } from "./pan-zoom-gestures";
 
 interface ZoomControl {
@@ -7,9 +7,9 @@ interface ZoomControl {
   factor: number; // 0 === reset
 }
 const ZOOM_CONTROLS: ZoomControl[] = [
-  { label: "Zoom out", glyph: "−", factor: 0.8 }, // −
+  { label: "Zoom out", glyph: "−", factor: ZOOM_OUT_FACTOR }, // −
   { label: "Reset", glyph: "↺", factor: 0 }, // ↺
-  { label: "Zoom in", glyph: "+", factor: 1.25 },
+  { label: "Zoom in", glyph: "+", factor: ZOOM_IN_FACTOR },
 ];
 
 /**

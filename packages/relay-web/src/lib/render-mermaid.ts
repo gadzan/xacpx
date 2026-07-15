@@ -50,8 +50,16 @@ async function getMermaid(theme: MermaidTheme): Promise<MermaidLike> {
  * Render every un-hydrated `pre.mermaid-block` under `root` to sanitized SVG. Results are
  * cached by `theme + source`. Errors are contained per-block (marked `data-mermaid-done="error"`,
  * code fallback preserved); this function never rejects.
+ *
+ * `shouldAbort`, when supplied, is consulted before every DOM commit — both before starting a
+ * block and again after the async `mermaid.render` resolves — so a component that unmounts (or
+ * resumes streaming) mid-render never has SVG written into its torn-down or now-partial DOM.
  */
-export async function hydrateMermaidBlocks(root: HTMLElement, theme: MermaidTheme): Promise<void> {
+export async function hydrateMermaidBlocks(
+  root: HTMLElement,
+  theme: MermaidTheme,
+  shouldAbort?: () => boolean,
+): Promise<void> {
   const blocks = Array.from(
     root.querySelectorAll<HTMLElement>('pre.mermaid-block[data-mermaid]:not([data-mermaid-done])'),
   );
@@ -65,6 +73,7 @@ export async function hydrateMermaidBlocks(root: HTMLElement, theme: MermaidThem
   }
 
   for (const block of blocks) {
+    if (shouldAbort?.()) return; // component torn down / streaming resumed — stop touching the DOM
     if (block.getAttribute("data-mermaid-done")) continue; // re-check: a concurrent pass may have claimed it
     const source = decodeMermaidSource(block.getAttribute("data-mermaid") ?? "");
     const key = `${theme}:${source}`;
@@ -76,6 +85,7 @@ export async function hydrateMermaidBlocks(root: HTMLElement, theme: MermaidThem
         svg = DOMPurify.sanitize(rendered.svg, { USE_PROFILES: { svg: true, svgFilters: true } });
         svgCache.set(key, svg);
       }
+      if (shouldAbort?.()) return; // re-check after the await: DOM may have been torn down mid-render
       block.innerHTML = svg;
       block.setAttribute("data-mermaid-done", "1");
       block.classList.add("mermaid-rendered");

@@ -27,8 +27,13 @@ vi.mock("../lib/render-mermaid", () => ({
 // The stand-in produces just enough DOM (a .mmd-viewport keeping the svg, a Fullscreen button wired
 // to onExpand) for those assertions.
 const enhanceCalls: HTMLElement[] = [];
+// Each enhance returns a detacher that records its id here, so tests can assert that a
+// re-render (or unmount) actually detaches the previous block's enhancers.
+const detachCalls: number[] = [];
+let enhanceSeq = 0;
 vi.mock("../lib/inline-mermaid", () => ({
   enhanceMermaidBlock: (block: HTMLElement, opts: { onExpand: () => void }) => {
+    const id = (enhanceSeq += 1);
     enhanceCalls.push(block);
     const svg = block.querySelector("svg");
     const viewport = document.createElement("div");
@@ -42,7 +47,7 @@ vi.mock("../lib/inline-mermaid", () => ({
     expand.addEventListener("click", () => opts.onExpand());
     bar.appendChild(expand);
     block.replaceChildren(viewport, bar);
-    return () => {};
+    return () => detachCalls.push(id);
   },
 }));
 
@@ -51,6 +56,8 @@ beforeEach(() => {
   setActivePinia(createPinia());
   renderSpy.mockClear();
   enhanceCalls.length = 0;
+  detachCalls.length = 0;
+  enhanceSeq = 0;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -235,6 +242,55 @@ describe("StreamMarkdown mermaid hydration", () => {
     expect(enhanceCalls.length).toBe(2);
     expect(wrapper.element.querySelector(".mmd-viewport")).not.toBeNull();
     reset.mockImplementation(() => {});
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  test("a queued hydration that releases after streaming resumed does not hydrate (re-checks streaming)", async () => {
+    // Pass 1 (mount, streaming=false) is held in-flight; while it is parked, streaming flips back
+    // to true. When pass 1 releases and the chained pass runs, it must see streaming=true and bail
+    // — otherwise it hydrates a diagram whose source is still mid-stream. The guard is the
+    // in-callback `hydrationStale()` recheck; without it this second hydrate fires.
+    vi.useRealTimers();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    hydrate.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) await gate; // park the first pass
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await nextTick();
+    await wrapper.setProps({ streaming: true }); // resume streaming while pass 1 is parked
+    release(); // let the chain drain
+    await flushPromises();
+    expect(calls).toBe(1); // the queued follow-up bailed on the streaming recheck
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  test("a plain (finalized) text re-render detaches the previous block's enhancers", async () => {
+    // Replacing v-html discards the enhanced viewport DOM; render() must detach its listeners
+    // rather than strand them until the next theme switch/unmount. Observed via the detacher the
+    // enhancer mock returns (records its id in detachCalls). Without the detach in render() this
+    // stays empty and the assertion fails.
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    expect(enhanceCalls.length).toBe(1);
+    expect(detachCalls).toEqual([]); // enhanced, nothing detached yet
+    await wrapper.setProps({ text: "```mermaid\ngraph TD\nA-->C\n```" }); // finalized change → render()
+    await flushPromises();
+    expect(detachCalls).toContain(1); // the first block's enhancer was detached on the re-render
     hydrate.mockImplementation(async () => {});
     wrapper.unmount();
   });

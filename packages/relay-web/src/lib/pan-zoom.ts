@@ -1,5 +1,11 @@
 // Pure, framework-free pan/zoom transform state. The consumer applies `toTransform()` to an
 // element with `transform-origin: 0 0`. Kept DOM-free so the geometry is unit-testable.
+
+// Shared step factors for the − / + zoom buttons, so the inline enhancer and the fullscreen
+// viewer step by the same amount (and can't drift). One click out then in returns to ~1×.
+export const ZOOM_IN_FACTOR = 1.25;
+export const ZOOM_OUT_FACTOR = 0.8;
+
 export interface PanZoomState {
   scale: number;
   x: number;

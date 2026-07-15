@@ -58,6 +58,38 @@ test("a failing render marks the block as error and keeps the code fallback", as
   expect(pre.querySelector("svg")).toBeNull();
 });
 
+test("shouldAbort after render resolves: SVG is never committed to a torn-down DOM", async () => {
+  // The component captured this root, then unmounted (or resumed streaming) while mermaid.render
+  // was in flight. shouldAbort flips true once render resolves, so the block must stay on its
+  // code fallback — no innerHTML rewrite, no data-mermaid-done, no mermaid-rendered class.
+  let rendered = false;
+  __setMermaidLoaderForTest(() =>
+    Promise.resolve({
+      initialize: () => {},
+      render: async () => {
+        rendered = true;
+        return { svg: "<svg><text>x</text></svg>" };
+      },
+    }),
+  );
+  const root = block("graph TD\n A-->B");
+  await hydrateMermaidBlocks(root, "dark", () => rendered); // false at loop entry, true after render
+  const pre = root.querySelector("pre.mermaid-block")!;
+  expect(rendered).toBe(true); // render did run — the abort is post-await, not a skip-before-start
+  expect(pre.hasAttribute("data-mermaid-done")).toBe(false);
+  expect(pre.querySelector("svg")).toBeNull();
+  expect(pre.querySelector("code")?.textContent).toBe("graph TD\n A-->B");
+});
+
+test("shouldAbort true before the loop: no block is touched", async () => {
+  const render = vi.fn(async () => ({ svg: "<svg><text>x</text></svg>" }));
+  __setMermaidLoaderForTest(() => Promise.resolve({ initialize: () => {}, render }));
+  const root = block("graph TD\n A-->B");
+  await hydrateMermaidBlocks(root, "dark", () => true);
+  expect(render).not.toHaveBeenCalled(); // aborted before starting any block
+  expect(root.querySelector("pre.mermaid-block")!.hasAttribute("data-mermaid-done")).toBe(false);
+});
+
 test("resetMermaidBlocks reverts a rendered block to its code fallback", async () => {
   __setMermaidLoaderForTest(() =>
     Promise.resolve({ initialize: () => {}, render: async () => ({ svg: "<svg><text>x</text></svg>" }) }),

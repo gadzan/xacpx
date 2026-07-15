@@ -62,29 +62,43 @@ function enhanceRenderedBlocks(root: HTMLElement): void {
     });
 }
 
+// A hydration pass is stale — must not touch the DOM — if the component was disposed, streaming
+// resumed, or the root is gone. Checked when the queued callback finally runs (an earlier pass may
+// have been in-flight across a streaming/unmount transition) AND, via hydrateMermaidBlocks'
+// shouldAbort hook, again after each async render before it commits SVG.
+function hydrationStale(): boolean {
+  return disposed || props.streaming === true || rootEl.value === null;
+}
+
 function scheduleHydrate(reset: boolean): void {
   if (props.streaming) return;
   hydrateChain = hydrateChain
     .then(async () => {
       await nextTick();
-      if (disposed || rootEl.value === null) return;
+      if (hydrationStale()) return;
+      const root = rootEl.value;
+      if (root === null) return; // narrows for TS; hydrationStale already ruled it out
       if (reset) {
         detachEnhancers();
         // resetMermaidBlocks rebuilds each block's children, so drop the enhancement marker too —
         // otherwise the re-rendered SVG is skipped by enhanceRenderedBlocks and loses pan/zoom.
-        rootEl.value
+        root
           .querySelectorAll("pre.mermaid-block[data-mmd-enhanced]")
           .forEach((block) => block.removeAttribute("data-mmd-enhanced"));
-        resetMermaidBlocks(rootEl.value);
+        resetMermaidBlocks(root);
       }
-      await hydrateMermaidBlocks(rootEl.value, theme.mode);
-      if (!disposed && rootEl.value !== null) enhanceRenderedBlocks(rootEl.value);
+      await hydrateMermaidBlocks(root, theme.mode, hydrationStale);
+      if (!hydrationStale()) enhanceRenderedBlocks(root);
     })
     .catch(() => {}); // one failed pass must not break the chain
 }
 
 function render(): void {
   lastRenderAt = Date.now();
+  // Replacing v-html discards the current DOM, including any enhanced mermaid viewports; detach
+  // their listeners first so a plain (finalized) re-render doesn't strand them until the next
+  // theme switch or unmount. The freshly rendered HTML gets its own enhancers after hydration.
+  detachEnhancers();
   html.value = renderMarkdown(props.text, { streaming: props.streaming });
   scheduleHydrate(false);
 }
