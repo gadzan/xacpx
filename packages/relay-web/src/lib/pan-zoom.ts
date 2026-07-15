@@ -22,6 +22,19 @@ export interface PanZoom {
   toTransform(): string;
 }
 
+/**
+ * Zoom `panZoom` by `factor` around the center of `rect` (a getBoundingClientRect-shaped size).
+ * Shared by the inline − / + buttons and the fullscreen viewer so the "take midpoint → zoomAt"
+ * step lives in one place.
+ */
+export function zoomToRectCenter(
+  panZoom: PanZoom,
+  rect: { width: number; height: number },
+  factor: number,
+): void {
+  panZoom.zoomAt(factor, rect.width / 2, rect.height / 2);
+}
+
 export function createPanZoom(opts: { minScale?: number; maxScale?: number } = {}): PanZoom {
   const minScale = opts.minScale ?? 0.2;
   const maxScale = opts.maxScale ?? 8;

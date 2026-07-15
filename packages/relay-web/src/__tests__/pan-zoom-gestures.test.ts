@@ -75,6 +75,32 @@ test("with oneFingerTouchPan a single-finger drag pans", () => {
   expect(pz.state.y).toBe(40);
 });
 
+test("detach removes every listener it registered (per-listener, same handler reference)", () => {
+  // Behavioral checks can't isolate a single leaked listener (e.g. a stray pointerdown is inert
+  // once pointermove is gone). Record every (type, handler) attach registers, then assert each is
+  // removed with the SAME reference — so dropping any one removeEventListener reddens this.
+  const target = el();
+  const pz = createPanZoom();
+  const added: Array<[string, unknown]> = [];
+  const removed: Array<[string, unknown]> = [];
+  const origAdd = target.addEventListener.bind(target);
+  const origRemove = target.removeEventListener.bind(target);
+  target.addEventListener = ((type: string, fn: unknown, o?: unknown) => {
+    added.push([type, fn]);
+    return origAdd(type, fn as EventListener, o as AddEventListenerOptions);
+  }) as typeof target.addEventListener;
+  target.removeEventListener = ((type: string, fn: unknown, o?: unknown) => {
+    removed.push([type, fn]);
+    return origRemove(type, fn as EventListener, o as EventListenerOptions);
+  }) as typeof target.removeEventListener;
+
+  const d = attachPanZoomGestures(target, pz, () => {}, { oneFingerTouchPan: true });
+  d();
+
+  expect(added.length).toBe(8); // wheel, pointer{down,move,up,cancel}, touch{start,move,end}
+  for (const pair of added) expect(removed).toContainEqual(pair);
+});
+
 test("detach stops all gestures — wheel, pointer-drag, and pinch listeners are all removed", () => {
   const target = el();
   const pz = createPanZoom();

@@ -90,6 +90,7 @@ export async function hydrateMermaidBlocks(
       block.setAttribute("data-mermaid-done", "1");
       block.classList.add("mermaid-rendered");
     } catch {
+      if (shouldAbort?.()) return; // torn down / streaming resumed during a FAILED render — same as the success path, don't touch stale DOM
       block.setAttribute("data-mermaid-done", "error");
       block.classList.add("mermaid-error");
       // Leave the <code> fallback in place so the user still sees the diagram source.

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { X, ZoomIn, ZoomOut, RotateCcw } from "lucide-vue-next";
-import { createPanZoom, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "../lib/pan-zoom";
+import { createPanZoom, zoomToRectCenter, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "../lib/pan-zoom";
 import { attachPanZoomGestures } from "../lib/pan-zoom-gestures";
 import { useModalA11y } from "../lib/use-modal-a11y";
 
@@ -12,9 +12,9 @@ const emit = defineEmits<{ close: [] }>();
 const dialogEl = ref<HTMLElement | null>(null);
 const stageEl = ref<HTMLElement | null>(null);
 const transform = ref("translate(0px, 0px) scale(1)");
-const pz = createPanZoom();
+const panZoom = createPanZoom();
 function apply(): void {
-  transform.value = pz.toTransform();
+  transform.value = panZoom.toTransform();
 }
 
 useModalA11y(dialogEl, () => emit("close"));
@@ -23,7 +23,7 @@ let detach: (() => void) | null = null;
 let prevOverflow = "";
 onMounted(() => {
   if (stageEl.value) {
-    detach = attachPanZoomGestures(stageEl.value, pz, apply, { oneFingerTouchPan: true });
+    detach = attachPanZoomGestures(stageEl.value, panZoom, apply, { oneFingerTouchPan: true });
   }
   prevOverflow = document.body.style.overflow;
   document.body.style.overflow = "hidden";
@@ -34,12 +34,12 @@ onBeforeUnmount(() => {
 });
 
 function zoomButton(factor: number): void {
-  const r = stageEl.value?.getBoundingClientRect();
-  pz.zoomAt(factor, r ? r.width / 2 : 0, r ? r.height / 2 : 0);
+  const r = stageEl.value?.getBoundingClientRect() ?? { width: 0, height: 0 };
+  zoomToRectCenter(panZoom, r, factor);
   apply();
 }
 function reset(): void {
-  pz.reset();
+  panZoom.reset();
   apply();
 }
 // Background (not the diagram) click closes — but a drag-to-pan that starts and ends on the empty

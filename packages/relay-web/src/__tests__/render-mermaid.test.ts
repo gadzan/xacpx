@@ -81,6 +81,29 @@ test("shouldAbort after render resolves: SVG is never committed to a torn-down D
   expect(pre.querySelector("code")?.textContent).toBe("graph TD\n A-->B");
 });
 
+test("shouldAbort after render REJECTS: error state is not written to a torn-down DOM", async () => {
+  // The failure branch must honor the same abort contract as the success branch: if the component
+  // unmounts / resumes streaming while mermaid.render is in flight and it then rejects, the stale
+  // block must NOT be marked error either — it stays on its untouched code fallback.
+  let rejected = false;
+  __setMermaidLoaderForTest(() =>
+    Promise.resolve({
+      initialize: () => {},
+      render: async () => {
+        rejected = true;
+        throw new Error("boom");
+      },
+    }),
+  );
+  const root = block("graph TD\n A-->B");
+  await hydrateMermaidBlocks(root, "dark", () => rejected); // false at loop entry, true after the reject
+  const pre = root.querySelector("pre.mermaid-block")!;
+  expect(rejected).toBe(true); // render did run and reject — abort is post-await, not a skip-before-start
+  expect(pre.hasAttribute("data-mermaid-done")).toBe(false);
+  expect(pre.classList.contains("mermaid-error")).toBe(false);
+  expect(pre.querySelector("code")?.textContent).toBe("graph TD\n A-->B");
+});
+
 test("shouldAbort true before the loop: no block is touched", async () => {
   const render = vi.fn(async () => ({ svg: "<svg><text>x</text></svg>" }));
   __setMermaidLoaderForTest(() => Promise.resolve({ initialize: () => {}, render }));

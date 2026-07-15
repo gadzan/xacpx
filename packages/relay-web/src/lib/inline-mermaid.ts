@@ -1,4 +1,4 @@
-import { createPanZoom, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "./pan-zoom";
+import { createPanZoom, zoomToRectCenter, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "./pan-zoom";
 import { attachPanZoomGestures } from "./pan-zoom-gestures";
 
 interface ZoomControl {
@@ -29,9 +29,9 @@ export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => 
   wrapper.appendChild(svg); // moves the svg out of the <pre>
   viewport.appendChild(wrapper);
 
-  const pz = createPanZoom();
+  const panZoom = createPanZoom();
   const apply = (): void => {
-    wrapper.style.transform = pz.toTransform();
+    wrapper.style.transform = panZoom.toTransform();
   };
 
   const bar = document.createElement("div");
@@ -52,10 +52,9 @@ export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => 
     addButton(control.label, control.glyph, (e) => {
       e.stopPropagation();
       if (control.factor === 0) {
-        pz.reset();
+        panZoom.reset();
       } else {
-        const r = viewport.getBoundingClientRect();
-        pz.zoomAt(control.factor, r.width / 2, r.height / 2);
+        zoomToRectCenter(panZoom, viewport.getBoundingClientRect(), control.factor);
       }
       apply();
     });
@@ -67,7 +66,7 @@ export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => 
 
   block.replaceChildren(viewport, bar);
 
-  const detachGestures = attachPanZoomGestures(viewport, pz, apply, { wheelRequiresModifier: true });
+  const detachGestures = attachPanZoomGestures(viewport, panZoom, apply, { wheelRequiresModifier: true });
 
   return () => {
     detachGestures();
