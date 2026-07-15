@@ -26,24 +26,15 @@ export interface KernelDeps {
 }
 
 export class OrchestrationStateKernel {
-  /** Token of the enclosing critical section, propagated through the async context. A per-call
-   *  token (not a bare `true`) lets `mutate` tell a genuinely re-entrant caller — still inside
-   *  the section that is running right now — apart from a chain that merely INHERITED a section's
-   *  context but outlives it. A bare boolean also can't distinguish a concurrent queued caller,
-   *  which is why this was never a plain field.
-   *
-   *  Known limitation of ALS-token detection: an inherited token is only observed as "not
-   *  re-entrant" once the enclosing section's async machinery has FULLY settled — in practice,
-   *  past a macrotask boundary, NOT merely once the section's `critical()` body has returned.
-   *  A detached chain that inherited the token and resumes within the SAME microtask turn as the
-   *  section's return still sees `runningToken` set (its first-resumption microtask is enqueued
-   *  before the section's `finally` reset runs) and is (conservatively) rejected as re-entrant.
-   *  This is a false positive, but a safe one: such a chain is racing the section's teardown so
-   *  tightly that treating it as nested costs nothing real. See the "OUTLIVES its critical
-   *  section" test, which must cross a macrotask boundary for exactly this reason. */
-  private readonly held = new AsyncLocalStorage<object>();
+  /** Async-context token of the enclosing critical section. A per-call token (not a bare `true`)
+   *  lets `mutate` tell a genuinely re-entrant caller — still inside the section running right
+   *  now — apart from a chain that merely INHERITED a section's context but runs after it. A bare
+   *  boolean also can't distinguish a concurrent queued caller, which is why this was never a
+   *  plain field. Named for what it holds: the currently-open section's context token. */
+  private readonly sectionContext = new AsyncLocalStorage<object>();
   /** Token of the critical section whose `critical()` body is executing at this instant, or
-   *  undefined when none. The mutex serialises sections, so at most one is ever live. */
+   *  undefined when none. The mutex serialises sections, so at most one is ever live. It is reset
+   *  in `mutate`'s `finally`, which runs one microtask after the `critical()` body returns. */
   private runningToken: object | undefined;
   private readonly stateMutex: AsyncMutex;
 
@@ -54,26 +45,42 @@ export class OrchestrationStateKernel {
     this.stateMutex = stateMutex ?? new AsyncMutex();
   }
 
-  /** AsyncMutex is strict-FIFO and non-reentrant: an AWAITED nested run() awaits a tail promise
-   *  that only resolves after the outer section returns → deadlock. Throw for that case only.
-   *  A detached chain that inherited a section's token but reaches mutate() once that section has
-   *  FULLY settled (`enclosing !== runningToken`, which holds only past a macrotask boundary —
-   *  see the `held` field's note on why a same-microtask-turn resumption is still rejected) is not
-   *  re-entrant — it queues on the now-free mutex and runs. */
+  /** The state mutex is strict-FIFO and non-reentrant: an AWAITED nested `run()` awaits a tail
+   *  that only resolves after the outer section returns → deadlock. That case must throw. A
+   *  DETACHED chain (`.then` / `void f()`) created inside a section but reaching `mutate` AFTER
+   *  the section's `critical()` returned is NOT re-entrant — the mutex is (about to be) free, so
+   *  it must run.
+   *
+   *  Both collapse to the same observable state at the instant of the call — `enclosing ===
+   *  runningToken` — because the outer section's teardown (`runningToken` reset in its `finally`)
+   *  is enqueued one microtask behind, and a single-hop `.then` detached chain resumes just ahead
+   *  of it. They become distinguishable one microtask later: a section that has RETURNED will have
+   *  run its `finally` and cleared `runningToken`; a section still open and awaiting THIS call will
+   *  not. So on a suspected re-entry we yield exactly once and re-check — converting a genuine
+   *  deadlock into a loud throw, while letting the after-completion detached chain (the filed #149
+   *  hazard) proceed. A single yield suffices for the filed single-`.then` shape; a multi-hop
+   *  chain resumes strictly later, by which point `runningToken` is already cleared and the
+   *  suspected-re-entry branch is never entered. */
   async mutate<T>(critical: () => Promise<T>): Promise<T> {
-    const enclosing = this.held.getStore();
+    const enclosing = this.sectionContext.getStore();
     if (enclosing !== undefined && enclosing === this.runningToken) {
-      throw new Error(
-        "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
-          "Call the collaborator outside the critical section.",
-      );
+      // Suspected re-entry. Yield one microtask so a RETURNING outer section's `finally` resets
+      // `runningToken` before we decide. If the token we inherited is still the running one, that
+      // section never returned — it is awaiting us — so this is a real deadlock: throw.
+      await Promise.resolve();
+      if (this.runningToken === enclosing) {
+        throw new Error(
+          "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
+            "Call the collaborator outside the critical section.",
+        );
+      }
     }
     const token = {};
     return await this.stateMutex.run(async () => {
       const previous = this.runningToken; // always undefined (mutex serialises); restored defensively
       this.runningToken = token;
       try {
-        return await this.held.run(token, critical);
+        return await this.sectionContext.run(token, critical);
       } finally {
         this.runningToken = previous;
       }
