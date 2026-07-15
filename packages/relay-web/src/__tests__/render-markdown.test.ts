@@ -96,6 +96,11 @@ describe("renderMarkdown", () => {
     expect(decodeMermaidSource(encoded)).toBe(src);
   });
 
+  it("preserves a leading BOM through the round-trip (ignoreBOM decoder)", () => {
+    const src = "﻿graph TD\n  A --> B";
+    expect(decodeMermaidSource(encodeMermaidSource(src))).toBe(src);
+  });
+
   it("a mermaid fence becomes a placeholder carrying the base64 source", () => {
     const html = renderMarkdown("```mermaid\ngraph TD\n  A --> B\n```");
     expect(html).toContain('class="mermaid-block"');

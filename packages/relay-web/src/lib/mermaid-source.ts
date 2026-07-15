@@ -19,5 +19,7 @@ export function decodeMermaidSource(encoded: string): string {
   const binary = atob(encoded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  // ignoreBOM keeps a leading U+FEFF as a literal char so the round-trip is exact (the default
+  // decoder silently strips it).
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
 }
