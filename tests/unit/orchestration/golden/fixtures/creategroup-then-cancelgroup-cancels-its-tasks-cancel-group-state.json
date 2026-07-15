@@ -329,23 +329,6 @@
       "request": null
     },
     {
-      "port": "cancelWorkerTask",
-      "request": {
-        "taskId": "task-1",
-        "workerSession": "backend:claude:backend:main",
-        "workspace": "backend",
-        "targetAgent": "claude"
-      }
-    },
-    {
-      "port": "loadState",
-      "request": null
-    },
-    {
-      "port": "loadState",
-      "request": null
-    },
-    {
       "port": "logger.info",
       "request": {
         "event": "orchestration.group.cancelled",
@@ -358,6 +341,23 @@
           "skipped_count": 0
         }
       }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "cancelWorkerTask",
+      "request": {
+        "taskId": "task-1",
+        "workerSession": "backend:claude:backend:main",
+        "workspace": "backend",
+        "targetAgent": "claude"
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
     },
     {
       "port": "saveState",
