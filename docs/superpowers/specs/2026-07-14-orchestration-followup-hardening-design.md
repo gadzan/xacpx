@@ -58,34 +58,42 @@ calls `mutate` afterward simply queues on the mutex and runs — that is exactly
 own). Detecting the false-positive construct treats the symptom; making the guard precise removes
 it.
 
-### Design — per-invocation token + `runningToken`
+### Design — per-invocation token + `runningToken`, decided one microtask later
 
-Replace the boolean store with a per-invocation **token**, and track the token of the critical
-section **currently executing** in a plain field:
+Replace the boolean store with a per-invocation **token** (`sectionContext`, renamed from `held`
+since it now carries a context token, not a boolean), and track the token of the critical section
+**currently executing** in a plain field. The catch: a genuine awaited-nested call and a detached
+`.then` chain that runs *just after* its section returns both observe `enclosing === runningToken`
+at the instant of the call — the section's teardown (`runningToken` reset in the `mutate` `finally`)
+is enqueued one microtask behind, and a single-hop `.then` resumes just ahead of it. They only
+become distinguishable one microtask later. So a *suspected* re-entry yields once and re-checks:
 
 ```ts
-private readonly held = new AsyncLocalStorage<object>();
-/** Token of the critical section whose `critical()` body is executing right now (undefined
- *  when none). The mutex serialises sections, so at most one token is ever live. */
+private readonly sectionContext = new AsyncLocalStorage<object>();
+/** Token of the critical section whose `critical()` body is executing right now (undefined when
+ *  none). Reset in mutate's `finally`, one microtask after the body returns. */
 private runningToken: object | undefined;
 
 async mutate<T>(critical: () => Promise<T>): Promise<T> {
-  const enclosing = this.held.getStore();
-  // Re-entrant ONLY when this call is made from inside the section that is currently running.
-  // A chain that inherited a token but outlives its section (enclosing !== runningToken) is not
-  // re-entrant — it queues on the free mutex and runs, no deadlock.
+  const enclosing = this.sectionContext.getStore();
   if (enclosing !== undefined && enclosing === this.runningToken) {
-    throw new Error(
-      "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
-        "Call the collaborator outside the critical section.",
-    );
+    // Suspected re-entry: yield one microtask so a RETURNING section's finally can clear
+    // runningToken, then re-check. Still the running token ⇒ that section never returned (it is
+    // awaiting us) ⇒ real deadlock ⇒ throw. Cleared ⇒ detached-after-completion ⇒ let it run.
+    await Promise.resolve();
+    if (this.runningToken === enclosing) {
+      throw new Error(
+        "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
+          "Call the collaborator outside the critical section.",
+      );
+    }
   }
   const token = {};
   return await this.stateMutex.run(async () => {
     const previous = this.runningToken;      // always undefined (mutex serialises); restored defensively
     this.runningToken = token;
     try {
-      return await this.held.run(token, critical);
+      return await this.sectionContext.run(token, critical);
     } finally {
       this.runningToken = previous;
     }
@@ -96,22 +104,26 @@ async mutate<T>(critical: () => Promise<T>): Promise<T> {
 Correctness across the four cases (preserving the original ALS design intent — see the
 kernel's existing comment that a plain boolean would wrongly reject a *concurrent* queued caller):
 
-| Case | `enclosing` | `runningToken` at call | Result | Correct? |
+| Case | `enclosing` | `runningToken` after the yield | Result | Correct? |
 |---|---|---|---|---|
-| Separate concurrent caller (queued on mutex) | `undefined` (own context) | live token of the running one | no throw → queues | ✓ (unchanged) |
-| Awaited nested `mutate` inside a section | that section's token | same token (still running) | **throw** | ✓ would deadlock |
-| Detached chain, calls `mutate` **after** its section returns (the #149 case) | old token | `undefined` (or a different section) | **no throw** → runs | ✓ **fixed** |
+| Separate concurrent caller (queued on mutex) | `undefined` (own context) | live token of the running one | no throw → queues (no yield taken) | ✓ (unchanged) |
+| Awaited nested `mutate` inside a section | that section's token | **same token** — the section is blocked awaiting this call, so its `finally` never ran | **throw** | ✓ would deadlock |
+| Detached chain, calls `mutate` **after** its section returns — incl. the single-`.then` same-microtask shape the issue names | old token | **cleared** — the returned section's `finally` ran during the yield | **no throw** → runs | ✓ **fixed** |
 | Detached chain awaited by its section (really nested) | that token | same token | throw | ✓ would deadlock |
 
-The check runs *before* queuing on the mutex, so the awaited-nested case still throws instead of
-hanging. `runningToken` is read/written only synchronously and the mutex serialises sections, so
-there is no torn read.
+The re-check runs *before* queuing on the mutex, so the awaited-nested case still throws instead of
+hanging. A single yield suffices for the filed single-`.then` shape (its callback was enqueued
+during the body's synchronous run, strictly before the section's own teardown); a multi-hop chain
+resumes strictly later, by which point `runningToken` is already cleared and the suspected-re-entry
+branch is never even entered.
 
-**Residual (documented, not the filed hazard):** a truly-detached chain that reaches its `mutate`
-call *while its enclosing section is still executing* (a long-running outer that spawned but did
-not await it) still throws. That construct races the very section that created it and is worth
-flagging; the filed hazard is specifically the **"日后调用" / after-completion** chain, which this
-fixes.
+**Residual (documented, narrowed — not the filed hazard):** a detached chain that reaches its
+`mutate` call *while its enclosing section is still suspended mid-body* (a long-running outer that
+spawned it and then `await`s something else before returning) still throws after the yield, because
+`runningToken` is genuinely still set. That construct issues a `mutate` into a section that has not
+returned — an ambiguous, racy shape — so conservatively throwing there is defensible. The filed
+hazard is the **"日后调用" / after-completion** chain (the section has returned), which this now
+handles even in the tightest same-microtask case.
 
 ### Consequence for the lexical scan
 
@@ -146,25 +158,38 @@ The only thing that races `group.cancelled` is the **detached** chain. Make its 
 
 Extract the awaited, deterministic part of `requestTaskCancellation` from the detached fire:
 
-- **New private** `applyTaskCancellationRequest(input): Promise<{ task, shouldPropagate, closedPackageId }>`
-  — everything `requestTaskCancellation` does today **except** the `startWorkerCancellation(task)`
-  call: the `mutate` (state transition + `saveState` #1), the `orchestration.task.cancel_requested`
-  log, the `handoffQueuedQuestions` (when `closedPackageId`), and the post-non-running reconcile.
-  Returns `shouldPropagate` so the caller can fire the detached chain.
-- **`requestTaskCancellation`** (public, unchanged behaviour) = `applyTaskCancellationRequest` then
-  `if (shouldPropagate) this.startWorkerCancellation(task)`. For a running task, `closedPackageId`
-  is undefined and the task is non-terminal, so today only `startWorkerCancellation` fires — i.e.
+- **New public** `applyCancellationRequest(input): Promise<{ task, shouldPropagate }>` — everything
+  `requestTaskCancellation` does today **except** the `startWorkerCancellation(task)` call: the
+  `mutate` (state transition + `saveState` #1), the `orchestration.task.cancel_requested` log, the
+  `handoffQueuedQuestions` (keyed on the `closedPackageId` computed *inside* the `mutate`), and the
+  post-non-running reconcile. Returns `{ task, shouldPropagate }` — `closedPackageId` stays private
+  to the `mutate`'s result and never crosses the method boundary. (Public, not private: `cancelGroup`
+  lives in a different service and calls it across the one-way GroupService→TaskCancellationService
+  edge.)
+- **`requestTaskCancellation`** (public, unchanged behaviour) = `applyCancellationRequest` then
+  `if (shouldPropagate) this.startWorkerCancellation(task)`. For a running task the task is
+  non-terminal and `closedPackageId` is undefined, so only `startWorkerCancellation` fires — i.e.
   propagation and the handoff/reconcile tails are already mutually exclusive per task, so no
   reordering within a single task.
 - **`cancelGroup`**:
-  1. Phase 1 — loop, `await applyTaskCancellationRequest(...)` per non-terminal task, collecting
-     the tasks whose `shouldPropagate` is true.
+  1. Phase 1 — loop, `await applyCancellationRequest(...)` per non-terminal task, collecting the
+     tasks whose `shouldPropagate` is true into `toPropagate`.
   2. Re-read the summary and log `orchestration.group.cancelled` (unchanged fields).
-  3. Phase 2 — `for (const task of toPropagate) this.startWorkerCancellation(task)`.
+  3. Fire `startWorkerCancellation` for every task in `toPropagate`.
 
 Now `group.cancelled` is logged with **zero** detached chains yet fired, so every chain's
 `saveState` #2 provably follows it. The hop-budget comments are replaced with a one-line statement
 of the invariant.
+
+**Partial-failure atomicity.** `applyCancellationRequest` commits each task's `cancelRequestedAt`
+in its own atomic `saveState`. If a *later* task's save throws mid-loop, an earlier task is already
+persisted as cancel-requested — and a retry of `cancelGroup` sees `shouldPropagate === false` for it
+(already requested), so it would never fire its worker-cancellation chain. To close that gap, steps
+1–3 run inside a `try` whose `finally` fires `startWorkerCancellation` for everything collected in
+`toPropagate` so far. On the happy path the `finally` runs after the loop, the re-read, and the log
+— order unchanged (the provable invariant holds). On a partial failure it still propagates the
+already-committed requests on *this* attempt (skipping only the log), so no committed cancellation
+is ever stranded and the caller's retry only needs to finish the tasks that never committed.
 
 ### Golden-oracle handling
 
