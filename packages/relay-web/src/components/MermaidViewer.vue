@@ -42,8 +42,18 @@ function reset(): void {
   pz.reset();
   apply();
 }
+// Background (not the diagram) click closes — but a drag-to-pan that starts and ends on the empty
+// stage also synthesizes a click, so ignore it if the pointer moved beyond a small threshold.
+let downX = 0;
+let downY = 0;
+function onStagePointerDown(e: PointerEvent): void {
+  downX = e.clientX;
+  downY = e.clientY;
+}
 function onStageClick(e: MouseEvent): void {
-  if (e.target === stageEl.value) emit("close"); // background, not the diagram
+  if (e.target !== stageEl.value) return; // clicked the diagram, not the backdrop
+  if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return; // was a drag
+  emit("close");
 }
 </script>
 
@@ -57,7 +67,7 @@ function onStageClick(e: MouseEvent): void {
       aria-modal="true"
       aria-label="Diagram viewer"
     >
-      <div ref="stageEl" class="mv-stage" @click="onStageClick">
+      <div ref="stageEl" class="mv-stage" @pointerdown="onStagePointerDown" @click="onStageClick">
         <!-- eslint-disable-next-line vue/no-v-html -- SVG already DOMPurify-sanitized by render-mermaid -->
         <div class="mv-content" :style="{ transform }" v-html="svg" />
       </div>

@@ -42,3 +42,19 @@ test("Escape, close button, and background click each emit close", async () => {
   expect(wrapper.emitted("close")!.length).toBeGreaterThanOrEqual(3);
   wrapper.unmount();
 });
+
+test("a drag on the empty backdrop does not close; only a stationary click does", async () => {
+  const wrapper = mount(MermaidViewer, { props: { svg: SVG } });
+  const stage = q(".mv-stage")!;
+  // pointer moved between down and click → a drag-pan, not a close
+  fire(stage, "pointerdown", { clientX: 0, clientY: 0 });
+  fire(stage, "click", { clientX: 60, clientY: 60 });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.emitted("close")).toBeFalsy();
+  // stationary click on the backdrop → close
+  fire(stage, "pointerdown", { clientX: 10, clientY: 10 });
+  fire(stage, "click", { clientX: 10, clientY: 10 });
+  await wrapper.vm.$nextTick();
+  expect(wrapper.emitted("close")).toHaveLength(1);
+  wrapper.unmount();
+});
