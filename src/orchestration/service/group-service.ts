@@ -131,39 +131,53 @@ export class GroupService {
     const skippedTaskIds: string[] = [];
     const toPropagate: OrchestrationTaskRecord[] = [];
 
-    // Phase 1 — apply every task's cancellation STATE transition (awaited, deterministic). Do NOT
-    // fire the detached worker-cancellation chains here: collect the tasks that need one.
-    for (const task of summary.tasks) {
-      if (this.kernel.isTerminalStatus(task.status)) {
-        skippedTaskIds.push(task.taskId);
-        continue;
+    let refreshed: OrchestrationGroupSummary;
+    try {
+      // Phase 1 — apply every task's cancellation STATE transition (awaited, deterministic). Do
+      // NOT fire the detached worker-cancellation chains here: collect the tasks that need one.
+      // applyCancellationRequest commits each task's `cancelRequestedAt` in its own atomic save,
+      // so a task processed before a later task's save fails is ALREADY persisted as
+      // cancel-requested. A retry of cancelGroup would then see `shouldPropagate === false` for it
+      // and never fire its chain — so committed requests must be propagated here, on this attempt,
+      // even if a later task throws. The `finally` guarantees that (see below).
+      for (const task of summary.tasks) {
+        if (this.kernel.isTerminalStatus(task.status)) {
+          skippedTaskIds.push(task.taskId);
+          continue;
+        }
+        const { task: cancelled, shouldPropagate } = await this.cancellation.applyCancellationRequest({
+          taskId: task.taskId,
+          coordinatorSession: input.coordinatorSession,
+        });
+        cancelledTaskIds.push(task.taskId);
+        if (shouldPropagate) {
+          toPropagate.push(cancelled);
+        }
       }
-      const { task: cancelled, shouldPropagate } = await this.cancellation.applyCancellationRequest({
-        taskId: task.taskId,
-        coordinatorSession: input.coordinatorSession,
+
+      const summaryAfter = await this.getGroupSummary(input);
+      if (!summaryAfter) {
+        throw new Error(`group "${input.groupId}" does not exist`);
+      }
+      refreshed = summaryAfter;
+
+      // group.cancelled is logged with ZERO detached chains yet fired, so every chain's terminal
+      // saveState provably follows it — a structural invariant, not a microtask-hop budget (#150).
+      // Reached only on the happy path; a partial failure skips the log but still propagates below.
+      this.kernel.logEvent("orchestration.group.cancelled", "group cancelled", {
+        ...this.kernel.groupContext(refreshed.group),
+        cancelled_count: cancelledTaskIds.length,
+        skipped_count: skippedTaskIds.length,
       });
-      cancelledTaskIds.push(task.taskId);
-      if (shouldPropagate) {
-        toPropagate.push(cancelled);
+    } finally {
+      // Fire the detached worker-cancellation chains for every request committed so far. On the
+      // happy path this runs after the loop, the refresh, and the log — order unchanged. On a
+      // partial failure (a later task's save threw) it still fires the already-committed chains,
+      // so a committed cancel-request is never stranded without its worker cancellation, and the
+      // caller's retry (which skips the now-requested task) does not need to re-fire it.
+      for (const task of toPropagate) {
+        this.cancellation.startWorkerCancellation(task);
       }
-    }
-
-    const refreshed = await this.getGroupSummary(input);
-    if (!refreshed) {
-      throw new Error(`group "${input.groupId}" does not exist`);
-    }
-
-    // group.cancelled is logged with ZERO detached chains yet fired, so every chain's terminal
-    // saveState provably follows it — a structural invariant, not a microtask-hop budget (#150).
-    this.kernel.logEvent("orchestration.group.cancelled", "group cancelled", {
-      ...this.kernel.groupContext(refreshed.group),
-      cancelled_count: cancelledTaskIds.length,
-      skipped_count: skippedTaskIds.length,
-    });
-
-    // Phase 2 — NOW fire the detached worker-cancellation chains, after the log.
-    for (const task of toPropagate) {
-      this.cancellation.startWorkerCancellation(task);
     }
 
     return {
