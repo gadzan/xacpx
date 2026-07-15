@@ -22,10 +22,35 @@ vi.mock("../lib/render-mermaid", () => ({
   resetMermaidBlocks: (...a: unknown[]) => reset(...a),
 }));
 
+// Mock the inline enhancer so the tests can assert the WIRING (enhance called once per rendered
+// block, viewer opened on ⤢) via call count — the real enhancer is covered by inline-mermaid.test.ts.
+// The stand-in produces just enough DOM (a .mmd-viewport keeping the svg, a Fullscreen button wired
+// to onExpand) for those assertions.
+const enhanceCalls: HTMLElement[] = [];
+vi.mock("../lib/inline-mermaid", () => ({
+  enhanceMermaidBlock: (block: HTMLElement, opts: { onExpand: () => void }) => {
+    enhanceCalls.push(block);
+    const svg = block.querySelector("svg");
+    const viewport = document.createElement("div");
+    viewport.className = "mmd-viewport";
+    if (svg) viewport.appendChild(svg);
+    const bar = document.createElement("div");
+    bar.className = "mmd-controls";
+    for (let i = 0; i < 3; i += 1) bar.appendChild(document.createElement("button"));
+    const expand = document.createElement("button");
+    expand.setAttribute("aria-label", "Fullscreen");
+    expand.addEventListener("click", () => opts.onExpand());
+    bar.appendChild(expand);
+    block.replaceChildren(viewport, bar);
+    return () => {};
+  },
+}));
+
 beforeEach(() => {
   vi.useFakeTimers();
   setActivePinia(createPinia());
   renderSpy.mockClear();
+  enhanceCalls.length = 0;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -161,15 +186,12 @@ describe("StreamMarkdown mermaid hydration", () => {
     wrapper.unmount();
   });
 
-  test("a rendered mermaid block is enhanced with an inline pan/zoom viewport + controls", async () => {
-    // Mount schedules hydrate through a chained promise with several microtask hops, so — like
-    // the "serializes hydration" test above — use real timers + flushPromises to reliably drain
-    // it instead of guessing a fixed nextTick count.
+  test("a rendered mermaid block is enhanced exactly once (idempotent across the mount double-schedule)", async () => {
+    // Mount schedules hydrate twice (module-level render() + onMounted). Each pass runs through a
+    // chained promise with several microtask hops, so use real timers + flushPromises to drain it.
     vi.useRealTimers();
-    // hydrate's inferred type is `(..._args: unknown[]) => Promise<void>` (see the file's rest-
-    // param note up top), so the mock body takes rest args and casts internally rather than
-    // declaring a concrete `root: HTMLElement` param, which fails typecheck as a param variance
-    // violation.
+    // hydrate's inferred type is `(..._args: unknown[]) => Promise<void>`, so take rest args and
+    // cast internally rather than a concrete `root: HTMLElement` param (param-variance typecheck).
     hydrate.mockImplementation(async (...args: unknown[]) => {
       renderFirstMermaidBlock(args[0] as HTMLElement);
     });
@@ -179,18 +201,45 @@ describe("StreamMarkdown mermaid hydration", () => {
     });
     await flushPromises();
     expect(wrapper.element.querySelector(".mmd-viewport")).not.toBeNull();
-    expect(wrapper.element.querySelectorAll(".mmd-controls button").length).toBe(4);
-    // idempotent: a second hydrate pass must not double-enhance
-    await wrapper.setProps({ streaming: false });
+    // The `:not([data-mmd-enhanced])` guard means the block is enhanced ONCE despite two hydrate
+    // passes on mount. Without the guard this is 2 — the assertion that actually locks it.
+    expect(enhanceCalls.length).toBe(1);
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  test("re-enhances a diagram after a theme switch (reset + re-hydrate)", async () => {
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    // reset mimics the real resetMermaidBlocks: it rebuilds each block to an un-rendered fallback
+    // and does NOT clear `data-mmd-enhanced` (clearing that marker is StreamMarkdown's job — the
+    // bug this test locks: without it, the re-rendered block is skipped and loses pan/zoom).
+    reset.mockImplementation((...args: unknown[]) => {
+      (args[0] as HTMLElement).querySelectorAll("pre.mermaid-block").forEach((b) => {
+        b.classList.remove("mermaid-rendered");
+        b.innerHTML = "<code>graph TD</code>";
+      });
+    });
+    const themeStore = useThemeStore();
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
     await flushPromises();
-    expect(wrapper.element.querySelectorAll(".mmd-viewport").length).toBe(1);
+    expect(enhanceCalls.length).toBe(1); // enhanced on mount
+    themeStore.set(themeStore.mode === "dark" ? "light" : "dark"); // → scheduleHydrate(reset = true)
+    await flushPromises();
+    // The reset cleared the enhancement DOM and marker; the re-hydrated block must be enhanced again.
+    expect(enhanceCalls.length).toBe(2);
+    expect(wrapper.element.querySelector(".mmd-viewport")).not.toBeNull();
+    reset.mockImplementation(() => {});
     hydrate.mockImplementation(async () => {});
     wrapper.unmount();
   });
 
   test("clicking the ⤢ button opens the fullscreen viewer with the diagram svg", async () => {
-    // Same rationale as above: real timers + flushPromises to drain the chained hydrate, and the
-    // rest-args form to keep hydrate.mockImplementation typechecking.
     vi.useRealTimers();
     hydrate.mockImplementation(async (...args: unknown[]) => {
       renderFirstMermaidBlock(args[0] as HTMLElement);

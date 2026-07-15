@@ -44,7 +44,9 @@ function detachEnhancers(): void {
   enhanceDetachers = [];
 }
 // After hydration, give each freshly-rendered diagram inline pan/zoom + a ⤢ that opens the
-// fullscreen viewer. `data-mmd-enhanced` keeps a re-hydration from wrapping the same block twice.
+// fullscreen viewer. `data-mmd-enhanced` keeps the double-schedule-on-mount from wrapping the same
+// block twice; it is cleared on a reset pass (below) because resetMermaidBlocks rebuilds the block
+// from scratch, so the fresh SVG must be re-enhanced.
 function enhanceRenderedBlocks(root: HTMLElement): void {
   root
     .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-rendered:not([data-mmd-enhanced])")
@@ -68,6 +70,11 @@ function scheduleHydrate(reset: boolean): void {
       if (disposed || rootEl.value === null) return;
       if (reset) {
         detachEnhancers();
+        // resetMermaidBlocks rebuilds each block's children, so drop the enhancement marker too —
+        // otherwise the re-rendered SVG is skipped by enhanceRenderedBlocks and loses pan/zoom.
+        rootEl.value
+          .querySelectorAll("pre.mermaid-block[data-mmd-enhanced]")
+          .forEach((block) => block.removeAttribute("data-mmd-enhanced"));
         resetMermaidBlocks(rootEl.value);
       }
       await hydrateMermaidBlocks(rootEl.value, theme.mode);
@@ -271,25 +278,9 @@ onBeforeUnmount(() => {
   border-top: 1px solid rgb(var(--c-border));
   margin: 0.8em 0;
 }
-/* Mermaid: the pre.mermaid-block is a code-styled fallback until hydrated. Once rendered,
-   center the SVG and let a wide diagram scroll like a wide table instead of overflowing. */
-.stream-md .mermaid-block.mermaid-rendered {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  overflow-x: auto;
-  text-align: center;
-}
-.stream-md .mermaid-block.mermaid-rendered svg {
-  max-width: 100%;
-  height: auto;
-}
-.stream-md .mermaid-block.mermaid-error {
-  border-color: rgb(var(--c-danger, var(--c-border)));
-}
-/* Inline pan/zoom: the enhancer replaces the rendered <pre> content with a bounded viewport + a
-   controls bar. The <pre> is the positioning context for the controls. */
+/* Mermaid: the pre.mermaid-block is a code-styled fallback until hydrated. Once rendered, the
+   inline enhancer replaces its content with a bounded pan/zoom viewport + a controls bar, so the
+   <pre> itself is just the positioning context — strip its code styling and let the viewport clip. */
 .stream-md .mermaid-block.mermaid-rendered {
   position: relative;
   padding: 0;
@@ -297,6 +288,9 @@ onBeforeUnmount(() => {
   background: transparent;
   box-shadow: none;
   overflow: visible;
+}
+.stream-md .mermaid-block.mermaid-error {
+  border-color: rgb(var(--c-danger, var(--c-border)));
 }
 .stream-md .mmd-viewport {
   max-height: 420px;
