@@ -79,6 +79,7 @@ export default {
     model: "model",
     working: "Agent is working… (Esc to stop)",
     message: "Message",
+    mermaidError: "Diagram failed to render",
     jumpLatest: "↓ Latest",
     queuedHeader: "Queued",
     queueCancelAria: "Remove from queue",

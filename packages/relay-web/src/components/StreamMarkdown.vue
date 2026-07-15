@@ -1,6 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { renderMarkdown } from "../lib/render-markdown";
+import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
+import { enhanceMermaidBlock } from "../lib/inline-mermaid";
+import MermaidViewer from "./MermaidViewer.vue";
+import { useThemeStore } from "../stores/theme";
+
+const { t } = useI18n();
 
 const props = defineProps<{ text: string; streaming?: boolean }>();
 
@@ -10,9 +17,12 @@ const props = defineProps<{ text: string; streaming?: boolean }>();
 // non-streaming path renders synchronously on every change, exactly like the old computed.
 const THROTTLE_MS = 80;
 
+const theme = useThemeStore();
+const rootEl = ref<HTMLElement | null>(null);
 const html = ref("");
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastRenderAt = 0;
+let disposed = false;
 
 function cancelTimer(): void {
   if (timer !== null) {
@@ -21,12 +31,96 @@ function cancelTimer(): void {
   }
 }
 
+// Mermaid blocks are hydrated only when NOT streaming: a mid-stream fence (auto-closed by
+// remend) holds a partial diagram that mermaid would fail to parse. During streaming the
+// block shows its source (the <code> fallback); the finalized render hydrates it to SVG.
+//
+// hydrateMermaidBlocks is async, so two overlapping triggers on the same root (e.g. rapid
+// theme toggles) could otherwise run concurrently. Chain every call through a per-instance
+// promise so only one hydration pass runs at a time; a failed pass must not break the chain.
+let hydrateChain: Promise<void> = Promise.resolve();
+
+const viewerSvg = ref<string | null>(null);
+let enhanceDetachers: Array<() => void> = [];
+function detachEnhancers(): void {
+  for (const d of enhanceDetachers) d();
+  enhanceDetachers = [];
+}
+// After hydration, give each freshly-rendered diagram inline pan/zoom + a ⤢ that opens the
+// fullscreen viewer. `data-mmd-enhanced` keeps the double-schedule-on-mount from wrapping the same
+// block twice; it is cleared on a reset pass (below) because resetMermaidBlocks rebuilds the block
+// from scratch, so the fresh SVG must be re-enhanced.
+function enhanceRenderedBlocks(root: HTMLElement): void {
+  root
+    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-rendered:not([data-mmd-enhanced])")
+    .forEach((block) => {
+      block.setAttribute("data-mmd-enhanced", "1");
+      enhanceDetachers.push(
+        enhanceMermaidBlock(block, {
+          onExpand: () => {
+            viewerSvg.value = block.querySelector("svg")?.outerHTML ?? null;
+          },
+        }),
+      );
+    });
+}
+
+// A block whose diagram failed to render keeps its <code> source (spec fallback); tag it with a
+// localized label the CSS `::before` renders muted, so the failure is legible instead of just a
+// tinted border. The label text sits in a data-attr (i18n lives here, not in the DOM-only lib);
+// it is inert once the `.mermaid-error` class is gone, so no cleanup is needed on reset.
+function labelErrorBlocks(root: HTMLElement): void {
+  root
+    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-error:not([data-mmd-error-label])")
+    .forEach((block) => block.setAttribute("data-mmd-error-label", t("chat.mermaidError")));
+}
+
+// A hydration pass is stale — must not touch the DOM — if the component was disposed, streaming
+// resumed, or the root is gone. Checked when the queued callback finally runs (an earlier pass may
+// have been in-flight across a streaming/unmount transition) AND, via hydrateMermaidBlocks'
+// shouldAbort hook, again after each async render before it commits SVG.
+function hydrationStale(): boolean {
+  return disposed || props.streaming === true || rootEl.value === null;
+}
+
+function scheduleHydrate(reset: boolean): void {
+  if (props.streaming) return;
+  hydrateChain = hydrateChain
+    .then(async () => {
+      await nextTick();
+      if (hydrationStale()) return;
+      const root = rootEl.value;
+      if (root === null) return; // narrows for TS; hydrationStale already ruled it out
+      if (reset) {
+        detachEnhancers();
+        // resetMermaidBlocks rebuilds each block's children, so drop the enhancement marker too —
+        // otherwise the re-rendered SVG is skipped by enhanceRenderedBlocks and loses pan/zoom.
+        root
+          .querySelectorAll("pre.mermaid-block[data-mmd-enhanced]")
+          .forEach((block) => block.removeAttribute("data-mmd-enhanced"));
+        resetMermaidBlocks(root);
+      }
+      await hydrateMermaidBlocks(root, theme.mode, hydrationStale);
+      if (!hydrationStale()) {
+        enhanceRenderedBlocks(root);
+        labelErrorBlocks(root);
+      }
+    })
+    .catch(() => {}); // one failed pass must not break the chain
+}
+
 function render(): void {
   lastRenderAt = Date.now();
+  // Replacing v-html discards the current DOM, including any enhanced mermaid viewports; detach
+  // their listeners first so a plain (finalized) re-render doesn't strand them until the next
+  // theme switch or unmount. The freshly rendered HTML gets its own enhancers after hydration.
+  detachEnhancers();
   html.value = renderMarkdown(props.text, { streaming: props.streaming });
+  scheduleHydrate(false);
 }
 
 render(); // initial synchronous render (also seeds the throttle clock)
+onMounted(() => scheduleHydrate(false)); // rootEl exists only after mount
 
 watch(
   () => props.text,
@@ -62,12 +156,23 @@ watch(
   },
 );
 
-onBeforeUnmount(cancelTimer);
+// Theme switched: re-theme any already-rendered diagrams (the SVG cache is theme-keyed).
+watch(
+  () => theme.mode,
+  () => scheduleHydrate(true),
+);
+
+onBeforeUnmount(() => {
+  disposed = true;
+  cancelTimer();
+  detachEnhancers();
+});
 </script>
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
-  <div class="stream-md text-sm" v-html="html" />
+  <div ref="rootEl" class="stream-md text-sm" v-html="html" />
+  <MermaidViewer v-if="viewerSvg" :svg="viewerSvg" @close="viewerSvg = null" />
 </template>
 
 <style>
@@ -202,5 +307,76 @@ onBeforeUnmount(cancelTimer);
   border: none;
   border-top: 1px solid rgb(var(--c-border));
   margin: 0.8em 0;
+}
+/* Mermaid: the pre.mermaid-block is a code-styled fallback until hydrated. Once rendered, the
+   inline enhancer replaces its content with a bounded pan/zoom viewport + a controls bar, so the
+   <pre> itself is just the positioning context — strip its code styling and let the viewport clip. */
+.stream-md .mermaid-block.mermaid-rendered {
+  position: relative;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.stream-md .mermaid-block.mermaid-error {
+  border-color: rgb(var(--c-danger, var(--c-border)));
+}
+/* Muted caption above the preserved source so a failed render reads as failed, not just tinted. */
+.stream-md .mermaid-block.mermaid-error::before {
+  content: attr(data-mmd-error-label);
+  display: block;
+  margin-bottom: 0.4em;
+  color: rgb(var(--c-fg-muted));
+  font-size: 12px;
+}
+.stream-md .mmd-viewport {
+  max-height: 420px;
+  overflow: hidden;
+  border: 1px solid rgb(var(--c-border));
+  border-radius: 8px;
+  background: rgb(var(--c-bg));
+  box-shadow: var(--shadow-e1);
+  touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
+  cursor: grab;
+}
+.stream-md .mmd-viewport:active {
+  cursor: grabbing;
+}
+.stream-md .mmd-transform {
+  transform-origin: 0 0;
+  width: max-content;
+}
+.stream-md .mmd-transform svg {
+  display: block;
+}
+.stream-md .mmd-controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+.stream-md .mermaid-block.mermaid-rendered:hover .mmd-controls,
+.stream-md .mermaid-block.mermaid-rendered:focus-within .mmd-controls {
+  opacity: 1;
+}
+.stream-md .mmd-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 6px;
+  border: 1px solid rgb(var(--c-border));
+  background: rgb(var(--c-surface));
+  color: rgb(var(--c-fg));
+}
+.stream-md .mmd-controls button:hover {
+  background: rgb(var(--c-bg-raised, var(--c-surface)));
 }
 </style>
