@@ -13,13 +13,13 @@ interface Pointish {
 }
 
 /**
- * Attach wheel/pointer/touch pan-zoom gestures on `el`, driving `pz` and calling `onChange` after
+ * Attach wheel/pointer/touch pan-zoom gestures on `el`, driving `panZoom` and calling `onChange` after
  * every state change. Mouse drag always pans; touch panning is one-finger only when opted in;
  * wheel zoom can require a modifier. Returns a detach function that removes every listener.
  */
 export function attachPanZoomGestures(
   el: HTMLElement,
-  pz: PanZoom,
+  panZoom: PanZoom,
   onChange: () => void,
   opts: GestureOptions = {},
 ): () => void {
@@ -38,7 +38,7 @@ export function attachPanZoomGestures(
     if (wheelRequiresModifier && !e.ctrlKey && !e.metaKey) return; // let the page scroll
     e.preventDefault();
     const { left, top } = origin();
-    pz.zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - left, e.clientY - top);
+    panZoom.zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - left, e.clientY - top);
     onChange();
   }
 
@@ -60,7 +60,7 @@ export function attachPanZoomGestures(
   }
   function onPointerMove(e: PointerEvent): void {
     if (!dragging || e.pointerId !== dragId) return;
-    pz.panBy(e.clientX - lastX, e.clientY - lastY);
+    panZoom.panBy(e.clientX - lastX, e.clientY - lastY);
     lastX = e.clientX;
     lastY = e.clientY;
     onChange();
@@ -96,13 +96,13 @@ export function attachPanZoomGestures(
       if (prevDist > 0) {
         const midX = (e.touches[0]!.clientX + e.touches[1]!.clientX) / 2 - left;
         const midY = (e.touches[0]!.clientY + e.touches[1]!.clientY) / 2 - top;
-        pz.zoomAt(dist / prevDist, midX, midY);
+        panZoom.zoomAt(dist / prevDist, midX, midY);
         onChange();
       }
       prevDist = dist;
     } else if (touchPanning && e.touches.length === 1) {
       e.preventDefault();
-      pz.panBy(e.touches[0]!.clientX - touchX, e.touches[0]!.clientY - touchY);
+      panZoom.panBy(e.touches[0]!.clientX - touchX, e.touches[0]!.clientY - touchY);
       touchX = e.touches[0]!.clientX;
       touchY = e.touches[0]!.clientY;
       onChange();

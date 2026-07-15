@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { renderMarkdown } from "../lib/render-markdown";
 import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
 import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import MermaidViewer from "./MermaidViewer.vue";
 import { useThemeStore } from "../stores/theme";
+
+const { t } = useI18n();
 
 const props = defineProps<{ text: string; streaming?: boolean }>();
 
@@ -62,6 +65,16 @@ function enhanceRenderedBlocks(root: HTMLElement): void {
     });
 }
 
+// A block whose diagram failed to render keeps its <code> source (spec fallback); tag it with a
+// localized label the CSS `::before` renders muted, so the failure is legible instead of just a
+// tinted border. The label text sits in a data-attr (i18n lives here, not in the DOM-only lib);
+// it is inert once the `.mermaid-error` class is gone, so no cleanup is needed on reset.
+function labelErrorBlocks(root: HTMLElement): void {
+  root
+    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-error:not([data-mmd-error-label])")
+    .forEach((block) => block.setAttribute("data-mmd-error-label", t("chat.mermaidError")));
+}
+
 // A hydration pass is stale — must not touch the DOM — if the component was disposed, streaming
 // resumed, or the root is gone. Checked when the queued callback finally runs (an earlier pass may
 // have been in-flight across a streaming/unmount transition) AND, via hydrateMermaidBlocks'
@@ -88,7 +101,10 @@ function scheduleHydrate(reset: boolean): void {
         resetMermaidBlocks(root);
       }
       await hydrateMermaidBlocks(root, theme.mode, hydrationStale);
-      if (!hydrationStale()) enhanceRenderedBlocks(root);
+      if (!hydrationStale()) {
+        enhanceRenderedBlocks(root);
+        labelErrorBlocks(root);
+      }
     })
     .catch(() => {}); // one failed pass must not break the chain
 }
@@ -305,6 +321,14 @@ onBeforeUnmount(() => {
 }
 .stream-md .mermaid-block.mermaid-error {
   border-color: rgb(var(--c-danger, var(--c-border)));
+}
+/* Muted caption above the preserved source so a failed render reads as failed, not just tinted. */
+.stream-md .mermaid-block.mermaid-error::before {
+  content: attr(data-mmd-error-label);
+  display: block;
+  margin-bottom: 0.4em;
+  color: rgb(var(--c-fg-muted));
+  font-size: 12px;
 }
 .stream-md .mmd-viewport {
   max-height: 420px;

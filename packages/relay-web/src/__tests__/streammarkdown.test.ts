@@ -295,6 +295,61 @@ describe("StreamMarkdown mermaid hydration", () => {
     wrapper.unmount();
   });
 
+  test("unmount mid-hydration: the abort predicate reaches INTO the hydrator and reports torn-down", async () => {
+    // Component-level teardown-during-hydration. The contract Codex flagged: the guard must reach
+    // INTO the hydrator, not merely gate the caller. We capture the 3rd arg (shouldAbort) the
+    // component hands hydrateMermaidBlocks, sample it AFTER unmount, and assert it reports stale —
+    // and that no post-hydrate enhancement touched the torn-down block. If the component stopped
+    // passing the predicate, `sampled` stays null and this reddens.
+    vi.useRealTimers();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const enteredP = new Promise<void>((r) => (entered = r));
+    let sampled: boolean | null = null;
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      const shouldAbort = args[2] as (() => boolean) | undefined;
+      entered(); // signal hydration is now in-flight (before any unmount)
+      await gate; // park here until after unmount
+      sampled = shouldAbort ? shouldAbort() : null;
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await enteredP; // hydrate is genuinely parked in-flight — not short-circuited before it ran
+    wrapper.unmount(); // tear down while hydration is parked
+    release(); // resolve against the disposed component
+    await flushPromises();
+    expect(sampled).toBe(true); // hydrator was handed a live predicate that reports torn-down
+    expect(enhanceCalls.length).toBe(0); // disposed → no enhancement of a torn-down block
+    hydrate.mockImplementation(async () => {});
+  });
+
+  test("a failed diagram gets a localized muted error label (spec error affordance)", async () => {
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      const root = args[0] as HTMLElement;
+      if (root.querySelectorAll("pre.mermaid-block").length === 0) {
+        const b = document.createElement("pre");
+        b.className = "mermaid-block mermaid-error"; // a render that failed keeps its code fallback
+        b.innerHTML = "<code>bad diagram</code>";
+        root.appendChild(b);
+      }
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\nbad\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    const errBlock = wrapper.element.querySelector("pre.mermaid-block.mermaid-error");
+    // Label text comes from i18n (en default); without labelErrorBlocks the attribute is absent.
+    expect(errBlock?.getAttribute("data-mmd-error-label")).toBe("Diagram failed to render");
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
   test("clicking the ⤢ button opens the fullscreen viewer with the diagram svg", async () => {
     vi.useRealTimers();
     hydrate.mockImplementation(async (...args: unknown[]) => {

@@ -75,22 +75,24 @@ test("with oneFingerTouchPan a single-finger drag pans", () => {
   expect(pz.state.y).toBe(40);
 });
 
-test("detach removes every listener it registered (per-listener, same handler reference)", () => {
+test("detach removes every listener it registered (per-listener, matching handler AND capture)", () => {
   // Behavioral checks can't isolate a single leaked listener (e.g. a stray pointerdown is inert
-  // once pointermove is gone). Record every (type, handler) attach registers, then assert each is
-  // removed with the SAME reference — so dropping any one removeEventListener reddens this.
+  // once pointermove is gone). Record every (type, handler, capture) attach registers, then assert
+  // each is removed with the SAME triple — the DOM matches removeEventListener on type+handler+
+  // capture, so including capture catches a single add flipped to capture:true without its remove.
+  const capture = (o: unknown): boolean => (typeof o === "boolean" ? o : !!(o as { capture?: boolean })?.capture);
   const target = el();
   const pz = createPanZoom();
-  const added: Array<[string, unknown]> = [];
-  const removed: Array<[string, unknown]> = [];
+  const added: Array<[string, unknown, boolean]> = [];
+  const removed: Array<[string, unknown, boolean]> = [];
   const origAdd = target.addEventListener.bind(target);
   const origRemove = target.removeEventListener.bind(target);
   target.addEventListener = ((type: string, fn: unknown, o?: unknown) => {
-    added.push([type, fn]);
+    added.push([type, fn, capture(o)]);
     return origAdd(type, fn as EventListener, o as AddEventListenerOptions);
   }) as typeof target.addEventListener;
   target.removeEventListener = ((type: string, fn: unknown, o?: unknown) => {
-    removed.push([type, fn]);
+    removed.push([type, fn, capture(o)]);
     return origRemove(type, fn as EventListener, o as EventListenerOptions);
   }) as typeof target.removeEventListener;
 
@@ -98,7 +100,7 @@ test("detach removes every listener it registered (per-listener, same handler re
   d();
 
   expect(added.length).toBe(8); // wheel, pointer{down,move,up,cancel}, touch{start,move,end}
-  for (const pair of added) expect(removed).toContainEqual(pair);
+  for (const triple of added) expect(removed).toContainEqual(triple);
 });
 
 test("detach stops all gestures — wheel, pointer-drag, and pinch listeners are all removed", () => {
