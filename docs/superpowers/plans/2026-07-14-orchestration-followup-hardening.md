@@ -1,5 +1,21 @@
 # Orchestration Follow-up Hardening (#149 / #150 / #151) Implementation Plan
 
+> ⚠️ **POST-IMPLEMENTATION AMENDMENT (2026-07-14) — DO NOT RE-EXECUTE THIS PLAN.** This work is
+> shipped and merged-ready on `fix/orchestration-critsec-hardening`. Two code blocks below were
+> **superseded** by a later Codex-review round and would **reintroduce fixed bugs** if transcribed
+> as originally written:
+> - **Task 1 / Step 3 (kernel `mutate`)** — the original `held` + *synchronous-throw* guard still
+>   false-rejects the single-`.then` same-microtask detached chain #149 names. The shipped guard
+>   renames `held`→`sectionContext` and, on a suspected re-entry, `await Promise.resolve()` yields
+>   once and re-checks before throwing. The block below has been updated to the shipped version.
+> - **Task 3 / Step 4b (`cancelGroup`)** — the original apply-all → log → *dispatch-all* (no
+>   try/finally) strands an already-committed cancellation when a later task's save fails. The
+>   shipped version wraps phase 1 + log in a `try` and fires the collected chains in a `finally`.
+>   The block below has been updated to the shipped version.
+>
+> Authoritative sources: the design spec (`docs/superpowers/specs/2026-07-14-orchestration-followup-hardening-design.md`,
+> §149/§150, updated), the current source, and commits `2d19c12` (#149) / `7fa95b5` (#150).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the three orchestration follow-up debts deferred from Track 3 — a false-positive reentrancy guard (#149), a hop-lucky cancel-group log ordering (#150), and a delivery-blind active-message fallback (#151).
@@ -75,9 +91,14 @@ export class OrchestrationStateKernel {
    *  the section that is running right now — apart from a chain that merely INHERITED a section's
    *  context but outlives it. A bare boolean also can't distinguish a concurrent queued caller,
    *  which is why this was never a plain field. */
-  private readonly held = new AsyncLocalStorage<object>();
+  // ⚠️ Updated to the shipped version (see the amendment at the top). The original plan showed
+  // `held` + a synchronous throw, which re-rejects the single-`.then` same-microtask detached
+  // chain #149 names. The shipped guard yields one microtask on a suspected re-entry, then
+  // re-checks — letting an after-completion detached chain run while still throwing on a genuine
+  // awaited-nested deadlock.
+  private readonly sectionContext = new AsyncLocalStorage<object>();
   /** Token of the critical section whose `critical()` body is executing at this instant, or
-   *  undefined when none. The mutex serialises sections, so at most one is ever live. */
+   *  undefined when none. Reset in mutate's `finally`, one microtask after the body returns. */
   private runningToken: object | undefined;
   private readonly stateMutex: AsyncMutex;
 
@@ -88,31 +109,36 @@ export class OrchestrationStateKernel {
     this.stateMutex = stateMutex ?? new AsyncMutex();
   }
 
-  /** AsyncMutex is strict-FIFO and non-reentrant: an AWAITED nested run() awaits a tail promise
-   *  that only resolves after the outer section returns → deadlock. Throw for that case only.
-   *  A detached chain that inherited a section's token but reaches mutate() AFTER that section
-   *  has returned (`enclosing !== runningToken`) is not re-entrant — it queues on the now-free
-   *  mutex and runs. */
   async mutate<T>(critical: () => Promise<T>): Promise<T> {
-    const enclosing = this.held.getStore();
+    const enclosing = this.sectionContext.getStore();
     if (enclosing !== undefined && enclosing === this.runningToken) {
-      throw new Error(
-        "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
-          "Call the collaborator outside the critical section.",
-      );
+      // Suspected re-entry: yield one microtask so a RETURNING section's finally clears
+      // runningToken, then re-check. Still the running token ⇒ that section never returned (it is
+      // awaiting us) ⇒ real deadlock ⇒ throw. Cleared ⇒ detached-after-completion ⇒ let it run.
+      await Promise.resolve();
+      if (this.runningToken === enclosing) {
+        throw new Error(
+          "orchestration: nested mutate() detected — this would deadlock the state mutex. " +
+            "Call the collaborator outside the critical section.",
+        );
+      }
     }
     const token = {};
     return await this.stateMutex.run(async () => {
       const previous = this.runningToken; // always undefined (mutex serialises); restored defensively
       this.runningToken = token;
       try {
-        return await this.held.run(token, critical);
+        return await this.sectionContext.run(token, critical);
       } finally {
         this.runningToken = previous;
       }
     });
   }
 ```
+
+> Also add a same-microtask `.then()` re-entry test (the exact #149 shape) alongside the macrotask
+> "outlives" test — it throws under the superseded synchronous guard, so it is what makes the fix
+> mutation-active. See `tests/unit/orchestration/service/orchestration-state-kernel.test.ts`.
 
 - [ ] **Step 4: Run to verify all kernel tests PASS**
 
@@ -258,6 +284,14 @@ git commit -m "fix(orchestration): active-message fallback prefers the last deli
   `startWorkerCancellation`. The caller fires `startWorkerCancellation(task)` when `shouldPropagate`.
 - Consumes (already public): `TaskCancellationService.startWorkerCancellation(task)`.
 - `requestTaskCancellation` keeps its signature and behaviour (now implemented via `applyCancellationRequest`).
+
+> ⚠️ **Superseded ordering assertion.** The original Step 2 test below asserts the `cancelWorkerTask`
+> *port* lands after the `group.cancelled` log. That port fires several awaits deep in the detached
+> chain, so it stays after the log regardless of when the chain is *started* — the assertion is
+> mutation-blind (it does NOT redden when the dispatch loop is moved before the log). The shipped
+> test instead observes, at the **first `startWorkerCancellation` call**, whether `group.cancelled`
+> is already logged (`=== 1`), which kills that mutation. See
+> `tests/unit/orchestration/service/group-service.test.ts`.
 
 - [ ] **Step 1: Record a pre-change oracle baseline (scratch, for comparison)**
 
@@ -457,46 +491,55 @@ Expected: the new ordering test FAILS — under the current in-loop dispatch, `c
 
 Rationale (must hold): for a task that propagates (running), `closedPackageId` is `undefined` and the task is non-terminal, so the handoff and reconcile branches are skipped — propagation and the awaited tails are mutually exclusive per task, so moving `startWorkerCancellation` to after `applyCancellationRequest` returns is byte-identical for a single task.
 
-- [ ] **Step 4b: Rewrite `cancelGroup`** — in `group-service.ts`, replace the loop body + trailing log (lines 131-170) so the detached dispatch happens AFTER the log:
+- [ ] **Step 4b: Rewrite `cancelGroup`** — in `group-service.ts`, replace the loop body + trailing log so the detached dispatch happens AFTER the log **and is fired in a `finally`** so a partial failure still propagates already-committed cancellations:
 
 ```ts
     const cancelledTaskIds: string[] = [];
     const skippedTaskIds: string[] = [];
     const toPropagate: OrchestrationTaskRecord[] = [];
 
-    // Phase 1 — apply every task's cancellation STATE transition (awaited, deterministic). Do NOT
-    // fire the detached worker-cancellation chains here: collect the tasks that need one.
-    for (const task of summary.tasks) {
-      if (this.kernel.isTerminalStatus(task.status)) {
-        skippedTaskIds.push(task.taskId);
-        continue;
+    let refreshed: OrchestrationGroupSummary;
+    try {
+      // Phase 1 — apply every task's cancellation STATE transition (awaited, deterministic).
+      // applyCancellationRequest commits each task's cancelRequestedAt in its own atomic save, so a
+      // task processed before a later task's save fails is ALREADY persisted as cancel-requested —
+      // and a retry would see shouldPropagate === false for it and never fire its chain. So the
+      // finally must propagate the committed requests on THIS attempt.
+      for (const task of summary.tasks) {
+        if (this.kernel.isTerminalStatus(task.status)) {
+          skippedTaskIds.push(task.taskId);
+          continue;
+        }
+        const { task: cancelled, shouldPropagate } = await this.cancellation.applyCancellationRequest({
+          taskId: task.taskId,
+          coordinatorSession: input.coordinatorSession,
+        });
+        cancelledTaskIds.push(task.taskId);
+        if (shouldPropagate) {
+          toPropagate.push(cancelled);
+        }
       }
-      const { task: cancelled, shouldPropagate } = await this.cancellation.applyCancellationRequest({
-        taskId: task.taskId,
-        coordinatorSession: input.coordinatorSession,
+
+      const summaryAfter = await this.getGroupSummary(input);
+      if (!summaryAfter) {
+        throw new Error(`group "${input.groupId}" does not exist`);
+      }
+      refreshed = summaryAfter;
+
+      // group.cancelled is logged with ZERO detached chains yet fired, so every chain's terminal
+      // saveState provably follows it — a structural invariant, not a microtask-hop budget (#150).
+      this.kernel.logEvent("orchestration.group.cancelled", "group cancelled", {
+        ...this.kernel.groupContext(refreshed.group),
+        cancelled_count: cancelledTaskIds.length,
+        skipped_count: skippedTaskIds.length,
       });
-      cancelledTaskIds.push(task.taskId);
-      if (shouldPropagate) {
-        toPropagate.push(cancelled);
+    } finally {
+      // Fire the detached chains for every request committed so far. Happy path: after the loop,
+      // refresh, and log — order unchanged. Partial failure: still propagates already-committed
+      // requests, so none is stranded and the caller's retry only finishes the uncommitted rest.
+      for (const task of toPropagate) {
+        this.cancellation.startWorkerCancellation(task);
       }
-    }
-
-    const refreshed = await this.getGroupSummary(input);
-    if (!refreshed) {
-      throw new Error(`group "${input.groupId}" does not exist`);
-    }
-
-    // group.cancelled is logged with ZERO detached chains yet fired, so every chain's terminal
-    // saveState provably follows it — a structural invariant, not a microtask-hop budget (#150).
-    this.kernel.logEvent("orchestration.group.cancelled", "group cancelled", {
-      ...this.kernel.groupContext(refreshed.group),
-      cancelled_count: cancelledTaskIds.length,
-      skipped_count: skippedTaskIds.length,
-    });
-
-    // Phase 2 — NOW fire the detached worker-cancellation chains, after the log.
-    for (const task of toPropagate) {
-      this.cancellation.startWorkerCancellation(task);
     }
 
     return {
@@ -506,7 +549,12 @@ Rationale (must hold): for a task that propagates (running), `closedPackageId` i
     };
 ```
 
-Ensure `OrchestrationTaskRecord` is imported in `group-service.ts` (it already imports it — see the file header). Remove the now-obsolete hop-budget comment block that preceded the old `requestTaskCancellation` call, replacing it with the phase-1/phase-2 comments above.
+Ensure `OrchestrationTaskRecord` and `OrchestrationGroupSummary` are imported in `group-service.ts` (it already imports both — see the file header). Remove the now-obsolete hop-budget comment block that preceded the old `requestTaskCancellation` call.
+
+> Add a partial-failure regression test (two running tasks with assigned workers; the second's
+> save fails; then a retry) asserting **both** workers are cancelled exactly once (count per
+> taskId, not a `Set`, so a double-dispatch can't hide). Deleting the `finally` strands t1 and
+> reddens it. See `tests/unit/orchestration/service/group-service.test.ts`.
 
 - [ ] **Step 5: Run the new ordering test + the two service tests**
 

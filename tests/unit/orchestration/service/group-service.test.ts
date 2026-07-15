@@ -140,9 +140,11 @@ test("summarizes a group with mixed terminal and non-terminal tasks", async () =
   expect(summary.terminal).toBe(false);
 });
 
-// Local copies — the frozen golden harness exports only its `makeGoldenHarness` factory and the
-// `GoldenHarness` type (it must stay byte-identical as a regression oracle, so it carries no test
-// helpers). These drain the detached worker-cancellation chains a cancelGroup fires.
+// Local poll helpers that drain the detached worker-cancellation chains a cancelGroup fires. The
+// golden harness intentionally exports only `makeGoldenHarness` + the `GoldenHarness` type, not
+// test utilities; `orchestration-golden.test.ts` keeps its own `waitForLogEvent` too — those
+// oracle files are deliberately independent (see the harness header). The byte-identical
+// constraint applies to the fixtures and `orchestration-service.test.ts`, not to these helpers.
 async function waitForLogEvent(harness: GoldenHarness, eventName: string, afterIndex: number): Promise<void> {
   for (let i = 0; i < 40; i += 1) {
     if (
