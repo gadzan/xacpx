@@ -2,6 +2,7 @@
 import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, expect, it, test, vi } from "vitest";
 import { mount } from "@vue/test-utils";
+import { nextTick, watch } from "vue";
 
 const rpc = vi.fn();
 vi.mock("../api/client", () => ({
@@ -265,6 +266,30 @@ test("surfaces an error when send fails", async () => {
   await chat.send("hello");
   expect(chat.error).toBe("instance-offline");
   expect(chat.sending).toBe(false);
+});
+
+test("a failed send flips the bubble to failed REACTIVELY (not only on the next push)", async () => {
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  // Mirror MessageList's template dependency: it reads `m.failed` on each row. Watch that and
+  // record every reactive transition. The bug: send() mutated `failed` on the RAW optimistic
+  // object, which never trips Vue's proxy set-trap — so this watcher would only observe the
+  // flip on a later array push, exactly matching "the bubble goes red only after I type again".
+  const observed: boolean[] = [];
+  watch(
+    () => chat.messages.some((m) => m.failed === true),
+    (v) => observed.push(v),
+    { flush: "sync" },
+  );
+  rpc.mockResolvedValueOnce({ ok: false, errorMessage: "boom" });
+  await chat.send("hi");
+  await nextTick();
+  expect(chat.messages).toHaveLength(1);
+  expect(chat.messages[0]!.failed).toBe(true); // final value is correct either way
+  expect(chat.error).toBe("boom");
+  // The reactive proof: the watcher must have seen the transition to `true` with no further
+  // list mutation. On the raw-mutation bug this stays [] (or all false) and the assertion fails.
+  expect(observed).toContain(true);
 });
 
 test("resend drops the failed attempt and re-sends, leaving one clean entry on success", async () => {
