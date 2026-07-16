@@ -279,7 +279,6 @@ function onInput() {
               </button>
             </li>
           </ul>
-          <span v-if="controls.error" data-test="model-error" class="text-xs text-danger">{{ controls.error }}</span>
           <!-- context-usage meter: click to open the cost / token-breakdown popover -->
           <button v-if="context" type="button" data-test="context-meter"
                   class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded pl-0.5 hover:opacity-80"

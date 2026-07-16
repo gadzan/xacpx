@@ -18,6 +18,7 @@ import { getLocale } from "../../i18n";
 import { resolveDefaultXacpxCommand } from "../acpx-queue-owner-launcher";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
+  CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
   DEFAULT_SESSION_INIT_TIMEOUT_MS,
 } from "../command-timeouts";
@@ -148,7 +149,9 @@ export class AcpxBridgeClient {
       if (timeoutMs !== undefined) {
         timer = setTimeoutFn(() => {
           if (this.pending.delete(id)) {
-            reject(new Error(`bridge request "${method}" timed out after ${timeoutMs}ms`));
+            reject(method === "setModel"
+              ? new CommandTimeoutError(timeoutMs, `bridge request "${method}"`, { stage: "set-model" })
+              : new Error(`bridge request "${method}" timed out after ${timeoutMs}ms`));
           }
         }, timeoutMs);
       }
@@ -247,6 +250,19 @@ export class AcpxBridgeClient {
     this.pending.delete(response.id);
     if (response.ok) {
       pending.resolve(response.result);
+      return;
+    }
+
+    if (response.error.timeout) {
+      pending.reject(new CommandTimeoutError(
+        response.error.timeout.timeoutMs,
+        response.error.timeout.command,
+        {
+          stage: response.error.timeout.stage,
+          stdout: response.error.timeout.stdoutTail,
+          stderr: response.error.timeout.stderrTail,
+        },
+      ));
       return;
     }
 

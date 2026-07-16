@@ -124,6 +124,16 @@ reset 在回合内重建了 transport 会话，但 reset handler 不发事件，
 await 必须留在 draining 守护窗口内，否则一个被中止且带排队项的回合会让新提示词插进来抢跑
 （由 golden fixture `aborted-queue-sessions-window` 钉住）。
 
+### 模型切换与 timeout 对账
+
+`control.session.model.set` 返回 `{ ok, current }`。正常切换时 `ok=true`；若 acpx 管理命令
+timeout，ControlService 会通过 `getSessionModel` 读取 transport 权威值、将该值（包括空值）写回
+逻辑会话，再返回 `current`。请求模型未实际生效时 `ok=false`，relay-web 必须采用返回的
+`current`，不能盲目回滚到请求前的本地值。成功完成对账的 timeout 会把原始诊断
+（stage、命令及有界 stdout/stderr tail）记录到 app log 的
+`control.session.model.timeout_reconciled` 事件；对账查询本身失败时，原始 timeout 继续作为
+RPC 错误返回，由 relay-web 浏览器诊断保留。
+
 ### 事件总线覆盖范围
 
 事件总线只保证「`ControlService` 自身发起的变更」会发事件；其它入口

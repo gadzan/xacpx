@@ -901,7 +901,7 @@ test("times out a hung management command, aborts the spawn, and rejects", async
     run as never,
   );
 
-  await expect(transport.cancel(session)).rejects.toThrow(/timed out after 20ms/);
+  await expect(transport.cancel(session)).rejects.toThrow(/timed out during cancel after 20ms/);
   expect(aborted).toBe(true);
 });
 
@@ -912,7 +912,7 @@ test("times out a hung sessions close (removeSession) instead of hanging forever
     run as never,
   );
 
-  await expect(transport.removeSession(session)).rejects.toThrow(/timed out after 20ms/);
+  await expect(transport.removeSession(session)).rejects.toThrow(/timed out during remove-session after 20ms/);
 });
 
 test("concatenates agent message chunks across thought and tool-call boundaries", async () => {

@@ -75,6 +75,7 @@ export default {
     stop: "停止",
     send: "发送",
     model: "模型",
+    modelSetFailed: "切换模型失败，请重试。",
     working: "Agent 正在工作…（按 Esc 停止）",
     message: "消息",
     mermaidError: "图表渲染失败",

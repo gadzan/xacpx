@@ -336,8 +336,8 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       const input = parseControlPayload(MSG.sessionModelSet, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.sessionModelSet}: malformed payload`);
       if (!input.sessionAlias || !input.modelId) return errorPayload("bad-request", "sessionAlias and modelId are required");
-      await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
-      return { ok: true };
+      const result = await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
+      return { ok: result.applied, current: result.current ?? null };
     }
     case MSG.terminalCreate: {
       const input = parseControlPayload(MSG.terminalCreate, payload);

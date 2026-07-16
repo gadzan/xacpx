@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ControlService } from "../../../src/control/control-service";
+import { CommandTimeoutError } from "../../../src/transport/command-timeouts";
 
 const session = {
   alias: "internal-backend",
@@ -12,6 +13,7 @@ const session = {
 
 function makeDeps() {
   const calls: string[] = [];
+  const logs: Array<{ event: string; message: string; context?: Record<string, unknown> }> = [];
   const deps = {
     sessions: {
       resolveAliasForChat: async (_chatKey: string, alias: string) => `internal-${alias}`,
@@ -22,9 +24,14 @@ function makeDeps() {
       getSessionModel: async (s: typeof session) => ({ current: s.model, available: ["gpt-5.2[high]", "gpt-5.2[low]"] }),
       setModel: async (s: typeof session, id: string) => { calls.push(`transport:${s.alias}:${id}`); },
     },
+    logger: {
+      error: async (event: string, message: string, context?: Record<string, unknown>) => {
+        logs.push({ event, message, context });
+      },
+    },
     events: { emit: () => {} },
   };
-  return { deps, calls };
+  return { deps, calls, logs };
 }
 
 test("getSessionModel returns current + available for a resolved session", async () => {
@@ -44,8 +51,80 @@ test("getSessionModel returns an empty list when the session is not found", asyn
 test("setSessionModel switches the transport model and persists by alias", async () => {
   const { deps, calls } = makeDeps();
   const control = new ControlService(deps as never);
-  await control.setSessionModel("relay:acc", "backend", "claude-opus-4-8");
+  await expect(control.setSessionModel("relay:acc", "backend", "claude-opus-4-8")).resolves.toEqual({
+    current: "claude-opus-4-8",
+    applied: true,
+  });
   expect(calls).toEqual(["transport:internal-backend:claude-opus-4-8", "persist:internal-backend:claude-opus-4-8"]);
+});
+
+test("setSessionModel reconciles a timed-out switch that acpx actually applied", async () => {
+  const { deps, calls, logs } = makeDeps();
+  deps.transport.setModel = async () => {
+    calls.push("transport:internal-backend:claude-opus-4-8");
+    throw new CommandTimeoutError(30_000, "acpx set model", { stage: "set-model" });
+  };
+  deps.transport.getSessionModel = async () => {
+    calls.push("query:internal-backend");
+    return { current: "claude-opus-4-8", available: ["claude-opus-4-8"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionModel("relay:acc", "backend", "claude-opus-4-8")).resolves.toEqual({
+    current: "claude-opus-4-8",
+    applied: true,
+  });
+  expect(calls).toEqual([
+    "transport:internal-backend:claude-opus-4-8",
+    "query:internal-backend",
+    "persist:internal-backend:claude-opus-4-8",
+  ]);
+  expect(logs).toEqual([{
+    event: "control.session.model.timeout_reconciled",
+    message: "Model switch timed out; adopted authoritative transport state",
+    context: {
+      sessionAlias: "internal-backend",
+      requestedModel: "claude-opus-4-8",
+      observedModel: "claude-opus-4-8",
+      timeout: "acpx command timed out during set-model after 30s: acpx set model",
+    },
+  }]);
+});
+
+test("setSessionModel adopts the authoritative model when a timed-out switch produced a third value", async () => {
+  const { deps, calls } = makeDeps();
+  deps.transport.setModel = async () => {
+    throw new CommandTimeoutError(30_000, "acpx set model", { stage: "set-model" });
+  };
+  deps.transport.getSessionModel = async () => ({
+    current: "provider/fallback-model",
+    available: ["gpt-5.2[high]", "claude-opus-4-8", "provider/fallback-model"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionModel("relay:acc", "backend", "claude-opus-4-8")).resolves.toEqual({
+    current: "provider/fallback-model",
+    applied: false,
+  });
+  expect(calls).toEqual(["persist:internal-backend:provider/fallback-model"]);
+});
+
+test("setSessionModel does not reconcile unrelated provider errors that merely mention a timeout", async () => {
+  const { deps, calls, logs } = makeDeps();
+  deps.transport.setModel = async () => {
+    throw new Error("provider request timed out while validating credentials");
+  };
+  deps.transport.getSessionModel = async () => {
+    calls.push("query");
+    return { current: "provider/fallback-model", available: [] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionModel("relay:acc", "backend", "claude-opus-4-8")).rejects.toThrow(
+    "provider request timed out",
+  );
+  expect(calls).toEqual([]);
+  expect(logs).toEqual([]);
 });
 
 test("setSessionModel throws when the transport cannot switch models", async () => {

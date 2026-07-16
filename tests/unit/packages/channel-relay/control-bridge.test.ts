@@ -94,6 +94,19 @@ test("queue.cancel dispatches to cancelQueuedItem and returns its result", async
   expect(calls.cancelQueuedItem?.[0]).toEqual({ chatKey: "relay:acct", alias: "a", itemId: "q1" });
 });
 
+test("session.model.set returns the authoritative reconciled model", async () => {
+  const { control } = makeFakeControl({
+    setSessionModel: async () => ({ current: "provider/fallback-model", applied: false }),
+  });
+  const bridge = createControlBridge(control as never);
+
+  expect(await dispatch(bridge, req(MSG.sessionModelSet, {
+    chatKey: "relay:acct",
+    sessionAlias: "a",
+    modelId: "requested-model",
+  }))).toEqual({ ok: false, current: "provider/fallback-model" });
+});
+
 test("sessions.native.list lists, and sessions.create forwards agentSessionId for native resume", async () => {
   const created: unknown[] = [];
   const { control } = makeFakeControl({

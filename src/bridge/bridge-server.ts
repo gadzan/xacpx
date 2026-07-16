@@ -13,7 +13,7 @@ import {
 import { PromptCommandError } from "../transport/prompt-output";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
-import { BridgeRuntime, EnsureSessionFailedError } from "./bridge-runtime";
+import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
 
 interface BridgeRequest {
   id: string;
@@ -85,6 +85,17 @@ export class BridgeServer {
       const promptDetails = error instanceof PromptCommandError
         ? { details: { exitCode: error.exitCode, stdout: error.stdout, stderr: error.stderr } }
         : {};
+      const timeoutDetails = error instanceof CommandTimeoutError
+        ? {
+            timeout: {
+              timeoutMs: error.timeoutMs,
+              command: error.command,
+              ...(error.stage ? { stage: error.stage } : {}),
+              ...(error.stdoutTail ? { stdoutTail: error.stdoutTail } : {}),
+              ...(error.stderrTail ? { stderrTail: error.stderrTail } : {}),
+            },
+          }
+        : {};
       return `${JSON.stringify({
         id: requestId,
         ok: false,
@@ -93,6 +104,7 @@ export class BridgeServer {
           message,
           ...ensureSessionFields,
           ...promptDetails,
+          ...timeoutDetails,
         },
       } satisfies BridgeResponse)}\n`;
     }

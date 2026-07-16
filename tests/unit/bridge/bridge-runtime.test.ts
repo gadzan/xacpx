@@ -302,13 +302,25 @@ interface FakeSpawnChildOptions {
   pid: number;
   /** When set, fire the close handler with this exit code on the next tick. */
   closeWithCode?: number;
+  stdout?: string;
+  stderr?: string;
 }
 
 function makeFakeSpawnChild(options: FakeSpawnChildOptions) {
   return {
     pid: options.pid,
-    stdout: { setEncoding: () => {}, on: () => {} },
-    stderr: { setEncoding: () => {}, on: () => {} },
+    stdout: {
+      setEncoding: () => {},
+      on: (event: string, handler: (chunk: string) => void) => {
+        if (event === "data" && options.stdout) handler(options.stdout);
+      },
+    },
+    stderr: {
+      setEncoding: () => {},
+      on: (event: string, handler: (chunk: string) => void) => {
+        if (event === "data" && options.stderr) handler(options.stderr);
+      },
+    },
     on: (event: string, handler: (code: number | null) => void) => {
       if (event === "close" && options.closeWithCode !== undefined) {
         setTimeout(() => handler(options.closeWithCode!), 0);
@@ -565,6 +577,36 @@ test("a hung management command kills the spawned tree and rejects with CommandT
 
   expect(caught).toBeInstanceOf(CommandTimeoutError);
   expect(killed).toEqual([777]);
+});
+
+test("a set-model timeout identifies its stage and preserves captured output tails", async () => {
+  const spawnFn = (() => makeFakeSpawnChild({
+    pid: 778,
+    stdout: "adapter initialized\nwaiting for response\n",
+    stderr: "model update dispatched\nprovider did not acknowledge\n",
+  })) as never;
+  const runtime = new BridgeRuntime(
+    "acpx",
+    (command, args, options?: CommandRunnerOptions) => spawnCapture(command, args, {
+      ...options,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+    }),
+    undefined,
+    { managementCommandTimeoutMs: 20 },
+  );
+
+  let caught: unknown;
+  try {
+    await runtime.setModel({ agent: "codex", cwd: "/repo", name: "demo", modelId: "gpt-5.2[high]" });
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(caught).toBeInstanceOf(CommandTimeoutError);
+  expect((caught as Error).message).toContain("during set-model");
+  expect((caught as Error).message).toContain("stdout tail: adapter initialized\nwaiting for response");
+  expect((caught as Error).message).toContain("stderr tail: model update dispatched\nprovider did not acknowledge");
 });
 
 test("prompt starts queue owner with orchestration MCP identity", async () => {
