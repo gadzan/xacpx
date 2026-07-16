@@ -83,6 +83,47 @@ test("fits a measurable diagram: scales down to the container width, centers, si
   }
 });
 
+test("re-fits on a container WIDTH change while at home, but never after the user zooms", () => {
+  const block = document.createElement("pre");
+  block.className = "mermaid-block mermaid-rendered";
+  block.innerHTML = '<svg data-test="d"><text>x</text></svg>';
+  document.body.appendChild(block);
+  const svg = block.querySelector("svg")!;
+  svg.getBoundingClientRect = () =>
+    ({ width: 400, height: 200, x: 0, y: 0, top: 0, left: 0, right: 400, bottom: 200, toJSON() {} }) as DOMRect;
+  // Controllable ResizeObserver: capture the callback so the test can fire it deterministically
+  // (the global test stub never fires it).
+  let roCb: () => void = () => {}; // reassigned by the ResizeObserver ctor below
+  const RealRO = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(cb: () => void) { roCb = cb; }
+    observe(): void {} unobserve(): void {} disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+  let width = 100;
+  const had = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, "clientWidth");
+  Object.defineProperty(window.HTMLElement.prototype, "clientWidth", { configurable: true, get: () => width });
+  try {
+    enhanceMermaidBlock(block, { onExpand: () => {} });
+    const wrap = block.querySelector(".mmd-transform") as HTMLElement;
+    expect(wrap.style.transform).toContain("scale(0.25)"); // 100/400
+
+    width = 200; // container widened
+    roCb();
+    expect(wrap.style.transform).toContain("scale(0.5)"); // re-fit while at home: 200/400
+
+    // User zooms in → no longer at home. A further resize must NOT yank their view.
+    (block.querySelector('[aria-label="Zoom in"]') as HTMLElement).click();
+    const zoomed = wrap.style.transform;
+    width = 400;
+    roCb();
+    expect(wrap.style.transform).toBe(zoomed); // unchanged — atHome guard held
+  } finally {
+    if (had) Object.defineProperty(window.HTMLElement.prototype, "clientWidth", had);
+    else delete (window.HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+    globalThis.ResizeObserver = RealRO;
+  }
+});
+
 test("a block with no svg is a no-op returning a safe detach", () => {
   const block = document.createElement("pre");
   block.className = "mermaid-block mermaid-rendered";

@@ -73,7 +73,8 @@ export function zoomToRectCenter(
 }
 
 export function createPanZoom(opts: { minScale?: number; maxScale?: number } = {}): PanZoom {
-  let minScale = opts.minScale ?? 0.2;
+  const baseMinScale = opts.minScale ?? 0.2;
+  let minScale = baseMinScale;
   const maxScale = opts.maxScale ?? 8;
   const state: PanZoomState = { scale: 1, x: 0, y: 0 };
   const home: PanZoomState = { scale: 1, x: 0, y: 0 };
@@ -98,7 +99,9 @@ export function createPanZoom(opts: { minScale?: number; maxScale?: number } = {
       state.y = home.y;
     },
     setHome(scale, x, y) {
-      minScale = Math.min(minScale, scale); // a fit below the default floor becomes the zoom-out limit
+      // Recompute the floor from the DEFAULT each time (not the previous floor) so a later, larger
+      // re-fit restores the normal zoom-out limit instead of ratcheting it permanently lower.
+      minScale = Math.min(baseMinScale, scale); // a fit below the default floor becomes the zoom-out limit
       home.scale = scale;
       home.x = x;
       home.y = y;

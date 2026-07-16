@@ -56,6 +56,14 @@ test("setHome below the default min-scale floor makes that fit the zoom-out limi
   expect(pz.state.scale).toBeCloseTo(0.2);
 });
 
+test("re-fitting to a larger scale restores the default floor (no permanent min-scale ratchet)", () => {
+  const pz = createPanZoom(); // default minScale 0.2
+  pz.setHome(0.1, 0, 0); // small fit → floor temporarily drops to 0.1
+  pz.setHome(0.5, 0, 0); // re-fit larger (e.g. a wider container)
+  pz.zoomAt(0.0001, 0, 0); // try to zoom all the way out
+  expect(pz.state.scale).toBe(0.2); // back to the DEFAULT floor, not the stale 0.1
+});
+
 test("computeFit scales down to fit, never up, and centers", () => {
   // Width-bound, align top → y pinned to 0, x centered.
   expect(computeFit(100, 1000, 200, 100, { align: "top" })).toEqual({ scale: 0.5, x: 0, y: 0 });

@@ -39,6 +39,12 @@ async function getMermaid(theme: MermaidTheme): Promise<MermaidLike> {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      // Render node labels as native SVG <text>, NOT HTML in <foreignObject>. DOMPurify's svg
+      // allowlist has no `foreignObject`, so it strips the whole label subtree — leaving empty
+      // boxes. (Adding the html profile does NOT help: foreignObject itself is removed regardless.)
+      // Native <text> is in the allowlist and survives sanitization.
+      htmlLabels: false,
+      flowchart: { htmlLabels: false },
       theme: theme === "dark" ? "dark" : "default",
     });
     initializedTheme = theme;
@@ -82,13 +88,9 @@ export async function hydrateMermaidBlocks(
       if (svg === undefined) {
         seq += 1;
         const rendered = await mermaid.render(`mmd-${seq}`, source);
-        // Flowchart node labels are HTML (<div>) inside <foreignObject>. The svg-only profile
-        // drops that HTML, leaving empty boxes — so allow the html profile too. mermaid runs in
-        // securityLevel:"strict" and DOMPurify still strips scripts / event handlers / js: URLs,
-        // so the label text survives without opening an injection surface.
-        svg = DOMPurify.sanitize(rendered.svg, {
-          USE_PROFILES: { svg: true, svgFilters: true, html: true },
-        });
+        // svg-only profile is sufficient because htmlLabels:false makes every label native SVG
+        // <text> (see getMermaid). DOMPurify still strips scripts / handlers / js: URLs.
+        svg = DOMPurify.sanitize(rendered.svg, { USE_PROFILES: { svg: true, svgFilters: true } });
         svgCache.set(key, svg);
       }
       if (shouldAbort?.()) return; // re-check after the await: DOM may have been torn down mid-render
