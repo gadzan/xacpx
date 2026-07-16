@@ -331,7 +331,9 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 .stream-md .mmd-viewport {
-  max-height: 420px;
+  /* Height is set inline by the enhancer to the fitted diagram height (capped there); the fallback
+     max-height only applies if measurement was unavailable and no inline height was set. */
+  max-height: 560px;
   overflow: hidden;
   border: 1px solid rgb(var(--c-border));
   border-radius: 8px;

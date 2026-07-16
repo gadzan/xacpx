@@ -82,7 +82,13 @@ export async function hydrateMermaidBlocks(
       if (svg === undefined) {
         seq += 1;
         const rendered = await mermaid.render(`mmd-${seq}`, source);
-        svg = DOMPurify.sanitize(rendered.svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+        // Flowchart node labels are HTML (<div>) inside <foreignObject>. The svg-only profile
+        // drops that HTML, leaving empty boxes — so allow the html profile too. mermaid runs in
+        // securityLevel:"strict" and DOMPurify still strips scripts / event handlers / js: URLs,
+        // so the label text survives without opening an injection surface.
+        svg = DOMPurify.sanitize(rendered.svg, {
+          USE_PROFILES: { svg: true, svgFilters: true, html: true },
+        });
         svgCache.set(key, svg);
       }
       if (shouldAbort?.()) return; // re-check after the await: DOM may have been torn down mid-render

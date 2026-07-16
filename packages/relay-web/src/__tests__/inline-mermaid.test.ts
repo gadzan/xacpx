@@ -54,6 +54,35 @@ test("detach removes gesture listeners", () => {
   expect(wrap.style.transform).toBe(before);
 });
 
+test("fits a measurable diagram: scales down to the container width, centers, sizes the viewport", () => {
+  const block = document.createElement("pre");
+  block.className = "mermaid-block mermaid-rendered";
+  block.innerHTML = '<svg data-test="d"><text>x</text></svg>';
+  document.body.appendChild(block);
+  // jsdom returns zeros for layout; stub the diagram's intrinsic size (400×200, wider than the
+  // 100px container → must scale to 0.25) and the viewport width.
+  const svg = block.querySelector("svg")!;
+  svg.getBoundingClientRect = () =>
+    ({ width: 400, height: 200, x: 0, y: 0, top: 0, left: 0, right: 400, bottom: 200, toJSON() {} }) as DOMRect;
+  const had = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, "clientWidth");
+  Object.defineProperty(window.HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 100 });
+  try {
+    enhanceMermaidBlock(block, { onExpand: () => {} });
+    const wrap = block.querySelector(".mmd-transform") as HTMLElement;
+    const viewport = block.querySelector(".mmd-viewport") as HTMLElement;
+    // 100/400 = 0.25; centered x = (100 - 400*0.25)/2 = 0; viewport height = 200 * 0.25 = 50.
+    expect(wrap.style.transform).toBe("translate(0px, 0px) scale(0.25)");
+    expect(viewport.style.height).toBe("50px");
+    // Reset returns to that fitted home, not 1×.
+    (block.querySelector('[aria-label="Zoom in"]') as HTMLElement).click();
+    (block.querySelector('[aria-label="Reset"]') as HTMLElement).click();
+    expect(wrap.style.transform).toBe("translate(0px, 0px) scale(0.25)");
+  } finally {
+    if (had) Object.defineProperty(window.HTMLElement.prototype, "clientWidth", had);
+    else delete (window.HTMLElement.prototype as unknown as Record<string, unknown>).clientWidth;
+  }
+});
+
 test("a block with no svg is a no-op returning a safe detach", () => {
   const block = document.createElement("pre");
   block.className = "mermaid-block mermaid-rendered";

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { X, ZoomIn, ZoomOut, RotateCcw } from "lucide-vue-next";
-import { createPanZoom, zoomToRectCenter, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "../lib/pan-zoom";
+import { computeFit, createPanZoom, zoomToRectCenter, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "../lib/pan-zoom";
 import { attachPanZoomGestures } from "../lib/pan-zoom-gestures";
+import { readSvgIntrinsicSize } from "../lib/svg-size";
 import { useModalA11y } from "../lib/use-modal-a11y";
 
 // Rendered only while open (parent v-if) → mount/unmount == open/close.
@@ -24,6 +25,21 @@ let prevOverflow = "";
 onMounted(() => {
   if (stageEl.value) {
     detach = attachPanZoomGestures(stageEl.value, panZoom, apply, { oneFingerTouchPan: true });
+    // Open on a fitted, centered view (scaled down to fit the stage, never up) rather than at
+    // native size in the corner — Reset returns here, and the user can still zoom in.
+    const svg = stageEl.value.querySelector("svg");
+    const size = svg ? readSvgIntrinsicSize(svg) : null;
+    if (svg && size) {
+      svg.style.maxWidth = "none";
+      svg.setAttribute("width", String(size.width));
+      svg.setAttribute("height", String(size.height));
+    }
+    const r = stageEl.value.getBoundingClientRect();
+    const f = size ? computeFit(r.width, r.height, size.width, size.height, { align: "center" }) : null;
+    if (f) {
+      panZoom.setHome(f.scale, f.x, f.y);
+      apply();
+    }
   }
   prevOverflow = document.body.style.overflow;
   document.body.style.overflow = "hidden";
