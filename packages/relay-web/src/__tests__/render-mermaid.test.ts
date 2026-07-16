@@ -33,6 +33,43 @@ test("hydrate replaces the placeholder with sanitized SVG and marks it done", as
   expect(pre.classList.contains("mermaid-rendered")).toBe(true);
 });
 
+test("initializes mermaid with htmlLabels:false so labels are native SVG <text> (survive sanitize)", async () => {
+  let cfg: Record<string, unknown> | null = null;
+  __setMermaidLoaderForTest(() =>
+    Promise.resolve({
+      initialize: (c: Record<string, unknown>) => { cfg = c; },
+      render: async () => ({ svg: "<svg><text>x</text></svg>" }),
+    }),
+  );
+  await hydrateMermaidBlocks(block("graph TD\n A-->B"), "dark");
+  expect(cfg).not.toBeNull();
+  // htmlLabels:false makes mermaid emit <text>/<tspan> instead of <div> in <foreignObject> —
+  // the latter is stripped by the svg-only DOMPurify pass, leaving empty node boxes.
+  const c = cfg as unknown as { htmlLabels?: unknown; flowchart?: { htmlLabels?: unknown } };
+  expect(c.htmlLabels).toBe(false);
+  expect(c.flowchart?.htmlLabels).toBe(false);
+});
+
+test("sanitize drops <foreignObject> HTML labels — the reason htmlLabels must be false", async () => {
+  __setMermaidLoaderForTest(() =>
+    Promise.resolve({
+      initialize: () => {},
+      // Emulate what mermaid emits WITH htmlLabels (the mode we deliberately avoid): the label text
+      // lives in an HTML <div> inside <foreignObject>. Our svg-only sanitize removes foreignObject
+      // outright (it's not in DOMPurify's svg allowlist), taking the label with it. This test pins
+      // that hazard so nobody "simplifies" htmlLabels:false away expecting foreignObject to survive.
+      render: async () => ({
+        svg: '<svg><g class="node"><foreignObject><div class="label">HELLOLABEL</div></foreignObject></g></svg>',
+      }),
+    }),
+  );
+  const root = block("graph TD\n A-->B");
+  await hydrateMermaidBlocks(root, "dark");
+  const pre = root.querySelector("pre.mermaid-block")!;
+  expect(pre.querySelector("foreignObject")).toBeNull();
+  expect(pre.textContent).not.toContain("HELLOLABEL");
+});
+
 test("hydrate caches by theme+source: identical re-hydrate does not re-invoke render", async () => {
   const render = vi.fn(async (_id: string, _text: string) => ({ svg: "<svg><text>x</text></svg>" }));
   __setMermaidLoaderForTest(() => Promise.resolve({ initialize: () => {}, render }));

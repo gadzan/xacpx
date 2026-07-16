@@ -17,9 +17,46 @@ export interface PanZoom {
   /** Multiply scale by `factor`, keeping viewport point (cx, cy) stationary. Clamps scale. */
   zoomAt(factor: number, cx: number, cy: number): void;
   panBy(dx: number, dy: number): void;
+  /** Reset to the home transform (the fitted view — see setHome), not necessarily 1×. */
   reset(): void;
+  /**
+   * Set the "home" transform reset() returns to — used to seed a fit-to-container view. Also snaps
+   * the current state to it, and lowers the min-scale floor so a fit smaller than the default floor
+   * (a big diagram shrunk to fit) is actually reachable and is the zoom-out limit.
+   */
+  setHome(scale: number, x: number, y: number): void;
+  /** True when the current transform still equals home (user hasn't zoomed/panned) — lets a
+   *  container resize re-fit without yanking a view the user deliberately zoomed into. */
+  atHome(): boolean;
   /** CSS transform for a `transform-origin: 0 0` element. */
   toTransform(): string;
+}
+
+export interface FitTransform {
+  scale: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * Pure fit math: the scale + translation that fits a `content` box inside a `container`, never
+ * upscaling past `maxScale` (default 1×). `align: "top"` pins the content to y=0 (inline, where the
+ * viewport is sized to the fitted height); the default centers on both axes (fullscreen overlay).
+ * Returns null for any non-positive dimension (e.g. an unmeasured element in jsdom).
+ */
+export function computeFit(
+  containerW: number,
+  containerH: number,
+  contentW: number,
+  contentH: number,
+  opts: { maxScale?: number; align?: "center" | "top" } = {},
+): FitTransform | null {
+  if (containerW <= 0 || containerH <= 0 || contentW <= 0 || contentH <= 0) return null;
+  const maxScale = opts.maxScale ?? 1;
+  const scale = Math.min(containerW / contentW, containerH / contentH, maxScale);
+  const x = (containerW - contentW * scale) / 2;
+  const y = opts.align === "top" ? 0 : (containerH - contentH * scale) / 2;
+  return { scale, x, y };
 }
 
 /**
@@ -36,9 +73,11 @@ export function zoomToRectCenter(
 }
 
 export function createPanZoom(opts: { minScale?: number; maxScale?: number } = {}): PanZoom {
-  const minScale = opts.minScale ?? 0.2;
+  const baseMinScale = opts.minScale ?? 0.2;
+  let minScale = baseMinScale;
   const maxScale = opts.maxScale ?? 8;
   const state: PanZoomState = { scale: 1, x: 0, y: 0 };
+  const home: PanZoomState = { scale: 1, x: 0, y: 0 };
 
   return {
     state,
@@ -55,9 +94,27 @@ export function createPanZoom(opts: { minScale?: number; maxScale?: number } = {
       state.y += dy;
     },
     reset() {
-      state.scale = 1;
-      state.x = 0;
-      state.y = 0;
+      state.scale = home.scale;
+      state.x = home.x;
+      state.y = home.y;
+    },
+    setHome(scale, x, y) {
+      // Recompute the floor from the DEFAULT each time (not the previous floor) so a later, larger
+      // re-fit restores the normal zoom-out limit instead of ratcheting it permanently lower.
+      minScale = Math.min(baseMinScale, scale); // a fit below the default floor becomes the zoom-out limit
+      home.scale = scale;
+      home.x = x;
+      home.y = y;
+      state.scale = scale;
+      state.x = x;
+      state.y = y;
+    },
+    atHome() {
+      return (
+        Math.abs(state.scale - home.scale) < 1e-3 &&
+        Math.abs(state.x - home.x) < 0.5 &&
+        Math.abs(state.y - home.y) < 0.5
+      );
     },
     toTransform() {
       return `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;

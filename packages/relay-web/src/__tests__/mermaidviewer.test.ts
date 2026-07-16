@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import MermaidViewer from "../components/MermaidViewer.vue";
 
@@ -18,6 +18,26 @@ test("teleports and renders the svg; locks body scroll while open", () => {
   expect(document.body.style.overflow).toBe("hidden");
   wrapper.unmount();
   expect(document.body.style.overflow).toBe("");
+});
+
+test("opens on a fitted, centered view (scales the diagram down to the stage)", async () => {
+  // jsdom returns zero rects; stub so the diagram (800×400) and stage (400×300) differ.
+  const rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const isSvg = this.tagName === "svg";
+    const w = isSvg ? 800 : 400;
+    const h = isSvg ? 400 : 300;
+    return { width: w, height: h, x: 0, y: 0, top: 0, left: 0, right: w, bottom: h, toJSON() {} } as DOMRect;
+  });
+  try {
+    const wrapper = mount(MermaidViewer, { props: { svg: SVG } });
+    await wrapper.vm.$nextTick(); // the fit is applied in onMounted; let the reactive :style flush
+    const content = q(".mv-content")!;
+    // scale = min(400/800, 300/400, 1) = 0.5; centered x = (400-400)/2 = 0, y = (300-200)/2 = 50.
+    expect(content.style.transform).toBe("translate(0px, 50px) scale(0.5)");
+    wrapper.unmount();
+  } finally {
+    rectSpy.mockRestore(); // restore even if the assertion throws, so the spy can't leak
+  }
 });
 
 test("wheel changes the transform; reset restores it", async () => {
