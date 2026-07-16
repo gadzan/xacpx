@@ -1,5 +1,6 @@
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
+import type { AcpxCommandStage } from "../command-timeouts";
 
 export type BridgeMethod =
   | "ping"
@@ -55,6 +56,13 @@ export interface BridgeErrorResponse {
       exitCode?: number;
       stdout?: string;
       stderr?: string;
+    };
+    timeout?: {
+      timeoutMs: number;
+      command: string;
+      stage?: AcpxCommandStage;
+      stdoutTail?: string;
+      stderrTail?: string;
     };
   };
 }

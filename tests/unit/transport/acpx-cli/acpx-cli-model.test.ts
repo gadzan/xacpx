@@ -89,6 +89,7 @@ test("setModel issues `set ... model <id>` with the new model consistently", asy
   expect(args.slice(setIdx)).toEqual(["set", "-s", "backend:api-fix", "model", "claude-opus-4-8"]);
   // global --model agrees with the new id (not a stale old one)
   expect(args[args.indexOf("--model") + 1]).toBe("claude-opus-4-8");
+  expect(run.mock.calls[0][2]).toMatchObject({ stage: "set-model" });
 });
 
 test("getSessionModel parses status json for current + available models", async () => {

@@ -34,7 +34,11 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
-import { DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS } from "../command-timeouts";
+import {
+  CommandTimeoutError,
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  type AcpxCommandStage,
+} from "../command-timeouts";
 import {
   buildPermissionArgs as sharedBuildPermissionArgs,
   buildSessionArgs as sharedBuildSessionArgs,
@@ -71,6 +75,18 @@ interface CommandResult {
 interface RunOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  stage?: AcpxCommandStage;
+}
+
+function managementTimeoutError(
+  args: string[],
+  options: RunOptions,
+  output: { stdout?: string; stderr?: string } = {},
+): CommandTimeoutError {
+  return new CommandTimeoutError(options.timeoutMs!, renderCommandForError(args), {
+    stage: options.stage,
+    ...output,
+  });
 }
 
 interface PromptStreamProcess {
@@ -115,7 +131,7 @@ async function defaultRunner(command: string, args: string[], options?: RunOptio
     const timeoutId = options?.timeoutMs
       ? setTimeout(() => {
           onAbort();
-          reject(new Error(`acpx command timed out after ${options.timeoutMs}ms: ${renderCommandForError(args)}`));
+          reject(managementTimeoutError(args, options, { stdout, stderr }));
         }, options.timeoutMs)
       : undefined;
 
@@ -165,7 +181,7 @@ async function defaultPtyRunner(command: string, args: string[], options?: RunOp
     const timeoutId = options?.timeoutMs
       ? setTimeout(() => {
           onAbort();
-          reject(new Error(`acpx command timed out after ${options.timeoutMs}ms: ${renderCommandForError(args)}`));
+          reject(managementTimeoutError(args, options, { stdout: output }));
         }, options.timeoutMs)
       : undefined;
 
@@ -294,6 +310,7 @@ export class AcpxCliTransport implements SessionTransport {
       const args = this.buildArgs(session, tail);
       const result = await this.runCommandWithTimeout(this.runCommand, args, {
         timeoutMs: Math.max(deadline - Date.now(), 1),
+        stage: "session-history",
       });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
@@ -374,7 +391,7 @@ export class AcpxCliTransport implements SessionTransport {
       "-s",
       session.transportSession,
       modeId,
-    ]), { timeoutMs: this.managementCommandTimeoutMs });
+    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "set-mode" });
   }
 
   // acpx's generic config setter: `<agent> set -s <name> model '<id>'`. Build args
@@ -388,7 +405,7 @@ export class AcpxCliTransport implements SessionTransport {
       session.transportSession,
       "model",
       modelId,
-    ]), { timeoutMs: this.managementCommandTimeoutMs });
+    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "set-model" });
   }
 
   // Read the session's current model and the agent-advertised available ids from
@@ -402,6 +419,7 @@ export class AcpxCliTransport implements SessionTransport {
       : [...prefix, session.agent, ...tail];
     const result = await this.runCommandWithTimeout(this.runCommand, args, {
       timeoutMs: this.managementCommandTimeoutMs,
+      stage: "get-session-model",
     });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
@@ -423,7 +441,7 @@ export class AcpxCliTransport implements SessionTransport {
       "cancel",
       "-s",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs });
+    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "cancel" });
     return {
       cancelled: true,
       message: output.trim(),
@@ -457,7 +475,7 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "close",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs });
+    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "remove-session" });
     if (result.code === 0) {
       return;
     }
@@ -502,7 +520,7 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs });
+    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "has-session" });
 
     return result.code === 0;
   }
@@ -527,7 +545,7 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs });
+    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "read-session-record" });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
@@ -581,9 +599,7 @@ export class AcpxCliTransport implements SessionTransport {
       new Promise<CommandResult>((_, reject) => {
         timeoutId = setTimeout(() => {
           reject(
-            new Error(
-              `acpx command timed out after ${options.timeoutMs}ms: ${renderCommandForError(args)}`,
-            ),
+            managementTimeoutError(args, options),
           );
           abortController.abort();
         }, options.timeoutMs);

@@ -16,6 +16,7 @@ import {
 import { encodeBridgeRequest } from "../../../../src/transport/acpx-bridge/acpx-bridge-protocol";
 import { PromptCommandError } from "../../../../src/transport/prompt-output";
 import { MissingOptionalDepError } from "../../../../src/recovery/errors";
+import { CommandTimeoutError } from "../../../../src/transport/command-timeouts";
 
 test("encodes a bridge request as ndjson", () => {
   expect(
@@ -47,6 +48,41 @@ test("rejects responses with bridge error payloads", async () => {
   client.handleLine('{"id":"1","ok":false,"error":{"code":"PING_FAILED","message":"boom"}}');
 
   await expect(pending).rejects.toThrow("boom");
+});
+
+test("reconstructs management timeout identity and diagnostics from bridge errors", async () => {
+  const client = new AcpxBridgeClient(() => {});
+  const pending = client.request("setModel", {});
+
+  client.handleLine(JSON.stringify({
+    id: "1",
+    ok: false,
+    error: {
+      code: "BRIDGE_INTERNAL_ERROR",
+      message: "timeout",
+      timeout: {
+        timeoutMs: 30_000,
+        command: "acpx codex set model",
+        stage: "set-model",
+        stdoutTail: "adapter started",
+        stderrTail: "provider stalled",
+      },
+    },
+  }));
+
+  try {
+    await pending;
+    throw new Error("expected rejection");
+  } catch (error) {
+    expect(error).toBeInstanceOf(CommandTimeoutError);
+    expect(error).toMatchObject({
+      timeoutMs: 30_000,
+      command: "acpx codex set model",
+      stage: "set-model",
+      stdoutTail: "adapter started",
+      stderrTail: "provider stalled",
+    });
+  }
 });
 
 test("reconstructs prompt command diagnostics from bridge error payloads", async () => {

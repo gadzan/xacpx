@@ -18,9 +18,12 @@ import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
 import {
+  CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
   DEFAULT_SESSION_INIT_TIMEOUT_MS,
+  type AcpxCommandStage,
 } from "../transport/command-timeouts";
+export { CommandTimeoutError } from "../transport/command-timeouts";
 import type {
   EnsureSessionProgress,
   MissingOptionalDepErrorData,
@@ -66,17 +69,12 @@ interface CommandResult {
   stderr: string;
 }
 
-export class CommandTimeoutError extends Error {
-  constructor(readonly timeoutMs: number, command: string) {
-    super(`acpx command timed out after ${timeoutMs / 1000}s: ${command}`);
-    this.name = "CommandTimeoutError";
-  }
-}
-
 export interface CommandRunnerOptions {
   onStderrLine?: (line: string) => void;
   /** Kill the spawned process tree and reject with CommandTimeoutError when it runs longer than this. */
   timeoutMs?: number;
+  /** Stable operation name included in timeout diagnostics. */
+  stage?: AcpxCommandStage;
 }
 type CommandRunner = (command: string, args: string[], options?: CommandRunnerOptions) => Promise<CommandResult>;
 type SessionCreateRunner = (command: string, args: string[], cwd: string, options?: CommandRunnerOptions) => Promise<CommandResult>;
@@ -262,6 +260,7 @@ export class BridgeRuntime {
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "has-session",
     });
 
     return { exists: result.code === 0 };
@@ -290,6 +289,7 @@ export class BridgeRuntime {
       const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tailArgs));
       const result = await this.run(spawnSpec.command, spawnSpec.args, {
         timeoutMs: Math.max(deadline - Date.now(), 1),
+        stage: "session-history",
       });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
@@ -534,6 +534,7 @@ export class BridgeRuntime {
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "read-session-record",
     });
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "sessions show failed");
@@ -568,6 +569,7 @@ export class BridgeRuntime {
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "set-mode",
     });
 
     if (result.code !== 0) {
@@ -594,6 +596,7 @@ export class BridgeRuntime {
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "set-model",
     });
 
     if (result.code !== 0) {
@@ -616,6 +619,7 @@ export class BridgeRuntime {
     ], { format: "json" }));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "get-session-model",
     });
 
     if (result.code !== 0) {
@@ -646,6 +650,7 @@ export class BridgeRuntime {
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "cancel",
     });
 
     if (result.code !== 0) {
@@ -671,6 +676,7 @@ export class BridgeRuntime {
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, {
       timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "remove-session",
     });
 
     if (result.code === 0) {
@@ -812,7 +818,11 @@ export function spawnCapture(
             const kill = options.killProcessTreeFn
               ?? ((pid: number) => terminateProcessTree(pid, { detachedProcessGroup: false }));
             void kill(child.pid ?? 0);
-            reject(new CommandTimeoutError(options.timeoutMs!, [command, ...args].join(" ")));
+            reject(new CommandTimeoutError(options.timeoutMs!, [command, ...args].join(" "), {
+              stage: options.stage,
+              stdout,
+              stderr,
+            }));
           }, options.timeoutMs)
         : undefined;
 
