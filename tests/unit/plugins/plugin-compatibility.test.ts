@@ -21,6 +21,14 @@ test("compareSemver orders patch/minor/major", () => {
   expect(compareSemver("10.0.0", "9.0.0")).toBe(1);
 });
 
+test("compareSemver orders prereleases before their release and by identifiers", () => {
+  expect(compareSemver("0.17.0-beta.5", "0.17.0-beta.6")).toBe(-1);
+  expect(compareSemver("0.17.0-beta.6", "0.17.0-beta.6")).toBe(0);
+  expect(compareSemver("0.17.0-beta.10", "0.17.0-beta.6")).toBe(1);
+  expect(compareSemver("0.17.0", "0.17.0-beta.6")).toBe(1);
+  expect(compareSemver("0.17.0-beta.6+build.1", "0.17.0-beta.6+build.2")).toBe(0);
+});
+
 test("compareSemver throws on malformed versions", () => {
   expect(() => compareSemver("0.3", "0.3.3")).toThrow();
   expect(() => compareSemver("not-a-version", "0.3.3")).toThrow();

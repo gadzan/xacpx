@@ -14,6 +14,8 @@ test("encode/decode roundtrips a request envelope", () => {
     id: "req-1",
     type: "instance.sessions.list",
     payload: { chatKey: "relay:acct-1" },
+    requestDeadlineAt: 1_800_000_000_000,
+    requestBudgetMs: 105_000,
   };
 
   const decoded = decodeEnvelope(encodeEnvelope(envelope));
@@ -60,6 +62,13 @@ test("decode rejects structurally invalid envelopes", () => {
     ok: false,
     error: "invalid-envelope",
   });
+  expect(decodeEnvelope(JSON.stringify({
+    protocolVersion: 1,
+    kind: "req",
+    id: "1",
+    type: "x",
+    requestBudgetMs: 0,
+  }))).toEqual({ ok: false, error: "invalid-envelope" });
 });
 
 test("decode reports version mismatch with detail", () => {

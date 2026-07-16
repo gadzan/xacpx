@@ -12,7 +12,9 @@
   3. `xacpx channel add relay --url <host> --token <access-token> --name home-pc`（连接器接入；`--url` 支持裸域名/IP[:端口]）
 - RPC 请求超时：`xacpx-relay start --request-timeout-ms <ms>` 限定网关 RPC 请求超时，默认 `120000`
   （共享常量 `DEFAULT_REQUEST_TIMEOUT_MS = 120s`，位于 packages/relay/src/gateway/instance-gateway.ts，
-  网关回退与服务端均复用之）；agent 冷启动慢 / 长 prompt 时可调大。
+  网关回退与服务端均复用之）；agent 冷启动慢 / 长 prompt 时可调大。Hub 会把均已扣除 15 秒
+  响应余量的绝对 work deadline 与相对 work budget 附在下行 request envelope 上，使
+  connector/core 在串行队列出闸时拒绝已来不及安全完成的状态变更；两字段任一缺失即 fail closed。
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。

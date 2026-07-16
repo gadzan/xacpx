@@ -16,6 +16,7 @@ import { startHeartbeat } from "./heartbeat.js";
 
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+export const REQUEST_RESPONSE_RESERVE_MS = 15_000;
 
 export interface GatewaySocket {
   send(data: string): void;
@@ -220,6 +221,10 @@ export class InstanceGateway {
     }
     const id = `relay-${++this.seq}`;
     const timeoutMs = this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const requestBudgetMs = Math.max(timeoutMs - REQUEST_RESPONSE_RESERVE_MS, 1);
+    // This is the mutation work cutoff, not the Hub response timer. Keeping the
+    // reserve in both representations prevents delivery latency from consuming it.
+    const requestDeadlineAt = Date.now() + requestBudgetMs;
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -227,7 +232,13 @@ export class InstanceGateway {
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer, instanceId });
       connection.socket.send(encodeEnvelope({
-        protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id, type, payload,
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "req",
+        id,
+        type,
+        payload,
+        requestDeadlineAt,
+        requestBudgetMs,
       }));
     });
   }

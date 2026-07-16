@@ -107,6 +107,109 @@ test("session.model.set returns the authoritative reconciled model", async () =>
   }))).toEqual({ ok: false, current: "provider/fallback-model" });
 });
 
+test("session.model.set uses the earlier of the Hub deadline and connector work budget", async () => {
+  const calls: unknown[][] = [];
+  const { control } = makeFakeControl({
+    setSessionModel: async (...args: unknown[]) => {
+      calls.push(args);
+      return { current: "model-b", applied: true };
+    },
+  });
+  const bridge = createControlBridge(control as never, { now: () => 5_000 } as never);
+  const envelope = {
+    ...req(MSG.sessionModelSet, {
+      chatKey: "relay:acct",
+      sessionAlias: "a",
+      modelId: "model-b",
+    }),
+    requestDeadlineAt: 120_000,
+    requestBudgetMs: 105_000,
+  } as RelayEnvelope;
+
+  await dispatch(bridge, envelope);
+
+  expect(calls).toEqual([[
+    "relay:acct",
+    "a",
+    "model-b",
+    { deadlineAt: 110_000 },
+  ]]);
+});
+
+test("session.model.set delivery delay cannot consume the Hub response reserve", async () => {
+  const calls: unknown[][] = [];
+  const { control } = makeFakeControl({
+    setSessionModel: async (...args: unknown[]) => {
+      calls.push(args);
+      return { current: "model-b", applied: true };
+    },
+  });
+  // Hub H=0, timeout=45s and reserve=15s: both wire fields carry a 30s
+  // work allowance. Delivery at t=20s must retain the absolute t=30s cutoff,
+  // rather than restart a fresh 30s budget at the connector.
+  const bridge = createControlBridge(control as never, { now: () => 20_000 } as never);
+  await dispatch(bridge, {
+    ...req(MSG.sessionModelSet, {
+      chatKey: "relay:acct",
+      sessionAlias: "a",
+      modelId: "model-b",
+    }),
+    requestDeadlineAt: 30_000,
+    requestBudgetMs: 30_000,
+  });
+
+  expect(calls[0]?.[3]).toEqual({ deadlineAt: 30_000 });
+});
+
+test("session.model.set fails closed when an older Hub omits its request deadline", async () => {
+  const calls: unknown[][] = [];
+  const { control } = makeFakeControl({
+    setSessionModel: async (...args: unknown[]) => {
+      calls.push(args);
+      return { current: "model-b", applied: true };
+    },
+  });
+  const bridge = createControlBridge(control as never, { now: () => 5_000 } as never);
+
+  await dispatch(bridge, req(MSG.sessionModelSet, {
+    chatKey: "relay:acct",
+    sessionAlias: "a",
+    modelId: "model-b",
+  }));
+
+  expect(calls[0]?.[3]).toEqual({ deadlineAt: 5_000 });
+});
+
+test("session.model.set fails closed when either Hub deadline field is missing", async () => {
+  const deadlines: unknown[] = [];
+  const { control } = makeFakeControl({
+    setSessionModel: async (...args: unknown[]) => {
+      deadlines.push(args[3]);
+      return { current: "model-b", applied: true };
+    },
+  });
+  const bridge = createControlBridge(control as never, { now: () => 5_000 } as never);
+  const payload = {
+    chatKey: "relay:acct",
+    sessionAlias: "a",
+    modelId: "model-b",
+  };
+
+  await dispatch(bridge, {
+    ...req(MSG.sessionModelSet, payload),
+    requestDeadlineAt: 100_000,
+  });
+  await dispatch(bridge, {
+    ...req(MSG.sessionModelSet, payload),
+    requestBudgetMs: 95_000,
+  });
+
+  expect(deadlines).toEqual([
+    { deadlineAt: 5_000 },
+    { deadlineAt: 5_000 },
+  ]);
+});
+
 test("sessions.native.list lists, and sessions.create forwards agentSessionId for native resume", async () => {
   const created: unknown[] = [];
   const { control } = makeFakeControl({

@@ -147,6 +147,29 @@ describe("session-controls store", () => {
     expect(s.current).toBe("model-c");
   });
 
+  it("returns to the last authoritative model when two rapid selections both fail", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a", "model-b", "model-c"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+
+    let resolveB!: (value: unknown) => void;
+    let resolveC!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveB = resolve; }));
+    const pendingB = s.setModel("i1", "backend", "model-b");
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveC = resolve; }));
+    const pendingC = s.setModel("i1", "backend", "model-c");
+
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    resolveB({ error: { code: "internal", message: "model-b failed" } });
+    await pendingB;
+    resolveC({ error: { code: "internal", message: "model-c failed" } });
+    await pendingC;
+
+    expect(s.current).toBe("model-a");
+    expect(useToasts().value).toHaveLength(1);
+    log.mockRestore();
+  });
+
   it("a model selection supersedes a pending load without leaving loading stuck", async () => {
     let resolveLoad!: (value: unknown) => void;
     rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));

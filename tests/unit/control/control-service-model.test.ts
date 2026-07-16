@@ -149,6 +149,60 @@ test("setSessionModel serializes timeout reconciliation with a newer switch for 
   ]);
 });
 
+test("setSessionModel rejects viable requests only after queue aging makes their deadline unsafe", async () => {
+  const { deps, calls } = makeDeps();
+  let now = 1_000;
+  (deps as typeof deps & { now: () => number }).now = () => now;
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  deps.transport.setModel = async (s: typeof session, id: string) => {
+    calls.push(`transport:${s.alias}:${id}`);
+    if (id === "model-b") {
+      markFirstStarted();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    }
+  };
+  const control = new ControlService(deps as never);
+
+  const first = control.setSessionModel("relay:acc", "backend", "model-b");
+  await firstStarted;
+  const deadlineAt = now + 90_100;
+  const second = control.setSessionModel(
+    "relay:acc",
+    "backend",
+    "model-c",
+    { deadlineAt },
+  );
+  const third = control.setSessionModel(
+    "relay:acc",
+    "backend",
+    "model-d",
+    { deadlineAt },
+  );
+  const secondRejected = second.then(
+    () => false,
+    (error: unknown) => error instanceof Error && error.message.includes("deadline"),
+  );
+  const thirdRejected = third.then(
+    () => false,
+    (error: unknown) => error instanceof Error && error.message.includes("deadline"),
+  );
+
+  // Let both requests finish alias resolution and enter the same-session queue
+  // while their deadline is still viable; only the wait behind model-b ages it out.
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  now += 200;
+  releaseFirst();
+  await first;
+  expect(await secondRejected).toBe(true);
+  expect(await thirdRejected).toBe(true);
+  expect(calls).not.toContain("transport:internal-backend:model-c");
+  expect(calls).not.toContain("persist:internal-backend:model-c");
+  expect(calls).not.toContain("transport:internal-backend:model-d");
+  expect(calls).not.toContain("persist:internal-backend:model-d");
+});
+
 test("setSessionModel does not reconcile unrelated provider errors that merely mention a timeout", async () => {
   const { deps, calls, logs } = makeDeps();
   deps.transport.setModel = async () => {

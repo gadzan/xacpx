@@ -27,8 +27,21 @@ import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
 import { TurnQueue } from "./turn-queue";
 import { buildControlMetadata, type TurnIdleTimeoutDetail } from "./turn-support";
-import { isCommandTimeoutError } from "../transport/command-timeouts";
+import {
+  BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  isCommandTimeoutError,
+} from "../transport/command-timeouts";
 import type { AppLogger } from "../logging/app-logger";
+
+const MODEL_SET_SETTLE_BUDGET_MS = 2 * (
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS
+);
+
+export interface ModelSetRequestOptions {
+  /** Connector-side deadline derived from the Hub request lifetime. */
+  deadlineAt?: number;
+}
 
 export interface ControlSessionInfo {
   alias: string;
@@ -71,6 +84,8 @@ export interface ControlWorkspaceInfo {
 
 export interface ControlServiceDeps {
   logger?: Pick<AppLogger, "error">;
+  /** Test seam for queue-deadline decisions. */
+  now?: () => number;
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
@@ -275,12 +290,20 @@ export class ControlService {
     chatKey: string,
     alias: string,
     modelId: string,
+    options: ModelSetRequestOptions = {},
   ): Promise<{ current?: string; applied: boolean }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
     const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
     if (!setModel) throw new Error("the active transport does not support switching models");
     return await this.runModelSetExclusive(session.alias, async () => {
+      if (
+        typeof options.deadlineAt === "number"
+        && Number.isFinite(options.deadlineAt)
+        && (this.deps.now?.() ?? Date.now()) + MODEL_SET_SETTLE_BUDGET_MS > options.deadlineAt
+      ) {
+        throw new Error("model switch deadline is too close to safely start the queued operation");
+      }
       try {
         await setModel(session, modelId);
       } catch (error) {

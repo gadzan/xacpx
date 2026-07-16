@@ -17,10 +17,21 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   let activeContext: string | null = null;
   let requestRevision = 0;
   const pendingModelSets = new Map<string, Promise<void>>();
+  const authoritativeModels = new Map<string, { revision: number; current: string | undefined }>();
 
   const contextKey = (instanceId: string, alias: string): string => `${instanceId}\u0000${alias}`;
   const isCurrentRequest = (context: string, revision: number): boolean =>
     activeContext === context && requestRevision === revision;
+  function recordAuthoritativeModel(context: string, revision: number, model: string | undefined): void {
+    const existing = authoritativeModels.get(context);
+    if (!existing || revision >= existing.revision) {
+      authoritativeModels.set(context, { revision, current: model });
+    }
+  }
+  function rollbackModel(context: string, fallback: string | undefined): string | undefined {
+    const authoritative = authoritativeModels.get(context);
+    return authoritative ? authoritative.current : fallback;
+  }
 
   function clearModelState(): void {
     current.value = undefined;
@@ -55,6 +66,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       if (!isCurrentRequest(context, revision)) return;
       if (isErrorPayload(r)) { clearModelState(); return; }
       current.value = typeof r.current === "string" ? r.current : undefined;
+      recordAuthoritativeModel(context, revision, current.value);
       // Never trust the wire to hand back an array — a malformed/partial result must
       // not blow up the composer's `available.length` reads (white-screens the input).
       available.value = Array.isArray(r.available) ? r.available : [];
@@ -83,30 +95,35 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         const r = await api.rpc<SessionModelSetResult>(instanceId, "control.session.model.set", { sessionAlias: alias, modelId: id });
         if (isErrorPayload(r)) {
           if (isCurrentRequest(context, revision)) {
-            current.value = prev;
+            current.value = rollbackModel(context, prev);
             reportModelSwitchFailure(r.error.message);
           }
           return false;
         }
         if (r.ok === false) {
+          const observed = r.current === null
+            ? undefined
+            : typeof r.current === "string" ? r.current : rollbackModel(context, prev);
+          recordAuthoritativeModel(context, revision, observed);
           if (isCurrentRequest(context, revision)) {
-            current.value = r.current === null
-              ? undefined
-              : typeof r.current === "string" ? r.current : prev;
+            current.value = observed;
             reportModelSwitchFailure(
               `requested ${id}; authoritative model is ${r.current ?? "unknown"}`,
             );
           }
           return false;
         }
+        const observed = r.current === null
+          ? undefined
+          : typeof r.current === "string" ? r.current : id;
+        recordAuthoritativeModel(context, revision, observed);
         if (isCurrentRequest(context, revision)) {
-          if (r.current === null) current.value = undefined;
-          else if (typeof r.current === "string") current.value = r.current;
+          current.value = observed;
         }
         return true;
       } catch (e) {
         if (isCurrentRequest(context, revision)) {
-          current.value = prev;
+          current.value = rollbackModel(context, prev);
           reportModelSwitchFailure(e instanceof Error ? e.message : "set-failed");
         }
         return false;
