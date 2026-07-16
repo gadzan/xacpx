@@ -797,6 +797,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     60 * 60 * 1000,
   );
   const control = new ControlService({
+    logger,
     agent,
     sessions,
     transport,

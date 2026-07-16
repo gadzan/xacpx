@@ -10,7 +10,7 @@
         ▲                 ▲
         │                 │
 @ganglion/xacpx-relay     @ganglion/xacpx-channel-relay
-  (hub，bin: xacpx-relay；   (连接器；peerDep xacpx >= 0.11.0)
+  (hub，bin: xacpx-relay；   (连接器；peerDep xacpx >= 0.17.0-beta.6)
    已内嵌看板 relay-web)
 
 @ganglion/xacpx           (core；channel-relay 的 peer 依赖，独立发布)
@@ -24,7 +24,7 @@
 
 | 包 | npm | repo | 说明 |
 |---|---|---|---|
-| `@ganglion/xacpx` | 0.10.1 | 0.11.0 | **需先发 0.11.0**（channel-relay 的 peer 前置） |
+| `@ganglion/xacpx` | 用 `npm view` 核对 | 0.17.0-beta.5 | 下次 relay connector 发布前，需先发布含 model-set deadline API 的 0.17.0-beta.6 |
 | `@ganglion/xacpx-relay-protocol` | 未发布 | 0.1.0 | 首发 |
 | `@ganglion/xacpx-relay` | 未发布 | 0.1.0 | 首发（内嵌看板） |
 | `@ganglion/xacpx-channel-relay` | 未发布 | 0.1.0 | 首发 |
@@ -33,8 +33,8 @@
 
 ## 发布顺序
 
-1. **core `@ganglion/xacpx` 0.11.0** —— channel-relay 声明 `peerDependencies.xacpx >= 0.11.0`，
-   用户侧得能装到 0.11.0。
+1. **core `@ganglion/xacpx` 0.17.0-beta.6** —— channel-relay 声明
+   `peerDependencies.xacpx >= 0.17.0-beta.6`，必须先发布含 deadline-aware `setSessionModel` 的 core。
 2. **`@ganglion/xacpx-relay-protocol`** —— relay 和 channel-relay 都依赖它（`^0.1.0`）。
 3. **`@ganglion/xacpx-relay` + `@ganglion/xacpx-channel-relay`** —— 两者都依赖已发布的 protocol。
 
@@ -55,9 +55,9 @@ bun run verify:publish
 `verify:publish` + tag/版本一致性校验 + `npm publish`（用 `secrets.NPM_TOKEN`）+ 发 weacpx-compat shim。
 
 ```bash
-# 确认 root package.json 的 version 是 0.11.0
-git tag v0.11.0
-git push origin v0.11.0
+# 确认 root package.json 的 version 与目标 tag 一致（本轮为 0.17.0-beta.6）
+git tag v0.17.0-beta.6
+git push origin v0.17.0-beta.6
 ```
 
 ## 发布 relay 三包（tag 触发，已有 CI）
@@ -101,7 +101,7 @@ xacpx-relay start
 
 连接器侧：
 ```bash
-npm i -g @ganglion/xacpx@0.11.0        # 或更高
+npm i -g @ganglion/xacpx@0.17.0-beta.6  # 或更高
 xacpx channel add relay --url <host> --token <access-token>
 ```
 

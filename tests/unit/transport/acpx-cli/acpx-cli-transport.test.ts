@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AcpxCliTransport } from "../../../../src/transport/acpx-cli/acpx-cli-transport";
+import { CommandTimeoutError } from "../../../../src/transport/command-timeouts";
 import type { AcpxQueueOwnerLauncher } from "../../../../src/transport/acpx-queue-owner-launcher";
 import type { ResolvedSession } from "../../../../src/transport/types";
 import { QuotaManager } from "../../../../src/weixin/messaging/quota-manager";
@@ -389,7 +390,7 @@ test("uses PTY when resuming an alias-based session", async () => {
   ], expect.objectContaining({ timeoutMs: 120_000 }));
 });
 
-test("tails session history by invoking sessions history quiet", async () => {
+test("tails session history with the acpx 0.12 --limit syntax", async () => {
   const run = mock(async () => ({ code: 0, stdout: "history", stderr: "" }));
   const transport = new AcpxCliTransport({ command: "acpx" }, run);
 
@@ -407,9 +408,8 @@ test("tails session history by invoking sessions history quiet", async () => {
     "./node_modules/.bin/codex-acp",
     "sessions",
     "history",
-    "quiet",
-    "-s",
     "backend:api-fix",
+    "--limit",
     "20",
     // Shared deadline across history candidates: bounded by the management timeout.
   ], expect.objectContaining({ timeoutMs: expect.any(Number) }));
@@ -901,8 +901,37 @@ test("times out a hung management command, aborts the spawn, and rejects", async
     run as never,
   );
 
-  await expect(transport.cancel(session)).rejects.toThrow(/timed out after 20ms/);
+  await expect(transport.cancel(session)).rejects.toThrow(/timed out during cancel after 20ms/);
   expect(aborted).toBe(true);
+});
+
+test("a real CLI runner timeout preserves only the final 2000 output characters", async () => {
+  const stdoutTail = "O".repeat(2_000);
+  const stderrTail = "E".repeat(2_000);
+  await withFakeAcpxScript(`
+process.stdout.write("discarded stdout\\n" + "O".repeat(2000));
+process.stderr.write("discarded stderr\\n" + "E".repeat(2000));
+setInterval(() => {}, 1000);
+`, async (scriptPath) => {
+    const transport = new AcpxCliTransport({
+      command: scriptPath,
+      managementCommandTimeoutMs: 500,
+    });
+
+    let caught: unknown;
+    try {
+      await transport.setModel(session, "model-b");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(CommandTimeoutError);
+    expect(caught).toMatchObject({
+      stage: "set-model",
+      stdoutTail,
+      stderrTail,
+    });
+  });
 });
 
 test("times out a hung sessions close (removeSession) instead of hanging forever", async () => {
@@ -912,7 +941,7 @@ test("times out a hung sessions close (removeSession) instead of hanging forever
     run as never,
   );
 
-  await expect(transport.removeSession(session)).rejects.toThrow(/timed out after 20ms/);
+  await expect(transport.removeSession(session)).rejects.toThrow(/timed out during remove-session after 20ms/);
 });
 
 test("concatenates agent message chunks across thought and tool-call boundaries", async () => {

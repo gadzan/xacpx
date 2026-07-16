@@ -35,6 +35,10 @@ function isEnvelopeShape(value) {
     return false;
   if (candidate.id !== undefined && typeof candidate.id !== "string")
     return false;
+  if (candidate.requestDeadlineAt !== undefined && (typeof candidate.requestDeadlineAt !== "number" || !Number.isFinite(candidate.requestDeadlineAt) || candidate.requestDeadlineAt <= 0))
+    return false;
+  if (candidate.requestBudgetMs !== undefined && (typeof candidate.requestBudgetMs !== "number" || !Number.isFinite(candidate.requestBudgetMs) || candidate.requestBudgetMs <= 0))
+    return false;
   if ((candidate.kind === "req" || candidate.kind === "res") && (typeof candidate.id !== "string" || candidate.id.length === 0))
     return false;
   return true;

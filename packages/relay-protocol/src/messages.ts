@@ -442,6 +442,13 @@ export interface SessionModelSetPayload {
   modelId: string;
 }
 
+export interface SessionModelSetResult {
+  /** Whether the requested model was observed after the operation settled. */
+  ok: boolean;
+  /** Authoritative transport model after timeout reconciliation, if known. */
+  current?: string | null;
+}
+
 export interface SessionModelResult {
   /** The session's current model id, if known. */
   current?: string;

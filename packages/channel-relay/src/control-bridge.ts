@@ -65,19 +65,25 @@ export const CONTROL_RPC_TIMEOUT_MS = 60_000;
 //     start, reporting failure while the session still gets created.
 //   - commandExecute: runs a slash command / agent command that is prompt-like
 //     in duration.
+//   - sessionModelSet: a 30s set timeout can be followed by a 30s authoritative
+//     status read (or two 45s bridge backstops). A 60s connector response timer
+//     would race that reconciliation without cancelling the underlying work;
+//     the Hub envelope budget instead prevents stale queued mutations from starting.
 // For all of these the hub's own 120s request timeout is the real backstop.
 const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.prompt,
   MSG.sessionsCreate,
   MSG.sessionsNativeList,
   MSG.commandExecute,
+  MSG.sessionModelSet,
 ]);
 
 export interface ControlBridgeOptions {
   timeoutMs?: number;
-  /** Test seams for the dispatch timeout timer. */
+  /** Test seams for the dispatch timeout timer and request-deadline conversion. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (timer: unknown) => void;
+  now?: () => number;
 }
 
 function controlRpcTimeoutMs(type: string, options: ControlBridgeOptions): number | undefined {
@@ -85,9 +91,27 @@ function controlRpcTimeoutMs(type: string, options: ControlBridgeOptions): numbe
   return options.timeoutMs ?? CONTROL_RPC_TIMEOUT_MS;
 }
 
+function modelSetDeadlineAt(envelope: RelayEnvelope, now: () => number): number | undefined {
+  if (envelope.type !== MSG.sessionModelSet) return undefined;
+  const receivedAt = now();
+  const absolute = envelope.requestDeadlineAt;
+  const budget = envelope.requestBudgetMs;
+  // The pair is intentional: the absolute cutoff preserves the Hub's response
+  // reserve across delivery delay, while the relative budget caps clock skew.
+  // A partial/legacy envelope cannot provide both guarantees, so fail closed.
+  if (
+    typeof absolute !== "number" || !Number.isFinite(absolute) || absolute <= 0
+    || typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0
+  ) {
+    return receivedAt;
+  }
+  return Math.min(absolute, receivedAt + budget);
+}
+
 export function createControlBridge(control: ControlService, options: ControlBridgeOptions = {}): ControlBridge {
   const setTimeoutFn = options.setTimeoutFn ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const clearTimeoutFn = options.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>));
+  const now = options.now ?? Date.now;
   return (envelope, respond) => {
     let settled = false;
     let timer: unknown;
@@ -108,7 +132,8 @@ export function createControlBridge(control: ControlService, options: ControlBri
       }, timeoutMs);
     }
 
-    void dispatchControlRequest(control, envelope)
+    const deadlineAt = modelSetDeadlineAt(envelope, now);
+    void dispatchControlRequest(control, envelope, deadlineAt)
       .then(respondOnce)
       .catch((error: unknown) => {
         respondOnce(errorPayload("internal", error instanceof Error ? error.message : String(error)));
@@ -116,7 +141,11 @@ export function createControlBridge(control: ControlService, options: ControlBri
   };
 }
 
-async function dispatchControlRequest(control: ControlService, envelope: RelayEnvelope): Promise<unknown> {
+async function dispatchControlRequest(
+  control: ControlService,
+  envelope: RelayEnvelope,
+  deadlineAt?: number,
+): Promise<unknown> {
   const payload = envelope.payload;
   switch (envelope.type) {
     case MSG.sessionsList: {
@@ -336,8 +365,10 @@ async function dispatchControlRequest(control: ControlService, envelope: RelayEn
       const input = parseControlPayload(MSG.sessionModelSet, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.sessionModelSet}: malformed payload`);
       if (!input.sessionAlias || !input.modelId) return errorPayload("bad-request", "sessionAlias and modelId are required");
-      await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId);
-      return { ok: true };
+      const result = deadlineAt === undefined
+        ? await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId)
+        : await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId, { deadlineAt });
+      return { ok: result.applied, current: result.current ?? null };
     }
     case MSG.terminalCreate: {
       const input = parseControlPayload(MSG.terminalCreate, payload);

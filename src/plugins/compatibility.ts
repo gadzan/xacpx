@@ -18,12 +18,16 @@ export const WEACPX_PLUGIN_API_VERSION = XACPX_PLUGIN_API_VERSION;
 export const WEACPX_PLUGIN_API_SUPPORTED_VERSIONS = XACPX_PLUGIN_API_SUPPORTED_VERSIONS;
 export const WEACPX_PLUGIN_MIN_CORE_VERSION = XACPX_PLUGIN_MIN_CORE_VERSION;
 
-const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
+const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+type CoreVersion = [number, number, number];
+interface ParsedSemver {
+  core: CoreVersion;
+  prerelease: string[];
+}
 
-// For compatibility checks we treat a prerelease build (e.g. `0.4.0-beta.0`)
-// as its base release (`0.4.0`). Plugins built against the upcoming stable
-// version need to load on its prereleases without authors having to declare
-// every prerelease tag in `minWeacpxVersion`.
+// Stable minimums/ranges retain the historical behavior of treating a running
+// prerelease (e.g. `0.4.0-beta.0`) as its base release (`0.4.0`). An explicitly
+// prerelease minimum bypasses this normalization so beta.6 can reject beta.5.
 export function normalizeCoreVersionForCompat(version: string): string {
   const dashIdx = version.indexOf("-");
   const plusIdx = version.indexOf("+");
@@ -35,22 +39,45 @@ export function normalizeCoreVersionForCompat(version: string): string {
 export function compareSemver(a: string, b: string): -1 | 0 | 1 {
   const lhs = parseSemverStrict(a);
   const rhs = parseSemverStrict(b);
-  for (let i = 0; i < 3; i += 1) {
-    if (lhs[i]! < rhs[i]!) return -1;
-    if (lhs[i]! > rhs[i]!) return 1;
+  const coreOrder = cmpTuple(lhs.core, rhs.core);
+  if (coreOrder !== 0) return coreOrder;
+  return comparePrerelease(lhs.prerelease, rhs.prerelease);
+}
+
+function parseSemverStrict(value: string): ParsedSemver {
+  const match = SEMVER_RE.exec(value);
+  if (!match) throw new Error(`malformed semver: ${value}`);
+  const prerelease = match[4]?.split(".") ?? [];
+  if (prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0"))) {
+    throw new Error(`malformed semver: ${value}`);
+  }
+  return {
+    core: [Number(match[1]!), Number(match[2]!), Number(match[3]!)],
+    prerelease,
+  };
+}
+
+function comparePrerelease(a: string[], b: string[]): -1 | 0 | 1 {
+  if (a.length === 0) return b.length === 0 ? 0 : 1;
+  if (b.length === 0) return -1;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const lhs = a[i];
+    const rhs = b[i];
+    if (lhs === undefined) return -1;
+    if (rhs === undefined) return 1;
+    if (lhs === rhs) continue;
+    const lhsNumeric = /^\d+$/.test(lhs);
+    const rhsNumeric = /^\d+$/.test(rhs);
+    if (lhsNumeric && rhsNumeric) return Number(lhs) < Number(rhs) ? -1 : 1;
+    if (lhsNumeric !== rhsNumeric) return lhsNumeric ? -1 : 1;
+    return lhs < rhs ? -1 : 1;
   }
   return 0;
 }
 
-function parseSemverStrict(value: string): [number, number, number] {
-  const match = SEMVER_RE.exec(value);
-  if (!match) throw new Error(`malformed semver: ${value}`);
-  return [Number(match[1]!), Number(match[2]!), Number(match[3]!)];
-}
-
 interface ParsedRange {
   kind: "exact" | "gte" | "caret";
-  base: [number, number, number];
+  base: CoreVersion;
   raw: string;
 }
 
@@ -58,20 +85,20 @@ function parseRange(requirement: string): ParsedRange {
   const trimmed = requirement.trim();
   if (!trimmed) throw new Error("empty version requirement");
   if (trimmed.startsWith(">=")) {
-    return { kind: "gte", base: parseSemverStrict(trimmed.slice(2).trim()), raw: trimmed };
+    return { kind: "gte", base: parseCoreVersionStrict(trimmed.slice(2).trim()), raw: trimmed };
   }
   if (trimmed.startsWith("^")) {
-    return { kind: "caret", base: parseSemverStrict(trimmed.slice(1).trim()), raw: trimmed };
+    return { kind: "caret", base: parseCoreVersionStrict(trimmed.slice(1).trim()), raw: trimmed };
   }
   if (trimmed.startsWith(">") || trimmed.startsWith("<") || trimmed.startsWith("~") || trimmed.includes(" ")) {
     throw new Error(`unsupported version requirement: ${requirement}`);
   }
-  return { kind: "exact", base: parseSemverStrict(trimmed), raw: trimmed };
+  return { kind: "exact", base: parseCoreVersionStrict(trimmed), raw: trimmed };
 }
 
 export function isVersionSatisfied(current: string, requirement: string): boolean {
   const range = parseRange(requirement);
-  const cur = parseSemverStrict(current);
+  const cur = parseCoreVersionStrict(current);
   switch (range.kind) {
     case "exact":
       return cur[0] === range.base[0] && cur[1] === range.base[1] && cur[2] === range.base[2];
@@ -89,7 +116,13 @@ export function isVersionSatisfied(current: string, requirement: string): boolea
   }
 }
 
-function cmpTuple(a: [number, number, number], b: [number, number, number]): -1 | 0 | 1 {
+function parseCoreVersionStrict(value: string): CoreVersion {
+  const parsed = parseSemverStrict(value);
+  if (parsed.prerelease.length > 0) throw new Error(`malformed semver: ${value}`);
+  return parsed.core;
+}
+
+function cmpTuple(a: CoreVersion, b: CoreVersion): -1 | 0 | 1 {
   for (let i = 0; i < 3; i += 1) {
     if (a[i]! < b[i]!) return -1;
     if (a[i]! > b[i]!) return 1;
@@ -147,7 +180,8 @@ export function validatePluginCompatibility(
     }
     let satisfied: boolean;
     try {
-      satisfied = compareSemver(normalizedCurrent, minVersion) >= 0;
+      const minIsPrerelease = parseSemverStrict(minVersion).prerelease.length > 0;
+      satisfied = compareSemver(minIsPrerelease ? currentXacpxVersion : normalizedCurrent, minVersion) >= 0;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(t().pluginCli.compatInvalidMinVersionDetail(packageName, minVersionField, detail));

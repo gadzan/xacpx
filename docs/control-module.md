@@ -124,6 +124,28 @@ reset 在回合内重建了 transport 会话，但 reset handler 不发事件，
 await 必须留在 draining 守护窗口内，否则一个被中止且带排队项的回合会让新提示词插进来抢跑
 （由 golden fixture `aborted-queue-sessions-window` 钉住）。
 
+### 模型切换与 timeout 对账
+
+`control.session.model.set` 返回 `{ ok, current }`。正常切换时 `ok=true`；若 acpx 管理命令
+timeout，ControlService 会通过 `getSessionModel` 读取 transport 权威值、将该值（包括空值）写回
+逻辑会话，再返回 `current`。请求模型未实际生效时 `ok=false`，relay-web 必须采用返回的
+`current`，不能盲目回滚到请求前的本地值。成功完成对账的 timeout 会把原始诊断
+（stage、命令及有界 stdout/stderr tail）记录到 app log 的
+`control.session.model.timeout_reconciled` 事件；对账查询本身失败时，原始 timeout 继续作为
+RPC 错误返回，由 relay-web 浏览器诊断保留。同一逻辑会话的模型切换在 ControlService 内
+串行执行，旧 timeout 的查询/持久化必须完成后才允许下一次切换，避免旧对账覆盖新值；不同
+会话仍可并行。relay-web 同时用会话上下文与请求序号丢弃迟到响应，并把最后确认的权威模型
+与当前乐观展示值分开保存；连续选择全部失败时回到权威值，而不是回到上一个乐观值。
+
+该 RPC 的 connector 侧 60 秒 response timeout 被显式豁免：一次 30 秒 set timeout 后还可能
+跟随一次 30 秒权威查询（bridge backstop 最坏为 45 秒 + 45 秒）。Hub 在下行 request envelope
+中同时附带扣除 15 秒响应余量后的绝对 epoch work deadline 与 connector work budget；connector
+仅在两者齐全时取更早值。绝对值保证传输耗时不会吃掉响应余量，相对 budget 限制跨机时钟偏差。
+旧 Hub 或部分字段缺失时，connector fail closed，将 deadline 设为接收时刻，使请求在触碰
+transport 前失败，而不是恢复到无期限排队。
+串行队列出闸时，ControlService 会为最坏 90 秒的 set + readback 预留完整预算；剩余时间不足的
+请求在触碰 transport 前失败，避免排队重新吃掉 Hub 为状态变更保留的响应窗口。
+
 ### 事件总线覆盖范围
 
 事件总线只保证「`ControlService` 自身发起的变更」会发事件；其它入口

@@ -1,5 +1,6 @@
 {
   "record": [
+    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions history backend:demo --limit 20 @30000)",
     "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions history quiet -s backend:demo 20 @30000)",
     "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions history quiet backend:demo 20 @30000)",
     "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions history -s backend:demo --tail 20 @30000)",

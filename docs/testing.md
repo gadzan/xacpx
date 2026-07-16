@@ -4,7 +4,7 @@
 
 Keep the test directory and execution entry points clear, stable, and maintainable.
 
-Production code goes in `src/`, test code goes in `tests/`; don't scatter test files around the source directories anymore.
+Core production code goes in `src/`, and core tests go in `tests/`; don't scatter test files around source directories. The relay-web package has one explicit Vitest exception documented below.
 
 ## Directory Conventions
 
@@ -41,6 +41,18 @@ These tests should not enter the default `npm test`, to avoid local or CI instab
 Holds test helper functions, fixture builders, and test-only utilities.
 
 For now, if a helper is very small, you can inline it in the test file first; only extract it when reuse becomes obvious.
+
+### `packages/relay-web/src/__tests__/` (package exception)
+
+Relay-web component/store tests live beside that package under `src/__tests__/` because they require
+Vite's Vue transform and the package's jsdom/Vitest setup. Run them with:
+
+```bash
+bun run --cwd packages/relay-web test
+```
+
+The root `npm test` includes this suite through `test:web`. This is the only supported test-under-`src`
+exception; Node/core/package tests continue to live under `tests/unit/`.
 
 ## Default Commands
 
@@ -79,7 +91,7 @@ bun run build
 
 ## Rules When Adding New Tests
 
-1. New tests go in `tests/unit/` by default
+1. New tests go in `tests/unit/` by default; relay-web Vue/jsdom tests use its documented package exception
 2. The directory structure should mirror `src/` as much as possible
 3. Keep test file names as `*.test.ts`
 4. Avoid leaving temporary troubleshooting scripts at the repository root
@@ -96,7 +108,7 @@ Prefer `tests/smoke/` over `tests/unit/` in the following cases:
 
 ## Rules After the Migration
 
-- `src/` holds production code only
+- `src/` holds production code only, except `packages/relay-web/src/__tests__/` as documented above
 - `tests/` holds test code only
 - `scripts/` holds run scripts only, not test bodies
 

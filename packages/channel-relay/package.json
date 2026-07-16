@@ -28,7 +28,7 @@
     "README.md"
   ],
   "peerDependencies": {
-    "xacpx": ">=0.11.0-0"
+    "xacpx": ">=0.17.0-beta.6"
   },
   "peerDependenciesMeta": {
     "xacpx": {

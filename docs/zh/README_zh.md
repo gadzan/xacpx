@@ -181,7 +181,7 @@ xacpx-relay add token        # 仅打印一次 access token
 xacpx-relay start            # 默认：--host 0.0.0.0 --http-port 8787
 
 # 在每个实例主机上：
-xacpx plugin add @ganglion/xacpx-channel-relay   # 需要 xacpx >= 0.11.0
+xacpx plugin add @ganglion/xacpx-channel-relay   # 需要 xacpx >= 0.17.0-beta.6
 xacpx channel add relay --url wss://relay.example.com --token <access-token> --name my-box
 xacpx restart
 ```

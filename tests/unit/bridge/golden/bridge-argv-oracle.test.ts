@@ -192,6 +192,7 @@ test("tail-history", () =>
       { code: 1, stdout: "", stderr: "" },
       { code: 1, stdout: "", stderr: "" },
       { code: 1, stdout: "", stderr: "" },
+      { code: 1, stdout: "", stderr: "" },
     ],
     run: (runtime) => runtime.tailSessionHistory({ ...makeBridgeInput(), lines: 20 }),
   }));

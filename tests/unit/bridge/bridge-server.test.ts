@@ -3,7 +3,7 @@ import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { BridgeRuntime, EnsureSessionFailedError } from "../../../src/bridge/bridge-runtime";
+import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "../../../src/bridge/bridge-runtime";
 import { BridgeServer } from "../../../src/bridge/bridge-server";
 import { PromptCommandError } from "../../../src/transport/prompt-output";
 
@@ -22,7 +22,7 @@ test("returns whether a named session exists", async () => {
   ).resolves.toEqual({ exists: true });
 });
 
-test("tails session history via sessions history quiet in bridge runtime", async () => {
+test("tails session history via the acpx 0.12 --limit syntax in bridge runtime", async () => {
   const calls: string[][] = [];
   const runtime = new BridgeRuntime("acpx", async (_command, args) => {
     calls.push(args);
@@ -47,9 +47,8 @@ test("tails session history via sessions history quiet in bridge runtime", async
     "codex",
     "sessions",
     "history",
-    "quiet",
-    "-s",
     "demo",
+    "--limit",
     "10",
   ]]);
 });
@@ -1375,6 +1374,39 @@ test("includes prompt diagnostics in bridge error responses", async () => {
   ).resolves.toEqual(
     '{"id":"3","ok":false,"error":{"code":"BRIDGE_INTERNAL_ERROR","message":"command failed with exit code 5","details":{"exitCode":5,"stdout":"partial stdout","stderr":"partial stderr"}}}\n',
   );
+});
+
+test("serializes management timeout identity and bounded diagnostics", async () => {
+  const runtime = {
+    setModel: async () => {
+      throw new CommandTimeoutError(30_000, "acpx codex set model", {
+        stage: "set-model",
+        stdout: "adapter started",
+        stderr: "provider stalled",
+      });
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  const response = await server.handleLine(JSON.stringify({
+    id: "timeout-1",
+    method: "setModel",
+    params: { agent: "codex", cwd: "/repo", name: "demo", modelId: "gpt-5.2[high]" },
+  }));
+
+  expect(JSON.parse(response)).toMatchObject({
+    id: "timeout-1",
+    ok: false,
+    error: {
+      timeout: {
+        timeoutMs: 30_000,
+        command: "acpx codex set model",
+        stage: "set-model",
+        stdoutTail: "adapter started",
+        stderrTail: "provider stalled",
+      },
+    },
+  });
 });
 
 test("returns structured error for invalid json input", async () => {

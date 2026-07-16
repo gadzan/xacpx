@@ -27,6 +27,21 @@ import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
 import { TurnQueue } from "./turn-queue";
 import { buildControlMetadata, type TurnIdleTimeoutDetail } from "./turn-support";
+import {
+  BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  isCommandTimeoutError,
+} from "../transport/command-timeouts";
+import type { AppLogger } from "../logging/app-logger";
+
+const MODEL_SET_SETTLE_BUDGET_MS = 2 * (
+  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS
+);
+
+export interface ModelSetRequestOptions {
+  /** Connector-side deadline derived from the Hub request lifetime. */
+  deadlineAt?: number;
+}
 
 export interface ControlSessionInfo {
   alias: string;
@@ -68,6 +83,9 @@ export interface ControlWorkspaceInfo {
 }
 
 export interface ControlServiceDeps {
+  logger?: Pick<AppLogger, "error">;
+  /** Test seam for queue-deadline decisions. */
+  now?: () => number;
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
@@ -176,6 +194,7 @@ export interface ControlExecuteCommandInput {
 export class ControlService {
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
+  private readonly modelSetTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
     this.runner = new SessionTurnRunner(deps);
@@ -267,12 +286,77 @@ export class ControlService {
   }
 
   /** Switch a session's model (acpx validates the id) and persist the override. */
-  async setSessionModel(chatKey: string, alias: string, modelId: string): Promise<void> {
+  async setSessionModel(
+    chatKey: string,
+    alias: string,
+    modelId: string,
+    options: ModelSetRequestOptions = {},
+  ): Promise<{ current?: string; applied: boolean }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
-    if (!this.deps.transport.setModel) throw new Error("the active transport does not support switching models");
-    await this.deps.transport.setModel(session, modelId);
-    await this.deps.sessions.setSessionModel(session.alias, modelId);
+    const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
+    if (!setModel) throw new Error("the active transport does not support switching models");
+    return await this.runModelSetExclusive(session.alias, async () => {
+      if (
+        typeof options.deadlineAt === "number"
+        && Number.isFinite(options.deadlineAt)
+        && (this.deps.now?.() ?? Date.now()) + MODEL_SET_SETTLE_BUDGET_MS > options.deadlineAt
+      ) {
+        throw new Error("model switch deadline is too close to safely start the queued operation");
+      }
+      try {
+        await setModel(session, modelId);
+      } catch (error) {
+        // A process timeout is ambiguous: acpx may have applied the model before it
+        // stopped responding. Read back the authoritative transport state so the
+        // persisted logical session and relay-web's optimistic chip cannot diverge.
+        if (!isCommandTimeoutError(error) || !this.deps.transport.getSessionModel) throw error;
+        let observed: { current?: string; available: string[] };
+        try {
+          observed = await this.deps.transport.getSessionModel(session);
+        } catch {
+          // Preserve the original timeout; reconciliation is best-effort diagnostics.
+          throw error;
+        }
+        await this.deps.sessions.setSessionModel(session.alias, observed.current);
+        try {
+          await this.deps.logger?.error(
+            "control.session.model.timeout_reconciled",
+            "Model switch timed out; adopted authoritative transport state",
+            {
+              sessionAlias: session.alias,
+              requestedModel: modelId,
+              observedModel: observed.current ?? null,
+              timeout: error instanceof Error ? error.message : String(error),
+            },
+          );
+        } catch {
+          // Logging is diagnostic only; reconciliation already succeeded.
+        }
+        return { current: observed.current, applied: observed.current === modelId };
+      }
+      await this.deps.sessions.setSessionModel(session.alias, modelId);
+      return { current: modelId, applied: true };
+    });
+  }
+
+  /** Serialize model mutations per logical session so stale reconciliation cannot win last. */
+  private async runModelSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.modelSetTails.get(sessionAlias) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => {}).then(() => gate);
+    this.modelSetTails.set(sessionAlias, tail);
+
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.modelSetTails.get(sessionAlias) === tail) {
+        this.modelSetTails.delete(sessionAlias);
+      }
+    }
   }
 
   /** Set (or clear) a session's relay-web display label and persist it. */

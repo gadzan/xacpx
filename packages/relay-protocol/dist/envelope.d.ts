@@ -8,6 +8,10 @@ export interface RelayEnvelope {
     /** Namespaced message type, e.g. "instance.sessions.list". */
     type: string;
     payload?: unknown;
+    /** Hub wall-clock deadline (epoch ms) for this request. */
+    requestDeadlineAt?: number;
+    /** Conservative connector work budget, excluding Hub response headroom. */
+    requestBudgetMs?: number;
 }
 export type DecodeEnvelopeResult = {
     ok: true;

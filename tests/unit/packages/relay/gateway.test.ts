@@ -13,7 +13,7 @@ import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { InstanceGateway } from "../../../../packages/relay/src/gateway/instance-gateway";
 
-async function makeGateway() {
+async function makeGateway(requestTimeoutMs = 500) {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
@@ -23,7 +23,7 @@ async function makeGateway() {
   const gateway = new InstanceGateway({
     instances,
     accounts,
-    requestTimeoutMs: 500,
+    requestTimeoutMs,
     onEvent: (instanceId, accountId, envelope) => events.push({ instanceId, accountId, type: envelope.type }),
   });
   const wss = new WebSocketServer({ port: 0 });
@@ -83,9 +83,11 @@ test("sendRequest round-trips through an authed instance; offline and timeout re
     type: MSG.instanceAuth, payload: { instanceId: redeemed.instanceId, credential: redeemed.credential },
   }));
   await nextMessage(socket); // auth res
+  let forwardedRequest: RelayEnvelope | undefined;
   socket.on("message", (data) => {
     const decoded = decodeEnvelope(String(data));
     if (decoded.ok && decoded.envelope.kind === "req" && decoded.envelope.type === MSG.sessionsList) {
+      forwardedRequest = decoded.envelope;
       socket.send(encodeEnvelope({
         protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res", id: decoded.envelope.id,
         type: decoded.envelope.type, payload: { sessions: [] },
@@ -93,9 +95,45 @@ test("sendRequest round-trips through an authed instance; offline and timeout re
     }
     // requests of other types are ignored -> sendRequest times out
   });
+  const requestStartedAt = Date.now();
   const result = await gateway.sendRequest(redeemed.instanceId, MSG.sessionsList, {});
   expect(result).toEqual({ sessions: [] });
+  expect(forwardedRequest?.requestBudgetMs).toBe(1);
+  expect(forwardedRequest?.requestDeadlineAt).toBeGreaterThanOrEqual(requestStartedAt);
+  expect(forwardedRequest?.requestDeadlineAt).toBeLessThan(requestStartedAt + 100);
   await expect(gateway.sendRequest(redeemed.instanceId, MSG.prompt, {})).rejects.toThrow("timeout");
+  socket.close();
+  wss.close();
+});
+
+test("sendRequest publishes an absolute work deadline that preserves the response reserve", async () => {
+  const { gateway, instances, account, wss, url } = await makeGateway(45_000);
+  const redeemed = instances.redeemPairingToken(
+    instances.issuePairingToken(account.id, "pc", 600_000).token,
+  )!;
+  const socket = await connect(url);
+  socket.send(encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "hs-1",
+    type: MSG.instanceAuth, payload: { instanceId: redeemed.instanceId, credential: redeemed.credential },
+  }));
+  await nextMessage(socket);
+  let forwardedRequest: RelayEnvelope | undefined;
+  socket.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (!decoded.ok || decoded.envelope.kind !== "req") return;
+    forwardedRequest = decoded.envelope;
+    socket.send(encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res", id: decoded.envelope.id,
+      type: decoded.envelope.type, payload: { sessions: [] },
+    }));
+  });
+
+  const requestStartedAt = Date.now();
+  await gateway.sendRequest(redeemed.instanceId, MSG.sessionsList, {});
+
+  expect(forwardedRequest?.requestBudgetMs).toBe(30_000);
+  expect(forwardedRequest?.requestDeadlineAt).toBeGreaterThanOrEqual(requestStartedAt + 30_000);
+  expect(forwardedRequest?.requestDeadlineAt).toBeLessThan(requestStartedAt + 31_000);
   socket.close();
   wss.close();
 });
