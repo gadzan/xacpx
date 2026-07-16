@@ -109,6 +109,46 @@ test("setSessionModel adopts the authoritative model when a timed-out switch pro
   expect(calls).toEqual(["persist:internal-backend:provider/fallback-model"]);
 });
 
+test("setSessionModel serializes timeout reconciliation with a newer switch for the same session", async () => {
+  const { deps, calls } = makeDeps();
+  let resolveObserved!: (value: { current?: string; available: string[] }) => void;
+  let markQueryStarted!: () => void;
+  const queryStarted = new Promise<void>((resolve) => { markQueryStarted = resolve; });
+  deps.transport.setModel = async (s: typeof session, id: string) => {
+    calls.push(`transport:${s.alias}:${id}`);
+    if (id === "model-b") {
+      throw new CommandTimeoutError(30_000, "acpx set model", { stage: "set-model" });
+    }
+  };
+  deps.transport.getSessionModel = async () => {
+    calls.push("query:internal-backend");
+    markQueryStarted();
+    return await new Promise((resolve) => { resolveObserved = resolve; });
+  };
+  const control = new ControlService(deps as never);
+
+  const first = control.setSessionModel("relay:acc", "backend", "model-b");
+  await queryStarted;
+  const second = control.setSessionModel("relay:acc", "backend", "model-c");
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+  expect(calls).toEqual([
+    "transport:internal-backend:model-b",
+    "query:internal-backend",
+  ]);
+
+  resolveObserved({ current: "model-b", available: ["model-b", "model-c"] });
+  await expect(first).resolves.toEqual({ current: "model-b", applied: true });
+  await expect(second).resolves.toEqual({ current: "model-c", applied: true });
+  expect(calls).toEqual([
+    "transport:internal-backend:model-b",
+    "query:internal-backend",
+    "persist:internal-backend:model-b",
+    "transport:internal-backend:model-c",
+    "persist:internal-backend:model-c",
+  ]);
+});
+
 test("setSessionModel does not reconcile unrelated provider errors that merely mention a timeout", async () => {
   const { deps, calls, logs } = makeDeps();
   deps.transport.setModel = async () => {

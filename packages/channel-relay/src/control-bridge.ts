@@ -65,12 +65,16 @@ export const CONTROL_RPC_TIMEOUT_MS = 60_000;
 //     start, reporting failure while the session still gets created.
 //   - commandExecute: runs a slash command / agent command that is prompt-like
 //     in duration.
+//   - sessionModelSet: a 30s set timeout can be followed by a 30s authoritative
+//     status read (or two 45s bridge backstops). A 60s connector response timer
+//     would race that reconciliation without cancelling the underlying work.
 // For all of these the hub's own 120s request timeout is the real backstop.
 const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.prompt,
   MSG.sessionsCreate,
   MSG.sessionsNativeList,
   MSG.commandExecute,
+  MSG.sessionModelSet,
 ]);
 
 export interface ControlBridgeOptions {

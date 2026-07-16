@@ -274,6 +274,7 @@ export class BridgeRuntime {
     lines: number;
   }): Promise<{ text: string }> {
     const candidates = [
+      ["sessions", "history", input.name, "--limit", String(input.lines)],
       ["sessions", "history", "quiet", "-s", input.name, String(input.lines)],
       ["sessions", "history", "quiet", input.name, String(input.lines)],
       ["sessions", "history", "-s", input.name, "--tail", String(input.lines)],

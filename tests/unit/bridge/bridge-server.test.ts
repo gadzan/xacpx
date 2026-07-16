@@ -22,7 +22,7 @@ test("returns whether a named session exists", async () => {
   ).resolves.toEqual({ exists: true });
 });
 
-test("tails session history via sessions history quiet in bridge runtime", async () => {
+test("tails session history via the acpx 0.12 --limit syntax in bridge runtime", async () => {
   const calls: string[][] = [];
   const runtime = new BridgeRuntime("acpx", async (_command, args) => {
     calls.push(args);
@@ -47,9 +47,8 @@ test("tails session history via sessions history quiet in bridge runtime", async
     "codex",
     "sessions",
     "history",
-    "quiet",
-    "-s",
     "demo",
+    "--limit",
     "10",
   ]]);
 });

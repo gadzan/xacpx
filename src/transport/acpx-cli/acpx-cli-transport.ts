@@ -295,6 +295,7 @@ export class AcpxCliTransport implements SessionTransport {
 
   async tailSessionHistory(session: ResolvedSession, lines: number): Promise<{ text: string }> {
     const candidates = [
+      ["sessions", "history", session.transportSession, "--limit", String(lines)],
       ["sessions", "history", "quiet", "-s", session.transportSession, String(lines)],
       ["sessions", "history", "quiet", session.transportSession, String(lines)],
       ["sessions", "history", "-s", session.transportSession, "--tail", String(lines)],

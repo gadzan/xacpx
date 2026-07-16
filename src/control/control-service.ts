@@ -179,6 +179,7 @@ export interface ControlExecuteCommandInput {
 export class ControlService {
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
+  private readonly modelSetTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
     this.runner = new SessionTurnRunner(deps);
@@ -277,40 +278,62 @@ export class ControlService {
   ): Promise<{ current?: string; applied: boolean }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
-    if (!this.deps.transport.setModel) throw new Error("the active transport does not support switching models");
+    const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
+    if (!setModel) throw new Error("the active transport does not support switching models");
+    return await this.runModelSetExclusive(session.alias, async () => {
+      try {
+        await setModel(session, modelId);
+      } catch (error) {
+        // A process timeout is ambiguous: acpx may have applied the model before it
+        // stopped responding. Read back the authoritative transport state so the
+        // persisted logical session and relay-web's optimistic chip cannot diverge.
+        if (!isCommandTimeoutError(error) || !this.deps.transport.getSessionModel) throw error;
+        let observed: { current?: string; available: string[] };
+        try {
+          observed = await this.deps.transport.getSessionModel(session);
+        } catch {
+          // Preserve the original timeout; reconciliation is best-effort diagnostics.
+          throw error;
+        }
+        await this.deps.sessions.setSessionModel(session.alias, observed.current);
+        try {
+          await this.deps.logger?.error(
+            "control.session.model.timeout_reconciled",
+            "Model switch timed out; adopted authoritative transport state",
+            {
+              sessionAlias: session.alias,
+              requestedModel: modelId,
+              observedModel: observed.current ?? null,
+              timeout: error instanceof Error ? error.message : String(error),
+            },
+          );
+        } catch {
+          // Logging is diagnostic only; reconciliation already succeeded.
+        }
+        return { current: observed.current, applied: observed.current === modelId };
+      }
+      await this.deps.sessions.setSessionModel(session.alias, modelId);
+      return { current: modelId, applied: true };
+    });
+  }
+
+  /** Serialize model mutations per logical session so stale reconciliation cannot win last. */
+  private async runModelSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.modelSetTails.get(sessionAlias) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => {}).then(() => gate);
+    this.modelSetTails.set(sessionAlias, tail);
+
+    await previous.catch(() => {});
     try {
-      await this.deps.transport.setModel(session, modelId);
-    } catch (error) {
-      // A process timeout is ambiguous: acpx may have applied the model before it
-      // stopped responding. Read back the authoritative transport state so the
-      // persisted logical session and relay-web's optimistic chip cannot diverge.
-      if (!isCommandTimeoutError(error) || !this.deps.transport.getSessionModel) throw error;
-      let observed: { current?: string; available: string[] };
-      try {
-        observed = await this.deps.transport.getSessionModel(session);
-      } catch {
-        // Preserve the original timeout; reconciliation is best-effort diagnostics.
-        throw error;
+      return await operation();
+    } finally {
+      release();
+      if (this.modelSetTails.get(sessionAlias) === tail) {
+        this.modelSetTails.delete(sessionAlias);
       }
-      await this.deps.sessions.setSessionModel(session.alias, observed.current);
-      try {
-        await this.deps.logger?.error(
-          "control.session.model.timeout_reconciled",
-          "Model switch timed out; adopted authoritative transport state",
-          {
-            sessionAlias: session.alias,
-            requestedModel: modelId,
-            observedModel: observed.current ?? null,
-            timeout: error instanceof Error ? error.message : String(error),
-          },
-        );
-      } catch {
-        // Logging is diagnostic only; reconciliation already succeeded.
-      }
-      return { current: observed.current, applied: observed.current === modelId };
     }
-    await this.deps.sessions.setSessionModel(session.alias, modelId);
-    return { current: modelId, applied: true };
   }
 
   /** Set (or clear) a session's relay-web display label and persist it. */

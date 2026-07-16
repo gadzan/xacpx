@@ -580,10 +580,12 @@ test("a hung management command kills the spawned tree and rejects with CommandT
 });
 
 test("a set-model timeout identifies its stage and preserves captured output tails", async () => {
+  const stdoutTail = "O".repeat(2_000);
+  const stderrTail = "E".repeat(2_000);
   const spawnFn = (() => makeFakeSpawnChild({
     pid: 778,
-    stdout: "adapter initialized\nwaiting for response\n",
-    stderr: "model update dispatched\nprovider did not acknowledge\n",
+    stdout: `discarded stdout\n${stdoutTail}\n`,
+    stderr: `discarded stderr\n${stderrTail}\n`,
   })) as never;
   const runtime = new BridgeRuntime(
     "acpx",
@@ -605,8 +607,7 @@ test("a set-model timeout identifies its stage and preserves captured output tai
 
   expect(caught).toBeInstanceOf(CommandTimeoutError);
   expect((caught as Error).message).toContain("during set-model");
-  expect((caught as Error).message).toContain("stdout tail: adapter initialized\nwaiting for response");
-  expect((caught as Error).message).toContain("stderr tail: model update dispatched\nprovider did not acknowledge");
+  expect(caught).toMatchObject({ stdoutTail, stderrTail });
 });
 
 test("prompt starts queue owner with orchestration MCP identity", async () => {

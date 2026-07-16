@@ -465,12 +465,18 @@ test("core-bounded / long RPC types are exempt from the connector timeout", asyn
     createSession: () => new Promise(() => {}),
     listNativeSessions: () => new Promise(() => {}),
     executeCommand: () => new Promise(() => {}),
+    setSessionModel: () => new Promise(() => {}),
   });
   const bridge = createControlBridge(control as never, seams);
 
   bridge(req(MSG.sessionsCreate, { chatKey: "relay:acct", alias: "a", agent: "codex", workspace: "ws" }), () => {});
   bridge(req(MSG.sessionsNativeList, { chatKey: "relay:acct", agent: "codex", workspace: "ws" }), () => {});
   bridge(req(MSG.commandExecute, { chatKey: "relay:acct", command: "/status" }), () => {});
+  bridge(req(MSG.sessionModelSet, {
+    chatKey: "relay:acct",
+    sessionAlias: "a",
+    modelId: "model-b",
+  }), () => {});
 
   // No timer armed for any exempt type.
   expect(seams.armed).toHaveLength(0);

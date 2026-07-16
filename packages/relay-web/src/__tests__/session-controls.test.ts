@@ -43,6 +43,23 @@ describe("session-controls store", () => {
     expect(s.available).toEqual([]);
   });
 
+  it("clears the previous session model while a new session is loading", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "session-a");
+
+    let resolveLoad!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
+    const pendingLoad = s.loadModel("i1", "session-b");
+
+    expect(s.current).toBeUndefined();
+    expect(s.available).toEqual([]);
+    expect(s.loading).toBe(true);
+    resolveLoad({ current: "model-b", available: ["model-b"] });
+    await pendingLoad;
+    expect(s.current).toBe("model-b");
+  });
+
   it("setModel updates current optimistically before the RPC resolves", async () => {
     let resolveRpc!: (v: unknown) => void;
     rpc.mockReturnValueOnce(new Promise((r) => { resolveRpc = r; }));
@@ -90,5 +107,112 @@ describe("session-controls store", () => {
       "requested claude-opus-4-8; authoritative model is provider/fallback-model",
     );
     log.mockRestore();
+  });
+
+  it("ignores a model-set response that arrives after switching sessions", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a", "model-b"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "session-a");
+
+    let resolveSet!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveSet = resolve; }));
+    const pendingSet = s.setModel("i1", "session-a", "model-b");
+
+    rpc.mockResolvedValueOnce({ current: "model-x", available: ["model-x"] });
+    await s.loadModel("i1", "session-b");
+    expect(s.current).toBe("model-x");
+
+    resolveSet({ ok: true, current: "model-b" });
+    await pendingSet;
+    expect(s.current).toBe("model-x");
+  });
+
+  it("keeps the latest selection when model-set responses arrive out of order", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a", "model-b", "model-c"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+
+    let resolveB!: (value: unknown) => void;
+    let resolveC!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveB = resolve; }));
+    const pendingB = s.setModel("i1", "backend", "model-b");
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveC = resolve; }));
+    const pendingC = s.setModel("i1", "backend", "model-c");
+
+    resolveC({ ok: true, current: "model-c" });
+    await pendingC;
+    resolveB({ ok: true, current: "model-b" });
+    await pendingB;
+
+    expect(s.current).toBe("model-c");
+  });
+
+  it("a model selection supersedes a pending load without leaving loading stuck", async () => {
+    let resolveLoad!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
+    const s = useSessionControlsStore();
+    const pendingLoad = s.loadModel("i1", "backend");
+    expect(s.loading).toBe(true);
+
+    rpc.mockResolvedValueOnce({ ok: true, current: "model-b" });
+    await s.setModel("i1", "backend", "model-b");
+    expect(s.loading).toBe(false);
+
+    resolveLoad({ current: "model-a", available: ["model-a"] });
+    await pendingLoad;
+    expect(s.current).toBe("model-b");
+  });
+
+  it("does not toast a stale model-set failure from the previous session", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a", "model-b"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "session-a");
+
+    let resolveSet!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveSet = resolve; }));
+    const pendingSet = s.setModel("i1", "session-a", "model-b");
+    rpc.mockResolvedValueOnce({ current: "model-x", available: ["model-x"] });
+    await s.loadModel("i1", "session-b");
+
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    resolveSet({ error: { code: "internal", message: "late failure" } });
+    await pendingSet;
+
+    expect(s.current).toBe("model-x");
+    expect(useToasts().value).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it("reloads a session only after its pending model selection settles", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a", "model-b"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "session-a");
+
+    let modelApplied = false;
+    let settleSet!: () => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => {
+      settleSet = () => {
+        modelApplied = true;
+        resolve({ ok: true, current: "model-b" });
+      };
+    }));
+    const pendingSet = s.setModel("i1", "session-a", "model-b");
+
+    rpc.mockResolvedValueOnce({ current: "model-x", available: ["model-x"] });
+    await s.loadModel("i1", "session-b");
+    rpc.mockImplementationOnce(async () => ({
+      current: modelApplied ? "model-b" : "model-a",
+      available: ["model-a", "model-b"],
+    }));
+    const pendingReload = s.loadModel("i1", "session-a");
+
+    // The set finishes while session A is active again. Its reload must not have
+    // queried the pre-set value and then discarded the authoritative set reply.
+    settleSet();
+    await pendingSet;
+    await pendingReload;
+
+    expect(s.current).toBe("model-b");
   });
 });

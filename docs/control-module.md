@@ -132,7 +132,14 @@ timeout，ControlService 会通过 `getSessionModel` 读取 transport 权威值�
 `current`，不能盲目回滚到请求前的本地值。成功完成对账的 timeout 会把原始诊断
 （stage、命令及有界 stdout/stderr tail）记录到 app log 的
 `control.session.model.timeout_reconciled` 事件；对账查询本身失败时，原始 timeout 继续作为
-RPC 错误返回，由 relay-web 浏览器诊断保留。
+RPC 错误返回，由 relay-web 浏览器诊断保留。同一逻辑会话的模型切换在 ControlService 内
+串行执行，旧 timeout 的查询/持久化必须完成后才允许下一次切换，避免旧对账覆盖新值；不同
+会话仍可并行。relay-web 同时用会话上下文与请求序号丢弃迟到响应，切换会话或连续选择模型时
+不会让旧响应污染当前 chip。
+
+该 RPC 的 connector 侧 60 秒 response timeout 被显式豁免：一次 30 秒 set timeout 后还可能
+跟随一次 30 秒权威查询（bridge backstop 最坏为 45 秒 + 45 秒），由 hub 的 120 秒请求上限兜底，
+避免 connector 先返回错误而底层继续完成对账。
 
 ### 事件总线覆盖范围
 
