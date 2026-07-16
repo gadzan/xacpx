@@ -384,6 +384,11 @@ export const useChatStore = defineStore("chat", () => {
         : {}),
     };
     messages.value.push(optimistic);
+    // `optimistic` above is the RAW object; the array element is a reactive proxy. Mutating the
+    // raw ref (optimistic.failed = true) never trips Vue's set-trap, so the failed bubble would
+    // only surface on the next list change (the next message). Mark failure through the proxy so
+    // the bubble turns red — and shows Failed/Resend — the instant the send errors.
+    const entry = messages.value[messages.value.length - 1]!;
     try {
       // The web dashboard is GUI-first: every message — including `/`-prefixed text —
       // is sent as a prompt so it streams as a normal turn. xacpx slash commands are
@@ -397,13 +402,13 @@ export const useChatStore = defineStore("chat", () => {
       });
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";
-        optimistic.failed = true;
+        entry.failed = true;
       }
     } catch (e) {
       const isTimeout = e instanceof ApiError && (e.status === 504 || e.code === "timeout");
       if (!isTimeout) {
         error.value = e instanceof ApiError ? e.code : "send-failed";
-        optimistic.failed = true;
+        entry.failed = true;
       }
     } finally {
       sending.value = false;
