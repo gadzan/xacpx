@@ -145,6 +145,33 @@ describe("WorkspaceGit index", () => {
       { path: "README.md", status: " M" },
     ]);
   });
+
+  test("treats selected paths literally instead of expanding Git pathspec magic", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, ":(top)**"), "literal\n");
+    writeFileSync(join(repo, "README.md"), "unrelated\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.stage("project", [":(top)**"]);
+
+    expect((await service.status("project")).files).toEqual([
+      { path: ":(top)**", status: "A " },
+      { path: "README.md", status: " M" },
+    ]);
+  });
+
+  test("unstages both sides of a staged rename when the destination row is selected", async () => {
+    const { repo } = initRepo();
+    git(repo, "mv", "README.md", "RENAMED.md");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.unstage("project", ["RENAMED.md"]);
+
+    expect((await service.status("project")).files).toEqual([
+      { path: "README.md", status: " D" },
+      { path: "RENAMED.md", status: "??" },
+    ]);
+  });
 });
 
 describe("WorkspaceGit branches", () => {

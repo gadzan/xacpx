@@ -212,7 +212,7 @@ async function pullRemote(): Promise<void> {
 }
 
 async function pushRemote(): Promise<void> {
-  if (!props.instanceId || !files.workspace) return;
+  if (!props.instanceId || !files.workspace || !git.status || git.status.detached) return;
   let setUpstream = false;
   if (!git.status?.upstream) {
     setUpstream = await confirm({
@@ -243,7 +243,8 @@ async function createWorktree(): Promise<void> {
   const branch = worktreeBranch.value.trim();
   const workspaceName = worktreeWorkspace.value.trim();
   const agent = activeSession.value?.agent;
-  if (!id || !workspace || !branch || !workspaceName || !agent) return;
+  const sourceSessionAlias = chat.sessionAlias;
+  if (!id || !workspace || !branch || !workspaceName || !agent || !sourceSessionAlias) return;
   try {
     const created = await git.createWorktree(id, workspace, {
       workspaceName,
@@ -251,7 +252,7 @@ async function createWorktree(): Promise<void> {
       createBranch: worktreeCreateBranch.value,
       ...(worktreeCreateBranch.value && worktreeStart.value.trim() ? { startPoint: worktreeStart.value.trim() } : {}),
     });
-    await worktreeSession.open(id, agent, created.workspace.name);
+    await worktreeSession.open(id, agent, created.workspace.name, sourceSessionAlias);
     showWorktreeCreate.value = false;
   } catch {
     // The Git store owns the actionable inline error and operation lifecycle.
@@ -601,7 +602,7 @@ watch(
               </span>
               <button data-test="git-fetch" :disabled="gitBusy" class="rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="fetchRemote">{{ $t("files.git.fetch") }}</button>
               <button data-test="git-pull" :disabled="gitBusy" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pullRemote"><Download :size="10" />{{ $t("files.git.pull") }}</button>
-              <button data-test="git-push" :disabled="gitBusy" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pushRemote"><Upload :size="10" />{{ $t("files.git.push") }}</button>
+              <button data-test="git-push" :disabled="gitBusy || !git.status || git.status.detached" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pushRemote"><Upload :size="10" />{{ $t("files.git.push") }}</button>
             </div>
             <div v-if="showWorktrees" data-test="git-worktrees" class="border-t border-border/70 px-2.5 py-1.5 text-[10.5px]">
               <div v-for="tree in git.status?.worktrees ?? []" :key="tree.path" class="flex items-center gap-1.5 py-0.5">

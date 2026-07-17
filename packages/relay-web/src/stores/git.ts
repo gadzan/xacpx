@@ -46,6 +46,7 @@ export const useGitStore = defineStore("git", () => {
   const lastResult = ref<GitOperationResult | null>(null);
   const error = ref("");
   let loadSequence = 0;
+  let operationSequence = 0;
   let activeContext: string | null = null;
 
   const contextKey = (instanceId: string, workspace: string) => `${instanceId}\0${workspace}`;
@@ -85,20 +86,25 @@ export const useGitStore = defineStore("git", () => {
     if (operation.value) throw new Error("git-operation-in-progress");
     const context = contextKey(instanceId, workspace);
     if (activeContext === null) activeContext = context;
+    const sequence = ++operationSequence;
     operation.value = { kind, startedAt: Date.now() };
     error.value = "";
     try {
       const result = unwrap(await api.rpc<T>(instanceId, type, payload));
       if (activeContext === context) await requestStatus(instanceId, workspace);
-      lastResult.value = { kind, ok: true, finishedAt: Date.now() };
+      if (sequence === operationSequence && activeContext === context) {
+        lastResult.value = { kind, ok: true, finishedAt: Date.now() };
+      }
       return result;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : `${kind}-failed`;
-      error.value = message;
-      lastResult.value = { kind, ok: false, message, finishedAt: Date.now() };
+      if (sequence === operationSequence && activeContext === context) {
+        error.value = message;
+        lastResult.value = { kind, ok: false, message, finishedAt: Date.now() };
+      }
       throw cause;
     } finally {
-      operation.value = null;
+      if (sequence === operationSequence) operation.value = null;
     }
   }
 
@@ -140,6 +146,7 @@ export const useGitStore = defineStore("git", () => {
 
   function reset(): void {
     loadSequence += 1;
+    operationSequence += 1;
     activeContext = null;
     status.value = null;
     operation.value = null;

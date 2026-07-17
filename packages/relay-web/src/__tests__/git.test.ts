@@ -119,6 +119,35 @@ describe("Git store operation lifecycle", () => {
     ]);
   });
 
+  it("does not let an old mutation clear the new workspace operation lifecycle", async () => {
+    let resolveOldStage!: (value: unknown) => void;
+    let resolveNewFetch!: (value: unknown) => void;
+    rpc.mockImplementation((_id: string, type: string, payload: { workspace: string }) => {
+      if (type === "control.git.stage") return new Promise((resolve) => { resolveOldStage = resolve; });
+      if (type === "control.git.fetch") return new Promise((resolve) => { resolveNewFetch = resolve; });
+      if (type === "control.git.status") return Promise.resolve({ ...status(), workspace: payload.workspace });
+      throw new Error(`unexpected ${type}`);
+    });
+    const store = useGitStore();
+    await store.load("i1", "old");
+    const oldStage = store.stage("i1", "old", ["a.ts"]);
+
+    store.reset();
+    await store.load("i1", "new");
+    const newFetch = store.fetch("i1", "new");
+    expect(store.operation).toMatchObject({ kind: "fetch" });
+
+    resolveOldStage({ ok: true });
+    await oldStage;
+    expect(store.operation).toMatchObject({ kind: "fetch" });
+    expect(store.lastResult).toBeNull();
+
+    resolveNewFetch({ ok: true });
+    await newFetch;
+    expect(store.operation).toBeNull();
+    expect(store.lastResult).toMatchObject({ kind: "fetch", ok: true });
+  });
+
   it("returns the registered workspace created for a managed worktree", async () => {
     rpc.mockImplementation((_id: string, type: string) => {
       if (type === "control.git.worktree.create") {

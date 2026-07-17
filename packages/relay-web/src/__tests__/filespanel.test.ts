@@ -275,6 +275,24 @@ describe("FilesPanel navigation rail", () => {
     expect(checkout).toHaveBeenCalledWith("i1", "ws", { branch: "feature" });
   });
 
+  it("does not offer push until authoritative Git status has loaded", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const git = useGitStore();
+    files.instanceId = "i1";
+    files.workspace = "ws";
+    files.tab = "changes";
+    files.diff = { workspace: "ws", files: [], diff: "", truncated: false } as never;
+    git.status = null;
+    const push = vi.spyOn(git, "push").mockResolvedValue({ ok: true });
+    await w.vm.$nextTick();
+
+    const button = w.find('[data-test="git-push"]');
+    expect(button.attributes("disabled")).toBeDefined();
+    await button.trigger("click");
+    expect(push).not.toHaveBeenCalled();
+  });
+
   it("registers a managed worktree and opens a new session with the current agent", async () => {
     const instances = useInstancesStore();
     instances.instances = [{
@@ -321,6 +339,59 @@ describe("FilesPanel navigation rail", () => {
     });
     expect(begin).toHaveBeenCalledWith("i1", "ws-feature-codex", "codex", "ws-feature");
     expect(select).toHaveBeenCalledWith("i1", "ws-feature-codex");
+  });
+
+  it("does not steal selection when the user switches sessions while a worktree is being created", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      sessions: [
+        { alias: "s1", agent: "codex", workspace: "ws" },
+        { alias: "s2", agent: "codex", workspace: "other" },
+      ],
+      agents: [], workspaces: [{ name: "ws", cwd: "/repo" }, { name: "other", cwd: "/other" }], agentCatalog: [],
+    }] as never;
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    await flushPromises();
+    const files = useFilesStore();
+    const git = useGitStore();
+    files.instanceId = "i1";
+    files.workspace = "ws";
+    files.tab = "changes";
+    files.diff = { workspace: "ws", files: [], diff: "", truncated: false } as never;
+    git.status = {
+      workspace: "ws", branch: "main", detached: false, ahead: 0, behind: 0,
+      worktree: { root: "/repo", linked: false }, files: [],
+      branches: [{ name: "main", current: true }],
+      worktrees: [{ path: "/repo", branch: "main", current: true, linked: false }],
+    } as never;
+    const result = {
+      worktree: { path: "/managed/feature", branch: "feature", linked: true as const },
+      workspace: { name: "ws-feature", cwd: "/managed/feature" },
+    };
+    let resolveCreate!: (value: typeof result) => void;
+    vi.spyOn(git, "createWorktree").mockReturnValue(new Promise((resolve) => { resolveCreate = resolve; }));
+    vi.spyOn(instances, "loadWorkspaces").mockResolvedValue();
+    const begin = vi.spyOn(instances, "beginSessionCreation").mockReturnValue(true);
+    const select = vi.spyOn(chat, "select");
+    vi.spyOn(files, "loadDiff").mockResolvedValue();
+    await w.vm.$nextTick();
+
+    await w.find('[data-test="git-worktrees-toggle"]').trigger("click");
+    await w.find('[data-test="git-new-worktree"]').trigger("click");
+    await w.find('[data-test="git-worktree-branch"]').setValue("feature");
+    await w.find('[data-test="git-worktree-workspace"]').setValue("ws-feature");
+    await w.find('[data-test="git-create-worktree"]').trigger("click");
+    chat.sessionAlias = "s2";
+    resolveCreate(result);
+    await flushPromises();
+
+    expect(begin).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+    expect(chat.sessionAlias).toBe("s2");
   });
 
   it("auto-loads the diff when switching sessions while the Changes tab is active", async () => {

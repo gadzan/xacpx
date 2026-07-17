@@ -143,6 +143,22 @@ export class WorkspaceGit {
     return startPoint;
   }
 
+  private async includeRenameSources(root: string, paths: string[]): Promise<string[]> {
+    const selected = new Set(paths);
+    const expanded = new Set(paths);
+    const fields = (await this.runRaw(root, ["-c", "core.quotePath=false", "status", "--porcelain", "-z"])).split("\0");
+    for (let index = 0; index < fields.length; index += 1) {
+      const field = fields[index];
+      if (!field) continue;
+      const status = field.slice(0, 2);
+      const path = field.slice(3);
+      if (status[0] !== "R" && status[0] !== "C") continue;
+      const originalPath = fields[++index];
+      if (originalPath && selected.has(path)) expanded.add(originalPath);
+    }
+    return [...expanded];
+  }
+
   /** Git write commands for one configured workspace share a FIFO. Reads remain
    * concurrent, and a failed write releases the next command instead of poisoning
    * the queue. */
@@ -164,18 +180,18 @@ export class WorkspaceGit {
   async stage(workspace: string, paths: string[]): Promise<void> {
     await this.withWrite(workspace, async () => {
       const root = await this.rootFor(workspace);
-      await this.run(root, ["add", "--", ...this.validatePaths(paths)]);
+      await this.run(root, ["--literal-pathspecs", "add", "--", ...this.validatePaths(paths)]);
     });
   }
 
   async unstage(workspace: string, paths: string[]): Promise<void> {
     await this.withWrite(workspace, async () => {
       const root = await this.rootFor(workspace);
-      const valid = this.validatePaths(paths);
+      const valid = await this.includeRenameSources(root, this.validatePaths(paths));
       try {
-        await this.run(root, ["restore", "--staged", "--", ...valid]);
+        await this.run(root, ["--literal-pathspecs", "restore", "--staged", "--", ...valid]);
       } catch {
-        await this.run(root, ["reset", "--", ...valid]);
+        await this.run(root, ["--literal-pathspecs", "reset", "--", ...valid]);
       }
     });
   }
