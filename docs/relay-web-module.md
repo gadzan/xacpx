@@ -188,7 +188,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 ## 文件写能力（子项目 B）
 
-Files 面板支持以下写操作（均需在 relay hub config 启用 `files.writeEnabled`，默认关闭）：
+Files 面板支持以下写操作（均需在 xacpx daemon config 启用 `files.writeEnabled`，默认关闭）：
 
 - **新建文件** — 在当前目录创建空文件，返回 `{path, mimeType}`
 - **新建文件夹** — 在当前目录创建目录，返回 `{path}`
@@ -199,7 +199,7 @@ Files 面板支持以下写操作（均需在 relay hub config 启用 `files.wri
 
 ### 门控与安全模型
 
-- **`files.writeEnabled` 开关**：relay hub `config.files.writeEnabled`（boolean，默认 `false`）控制 5 个写操作的访问权；关闭时写操作（create/rename/delete/copy）返回 403，只读操作（list/download）仍可用。通过 relay hub 启动参数 `--files-write-enabled` 或配置文件 `relay.config.json` 中 `files.writeEnabled: true` 启用。
+- **`files.writeEnabled` 开关**：xacpx daemon 的 `config.files.writeEnabled`（boolean，默认 `false`）控制文件写入及下述结构化 Git mutation；关闭时相关 Control RPC 返回 `files-write-disabled`，只读操作（list/download/Git status）仍可用。在 xacpx 配置文件中设置 `files.writeEnabled: true` 后重启 daemon 生效。
 - **安全隔离**：写操作复用 `WorkspaceFs.resolveParent()` 和 `WorkspaceFs.resolve()` 三道闸（account-owns-instance → workspace 名白名单 → realpath 包含），确保操作不脱离 workspace 容器。
 - **删除确认**：Web UI 在执行删除前弹出确认对话框，删除后无法恢复（永久删除）。
 - **下载大小限制**：单个文件≤5 MiB；超出大小的文件下载请求被 relay hub 拒绝（413）。
