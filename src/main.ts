@@ -817,7 +817,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     agents: {
       list: () =>
         Object.entries(config.agents).map(([name, agentConfig]) => ({ name, driver: agentConfig.driver })),
-      catalog: () => listAgentCatalog(config),
+      catalog: () => listAgentCatalog(config, undefined, undefined, logger),
       create: async (name, driver) => {
         const updated = await configStore.upsertAgent(name, { driver });
         replaceRuntimeConfig(config, updated);

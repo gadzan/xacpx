@@ -1,5 +1,7 @@
+import { createAgentRegistry } from "acpx/runtime";
 import { expect, test } from "bun:test";
 import { listAgentCatalog } from "../../../src/config/agent-catalog";
+import { listAgentTemplates } from "../../../src/config/agent-templates";
 import type { AppConfig } from "../../../src/config/types";
 
 function cfg(agents: Record<string, { driver: string }>): AppConfig {
@@ -29,9 +31,53 @@ test("cursor probes the cursor-agent binary, not 'cursor'", () => {
   expect(seen).not.toContain("cursor");
 });
 
+// Regression: qoder's CLI is `qodercli`; probing "qoder" mislabelled an installed
+// agent as "CLI not detected" in the web new-session dialog.
+test("qoder is 'yes' when only the qodercli binary is on PATH", () => {
+  const cat = listAgentCatalog(cfg({}), (bin) => bin === "qodercli");
+  expect(cat.find((e) => e.driver === "qoder")!.installed).toBe("yes");
+});
+
+test("npx-launched drivers are builtin, not PATH-probed", () => {
+  const seen: string[] = [];
+  const cat = listAgentCatalog(cfg({}), (bin) => { seen.push(bin); return false; });
+  for (const driver of ["pi", "kilocode", "opencode"]) {
+    expect(cat.find((e) => e.driver === driver)!.installed).toBe("builtin");
+    expect(seen).not.toContain(driver);
+  }
+});
+
 test("configured is true when a config agent uses the driver under a different name", () => {
   const cat = listAgentCatalog(cfg({ "my-gem": { driver: "gemini" } }), () => false);
   expect(cat.find((e) => e.driver === "gemini")!.configured).toBe(true);
+});
+
+// Drift guard against the REAL acpx dependency: every driver we offer must still be one
+// acpx knows. `list()` is the canonical set; the two droid aliases are resolvable but not
+// listed, so they fall back to the echo check — `resolve()` returns an unknown name
+// unchanged instead of throwing, so a dropped name resolves to itself. (Membership first
+// on purpose: the echo check alone would false-fail the day acpx ships a bare-invoked
+// driver, which is acpx's argument style, not the thing under test.)
+test("every template driver is still known to the acpx registry", () => {
+  const registry = createAgentRegistry();
+  const known = new Set(registry.list());
+  const dropped = listAgentTemplates().filter(
+    (driver) => !known.has(driver) && registry.resolve(driver) === driver,
+  );
+  expect(dropped).toEqual([]);
+});
+
+// The registry is loaded lazily and may be null: acpx is resolvable via PATH, in which case
+// its runtime is not importable from here. That must degrade, never throw — src/main.ts pulls
+// this module in on every command path, `doctor` included.
+test("degrades to probing the bare driver name when acpx is unresolvable", () => {
+  const seen: string[] = [];
+  const cat = listAgentCatalog(cfg({}), (bin) => { seen.push(bin); return bin === "qoder"; }, null);
+  expect(cat.find((e) => e.driver === "qoder")!.installed).toBe("yes");
+  expect(seen).toContain("qoder");
+  // Without the registry there is nothing to mark builtin, so npx drivers are probed by name.
+  expect(cat.find((e) => e.driver === "opencode")!.installed).toBe("unknown");
+  expect(cat).toHaveLength(listAgentTemplates().length);
 });
 
 test("every entry comes from listAgentTemplates and has the three fields", () => {
