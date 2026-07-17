@@ -21,12 +21,12 @@ export interface Rgba {
  * Below this WCAG contrast ratio a label counts as unreadable and gets recoloured.
  *
  * 3.0 rather than AA's 4.5 (labels are mermaid's default 16px — normal text, not large) because the
- * repair palette is exactly two colours, so the achievable contrast is bounded: minimising
+ * repair palette is exactly two colours, so what the repair can achieve is bounded: minimising
  * `max(cr(DARK_TEXT, bg), cr(LIGHT_TEXT, bg))` over all backgrounds bottoms out at ~4.17 around
- * mid-grey (~#767676). A 4.5 threshold could therefore fire on a label the repair can only lift to
- * 4.17, and the pass would want to re-repair it forever instead of settling. 3.0 is the bar a
- * two-colour palette can actually stand behind. A real 4.5 needs a third lever (adjusting the fill,
- * or a text halo) — out of scope.
+ * mid-grey (~#767676). A threshold above that floor would fire on labels the repair can only lift
+ * TO the floor — e.g. at 4.5 a label already sitting at 4.4 gets repainted down to 4.17, a net
+ * regression. 3.0 is the bar a two-colour palette can actually stand behind. A real 4.5 needs a
+ * third lever (adjusting the fill, or a text halo) — out of scope.
  */
 export const MIN_LABEL_CONTRAST = 3.0;
 
@@ -224,9 +224,13 @@ function fixNode(node: Element, svg: Element): void {
   for (const text of Array.from(node.querySelectorAll("text"))) {
     if (hasAuthoredLabelColor(text, svg)) continue; // the author picked this colour — not ours to fix
     const labelFill = readFill(text);
-    if (!labelFill) continue; // unmeasurable label — do not guess
-    // Already readable: no-op. This early-out is also what makes the pass idempotent — a repaired
-    // label clears the bar next time, so re-running is a no-op with no marker attribute to go stale.
+    // Unmeasurable label — do not guess. Same alpha bar as the shape: a translucent label composites
+    // against the fill, and we do not composite, so treating it as opaque would measure a colour
+    // that is not on screen.
+    if (!labelFill || labelFill.a < MIN_MEASURABLE_ALPHA) continue;
+    // Already readable: no-op. This is what preserves mermaid's own designed palettes untouched.
+    // (Re-running the pass is safe regardless: `recolor` is a deterministic function of shapeFill,
+    // which the repair never touches — so no marker attribute is needed, and none can go stale.)
     if (contrastRatio(labelFill, shapeFill) >= MIN_LABEL_CONTRAST) continue;
     recolor(text, pickReadableTextColor(shapeFill));
   }

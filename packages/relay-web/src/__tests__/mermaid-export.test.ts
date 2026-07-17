@@ -60,7 +60,7 @@ describe("pngFileName", () => {
     expect(a).not.toBe(b);
   });
 
-  test("re-exporting the SAME diagram is stable (a re-download overwrites, not (1), (2))", () => {
+  test("re-exporting the SAME diagram yields the same name", () => {
     const src = "graph TD\n  A --> B";
     expect(pngFileName(src)).toBe(pngFileName(src));
   });

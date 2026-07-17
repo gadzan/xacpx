@@ -40,8 +40,9 @@ function hash32(input: string): string {
 
 /**
  * A filename for the exported diagram: `diagram-<8 hex>.png`, where the hash covers the FULL
- * diagram source. Two different diagrams get different names, and re-exporting the same diagram is
- * stable (same name every time, so a re-download overwrites rather than piling up `(1)`, `(2)`).
+ * diagram source. Two different diagrams get different names, and the same diagram always exports
+ * under the same name (browsers still uniquify a repeat download as `… (1).png` — they do not
+ * overwrite — but the name stays recognisable and tied to the content).
  *
  * Seeding from the source's first line instead would be near-useless: it is almost always
  * `flowchart TD` / `graph TD`, so every flowchart in a conversation would collide, and a CJK-only

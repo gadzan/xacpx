@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   contrastRatio,
+  DARK_TEXT,
   fixLabelContrast,
+  LIGHT_TEXT,
+  MIN_LABEL_CONTRAST,
   parseCssColor,
   pickReadableTextColor,
   relativeLuminance,
@@ -87,15 +90,26 @@ describe("pickReadableTextColor", () => {
     expect(pickReadableTextColor({ r: 20, g: 40, b: 160 })).toBe("#f5f5f5");
   });
 
-  test("the palette's worst case is ~4.17 at #767676 — the bound MIN_LABEL_CONTRAST is built on", () => {
-    const bg = { r: 118, g: 118, b: 118 };
-    const best = Math.max(
-      contrastRatio(parseCssColor("#111111")!, bg),
-      contrastRatio(parseCssColor("#f5f5f5")!, bg),
-    );
-    expect(best).toBeCloseTo(4.17, 1);
-    expect(best).toBeLessThan(4.5); // a 4.5 threshold could not be satisfied here → non-idempotent
-    expect(best).toBeGreaterThan(3.0); // 3.0 always can be
+  // MIN_LABEL_CONTRAST must stay at or below what the two-colour palette can actually deliver:
+  // above that floor, the pass would repaint labels that are already better than the repair.
+  // Reads the real constants, so widening the palette or raising the threshold reddens this.
+  test("MIN_LABEL_CONTRAST sits at or below the palette's worst-case ceiling", () => {
+    let floor = Infinity;
+    let floorAt = -1;
+    for (let grey = 0; grey <= 255; grey += 1) {
+      const bg = { r: grey, g: grey, b: grey };
+      const best = Math.max(
+        contrastRatio(parseCssColor(DARK_TEXT)!, bg),
+        contrastRatio(parseCssColor(LIGHT_TEXT)!, bg),
+      );
+      if (best < floor) {
+        floor = best;
+        floorAt = grey;
+      }
+    }
+    expect(floorAt).toBe(118); // ~#767676
+    expect(floor).toBeCloseTo(4.166, 2);
+    expect(MIN_LABEL_CONTRAST).toBeLessThanOrEqual(floor);
   });
 });
 
@@ -337,6 +351,17 @@ describe("fixLabelContrast: a translucent fill is not measurable", () => {
     const svg = makeSvg(node("rgba(224, 255, 255, 0.95)", "#cccccc"));
     fixLabelContrast(svg);
     expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+  });
+
+  // The same bar applies to the LABEL, not just the shape: a translucent label composites against
+  // the fill it sits on, so scoring it as opaque measures a colour that is not on screen — and an
+  // invisible label would get "repaired" into a visible one.
+  test("does not repaint a translucent label either", () => {
+    stubComputedFill();
+    const svg = makeSvg(node("#101010", "rgba(0, 0, 0, 0)"));
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
   });
 });
 
