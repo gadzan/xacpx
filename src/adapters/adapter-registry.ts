@@ -67,6 +67,12 @@ export function isAdapterRegistryNotFoundOutput(output: string): boolean {
   return /\bE404\b|\b404\s+Not\s+Found\b/i.test(output);
 }
 
+/** Runtime errors can also contain API/model 404s. Only classify them as an
+ * adapter registry failure when npm itself is present in the diagnostic. */
+export function isNpmAdapterRegistryNotFoundOutput(output: string): boolean {
+  return /\bnpm\b/i.test(output) && isAdapterRegistryNotFoundOutput(output);
+}
+
 export function describeAdapterRegistryError(error: unknown): string {
   return error instanceof AdapterRegistryPackageNotFoundError
     ? adapterRegistryE404Guidance(error.registry)

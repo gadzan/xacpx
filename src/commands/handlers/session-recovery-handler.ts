@@ -6,7 +6,7 @@ import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import { t } from "../../i18n";
 import {
   DEFAULT_ADAPTER_REGISTRY,
-  isAdapterRegistryNotFoundOutput,
+  isNpmAdapterRegistryNotFoundOutput,
 } from "../../adapters/adapter-registry";
 import { managedAdapterRegistryFromCommand } from "../../adapters/adapter-catalog";
 
@@ -102,7 +102,7 @@ export function renderSessionCreationError(session: ResolvedSession, error: unkn
 
 function renderAdapterRegistryError(session: ResolvedSession, message: string): RouterResponse | null {
   const registry = managedAdapterRegistryFromCommand(session.agentCommand);
-  if (!registry || !isAdapterRegistryNotFoundOutput(message)) return null;
+  if (!registry || !isNpmAdapterRegistryNotFoundOutput(message)) return null;
   return {
     text: t().recovery.adapterRegistryE404(registry, DEFAULT_ADAPTER_REGISTRY),
   };

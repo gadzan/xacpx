@@ -128,3 +128,13 @@ test("runtime adapter E404 is actionable when a prompt cold-start fails", () => 
 
   expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org/");
 });
+
+test("a non-npm backend 404 is not misreported as an adapter registry failure", () => {
+  const error = new Error("model endpoint returned 404 Not Found");
+  expect(() => renderSessionCreationError(
+    session({
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.4",
+    }),
+    error,
+  )).toThrow(error);
+});
