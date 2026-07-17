@@ -22,6 +22,14 @@ import {
   type FsRenamePayload,
   type FsSearchPayload,
   type FsWritePayload,
+  type GitCheckoutPayload,
+  type GitCommitPayload,
+  type GitFetchPayload,
+  type GitPathsPayload,
+  type GitPullPayload,
+  type GitPushPayload,
+  type GitStatusPayload,
+  type GitWorktreeCreatePayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type PromptCancelPayload,
@@ -54,6 +62,7 @@ const fields = (p: unknown): Record<string, unknown> | null => (isObj(p) ? p : n
 
 const isArr = (v: unknown): boolean => Array.isArray(v);
 const optArr = (v: unknown): boolean => v === undefined || Array.isArray(v);
+const isStrArr = (v: unknown): boolean => Array.isArray(v) && v.every(isStr);
 
 // --- session / agent / workspace ---
 const validateSessionsList: Validator<SessionsListPayload> = (p) => {
@@ -199,6 +208,41 @@ const validateFsWrite: Validator<FsWritePayload> = (p) => {
   return o as unknown as FsWritePayload;
 };
 
+// --- git (structured actions only; never accepts argv or a client-selected worktree path) ---
+const validateGitStatus: Validator<GitStatusPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) ? (o as unknown as GitStatusPayload) : null;
+};
+const validateGitPaths: Validator<GitPathsPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStrArr(o.paths) ? (o as unknown as GitPathsPayload) : null;
+};
+const validateGitCommit: Validator<GitCommitPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.message) ? (o as unknown as GitCommitPayload) : null;
+};
+const validateGitFetch: Validator<GitFetchPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && optStr(o.remote) ? (o as unknown as GitFetchPayload) : null;
+};
+const validateGitPull: Validator<GitPullPayload> = validateGitStatus;
+const validateGitPush: Validator<GitPushPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && optBool(o.setUpstream) && optStr(o.remote)
+    ? (o as unknown as GitPushPayload) : null;
+};
+const validateGitCheckout: Validator<GitCheckoutPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.branch) && optBool(o.create) && optStr(o.startPoint)
+    ? (o as unknown as GitCheckoutPayload) : null;
+};
+const validateGitWorktreeCreate: Validator<GitWorktreeCreatePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.workspaceName) && isStr(o.branch)
+    && optBool(o.createBranch) && optStr(o.startPoint) && o.path === undefined
+    ? (o as unknown as GitWorktreeCreatePayload) : null;
+};
+
 // --- model / terminal / upload ---
 const validateSessionModelGet: Validator<SessionModelGetPayload> = (p) => {
   const o = fields(p);
@@ -238,6 +282,9 @@ export type ControlRpcType =
   | typeof MSG.fsRead | typeof MSG.fsDiff | typeof MSG.fsSearch | typeof MSG.fsCreate
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
+  | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage | typeof MSG.gitCommit
+  | typeof MSG.gitFetch | typeof MSG.gitPull | typeof MSG.gitPush | typeof MSG.gitCheckout
+  | typeof MSG.gitWorktreeCreate
   | typeof MSG.terminalCreate | typeof MSG.terminalAttach | typeof MSG.upload;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
@@ -274,6 +321,15 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.fsCopy]: validateFsCopy,
   [MSG.fsDownload]: validateFsDownload,
   [MSG.fsWrite]: validateFsWrite,
+  [MSG.gitStatus]: validateGitStatus,
+  [MSG.gitStage]: validateGitPaths,
+  [MSG.gitUnstage]: validateGitPaths,
+  [MSG.gitCommit]: validateGitCommit,
+  [MSG.gitFetch]: validateGitFetch,
+  [MSG.gitPull]: validateGitPull,
+  [MSG.gitPush]: validateGitPush,
+  [MSG.gitCheckout]: validateGitCheckout,
+  [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.terminalCreate]: validateTerminalCreate,
@@ -309,3 +365,5 @@ type _fsWriteBound = Expect<Equal<PayloadFor<typeof MSG.fsWrite>, FsWritePayload
 type _promptBound = Expect<Equal<PayloadFor<typeof MSG.prompt>, PromptPayload>>;
 type _fsReadBound = Expect<Equal<PayloadFor<typeof MSG.fsRead>, FsReadPayload>>;
 type _uploadBound = Expect<Equal<PayloadFor<typeof MSG.upload>, UploadPayload>>;
+type _gitCheckoutBound = Expect<Equal<PayloadFor<typeof MSG.gitCheckout>, GitCheckoutPayload>>;
+type _gitWorktreeCreateBound = Expect<Equal<PayloadFor<typeof MSG.gitWorktreeCreate>, GitWorktreeCreatePayload>>;

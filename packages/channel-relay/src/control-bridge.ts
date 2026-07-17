@@ -299,6 +299,69 @@ async function dispatchControlRequest(
       if (!input.workspace) return errorPayload("bad-request", "workspace is required");
       return await control.workspaceGitDiff(input.workspace, input.path); // WorkspaceDiff ≅ FsDiffResult
     }
+    case MSG.gitStatus: {
+      const input = parseControlPayload(MSG.gitStatus, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitStatus}: malformed payload`);
+      return await control.workspaceGitStatus(input.workspace);
+    }
+    case MSG.gitStage: {
+      const input = parseControlPayload(MSG.gitStage, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitStage}: malformed payload`);
+      await control.gitStage(input.workspace, input.paths);
+      return { ok: true };
+    }
+    case MSG.gitUnstage: {
+      const input = parseControlPayload(MSG.gitUnstage, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitUnstage}: malformed payload`);
+      await control.gitUnstage(input.workspace, input.paths);
+      return { ok: true };
+    }
+    case MSG.gitCommit: {
+      const input = parseControlPayload(MSG.gitCommit, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitCommit}: malformed payload`);
+      return await control.gitCommit(input.workspace, input.message);
+    }
+    case MSG.gitFetch: {
+      const input = parseControlPayload(MSG.gitFetch, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitFetch}: malformed payload`);
+      await control.gitFetch(input.workspace, input.remote);
+      return { ok: true };
+    }
+    case MSG.gitPull: {
+      const input = parseControlPayload(MSG.gitPull, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitPull}: malformed payload`);
+      await control.gitPull(input.workspace);
+      return { ok: true };
+    }
+    case MSG.gitPush: {
+      const input = parseControlPayload(MSG.gitPush, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitPush}: malformed payload`);
+      await control.gitPush(input.workspace, {
+        ...(input.setUpstream !== undefined ? { setUpstream: input.setUpstream } : {}),
+        ...(input.remote !== undefined ? { remote: input.remote } : {}),
+      });
+      return { ok: true };
+    }
+    case MSG.gitCheckout: {
+      const input = parseControlPayload(MSG.gitCheckout, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitCheckout}: malformed payload`);
+      await control.gitCheckout(input.workspace, {
+        branch: input.branch,
+        ...(input.create !== undefined ? { create: input.create } : {}),
+        ...(input.startPoint !== undefined ? { startPoint: input.startPoint } : {}),
+      });
+      return { ok: true };
+    }
+    case MSG.gitWorktreeCreate: {
+      const input = parseControlPayload(MSG.gitWorktreeCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitWorktreeCreate}: malformed payload`);
+      return await control.gitCreateWorktree(input.workspace, {
+        workspaceName: input.workspaceName,
+        branch: input.branch,
+        ...(input.createBranch !== undefined ? { createBranch: input.createBranch } : {}),
+        ...(input.startPoint !== undefined ? { startPoint: input.startPoint } : {}),
+      });
+    }
     case MSG.fsSearch: {
       const input = parseControlPayload(MSG.fsSearch, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.fsSearch}: malformed payload`);

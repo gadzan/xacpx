@@ -30,6 +30,9 @@
   `createControlEventBus` 工厂：支持 `turn-output` / `turn-finished` /
   `sessions-changed` / `scheduled-changed` / `orchestration-changed` 五类事件；
   监听器异常彼此隔离（经注入的 `logger.error` 记录，不外抛）。
+- **`src/control/workspace-git.ts`** — `WorkspaceGit`：配置工作区范围内的结构化 Git
+  门面。只用 `execFile` 参数数组调用 Git，不接受任意命令或客户端指定 worktree 路径；
+  同一工作区的 Git 写操作按 FIFO 串行。
 
 ## 方法概览
 
@@ -47,6 +50,11 @@
 | `prompt(input)` | 向 agent 发起一轮对话（见下方语义要点），返回 `ControlPromptResult`。 |
 | `cancelTurn(chatKey, sessionAlias)` | 通过 `AbortController` 中止进行中的 turn；返回是否成功中止。 |
 | `executeCommand(input)` | 不切换会话、不发事件地向 agent 执行一条命令，收集所有分片与最终文本（换行拼接）后返回字符串。 |
+| `workspaceGitStatus(workspace)` | 返回分支、上游 ahead/behind、文件状态、本地分支与 worktree 列表；只读，不受写开关影响。 |
+| `gitStage` / `gitUnstage` / `gitCommit` | 结构化操作 index 与提交；commit 只提交已暂存内容。 |
+| `gitFetch` / `gitPull` / `gitPush` | 远端同步；pull 固定 `--ff-only`，首次 push 必须显式要求设置 upstream，不提供 force。 |
+| `gitCheckout` | 切换或创建分支；工作树有未提交改动时拒绝，不自动 stash。 |
+| `gitCreateWorktree` | 在 daemon 管理的 `~/.xacpx/worktrees` 下创建 worktree，并注册为 workspace；注册失败会回滚 worktree。 |
 | `get events()` | 返回注入的 `ControlEventBus` 实例，供消费者订阅事件。 |
 
 ## 注入方式

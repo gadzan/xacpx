@@ -214,6 +214,25 @@ Files 面板支持以下写操作（均需在 relay hub config 启用 `files.wri
 
 Web 侧 `FilesPanel.vue` 在树节点右键菜单或行操作按钮中暴露这些操作；关闭时菜单项禁用。
 
+## Changes 面板 Git 操作（A + C）
+
+Changes tab 在原有差异列表上增加结构化 Git 工作流：
+
+- **紧凑上下文（A）**：顶部显示/切换本地分支、upstream 与 ahead/behind，并提供
+  Fetch、`Pull --ff-only`、普通 Push。首次 Push 需确认后才执行 `--set-upstream origin`；
+  不提供 force push、merge 或 rebase。
+- **改动与提交**：每个文件可暂存/取消暂存，也可按组或全部暂存；底部固定提交输入区，
+  只提交 staged 文件。运行中的 Git 操作会锁住冲突控件，并在面板内显示进度、成功或错误，
+  完成后重新读取 Git 状态与 diff。
+- **分支安全**：可切换或从指定起点创建本地分支；dirty worktree 拒绝切换和 pull，Web
+  不自动 stash，也不会隐式丢弃用户改动。
+- **worktree 上下文（C）**：按需展开当前仓库的 worktree 列表。创建时客户端只提交分支与
+  workspace 名称，宿主路径由 daemon 在 `~/.xacpx/worktrees` 下生成；成功后注册 workspace，
+  并用当前会话的 agent 新建、切换到该 worktree 会话。v1 不提供删除或 prune UI。
+
+Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/commit/fetch/pull/push/checkout/worktree.create`。
+所有 Git 写 RPC 与文件写操作共用 `files.writeEnabled`（默认关闭）。
+
 ### 范围说明
 
 "在 OS 打开"（open-in-browser/open-in-finder）已明确排出范围，不实现。仅提供下载供本地查看。

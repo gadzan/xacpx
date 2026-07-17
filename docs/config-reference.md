@@ -581,7 +581,7 @@ File tree operations configuration for relay-web file browser.
 
 | Field | Type | Required | Description |
 |------|------|------|------|
-| `writeEnabled` | `boolean` | No | Enable or disable write operations (new file, new folder, rename, delete, copy) in the relay-web file browser. Download is unaffected and remains always available. Defaults to `false` (write disabled). Requires daemon restart to take effect when changed |
+| `writeEnabled` | `boolean` | No | Enable or disable file writes and structured Git mutations in relay-web. Git mutations include stage/unstage/commit, fetch, fast-forward-only pull, push, branch switch/create, and managed worktree creation. Read-only file browsing/download and Git status remain available. Defaults to `false` (write disabled). Requires daemon restart to take effect when changed |
 
 ### Example
 

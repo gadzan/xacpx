@@ -22,6 +22,15 @@ import type { ControlEventBus } from "./control-event-bus";
 import { readNativeSessionHistory, type NativeHistoryMessage } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
 import { WorkspaceFs, type DirListing, type FileContent, type SearchOptions, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
+import {
+  WorkspaceGit,
+  type GitCheckoutOptions,
+  type GitCommitResult,
+  type GitPushOptions,
+  type GitStatus,
+  type GitWorktreeCreateOptions,
+  type GitWorktreeCreateResult,
+} from "./workspace-git";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
@@ -137,6 +146,8 @@ export interface ControlServiceDeps {
   terminal: import("./terminal-service").TerminalService;
   terminalEnabled: () => boolean;
   filesWriteEnabled: () => boolean;
+  /** Test/embedding override; production defaults to ~/.xacpx/worktrees. */
+  gitWorktreesRoot?: string;
   // Inactivity watchdog threshold in ms for in-flight turns; absent ⇒ disabled. Wired in
   // main.ts from transport.turnIdleTimeoutSeconds. Optional so existing tests need no change.
   turnIdleTimeoutMs?: () => number;
@@ -194,9 +205,14 @@ export interface ControlExecuteCommandInput {
 export class ControlService {
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
+  private readonly workspaceGit: WorkspaceGit;
   private readonly modelSetTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
+    this.workspaceGit = new WorkspaceGit(
+      () => this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
+      { ...(deps.gitWorktreesRoot ? { managedWorktreesRoot: deps.gitWorktreesRoot } : {}) },
+    );
     this.runner = new SessionTurnRunner(deps);
     this.turnQueue = new TurnQueue({
       runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
@@ -222,7 +238,6 @@ export class ControlService {
   private readonly workspaceFs = new WorkspaceFs(() =>
     this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
   );
-
   listDirectory(workspace: string, path?: string): Promise<DirListing> {
     return this.workspaceFs.listDirectory(workspace, path);
   }
@@ -233,6 +248,74 @@ export class ControlService {
 
   workspaceGitDiff(workspace: string, path?: string): Promise<WorkspaceDiff> {
     return this.workspaceFs.gitDiff(workspace, path);
+  }
+
+  workspaceGitStatus(workspace: string): Promise<GitStatus> {
+    return this.workspaceGit.status(workspace);
+  }
+
+  async gitStage(workspace: string, paths: string[]): Promise<void> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    await this.workspaceGit.stage(workspace, paths);
+  }
+
+  async gitUnstage(workspace: string, paths: string[]): Promise<void> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    await this.workspaceGit.unstage(workspace, paths);
+  }
+
+  async gitCommit(workspace: string, message: string): Promise<GitCommitResult> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return await this.workspaceGit.commit(workspace, message);
+  }
+
+  async gitFetch(workspace: string, remote?: string): Promise<void> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    await this.workspaceGit.fetch(workspace, remote);
+  }
+
+  async gitPull(workspace: string): Promise<void> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    await this.workspaceGit.pull(workspace);
+  }
+
+  async gitPush(workspace: string, options?: GitPushOptions): Promise<void> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    await this.workspaceGit.push(workspace, options);
+  }
+
+  async gitCheckout(workspace: string, options: GitCheckoutOptions): Promise<void> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    await this.workspaceGit.checkout(workspace, options);
+  }
+
+  async gitCreateWorktree(
+    workspace: string,
+    input: GitWorktreeCreateOptions & { workspaceName: string },
+  ): Promise<{ worktree: GitWorktreeCreateResult; workspace: ControlWorkspaceInfo }> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    const workspaceName = input.workspaceName.trim();
+    if (!workspaceName) throw new Error("workspace-name-required");
+    if (this.deps.workspaces.list().some((item) => item.name === workspaceName)) {
+      throw new Error("workspace-name-exists");
+    }
+    const worktree = await this.workspaceGit.createWorktree(workspace, input);
+    try {
+      const registered = await this.deps.workspaces.create(
+        workspaceName,
+        worktree.path,
+        `Git worktree for ${worktree.branch}`,
+      );
+      return { worktree, workspace: registered };
+    } catch (error) {
+      try {
+        await this.workspaceGit.removeManagedWorktree(workspace, worktree.path);
+      } catch {
+        // Preserve the registration error; the managed path is still bounded and can be
+        // diagnosed/pruned manually if Git refuses the best-effort compensation.
+      }
+      throw error;
+    }
   }
 
   searchWorkspace(workspace: string, opts: SearchOptions): Promise<SearchResult> {

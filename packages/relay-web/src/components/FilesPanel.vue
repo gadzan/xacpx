@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronRight, File, FileText, Folder, FolderGit2, GitBranch, List, MoreHorizontal, RefreshCw, X } from "lucide-vue-next";
+import { useI18n } from "vue-i18n";
+import { ChevronRight, Download, File, FileText, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Upload, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
+import { useGitStore } from "../stores/git";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { groupChanges, splitPath } from "../lib/change-groups";
 import { openMenuKey, ROOT_MENU_KEY } from "../lib/tree-menu";
+import { confirm } from "../lib/use-confirm";
+import { genAlias, slugify, uniqueName } from "../lib/session-form";
 import FileTreeNode from "./FileTreeNode.vue";
 import ContextMenu from "./ContextMenu.vue";
 
@@ -19,7 +23,9 @@ const vFocus = {
 };
 
 const props = defineProps<{ instanceId: string | null }>();
+const { t } = useI18n();
 const files = useFilesStore();
+const git = useGitStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
 const centerTabs = useCenterTabsStore();
@@ -94,6 +100,164 @@ const gitCtx = computed(() => {
   if (!d) return null;
   return { branch: d.branch, detached: d.detached === true, worktree: d.worktree };
 });
+
+const activeSession = computed(() => {
+  const inst = props.instanceId ? instances.byId(props.instanceId) : undefined;
+  return inst?.sessions.find((session) => session.alias === chat.sessionAlias);
+});
+const gitBusy = computed(() => git.operation !== null);
+const stagedPaths = computed(() => [...new Set((files.diff?.files ?? [])
+  .filter((file) => file.status[0] !== " " && file.status[0] !== "?")
+  .map((file) => file.path))]);
+const stageablePaths = computed(() => [...new Set((files.diff?.files ?? [])
+  .filter((file) => file.status[1] !== " " || file.status === "??")
+  .map((file) => file.path))]);
+const gitMessage = computed(() => {
+  if (git.error) {
+    const known: Record<string, string> = {
+      "dirty-worktree": t("files.git.errors.dirtyWorktree"),
+      "no-upstream": t("files.git.errors.noUpstream"),
+      "files-write-disabled": t("files.git.errors.writeDisabled"),
+      "invalid-branch-name": t("files.git.errors.invalidBranch"),
+      "invalid-start-point": t("files.git.errors.invalidStartPoint"),
+      "workspace-name-exists": t("files.git.errors.workspaceExists"),
+      "unknown-remote": t("files.git.errors.unknownRemote"),
+      "detached-head": t("files.git.errors.detachedHead"),
+      "git-operation-in-progress": t("files.git.errors.inProgress"),
+    };
+    return { ok: false, text: known[git.error] ?? git.error };
+  }
+  if (git.operation) return { ok: true, text: t(`files.git.running.${git.operation.kind}`) };
+  if (git.lastResult?.ok) return { ok: true, text: t(`files.git.done.${git.lastResult.kind}`) };
+  return null;
+});
+
+const commitMessage = ref("");
+const showBranchCreate = ref(false);
+const branchName = ref("");
+const branchStart = ref("");
+const showWorktrees = ref(false);
+const showWorktreeCreate = ref(false);
+const worktreeBranch = ref("");
+const worktreeStart = ref("");
+const worktreeWorkspace = ref("");
+const worktreeCreateBranch = ref(true);
+
+async function refreshGit(): Promise<void> {
+  if (!props.instanceId || !files.workspace) return;
+  await Promise.all([git.load(props.instanceId, files.workspace), files.loadDiff()]);
+}
+
+async function runGit(action: () => Promise<unknown>): Promise<boolean> {
+  const context = { instanceId: props.instanceId, workspace: files.workspace };
+  try {
+    await action();
+    if (props.instanceId === context.instanceId && files.workspace === context.workspace) {
+      await files.loadDiff();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stage(paths: string[]): Promise<void> {
+  if (!props.instanceId || !files.workspace || !paths.length) return;
+  await runGit(() => git.stage(props.instanceId!, files.workspace!, paths));
+}
+
+async function unstage(paths: string[]): Promise<void> {
+  if (!props.instanceId || !files.workspace || !paths.length) return;
+  await runGit(() => git.unstage(props.instanceId!, files.workspace!, paths));
+}
+
+async function commitStaged(): Promise<void> {
+  const message = commitMessage.value.trim();
+  if (!props.instanceId || !files.workspace || !message || !stagedPaths.value.length) return;
+  if (await runGit(() => git.commit(props.instanceId!, files.workspace!, message))) commitMessage.value = "";
+}
+
+async function switchBranch(event: Event): Promise<void> {
+  const select = event.target as HTMLSelectElement;
+  const branch = select.value;
+  if (!props.instanceId || !files.workspace || !branch || branch === git.status?.branch) return;
+  if (!await runGit(() => git.checkout(props.instanceId!, files.workspace!, { branch }))) {
+    select.value = git.status?.branch ?? "";
+  }
+}
+
+async function createBranch(): Promise<void> {
+  const branch = branchName.value.trim();
+  if (!props.instanceId || !files.workspace || !branch) return;
+  const ok = await runGit(() => git.checkout(props.instanceId!, files.workspace!, {
+    branch,
+    create: true,
+    ...(branchStart.value.trim() ? { startPoint: branchStart.value.trim() } : {}),
+  }));
+  if (ok) {
+    branchName.value = "";
+    branchStart.value = "";
+    showBranchCreate.value = false;
+  }
+}
+
+async function fetchRemote(): Promise<void> {
+  if (props.instanceId && files.workspace) await runGit(() => git.fetch(props.instanceId!, files.workspace!));
+}
+
+async function pullRemote(): Promise<void> {
+  if (props.instanceId && files.workspace) await runGit(() => git.pull(props.instanceId!, files.workspace!));
+}
+
+async function pushRemote(): Promise<void> {
+  if (!props.instanceId || !files.workspace) return;
+  let setUpstream = false;
+  if (!git.status?.upstream) {
+    setUpstream = await confirm({
+      title: t("files.git.pushFirstTitle"),
+      message: t("files.git.pushFirstBody", { branch: git.status?.branch ?? "HEAD" }),
+      confirmLabel: t("files.git.pushAndTrack"),
+      cancelLabel: t("files.cancel"),
+    });
+    if (!setUpstream) return;
+  }
+  await runGit(() => git.push(props.instanceId!, files.workspace!, setUpstream ? { setUpstream: true, remote: "origin" } : {}));
+}
+
+function beginWorktreeCreate(): void {
+  const branch = git.status?.branch ?? "main";
+  worktreeBranch.value = "";
+  worktreeStart.value = branch;
+  const base = slugify(`${files.workspace ?? "workspace"}-worktree`) || "worktree";
+  const existing = instances.byId(props.instanceId ?? "")?.workspaces.map((item) => item.name) ?? [];
+  worktreeWorkspace.value = uniqueName(base, existing);
+  worktreeCreateBranch.value = true;
+  showWorktreeCreate.value = true;
+}
+
+async function createWorktree(): Promise<void> {
+  const id = props.instanceId;
+  const workspace = files.workspace;
+  const branch = worktreeBranch.value.trim();
+  const workspaceName = worktreeWorkspace.value.trim();
+  const agent = activeSession.value?.agent;
+  if (!id || !workspace || !branch || !workspaceName || !agent) return;
+  try {
+    const created = await git.createWorktree(id, workspace, {
+      workspaceName,
+      branch,
+      createBranch: worktreeCreateBranch.value,
+      ...(worktreeCreateBranch.value && worktreeStart.value.trim() ? { startPoint: worktreeStart.value.trim() } : {}),
+    });
+    await instances.loadWorkspaces(id).catch(() => {});
+    const existingAliases = instances.byId(id)?.sessions.map((session) => session.alias) ?? [];
+    const alias = uniqueName(genAlias(created.workspace.name, agent), existingAliases);
+    if (instances.beginSessionCreation(id, alias, agent, created.workspace.name)) chat.select(id, alias);
+    showWorktreeCreate.value = false;
+  } catch {
+    // The Git store owns the actionable inline error and operation lifecycle.
+  }
+}
 
 // Changes summary: `N files · +X −Y`, derived (read-only) from the loaded diff.
 const changesSummary = computed(() => {
@@ -221,6 +385,7 @@ watch(
   () => [props.instanceId, activeWorkspace.value] as const,
   async ([id, ws]) => {
     files.reset();
+    git.reset();
     searchInput.value = "";
     selectedDiff.value = null;
     if (!id) return;
@@ -234,7 +399,7 @@ watch(
     // session switch (the tab value is unchanged), so the Changes tab would sit on the
     // "no diff loaded" placeholder until a manual refresh. Load it here when it's the
     // active view so switching sessions auto-shows the new workspace's changes.
-    if (files.tab === "changes") void files.loadDiff();
+    if (files.tab === "changes") void Promise.all([files.loadDiff(), git.load(id, target)]);
   },
   { immediate: true },
 );
@@ -242,7 +407,10 @@ watch(
 watch(
   () => files.tab,
   (t) => {
-    if (t === "changes" && !files.diff) void files.loadDiff();
+    if (t === "changes" && files.instanceId && files.workspace) {
+      if (!files.diff) void files.loadDiff();
+      void git.load(files.instanceId, files.workspace);
+    }
   },
 );
 </script>
@@ -276,7 +444,7 @@ watch(
             :aria-label="$t('files.refresh')"
             class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
             :disabled="files.loading"
-            @click="files.refresh()"
+            @click="files.tab === 'changes' ? refreshGit() : files.refresh()"
           >
             <RefreshCw :size="13" :class="files.loading ? 'animate-spin motion-reduce:animate-none' : ''" />
           </button>
@@ -389,39 +557,95 @@ watch(
       <!-- Changes (git status) tab: pinned summary; only the changed-files list scrolls. -->
       <div v-else class="flex min-h-0 flex-1 flex-col">
         <template v-if="files.diff">
-          <!-- pinned git context: branch / detached + worktree, then the change counts -->
+          <!-- Compact Git context and operations (A), with expandable worktree context (C). -->
           <div class="shrink-0 border-b border-border">
-            <div data-test="changes-summary" class="flex items-center gap-1.5 px-2.5 pt-2" :class="gitCtx?.worktree ? 'pb-1' : 'pb-2'">
+            <div data-test="changes-summary" class="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
               <GitBranch :size="12" class="shrink-0 text-accent" />
-              <span v-if="gitCtx?.branch" data-test="changes-branch" class="truncate font-mono text-[11.5px] font-medium text-fg">{{ gitCtx.branch }}</span>
+              <select v-if="git.status?.branch" data-test="git-branch-select" :value="git.status.branch" :disabled="gitBusy"
+                      class="min-w-0 max-w-[45%] truncate rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg disabled:opacity-50"
+                      @change="switchBranch">
+                <option v-for="branch in git.status.branches" :key="branch.name" :value="branch.name"
+                        :disabled="!!branch.worktreePath && !branch.current">{{ branch.name }}{{ branch.worktreePath && !branch.current ? ` · ${$t('files.git.inWorktree')}` : '' }}</option>
+              </select>
+              <span v-else-if="gitCtx?.branch" data-test="changes-branch" class="truncate font-mono text-[11.5px] font-medium text-fg">{{ gitCtx.branch }}</span>
               <span v-else-if="gitCtx?.detached" data-test="changes-branch" class="truncate font-mono text-[11.5px] italic text-fg-muted">{{ $t("files.detached") }}</span>
               <span v-else class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
               <span v-if="gitCtx?.worktree?.linked" data-test="worktree-linked"
                     class="shrink-0 rounded-full border border-accent/30 bg-accent/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">{{ $t("files.linked") }}</span>
               <span class="flex-1" />
+              <button data-test="git-new-branch" :title="$t('files.git.newBranch')" :disabled="gitBusy"
+                      class="grid h-6 w-6 place-items-center rounded text-fg-muted hover:bg-raised hover:text-accent disabled:opacity-50"
+                      @click="showBranchCreate = !showBranchCreate"><Plus :size="12" /></button>
+              <button data-test="git-worktrees-toggle" :title="$t('files.git.worktrees')" :disabled="gitBusy"
+                      class="grid h-6 w-6 place-items-center rounded text-fg-muted hover:bg-raised hover:text-accent disabled:opacity-50"
+                      @click="showWorktrees = !showWorktrees"><FolderGit2 :size="12" /></button>
               <div v-if="changesSummary" class="flex shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums">
                 <span class="text-fg-muted">{{ changesSummary.fileCount }} {{ $t("files.filesCount") }}</span>
                 <span class="text-run">+{{ changesSummary.add }}</span>
                 <span class="text-danger">−{{ changesSummary.del }}</span>
               </div>
             </div>
+            <div v-if="showBranchCreate" data-test="git-branch-create" class="mx-2.5 mb-1.5 space-y-1 rounded border border-border bg-bg p-1.5">
+              <input v-model="branchName" data-test="git-new-branch-name" :placeholder="$t('files.git.branchName')"
+                     class="w-full rounded border border-border bg-surface px-2 py-1 text-[11px] text-fg" />
+              <div class="flex gap-1">
+                <input v-model="branchStart" :placeholder="$t('files.git.startPoint')"
+                       class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-[11px] text-fg" />
+                <button data-test="git-create-branch" :disabled="gitBusy || !branchName.trim()"
+                        class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-white disabled:opacity-50" @click="createBranch">{{ $t("files.git.create") }}</button>
+              </div>
+            </div>
+            <div class="flex items-center gap-1 px-2.5 pb-1 text-[10.5px]">
+              <span class="min-w-0 flex-1 truncate font-mono text-fg-muted" :title="git.status?.upstream">
+                {{ git.status?.upstream ?? $t("files.git.noUpstream") }}
+                <template v-if="git.status?.ahead || git.status?.behind"> · ↑{{ git.status.ahead }} ↓{{ git.status.behind }}</template>
+              </span>
+              <button data-test="git-fetch" :disabled="gitBusy" class="rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="fetchRemote">{{ $t("files.git.fetch") }}</button>
+              <button data-test="git-pull" :disabled="gitBusy" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pullRemote"><Download :size="10" />{{ $t("files.git.pull") }}</button>
+              <button data-test="git-push" :disabled="gitBusy" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pushRemote"><Upload :size="10" />{{ $t("files.git.push") }}</button>
+            </div>
+            <div v-if="showWorktrees" data-test="git-worktrees" class="border-t border-border/70 px-2.5 py-1.5 text-[10.5px]">
+              <div v-for="tree in git.status?.worktrees ?? []" :key="tree.path" class="flex items-center gap-1.5 py-0.5">
+                <FolderGit2 :size="10" :class="tree.current ? 'text-accent' : 'text-fg-muted'" />
+                <span class="shrink-0 font-mono text-fg">{{ tree.branch ?? $t("files.detached") }}</span>
+                <span class="min-w-0 flex-1 truncate font-mono text-fg-muted" :title="tree.path">{{ tree.path }}</span>
+              </div>
+              <button data-test="git-new-worktree" class="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-1 text-accent hover:bg-accent/10" @click="beginWorktreeCreate"><Plus :size="10" />{{ $t("files.git.newWorktree") }}</button>
+              <div v-if="showWorktreeCreate" data-test="git-worktree-create" class="mt-1 space-y-1 rounded border border-border bg-bg p-1.5">
+                <label class="flex items-center gap-1"><input v-model="worktreeCreateBranch" type="checkbox" class="accent-accent" />{{ $t("files.git.createBranch") }}</label>
+                <input v-model="worktreeBranch" data-test="git-worktree-branch" :placeholder="$t('files.git.branchName')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
+                <input v-model="worktreeWorkspace" data-test="git-worktree-workspace" :placeholder="$t('files.git.workspaceName')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
+                <input v-if="worktreeCreateBranch" v-model="worktreeStart" :placeholder="$t('files.git.startPoint')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
+                <button data-test="git-create-worktree" :disabled="gitBusy || !worktreeBranch.trim() || !worktreeWorkspace.trim() || !activeSession?.agent"
+                        class="rounded bg-accent px-2 py-1 font-medium text-white disabled:opacity-50" @click="createWorktree">{{ $t("files.git.createAndOpen") }}</button>
+              </div>
+            </div>
             <div v-if="gitCtx?.worktree" data-test="worktree-path" class="flex items-center gap-1.5 px-2.5 pb-2 text-[10px] text-fg-muted" :title="`${$t('files.worktree')}: ${gitCtx.worktree.root}`">
               <FolderGit2 :size="11" class="shrink-0 opacity-70" />
               <span class="truncate font-mono" dir="rtl">{{ gitCtx.worktree.root }}</span>
             </div>
+            <div v-if="gitMessage" data-test="git-operation-message" class="flex items-center gap-1 border-t border-border/70 px-2.5 py-1 text-[10.5px]" :class="gitMessage.ok ? 'text-fg-muted' : 'bg-danger/10 text-danger'">
+              <Loader2 v-if="git.operation" :size="10" class="animate-spin motion-reduce:animate-none" />
+              <span class="break-all">{{ gitMessage.text }}</span>
+            </div>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-2">
             <div v-for="s in changeSections" :key="s.key" data-test="change-group">
-              <button class="flex w-full items-center gap-1.5 px-1 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted transition-colors hover:text-fg"
-                      @click="toggleGroup(s.key)">
-                <ChevronRight :size="11" class="shrink-0 transition-transform" :class="collapsed[s.key] ? '' : 'rotate-90'" />
-                <span>{{ $t(`files.${s.key}`) }}</span>
-                <span class="text-fg-muted/60">{{ s.items.length }}</span>
-              </button>
+              <div class="flex items-center">
+                <button class="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted transition-colors hover:text-fg"
+                        @click="toggleGroup(s.key)">
+                  <ChevronRight :size="11" class="shrink-0 transition-transform" :class="collapsed[s.key] ? '' : 'rotate-90'" />
+                  <span>{{ $t(`files.${s.key}`) }}</span>
+                  <span class="text-fg-muted/60">{{ s.items.length }}</span>
+                </button>
+                <button v-if="s.key !== 'staged'" data-test="git-stage-group" :disabled="gitBusy"
+                        class="rounded px-1 py-0.5 text-[10px] text-accent hover:bg-accent/10 disabled:opacity-50"
+                        @click="stage(s.items.map((item) => item.path))">{{ $t("files.git.stageAll") }}</button>
+              </div>
               <ul v-show="!collapsed[s.key]" class="space-y-px pt-0.5">
-                <li v-for="f in s.items" :key="f.path">
+                <li v-for="f in s.items" :key="f.path" class="group flex items-center">
                   <button data-test="diff-file" :title="f.path"
-                          class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
+                          class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
                           :class="selectedDiff === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
                     <span class="w-3 shrink-0 text-center font-mono text-[10.5px] uppercase" :class="statusBadge(f.status).cls">{{ statusBadge(f.status).label }}</span>
                     <span class="flex min-w-0 flex-1 items-baseline truncate font-mono text-[11px]">
@@ -429,10 +653,28 @@ watch(
                       <span class="shrink-0" :class="selectedDiff === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
                     </span>
                   </button>
+                  <button v-if="s.key === 'staged'" :data-test="`git-unstage-${f.path}`" :title="$t('files.git.unstage')" :disabled="gitBusy"
+                          class="shrink-0 rounded px-1 py-0.5 text-[10px] text-fg-muted opacity-70 hover:bg-raised hover:text-fg group-hover:opacity-100 disabled:opacity-30"
+                          @click.stop="unstage([f.path])">−</button>
+                  <button v-else :data-test="`git-stage-${f.path}`" :title="$t('files.git.stage')" :disabled="gitBusy"
+                          class="shrink-0 rounded px-1 py-0.5 text-[10px] text-fg-muted opacity-70 hover:bg-raised hover:text-accent group-hover:opacity-100 disabled:opacity-30"
+                          @click.stop="stage([f.path])">+</button>
                 </li>
               </ul>
             </div>
             <div v-if="!changeSections.length" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.noChanges") }}</div>
+          </div>
+          <div class="shrink-0 border-t border-border bg-surface p-2">
+            <textarea v-model="commitMessage" data-test="git-commit-message" rows="2" :placeholder="$t('files.git.commitPlaceholder')"
+                      class="w-full resize-none rounded border border-border bg-bg px-2 py-1.5 text-[11.5px] text-fg placeholder:text-fg-muted disabled:opacity-50"
+                      :disabled="gitBusy" @keydown.meta.enter.prevent="commitStaged" @keydown.ctrl.enter.prevent="commitStaged" />
+            <div class="mt-1 flex items-center gap-1.5">
+              <span class="min-w-0 flex-1 truncate text-[10px] text-fg-muted">{{ $t("files.git.commitStaged", { n: stagedPaths.length }) }}</span>
+              <button v-if="stageablePaths.length" data-test="git-stage-all" :disabled="gitBusy"
+                      class="rounded px-2 py-1 text-[10.5px] text-accent hover:bg-accent/10 disabled:opacity-50" @click="stage(stageablePaths)">{{ $t("files.git.stageAll") }}</button>
+              <button data-test="git-commit" :disabled="gitBusy || !commitMessage.trim() || !stagedPaths.length"
+                      class="rounded bg-accent px-2.5 py-1 text-[10.5px] font-semibold text-white disabled:opacity-40" @click="commitStaged">{{ $t("files.git.commit") }}</button>
+            </div>
           </div>
         </template>
         <!-- A non-git workspace is normal here — a calm note, not an error banner. -->
