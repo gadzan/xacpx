@@ -10,7 +10,8 @@ import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { groupChanges, splitPath } from "../lib/change-groups";
 import { openMenuKey, ROOT_MENU_KEY } from "../lib/tree-menu";
 import { confirm } from "../lib/use-confirm";
-import { genAlias, slugify, uniqueName } from "../lib/session-form";
+import { slugify, uniqueName } from "../lib/session-form";
+import { useWorktreeSession } from "../lib/use-worktree-session";
 import FileTreeNode from "./FileTreeNode.vue";
 import ContextMenu from "./ContextMenu.vue";
 
@@ -29,6 +30,7 @@ const git = useGitStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
 const centerTabs = useCenterTabsStore();
+const worktreeSession = useWorktreeSession();
 
 // The session whose center tabs a click here should open a tab on — null when no
 // session is selected, in which case opening a file/diff from the rail is a no-op.
@@ -249,10 +251,7 @@ async function createWorktree(): Promise<void> {
       createBranch: worktreeCreateBranch.value,
       ...(worktreeCreateBranch.value && worktreeStart.value.trim() ? { startPoint: worktreeStart.value.trim() } : {}),
     });
-    await instances.loadWorkspaces(id).catch(() => {});
-    const existingAliases = instances.byId(id)?.sessions.map((session) => session.alias) ?? [];
-    const alias = uniqueName(genAlias(created.workspace.name, agent), existingAliases);
-    if (instances.beginSessionCreation(id, alias, agent, created.workspace.name)) chat.select(id, alias);
+    await worktreeSession.open(id, agent, created.workspace.name);
     showWorktreeCreate.value = false;
   } catch {
     // The Git store owns the actionable inline error and operation lifecycle.

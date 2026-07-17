@@ -121,6 +121,28 @@ export class WorkspaceGit {
     return paths;
   }
 
+  private async validateBranch(root: string, raw: string): Promise<string> {
+    const branch = raw.trim();
+    if (!branch) throw new Error("branch-required");
+    try {
+      await this.run(root, ["check-ref-format", "--branch", branch]);
+    } catch {
+      throw new Error("invalid-branch-name");
+    }
+    return branch;
+  }
+
+  private async validateStartPoint(root: string, raw?: string): Promise<string | undefined> {
+    const startPoint = raw?.trim();
+    if (!startPoint) return undefined;
+    try {
+      await this.run(root, ["rev-parse", "--verify", "--end-of-options", `${startPoint}^{commit}`]);
+    } catch {
+      throw new Error("invalid-start-point");
+    }
+    return startPoint;
+  }
+
   /** Git write commands for one configured workspace share a FIFO. Reads remain
    * concurrent, and a failed write releases the next command instead of poisoning
    * the queue. */
@@ -174,25 +196,12 @@ export class WorkspaceGit {
   async checkout(workspace: string, options: GitCheckoutOptions): Promise<void> {
     await this.withWrite(workspace, async () => {
       const root = await this.rootFor(workspace);
-      const branch = options.branch.trim();
-      if (!branch) throw new Error("branch-required");
-      try {
-        await this.run(root, ["check-ref-format", "--branch", branch]);
-      } catch {
-        throw new Error("invalid-branch-name");
-      }
+      const branch = await this.validateBranch(root, options.branch);
       if ((await this.runRaw(root, ["status", "--porcelain", "-z"])) !== "") {
         throw new Error("dirty-worktree");
       }
       if (options.create) {
-        const startPoint = options.startPoint?.trim();
-        if (startPoint) {
-          try {
-            await this.run(root, ["rev-parse", "--verify", "--end-of-options", `${startPoint}^{commit}`]);
-          } catch {
-            throw new Error("invalid-start-point");
-          }
-        }
+        const startPoint = await this.validateStartPoint(root, options.startPoint);
         await this.run(root, ["switch", "-c", branch, ...(startPoint ? [startPoint] : [])]);
         return;
       }
@@ -249,21 +258,8 @@ export class WorkspaceGit {
   ): Promise<GitWorktreeCreateResult> {
     return this.withWrite(workspace, async () => {
       const root = await this.rootFor(workspace);
-      const branch = options.branch.trim();
-      if (!branch) throw new Error("branch-required");
-      try {
-        await this.run(root, ["check-ref-format", "--branch", branch]);
-      } catch {
-        throw new Error("invalid-branch-name");
-      }
-      const startPoint = options.startPoint?.trim();
-      if (startPoint) {
-        try {
-          await this.run(root, ["rev-parse", "--verify", "--end-of-options", `${startPoint}^{commit}`]);
-        } catch {
-          throw new Error("invalid-start-point");
-        }
-      }
+      const branch = await this.validateBranch(root, options.branch);
+      const startPoint = await this.validateStartPoint(root, options.startPoint);
 
       await mkdir(this.managedWorktreesRoot, { recursive: true });
       const managedRoot = await realpath(this.managedWorktreesRoot);

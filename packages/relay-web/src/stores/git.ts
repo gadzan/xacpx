@@ -75,7 +75,7 @@ export const useGitStore = defineStore("git", () => {
     return requestStatus(instanceId, workspace);
   }
 
-  async function run<T>(
+  async function runGitOperation<T>(
     kind: GitOperationKind,
     instanceId: string,
     workspace: string,
@@ -103,31 +103,31 @@ export const useGitStore = defineStore("git", () => {
   }
 
   function stage(instanceId: string, workspace: string, paths: string[]): Promise<{ ok: true }> {
-    return run("stage", instanceId, workspace, MSG.gitStage, { workspace, paths });
+    return runGitOperation("stage", instanceId, workspace, MSG.gitStage, { workspace, paths });
   }
 
   function unstage(instanceId: string, workspace: string, paths: string[]): Promise<{ ok: true }> {
-    return run("unstage", instanceId, workspace, MSG.gitUnstage, { workspace, paths });
+    return runGitOperation("unstage", instanceId, workspace, MSG.gitUnstage, { workspace, paths });
   }
 
   function commit(instanceId: string, workspace: string, message: string): Promise<GitCommitResult> {
-    return run("commit", instanceId, workspace, MSG.gitCommit, { workspace, message });
+    return runGitOperation("commit", instanceId, workspace, MSG.gitCommit, { workspace, message });
   }
 
   function fetch(instanceId: string, workspace: string, options: Omit<GitFetchPayload, "workspace"> = {}): Promise<{ ok: true }> {
-    return run("fetch", instanceId, workspace, MSG.gitFetch, { workspace, ...options });
+    return runGitOperation("fetch", instanceId, workspace, MSG.gitFetch, { workspace, ...options });
   }
 
   function pull(instanceId: string, workspace: string): Promise<{ ok: true }> {
-    return run("pull", instanceId, workspace, MSG.gitPull, { workspace });
+    return runGitOperation("pull", instanceId, workspace, MSG.gitPull, { workspace });
   }
 
   function push(instanceId: string, workspace: string, options: Omit<GitPushPayload, "workspace"> = {}): Promise<{ ok: true }> {
-    return run("push", instanceId, workspace, MSG.gitPush, { workspace, ...options });
+    return runGitOperation("push", instanceId, workspace, MSG.gitPush, { workspace, ...options });
   }
 
   function checkout(instanceId: string, workspace: string, options: Omit<GitCheckoutPayload, "workspace">): Promise<{ ok: true }> {
-    return run("checkout", instanceId, workspace, MSG.gitCheckout, { workspace, ...options });
+    return runGitOperation("checkout", instanceId, workspace, MSG.gitCheckout, { workspace, ...options });
   }
 
   function createWorktree(
@@ -135,7 +135,7 @@ export const useGitStore = defineStore("git", () => {
     workspace: string,
     options: Omit<GitWorktreeCreatePayload, "workspace">,
   ): Promise<GitWorktreeCreateResult> {
-    return run("worktree-create", instanceId, workspace, MSG.gitWorktreeCreate, { workspace, ...options });
+    return runGitOperation("worktree-create", instanceId, workspace, MSG.gitWorktreeCreate, { workspace, ...options });
   }
 
   function reset(): void {
