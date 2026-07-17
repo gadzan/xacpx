@@ -33,6 +33,24 @@ function makeFakeControl(overrides: Record<string, unknown> = {}) {
       record("fsWrite", { workspace, path, content, expected });
       return { path, mtimeMs: 2, size: content.length };
     },
+    workspaceGitStatus: async (workspace: string) => ({
+      workspace, branch: "main", detached: false, ahead: 0, behind: 0,
+      worktree: { root: "/repo", linked: false }, files: [], branches: [], worktrees: [],
+    }),
+    gitStage: async (workspace: string, paths: string[]) => { record("gitStage", { workspace, paths }); },
+    gitUnstage: async (workspace: string, paths: string[]) => { record("gitUnstage", { workspace, paths }); },
+    gitCommit: async (workspace: string, message: string) => {
+      record("gitCommit", { workspace, message });
+      return { hash: "abcdef123456", shortHash: "abcdef1", summary: message };
+    },
+    gitFetch: async (workspace: string, remote?: string) => { record("gitFetch", { workspace, remote }); },
+    gitPull: async (workspace: string) => { record("gitPull", { workspace }); },
+    gitPush: async (workspace: string, options?: unknown) => { record("gitPush", { workspace, options }); },
+    gitCheckout: async (workspace: string, options: unknown) => { record("gitCheckout", { workspace, options }); },
+    gitCreateWorktree: async (workspace: string, input: { workspaceName: string; branch: string }) => {
+      record("gitCreateWorktree", { workspace, input });
+      return { worktree: { path: "/managed/wt", branch: input.branch, linked: true }, workspace: { name: input.workspaceName, cwd: "/managed/wt" } };
+    },
     cancelTurn: (chatKey: string, alias: string) => { record("cancelTurn", { chatKey, alias }); return true; },
     cancelQueuedItem: (chatKey: string, alias: string, itemId: string) => {
       record("cancelQueuedItem", { chatKey, alias, itemId });
@@ -92,6 +110,38 @@ test("queue.cancel dispatches to cancelQueuedItem and returns its result", async
   const result = await dispatch(bridge, req(MSG.queueCancel, { chatKey: "relay:acct", sessionAlias: "a", itemId: "q1" }));
   expect(result).toEqual({ cancelled: true });
   expect(calls.cancelQueuedItem?.[0]).toEqual({ chatKey: "relay:acct", alias: "a", itemId: "q1" });
+});
+
+test("git.status dispatches through the structured ControlService method", async () => {
+  const { control } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.gitStatus, { workspace: "project" }))).toEqual({
+    workspace: "project", branch: "main", detached: false, ahead: 0, behind: 0,
+    worktree: { root: "/repo", linked: false }, files: [], branches: [], worktrees: [],
+  });
+});
+
+test("structured Git mutation RPCs dispatch without accepting raw commands", async () => {
+  const { control, calls } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+
+  expect(await dispatch(bridge, req(MSG.gitStage, { workspace: "project", paths: ["a.ts"] }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitUnstage, { workspace: "project", paths: ["a.ts"] }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitCommit, { workspace: "project", message: "feat: x" }))).toMatchObject({ shortHash: "abcdef1" });
+  expect(await dispatch(bridge, req(MSG.gitFetch, { workspace: "project", remote: "origin" }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitPull, { workspace: "project" }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitPush, { workspace: "project", setUpstream: true, remote: "origin" }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitCheckout, { workspace: "project", branch: "feature", create: true, startPoint: "main" }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitWorktreeCreate, {
+    workspace: "project", workspaceName: "project-feature", branch: "feature", createBranch: true,
+  }))).toMatchObject({ workspace: { name: "project-feature" } });
+
+  expect(calls.gitStage?.[0]).toEqual({ workspace: "project", paths: ["a.ts"] });
+  expect(calls.gitPush?.[0]).toEqual({ workspace: "project", options: { setUpstream: true, remote: "origin" } });
+  expect(calls.gitCheckout?.[0]).toEqual({ workspace: "project", options: { branch: "feature", create: true, startPoint: "main" } });
+  expect(await dispatch(bridge, req(MSG.gitWorktreeCreate, {
+    workspace: "project", workspaceName: "escape", branch: "feature", path: "/tmp/escape",
+  }))).toEqual({ error: { code: "invalid-payload", message: `${MSG.gitWorktreeCreate}: malformed payload` } });
 });
 
 test("session.model.set returns the authoritative reconciled model", async () => {

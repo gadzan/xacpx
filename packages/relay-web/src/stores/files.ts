@@ -52,11 +52,15 @@ export const useFilesStore = defineStore("files", () => {
   const expanded = ref<Set<string>>(new Set());
   const loadingDirs = ref<Set<string>>(new Set());
   const hits = ref<FsSearchHitDto[]>([]);
+  let diffRequestId = 0;
+  let workspaceEpoch = 0;
   const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string }>({
     mode: "content", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "",
   });
 
   function reset(): void {
+    diffRequestId++;
+    workspaceEpoch++;
     workspace.value = null;
     path.value = "";
     entries.value = [];
@@ -67,6 +71,7 @@ export const useFilesStore = defineStore("files", () => {
     changed.value = {};
     query.value = "";
     results.value = [];
+    loading.value = false;
     error.value = "";
     tree.value = {};
     expanded.value = new Set();
@@ -80,8 +85,11 @@ export const useFilesStore = defineStore("files", () => {
   }
 
   async function selectWorkspace(id: string, ws: string): Promise<void> {
+    diffRequestId++;
+    const epoch = ++workspaceEpoch;
     instanceId.value = id;
     workspace.value = ws;
+    loading.value = false;
     file.value = null;
     diff.value = null;
     diffPath.value = null;
@@ -92,6 +100,7 @@ export const useFilesStore = defineStore("files", () => {
     tree.value = {}; hits.value = [];
     try { expanded.value = new Set(JSON.parse(localStorage.getItem(expandedKey()) ?? "[]") as string[]); } catch { expanded.value = new Set(); }
     await listTree("");
+    if (epoch !== workspaceEpoch || instanceId.value !== id || workspace.value !== ws) return;
     // Mirror the root layer into the flat path/entries state — the Changes tab and
     // any surviving flat-view consumers read those, not `tree`, after selectWorkspace.
     path.value = "";
@@ -169,15 +178,25 @@ export const useFilesStore = defineStore("files", () => {
   /** Fetch one directory layer into the tree cache, recording root/sep along the way. */
   async function listTree(dir: string): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
+    const id = instanceId.value;
+    const ws = workspace.value;
+    const epoch = workspaceEpoch;
+    const isCurrent = () => epoch === workspaceEpoch
+      && instanceId.value === id
+      && workspace.value === ws;
     loadingDirs.value = new Set(loadingDirs.value).add(dir);
     try {
-      const r = unwrap(await api.rpc<FsListResult>(instanceId.value, "control.fs.list", { workspace: workspace.value, path: dir }));
+      const r = unwrap(await api.rpc<FsListResult>(id, "control.fs.list", { workspace: ws, path: dir }));
+      if (!isCurrent()) return;
       root.value = r.root; sepChar.value = r.sep;
       tree.value = { ...tree.value, [dir]: r.entries };
     } catch (e) {
+      if (!isCurrent()) return;
       error.value = e instanceof Error ? e.message : "list-failed";
     } finally {
-      const next = new Set(loadingDirs.value); next.delete(dir); loadingDirs.value = next;
+      if (isCurrent()) {
+        const next = new Set(loadingDirs.value); next.delete(dir); loadingDirs.value = next;
+      }
     }
   }
 
@@ -345,13 +364,22 @@ export const useFilesStore = defineStore("files", () => {
   /** Load the git diff for the whole tree (path omitted) or one file. */
   async function loadDiff(filePath?: string): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
+    const id = instanceId.value;
+    const ws = workspace.value;
+    const requestId = ++diffRequestId;
+    const isCurrent = () => requestId === diffRequestId
+      && instanceId.value === id
+      && workspace.value === ws;
     loading.value = true;
     error.value = "";
     diffPath.value = filePath ?? null;
     try {
-      diff.value = unwrap(await api.rpc<FsDiffResult>(instanceId.value, "control.fs.diff", { workspace: workspace.value, ...(filePath ? { path: filePath } : {}) }));
+      const result = unwrap(await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws, ...(filePath ? { path: filePath } : {}) }));
+      if (!isCurrent()) return;
+      diff.value = result;
       notGit.value = false;
     } catch (e) {
+      if (!isCurrent()) return;
       const msg = e instanceof Error ? e.message : "diff-failed";
       diff.value = null;
       // A non-git workspace is an expected state for the Changes tab — surface it as a
@@ -362,7 +390,7 @@ export const useFilesStore = defineStore("files", () => {
         error.value = msg;
       }
     } finally {
-      loading.value = false;
+      if (isCurrent()) loading.value = false;
     }
   }
 

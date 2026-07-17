@@ -42,6 +42,15 @@ export const MSG = {
   fsCopy: "control.fs.copy",
   fsDownload: "control.fs.download",
   fsWrite: "control.fs.write",
+  gitStatus: "control.git.status",
+  gitStage: "control.git.stage",
+  gitUnstage: "control.git.unstage",
+  gitCommit: "control.git.commit",
+  gitFetch: "control.git.fetch",
+  gitPull: "control.git.pull",
+  gitPush: "control.git.push",
+  gitCheckout: "control.git.checkout",
+  gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
@@ -356,6 +365,41 @@ export interface FsDiffResult {
   detached?: boolean;
   /** Working-tree context: top-level root, and whether it's a linked (non-primary) worktree. */
   worktree?: { root: string; linked: boolean };
+}
+
+// --- structured Git operations (scoped to a configured workspace) ---
+export interface GitStatusPayload { workspace: string; }
+export interface GitBranchDto { name: string; current: boolean; worktreePath?: string; }
+export interface GitWorktreeDto { path: string; branch?: string; detached?: boolean; current: boolean; linked: boolean; }
+export interface GitStatusResult {
+  workspace: string;
+  branch?: string;
+  detached: boolean;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  worktree: { root: string; linked: boolean };
+  files: FsDiffFileDto[];
+  branches: GitBranchDto[];
+  worktrees: GitWorktreeDto[];
+}
+export interface GitPathsPayload { workspace: string; paths: string[]; }
+export interface GitCommitPayload { workspace: string; message: string; }
+export interface GitCommitResult { hash: string; shortHash: string; summary: string; }
+export interface GitFetchPayload { workspace: string; remote?: string; }
+export interface GitPullPayload { workspace: string; }
+export interface GitPushPayload { workspace: string; setUpstream?: boolean; remote?: string; }
+export interface GitCheckoutPayload { workspace: string; branch: string; create?: boolean; startPoint?: string; }
+export interface GitWorktreeCreatePayload {
+  workspace: string;
+  workspaceName: string;
+  branch: string;
+  createBranch?: boolean;
+  startPoint?: string;
+}
+export interface GitWorktreeCreateResult {
+  worktree: { path: string; branch: string; linked: true };
+  workspace: WorkspaceDto;
 }
 export interface FsSearchPayload {
   workspace: string;

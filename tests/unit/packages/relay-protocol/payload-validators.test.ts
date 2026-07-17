@@ -48,6 +48,23 @@ test("upload requires filename, content, mimeType strings", () => {
   expect(parseControlPayload(MSG.upload, { filename: "a", content: "b64" })).toBeNull();
 });
 
+test("Git RPC payloads accept only structured operations", () => {
+  expect(parseControlPayload(MSG.gitStatus, { workspace: "project" })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitStage, { workspace: "project", paths: ["a.ts"] })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitStage, { workspace: "project", paths: [1] })).toBeNull();
+  expect(parseControlPayload(MSG.gitCommit, { workspace: "project", message: "feat: x" })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitFetch, { workspace: "project", remote: "origin" })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitPull, { workspace: "project" })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitPush, { workspace: "project", setUpstream: true, remote: "origin" })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitCheckout, { workspace: "project", branch: "feature", create: true, startPoint: "main" })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitWorktreeCreate, {
+    workspace: "project", workspaceName: "project-feature", branch: "feature", createBranch: true,
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitWorktreeCreate, {
+    workspace: "project", workspaceName: "project-feature", branch: "feature", path: "/tmp/escape",
+  } as never)).toBeNull();
+});
+
 test("every registered validator returns null for a non-object payload", () => {
   for (const type of Object.keys(CONTROL_PAYLOAD_VALIDATORS) as (keyof typeof CONTROL_PAYLOAD_VALIDATORS)[]) {
     expect(CONTROL_PAYLOAD_VALIDATORS[type](null)).toBeNull();

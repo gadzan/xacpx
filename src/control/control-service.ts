@@ -22,6 +22,15 @@ import type { ControlEventBus } from "./control-event-bus";
 import { readNativeSessionHistory, type NativeHistoryMessage } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
 import { WorkspaceFs, type DirListing, type FileContent, type SearchOptions, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
+import {
+  WorkspaceGit,
+  type GitCheckoutOptions,
+  type GitCommitResult,
+  type GitPushOptions,
+  type GitStatus,
+  type GitWorktreeCreateOptions,
+  type GitWorktreeCreateResult,
+} from "./workspace-git";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
@@ -137,6 +146,8 @@ export interface ControlServiceDeps {
   terminal: import("./terminal-service").TerminalService;
   terminalEnabled: () => boolean;
   filesWriteEnabled: () => boolean;
+  /** Test/embedding override; production defaults to ~/.xacpx/worktrees. */
+  gitWorktreesRoot?: string;
   // Inactivity watchdog threshold in ms for in-flight turns; absent ⇒ disabled. Wired in
   // main.ts from transport.turnIdleTimeoutSeconds. Optional so existing tests need no change.
   turnIdleTimeoutMs?: () => number;
@@ -194,9 +205,15 @@ export interface ControlExecuteCommandInput {
 export class ControlService {
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
+  private readonly workspaceGit: WorkspaceGit;
   private readonly modelSetTails = new Map<string, Promise<void>>();
+  private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
+    this.workspaceGit = new WorkspaceGit(
+      () => this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
+      { ...(deps.gitWorktreesRoot ? { managedWorktreesRoot: deps.gitWorktreesRoot } : {}) },
+    );
     this.runner = new SessionTurnRunner(deps);
     this.turnQueue = new TurnQueue({
       runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
@@ -222,7 +239,6 @@ export class ControlService {
   private readonly workspaceFs = new WorkspaceFs(() =>
     this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
   );
-
   listDirectory(workspace: string, path?: string): Promise<DirListing> {
     return this.workspaceFs.listDirectory(workspace, path);
   }
@@ -233,6 +249,92 @@ export class ControlService {
 
   workspaceGitDiff(workspace: string, path?: string): Promise<WorkspaceDiff> {
     return this.workspaceFs.gitDiff(workspace, path);
+  }
+
+  workspaceGitStatus(workspace: string): Promise<GitStatus> {
+    return this.workspaceGit.status(workspace);
+  }
+
+  private async mutateWorkspaceGit<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
+    return operation();
+  }
+
+  private async withWorktreeRegistration<T>(workspaceName: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.worktreeRegistrationTails.get(workspaceName) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => {}).then(() => current);
+    this.worktreeRegistrationTails.set(workspaceName, tail);
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.worktreeRegistrationTails.get(workspaceName) === tail) {
+        this.worktreeRegistrationTails.delete(workspaceName);
+      }
+    }
+  }
+
+  gitStage(workspace: string, paths: string[]): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.stage(workspace, paths));
+  }
+
+  gitUnstage(workspace: string, paths: string[]): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.unstage(workspace, paths));
+  }
+
+  gitCommit(workspace: string, message: string): Promise<GitCommitResult> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.commit(workspace, message));
+  }
+
+  gitFetch(workspace: string, remote?: string): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.fetch(workspace, remote));
+  }
+
+  gitPull(workspace: string): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.pull(workspace));
+  }
+
+  gitPush(workspace: string, options?: GitPushOptions): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.push(workspace, options));
+  }
+
+  gitCheckout(workspace: string, options: GitCheckoutOptions): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.checkout(workspace, options));
+  }
+
+  async gitCreateWorktree(
+    workspace: string,
+    input: GitWorktreeCreateOptions & { workspaceName: string },
+  ): Promise<{ worktree: GitWorktreeCreateResult; workspace: ControlWorkspaceInfo }> {
+    const workspaceName = input.workspaceName.trim();
+    if (!workspaceName) throw new Error("workspace-name-required");
+    return this.mutateWorkspaceGit(() => this.withWorktreeRegistration(workspaceName, async () => {
+      if (this.deps.workspaces.list().some((item) => item.name === workspaceName)) {
+        throw new Error("workspace-name-exists");
+      }
+      const worktree = await this.workspaceGit.createWorktree(workspace, input);
+      try {
+        const registered = await this.deps.workspaces.create(
+          workspaceName,
+          worktree.path,
+          `Git worktree for ${worktree.branch}`,
+        );
+        return { worktree, workspace: registered };
+      } catch (registrationError) {
+        try {
+          await this.workspaceGit.removeManagedWorktree(workspace, worktree.path);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [registrationError, rollbackError],
+            "workspace-registration-rollback-failed",
+          );
+        }
+        throw registrationError;
+      }
+    }));
   }
 
   searchWorkspace(workspace: string, opts: SearchOptions): Promise<SearchResult> {

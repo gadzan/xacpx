@@ -83,6 +83,15 @@ var MSG = {
   fsCopy: "control.fs.copy",
   fsDownload: "control.fs.download",
   fsWrite: "control.fs.write",
+  gitStatus: "control.git.status",
+  gitStage: "control.git.stage",
+  gitUnstage: "control.git.unstage",
+  gitCommit: "control.git.commit",
+  gitFetch: "control.git.fetch",
+  gitPull: "control.git.pull",
+  gitPush: "control.git.push",
+  gitCheckout: "control.git.checkout",
+  gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
@@ -273,6 +282,7 @@ function parseWebClientMessage(envelope) {
 // packages/relay-protocol/src/payload-validators.ts
 var fields = (p) => isObj(p) ? p : null;
 var optArr = (v) => v === undefined || Array.isArray(v);
+var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
 var validateSessionsList = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) ? o : null;
@@ -398,6 +408,35 @@ var validateFsWrite = (p) => {
     return null;
   return o;
 };
+var validateGitStatus = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) ? o : null;
+};
+var validateGitPaths = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStrArr(o.paths) ? o : null;
+};
+var validateGitCommit = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.message) ? o : null;
+};
+var validateGitFetch = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && optStr(o.remote) ? o : null;
+};
+var validateGitPull = validateGitStatus;
+var validateGitPush = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && optBool(o.setUpstream) && optStr(o.remote) ? o : null;
+};
+var validateGitCheckout = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.branch) && optBool(o.create) && optStr(o.startPoint) ? o : null;
+};
+var validateGitWorktreeCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.workspace) && isStr(o.workspaceName) && isStr(o.branch) && optBool(o.createBranch) && optStr(o.startPoint) && o.path === undefined ? o : null;
+};
 var validateSessionModelGet = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
@@ -449,6 +488,15 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.fsCopy]: validateFsCopy,
   [MSG.fsDownload]: validateFsDownload,
   [MSG.fsWrite]: validateFsWrite,
+  [MSG.gitStatus]: validateGitStatus,
+  [MSG.gitStage]: validateGitPaths,
+  [MSG.gitUnstage]: validateGitPaths,
+  [MSG.gitCommit]: validateGitCommit,
+  [MSG.gitFetch]: validateGitFetch,
+  [MSG.gitPull]: validateGitPull,
+  [MSG.gitPush]: validateGitPush,
+  [MSG.gitCheckout]: validateGitCheckout,
+  [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.terminalCreate]: validateTerminalCreate,
