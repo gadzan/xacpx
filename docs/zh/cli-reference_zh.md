@@ -97,8 +97,8 @@ xacpx agent rm kimi
 
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
-factory-droid, factorydroid, iflow, kilocode, kimi, kiro,
-opencode, qoder, qwen, trae
+factory-droid, factorydroid, grok-build, iflow, kilocode, kimi,
+kiro, mux, opencode, qoder, qwen, trae
 ```
 
 这些模板只写入 `driver`，实际启动命令交给 acpx 解析；例如 `/agent add kimi` 会保存 `{ "driver": "kimi" }`。配置字段见 [config-reference_zh.md](./config-reference_zh.md)。

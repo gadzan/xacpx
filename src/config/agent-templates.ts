@@ -31,6 +31,9 @@ const TEMPLATES: Record<string, AgentConfig> = {
   factorydroid: {
     driver: "factorydroid",
   },
+  "grok-build": {
+    driver: "grok-build",
+  },
   iflow: {
     driver: "iflow",
   },
@@ -42,6 +45,9 @@ const TEMPLATES: Record<string, AgentConfig> = {
   },
   kiro: {
     driver: "kiro",
+  },
+  mux: {
+    driver: "mux",
   },
   opencode: {
     driver: "opencode",

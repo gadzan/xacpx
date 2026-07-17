@@ -98,8 +98,8 @@ The current built-in templates align with acpx's built-in agents:
 
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
-factory-droid, factorydroid, iflow, kilocode, kimi, kiro,
-opencode, qoder, qwen, trae
+factory-droid, factorydroid, grok-build, iflow, kilocode, kimi,
+kiro, mux, opencode, qoder, qwen, trae
 ```
 
 These templates only write `driver`; the actual launch command is resolved by acpx. For example, `/agent add kimi` saves `{ "driver": "kimi" }`. For config fields see [config-reference.md](./config-reference.md).
