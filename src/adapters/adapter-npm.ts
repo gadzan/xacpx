@@ -7,6 +7,7 @@ import {
   AdapterRegistryPackageNotFoundError,
   adapterRegistryNpmArgs,
   effectiveAdapterRegistry,
+  isAdapterRegistryNotFoundOutput,
 } from "./adapter-registry";
 
 export async function getAdapterNpmVersion(
@@ -30,7 +31,7 @@ export async function getAdapterNpmVersion(
     if (version && /no match.*\bversion\b|no matching version|notarget/i.test(result.stderr)) {
       return null;
     }
-    if (/\bE404\b|\b404\s+Not\s+Found\b/i.test(result.stderr)) {
+    if (isAdapterRegistryNotFoundOutput(result.stderr)) {
       throw new AdapterRegistryPackageNotFoundError(normalizedRegistry);
     }
     return null;

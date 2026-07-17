@@ -238,6 +238,7 @@ export interface NativeSessionMessages {
 }
 
 export interface RecoveryMessages {
+  adapterRegistryE404: (registry: string, officialRegistry: string) => string;
   // renderTransportError — transient session
   transientSessionFailed: string;
   transientSessionHint: string;

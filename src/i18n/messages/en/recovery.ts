@@ -1,6 +1,8 @@
 import type { RecoveryMessages } from "../../types";
 
 export const recovery: RecoveryMessages = {
+  adapterRegistryE404: (registry, officialRegistry) =>
+    `npm registry ${registry} returned E404 for the managed adapter. Run \`xacpx adapter registry set ${officialRegistry}\` and \`xacpx restart\`, or ask your registry administrator to proxy/allowlist the @agentclientprotocol scope.`,
   // renderTransportError — transient session
   transientSessionFailed: "The scheduled task's temporary session failed to start; this run was not executed.",
   transientSessionHint: "Temporary sessions are created automatically at run time — no manual action needed. To reschedule, use /lt.",

@@ -1,4 +1,8 @@
-import { DEFAULT_ADAPTER_REGISTRY, adapterRegistryNpmArgs } from "./adapter-registry";
+import {
+  DEFAULT_ADAPTER_REGISTRY,
+  adapterRegistryNpmArgs,
+  normalizeAdapterRegistry,
+} from "./adapter-registry";
 
 export const MANAGED_ADAPTERS = {
   codex: {
@@ -59,8 +63,17 @@ export function resolveManagedAdapterCommand(
 }
 
 export function isManagedAdapterCommand(driver: string, command: string | undefined): boolean {
-  if (!command || !isManagedAdapterId(driver)) return false;
-  const packagePrefix = `${MANAGED_ADAPTERS[driver].packageName}@`;
+  return isManagedAdapterId(driver) && parseManagedAdapterCommand(command)?.id === driver;
+}
+
+export function managedAdapterRegistryFromCommand(command: string | undefined): string | undefined {
+  return parseManagedAdapterCommand(command)?.registry;
+}
+
+function parseManagedAdapterCommand(
+  command: string | undefined,
+): { id: ManagedAdapterId; registry?: string } | undefined {
+  if (!command) return undefined;
   const parts = command.split(" ");
   const hasLegacyShape = parts.length === 3 && parts[0] === "npx" && parts[1] === "-y";
   const hasRegistryShape = Boolean((parts.length === 4 || parts.length === 5)
@@ -68,10 +81,27 @@ export function isManagedAdapterCommand(driver: string, command: string | undefi
     && parts[1] === "-y"
     && parts[2]?.startsWith("--registry=")
     && (parts.length === 4 || parts[3]?.startsWith("--@agentclientprotocol:registry=")));
+  if (!hasLegacyShape && !hasRegistryShape) return undefined;
+
   const packageValue = parts.at(-1) ?? "";
-  return (hasLegacyShape || hasRegistryShape)
-    && packageValue.startsWith(packagePrefix)
-    && packageValue.length > packagePrefix.length;
+  const id = listManagedAdapterIds().find((candidate) => {
+    const prefix = `${MANAGED_ADAPTERS[candidate].packageName}@`;
+    return packageValue.startsWith(prefix) && packageValue.length > prefix.length;
+  });
+  if (!id) return undefined;
+  if (hasLegacyShape) return { id };
+
+  const genericRegistry = parts[2]!.slice("--registry=".length);
+  const scopedRegistry = parts.length === 5
+    ? parts[3]!.slice("--@agentclientprotocol:registry=".length)
+    : genericRegistry;
+  try {
+    const registry = normalizeAdapterRegistry(genericRegistry);
+    if (normalizeAdapterRegistry(scopedRegistry) !== registry) return undefined;
+    return { id, registry };
+  } catch {
+    return undefined;
+  }
 }
 
 /** A recorded generated command is derived state, so a newer configured/default

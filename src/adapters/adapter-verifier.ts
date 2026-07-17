@@ -8,6 +8,7 @@ import {
   adapterRegistryNpmArgs,
   adapterRegistryE404Guidance,
   effectiveAdapterRegistry,
+  isAdapterRegistryNotFoundOutput,
 } from "./adapter-registry";
 
 const DEFAULT_VERIFY_TIMEOUT_MS = 120_000;
@@ -95,7 +96,7 @@ export async function verifyAcpInitialize(
       child.once("error", (error) => finish(new Error(`failed to start adapter: ${error.message}`)));
       child.once("close", (code, signal) => {
         if (settled) return;
-        if (options.adapterRegistry && /\bE404\b|\b404\s+Not\s+Found\b/i.test(stderr)) {
+        if (options.adapterRegistry && isAdapterRegistryNotFoundOutput(stderr)) {
           finish(new Error(adapterRegistryE404Guidance(effectiveAdapterRegistry(options.adapterRegistry))));
           return;
         }

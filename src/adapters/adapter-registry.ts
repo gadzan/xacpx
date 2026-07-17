@@ -63,6 +63,10 @@ export function adapterRegistryE404Guidance(registry: string): string {
   ].join(" ");
 }
 
+export function isAdapterRegistryNotFoundOutput(output: string): boolean {
+  return /\bE404\b|\b404\s+Not\s+Found\b/i.test(output);
+}
+
 export function describeAdapterRegistryError(error: unknown): string {
   return error instanceof AdapterRegistryPackageNotFoundError
     ? adapterRegistryE404Guidance(error.registry)

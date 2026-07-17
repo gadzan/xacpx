@@ -1,6 +1,8 @@
 import type { RecoveryMessages } from "../../types";
 
 export const recovery: RecoveryMessages = {
+  adapterRegistryE404: (registry, officialRegistry) =>
+    `npm registry ${registry} 返回了 managed adapter E404。请执行 \`xacpx adapter registry set ${officialRegistry}\` 和 \`xacpx restart\`，或让私源管理员代理/放行 @agentclientprotocol scope。`,
   // renderTransportError — transient session
   transientSessionFailed: "定时任务的临时会话启动失败，本次任务未能执行。",
   transientSessionHint: "临时会话由系统在执行时自动创建，无需手动操作；如需重排，请用 /lt 重新安排。",
