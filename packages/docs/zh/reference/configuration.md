@@ -136,10 +136,12 @@ WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 | `droid` | `"droid"` |
 | `factory-droid` | `"factory-droid"` |
 | `factorydroid` | `"factorydroid"` |
+| `grok-build` | `"grok-build"` |
 | `iflow` | `"iflow"` |
 | `kilocode` | `"kilocode"` |
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
+| `mux` | `"mux"` |
 | `opencode` | `"opencode"` |
 | `qoder` | `"qoder"` |
 | `qwen` | `"qwen"` |

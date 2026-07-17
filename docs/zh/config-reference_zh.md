@@ -452,10 +452,12 @@ xacpx channel add <channel-type>
 | `droid` | `"droid"` | 无（使用 acpx 默认） |
 | `factory-droid` | `"factory-droid"` | 无（使用 acpx 默认） |
 | `factorydroid` | `"factorydroid"` | 无（使用 acpx 默认） |
+| `grok-build` | `"grok-build"` | 无（使用 acpx 默认） |
 | `iflow` | `"iflow"` | 无（使用 acpx 默认） |
 | `kilocode` | `"kilocode"` | 无（使用 acpx 默认） |
 | `kimi` | `"kimi"` | 无（使用 acpx 默认） |
 | `kiro` | `"kiro"` | 无（使用 acpx 默认） |
+| `mux` | `"mux"` | 无（使用 acpx 默认） |
 | `opencode` | `"opencode"` | 无（使用 acpx 默认） |
 | `qoder` | `"qoder"` | 无（使用 acpx 默认） |
 | `qwen` | `"qwen"` | 无（使用 acpx 默认） |

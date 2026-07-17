@@ -55,7 +55,7 @@ Agent 是你要驱动的底层工具配置，例如 `codex`、`claude`、`kimi`�
 | 命令 | 说明 |
 |------|------|
 | `/agents` | 查看已注册的 agent |
-| `/agent add <codex|claude|pi|openclaw|gemini|cursor|copilot|droid|factory-droid|factorydroid|iflow|kilocode|kimi|kiro|opencode|qoder|qwen|trae>` | 添加一个内置 agent 模板；已存在且配置不同的同名 agent 不会被覆盖 |
+| `/agent add <codex|claude|pi|openclaw|gemini|cursor|copilot|droid|factory-droid|factorydroid|grok-build|iflow|kilocode|kimi|kiro|mux|opencode|qoder|qwen|trae>` | 添加一个内置 agent 模板；已存在且配置不同的同名 agent 不会被覆盖 |
 | `/agent rm <name>` | 删除一个 agent |
 
 示例：

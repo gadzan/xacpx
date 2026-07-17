@@ -4,7 +4,7 @@ This guide walks you through installing xacpx, connecting a chat channel, and ru
 
 ## Requirements
 
-- **Node.js 22+** (or Bun as an alternative runtime for local development)
+- **Node.js 22.12+** (or Bun as an alternative runtime for local development)
 - **An agent CLI** — Codex, Claude Code, Gemini, OpenCode, or any other agent supported by `acpx`. You do not need to install `acpx` globally; xacpx ships with a bundled copy.
 - **A supported chat client** — WeChat, Feishu, or Yuanbao installed on your phone (or configured as a bot application)
 

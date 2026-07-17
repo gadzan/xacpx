@@ -136,10 +136,12 @@ Built-in templates (use `driver` only; let `acpx` resolve the alias):
 | `droid` | `"droid"` |
 | `factory-droid` | `"factory-droid"` |
 | `factorydroid` | `"factorydroid"` |
+| `grok-build` | `"grok-build"` |
 | `iflow` | `"iflow"` |
 | `kilocode` | `"kilocode"` |
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
+| `mux` | `"mux"` |
 | `opencode` | `"opencode"` |
 | `qoder` | `"qoder"` |
 | `qwen` | `"qwen"` |

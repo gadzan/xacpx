@@ -110,7 +110,7 @@ An agent is a named configuration for an underlying tool such as `codex`, `claud
 | `/agent add <name>` | Add a built-in agent template; does not overwrite an existing agent with a different configuration |
 | `/agent rm <name>` | Delete an agent |
 
-Built-in template names: `codex`, `claude`, `pi`, `openclaw`, `gemini`, `cursor`, `copilot`, `droid`, `factory-droid`, `factorydroid`, `iflow`, `kilocode`, `kimi`, `kiro`, `opencode`, `qoder`, `qwen`, `trae`.
+Built-in template names: `codex`, `claude`, `pi`, `openclaw`, `gemini`, `cursor`, `copilot`, `droid`, `factory-droid`, `factorydroid`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `qoder`, `qwen`, `trae`.
 
 ```text
 /agent add codex

@@ -56,7 +56,7 @@ An agent is the configuration of the underlying tool you want to drive, e.g. `co
 | Command | Description |
 |------|------|
 | `/agents` | View registered agents |
-| `/agent add <codex|claude|pi|openclaw|gemini|cursor|copilot|droid|factory-droid|factorydroid|iflow|kilocode|kimi|kiro|opencode|qoder|qwen|trae>` | Add a built-in agent template; an existing agent with the same name but a different configuration will not be overwritten |
+| `/agent add <codex|claude|pi|openclaw|gemini|cursor|copilot|droid|factory-droid|factorydroid|grok-build|iflow|kilocode|kimi|kiro|mux|opencode|qoder|qwen|trae>` | Add a built-in agent template; an existing agent with the same name but a different configuration will not be overwritten |
 | `/agent add <template> --model <id>` | Add (or update) the agent and set its default model (e.g. `gpt-5.2[high]`), used by every session of that agent unless overridden |
 | `/agent rm <name>` | Delete an agent |
 

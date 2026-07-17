@@ -466,10 +466,12 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `droid` | `"droid"` | None (uses acpx default) |
 | `factory-droid` | `"factory-droid"` | None (uses acpx default) |
 | `factorydroid` | `"factorydroid"` | None (uses acpx default) |
+| `grok-build` | `"grok-build"` | None (uses acpx default) |
 | `iflow` | `"iflow"` | None (uses acpx default) |
 | `kilocode` | `"kilocode"` | None (uses acpx default) |
 | `kimi` | `"kimi"` | None (uses acpx default) |
 | `kiro` | `"kiro"` | None (uses acpx default) |
+| `mux` | `"mux"` | None (uses acpx default) |
 | `opencode` | `"opencode"` | None (uses acpx default) |
 | `qoder` | `"qoder"` | None (uses acpx default) |
 | `qwen` | `"qwen"` | None (uses acpx default) |

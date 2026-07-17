@@ -4,7 +4,7 @@
 
 ## 环境要求
 
-- **Node.js 22+**（或使用 Bun 作为本地开发的替代运行时）
+- **Node.js 22.12+**（或使用 Bun 作为本地开发的替代运行时）
 - **Agent CLI** — Codex、Claude Code、Gemini、OpenCode，或任何 `acpx` 所支持的 Agent。无需全局安装 `acpx`，xacpx 自带捆绑版本。
 - **支持的聊天客户端** — 在手机上安装微信、飞书或元宝（或配置为机器人应用）
 
