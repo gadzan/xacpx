@@ -42,7 +42,7 @@
 
 ### 必要环境
 
-- **Node.js ≥ 22** 或 **Bun**（Bun 用于开发脚本与 build；运行时也可用 Node）
+- **Node.js ≥ 22.12** 或 **Bun**（Bun 用于开发脚本与 build；运行时也可用 Node）
 - 一个可用的微信 / 飞书 / 元宝账号（看你测哪个频道；只读取代码可以省）
 - 本机能跑 `acpx` 和你想接的 agent CLI（codex / claude / gemini …）
 

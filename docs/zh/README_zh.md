@@ -29,7 +29,7 @@
 
 ### 前置条件
 
-- Node.js 22+ 或 Bun
+- Node.js 22.12+ 或 Bun
 - 已可用的 Codex / Claude Code / Gemini / OpenCode 等你要使用的 Agent CLI
 - 一台装了微信、飞书或元宝的手机
 

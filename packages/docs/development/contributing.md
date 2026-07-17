@@ -6,7 +6,7 @@ A guide for bug fixers, feature developers, channel plugin authors, and code rea
 
 ### Prerequisites
 
-- **Node.js ≥ 22** or **Bun** (Bun is used for development scripts and builds; Node can run the output)
+- **Node.js ≥ 22.12** or **Bun** (Bun is used for development scripts and builds; Node can run the output)
 - A WeChat, Feishu, or Yuanbao account (depending on which channel you are testing; code reading requires neither)
 - `acpx` and your target agent CLI (codex / claude / gemini, etc.) runnable on the machine
 

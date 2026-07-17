@@ -29,7 +29,7 @@ If you need to code or work remotely on a temporary basis, `xacpx` gives you a f
 
 ### Prerequisites
 
-- Node.js 22+ or Bun
+- Node.js 22.12+ or Bun
 - A working agent CLI you intend to use, such as Codex / Claude Code / Gemini / OpenCode
 - A phone with WeChat, Feishu, or Yuanbao installed
 

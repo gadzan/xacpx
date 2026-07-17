@@ -42,7 +42,7 @@
 
 ### Required Environment
 
-- **Node.js ≥ 22** or **Bun** (Bun is used for dev scripts and builds; the runtime can also use Node)
+- **Node.js ≥ 22.12** or **Bun** (Bun is used for dev scripts and builds; the runtime can also use Node)
 - A usable WeChat / Feishu / Yuanbao account (depending on which channel you're testing; can be skipped if you're only reading code)
 - The ability to run `acpx` and the agent CLI you want to connect (codex / claude / gemini …) locally
 

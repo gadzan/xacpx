@@ -2,14 +2,30 @@ import { createAgentRegistry } from "acpx/runtime";
 import { expect, test } from "bun:test";
 import { listAgentCatalog } from "../../../src/config/agent-catalog";
 import { listAgentTemplates } from "../../../src/config/agent-templates";
+import { getAgentTemplate } from "../../../src/config/agent-templates";
 import type { AppConfig } from "../../../src/config/types";
 
 function cfg(agents: Record<string, { driver: string }>): AppConfig {
   return { agents, workspaces: {} } as unknown as AppConfig;
 }
 
+const registry = createAgentRegistry();
+function catalog(
+  config: AppConfig,
+  options: { probe?: (binary: string) => boolean; registry?: typeof registry | null } = {},
+) {
+  return listAgentCatalog(config, { registry, ...options });
+}
+
+test("grok-build and mux are explicit usable templates", () => {
+  expect(getAgentTemplate("grok-build")).toEqual({ driver: "grok-build" });
+  expect(getAgentTemplate("mux")).toEqual({ driver: "mux" });
+  expect(listAgentTemplates()).toContain("grok-build");
+  expect(listAgentTemplates()).toContain("mux");
+});
+
 test("codex and claude are always builtin and configured-aware", () => {
-  const cat = listAgentCatalog(cfg({ codex: { driver: "codex" } }), () => false);
+  const cat = catalog(cfg({ codex: { driver: "codex" } }), { probe: () => false });
   const codex = cat.find((e) => e.driver === "codex")!;
   const claude = cat.find((e) => e.driver === "claude")!;
   expect(codex.installed).toBe("builtin");
@@ -19,14 +35,14 @@ test("codex and claude are always builtin and configured-aware", () => {
 });
 
 test("non-builtin driver is 'yes' when its binary is on PATH, else 'unknown'", () => {
-  const cat = listAgentCatalog(cfg({}), (bin) => bin === "gemini");
+  const cat = catalog(cfg({}), { probe: (bin) => bin === "gemini" });
   expect(cat.find((e) => e.driver === "gemini")!.installed).toBe("yes");
   expect(cat.find((e) => e.driver === "qwen")!.installed).toBe("unknown");
 });
 
 test("cursor probes the cursor-agent binary, not 'cursor'", () => {
   const seen: string[] = [];
-  listAgentCatalog(cfg({}), (bin) => { seen.push(bin); return false; });
+  catalog(cfg({}), { probe: (bin) => { seen.push(bin); return false; } });
   expect(seen).toContain("cursor-agent");
   expect(seen).not.toContain("cursor");
 });
@@ -34,13 +50,13 @@ test("cursor probes the cursor-agent binary, not 'cursor'", () => {
 // Regression: qoder's CLI is `qodercli`; probing "qoder" mislabelled an installed
 // agent as "CLI not detected" in the web new-session dialog.
 test("qoder is 'yes' when only the qodercli binary is on PATH", () => {
-  const cat = listAgentCatalog(cfg({}), (bin) => bin === "qodercli");
+  const cat = catalog(cfg({}), { probe: (bin) => bin === "qodercli" });
   expect(cat.find((e) => e.driver === "qoder")!.installed).toBe("yes");
 });
 
 test("npx-launched drivers are builtin, not PATH-probed", () => {
   const seen: string[] = [];
-  const cat = listAgentCatalog(cfg({}), (bin) => { seen.push(bin); return false; });
+  const cat = catalog(cfg({}), { probe: (bin) => { seen.push(bin); return false; } });
   for (const driver of ["pi", "kilocode", "opencode"]) {
     expect(cat.find((e) => e.driver === driver)!.installed).toBe("builtin");
     expect(seen).not.toContain(driver);
@@ -48,7 +64,7 @@ test("npx-launched drivers are builtin, not PATH-probed", () => {
 });
 
 test("configured is true when a config agent uses the driver under a different name", () => {
-  const cat = listAgentCatalog(cfg({ "my-gem": { driver: "gemini" } }), () => false);
+  const cat = catalog(cfg({ "my-gem": { driver: "gemini" } }), { probe: () => false });
   expect(cat.find((e) => e.driver === "gemini")!.configured).toBe(true);
 });
 
@@ -72,7 +88,10 @@ test("every template driver is still known to the acpx registry", () => {
 // this module in on every command path, `doctor` included.
 test("degrades to probing the bare driver name when acpx is unresolvable", () => {
   const seen: string[] = [];
-  const cat = listAgentCatalog(cfg({}), (bin) => { seen.push(bin); return bin === "qoder"; }, null);
+  const cat = catalog(cfg({}), {
+    probe: (bin) => { seen.push(bin); return bin === "qoder"; },
+    registry: null,
+  });
   expect(cat.find((e) => e.driver === "qoder")!.installed).toBe("yes");
   expect(seen).toContain("qoder");
   // Without the registry there is nothing to mark builtin, so npx drivers are probed by name.
@@ -81,7 +100,7 @@ test("degrades to probing the bare driver name when acpx is unresolvable", () =>
 });
 
 test("every entry comes from listAgentTemplates and has the three fields", () => {
-  const cat = listAgentCatalog(cfg({}), () => false);
+  const cat = catalog(cfg({}), { probe: () => false });
   expect(cat.length).toBeGreaterThanOrEqual(15);
   for (const e of cat) {
     expect(typeof e.driver).toBe("string");

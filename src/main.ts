@@ -56,6 +56,7 @@ import { ControlService } from "./control/control-service";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
+import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 
 export interface RuntimePaths {
@@ -789,6 +790,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     shell: () => terminalShell(config),
   });
   const uploadStore = new UploadStore();
+  const loadAgentRegistry = createAcpxAgentRegistryLoader({ logger });
   void uploadStore.cleanup(); // best-effort startup sweep of expired uploads
   // A long-lived daemon never re-sweeps on the startup pass alone, so expired uploads
   // would accumulate forever despite the 24h TTL. Re-run hourly; cleared on dispose.
@@ -817,7 +819,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     agents: {
       list: () =>
         Object.entries(config.agents).map(([name, agentConfig]) => ({ name, driver: agentConfig.driver })),
-      catalog: () => listAgentCatalog(config, undefined, undefined, logger),
+      catalog: () => listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
         const updated = await configStore.upsertAgent(name, { driver });
         replaceRuntimeConfig(config, updated);
