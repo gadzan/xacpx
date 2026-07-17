@@ -39,6 +39,7 @@ xacpx is a WeChat console that lets you remotely control `acpx` sessions. It bri
 - **`src/console-agent.ts`** - Bridges WeChat messages to the command router.
 - **`src/commands/command-router.ts`** - Routes WeChat commands (`/agent add`, `/session new`, etc.) to handlers.
 - **`src/commands/parse-command.ts`** - Parses slash commands into typed structures.
+- **`src/control/workspace-git.ts`** - Structured Git/worktree operations for configured workspaces; mutation gating and workspace registration are coordinated by `ControlService`.
 
 ### Transport Layer (src/transport/)
 

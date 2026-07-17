@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { WorkspaceGit } from "../../../src/control/workspace-git";
@@ -275,6 +276,28 @@ describe("WorkspaceGit synchronization", () => {
 });
 
 describe("WorkspaceGit worktrees", () => {
+  test("rejects a managed repo directory symlink before creating outside the root", async () => {
+    const { repo } = initRepo();
+    const managedRoot = temp("wsgit-managed-");
+    const outside = temp("wsgit-outside-");
+    const commonDir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const top = git(repo, "rev-parse", "--show-toplevel");
+    const repoKey = `${basename(top)}-${createHash("sha256").update(commonDir).digest("hex").slice(0, 8)}`;
+    symlinkSync(outside, join(managedRoot, repoKey));
+    const service = new WorkspaceGit(
+      () => [{ name: "project", cwd: repo }],
+      { managedWorktreesRoot: managedRoot },
+    );
+
+    await expect(service.createWorktree("project", {
+      branch: "feature/escaped",
+      createBranch: true,
+      startPoint: "main",
+    })).rejects.toThrow("worktree-path-unsafe");
+    expect(existsSync(join(outside, "feature-escaped"))).toBe(false);
+    expect((await service.status("project")).worktrees).toHaveLength(1);
+  });
+
   test("creates a linked worktree under the server-managed root", async () => {
     const { repo } = initRepo();
     const managedRoot = temp("wsgit-managed-");

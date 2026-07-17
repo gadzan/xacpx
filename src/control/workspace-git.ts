@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -284,15 +284,32 @@ export class WorkspaceGit {
       const repoKey = `${basename(top)}-${createHash("sha256").update(commonDir).digest("hex").slice(0, 8)}`;
       const branchSlug = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "branch";
       const branchKey = `${branchSlug}-${createHash("sha256").update(branch).digest("hex").slice(0, 6)}`;
-      const target = join(managedRoot, repoKey, branchKey);
-      await mkdir(join(managedRoot, repoKey), { recursive: true });
+      const repoDir = join(managedRoot, repoKey);
+      try {
+        const existing = await lstat(repoDir);
+        if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error("worktree-path-unsafe");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        await mkdir(repoDir);
+      }
+      const realRepoDir = await realpath(repoDir);
+      if (!realRepoDir.startsWith(managedRoot + sep)) throw new Error("worktree-path-unsafe");
+      const target = join(realRepoDir, branchKey);
+      try {
+        await lstat(target);
+        throw new Error("worktree-path-exists");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
 
       if (options.createBranch) {
         await this.run(root, ["worktree", "add", "-b", branch, target, ...(startPoint ? [startPoint] : [])]);
       } else {
         await this.run(root, ["worktree", "add", target, branch]);
       }
-      return { path: await realpath(target), branch, linked: true };
+      const createdPath = await realpath(target);
+      if (!createdPath.startsWith(managedRoot + sep)) throw new Error("worktree-path-unsafe");
+      return { path: createdPath, branch, linked: true };
     });
   }
 

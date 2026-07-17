@@ -28,7 +28,7 @@ function service(
 ): ControlService {
   return new ControlService({
     workspaces: {
-      list: () => [{ name: "project", cwd: root }],
+      list: () => [{ name: "project", cwd: root }, ...created],
       create: async (name: string, cwd: string) => {
         if (options.failCreate) throw new Error("config-write-failed");
         created.push({ name, cwd });
@@ -77,6 +77,32 @@ describe("ControlService Git gate", () => {
 });
 
 describe("ControlService Git worktree registration", () => {
+  test("serializes the name check through registration for concurrent creates", async () => {
+    const root = repo();
+    const managedRoot = mkdtempSync(join(tmpdir(), "control-git-managed-"));
+    cleanups.push(managedRoot);
+    const created: Array<{ name: string; cwd: string }> = [];
+    const control = service(root, true, created, { managedRoot });
+    const input = {
+      workspaceName: "project-feature",
+      branch: "feature/concurrent",
+      createBranch: true,
+      startPoint: "main",
+    };
+
+    const results = await Promise.allSettled([
+      control.gitCreateWorktree("project", input),
+      control.gitCreateWorktree("project", input),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    expect(rejected?.reason).toBeInstanceOf(Error);
+    expect((rejected?.reason as Error).message).toBe("workspace-name-exists");
+    expect(created).toHaveLength(1);
+    expect((await control.workspaceGitStatus("project")).worktrees).toHaveLength(2);
+  });
+
   test("registers a created worktree as a configured workspace", async () => {
     const root = repo();
     const managedRoot = mkdtempSync(join(tmpdir(), "control-git-managed-"));

@@ -229,6 +229,11 @@ Changes tab 在原有差异列表上增加结构化 Git 工作流：
 - **worktree 上下文（C）**：按需展开当前仓库的 worktree 列表。创建时客户端只提交分支与
   workspace 名称，宿主路径由 daemon 在 `~/.xacpx/worktrees` 下生成；成功后注册 workspace，
   并用当前会话的 agent 新建、切换到该 worktree 会话。v1 不提供删除或 prune UI。
+- **异步上下文隔离**：diff 请求记录 instance/workspace 与请求序号；切换会话或工作区后返回的
+  旧响应（包括错误与 loading 收尾）会被丢弃，不能覆盖新工作区的 Changes 状态或成为后续 Git
+  mutation 的路径来源。
+- **前端边界**：`src/lib/use-changes-git.ts` 持有 Changes 面板的分支、同步、暂存、提交与
+  worktree 工作流；`FilesPanel.vue` 只负责文件导航和组合渲染。
 
 Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/commit/fetch/pull/push/checkout/worktree.create`。
 所有 Git 写 RPC 与文件写操作共用 `files.writeEnabled`（默认关闭）。

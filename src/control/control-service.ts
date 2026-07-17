@@ -207,6 +207,7 @@ export class ControlService {
   private readonly turnQueue: TurnQueue;
   private readonly workspaceGit: WorkspaceGit;
   private readonly modelSetTails = new Map<string, Promise<void>>();
+  private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
     this.workspaceGit = new WorkspaceGit(
@@ -254,68 +255,86 @@ export class ControlService {
     return this.workspaceGit.status(workspace);
   }
 
-  async gitStage(workspace: string, paths: string[]): Promise<void> {
+  private async mutateWorkspaceGit<T>(operation: () => Promise<T>): Promise<T> {
     if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    await this.workspaceGit.stage(workspace, paths);
+    return operation();
   }
 
-  async gitUnstage(workspace: string, paths: string[]): Promise<void> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    await this.workspaceGit.unstage(workspace, paths);
+  private async withWorktreeRegistration<T>(workspaceName: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.worktreeRegistrationTails.get(workspaceName) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => {}).then(() => current);
+    this.worktreeRegistrationTails.set(workspaceName, tail);
+    await previous.catch(() => {});
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.worktreeRegistrationTails.get(workspaceName) === tail) {
+        this.worktreeRegistrationTails.delete(workspaceName);
+      }
+    }
   }
 
-  async gitCommit(workspace: string, message: string): Promise<GitCommitResult> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    return await this.workspaceGit.commit(workspace, message);
+  gitStage(workspace: string, paths: string[]): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.stage(workspace, paths));
   }
 
-  async gitFetch(workspace: string, remote?: string): Promise<void> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    await this.workspaceGit.fetch(workspace, remote);
+  gitUnstage(workspace: string, paths: string[]): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.unstage(workspace, paths));
   }
 
-  async gitPull(workspace: string): Promise<void> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    await this.workspaceGit.pull(workspace);
+  gitCommit(workspace: string, message: string): Promise<GitCommitResult> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.commit(workspace, message));
   }
 
-  async gitPush(workspace: string, options?: GitPushOptions): Promise<void> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    await this.workspaceGit.push(workspace, options);
+  gitFetch(workspace: string, remote?: string): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.fetch(workspace, remote));
   }
 
-  async gitCheckout(workspace: string, options: GitCheckoutOptions): Promise<void> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    await this.workspaceGit.checkout(workspace, options);
+  gitPull(workspace: string): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.pull(workspace));
+  }
+
+  gitPush(workspace: string, options?: GitPushOptions): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.push(workspace, options));
+  }
+
+  gitCheckout(workspace: string, options: GitCheckoutOptions): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.checkout(workspace, options));
   }
 
   async gitCreateWorktree(
     workspace: string,
     input: GitWorktreeCreateOptions & { workspaceName: string },
   ): Promise<{ worktree: GitWorktreeCreateResult; workspace: ControlWorkspaceInfo }> {
-    if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
     const workspaceName = input.workspaceName.trim();
     if (!workspaceName) throw new Error("workspace-name-required");
-    if (this.deps.workspaces.list().some((item) => item.name === workspaceName)) {
-      throw new Error("workspace-name-exists");
-    }
-    const worktree = await this.workspaceGit.createWorktree(workspace, input);
-    try {
-      const registered = await this.deps.workspaces.create(
-        workspaceName,
-        worktree.path,
-        `Git worktree for ${worktree.branch}`,
-      );
-      return { worktree, workspace: registered };
-    } catch (error) {
-      try {
-        await this.workspaceGit.removeManagedWorktree(workspace, worktree.path);
-      } catch {
-        // Preserve the registration error; the managed path is still bounded and can be
-        // diagnosed/pruned manually if Git refuses the best-effort compensation.
+    return this.mutateWorkspaceGit(() => this.withWorktreeRegistration(workspaceName, async () => {
+      if (this.deps.workspaces.list().some((item) => item.name === workspaceName)) {
+        throw new Error("workspace-name-exists");
       }
-      throw error;
-    }
+      const worktree = await this.workspaceGit.createWorktree(workspace, input);
+      try {
+        const registered = await this.deps.workspaces.create(
+          workspaceName,
+          worktree.path,
+          `Git worktree for ${worktree.branch}`,
+        );
+        return { worktree, workspace: registered };
+      } catch (registrationError) {
+        try {
+          await this.workspaceGit.removeManagedWorktree(workspace, worktree.path);
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [registrationError, rollbackError],
+            "workspace-registration-rollback-failed",
+          );
+        }
+        throw registrationError;
+      }
+    }));
   }
 
   searchWorkspace(workspace: string, opts: SearchOptions): Promise<SearchResult> {

@@ -24,6 +24,37 @@ beforeEach(() => {
 });
 
 describe("FilesPanel navigation rail", () => {
+  it("does not let a stale workspace-options load re-select the previous session workspace", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      sessions: [
+        { alias: "s1", agent: "codex", workspace: "backend" },
+        { alias: "s2", agent: "codex", workspace: "frontend" },
+      ],
+      agents: [], workspaces: [{ name: "backend", cwd: "/b" }, { name: "frontend", cwd: "/f" }], agentCatalog: [],
+    }] as never;
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "s1";
+    let resolveFirst!: () => void;
+    const loadWorkspaces = vi.spyOn(instances, "loadWorkspaces")
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValueOnce();
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    await vi.waitFor(() => expect(loadWorkspaces).toHaveBeenCalledTimes(1));
+
+    chat.sessionAlias = "s2";
+    await vi.waitFor(() => expect(loadWorkspaces).toHaveBeenCalledTimes(2));
+    await flushPromises();
+    expect(useFilesStore().workspace).toBe("frontend");
+
+    resolveFirst();
+    await flushPromises();
+    expect(useFilesStore().workspace).toBe("frontend");
+    w.unmount();
+  });
+
   it("follows the active session's workspace and shows it as a static label (no picker)", async () => {
     const instances = useInstancesStore();
     instances.instances = [{

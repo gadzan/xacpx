@@ -32,7 +32,8 @@
   监听器异常彼此隔离（经注入的 `logger.error` 记录，不外抛）。
 - **`src/control/workspace-git.ts`** — `WorkspaceGit`：配置工作区范围内的结构化 Git
   门面。只用 `execFile` 参数数组调用 Git，不接受任意命令或客户端指定 worktree 路径；
-  同一工作区的 Git 写操作按 FIFO 串行。
+  同一工作区的 Git 写操作按 FIFO 串行。托管 worktree 的仓库目录拒绝符号链接，并在
+  创建前后校验 realpath 仍位于托管根目录内。
 
 ## 方法概览
 
@@ -54,7 +55,7 @@
 | `gitStage` / `gitUnstage` / `gitCommit` | 结构化操作 index 与提交；commit 只提交已暂存内容。 |
 | `gitFetch` / `gitPull` / `gitPush` | 远端同步；pull 固定 `--ff-only`，首次 push 必须显式要求设置 upstream，不提供 force。 |
 | `gitCheckout` | 切换或创建分支；工作树有未提交改动时拒绝，不自动 stash。 |
-| `gitCreateWorktree` | 在 daemon 管理的 `~/.xacpx/worktrees` 下创建 worktree，并注册为 workspace；注册失败会回滚 worktree。 |
+| `gitCreateWorktree` | 在 daemon 管理的 `~/.xacpx/worktrees` 下创建 worktree，并注册为 workspace；同名 workspace 的检查、创建、注册与补偿按名称串行，注册失败会回滚 worktree，补偿本身失败则以 `workspace-registration-rollback-failed` 显式报告。 |
 | `get events()` | 返回注入的 `ControlEventBus` 实例，供消费者订阅事件。 |
 
 ## 注入方式

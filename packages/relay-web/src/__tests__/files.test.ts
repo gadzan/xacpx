@@ -15,6 +15,60 @@ beforeEach(() => {
 });
 
 describe("files store", () => {
+  it("discards a stale diff response after the active workspace changes", async () => {
+    let resolveOld!: (value: unknown) => void;
+    const oldResponse = new Promise((resolve) => { resolveOld = resolve; });
+    rpc.mockImplementationOnce(() => oldResponse);
+
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "old";
+    const oldLoad = s.loadDiff();
+
+    s.workspace = "new";
+    rpc.mockResolvedValueOnce({ workspace: "new", files: [{ path: "new.txt", status: " M" }], diff: "+new", truncated: false });
+    await s.loadDiff();
+    resolveOld({ workspace: "old", files: [{ path: "old.txt", status: " M" }], diff: "+old", truncated: false });
+    await oldLoad;
+
+    expect(s.diff?.workspace).toBe("new");
+    expect(s.diff?.files[0]?.path).toBe("new.txt");
+    expect(s.loading).toBe(false);
+  });
+
+  it("clears diff loading when a workspace reset invalidates the request", async () => {
+    let resolveOld!: (value: unknown) => void;
+    rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "old";
+
+    const oldLoad = s.loadDiff();
+    expect(s.loading).toBe(true);
+    s.reset();
+    expect(s.loading).toBe(false);
+    resolveOld({ workspace: "old", files: [], diff: "", truncated: false });
+    await oldLoad;
+    expect(s.loading).toBe(false);
+    expect(s.diff).toBeNull();
+  });
+
+  it("discards a stale tree response from a superseded workspace selection", async () => {
+    let resolveOld!: (value: unknown) => void;
+    rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    const s = useFilesStore();
+    const oldSelection = s.selectWorkspace("i1", "old");
+
+    rpc.mockResolvedValueOnce({ workspace: "new", path: "", root: "/new", sep: "/", entries: [{ name: "new.ts", type: "file" }] });
+    await s.selectWorkspace("i1", "new");
+    resolveOld({ workspace: "old", path: "", root: "/old", sep: "/", entries: [{ name: "old.ts", type: "file" }] });
+    await oldSelection;
+
+    expect(s.workspace).toBe("new");
+    expect(s.root).toBe("/new");
+    expect(s.tree[""]?.map((entry) => entry.name)).toEqual(["new.ts"]);
+  });
+
   it("selects a workspace and lists the root", async () => {
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [
       { name: "src", type: "dir" },

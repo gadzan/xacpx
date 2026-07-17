@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
+import { computed, ref, toRef, watch } from "vue";
 import { ChevronRight, Download, File, FileText, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Upload, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
-import { useGitStore } from "../stores/git";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
-import { groupChanges, splitPath } from "../lib/change-groups";
+import { splitPath } from "../lib/change-groups";
 import { openMenuKey, ROOT_MENU_KEY } from "../lib/tree-menu";
-import { confirm } from "../lib/use-confirm";
-import { slugify, uniqueName } from "../lib/session-form";
-import { useWorktreeSession } from "../lib/use-worktree-session";
+import { useChangesGit } from "../lib/use-changes-git";
 import FileTreeNode from "./FileTreeNode.vue";
 import ContextMenu from "./ContextMenu.vue";
 
@@ -24,13 +20,10 @@ const vFocus = {
 };
 
 const props = defineProps<{ instanceId: string | null }>();
-const { t } = useI18n();
 const files = useFilesStore();
-const git = useGitStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
 const centerTabs = useCenterTabsStore();
-const worktreeSession = useWorktreeSession();
 
 // The session whose center tabs a click here should open a tab on — null when no
 // session is selected, in which case opening a file/diff from the rail is a no-op.
@@ -94,212 +87,15 @@ const activeWorkspace = computed(() => {
   const inst = props.instanceId ? instances.byId(props.instanceId) : undefined;
   return inst?.sessions.find((s) => s.alias === chat.sessionAlias)?.workspace ?? null;
 });
-
-// Git context for the Changes header: branch / detached HEAD + worktree (root path,
-// linked flag), straight off the loaded diff result. null until a diff is loaded.
-const gitCtx = computed(() => {
-  const d = files.diff;
-  if (!d) return null;
-  return { branch: d.branch, detached: d.detached === true, worktree: d.worktree };
-});
-
-const activeSession = computed(() => {
-  const inst = props.instanceId ? instances.byId(props.instanceId) : undefined;
-  return inst?.sessions.find((session) => session.alias === chat.sessionAlias);
-});
-const gitBusy = computed(() => git.operation !== null);
-const stagedPaths = computed(() => [...new Set((files.diff?.files ?? [])
-  .filter((file) => file.status[0] !== " " && file.status[0] !== "?")
-  .map((file) => file.path))]);
-const stageablePaths = computed(() => [...new Set((files.diff?.files ?? [])
-  .filter((file) => file.status[1] !== " " || file.status === "??")
-  .map((file) => file.path))]);
-const gitMessage = computed(() => {
-  if (git.error) {
-    const known: Record<string, string> = {
-      "dirty-worktree": t("files.git.errors.dirtyWorktree"),
-      "no-upstream": t("files.git.errors.noUpstream"),
-      "files-write-disabled": t("files.git.errors.writeDisabled"),
-      "invalid-branch-name": t("files.git.errors.invalidBranch"),
-      "invalid-start-point": t("files.git.errors.invalidStartPoint"),
-      "workspace-name-exists": t("files.git.errors.workspaceExists"),
-      "unknown-remote": t("files.git.errors.unknownRemote"),
-      "detached-head": t("files.git.errors.detachedHead"),
-      "git-operation-in-progress": t("files.git.errors.inProgress"),
-    };
-    return { ok: false, text: known[git.error] ?? git.error };
-  }
-  if (git.operation) return { ok: true, text: t(`files.git.running.${git.operation.kind}`) };
-  if (git.lastResult?.ok) return { ok: true, text: t(`files.git.done.${git.lastResult.kind}`) };
-  return null;
-});
-
-const commitMessage = ref("");
-const showBranchCreate = ref(false);
-const branchName = ref("");
-const branchStart = ref("");
-const showWorktrees = ref(false);
-const showWorktreeCreate = ref(false);
-const worktreeBranch = ref("");
-const worktreeStart = ref("");
-const worktreeWorkspace = ref("");
-const worktreeCreateBranch = ref(true);
-
-async function refreshGit(): Promise<void> {
-  if (!props.instanceId || !files.workspace) return;
-  await Promise.all([git.load(props.instanceId, files.workspace), files.loadDiff()]);
-}
-
-async function runGit(action: () => Promise<unknown>): Promise<boolean> {
-  const context = { instanceId: props.instanceId, workspace: files.workspace };
-  try {
-    await action();
-    if (props.instanceId === context.instanceId && files.workspace === context.workspace) {
-      await files.loadDiff();
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function stage(paths: string[]): Promise<void> {
-  if (!props.instanceId || !files.workspace || !paths.length) return;
-  await runGit(() => git.stage(props.instanceId!, files.workspace!, paths));
-}
-
-async function unstage(paths: string[]): Promise<void> {
-  if (!props.instanceId || !files.workspace || !paths.length) return;
-  await runGit(() => git.unstage(props.instanceId!, files.workspace!, paths));
-}
-
-async function commitStaged(): Promise<void> {
-  const message = commitMessage.value.trim();
-  if (!props.instanceId || !files.workspace || !message || !stagedPaths.value.length) return;
-  if (await runGit(() => git.commit(props.instanceId!, files.workspace!, message))) commitMessage.value = "";
-}
-
-async function switchBranch(event: Event): Promise<void> {
-  const select = event.target as HTMLSelectElement;
-  const branch = select.value;
-  if (!props.instanceId || !files.workspace || !branch || branch === git.status?.branch) return;
-  if (!await runGit(() => git.checkout(props.instanceId!, files.workspace!, { branch }))) {
-    select.value = git.status?.branch ?? "";
-  }
-}
-
-async function createBranch(): Promise<void> {
-  const branch = branchName.value.trim();
-  if (!props.instanceId || !files.workspace || !branch) return;
-  const ok = await runGit(() => git.checkout(props.instanceId!, files.workspace!, {
-    branch,
-    create: true,
-    ...(branchStart.value.trim() ? { startPoint: branchStart.value.trim() } : {}),
-  }));
-  if (ok) {
-    branchName.value = "";
-    branchStart.value = "";
-    showBranchCreate.value = false;
-  }
-}
-
-async function fetchRemote(): Promise<void> {
-  if (props.instanceId && files.workspace) await runGit(() => git.fetch(props.instanceId!, files.workspace!));
-}
-
-async function pullRemote(): Promise<void> {
-  if (props.instanceId && files.workspace) await runGit(() => git.pull(props.instanceId!, files.workspace!));
-}
-
-async function pushRemote(): Promise<void> {
-  if (!props.instanceId || !files.workspace || !git.status || git.status.detached) return;
-  let setUpstream = false;
-  if (!git.status?.upstream) {
-    setUpstream = await confirm({
-      title: t("files.git.pushFirstTitle"),
-      message: t("files.git.pushFirstBody", { branch: git.status?.branch ?? "HEAD" }),
-      confirmLabel: t("files.git.pushAndTrack"),
-      cancelLabel: t("files.cancel"),
-    });
-    if (!setUpstream) return;
-  }
-  await runGit(() => git.push(props.instanceId!, files.workspace!, setUpstream ? { setUpstream: true, remote: "origin" } : {}));
-}
-
-function beginWorktreeCreate(): void {
-  const branch = git.status?.branch ?? "main";
-  worktreeBranch.value = "";
-  worktreeStart.value = branch;
-  const base = slugify(`${files.workspace ?? "workspace"}-worktree`) || "worktree";
-  const existing = instances.byId(props.instanceId ?? "")?.workspaces.map((item) => item.name) ?? [];
-  worktreeWorkspace.value = uniqueName(base, existing);
-  worktreeCreateBranch.value = true;
-  showWorktreeCreate.value = true;
-}
-
-async function createWorktree(): Promise<void> {
-  const id = props.instanceId;
-  const workspace = files.workspace;
-  const branch = worktreeBranch.value.trim();
-  const workspaceName = worktreeWorkspace.value.trim();
-  const agent = activeSession.value?.agent;
-  const sourceSessionAlias = chat.sessionAlias;
-  if (!id || !workspace || !branch || !workspaceName || !agent || !sourceSessionAlias) return;
-  try {
-    const created = await git.createWorktree(id, workspace, {
-      workspaceName,
-      branch,
-      createBranch: worktreeCreateBranch.value,
-      ...(worktreeCreateBranch.value && worktreeStart.value.trim() ? { startPoint: worktreeStart.value.trim() } : {}),
-    });
-    await worktreeSession.open(id, agent, created.workspace.name, sourceSessionAlias);
-    showWorktreeCreate.value = false;
-  } catch {
-    // The Git store owns the actionable inline error and operation lifecycle.
-  }
-}
-
-// Changes summary: `N files · +X −Y`, derived (read-only) from the loaded diff.
-const changesSummary = computed(() => {
-  const d = files.diff;
-  if (!d) return null;
-  let add = 0;
-  let del = 0;
-  for (const l of d.diff ? d.diff.split("\n") : []) {
-    if (l.startsWith("+") && !l.startsWith("+++")) add++;
-    else if (l.startsWith("-") && !l.startsWith("---")) del++;
-  }
-  return { fileCount: d.files.length, add, del };
-});
-
-// Three-way grouping of the changed-files list (Staged / Changes / Untracked). Empty groups hide.
-const changeSections = computed(() => {
-  const g = groupChanges(files.diff?.files ?? []);
-  return [
-    { key: "staged", items: g.staged },
-    { key: "changes", items: g.changes },
-    { key: "untracked", items: g.untracked },
-  ].filter((s) => s.items.length);
-});
-
-// Per-group collapse state, persisted (sibling of the xacpx.* prefs).
-const COLLAPSE_KEY = "xacpx.changes.collapsed";
-const collapsed = ref<Record<string, boolean>>(loadCollapsed());
-function loadCollapsed(): Record<string, boolean> {
-  try {
-    return JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? "{}") as Record<string, boolean>;
-  } catch {
-    return {};
-  }
-}
-function toggleGroup(key: string): void {
-  collapsed.value = { ...collapsed.value, [key]: !collapsed.value[key] };
-  try {
-    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed.value));
-  } catch {
-    /* private mode / quota — collapse just won't persist */
-  }
-}
+const {
+  git, gitCtx, activeSession, gitBusy, stagedPaths, stageablePaths, gitMessage,
+  commitMessage, showBranchCreate, branchName, branchStart, showWorktrees,
+  showWorktreeCreate, worktreeBranch, worktreeStart, worktreeWorkspace,
+  worktreeCreateBranch, changesSummary, changeSections, collapsed,
+  refreshGit, stage, unstage, commitStaged, switchBranch, createBranch,
+  fetchRemote, pullRemote, pushRemote, beginWorktreeCreate, createWorktree,
+  toggleGroup, statusBadge,
+} = useChangesGit(toRef(props, "instanceId"));
 
 // Debounced file-name search.
 const searchInput = ref("");
@@ -354,17 +150,6 @@ function segments(text: string): { text: string; hit: boolean }[] {
   return out.length ? out : [{ text, hit: false }];
 }
 
-// Git-status badge for a Changes-tab row, derived from the porcelain status code.
-function statusBadge(code: string): { label: string; cls: string; dot: string } {
-  const c = code.trim();
-  if (c.includes("?")) return { label: "U", cls: "text-warn", dot: "bg-warn" }; // untracked
-  if (c.includes("A")) return { label: "A", cls: "text-run", dot: "bg-run" };
-  if (c.includes("D")) return { label: "D", cls: "text-danger", dot: "bg-danger" };
-  if (c.includes("R")) return { label: "R", cls: "text-accent", dot: "bg-accent" };
-  if (c.includes("M")) return { label: "M", cls: "text-info", dot: "bg-warn" };
-  return { label: c[0] ?? "•", cls: "text-fg-muted", dot: "bg-warn" };
-}
-
 function openSearchResult(m: string, line?: number) {
   selectedDiff.value = null; // clear any Changes-tab row highlight in favor of the freshly opened file
   if (currentKey.value) centerTabs.openFile(currentKey.value, m, line); // line = scroll target for content hits
@@ -381,9 +166,11 @@ function openDiff(path: string) {
 
 // Follow the instance + active session's workspace. Re-selects (and resets navigation)
 // whenever you switch to a session in a different workspace.
+let workspaceSelectionId = 0;
 watch(
   () => [props.instanceId, activeWorkspace.value] as const,
   async ([id, ws]) => {
+    const selectionId = ++workspaceSelectionId;
     files.reset();
     git.reset();
     searchInput.value = "";
@@ -391,10 +178,12 @@ watch(
     if (!id) return;
     files.instanceId = id;
     await instances.loadWorkspaces(id).catch(() => {});
+    if (selectionId !== workspaceSelectionId || props.instanceId !== id || activeWorkspace.value !== ws) return;
     // Default to the active session's workspace; fall back to the first configured one.
     const target = ws ?? instances.byId(id)?.workspaces?.[0]?.name;
     if (!target) return;
     await files.selectWorkspace(id, target);
+    if (selectionId !== workspaceSelectionId || props.instanceId !== id || activeWorkspace.value !== ws) return;
     // selectWorkspace cleared the diff, but the files.tab watcher below won't refire on a
     // session switch (the tab value is unchanged), so the Changes tab would sit on the
     // "no diff loaded" placeholder until a manual refresh. Load it here when it's the
