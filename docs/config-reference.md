@@ -16,6 +16,7 @@ If you want to manage WeChat/Feishu message channels, see [`docs/channel-managem
     "permissionMode": "approve-all",
     "nonInteractivePermissions": "deny",
     "queueOwnerTtlSeconds": 1800,
+    "adapterRegistry": "https://registry.npmjs.org/",
     "adapterVersions": {
       "codex": "1.1.4",
       "claude": "0.59.0"
@@ -95,16 +96,27 @@ How xacpx communicates with the acpx backend.
 | `turnIdleTimeoutSeconds` | `number` | No | Inactivity watchdog for in-flight agent turns. If a turn produces no streamed agent activity (output/tool/thought/usage/plan/command event) for this many seconds, it is aborted and reported as `Turn timed out due to inactivity`, reclaiming its slot. The timer resets on every streamed event, so long but actively-working turns are unaffected — **but a single tool call that stays silent for the whole window (e.g. `sleep`, a long compile/clone with no interleaved output) will still trip it**; raise this value or set `0` for workloads with long silent operations. Defaults to `600` (10 minutes); `0` disables the watchdog. Each reclaim is logged as `control.turn.idle_timeout` (with the session and the concrete threshold) for diagnosis |
 | `preferLocalAgents` | `boolean` | No | Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback when one is on `PATH` (currently the unpinned-npx drivers `opencode` and `kilocode`). Avoids a per-cold-start npm-registry fetch — faster and immune to network blips (e.g. `ECONNRESET` during agent init). Defaults to `true`; set `false` to always use acpx's default resolution. A per-agent `command` override still takes precedence |
 | `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `1.1.4`, `claude` `0.59.0` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
+| `adapterRegistry` | `string` | No | npm registry used only for xacpx-managed Codex/Claude adapters. Defaults to `https://registry.npmjs.org/` and does **not** inherit the machine/company npm default. Change it with `xacpx adapter registry set <url>`; only credential-free HTTP(S) URLs are accepted |
 
 ### Managed ACP adapter versions
 
-xacpx does not install the Codex or Claude adapter as a package dependency. For these two drivers it passes an exact `npx -y <package>@<version>` command to acpx. Resolution priority is:
+xacpx does not install the Codex or Claude adapter as a package dependency. For these two drivers it passes an exact `npx -y --registry=<registry> <package>@<version>` command to acpx. Resolution priority is:
 
 1. Explicit `agents.<name>.command` (fully user-managed)
 2. `transport.adapterVersions.<driver>`
 3. The exact version tested and shipped by this xacpx release
 
 Use `xacpx adapter list` to inspect local effective versions, `xacpx adapter check` to compare with npm, and `xacpx adapter update <name>` (or `--all`) to opt in to a newer version. `set` and `update` first confirm the exact package version is published and complete a real ACP `initialize` probe; the config is changed only if that probe succeeds. Adapter version changes require `xacpx restart`. xacpx never updates these pins automatically during daemon startup.
+
+All adapter version lookups, publication checks, verification downloads, and runtime `npx` launches use the effective `adapterRegistry`. The default is always the public npm registry; xacpx explicitly overrides both npm's generic registry and any `.npmrc` mapping for the `@agentclientprotocol` scope. A company registry can be selected explicitly when it proxies that scope:
+
+```bash
+xacpx adapter registry
+xacpx adapter registry set https://npm.company.example/repository/npm-group/
+xacpx adapter registry reset   # return to https://registry.npmjs.org/
+```
+
+Registry URLs must not include credentials; configure registry-scoped authentication in npm's normal `.npmrc` instead. Restart the daemon after changing the registry.
 
 ### `type` Options
 

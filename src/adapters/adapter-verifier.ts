@@ -1,15 +1,21 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
 
 import { terminateProcessTree } from "../process/terminate-process-tree";
 import { MANAGED_ADAPTERS, type ManagedAdapterId } from "./adapter-catalog";
+import { resolveNpmCommand } from "./adapter-npm";
+import {
+  DEFAULT_ADAPTER_REGISTRY,
+  adapterRegistryNpmArgs,
+  adapterRegistryE404Guidance,
+  effectiveAdapterRegistry,
+} from "./adapter-registry";
 
 const DEFAULT_VERIFY_TIMEOUT_MS = 120_000;
 const OUTPUT_LIMIT = 64 * 1024;
 
 interface VerifyOptions {
   timeoutMs?: number;
+  adapterRegistry?: string;
 }
 
 interface JsonRpcResponse {
@@ -89,6 +95,10 @@ export async function verifyAcpInitialize(
       child.once("error", (error) => finish(new Error(`failed to start adapter: ${error.message}`)));
       child.once("close", (code, signal) => {
         if (settled) return;
+        if (options.adapterRegistry && /\bE404\b|\b404\s+Not\s+Found\b/i.test(stderr)) {
+          finish(new Error(adapterRegistryE404Guidance(effectiveAdapterRegistry(options.adapterRegistry))));
+          return;
+        }
         const suffix = stderr.trim() ? `: ${stderr.trim()}` : "";
         finish(new Error(`adapter exited before ACP initialize completed (code=${String(code)}, signal=${String(signal)})${suffix}`));
       });
@@ -121,34 +131,23 @@ export async function verifyAcpInitialize(
 }
 
 /** Downloads the exact package version through npm's exec cache, then probes ACP. */
-export async function verifyAdapterVersion(id: ManagedAdapterId, version: string): Promise<void> {
+export async function verifyAdapterVersion(
+  id: ManagedAdapterId,
+  version: string,
+  registry: string = DEFAULT_ADAPTER_REGISTRY,
+): Promise<void> {
   const adapter = MANAGED_ADAPTERS[id];
   const npm = resolveNpmCommand();
+  const normalizedRegistry = effectiveAdapterRegistry(registry);
   await verifyAcpInitialize(npm.command, [
     ...npm.prefixArgs,
     "exec",
     "--yes",
+    ...adapterRegistryNpmArgs(normalizedRegistry),
     `--package=${adapter.packageName}@${version}`,
     "--",
     adapter.binName,
-  ]);
-}
-
-function resolveNpmCommand(): { command: string; prefixArgs: string[] } {
-  if (process.platform !== "win32") return { command: "npm", prefixArgs: [] };
-
-  // Never route package specs through a command shell. Official Node installers
-  // place npm-cli.js beside node.exe; npm-run scripts also expose its exact path.
-  const candidates = [
-    process.env.npm_execpath,
-    join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
-  ];
-  const npmCli = candidates.find((candidate): candidate is string =>
-    typeof candidate === "string" && /npm-cli\.(?:c?js)$/i.test(candidate) && existsSync(candidate));
-  if (!npmCli) {
-    throw new Error("cannot locate npm-cli.js for shell-free adapter verification");
-  }
-  return { command: process.execPath, prefixArgs: [npmCli] };
+  ], { adapterRegistry: normalizedRegistry });
 }
 
 function appendLimited(current: string, chunk: string): string {

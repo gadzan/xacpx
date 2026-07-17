@@ -1,3 +1,5 @@
+import { DEFAULT_ADAPTER_REGISTRY, adapterRegistryNpmArgs } from "./adapter-registry";
+
 export const MANAGED_ADAPTERS = {
   codex: {
     packageName: "@agentclientprotocol/codex-acp",
@@ -37,24 +39,39 @@ export function effectiveAdapterVersion(
   return overrides?.[id] ?? MANAGED_ADAPTERS[id].defaultVersion;
 }
 
-export function buildManagedAdapterCommand(id: ManagedAdapterId, version: string): string {
+export function buildManagedAdapterCommand(
+  id: ManagedAdapterId,
+  version: string,
+  registry: string = DEFAULT_ADAPTER_REGISTRY,
+): string {
   if (!isExactAdapterVersion(version)) throw new Error(`invalid adapter version: ${version}`);
   const spec = MANAGED_ADAPTERS[id];
-  return `npx -y ${spec.packageName}@${version}`;
+  return `npx -y ${adapterRegistryNpmArgs(registry).join(" ")} ${spec.packageName}@${version}`;
 }
 
 export function resolveManagedAdapterCommand(
   driver: string,
   overrides?: AdapterVersionOverrides,
+  registry?: string,
 ): string | undefined {
   if (!isManagedAdapterId(driver)) return undefined;
-  return buildManagedAdapterCommand(driver, effectiveAdapterVersion(driver, overrides));
+  return buildManagedAdapterCommand(driver, effectiveAdapterVersion(driver, overrides), registry);
 }
 
 export function isManagedAdapterCommand(driver: string, command: string | undefined): boolean {
   if (!command || !isManagedAdapterId(driver)) return false;
-  const prefix = `npx -y ${MANAGED_ADAPTERS[driver].packageName}@`;
-  return command.startsWith(prefix) && command.length > prefix.length && !/\s/.test(command.slice(prefix.length));
+  const packagePrefix = `${MANAGED_ADAPTERS[driver].packageName}@`;
+  const parts = command.split(" ");
+  const hasLegacyShape = parts.length === 3 && parts[0] === "npx" && parts[1] === "-y";
+  const hasRegistryShape = Boolean((parts.length === 4 || parts.length === 5)
+    && parts[0] === "npx"
+    && parts[1] === "-y"
+    && parts[2]?.startsWith("--registry=")
+    && (parts.length === 4 || parts[3]?.startsWith("--@agentclientprotocol:registry=")));
+  const packageValue = parts.at(-1) ?? "";
+  return (hasLegacyShape || hasRegistryShape)
+    && packageValue.startsWith(packagePrefix)
+    && packageValue.length > packagePrefix.length;
 }
 
 /** A recorded generated command is derived state, so a newer configured/default

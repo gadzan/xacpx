@@ -1867,3 +1867,17 @@ test("adapter set persists only transport.adapterVersions in the real config sto
     expect((await readConfigJson(home)).transport.adapterVersions).toEqual({ codex: "1.1.2" });
   });
 });
+
+test("adapter registry CLI persists and resets only transport.adapterRegistry", async () => {
+  await withTempHome(async (home) => {
+    expect(await runCli([
+      "adapter", "registry", "set", "https://npm.corp.example/repository/npm",
+    ], { print: () => {} })).toBe(0);
+    expect((await readConfigJson(home)).transport.adapterRegistry).toBe(
+      "https://npm.corp.example/repository/npm/",
+    );
+
+    expect(await runCli(["adapter", "registry", "reset"], { print: () => {} })).toBe(0);
+    expect((await readConfigJson(home)).transport.adapterRegistry).toBeUndefined();
+  });
+});

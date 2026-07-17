@@ -935,6 +935,10 @@ export interface CliMessages {
   adapterReset: (id: string, version: string) => string;
   adapterFailed: (id: string, detail: string) => string;
   adapterRestartRequired: string;
+  adapterRegistryCurrent: (registry: string, source: string) => string;
+  adapterRegistrySaved: (registry: string) => string;
+  adapterRegistryReset: (registry: string) => string;
+  adapterInvalidRegistry: (detail: string) => string;
 
   // later commands
   laterIdEmpty: string;

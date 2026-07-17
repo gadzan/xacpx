@@ -18,6 +18,7 @@ export const cli: CliMessages = {
     "xacpx version - 查看版本",
     "xacpx agent|agents list|add|rm|templates - 管理本机 Agent",
     "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name> - 管理 ACP adapter 版本",
+    "xacpx adapter registry [set <url>|reset] - 管理 ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - 管理本机工作区（别名：ws）",
     "xacpx later|lt list|cancel <id> - 管理本机待执行定时任务",
     "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - 启动 MCP stdio 服务",
@@ -90,7 +91,11 @@ export const cli: CliMessages = {
   adapterSaved: (id, version) => `${id} adapter 版本已设置为 ${version}。`,
   adapterReset: (id, version) => `${id} adapter 本机覆盖已删除；当前生效版本为 ${version}。`,
   adapterFailed: (id, detail) => `${id} adapter 更新失败：${detail}`,
-  adapterRestartRequired: "请重启 xacpx daemon 后再使用新的 adapter 版本。",
+  adapterRestartRequired: "请重启 xacpx daemon 后再使用新的 adapter 配置。",
+  adapterRegistryCurrent: (registry, source) => `Adapter registry：${registry}（来源=${source}）`,
+  adapterRegistrySaved: (registry) => `Adapter registry 已设置为 ${registry}。`,
+  adapterRegistryReset: (registry) => `Adapter registry 本机覆盖已删除；当前使用 ${registry}。`,
+  adapterInvalidRegistry: (detail) => `Adapter registry 无效：${detail}`,
 
   // later commands
   laterIdEmpty: "定时任务 ID 不能为空。",

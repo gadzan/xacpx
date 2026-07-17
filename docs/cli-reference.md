@@ -27,6 +27,7 @@ commands (sent inside WeChat / Feishu / Yuanbao), see [commands.md](./commands.m
 | `xacpx adapter list\|check [codex\|claude]` | Inspect effective managed ACP adapter versions and optionally compare them with npm |
 | `xacpx adapter update <codex\|claude>` / `xacpx adapter update --all` | Verify and save the latest published adapter version locally |
 | `xacpx adapter set <codex\|claude> <version>` / `reset <codex\|claude>` | Verify an exact version override, or return to this xacpx release's tested default |
+| `xacpx adapter registry [set <url>\|reset]` | Show, change, or reset the npm registry used only for managed adapters |
 | `xacpx workspace list` | List workspaces registered on this machine |
 | `xacpx workspace add [name] [--raw]` | Register the current directory as a workspace; without `name`, uses the current directory name, and names with special characters are normalized automatically |
 | `xacpx workspace rm <name>` | Remove a workspace |
@@ -119,9 +120,14 @@ xacpx adapter update codex        # opt in to latest after an ACP initialize pro
 xacpx adapter update --all        # all probes must pass before one config write
 xacpx adapter set codex 1.1.2     # exact semver only; verifies before saving
 xacpx adapter reset codex         # remove local override; use release default
+xacpx adapter registry            # show effective registry and its source
+xacpx adapter registry set https://npm.company.example/repository/npm-group/
+xacpx adapter registry reset      # return to the public npm registry
 ```
 
 `set` and `update` use a package/bin allowlist and structured process arguments. A candidate must exist in npm and answer a real ACP protocol-version-1 `initialize` request before `transport.adapterVersions` is written. If any `update --all` probe fails, none of its candidates are saved. Changes are never applied automatically at daemon startup; after a successful mutation, run `xacpx restart`.
+
+The adapter registry defaults to `https://registry.npmjs.org/`, independently of both the machine's generic npm registry and an existing `@agentclientprotocol:registry` scope mapping. It is used consistently for latest-version queries, exact-version checks, verification downloads, and runtime `npx` launches. Set a company registry only if it proxies or hosts `@agentclientprotocol/codex-acp` and `@agentclientprotocol/claude-agent-acp`. Registry authentication stays in npm's scoped `.npmrc`; credentials in the URL are rejected.
 
 ## `doctor`
 

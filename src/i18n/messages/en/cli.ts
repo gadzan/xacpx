@@ -18,6 +18,7 @@ export const cli: CliMessages = {
     "xacpx version - Show version",
     "xacpx agent|agents list|add|rm|templates - Manage local agents",
     "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name> - Manage ACP adapter versions",
+    "xacpx adapter registry [set <url>|reset] - Manage the ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - Manage local workspaces (alias: ws)",
     "xacpx later|lt list|cancel <id> - Manage local scheduled tasks",
     "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - Start MCP stdio server",
@@ -90,7 +91,11 @@ export const cli: CliMessages = {
   adapterSaved: (id, version) => `${id} adapter version set to ${version}.`,
   adapterReset: (id, version) => `${id} adapter override removed; effective version is ${version}.`,
   adapterFailed: (id, detail) => `Failed to update ${id} adapter: ${detail}`,
-  adapterRestartRequired: "Restart the xacpx daemon before using the new adapter version.",
+  adapterRestartRequired: "Restart the xacpx daemon before using the new adapter settings.",
+  adapterRegistryCurrent: (registry, source) => `Adapter registry: ${registry} (source=${source})`,
+  adapterRegistrySaved: (registry) => `Adapter registry set to ${registry}.`,
+  adapterRegistryReset: (registry) => `Adapter registry override removed; using ${registry}.`,
+  adapterInvalidRegistry: (detail) => `Invalid adapter registry: ${detail}`,
 
   // later commands
   laterIdEmpty: "Scheduled task ID cannot be empty.",

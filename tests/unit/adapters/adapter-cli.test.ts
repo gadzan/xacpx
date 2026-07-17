@@ -8,6 +8,8 @@ function deps(overrides: Partial<AdapterCliDeps> = {}) {
   const base: AdapterCliDeps = {
     loadVersions: async () => ({}),
     saveVersions: async (versions) => { saved = versions; },
+    loadRegistry: async () => undefined,
+    saveRegistry: async () => {},
     getLatestVersion: async (id) => id === "codex" ? "1.1.4" : "0.59.0",
     versionExists: async () => true,
     verifyVersion: async () => {},
@@ -19,6 +21,52 @@ function deps(overrides: Partial<AdapterCliDeps> = {}) {
     saved: () => saved,
   };
 }
+
+test("registry shows the official npm default and can set or reset a local override", async () => {
+  const savedRegistries: Array<string | undefined> = [];
+  const ctx = deps({
+    loadRegistry: async () => undefined,
+    saveRegistry: async (registry) => { savedRegistries.push(registry); },
+  });
+
+  expect(await handleAdapterCli(["registry"], ctx.deps)).toBe(0);
+  expect(ctx.lines.join("\n")).toContain("https://registry.npmjs.org/");
+
+  expect(await handleAdapterCli(["registry", "set", "https://npm.corp.example/repository/npm"], ctx.deps)).toBe(0);
+  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm/"]);
+
+  expect(await handleAdapterCli(["registry", "reset"], ctx.deps)).toBe(0);
+  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm/", undefined]);
+});
+
+test("registry rejects unsafe URLs without changing config", async () => {
+  let saves = 0;
+  const ctx = deps({ saveRegistry: async () => { saves += 1; } });
+  for (const registry of [
+    "https://user:secret@npm.example/",
+    "https://npm.example/repository/;touch-pwned",
+  ]) {
+    expect(await handleAdapterCli(["registry", "set", registry], ctx.deps)).toBe(1);
+  }
+  expect(saves).toBe(0);
+  expect(ctx.lines.join("\n")).toContain("registry");
+});
+
+test("check queries npm through the configured adapter registry", async () => {
+  const queried: string[] = [];
+  const ctx = deps({
+    loadRegistry: async () => "https://npm.corp.example/repository/npm/",
+    getLatestVersion: async (id, registry) => {
+      queried.push(`${id}:${registry}`);
+      return id === "codex" ? "1.1.4" : "0.59.0";
+    },
+  });
+  expect(await handleAdapterCli(["check"], ctx.deps)).toBe(0);
+  expect(queried).toEqual([
+    "codex:https://npm.corp.example/repository/npm/",
+    "claude:https://npm.corp.example/repository/npm/",
+  ]);
+});
 
 test("list is local-only and shows default versus configured effective versions", async () => {
   let networkCalls = 0;
@@ -37,11 +85,15 @@ test("set verifies a published exact version before persisting it", async () => 
   const events: string[] = [];
   const ctx = deps({
     loadVersions: async () => ({ claude: "0.58.1" }),
-    versionExists: async (id, version) => { events.push(`exists:${id}:${version}`); return true; },
-    verifyVersion: async (id, version) => { events.push(`verify:${id}:${version}`); },
+    loadRegistry: async () => "https://npm.corp.example/",
+    versionExists: async (id, version, registry) => { events.push(`exists:${id}:${version}:${registry}`); return true; },
+    verifyVersion: async (id, version, registry) => { events.push(`verify:${id}:${version}:${registry}`); },
   });
   expect(await handleAdapterCli(["set", "codex", "1.1.2"], ctx.deps)).toBe(0);
-  expect(events).toEqual(["exists:codex:1.1.2", "verify:codex:1.1.2"]);
+  expect(events).toEqual([
+    "exists:codex:1.1.2:https://npm.corp.example/",
+    "verify:codex:1.1.2:https://npm.corp.example/",
+  ]);
   expect(ctx.saved()).toEqual({ claude: "0.58.1", codex: "1.1.2" });
 });
 

@@ -54,7 +54,7 @@ test("creates a session with xacpx's pinned managed adapter", async () => {
 
   expect(session.transportSession).toBe("backend:api-fix");
   expect(session.cwd).toBe("/tmp/backend");
-  expect(session.agentCommand).toBe("npx -y @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4");
 });
 
 test("ignores a legacy raw codex command and falls back to xacpx's pinned adapter", async () => {
@@ -68,7 +68,7 @@ test("ignores a legacy raw codex command and falls back to xacpx's pinned adapte
 
   const session = await service.createSession("api-fix", "codex", "backend");
 
-  expect(session.agentCommand).toBe("npx -y @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4");
 });
 
 test("refreshes recorded generated adapter commands but preserves custom recorded commands", async () => {
@@ -84,7 +84,7 @@ test("refreshes recorded generated adapter commands but preserves custom recorde
   };
   const generated = new SessionService(config, new MemoryStateStore(), generatedState);
   expect((await generated.getSession("review"))?.agentCommand).toBe(
-    "npx -y @agentclientprotocol/codex-acp@1.1.2",
+    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.2",
   );
 
   generatedState.sessions.review!.transport_agent_command = "my-codex-wrapper --safe";
@@ -105,7 +105,7 @@ test("refreshes a recorded legacy codex shim to the current managed pin", async 
 
   const service = new SessionService(config, new MemoryStateStore(), state);
   expect((await service.getSession("review"))?.agentCommand).toBe(
-    "npx -y @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
   );
 });
 
@@ -807,7 +807,7 @@ test("recreating an alias with a different agent does not inherit transport agen
 
   const recreated = await service.createSession("foo", "claude", "backend");
 
-  expect(recreated.agentCommand).toBe("npx -y @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/claude-agent-acp@0.59.0");
   expect(recreated.modeId).toBeUndefined();
   expect(recreated.replyMode).toBeUndefined();
   expect(state.sessions.foo?.transport_agent_command).toBeUndefined();
@@ -842,7 +842,7 @@ test("resolveSession does not reuse a cached transport agent command from a diff
   await service.setSessionTransportAgentCommand("foo", "npx @zed-industries/codex-acp@^0.9.5");
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
-  expect(crossAgent.agentCommand).toBe("npx -y @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/claude-agent-acp@0.59.0");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");

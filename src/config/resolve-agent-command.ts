@@ -32,12 +32,13 @@ export function resolveRuntimeAgentCommand(
   command: string | undefined,
   preferLocal = true,
   adapterVersions?: AdapterVersionOverrides,
+  adapterRegistry?: string,
 ): string | undefined {
   const explicit = resolveAgentCommand(driver, command);
   if (explicit) {
     return explicit;
   }
-  const managed = resolveManagedAdapterCommand(driver, adapterVersions);
+  const managed = resolveManagedAdapterCommand(driver, adapterVersions, adapterRegistry);
   if (managed) return managed;
   return preferLocal ? resolveLocalAgentCommand(driver) : undefined;
 }
@@ -46,13 +47,14 @@ export function resolveRuntimeAgentCommand(
  * this decomposition here prevents those identity-sensitive paths from drifting. */
 export function resolveConfiguredAgentCommand(
   agent: Pick<AgentConfig, "driver" | "command">,
-  transport?: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions">,
+  transport?: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry">,
 ): string | undefined {
   return resolveRuntimeAgentCommand(
     agent.driver,
     agent.command,
     transport?.preferLocalAgents !== false,
     transport?.adapterVersions,
+    transport?.adapterRegistry,
   );
 }
 

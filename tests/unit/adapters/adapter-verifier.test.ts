@@ -40,3 +40,11 @@ test("times out and terminates an adapter that never initializes", async () => {
     .rejects.toThrow("timed out after 30ms");
   expect(Date.now() - startedAt).toBeLessThan(2_000);
 });
+
+test("npm E404 failures point users to the adapter registry setting", async () => {
+  await expect(verifyAcpInitialize(
+    process.execPath,
+    ["-e", "console.error('npm ERR! code E404'); process.exit(1)"],
+    { adapterRegistry: "https://npm.corp.example/" },
+  )).rejects.toThrow("xacpx adapter registry set https://registry.npmjs.org/");
+});

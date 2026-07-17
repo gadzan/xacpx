@@ -42,9 +42,9 @@ import { toDisplaySessionAlias } from "./channels/channel-scope";
 import { renderLaterList } from "./scheduled/scheduled-render";
 import { ScheduledTaskService, normalizeId } from "./scheduled/scheduled-service";
 import { maybeRunFirstUseOnboarding, type FirstRunOnboardingPlan } from "./onboarding.js";
-import { getLatestNpmVersion, handleUpdateCli, type UpdateCliDeps } from "./cli-update.js";
+import { handleUpdateCli, type UpdateCliDeps } from "./cli-update.js";
 import { handleAdapterCli, type AdapterCliDeps } from "./adapters/adapter-cli";
-import { MANAGED_ADAPTERS } from "./adapters/adapter-catalog";
+import { getAdapterNpmVersion } from "./adapters/adapter-npm";
 import { verifyAdapterVersion } from "./adapters/adapter-verifier";
 import type { AppConfig } from "./config/types";
 import type { AppState } from "./state/types";
@@ -921,9 +921,11 @@ function createAdapterCliDeps(input: {
   const defaults: AdapterCliDeps = {
     loadVersions: async () => (await (await getStore()).load()).transport.adapterVersions ?? {},
     saveVersions: async (versions) => { await (await getStore()).replaceAdapterVersions(versions); },
-    getLatestVersion: async (id) => await getLatestNpmVersion(MANAGED_ADAPTERS[id].packageName),
-    versionExists: async (id, version) =>
-      await getLatestNpmVersion(`${MANAGED_ADAPTERS[id].packageName}@${version}`) === version,
+    loadRegistry: async () => (await (await getStore()).load()).transport.adapterRegistry,
+    saveRegistry: async (registry) => { await (await getStore()).updateTransport({ adapterRegistry: registry }); },
+    getLatestVersion: async (id, registry) => await getAdapterNpmVersion(id, undefined, registry),
+    versionExists: async (id, version, registry) =>
+      await getAdapterNpmVersion(id, version, registry) === version,
     verifyVersion: verifyAdapterVersion,
     print: input.print,
   };

@@ -31,3 +31,20 @@ Currently the more clearly known values are:
 - `cursor`: `agent`, `plan`, `ask`
 
 If you're unsure whether a value works, check the corresponding agent's docs first; if you get it wrong, you'll usually get an error such as an invalid argument.
+
+## Why does an adapter download fail with npm E404?
+
+`E404` usually means the selected registry does not contain or proxy the `@agentclientprotocol` adapter packages. New xacpx releases default managed adapter operations to the public npm registry, independently of the machine's generic or scope-specific company npm registry. Inspect the effective value with:
+
+```bash
+xacpx adapter registry
+```
+
+To use the public registry explicitly:
+
+```bash
+xacpx adapter registry set https://registry.npmjs.org/
+xacpx restart
+```
+
+If company policy requires a private registry, ask its administrator to proxy or allowlist the `@agentclientprotocol` scope, then configure that registry with `xacpx adapter registry set <url>`. Put any registry-scoped token in `.npmrc`; xacpx rejects credentials embedded in the URL. `xacpx adapter check` is a quick way to verify that both managed packages are visible before creating another session.
