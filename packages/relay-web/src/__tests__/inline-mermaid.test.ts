@@ -1,6 +1,19 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { enhanceMermaidBlock } from "../lib/inline-mermaid";
+import { downloadSvgAsPng } from "../lib/mermaid-export";
 import { encodeMermaidSource } from "../lib/mermaid-source";
+
+// The rasterizer itself is canvas glue jsdom cannot run; stub it so the button's pending/failure
+// behaviour (which is this module's job) is drivable. pngFileName stays real.
+vi.mock("../lib/mermaid-export", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/mermaid-export")>()),
+  downloadSvgAsPng: vi.fn(async () => true),
+}));
+const mockDownload = vi.mocked(downloadSvgAsPng);
+beforeEach(() => {
+  mockDownload.mockReset();
+  mockDownload.mockResolvedValue(true);
+});
 
 // The enhancer takes its button text from the caller (it has no i18n of its own); these mirror the
 // en catalog so the aria-label selectors below read naturally.
@@ -203,4 +216,99 @@ test("labels drive the button text: a non-English catalog reaches the DOM", () =
   });
   expect(block.querySelector('[aria-label="查看图表源码"]')).not.toBeNull();
   expect(block.querySelector('[aria-label="下载为 PNG"]')).not.toBeNull();
+});
+
+// The reset path a theme switch takes: detach → resetMermaidBlocks (which rebuilds the block from
+// its source and knows nothing about `mmd-source-mode`) → re-hydrate → re-enhance. The enhancer owns
+// that class, so it must clear it — otherwise the fresh enhancement starts at showingSource=false /
+// aria-pressed="false" while the CSS still hides the diagram, and the first click is a no-op.
+test("re-enhancing a block left in source mode comes back showing the DIAGRAM", () => {
+  const block = makeBlock();
+  const detach = enhanceMermaidBlock(block, { onExpand: () => {}, labels: LABELS });
+  (block.querySelector('[aria-label="Show diagram source"]') as HTMLElement).click();
+  expect(block.classList.contains("mmd-source-mode")).toBe(true);
+
+  // Replay the reset: detach, rebuild the block's children exactly as resetMermaidBlocks does, and
+  // re-enhance. The class survives all of that — it lives on the block, which is never replaced.
+  detach();
+  const code = document.createElement("code");
+  code.textContent = SOURCE;
+  block.replaceChildren(code);
+  block.classList.remove("mermaid-rendered", "mermaid-error");
+  expect(block.classList.contains("mmd-source-mode")).toBe(true); // reset did NOT clear it
+
+  block.classList.add("mermaid-rendered");
+  block.innerHTML = '<svg data-test="d2"><text>x</text></svg>'; // re-hydrated svg
+  enhanceMermaidBlock(block, { onExpand: () => {}, labels: LABELS });
+
+  expect(block.classList.contains("mmd-source-mode")).toBe(false);
+  expect(
+    (block.querySelector('[aria-label="Show diagram source"]') as HTMLElement).getAttribute("aria-pressed"),
+  ).toBe("false");
+  // And the toggle is live on the FIRST click, not the second.
+  (block.querySelector('[aria-label="Show diagram source"]') as HTMLElement).click();
+  expect(block.classList.contains("mmd-source-mode")).toBe(true);
+});
+
+// U+2B07 alone is Emoji_Presentation=Yes → iOS/Android/macOS paint it as a blue emoji and ignore the
+// bar's colour. U+FE0E forces text presentation. Cannot be observed headlessly; pin the code points.
+test("the download glyph carries the text-presentation selector (U+FE0E)", () => {
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {}, labels: LABELS });
+  const glyph = (block.querySelector('[aria-label="Download as PNG"]') as HTMLElement).textContent ?? "";
+  expect([...glyph].map((c) => c.codePointAt(0))).toEqual([0x2b07, 0xfe0e]);
+});
+
+// A rasterization can fail (Image.onerror, toBlob → null). Without this the user taps and nothing
+// EVER happens — no pending state, no error, and a second tap queues a second raster.
+test("⬇ disables itself while exporting, so a double-tap cannot queue two rasterizations", async () => {
+  let release: (v: boolean) => void = () => {};
+  mockDownload.mockReturnValue(new Promise<boolean>((resolve) => { release = resolve; }));
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {}, labels: LABELS });
+  const button = block.querySelector('[aria-label="Download as PNG"]') as HTMLButtonElement;
+
+  button.click();
+  expect(button.disabled).toBe(true);
+  expect(button.getAttribute("aria-busy")).toBe("true");
+
+  button.click(); // second tap while in flight
+  expect(mockDownload).toHaveBeenCalledTimes(1);
+
+  release(true);
+  await vi.waitFor(() => expect(button.disabled).toBe(false));
+  expect(button.hasAttribute("aria-busy")).toBe(false);
+});
+
+test("a failed export reports through onExportError (and never throws)", async () => {
+  mockDownload.mockResolvedValue(false);
+  const errors: number[] = [];
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {}, onExportError: () => errors.push(1), labels: LABELS });
+  const button = block.querySelector('[aria-label="Download as PNG"]') as HTMLButtonElement;
+
+  button.click();
+  await vi.waitFor(() => expect(errors).toHaveLength(1));
+  expect(button.disabled).toBe(false); // and the button is usable again for a retry
+});
+
+test("a SUCCESSFUL export stays silent", async () => {
+  mockDownload.mockResolvedValue(true);
+  const errors: number[] = [];
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {}, onExportError: () => errors.push(1), labels: LABELS });
+  const button = block.querySelector('[aria-label="Download as PNG"]') as HTMLButtonElement;
+
+  button.click();
+  await vi.waitFor(() => expect(button.disabled).toBe(false));
+  expect(errors).toHaveLength(0);
+});
+
+test("a failed export with no onExportError wired is still safe", async () => {
+  mockDownload.mockResolvedValue(false);
+  const block = makeBlock();
+  enhanceMermaidBlock(block, { onExpand: () => {}, labels: LABELS });
+  const button = block.querySelector('[aria-label="Download as PNG"]') as HTMLButtonElement;
+  expect(() => button.click()).not.toThrow();
+  await vi.waitFor(() => expect(button.disabled).toBe(false));
 });

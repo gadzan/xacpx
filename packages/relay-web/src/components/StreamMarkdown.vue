@@ -7,6 +7,8 @@ import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import { fixLabelContrast } from "../lib/mermaid-contrast";
 import MermaidViewer from "./MermaidViewer.vue";
 import { useThemeStore } from "../stores/theme";
+import { useLocaleStore } from "../stores/locale";
+import { pushToast } from "../lib/use-toasts";
 
 const { t } = useI18n();
 
@@ -19,6 +21,7 @@ const props = defineProps<{ text: string; streaming?: boolean }>();
 const THROTTLE_MS = 80;
 
 const theme = useThemeStore();
+const localeStore = useLocaleStore();
 const rootEl = ref<HTMLElement | null>(null);
 const html = ref("");
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -61,6 +64,9 @@ function enhanceRenderedBlocks(root: HTMLElement): void {
           onExpand: () => {
             viewerSvg.value = block.querySelector("svg")?.outerHTML ?? null;
           },
+          // A PNG export can fail (Image.onerror, toBlob → null) and the enhancer has no way to say
+          // so; route it to the app's toast queue, which takes an i18n key and translates at render.
+          onExportError: () => pushToast("error", "chat.mermaidDownloadFailed"),
           // The enhancer is a DOM-only lib with no i18n of its own; `t` lives here.
           labels: {
             zoomOut: t("chat.mermaidZoomOut"),
@@ -90,9 +96,13 @@ function fixRenderedBlockContrast(root: HTMLElement): void {
 // localized label the CSS `::before` renders muted, so the failure is legible instead of just a
 // tinted border. The label text sits in a data-attr (i18n lives here, not in the DOM-only lib);
 // it is inert once the `.mermaid-error` class is gone, so no cleanup is needed on reset.
+//
+// Unconditional rather than `:not([data-mmd-error-label])`: the attribute holds TRANSLATED text, so
+// skipping an already-labelled block would freeze it in the locale it first rendered in. Writing the
+// same string again is a no-op, so this costs nothing on the common path.
 function labelErrorBlocks(root: HTMLElement): void {
   root
-    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-error:not([data-mmd-error-label])")
+    .querySelectorAll<HTMLElement>("pre.mermaid-block.mermaid-error")
     .forEach((block) => block.setAttribute("data-mmd-error-label", t("chat.mermaidError")));
 }
 
@@ -181,6 +191,15 @@ watch(
 // Theme switched: re-theme any already-rendered diagrams (the SVG cache is theme-keyed).
 watch(
   () => theme.mode,
+  () => scheduleHydrate(true),
+);
+
+// Locale switched: the enhancer's button labels and the error caption are baked in at enhance time
+// (`data-mmd-enhanced` means a block is never enhanced twice), so without this they would stay in
+// the old language until a theme toggle or a remount. The reset path rebuilds and re-enhances every
+// block, which re-reads `t` — the same route the theme watcher takes.
+watch(
+  () => localeStore.locale,
   () => scheduleHydrate(true),
 );
 
@@ -417,6 +436,13 @@ onBeforeUnmount(() => {
 .stream-md .mermaid-block.mermaid-rendered:hover .mmd-controls,
 .stream-md .mermaid-block.mermaid-rendered:focus-within .mmd-controls {
   opacity: 1;
+}
+/* Touch devices never hover, and :focus-within only lands AFTER the first tap — so the dim resting
+   state would be all a phone user ever sees while reading a diagram. Show the bar outright there. */
+@media (hover: none) {
+  .stream-md .mmd-controls {
+    opacity: 1;
+  }
 }
 .stream-md .mmd-controls button {
   display: inline-flex;

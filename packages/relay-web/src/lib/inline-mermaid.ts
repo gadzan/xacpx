@@ -57,10 +57,17 @@ function exportBackground(viewport: HTMLElement): string {
  */
 export function enhanceMermaidBlock(
   block: HTMLElement,
-  opts: { onExpand: () => void; labels: MermaidControlLabels },
+  opts: { onExpand: () => void; onExportError?: () => void; labels: MermaidControlLabels },
 ): () => void {
   const svg = block.querySelector("svg");
   if (!svg) return () => {};
+
+  // This enhancer OWNS `mmd-source-mode`, so it must initialize it: `showingSource` starts false
+  // below, and a re-enhance (theme switch → detach → reset → re-hydrate) hits a block that may still
+  // carry the class from the previous enhancement. resetMermaidBlocks deliberately knows nothing
+  // about it — clearing it here is what keeps the DOM and `showingSource` from disagreeing, which
+  // otherwise hides the diagram behind a toggle that claims aria-pressed="false".
+  block.classList.remove("mmd-source-mode");
 
   const viewport = document.createElement("div");
   viewport.className = "mmd-viewport";
@@ -141,9 +148,25 @@ export function enhanceMermaidBlock(
   });
   sourceButton.setAttribute("aria-pressed", "false");
 
-  addButton(opts.labels.download, "⬇", (e) => {
+  // U+2B07 is Emoji_Presentation=Yes, so iOS/Android/macOS paint it as a blue emoji and ignore the
+  // bar's `color`. U+FE0E (VARIATION SELECTOR-15) forces text presentation, keeping it monochrome
+  // alongside the other five glyphs, which are all text-default.
+  const downloadButton = addButton(opts.labels.download, "\u2B07\uFE0E", (e) => {
     e.stopPropagation();
-    void downloadSvgAsPng(svg, { background: exportBackground(viewport), fileName: pngFileName(source) });
+    // Rasterizing is async and can fail (Image.onerror, toBlob → null). Disabling for the duration
+    // is what stops a double-tap from queueing a second raster (a disabled button fires no click),
+    // and a failure is reported rather than swallowed — the caller owns how it surfaces, since this
+    // module has no i18n.
+    downloadButton.disabled = true;
+    downloadButton.setAttribute("aria-busy", "true");
+    void downloadSvgAsPng(svg, { background: exportBackground(viewport), fileName: pngFileName(source) })
+      .then((ok) => {
+        if (!ok) opts.onExportError?.();
+      })
+      .finally(() => {
+        downloadButton.disabled = false;
+        downloadButton.removeAttribute("aria-busy");
+      });
   });
 
   block.replaceChildren(viewport, sourceEl, bar);

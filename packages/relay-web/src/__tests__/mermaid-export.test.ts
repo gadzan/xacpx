@@ -46,29 +46,37 @@ describe("buildSvgDataUrl", () => {
 });
 
 describe("pngFileName", () => {
-  test("slugs the diagram's first line", () => {
-    expect(pngFileName("graph TD\n  A --> B")).toBe("diagram-graph-td.png");
-    expect(pngFileName("sequenceDiagram\n  A->>B: hi")).toBe("diagram-sequencediagram.png");
+  test("always the same shape: diagram-<8 hex>.png", () => {
+    expect(pngFileName("graph TD\n  A --> B")).toMatch(/^diagram-[0-9a-f]{8}\.png$/);
+    expect(pngFileName("")).toMatch(/^diagram-[0-9a-f]{8}\.png$/);
+    expect(pngFileName("部署流程\n  A --> B")).toMatch(/^diagram-[0-9a-f]{8}\.png$/);
   });
 
-  test("skips leading blank lines", () => {
-    expect(pngFileName("\n\n  flowchart LR\nA-->B")).toBe("diagram-flowchart-lr.png");
+  // The point of hashing the FULL source: seeding from the first line would give every flowchart in
+  // a conversation the same `diagram-flowchart-td.png`, and the browser would pile up (1), (2).
+  test("diagrams that differ only below the first line still get different names", () => {
+    const a = pngFileName("flowchart TD\n  A --> B");
+    const b = pngFileName("flowchart TD\n  C --> D");
+    expect(a).not.toBe(b);
   });
 
-  test("falls back to diagram.png when nothing is sluggable", () => {
-    expect(pngFileName("")).toBe("diagram.png");
-    expect(pngFileName("   ")).toBe("diagram.png");
-    expect(pngFileName("部署流程")).toBe("diagram.png");
-    expect(pngFileName("---")).toBe("diagram.png");
+  test("re-exporting the SAME diagram is stable (a re-download overwrites, not (1), (2))", () => {
+    const src = "graph TD\n  A --> B";
+    expect(pngFileName(src)).toBe(pngFileName(src));
   });
 
-  test("produces a safe filename: no path separators, spaces, or trailing dashes", () => {
-    const name = pngFileName("graph /../../etc/passwd TD!!!");
+  // A CJK-only source has nothing ASCII-sluggable in it; it must still get a distinguishing name.
+  test("CJK sources are named and distinguished like any other", () => {
+    expect(pngFileName("部署流程")).not.toBe(pngFileName("测试流程"));
+  });
+
+  test("produces a safe filename: no path separators or spaces, whatever the source holds", () => {
+    const name = pngFileName("graph /../../etc/passwd TD!!!\n<script>  \n");
     expect(name).not.toMatch(/[/\\\s]/);
-    expect(name).toMatch(/^diagram-[a-z0-9-]*[a-z0-9]\.png$/);
+    expect(name).toMatch(/^diagram-[0-9a-f]{8}\.png$/);
   });
 
-  test("caps the length of a rambling first line", () => {
-    expect(pngFileName("a".repeat(200)).length).toBeLessThanOrEqual("diagram-".length + 40 + ".png".length);
+  test("a rambling source does not lengthen the name", () => {
+    expect(pngFileName("a".repeat(20000))).toMatch(/^diagram-[0-9a-f]{8}\.png$/);
   });
 });

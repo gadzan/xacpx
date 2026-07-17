@@ -27,20 +27,28 @@ export function buildSvgDataUrl(svgMarkup: string): string {
   return `data:image/svg+xml;base64,${utf8ToBase64(markup)}`;
 }
 
+// FNV-1a (32-bit) over the UTF-16 code units. Not cryptographic and does not need to be — this only
+// has to separate the handful of diagrams in one conversation, with no new dependency.
+function hash32(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
 /**
- * A filename for the exported diagram, derived from the diagram source so several downloads in one
- * conversation stay distinguishable. Falls back to a plain `diagram.png` when the seed has nothing
- * ASCII-sluggable in it (e.g. a CJK-only first line).
+ * A filename for the exported diagram: `diagram-<8 hex>.png`, where the hash covers the FULL
+ * diagram source. Two different diagrams get different names, and re-exporting the same diagram is
+ * stable (same name every time, so a re-download overwrites rather than piling up `(1)`, `(2)`).
+ *
+ * Seeding from the source's first line instead would be near-useless: it is almost always
+ * `flowchart TD` / `graph TD`, so every flowchart in a conversation would collide, and a CJK-only
+ * first line has nothing ASCII-sluggable in it at all.
  */
 export function pngFileName(seedText: string): string {
-  const firstLine = (seedText ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "") ?? "";
-  const slug = firstLine
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40)
-    .replace(/-+$/g, "");
-  return slug === "" ? "diagram.png" : `diagram-${slug}.png`;
+  return `diagram-${hash32(seedText ?? "")}.png`;
 }
 
 function triggerDownload(blob: Blob, fileName: string): void {
@@ -56,21 +64,25 @@ function triggerDownload(blob: Blob, fileName: string): void {
 }
 
 /**
- * Rasterize `svg` and hand the user a PNG.
+ * Rasterize `svg` and hand the user a PNG. Resolves `true` once the download is triggered, `false`
+ * if it could not be produced — never throws, so the caller decides how a failure surfaces rather
+ * than it vanishing into a swallowed catch.
  *
  * `background` is filled before the diagram is drawn: a transparent PNG looks broken the moment it
  * is pasted onto anything that isn't the app's own background. Pass the viewport's resolved colour.
+ * That means a dark-mode diagram exports dark and looks dark pasted into a light document — a
+ * deliberate "export what you see" choice, not an oversight.
  *
  * Thin glue over the tested pure helpers, and untestable in jsdom (no canvas) — kept free of any
- * logic worth asserting. Never throws; a failed export is a no-op.
+ * logic worth asserting.
  */
 export async function downloadSvgAsPng(
   svg: SVGSVGElement,
   opts: { background: string; scale?: number; fileName?: string },
-): Promise<void> {
+): Promise<boolean> {
   try {
     const size = readSvgIntrinsicSize(svg);
-    if (!size) return;
+    if (!size) return false;
     const scale = opts.scale ?? DEFAULT_SCALE;
 
     // Serialize a CLONE with width/height pinned: the live svg may be mid-transform in the pan/zoom
@@ -92,15 +104,16 @@ export async function downloadSvgAsPng(
     canvas.width = Math.max(1, Math.round(size.width * scale));
     canvas.height = Math.max(1, Math.round(size.height * scale));
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) return false;
     ctx.fillStyle = opts.background;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
 
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
-    if (!blob) return;
+    if (!blob) return false;
     triggerDownload(blob, opts.fileName ?? "diagram.png");
+    return true;
   } catch {
-    // Export is a convenience; a failure must not surface as an unhandled rejection.
+    return false; // reported to the caller, never rethrown as an unhandled rejection
   }
 }

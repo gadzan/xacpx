@@ -18,9 +18,15 @@ export interface Rgba {
 }
 
 /**
- * Below this WCAG contrast ratio a label counts as unreadable and gets recoloured. 3.0 is the
- * WCAG AA bar for large text, which is what diagram labels effectively are. It is set low on
- * purpose: it must be permissive enough that every mermaid-designed pairing stays untouched.
+ * Below this WCAG contrast ratio a label counts as unreadable and gets recoloured.
+ *
+ * 3.0 rather than AA's 4.5 (labels are mermaid's default 16px — normal text, not large) because the
+ * repair palette is exactly two colours, so the achievable contrast is bounded: minimising
+ * `max(cr(DARK_TEXT, bg), cr(LIGHT_TEXT, bg))` over all backgrounds bottoms out at ~4.17 around
+ * mid-grey (~#767676). A 4.5 threshold could therefore fire on a label the repair can only lift to
+ * 4.17, and the pass would want to re-repair it forever instead of settling. 3.0 is the bar a
+ * two-colour palette can actually stand behind. A real 4.5 needs a third lever (adjusting the fill,
+ * or a text halo) — out of scope.
  */
 export const MIN_LABEL_CONTRAST = 3.0;
 
@@ -143,9 +149,9 @@ function computedFill(el: Element): string {
 
 /**
  * The element's effective fill. Computed style is authoritative — mermaid's colours arrive through
- * the `<style>` block it injects inside the svg, so the attribute alone is not enough. The
- * attribute is only a fallback for engines that do not resolve SVG presentation properties through
- * getComputedStyle (jsdom, where our fixtures set the attribute directly).
+ * the `<style>` block it injects inside the svg, so the attribute alone is not enough. Reading the
+ * attribute is a fallback for engines that do not resolve SVG presentation properties through
+ * getComputedStyle; a browser always takes the computed branch.
  */
 function readFill(el: Element): Rgba | null {
   const computed = computedFill(el);
@@ -156,15 +162,46 @@ function readFill(el: Element): Rgba | null {
 
 const SHAPE_SELECTOR = "rect, polygon, circle, ellipse, path";
 
+// A fill below this alpha composites with whatever is behind it, which we do not know and will not
+// guess at — measuring it as if opaque is worse than doing nothing (`fill:#ffffff1a` over mermaid's
+// dark background really lands near rgb(54,54,54), where the theme's #ccc label is already at 7.5;
+// treating it as pure white reads 1.6 and would repaint to #111 at a real 1.6 — actively breaking a
+// diagram that was fine).
+const MIN_MEASURABLE_ALPHA = 0.9;
+
 // The node's background: the first shape (document order — mermaid emits the shape before the
-// label) that resolves to an actually-painted colour. A `fill:none` outline or a `url(#grad)`
-// gradient is unmeasurable, so it is skipped rather than guessed at.
+// label) that resolves to an actually-painted, effectively-opaque colour. A `fill:none` outline, a
+// `url(#grad)` gradient, or a translucent fill is unmeasurable, so it is skipped in favour of the
+// next candidate shape; if none qualifies the node is left alone.
 function findShapeFill(node: Element): Rgba | null {
   for (const shape of Array.from(node.querySelectorAll(SHAPE_SELECTOR))) {
     const fill = readFill(shape);
-    if (fill && fill.a > 0) return fill;
+    if (fill && fill.a >= MIN_MEASURABLE_ALPHA) return fill;
   }
   return null;
+}
+
+/**
+ * Did the diagram's author choose this label's colour?
+ *
+ * `style A fill:#f0f0f0,color:#c0c0c0` and `classDef … color:…` are a normal idiom (a deliberately
+ * greyed-out "not built yet" node), and mermaid honours them — repainting one to #111 would turn the
+ * most-muted node into the highest-contrast one. Mermaid delivers an author `color:` as an inline
+ * `style="color: … !important"` on an ANCESTOR <g> of the label, while a theme default arrives only
+ * through the svg's injected <style> block, where no ancestor carries an inline colour. So an inline
+ * `style.color` on any ancestor means "hands off", independent of theme and diagram type.
+ *
+ * The walk starts at the PARENT: recolor() writes `style.color` onto the <text> itself, so counting
+ * the text would make the pass see its own repair as an author colour on a second run.
+ */
+function hasAuthoredLabelColor(text: Element, svg: Element): boolean {
+  let el = text.parentElement;
+  while (el) {
+    if (((el as SVGElement | HTMLElement).style?.color ?? "") !== "") return true;
+    if (el === svg) return false;
+    el = el.parentElement;
+  }
+  return false;
 }
 
 function recolor(text: Element, color: string): void {
@@ -181,13 +218,16 @@ function recolor(text: Element, color: string): void {
   for (const tspan of Array.from(text.querySelectorAll("tspan"))) paint(tspan);
 }
 
-function fixNode(node: Element): void {
+function fixNode(node: Element, svg: Element): void {
   const shapeFill = findShapeFill(node);
   if (!shapeFill) return; // nothing measurable to sit on — leave the node exactly as mermaid drew it
   for (const text of Array.from(node.querySelectorAll("text"))) {
+    if (hasAuthoredLabelColor(text, svg)) continue; // the author picked this colour — not ours to fix
     const labelFill = readFill(text);
     if (!labelFill) continue; // unmeasurable label — do not guess
-    if (contrastRatio(labelFill, shapeFill) >= MIN_LABEL_CONTRAST) continue; // already readable: no-op
+    // Already readable: no-op. This early-out is also what makes the pass idempotent — a repaired
+    // label clears the bar next time, so re-running is a no-op with no marker attribute to go stale.
+    if (contrastRatio(labelFill, shapeFill) >= MIN_LABEL_CONTRAST) continue;
     recolor(text, pickReadableTextColor(shapeFill));
   }
 }
@@ -202,7 +242,7 @@ function fixNode(node: Element): void {
 export function fixLabelContrast(svg: SVGElement): void {
   for (const node of Array.from(svg.querySelectorAll("g.node, g.cluster"))) {
     try {
-      fixNode(node);
+      fixNode(node, svg);
     } catch {
       // A single weird node must never kill the whole pass.
     }

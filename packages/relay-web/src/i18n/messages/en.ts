@@ -87,6 +87,7 @@ export default {
     mermaidFullscreen: "Fullscreen",
     mermaidSource: "Show diagram source",
     mermaidDownload: "Download as PNG",
+    mermaidDownloadFailed: "Could not export the diagram as a PNG",
     jumpLatest: "↓ Latest",
     queuedHeader: "Queued",
     queueCancelAria: "Remove from queue",

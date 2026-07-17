@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   contrastRatio,
   fixLabelContrast,
@@ -9,6 +9,7 @@ import {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  vi.restoreAllMocks();
 });
 
 describe("parseCssColor", () => {
@@ -72,39 +73,76 @@ describe("pickReadableTextColor", () => {
     expect(pickReadableTextColor({ r: 0, g: 0, b: 0 })).toBe("#f5f5f5");
   });
 
-  test("whatever it picks actually beats the alternative", () => {
-    for (const bg of [{ r: 128, g: 128, b: 128 }, { r: 100, g: 180, b: 20 }, { r: 20, g: 40, b: 160 }]) {
-      const picked = parseCssColor(pickReadableTextColor(bg))!;
-      const other = parseCssColor(pickReadableTextColor(bg) === "#111111" ? "#f5f5f5" : "#111111")!;
-      expect(contrastRatio(picked, bg)).toBeGreaterThanOrEqual(contrastRatio(other, bg));
-    }
+  // Hardcoded rather than re-deriving the pick from the same helpers the implementation uses (that
+  // shape of assertion restates the code and cannot fail). Mid-grey is the interesting case: it is
+  // where the two-colour palette is weakest, which is the reason MIN_LABEL_CONTRAST is 3.0 and not
+  // AA's 4.5 — #767676 is the worst background there is, and even the winning pick only reaches 4.17.
+  test("the pick flips by luminance, well below the numeric mid-grey", () => {
+    // The flip sits at grey 119 — a saturated blue that is numerically mid-bright is still dark
+    // enough to need light text, which is the whole point of going through relative luminance.
+    expect(pickReadableTextColor({ r: 118, g: 118, b: 118 })).toBe("#f5f5f5"); // #767676
+    expect(pickReadableTextColor({ r: 119, g: 119, b: 119 })).toBe("#111111");
+    expect(pickReadableTextColor({ r: 128, g: 128, b: 128 })).toBe("#111111");
+    expect(pickReadableTextColor({ r: 100, g: 180, b: 20 })).toBe("#111111");
+    expect(pickReadableTextColor({ r: 20, g: 40, b: 160 })).toBe("#f5f5f5");
+  });
+
+  test("the palette's worst case is ~4.17 at #767676 — the bound MIN_LABEL_CONTRAST is built on", () => {
+    const bg = { r: 118, g: 118, b: 118 };
+    const best = Math.max(
+      contrastRatio(parseCssColor("#111111")!, bg),
+      contrastRatio(parseCssColor("#f5f5f5")!, bg),
+    );
+    expect(best).toBeCloseTo(4.17, 1);
+    expect(best).toBeLessThan(4.5); // a 4.5 threshold could not be satisfied here → non-idempotent
+    expect(best).toBeGreaterThan(3.0); // 3.0 always can be
   });
 });
 
-// jsdom cannot run real mermaid (getBBox is unimplemented) and will not resolve mermaid's
-// id-scoped <style> rules the way Chromium does, so these fixtures set `fill` attributes directly —
-// which is exactly the fallback path readFill() takes when computed style yields nothing.
+// jsdom cannot run real mermaid (getBBox is unimplemented), so these are hand-built fixtures.
+//
+// More importantly: in production this pass ALWAYS reads colours out of getComputedStyle (it runs on
+// an attached svg, and mermaid's colours arrive through the <style> block it injects — the `fill`
+// attribute alone is not even enough). jsdom does not resolve SVG presentation properties and
+// returns "" for `fill`, which would silently route every test down the attribute FALLBACK and prove
+// the no-op guarantees about a path the browser never takes. So the fixtures carry their colour in
+// `data-cfill` only, and `stubComputedFill` resolves it the way Chromium would — the attribute
+// fallback then has nothing to find, which is what makes "we drove the computed branch" checkable.
 function makeSvg(nodes: string): SVGElement {
   const host = document.createElement("div");
   host.innerHTML = `<svg>${nodes}</svg>`;
   document.body.appendChild(host);
   return host.querySelector("svg") as unknown as SVGElement;
 }
-function node(shapeFill: string, textFill: string, opts?: { tspan?: boolean; cls?: string }): string {
-  const label = opts?.tspan
-    ? `<text fill="${textFill}"><tspan fill="${textFill}">hi</tspan></text>`
-    : `<text fill="${textFill}">hi</text>`;
-  return `<g class="${opts?.cls ?? "node"}"><rect fill="${shapeFill}"></rect>${label}</g>`;
+
+function stubComputedFill(): void {
+  const real = window.getComputedStyle.bind(window);
+  vi.spyOn(window, "getComputedStyle").mockImplementation(((el: Element, pseudo?: string | null) => {
+    const cfill = el?.getAttribute?.("data-cfill");
+    if (cfill === null || cfill === undefined) return real(el as Element, pseudo);
+    return {
+      getPropertyValue: (prop: string) => (prop === "fill" ? cfill : ""),
+    } as unknown as CSSStyleDeclaration;
+  }) as typeof window.getComputedStyle);
 }
 
-describe("fixLabelContrast", () => {
+function node(shapeFill: string, textFill: string, opts?: { tspan?: boolean; cls?: string }): string {
+  const label = opts?.tspan
+    ? `<text data-cfill="${textFill}"><tspan data-cfill="${textFill}">hi</tspan></text>`
+    : `<text data-cfill="${textFill}">hi</text>`;
+  return `<g class="${opts?.cls ?? "node"}"><rect data-cfill="${shapeFill}"></rect>${label}</g>`;
+}
+
+describe("fixLabelContrast (computed-style path — what a browser actually takes)", () => {
   test("recolors a failing label: theme #ccc text on an author-pinned light fill", () => {
+    stubComputedFill();
     const svg = makeSvg(node("#e0ffff", "#cccccc"));
     fixLabelContrast(svg);
     expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
   });
 
   test("recolors toward light text when the author pins a DARK fill", () => {
+    stubComputedFill();
     const svg = makeSvg(node("#101010", "#333333"));
     fixLabelContrast(svg);
     expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#f5f5f5");
@@ -112,22 +150,46 @@ describe("fixLabelContrast", () => {
 
   // The whole point of the >= 3.0 early-out: mermaid's designed palettes must come out byte-identical.
   test("NO-OP for mermaid's own default-theme pairing (#333 on #ECECFF)", () => {
+    stubComputedFill();
     const svg = makeSvg(node("#ECECFF", "#333333"));
     const before = svg.innerHTML;
     fixLabelContrast(svg);
-    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#333333");
     expect(svg.innerHTML).toBe(before);
+    expect(svg.querySelector("text")!.hasAttribute("fill")).toBe(false);
   });
 
   test("NO-OP for mermaid's own dark-theme pairing (#ccc on #1f2020)", () => {
+    stubComputedFill();
     const svg = makeSvg(node("#1f2020", "#cccccc"));
     const before = svg.innerHTML;
     fixLabelContrast(svg);
-    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#cccccc");
+    expect(svg.innerHTML).toBe(before);
+    expect(svg.querySelector("text")!.hasAttribute("fill")).toBe(false);
+  });
+
+  test("NO-OP for mermaid's tightest designed pairing: dark cluster #ccc on #3f3f3f (6.56)", () => {
+    stubComputedFill();
+    const svg = makeSvg(node("#3f3f3f", "#cccccc", { cls: "cluster" }));
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
     expect(svg.innerHTML).toBe(before);
   });
 
+  test("is idempotent: a second pass leaves the repaired label byte-identical", () => {
+    stubComputedFill();
+    const svg = makeSvg(node("#e0ffff", "#cccccc"));
+    fixLabelContrast(svg);
+    // The repair writes a real `fill`/`style`, so the second pass reads #111111 back through the
+    // computed stub only if we mirror it into data-cfill — which is exactly what a browser would do.
+    const text = svg.querySelector("text")!;
+    text.setAttribute("data-cfill", text.getAttribute("fill")!);
+    const after = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(after); // >= 3.0 early-out, no marker attribute needed
+  });
+
   test("also repaints tspans, which would otherwise win over the parent text", () => {
+    stubComputedFill();
     const svg = makeSvg(node("#e0ffff", "#cccccc", { tspan: true }));
     fixLabelContrast(svg);
     expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
@@ -135,6 +197,7 @@ describe("fixLabelContrast", () => {
   });
 
   test("covers clusters, not just nodes", () => {
+    stubComputedFill();
     const svg = makeSvg(node("#e0ffff", "#cccccc", { cls: "cluster" }));
     fixLabelContrast(svg);
     expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
@@ -142,28 +205,34 @@ describe("fixLabelContrast", () => {
 
   test("skips a node whose shape has no paintable fill", () => {
     for (const fill of ["none", "rgba(0, 0, 0, 0)", "url(#grad)"]) {
+      stubComputedFill();
       const svg = makeSvg(node(fill, "#cccccc"));
       fixLabelContrast(svg);
-      expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#cccccc");
+      expect(svg.querySelector("text")!.hasAttribute("fill")).toBe(false);
       document.body.innerHTML = "";
+      vi.restoreAllMocks();
     }
   });
 
   test("uses the first paintable shape and ignores a leading fill:none outline", () => {
+    stubComputedFill();
     const svg = makeSvg(
-      '<g class="node"><path fill="none"></path><rect fill="#e0ffff"></rect><text fill="#cccccc">hi</text></g>',
+      '<g class="node"><path data-cfill="none"></path><rect data-cfill="#e0ffff"></rect>' +
+        '<text data-cfill="#cccccc">hi</text></g>',
     );
     fixLabelContrast(svg);
     expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
   });
 
   test("leaves everything outside g.node / g.cluster alone (edge labels, standalone text)", () => {
-    const svg = makeSvg('<g class="edgeLabel"><rect fill="#e0ffff"></rect><text fill="#cccccc">e</text></g>');
+    stubComputedFill();
+    const svg = makeSvg('<g class="edgeLabel"><rect data-cfill="#e0ffff"></rect><text data-cfill="#cccccc">e</text></g>');
     fixLabelContrast(svg);
-    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#cccccc");
+    expect(svg.querySelector("text")!.hasAttribute("fill")).toBe(false);
   });
 
   test("one malformed node cannot abort the pass", () => {
+    stubComputedFill();
     const svg = makeSvg(`${node("#e0ffff", "#cccccc")}${node("#e0ffff", "#cccccc")}`);
     const bad = svg.querySelectorAll("g.node")[0];
     // Make the first node throw the moment fixNode touches it.
@@ -178,19 +247,124 @@ describe("fixLabelContrast", () => {
   });
 
   test("an svg with no nodes is a silent no-op", () => {
+    stubComputedFill();
     const svg = makeSvg("<text>bare</text>");
     expect(() => fixLabelContrast(svg)).not.toThrow();
     expect(svg.querySelector("text")!.hasAttribute("fill")).toBe(false);
   });
 });
 
+// `style A fill:#f0f0f0,color:#c0c0c0` — a deliberately greyed-out "not built yet" node — is a
+// normal idiom, and mermaid honours the author's `color:` on the native <text>. Repainting it to
+// #111 at 16.6:1 would turn the most-muted node into the loudest one on the chart. Mermaid delivers
+// an author colour as an inline `style="color: … !important"` on an ANCESTOR <g>; a theme default
+// arrives only through the injected <style>, where no ancestor carries an inline colour.
+describe("fixLabelContrast: an author-specified label colour is never touched", () => {
+  test("fill-only (no author colour) → repaired", () => {
+    stubComputedFill();
+    const svg = makeSvg('<g class="node"><rect data-cfill="#f0f0f0"></rect><text data-cfill="#cccccc">hi</text></g>');
+    fixLabelContrast(svg);
+    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+  });
+
+  test("fill + author color → left exactly alone, however bad the contrast", () => {
+    stubComputedFill();
+    const svg = makeSvg(
+      '<g class="node" style="color: #c0c0c0 !important">' +
+        '<rect data-cfill="#f0f0f0"></rect><text data-cfill="#c0c0c0">hi</text></g>',
+    );
+    const before = svg.innerHTML;
+    // The pairing really is failing — this is a skip, not a pass on contrast.
+    expect(contrastRatio(parseCssColor("#c0c0c0")!, parseCssColor("#f0f0f0")!)).toBeLessThan(3);
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
+  test("the author colour is honoured from any ancestor, not just the immediate parent", () => {
+    stubComputedFill();
+    const svg = makeSvg(
+      '<g class="node" style="color: #c0c0c0 !important"><g class="label"><g>' +
+        '<rect data-cfill="#f0f0f0"></rect><text data-cfill="#c0c0c0">hi</text></g></g></g>',
+    );
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
+  test("the <text>'s OWN inline colour does not count — otherwise the pass eats its own repair", () => {
+    stubComputedFill();
+    // recolor() writes style.color onto the text; a second pass must still see this as ours to fix.
+    const svg = makeSvg('<g class="node"><rect data-cfill="#f0f0f0"></rect>' +
+      '<text style="color: #cccccc" data-cfill="#cccccc">hi</text></g>');
+    fixLabelContrast(svg);
+    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+  });
+});
+
+// A translucent fill composites with a backdrop we do not know. Measuring it as if opaque is worse
+// than doing nothing: `fill:#ffffff1a` over mermaid-dark really lands near rgb(54,54,54), where the
+// #ccc label sits at ~7.5 and is perfectly readable — but read as pure white it scores 1.6 and the
+// "repair" would drop #111 on it at a real ~1.6, breaking a diagram that was fine.
+describe("fixLabelContrast: a translucent fill is not measurable", () => {
+  test("does not repaint over a nearly-transparent author fill", () => {
+    stubComputedFill();
+    const svg = makeSvg(node("rgba(255, 255, 255, 0.1)", "#cccccc"));
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
+  test("hex-alpha too (`fill:#ffffff1a`, the form a diagram source actually writes)", () => {
+    stubComputedFill();
+    const svg = makeSvg(node("#ffffff1a", "#cccccc"));
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
+  test("falls through a translucent shape to the next OPAQUE one rather than giving up", () => {
+    stubComputedFill();
+    const svg = makeSvg(
+      '<g class="node"><rect data-cfill="rgba(255, 255, 255, 0.1)"></rect>' +
+        '<rect data-cfill="#e0ffff"></rect><text data-cfill="#cccccc">hi</text></g>',
+    );
+    fixLabelContrast(svg);
+    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+  });
+
+  test("effectively-opaque still counts (a >= 0.9): antialiasing-grade alpha is not a real backdrop", () => {
+    stubComputedFill();
+    const svg = makeSvg(node("rgba(224, 255, 255, 0.95)", "#cccccc"));
+    fixLabelContrast(svg);
+    expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+  });
+});
+
+// The attribute fallback exists for engines that do not resolve SVG presentation properties through
+// getComputedStyle. Production never lands here (see above), but it is what makes the function
+// drivable at all, so keep one test honest about which branch it is.
+test("attribute fallback: colours read straight off `fill` when computed style yields nothing", () => {
+  const svg = makeSvg('<g class="node"><rect fill="#e0ffff"></rect><text fill="#cccccc">hi</text></g>');
+  expect(getComputedStyle(svg.querySelector("rect")!).getPropertyValue("fill")).toBe(""); // jsdom, unstubbed
+  fixLabelContrast(svg);
+  expect(svg.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+});
+
 // MermaidViewer renders `svg.outerHTML` copied from this same (already-fixed) inline DOM, so the
 // fullscreen view inherits the contrast fix with no code of its own. That only holds if the fix is
-// written as serializable inline paint rather than, say, a JS-side style object — pin it here.
+// written as serializable inline paint rather than, say, a JS-side style object — pin it here by
+// re-parsing the way the viewer does. (Asserting the string merely LACKS "#cccccc" would pin the
+// fixture, not the invariant: real mermaid output keeps its theme colours in the injected <style>
+// regardless of what we painted.)
 test("the fix survives outerHTML serialization (this is what MermaidViewer clones)", () => {
+  stubComputedFill();
   const svg = makeSvg(node("#e0ffff", "#cccccc", { tspan: true }));
   fixLabelContrast(svg);
   const serialized = (svg as unknown as SVGSVGElement).outerHTML;
-  expect(serialized).toContain("#111111");
-  expect(serialized).not.toContain("#cccccc");
+
+  const host = document.createElement("div");
+  host.innerHTML = serialized;
+  expect(host.querySelector("text")!.getAttribute("fill")).toBe("#111111");
+  expect(host.querySelector("tspan")!.getAttribute("fill")).toBe("#111111");
+  expect(host.querySelector("text")!.getAttribute("style") ?? "").toContain("fill");
 });

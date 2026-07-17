@@ -5,13 +5,23 @@ import { createPinia, setActivePinia } from "pinia";
 import StreamMarkdown from "../components/StreamMarkdown.vue";
 import MermaidViewer from "../components/MermaidViewer.vue";
 import { renderMarkdown } from "../lib/render-markdown";
+import { pushToast } from "../lib/use-toasts";
 import { useThemeStore } from "../stores/theme";
+import { useLocaleStore } from "../stores/locale";
 
 // Count parses without paying for the real pipeline (healing + markdown-it + DOMPurify).
 vi.mock("../lib/render-markdown", () => ({
   renderMarkdown: vi.fn((text: string) => `<p>${text}</p>`),
 }));
 const renderSpy = vi.mocked(renderMarkdown);
+
+// The app's toast queue is where an export failure has to surface; assert the wiring, not the queue
+// (use-toasts is a module-level singleton with its own coverage).
+vi.mock("../lib/use-toasts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/use-toasts")>()),
+  pushToast: vi.fn(() => 1),
+}));
+const pushToastSpy = vi.mocked(pushToast);
 
 // Explicit rest-param signatures (rather than 0-arity) so the `(...a) => fn(...a)` spread
 // wrappers below typecheck: TS rejects spreading a non-tuple array into a fixed-arity call.
@@ -27,14 +37,24 @@ vi.mock("../lib/render-mermaid", () => ({
 // The stand-in produces just enough DOM (a .mmd-viewport keeping the svg, a Fullscreen button wired
 // to onExpand) for those assertions.
 const enhanceCalls: HTMLElement[] = [];
+// The labels handed to each enhance call — the component owns `t`, so this is where a locale
+// switch has to become visible.
+const enhanceLabels: Array<Record<string, string>> = [];
+// The full opts, so a test can fire the callbacks the component wired in.
+const enhanceOpts: Array<{ onExportError?: () => void }> = [];
 // Each enhance returns a detacher that records its id here, so tests can assert that a
 // re-render (or unmount) actually detaches the previous block's enhancers.
 const detachCalls: number[] = [];
 let enhanceSeq = 0;
 vi.mock("../lib/inline-mermaid", () => ({
-  enhanceMermaidBlock: (block: HTMLElement, opts: { onExpand: () => void }) => {
+  enhanceMermaidBlock: (
+    block: HTMLElement,
+    opts: { onExpand: () => void; onExportError?: () => void; labels?: Record<string, string> },
+  ) => {
     const id = (enhanceSeq += 1);
     enhanceCalls.push(block);
+    enhanceLabels.push(opts.labels ?? {});
+    enhanceOpts.push(opts);
     const svg = block.querySelector("svg");
     const viewport = document.createElement("div");
     viewport.className = "mmd-viewport";
@@ -56,6 +76,9 @@ beforeEach(() => {
   setActivePinia(createPinia());
   renderSpy.mockClear();
   enhanceCalls.length = 0;
+  enhanceLabels.length = 0;
+  enhanceOpts.length = 0;
+  pushToastSpy.mockClear();
   detachCalls.length = 0;
   enhanceSeq = 0;
 });
@@ -242,6 +265,96 @@ describe("StreamMarkdown mermaid hydration", () => {
     expect(enhanceCalls.length).toBe(2);
     expect(wrapper.element.querySelector(".mmd-viewport")).not.toBeNull();
     reset.mockImplementation(() => {});
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  // The enhancer's button text is baked in at enhance time and `data-mmd-enhanced` means a block is
+  // never enhanced twice — so without a locale watcher, switching zh-CN → en leaves every aria-label
+  // in the old language until a theme toggle or a remount. Same reset path as the theme watcher.
+  test("re-enhances with re-translated labels after a LOCALE switch", async () => {
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    reset.mockImplementation((...args: unknown[]) => {
+      (args[0] as HTMLElement).querySelectorAll("pre.mermaid-block").forEach((b) => {
+        b.classList.remove("mermaid-rendered");
+        b.innerHTML = "<code>graph TD</code>";
+      });
+    });
+    const localeStore = useLocaleStore();
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    expect(enhanceCalls.length).toBe(1);
+    expect(enhanceLabels[0].source).toBe("Show diagram source"); // en default
+
+    localeStore.set("zh-CN");
+    await flushPromises();
+
+    expect(enhanceCalls.length).toBe(2); // reset + re-hydrate + re-enhance
+    expect(enhanceLabels[1].source).toBe("查看图表源码");
+    expect(enhanceLabels[1].download).toBe("下载为 PNG");
+
+    localeStore.set("en"); // shared i18n singleton — do not leak zh into later tests
+    reset.mockImplementation(() => {});
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  // Same latent bug in the error caption: the data-attr holds TRANSLATED text, so a
+  // `:not([data-mmd-error-label])` guard would freeze it in whatever locale rendered first.
+  test("the error label is re-translated on a locale switch, not frozen at first render", async () => {
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      const root = args[0] as HTMLElement;
+      if (root.querySelectorAll("pre.mermaid-block").length === 0) {
+        const b = document.createElement("pre");
+        b.className = "mermaid-block mermaid-error";
+        b.innerHTML = "<code>bad diagram</code>";
+        root.appendChild(b);
+      }
+    });
+    const localeStore = useLocaleStore();
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\nbad\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    const errBlock = (): Element | null => wrapper.element.querySelector("pre.mermaid-block.mermaid-error");
+    expect(errBlock()?.getAttribute("data-mmd-error-label")).toBe("Diagram failed to render");
+
+    localeStore.set("zh-CN");
+    await flushPromises();
+    expect(errBlock()?.getAttribute("data-mmd-error-label")).toBe("图表渲染失败");
+
+    localeStore.set("en");
+    hydrate.mockImplementation(async () => {});
+    wrapper.unmount();
+  });
+
+  // A PNG export can fail (Image.onerror, toBlob → null) and the enhancer is DOM-only with no i18n,
+  // so it reports through a callback. Without this wiring the user taps ⬇ and nothing ever happens.
+  test("an export failure from the enhancer surfaces as an error toast", async () => {
+    vi.useRealTimers();
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      renderFirstMermaidBlock(args[0] as HTMLElement);
+    });
+    const wrapper = mount(StreamMarkdown, {
+      props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    await flushPromises();
+    expect(pushToastSpy).not.toHaveBeenCalled(); // nothing failed yet
+
+    // The enhancer reporting a failed rasterization.
+    expect(enhanceOpts[0].onExportError).toBeTypeOf("function");
+    enhanceOpts[0].onExportError?.();
+    expect(pushToastSpy).toHaveBeenCalledWith("error", "chat.mermaidDownloadFailed");
+
     hydrate.mockImplementation(async () => {});
     wrapper.unmount();
   });
