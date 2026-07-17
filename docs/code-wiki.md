@@ -144,6 +144,7 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
   - foreground `run`
   - `login/logout` (a wrapper around the channel)
   - `workspace`/`channel`, these "local config management" commands
+  - `adapter` version management: exact built-in defaults and command generation live in [src/adapters/adapter-catalog.ts](../src/adapters/adapter-catalog.ts); registry validation/ACP initialize probing and atomic config persistence are coordinated by [src/adapters/adapter-cli.ts](../src/adapters/adapter-cli.ts)
   - `mcp-stdio` (MCP server startup and identity rules)
 
 ### 5.2 App Assembly (src/main.ts)
@@ -241,6 +242,8 @@ ConsoleAgent is the adaptation layer from "channel message protocol → router p
 ### 5.7 Transport (src/transport/*)
 
 Unified boundary: `SessionTransport`: [transport/types.ts](../src/transport/types.ts#L46-L64)
+
+Before entering that boundary, [resolve-agent-command.ts](../src/config/resolve-agent-command.ts) resolves an explicit per-agent command first, then xacpx's exact managed Codex/Claude npx pin, then the local/native fallback for other drivers. Generated managed commands recorded in session state are derived state: [SessionService](../src/sessions/session-service.ts) refreshes them from the current configured/default pin after restart, while preserving genuinely custom recorded commands.
 
 - `ensureSession()`: creates/ensures the underlying session exists for a given `ResolvedSession`, and can report back `EnsureSessionProgress` (spawn/initializing/ready or note)
 - `prompt()`: sends a prompt, supporting a reply callback (streaming) and `PromptOptions` (media, onSegment)

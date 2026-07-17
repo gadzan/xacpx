@@ -46,7 +46,7 @@ class MemoryStateStore implements Pick<StateStore, "save"> {
   }
 }
 
-test("creates a session from a known agent and workspace", async () => {
+test("creates a session with xacpx's pinned managed adapter", async () => {
   const store = new MemoryStateStore();
   const service = new SessionService(createConfig(), store, createEmptyState());
 
@@ -54,10 +54,10 @@ test("creates a session from a known agent and workspace", async () => {
 
   expect(session.transportSession).toBe("backend:api-fix");
   expect(session.cwd).toBe("/tmp/backend");
-  expect(session.agentCommand).toBeUndefined();
+  expect(session.agentCommand).toBe("npx -y @agentclientprotocol/codex-acp@1.1.4");
 });
 
-test("ignores a legacy raw codex command and falls back to the built-in codex alias", async () => {
+test("ignores a legacy raw codex command and falls back to xacpx's pinned adapter", async () => {
   const store = new MemoryStateStore();
   const config = createConfig();
   config.agents.codex = {
@@ -68,7 +68,61 @@ test("ignores a legacy raw codex command and falls back to the built-in codex al
 
   const session = await service.createSession("api-fix", "codex", "backend");
 
-  expect(session.agentCommand).toBeUndefined();
+  expect(session.agentCommand).toBe("npx -y @agentclientprotocol/codex-acp@1.1.4");
+});
+
+test("refreshes recorded generated adapter commands but preserves custom recorded commands", async () => {
+  const config = createConfig();
+  config.transport.adapterVersions = { codex: "1.1.2" };
+  const generatedState = createEmptyState();
+  generatedState.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "npx -y @agentclientprotocol/codex-acp@^0.0.44",
+  };
+  const generated = new SessionService(config, new MemoryStateStore(), generatedState);
+  expect((await generated.getSession("review"))?.agentCommand).toBe(
+    "npx -y @agentclientprotocol/codex-acp@1.1.2",
+  );
+
+  generatedState.sessions.review!.transport_agent_command = "my-codex-wrapper --safe";
+  const custom = new SessionService(config, new MemoryStateStore(), generatedState);
+  expect((await custom.getSession("review"))?.agentCommand).toBe("my-codex-wrapper --safe");
+});
+
+test("refreshes a recorded legacy codex shim to the current managed pin", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "./node_modules/.bin/codex-acp",
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  expect((await service.getSession("review"))?.agentCommand).toBe(
+    "npx -y @agentclientprotocol/codex-acp@1.1.4",
+  );
+});
+
+test("an explicit agents.<name>.command overrides a recorded session command", async () => {
+  const config = createConfig();
+  config.agents.codex = { driver: "codex", command: "configured-codex-wrapper" };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "recorded-codex-wrapper",
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  expect((await service.getSession("review"))?.agentCommand).toBe("configured-codex-wrapper");
 });
 
 test("attaches an existing transport session with a custom name", async () => {
@@ -753,7 +807,7 @@ test("recreating an alias with a different agent does not inherit transport agen
 
   const recreated = await service.createSession("foo", "claude", "backend");
 
-  expect(recreated.agentCommand).toBeUndefined();
+  expect(recreated.agentCommand).toBe("npx -y @agentclientprotocol/claude-agent-acp@0.59.0");
   expect(recreated.modeId).toBeUndefined();
   expect(recreated.replyMode).toBeUndefined();
   expect(state.sessions.foo?.transport_agent_command).toBeUndefined();
@@ -788,7 +842,7 @@ test("resolveSession does not reuse a cached transport agent command from a diff
   await service.setSessionTransportAgentCommand("foo", "npx @zed-industries/codex-acp@^0.9.5");
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
-  expect(crossAgent.agentCommand).toBeUndefined();
+  expect(crossAgent.agentCommand).toBe("npx -y @agentclientprotocol/claude-agent-acp@0.59.0");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");

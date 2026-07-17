@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { withPrivateFileLock } from "../util/private-file.js";
 
 import { loadConfig, parseConfig } from "./load-config";
+import type { AdapterVersionOverrides } from "../adapters/adapter-catalog";
 import type { AgentConfig, AppConfig, ChannelRuntimeConfig, PluginConfig } from "./types";
 
 /**
@@ -96,6 +97,18 @@ export class ConfigStore {
   async updateTransport(patch: Partial<AppConfig["transport"]>): Promise<AppConfig> {
     return await this.patchRaw((raw) => {
       applyRecordPatch(ensureRecordAt(raw, "transport"), patch);
+    });
+  }
+
+  /** Replaces only xacpx-managed adapter pins; unrelated transport keys stay untouched. */
+  async replaceAdapterVersions(versions: AdapterVersionOverrides): Promise<AppConfig> {
+    return await this.patchRaw((raw) => {
+      const transport = ensureRecordAt(raw, "transport");
+      if (Object.keys(versions).length === 0) {
+        delete transport.adapterVersions;
+      } else {
+        transport.adapterVersions = clonePlain(versions);
+      }
     });
   }
 

@@ -919,6 +919,23 @@ export interface CliMessages {
   agentNotFound: (name: string) => string;
   agentRemoved: (name: string) => string;
 
+  // adapter commands
+  adapterListHeader: string;
+  adapterListRow: (id: string, effective: string, defaultVersion: string, source: string) => string;
+  adapterSourceDefault: string;
+  adapterSourceConfigured: string;
+  adapterUnsupported: (id: string) => string;
+  adapterInvalidVersion: (version: string) => string;
+  adapterVersionUnavailable: (id: string, version: string) => string;
+  adapterLatestUnavailable: (id: string) => string;
+  adapterCheckRow: (id: string, effective: string, latest: string) => string;
+  adapterAlreadyLatest: (id: string, version: string) => string;
+  adapterVerifying: (id: string, version: string) => string;
+  adapterSaved: (id: string, version: string) => string;
+  adapterReset: (id: string, version: string) => string;
+  adapterFailed: (id: string, detail: string) => string;
+  adapterRestartRequired: string;
+
   // later commands
   laterIdEmpty: string;
   laterNotFound: (id: string) => string;

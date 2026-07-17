@@ -15,7 +15,11 @@ If you want to manage WeChat/Feishu message channels, see [`docs/channel-managem
     "sessionInitTimeoutMs": 120000,
     "permissionMode": "approve-all",
     "nonInteractivePermissions": "deny",
-    "queueOwnerTtlSeconds": 1800
+    "queueOwnerTtlSeconds": 1800,
+    "adapterVersions": {
+      "codex": "1.1.4",
+      "claude": "0.59.0"
+    }
   },
   "logging": {
     "level": "info",
@@ -90,6 +94,17 @@ How xacpx communicates with the acpx backend.
 | `queueOwnerTtlSeconds` | `number` | No | acpx queue owner idle time-to-live (seconds), passed through to the prompt command as `acpx --ttl <value>`. Defaults to `1800` (30 minutes); `0` = live forever. See the "Reducing agent cold starts" notes below |
 | `turnIdleTimeoutSeconds` | `number` | No | Inactivity watchdog for in-flight agent turns. If a turn produces no streamed agent activity (output/tool/thought/usage/plan/command event) for this many seconds, it is aborted and reported as `Turn timed out due to inactivity`, reclaiming its slot. The timer resets on every streamed event, so long but actively-working turns are unaffected — **but a single tool call that stays silent for the whole window (e.g. `sleep`, a long compile/clone with no interleaved output) will still trip it**; raise this value or set `0` for workloads with long silent operations. Defaults to `600` (10 minutes); `0` disables the watchdog. Each reclaim is logged as `control.turn.idle_timeout` (with the session and the concrete threshold) for diagnosis |
 | `preferLocalAgents` | `boolean` | No | Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback when one is on `PATH` (currently the unpinned-npx drivers `opencode` and `kilocode`). Avoids a per-cold-start npm-registry fetch — faster and immune to network blips (e.g. `ECONNRESET` during agent init). Defaults to `true`; set `false` to always use acpx's default resolution. A per-agent `command` override still takes precedence |
+| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `1.1.4`, `claude` `0.59.0` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
+
+### Managed ACP adapter versions
+
+xacpx does not install the Codex or Claude adapter as a package dependency. For these two drivers it passes an exact `npx -y <package>@<version>` command to acpx. Resolution priority is:
+
+1. Explicit `agents.<name>.command` (fully user-managed)
+2. `transport.adapterVersions.<driver>`
+3. The exact version tested and shipped by this xacpx release
+
+Use `xacpx adapter list` to inspect local effective versions, `xacpx adapter check` to compare with npm, and `xacpx adapter update <name>` (or `--all`) to opt in to a newer version. `set` and `update` first confirm the exact package version is published and complete a real ACP `initialize` probe; the config is changed only if that probe succeeds. Adapter version changes require `xacpx restart`. xacpx never updates these pins automatically during daemon startup.
 
 ### `type` Options
 
@@ -441,14 +456,14 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `driver` | `string` | Yes | Agent driver type, passed as the first positional argument to acpx |
-| `command` | `string` | No | Explicitly specify the raw command for a custom agent. When omitted, acpx's default behavior is used |
+| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins |
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
 
 Notes:
 
-- For built-in templates, it is recommended to write only `driver` and let `acpx` resolve the corresponding alias itself
+- For built-in templates, write only `driver`; xacpx pins Codex/Claude adapters, while other drivers use the normal runtime/acpx resolution path
 - `agent.command` is mainly for custom agents; it is not recommended to hand-write a raw command for a built-in driver
-- The legacy `codex` raw command configuration is automatically ignored on load, falling back to `acpx codex ...`
+- The legacy `codex` shim command is automatically ignored on load, falling back to xacpx's current managed Codex adapter pin
 
 ### Built-in Templates
 
@@ -456,8 +471,8 @@ The following built-in templates are used when you send `/agent add <name>` via 
 
 | Template Name | driver | command |
 |--------|--------|---------|
-| `codex` | `"codex"` | None (uses acpx default) |
-| `claude` | `"claude"` | None (uses acpx default) |
+| `codex` | `"codex"` | None (uses xacpx managed pin) |
+| `claude` | `"claude"` | None (uses xacpx managed pin) |
 | `pi` | `"pi"` | None (uses acpx default) |
 | `openclaw` | `"openclaw"` | None (uses acpx default) |
 | `gemini` | `"gemini"` | None (uses acpx default) |

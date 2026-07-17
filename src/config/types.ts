@@ -1,4 +1,5 @@
 import type { Locale } from "../i18n/resolve-locale";
+import type { AdapterVersionOverrides } from "../adapters/adapter-catalog";
 
 export type PermissionMode = "approve-all" | "approve-reads" | "deny-all";
 export type NonInteractivePermissions = "deny" | "fail";
@@ -45,6 +46,9 @@ export interface TransportConfig {
    * acpx's default resolution. A per-agent `command` override still takes precedence.
    */
   preferLocalAgents?: boolean;
+  /** Exact local overrides for xacpx-managed ACP adapter versions. Omitted entries
+   * use the tested defaults compiled into this xacpx release. */
+  adapterVersions?: AdapterVersionOverrides;
   /**
    * Inactivity watchdog: abort a turn that produces NO agent activity (no streamed
    * output/tool/thought/usage event) for this many seconds, reclaiming its in-flight

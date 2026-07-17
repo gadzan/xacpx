@@ -1,4 +1,4 @@
-import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
+import { resolveConfiguredAgentCommand } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import type { OrchestrationState } from "../orchestration/orchestration-types";
 import type { ResolvedSession } from "./types";
@@ -55,7 +55,7 @@ export function workerBindingReapTargets(
     if (!cwd) {
       continue;
     }
-    const agentCommand = resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, config.transport.preferLocalAgents !== false);
+    const agentCommand = resolveConfiguredAgentCommand(agentConfig, config.transport);
     targets.push({
       agent: binding.targetAgent,
       ...(agentCommand ? { agentCommand } : {}),

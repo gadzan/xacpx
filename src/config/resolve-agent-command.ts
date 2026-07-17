@@ -1,4 +1,6 @@
 import { resolveLocalAgentCommand } from "./local-agent-bin";
+import { resolveManagedAdapterCommand, type AdapterVersionOverrides } from "../adapters/adapter-catalog";
+import type { AgentConfig, TransportConfig } from "./types";
 
 export function resolveAgentCommand(
   driver: string,
@@ -17,8 +19,8 @@ export function resolveAgentCommand(
 
 /**
  * Agent command for the RUNTIME spawn/reap paths. An explicit per-agent `command`
- * always wins; otherwise, when `preferLocal` (default true), prefer a locally-installed
- * native CLI over acpx's npx fallback; otherwise undefined (acpx resolves the driver).
+ * always wins. Managed codex/claude drivers then use xacpx's exact npx pin; only
+ * unmanaged drivers fall through to the optional locally-installed native CLI.
  *
  * Use this — not bare resolveAgentCommand — wherever an agentCommand is built to spawn
  * OR reap a queue owner, so both resolve identically (a mismatch would orphan the owner).
@@ -29,12 +31,29 @@ export function resolveRuntimeAgentCommand(
   driver: string,
   command: string | undefined,
   preferLocal = true,
+  adapterVersions?: AdapterVersionOverrides,
 ): string | undefined {
   const explicit = resolveAgentCommand(driver, command);
   if (explicit) {
     return explicit;
   }
+  const managed = resolveManagedAdapterCommand(driver, adapterVersions);
+  if (managed) return managed;
   return preferLocal ? resolveLocalAgentCommand(driver) : undefined;
+}
+
+/** Config-shaped entrypoint used by every runtime spawn/list/reap path. Keeping
+ * this decomposition here prevents those identity-sensitive paths from drifting. */
+export function resolveConfiguredAgentCommand(
+  agent: Pick<AgentConfig, "driver" | "command">,
+  transport?: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions">,
+): string | undefined {
+  return resolveRuntimeAgentCommand(
+    agent.driver,
+    agent.command,
+    transport?.preferLocalAgents !== false,
+    transport?.adapterVersions,
+  );
 }
 
 export function isLegacyCodexCommand(command: string): boolean {

@@ -1833,3 +1833,37 @@ test("runCli routes plugin command", async () => {
   expect(code).toBe(0);
   expect(lines).toEqual(["还没有安装插件。"]);
 });
+
+test("runCli routes adapter commands through injectable registry and probe seams", async () => {
+  setLocale("en");
+  const events: string[] = [];
+  const code = await runCli(["adapter", "set", "codex", "1.1.2"], {
+    print: (line) => events.push(line),
+    adapterCliDeps: {
+      loadVersions: async () => ({}),
+      saveVersions: async (versions) => { events.push(`saved:${JSON.stringify(versions)}`); },
+      getLatestVersion: async () => "1.1.4",
+      versionExists: async () => true,
+      verifyVersion: async (id, version) => { events.push(`verified:${id}@${version}`); },
+    },
+  });
+
+  expect(code).toBe(0);
+  expect(events).toContain("verified:codex@1.1.2");
+  expect(events).toContain('saved:{"codex":"1.1.2"}');
+});
+
+test("adapter set persists only transport.adapterVersions in the real config store", async () => {
+  await withTempHome(async (home) => {
+    const code = await runCli(["adapter", "set", "codex", "1.1.2"], {
+      print: () => {},
+      adapterCliDeps: {
+        versionExists: async () => true,
+        verifyVersion: async () => {},
+      },
+    });
+
+    expect(code).toBe(0);
+    expect((await readConfigJson(home)).transport.adapterVersions).toEqual({ codex: "1.1.2" });
+  });
+});
