@@ -139,43 +139,73 @@ export function pickReadableTextColor(bg: { r: number; g: number; b: number }): 
   return contrastRatio(dark, bg) >= contrastRatio(light, bg) ? DARK_TEXT : LIGHT_TEXT;
 }
 
-function computedFill(el: Element): string {
+function computedProperty(el: Element, property: string): string {
   try {
-    return getComputedStyle(el).getPropertyValue("fill")?.trim() ?? "";
+    return getComputedStyle(el).getPropertyValue(property)?.trim() ?? "";
   } catch {
     return ""; // detached / engine without SVG computed styles
   }
 }
 
+function readUnitAlpha(el: Element, property: "fill-opacity" | "opacity"): number | null {
+  const computed = computedProperty(el, property);
+  const raw = computed !== ""
+    ? computed
+    : el.getAttribute(property) ?? (el as SVGElement).style?.getPropertyValue(property) ?? "";
+  if (raw === "") return 1;
+  const trimmed = raw.trim();
+  const percent = trimmed.endsWith("%");
+  const parsed = Number(percent ? trimmed.slice(0, -1) : trimmed);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(1, Math.max(0, percent ? parsed / 100 : parsed));
+}
+
 /**
  * The element's effective fill. Computed style is authoritative — mermaid's colours arrive through
- * the `<style>` block it injects inside the svg, so the attribute alone is not enough. Reading the
- * attribute is a fallback for engines that do not resolve SVG presentation properties through
- * getComputedStyle; a browser always takes the computed branch.
+ * the `<style>` block it injects inside the svg, so the attribute alone is not enough. The colour's
+ * own alpha, inherited `fill-opacity`, and this element plus every SVG ancestor's compositing
+ * `opacity` are multiplied; SVG exposes those as separate computed properties, never folded into
+ * `fill`. Attribute/style reads are fallbacks for engines that do not resolve SVG presentation
+ * properties through getComputedStyle; a browser takes the computed branch.
  */
-function readFill(el: Element): Rgba | null {
-  const computed = computedFill(el);
-  if (computed !== "") return parseCssColor(computed);
-  const attr = el.getAttribute("fill");
-  return attr === null ? null : parseCssColor(attr);
+function cumulativeOpacity(el: Element, svg: Element): number | null {
+  let opacity = 1;
+  let current: Element | null = el;
+  while (current) {
+    const ownOpacity = readUnitAlpha(current, "opacity");
+    if (ownOpacity === null) return null;
+    opacity *= ownOpacity;
+    if (current === svg) return opacity;
+    current = current.parentElement;
+  }
+  return null; // not attached beneath the expected svg — effective paint is unknowable
+}
+
+function readFill(el: Element, svg: Element): Rgba | null {
+  const computed = computedProperty(el, "fill");
+  const fill = computed !== "" ? parseCssColor(computed) : parseCssColor(el.getAttribute("fill") ?? "");
+  if (!fill) return null;
+  const fillOpacity = readUnitAlpha(el, "fill-opacity");
+  const opacity = cumulativeOpacity(el, svg);
+  return fillOpacity === null || opacity === null ? null : { ...fill, a: fill.a * fillOpacity * opacity };
 }
 
 const SHAPE_SELECTOR = "rect, polygon, circle, ellipse, path";
 
-// A fill below this alpha composites with whatever is behind it, which we do not know and will not
-// guess at — measuring it as if opaque is worse than doing nothing (`fill:#ffffff1a` over mermaid's
-// dark background really lands near rgb(54,54,54), where the theme's #ccc label is already at 7.5;
-// treating it as pure white reads 1.6 and would repaint to #111 at a real 1.6 — actively breaking a
-// diagram that was fine).
+// A fill below this effective alpha composites with whatever is behind it, which we do not know and
+// will not guess at. Effective includes colour alpha, `fill-opacity`, and element/ancestor `opacity`:
+// Mermaid preserves all of these author CSS forms. Measuring `fill:#fff;fill-opacity:.1` as opaque
+// is worse than doing nothing — over Mermaid dark it lands near rgb(54,54,54), where #ccc is already
+// at 7.5; treating it as white would repaint to #111 at a real 1.6 and break a diagram that was fine.
 const MIN_MEASURABLE_ALPHA = 0.9;
 
 // The node's background: the first shape (document order — mermaid emits the shape before the
 // label) that resolves to an actually-painted, effectively-opaque colour. A `fill:none` outline, a
 // `url(#grad)` gradient, or a translucent fill is unmeasurable, so it is skipped in favour of the
 // next candidate shape; if none qualifies the node is left alone.
-function findShapeFill(node: Element): Rgba | null {
+function findShapeFill(node: Element, svg: Element): Rgba | null {
   for (const shape of Array.from(node.querySelectorAll(SHAPE_SELECTOR))) {
-    const fill = readFill(shape);
+    const fill = readFill(shape, svg);
     if (fill && fill.a >= MIN_MEASURABLE_ALPHA) return fill;
   }
   return null;
@@ -219,11 +249,11 @@ function recolor(text: Element, color: string): void {
 }
 
 function fixNode(node: Element, svg: Element): void {
-  const shapeFill = findShapeFill(node);
+  const shapeFill = findShapeFill(node, svg);
   if (!shapeFill) return; // nothing measurable to sit on — leave the node exactly as mermaid drew it
   for (const text of Array.from(node.querySelectorAll("text"))) {
     if (hasAuthoredLabelColor(text, svg)) continue; // the author picked this colour — not ours to fix
-    const labelFill = readFill(text);
+    const labelFill = readFill(text, svg);
     // Unmeasurable label — do not guess. Same alpha bar as the shape: a translucent label composites
     // against the fill, and we do not composite, so treating it as opaque would measure a colour
     // that is not on screen.

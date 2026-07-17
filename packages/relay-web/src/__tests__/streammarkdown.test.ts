@@ -37,6 +37,7 @@ vi.mock("../lib/render-mermaid", () => ({
 // The stand-in produces just enough DOM (a .mmd-viewport keeping the svg, a Fullscreen button wired
 // to onExpand) for those assertions.
 const enhanceCalls: HTMLElement[] = [];
+const enhanceLabelFills: Array<string | null> = [];
 // The labels handed to each enhance call — the component owns `t`, so this is where a locale
 // switch has to become visible.
 const enhanceLabels: Array<Record<string, string>> = [];
@@ -53,6 +54,7 @@ vi.mock("../lib/inline-mermaid", () => ({
   ) => {
     const id = (enhanceSeq += 1);
     enhanceCalls.push(block);
+    enhanceLabelFills.push(block.querySelector("text")?.getAttribute("fill") ?? null);
     enhanceLabels.push(opts.labels ?? {});
     enhanceOpts.push(opts);
     const svg = block.querySelector("svg");
@@ -76,6 +78,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   renderSpy.mockClear();
   enhanceCalls.length = 0;
+  enhanceLabelFills.length = 0;
   enhanceLabels.length = 0;
   enhanceOpts.length = 0;
   pushToastSpy.mockClear();
@@ -164,6 +167,51 @@ function renderFirstMermaidBlock(root: HTMLElement): void {
 }
 
 describe("StreamMarkdown mermaid hydration", () => {
+  test("repairs contrast on an attached SVG before handing the block to the enhancer", async () => {
+    vi.useRealTimers();
+    const connectedReads: boolean[] = [];
+    const realGetComputedStyle = window.getComputedStyle.bind(window);
+    const styleSpy = vi.spyOn(window, "getComputedStyle").mockImplementation(((el: Element, pseudo?: string | null) => {
+      connectedReads.push(el.isConnected);
+      const fill = el.getAttribute?.("data-cfill");
+      if (fill === null) return realGetComputedStyle(el, pseudo);
+      return {
+        getPropertyValue: (property: string) => {
+          if (property === "fill") return fill;
+          if (property === "fill-opacity" || property === "opacity") return "1";
+          return "";
+        },
+      } as unknown as CSSStyleDeclaration;
+    }) as typeof window.getComputedStyle);
+    hydrate.mockImplementation(async (...args: unknown[]) => {
+      const root = args[0] as HTMLElement;
+      if (root.querySelector("pre.mermaid-block")) return;
+      const block = document.createElement("pre");
+      block.className = "mermaid-block mermaid-rendered";
+      block.innerHTML = '<svg><g class="node"><rect data-cfill="#e0ffff"></rect>' +
+        '<text data-cfill="#cccccc">hi</text></g></svg>';
+      root.appendChild(block);
+    });
+
+    try {
+      const wrapper = mount(StreamMarkdown, {
+        props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: false },
+        attachTo: document.body,
+        global: { stubs: { MermaidViewer: true } },
+      });
+      await flushPromises();
+
+      expect(connectedReads.length).toBeGreaterThan(0);
+      expect(connectedReads.every(Boolean)).toBe(true);
+      expect(enhanceLabelFills).toEqual(["#111111"]);
+      expect(wrapper.element.querySelector("text")?.getAttribute("fill")).toBe("#111111");
+      wrapper.unmount();
+    } finally {
+      styleSpy.mockRestore();
+      hydrate.mockImplementation(async () => {});
+    }
+  });
+
   test("does not hydrate mermaid while streaming", async () => {
     hydrate.mockClear();
     const wrapper = mount(StreamMarkdown, { props: { text: "```mermaid\ngraph TD\nA-->B\n```", streaming: true } });

@@ -145,9 +145,22 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 非法图表保留源码作为代码块兜底。非 relay-web 频道（微信/终端）仍为纯文本。
 
 已渲染的图表支持平移/缩放：**内联**（`inline-mermaid.ts` 就地增强——Ctrl/⌘+滚轮缩放、鼠标拖拽平移、
-双指捏合；单指仍滚动页面）配一条 − / 复位 / + / ⤢ 控件条；点 ⤢ 打开**全屏**查看器（`MermaidViewer.vue`，
-平滑滚轮/单指拖拽/双指缩放 + Esc/✕/点空白关闭）。两种模式共用纯 `pan-zoom.ts` 控制器与
-`pan-zoom-gestures.ts` 手势装配；均复用已注入 DOM 的（已净化）SVG，不重新解析。
+双指捏合；单指仍滚动页面）配一条 − / 复位 / + / ⤢ / `</>` / ⬇ 控件条；点 ⤢ 打开**全屏**查看器
+（`MermaidViewer.vue`，平滑滚轮/单指拖拽/双指缩放 + Esc/✕/点空白关闭）。`</>` 在图形和
+`data-mermaid` 中保存的原始源码之间切换，源码模式会隐藏无意义的缩放/复位/全屏按钮；⬇ 把当前 SVG
+以 2× 分辨率栅格化为 PNG，并先用当前 viewport 背景铺满画布，导出失败走全局 toast。控件 aria-label
+来自 en/zh-CN i18n；切换语言会走 reset → hydrate → enhance 路径重新生成控件与错误文案。
+
+Mermaid 对作者通过 `style` / `classDef` 固定的 shape fill 不会自动调整主题 label 色，因此水合完成后、
+inline enhancer 移动 SVG 前，`mermaid-contrast.ts` 会在**已连接 DOM**上测量 `g.node` / `g.cluster`
+的 shape/label WCAG contrast。仅低于 3.0 且作者没有显式指定 label color 时，才在深浅两种文字色中
+选择对比度更高者；Mermaid 自带的合格配色保持不变。颜色 alpha、独立 `fill-opacity`、元素与祖先
+`opacity` 会共同决定是否可测：有效 alpha 低于 0.9 时 fail closed，不猜测未知背景；gradient、
+`fill:none` 等不可测 fill 也跳过。当前范围不含 sequenceDiagram actor（它不是 `g.node`）。
+
+全屏与 PNG 均复用已注入 DOM 的（已净化、已修复对比度）SVG，不重新解析。内联与全屏模式共用纯
+`pan-zoom.ts` 控制器与 `pan-zoom-gestures.ts` 手势装配；源码切换/下载/控件生命周期集中在
+`inline-mermaid.ts`，PNG 序列化与栅格化集中在 `mermaid-export.ts`。
 
 ## 响应式 / 移动端布局
 

@@ -1,8 +1,11 @@
-import { describe, expect, test } from "vitest";
-import { buildSvgDataUrl, pngFileName } from "../lib/mermaid-export";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { buildSvgDataUrl, downloadSvgAsPng, pngFileName } from "../lib/mermaid-export";
 
-// Only the pure helpers are covered: jsdom has no canvas, so downloadSvgAsPng's glue is left
-// untested rather than faked behind a canvas polyfill dependency.
+afterEach(() => {
+  document.body.innerHTML = "";
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function decodeDataUrl(url: string): string {
   const b64 = url.replace(/^data:image\/svg\+xml;base64,/, "");
@@ -79,4 +82,55 @@ describe("pngFileName", () => {
   test("a rambling source does not lengthen the name", () => {
     expect(pngFileName("a".repeat(20000))).toMatch(/^diagram-[0-9a-f]{8}\.png$/);
   });
+});
+
+test("downloadSvgAsPng exports a 2x opaque raster before triggering the download", async () => {
+  const operations: Array<unknown[]> = [];
+  const context = {
+    set fillStyle(value: string) { operations.push(["fillStyle", value]); },
+    fillRect: (...args: unknown[]) => operations.push(["fillRect", ...args]),
+    drawImage: (...args: unknown[]) => operations.push(["drawImage", ...args.slice(1)]),
+  } as unknown as CanvasRenderingContext2D;
+  const canvases: HTMLCanvasElement[] = [];
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((function (this: HTMLCanvasElement) {
+    canvases.push(this);
+    return context;
+  }) as unknown as typeof HTMLCanvasElement.prototype.getContext);
+  vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback, type) => {
+    expect(type).toBe("image/png");
+    callback(new Blob(["png"], { type: "image/png" }));
+  });
+  vi.stubGlobal("Image", class {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+  });
+  const createObjectUrl = vi.fn(() => "blob:test");
+  const revokeObjectUrl = vi.fn();
+  vi.stubGlobal("URL", { createObjectURL: createObjectUrl, revokeObjectURL: revokeObjectUrl });
+  let clickedDownload = "";
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    clickedDownload = this.download;
+  });
+
+  const host = document.createElement("div");
+  host.innerHTML = '<svg viewBox="0 0 120 60"><text>hi</text></svg>';
+  document.body.appendChild(host);
+  const svg = host.querySelector("svg") as SVGSVGElement;
+  svg.getBoundingClientRect = () => ({
+    width: 120, height: 60, x: 0, y: 0, top: 0, left: 0, right: 120, bottom: 60, toJSON() {},
+  }) as DOMRect;
+
+  await expect(downloadSvgAsPng(svg, { background: "rgb(31, 32, 32)", fileName: "diagram.png" }))
+    .resolves.toBe(true);
+  expect(canvases[0]?.width).toBe(240);
+  expect(canvases[0]?.height).toBe(120);
+  expect(operations).toEqual([
+    ["fillStyle", "rgb(31, 32, 32)"],
+    ["fillRect", 0, 0, 240, 120],
+    ["drawImage", 0, 0, 240, 120],
+  ]);
+  expect(clickedDownload).toBe("diagram.png");
+  expect(createObjectUrl).toHaveBeenCalledOnce();
+  expect(revokeObjectUrl).toHaveBeenCalledWith("blob:test");
 });

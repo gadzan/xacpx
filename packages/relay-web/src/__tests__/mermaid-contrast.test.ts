@@ -133,9 +133,16 @@ function stubComputedFill(): void {
   const real = window.getComputedStyle.bind(window);
   vi.spyOn(window, "getComputedStyle").mockImplementation(((el: Element, pseudo?: string | null) => {
     const cfill = el?.getAttribute?.("data-cfill");
-    if (cfill === null || cfill === undefined) return real(el as Element, pseudo);
+    const fillOpacity = el?.getAttribute?.("data-cfill-opacity");
+    const opacity = el?.getAttribute?.("data-copacity");
+    if (cfill === null && fillOpacity === null && opacity === null) return real(el as Element, pseudo);
     return {
-      getPropertyValue: (prop: string) => (prop === "fill" ? cfill : ""),
+      getPropertyValue: (prop: string) => {
+        if (prop === "fill") return cfill ?? "";
+        if (prop === "fill-opacity") return fillOpacity ?? "1";
+        if (prop === "opacity") return opacity ?? "1";
+        return "";
+      },
     } as unknown as CSSStyleDeclaration;
   }) as typeof window.getComputedStyle);
 }
@@ -320,6 +327,39 @@ describe("fixLabelContrast: an author-specified label colour is never touched", 
 // #ccc label sits at ~7.5 and is perfectly readable — but read as pure white it scores 1.6 and the
 // "repair" would drop #111 on it at a real ~1.6, breaking a diagram that was fine.
 describe("fixLabelContrast: a translucent fill is not measurable", () => {
+  test("does not repaint when Mermaid emits alpha as a separate fill-opacity property", () => {
+    stubComputedFill();
+    const svg = makeSvg(
+      '<g class="node"><rect data-cfill="#ffffff" data-cfill-opacity="0.1"></rect>' +
+        '<text data-cfill="#cccccc">hi</text></g>',
+    );
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
+  test("does not repaint when the shape element has independent opacity", () => {
+    stubComputedFill();
+    const svg = makeSvg(
+      '<g class="node"><rect data-cfill="#ffffff" data-copacity="0.1"></rect>' +
+        '<text data-cfill="#cccccc">hi</text></g>',
+    );
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
+  test("does not repaint through a translucent ancestor group", () => {
+    stubComputedFill();
+    const svg = makeSvg(
+      '<g class="node" data-copacity="0.1"><rect data-cfill="#ffffff"></rect>' +
+        '<text data-cfill="#cccccc">hi</text></g>',
+    );
+    const before = svg.innerHTML;
+    fixLabelContrast(svg);
+    expect(svg.innerHTML).toBe(before);
+  });
+
   test("does not repaint over a nearly-transparent author fill", () => {
     stubComputedFill();
     const svg = makeSvg(node("rgba(255, 255, 255, 0.1)", "#cccccc"));
@@ -362,6 +402,21 @@ describe("fixLabelContrast: a translucent fill is not measurable", () => {
     const before = svg.innerHTML;
     fixLabelContrast(svg);
     expect(svg.innerHTML).toBe(before);
+  });
+
+  test("does not repaint a label with separate fill-opacity or ancestor opacity", () => {
+    for (const label of [
+      '<text data-cfill="#cccccc" data-cfill-opacity="0.1">hi</text>',
+      '<g data-copacity="0.1"><text data-cfill="#cccccc">hi</text></g>',
+    ]) {
+      stubComputedFill();
+      const svg = makeSvg(`<g class="node"><rect data-cfill="#ffffff"></rect>${label}</g>`);
+      const before = svg.innerHTML;
+      fixLabelContrast(svg);
+      expect(svg.innerHTML).toBe(before);
+      document.body.innerHTML = "";
+      vi.restoreAllMocks();
+    }
   });
 });
 

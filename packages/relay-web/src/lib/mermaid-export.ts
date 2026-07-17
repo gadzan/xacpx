@@ -74,8 +74,9 @@ function triggerDownload(blob: Blob, fileName: string): void {
  * That means a dark-mode diagram exports dark and looks dark pasted into a light document — a
  * deliberate "export what you see" choice, not an oversight.
  *
- * Thin glue over the tested pure helpers, and untestable in jsdom (no canvas) — kept free of any
- * logic worth asserting.
+ * Thin glue over the tested pure helpers. The browser-only Image/canvas/download boundaries are
+ * replaced with narrow test doubles so the 2x dimensions, opaque background, and operation order
+ * stay regression-guarded without a canvas polyfill.
  */
 export async function downloadSvgAsPng(
   svg: SVGSVGElement,
