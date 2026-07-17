@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { renderMarkdown } from "../lib/render-markdown";
 import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
 import { enhanceMermaidBlock } from "../lib/inline-mermaid";
+import { fixLabelContrast } from "../lib/mermaid-contrast";
 import MermaidViewer from "./MermaidViewer.vue";
 import { useThemeStore } from "../stores/theme";
 
@@ -60,9 +61,29 @@ function enhanceRenderedBlocks(root: HTMLElement): void {
           onExpand: () => {
             viewerSvg.value = block.querySelector("svg")?.outerHTML ?? null;
           },
+          // The enhancer is a DOM-only lib with no i18n of its own; `t` lives here.
+          labels: {
+            zoomOut: t("chat.mermaidZoomOut"),
+            reset: t("chat.mermaidReset"),
+            zoomIn: t("chat.mermaidZoomIn"),
+            fullscreen: t("chat.mermaidFullscreen"),
+            source: t("chat.mermaidSource"),
+            download: t("chat.mermaidDownload"),
+          },
         }),
       );
     });
+}
+
+// Mermaid leaves a label's <text> on the theme's colour even when the diagram source pins the node
+// fill (`style A fill:#f9f` / `classDef`), which can put light-grey text on a light fill. Repaint
+// only the labels that actually fail contrast, while the svg is still attached (the pass reads
+// getComputedStyle) and before the enhancer moves it into the pan/zoom viewport. MermaidViewer
+// clones `svg.outerHTML` from this same DOM, so the fullscreen view inherits the fix for free.
+function fixRenderedBlockContrast(root: HTMLElement): void {
+  root
+    .querySelectorAll<SVGElement>("pre.mermaid-block.mermaid-rendered svg")
+    .forEach((svg) => fixLabelContrast(svg));
 }
 
 // A block whose diagram failed to render keeps its <code> source (spec fallback); tag it with a
@@ -102,6 +123,7 @@ function scheduleHydrate(reset: boolean): void {
       }
       await hydrateMermaidBlocks(root, theme.mode, hydrationStale);
       if (!hydrationStale()) {
+        fixRenderedBlockContrast(root);
         enhanceRenderedBlocks(root);
         labelErrorBlocks(root);
       }
@@ -351,6 +373,37 @@ onBeforeUnmount(() => {
 }
 .stream-md .mmd-transform svg {
   display: block;
+}
+/* Source view: the code-toggle button swaps the diagram for its text and back. Exactly one of the
+   two is visible, and the view-only controls (zoom/reset/fullscreen) hide with the diagram. */
+.stream-md .mmd-source {
+  display: none;
+  background: rgb(var(--c-bg));
+  color: rgb(var(--c-fg));
+  border: 1px solid rgb(var(--c-border));
+  border-radius: 8px;
+  padding: 0.65em 0.85em;
+  margin: 0;
+  max-height: 560px;
+  overflow: auto;
+  box-shadow: var(--shadow-e1);
+  white-space: pre;
+}
+.stream-md .mermaid-block.mmd-source-mode .mmd-viewport {
+  display: none;
+}
+.stream-md .mermaid-block.mmd-source-mode .mmd-source {
+  display: block;
+}
+.stream-md .mermaid-block.mmd-source-mode .mmd-controls .mmd-view-only {
+  display: none;
+}
+.stream-md .mmd-source code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .stream-md .mmd-controls {
   position: absolute;

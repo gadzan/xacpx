@@ -1,3 +1,5 @@
+import { downloadSvgAsPng, pngFileName } from "./mermaid-export";
+import { decodeMermaidSource } from "./mermaid-source";
 import { computeFit, createPanZoom, zoomToRectCenter, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR } from "./pan-zoom";
 import { attachPanZoomGestures } from "./pan-zoom-gestures";
 import { readSvgIntrinsicSize } from "./svg-size";
@@ -8,24 +10,55 @@ function maxViewportHeight(): number {
   return typeof window !== "undefined" ? Math.min(560, Math.round(window.innerHeight * 0.7)) : 560;
 }
 
+/**
+ * Button text for the controls bar. This module is DOM-only and deliberately has no i18n of its
+ * own; the component that owns `t` passes the strings in (same seam as the `chat.mermaidError`
+ * data-attr on the error block).
+ */
+export interface MermaidControlLabels {
+  zoomOut: string;
+  reset: string;
+  zoomIn: string;
+  fullscreen: string;
+  source: string;
+  download: string;
+}
+
 interface ZoomControl {
-  label: string;
+  key: "zoomOut" | "reset" | "zoomIn";
   glyph: string;
   factor: number; // 0 === reset
 }
 const ZOOM_CONTROLS: ZoomControl[] = [
-  { label: "Zoom out", glyph: "−", factor: ZOOM_OUT_FACTOR }, // −
-  { label: "Reset", glyph: "↺", factor: 0 }, // ↺
-  { label: "Zoom in", glyph: "+", factor: ZOOM_IN_FACTOR },
+  { key: "zoomOut", glyph: "−", factor: ZOOM_OUT_FACTOR }, // −
+  { key: "reset", glyph: "↺", factor: 0 }, // ↺
+  { key: "zoomIn", glyph: "+", factor: ZOOM_IN_FACTOR },
 ];
+
+// A PNG needs an opaque backdrop (transparent PNGs look broken pasted anywhere). Use whatever the
+// viewport actually resolves to; fall back to white when the engine reports nothing paintable
+// (jsdom, or a viewport that inherits a transparent background).
+function exportBackground(viewport: HTMLElement): string {
+  try {
+    const bg = getComputedStyle(viewport).backgroundColor;
+    if (bg && bg !== "transparent" && !/^rgba\(0,\s*0,\s*0,\s*0\)$/.test(bg)) return bg;
+  } catch {
+    // fall through
+  }
+  return "#ffffff";
+}
 
 /**
  * Enhance a rendered `pre.mermaid-block`: move its injected `<svg>` into a bounded pan/zoom
  * viewport (Ctrl/⌘+wheel zoom, mouse-drag pan, two-finger pinch; one finger still scrolls the
- * page), and add a controls bar (− / reset / + / ⤢). The ⤢ button calls `onExpand`. Returns a
- * detach that removes every listener. A block without an `<svg>` is a no-op.
+ * page), and add a controls bar (− / reset / + / ⤢ / </> / ⬇). The ⤢ button calls `onExpand`,
+ * `</>` swaps the diagram for its source, and `⬇` saves a PNG. Returns a detach that removes every
+ * listener. A block without an `<svg>` is a no-op.
  */
-export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => void }): () => void {
+export function enhanceMermaidBlock(
+  block: HTMLElement,
+  opts: { onExpand: () => void; labels: MermaidControlLabels },
+): () => void {
   const svg = block.querySelector("svg");
   if (!svg) return () => {};
 
@@ -36,6 +69,15 @@ export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => 
   wrapper.appendChild(svg); // moves the svg out of the <pre>
   viewport.appendChild(wrapper);
 
+  // The `data-mermaid` base64 is the source of truth for the diagram text (the <code> fallback is
+  // gone once the block is hydrated).
+  const source = decodeMermaidSource(block.getAttribute("data-mermaid") ?? "");
+  const sourceEl = document.createElement("pre");
+  sourceEl.className = "mmd-source";
+  const sourceCode = document.createElement("code");
+  sourceCode.textContent = source;
+  sourceEl.appendChild(sourceCode);
+
   const panZoom = createPanZoom();
   const apply = (): void => {
     wrapper.style.transform = panZoom.toTransform();
@@ -45,33 +87,66 @@ export function enhanceMermaidBlock(block: HTMLElement, opts: { onExpand: () => 
   bar.className = "mmd-controls";
   const buttonDetachers: Array<() => void> = [];
 
-  const addButton = (label: string, glyph: string, handler: (e: Event) => void): void => {
+  const addButton = (
+    label: string,
+    glyph: string,
+    handler: (e: Event) => void,
+    options?: { viewOnly?: boolean },
+  ): HTMLButtonElement => {
     const b = document.createElement("button");
     b.type = "button";
     b.setAttribute("aria-label", label);
+    // Zoom/reset/fullscreen are meaningless over a source listing, so they hide in source mode
+    // (CSS keys off `.mmd-source-mode` on the block). `</>` and `⬇` stay usable in both modes.
+    if (options?.viewOnly) b.classList.add("mmd-view-only");
     b.textContent = glyph;
     b.addEventListener("click", handler);
     buttonDetachers.push(() => b.removeEventListener("click", handler));
     bar.appendChild(b);
+    return b;
   };
 
   for (const control of ZOOM_CONTROLS) {
-    addButton(control.label, control.glyph, (e) => {
-      e.stopPropagation();
-      if (control.factor === 0) {
-        panZoom.reset();
-      } else {
-        zoomToRectCenter(panZoom, viewport.getBoundingClientRect(), control.factor);
-      }
-      apply();
-    });
+    addButton(
+      opts.labels[control.key],
+      control.glyph,
+      (e) => {
+        e.stopPropagation();
+        if (control.factor === 0) {
+          panZoom.reset();
+        } else {
+          zoomToRectCenter(panZoom, viewport.getBoundingClientRect(), control.factor);
+        }
+        apply();
+      },
+      { viewOnly: true },
+    );
   }
-  addButton("Fullscreen", "⤢", (e) => {
+  addButton(
+    opts.labels.fullscreen,
+    "⤢",
+    (e) => {
+      e.stopPropagation();
+      opts.onExpand();
+    },
+    { viewOnly: true },
+  );
+
+  let showingSource = false;
+  const sourceButton = addButton(opts.labels.source, "</>", (e) => {
     e.stopPropagation();
-    opts.onExpand();
+    showingSource = !showingSource;
+    block.classList.toggle("mmd-source-mode", showingSource);
+    sourceButton.setAttribute("aria-pressed", String(showingSource));
+  });
+  sourceButton.setAttribute("aria-pressed", "false");
+
+  addButton(opts.labels.download, "⬇", (e) => {
+    e.stopPropagation();
+    void downloadSvgAsPng(svg, { background: exportBackground(viewport), fileName: pngFileName(source) });
   });
 
-  block.replaceChildren(viewport, bar);
+  block.replaceChildren(viewport, sourceEl, bar);
 
   // Fit-to-container: scale the diagram DOWN (never up) so it fully fits the viewport width and a
   // capped height, centered — instead of rendering at native size, left-aligned and clipped. The
