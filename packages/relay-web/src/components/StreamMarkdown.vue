@@ -60,6 +60,15 @@ function enhanceRenderedBlocks(root: HTMLElement): void {
           onExpand: () => {
             viewerSvg.value = block.querySelector("svg")?.outerHTML ?? null;
           },
+          // The enhancer is a DOM-only lib with no i18n of its own; `t` lives here.
+          labels: {
+            zoomOut: t("chat.mermaidZoomOut"),
+            reset: t("chat.mermaidReset"),
+            zoomIn: t("chat.mermaidZoomIn"),
+            fullscreen: t("chat.mermaidFullscreen"),
+            source: t("chat.mermaidSource"),
+            download: t("chat.mermaidDownload"),
+          },
         }),
       );
     });
@@ -351,6 +360,37 @@ onBeforeUnmount(() => {
 }
 .stream-md .mmd-transform svg {
   display: block;
+}
+/* Source view: the code-toggle button swaps the diagram for its text and back. Exactly one of the
+   two is visible, and the view-only controls (zoom/reset/fullscreen) hide with the diagram. */
+.stream-md .mmd-source {
+  display: none;
+  background: rgb(var(--c-bg));
+  color: rgb(var(--c-fg));
+  border: 1px solid rgb(var(--c-border));
+  border-radius: 8px;
+  padding: 0.65em 0.85em;
+  margin: 0;
+  max-height: 560px;
+  overflow: auto;
+  box-shadow: var(--shadow-e1);
+  white-space: pre;
+}
+.stream-md .mermaid-block.mmd-source-mode .mmd-viewport {
+  display: none;
+}
+.stream-md .mermaid-block.mmd-source-mode .mmd-source {
+  display: block;
+}
+.stream-md .mermaid-block.mmd-source-mode .mmd-controls .mmd-view-only {
+  display: none;
+}
+.stream-md .mmd-source code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .stream-md .mmd-controls {
   position: absolute;

@@ -6,12 +6,20 @@
 // inside the markdown render with no error isolation, so a single bad code unit would
 // crash the whole message. TextEncoder is total: it maps unpaired surrogates to U+FFFD.
 
-/** Encode a diagram's source to attribute-safe base64 (alphabet `[A-Za-z0-9+/=]`). */
-export function encodeMermaidSource(src: string): string {
-  const bytes = new TextEncoder().encode(src);
+/**
+ * Encode any string to base64 via its UTF-8 bytes (alphabet `[A-Za-z0-9+/=]`). Shared with the PNG
+ * exporter, which base64s serialized SVG markup and hits the same lone-surrogate/non-Latin-1 traps.
+ */
+export function utf8ToBase64(input: string): string {
+  const bytes = new TextEncoder().encode(input);
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+/** Encode a diagram's source to attribute-safe base64 (alphabet `[A-Za-z0-9+/=]`). */
+export function encodeMermaidSource(src: string): string {
+  return utf8ToBase64(src);
 }
 
 /** Inverse of {@link encodeMermaidSource}. */
