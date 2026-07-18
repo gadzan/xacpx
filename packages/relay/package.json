@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-relay",
-  "version": "0.9.12-beta.22",
+  "version": "0.9.12-beta.23",
   "description": "Self-hosted relay hub for xacpx: instance gateway, accounts, and web API.",
   "license": "MIT",
   "keywords": [
