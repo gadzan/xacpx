@@ -9,7 +9,7 @@ export { relayCliProvider } from "./relay-provider.js";
 const plugin: XacpxPlugin = {
   apiVersion: 1,
   name: "@ganglion/xacpx-channel-relay",
-  minXacpxVersion: "0.17.0-beta.6",
+  minXacpxVersion: "0.17.0-beta.7",
   channels: [
     {
       type: "relay",
