@@ -125,6 +125,9 @@ export async function hydrateMermaidBlocks(
       }
       if (shouldAbort?.()) return; // re-check after the await: DOM may have been torn down mid-render
       block.innerHTML = svg;
+      // svgCache holds the pre-fix SVG string, so re-apply on every injection (incl. cache hits).
+      // Cheap, idempotent DOM walk; no-op when contrast is already fine or fills don't resolve.
+      applyNodeLabelContrast(block);
       block.setAttribute("data-mermaid-done", "1");
       block.classList.add("mermaid-rendered");
     } catch {

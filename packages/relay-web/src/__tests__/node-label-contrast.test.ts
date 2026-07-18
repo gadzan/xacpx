@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "vitest";
-import { applyNodeLabelContrast } from "../lib/render-mermaid";
+import { applyNodeLabelContrast, hydrateMermaidBlocks, __setMermaidLoaderForTest } from "../lib/render-mermaid";
+import { encodeMermaidSource } from "../lib/mermaid-source";
 
 // Build a mermaid-like g.node. jsdom's getComputedStyle resolves only INLINE
 // style (not <style> classes / presentation attrs), so we feed fills via inline
@@ -19,8 +20,17 @@ function nodeSvg(shapeFill: string, textFill: string): HTMLElement {
 function textFill(root: HTMLElement): string {
   return (root.querySelector("text") as unknown as SVGElement).style.fill;
 }
+
+function mermaidBlock(src: string): HTMLElement {
+  const root = document.createElement("div");
+  root.innerHTML = `<pre class="mermaid-block" data-mermaid="${encodeMermaidSource(src)}"><code>${src}</code></pre>`;
+  document.body.appendChild(root); // getComputedStyle needs it in-document
+  return root;
+}
+
 afterEach(() => {
   document.body.innerHTML = "";
+  __setMermaidLoaderForTest(null);
 });
 
 test("overrides the label color on a light fill (contrast 1.52 < 3.0)", () => {
@@ -39,4 +49,23 @@ test("skips nodes whose shape has no resolvable fill (fill:none)", () => {
   const root = nodeSvg("none", "rgb(204, 204, 204)");
   applyNodeLabelContrast(root);
   expect(textFill(root)).toBe("rgb(204, 204, 204)");
+});
+
+test("hydrateMermaidBlocks fixes a low-contrast node label end to end", async () => {
+  __setMermaidLoaderForTest(() =>
+    Promise.resolve({
+      initialize: () => {},
+      render: async () => ({
+        svg:
+          `<svg><g class="node">` +
+          `<rect style="fill: rgb(224, 255, 255)"></rect>` +
+          `<text style="fill: rgb(204, 204, 204)">Hi</text>` +
+          `</g></svg>`,
+      }),
+    }),
+  );
+  const root = mermaidBlock("graph TD\n A-->B");
+  await hydrateMermaidBlocks(root, "dark");
+  const text = root.querySelector("pre.mermaid-block text") as unknown as SVGElement;
+  expect(text.style.fill).toBe("rgb(0, 0, 0)");
 });
