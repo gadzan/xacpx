@@ -10,8 +10,11 @@ export interface MermaidLike {
   render(id: string, text: string): Promise<{ svg: string }>;
 }
 
-// WCAG graphical-object minimum. Node labels below this against their fill are
-// illegible (e.g. mermaid dark's #ccc text on an author-pinned light fill ≈ 1.5).
+// Conservative "rescue" threshold — recolor only labels well below legibility, so
+// we don't second-guess mermaid's own borderline styling. This is deliberately NOT
+// WCAG AA text conformance (SC 1.4.3 would be 4.5:1); the 3.0–4.5 band is left
+// alone. The real failure mode this targets — #ccc text on an author-pinned light
+// fill — measures ≈ 1.5, far below 3.0, so this catches every actual case.
 const MIN_LABEL_CONTRAST = 3.0;
 
 let loaderOverride: null | (() => Promise<MermaidLike>) = null;

@@ -6,9 +6,11 @@ export type RGB = [number, number, number];
 
 /**
  * Parse a CSS `rgb()/rgba()` computed-style string into an RGB triple.
- * Returns null for `none`, fully transparent (alpha 0), or anything unparseable
- * — i.e. "no usable background color". A fractional alpha (e.g. `rgba(r,g,b,0.5)`)
- * is treated as opaque — no compositing is done; mermaid shape fills are opaque.
+ * Returns null for `none`, anything unparseable, and any non-opaque color — i.e.
+ * "no usable opaque background color". A partial or zero alpha (`rgba(r,g,b,a)`,
+ * a < 1, or a non-numeric alpha) can't be composited without the effective
+ * background, which we don't reliably have, so it is skipped rather than measured
+ * as its unblended color and decided on wrongly.
  */
 export function parseCssColor(value: string): RGB | null {
   const m = value.match(/rgba?\(([^)]+)\)/i);
@@ -16,7 +18,7 @@ export function parseCssColor(value: string): RGB | null {
   const parts = m[1].split(",").map((p) => parseFloat(p.trim()));
   if (parts.length < 3 || parts.slice(0, 3).some((n) => Number.isNaN(n))) return null;
   const alpha = parts.length >= 4 ? parts[3] : 1;
-  if (alpha === 0) return null;
+  if (!(alpha >= 1)) return null; // alpha < 1 (non-opaque) or NaN (non-numeric) → skip
   return [parts[0], parts[1], parts[2]];
 }
 

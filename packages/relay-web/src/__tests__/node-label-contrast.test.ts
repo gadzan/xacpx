@@ -59,6 +59,21 @@ test("skips nodes whose label color is unresolvable (text fill:none)", () => {
   expect(textFill(root)).toBe("none");
 });
 
+// Threshold boundary: white text on gray(148) ≈ 3.03 (>= 3.0) vs gray(149) ≈ 2.99
+// (< 3.0). These bracket MIN_LABEL_CONTRAST and pin both its value (a raise to 4.5
+// would recolor the 3.03 case) and its >= direction (equal stays untouched).
+test("leaves a label just at/above the 3.0 threshold untouched (gray 148 ≈ 3.03)", () => {
+  const root = nodeSvg("rgb(148, 148, 148)", "rgb(255, 255, 255)");
+  applyNodeLabelContrast(root);
+  expect(textFill(root)).toBe("rgb(255, 255, 255)");
+});
+
+test("recolors a label just below the 3.0 threshold (gray 149 ≈ 2.99)", () => {
+  const root = nodeSvg("rgb(149, 149, 149)", "rgb(255, 255, 255)");
+  applyNodeLabelContrast(root);
+  expect(textFill(root)).toBe("rgb(0, 0, 0)"); // black wins against a mid-gray fill
+});
+
 test("hydrateMermaidBlocks fixes a low-contrast node label end to end", async () => {
   __setMermaidLoaderForTest(() =>
     Promise.resolve({
