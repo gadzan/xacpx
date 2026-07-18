@@ -39,13 +39,13 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.3.3-beta.5",
+      "version": "0.3.3-beta.7",
       "dependencies": {
         "@ganglion/xacpx-relay-protocol": "^0.1.0",
         "ws": "^8.20.0",
       },
       "peerDependencies": {
-        "xacpx": ">=0.17.0-beta.6",
+        "xacpx": ">=0.17.0-beta.7",
       },
       "optionalPeers": [
         "xacpx",
@@ -75,7 +75,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.9.12-beta.20",
+      "version": "0.9.12-beta.22",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
@@ -88,7 +88,7 @@
     },
     "packages/relay-protocol": {
       "name": "@ganglion/xacpx-relay-protocol",
-      "version": "0.1.12",
+      "version": "0.1.14",
     },
     "packages/relay-web": {
       "name": "@ganglion/xacpx-relay-web",
