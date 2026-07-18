@@ -7,7 +7,8 @@ export type RGB = [number, number, number];
 /**
  * Parse a CSS `rgb()/rgba()` computed-style string into an RGB triple.
  * Returns null for `none`, fully transparent (alpha 0), or anything unparseable
- * — i.e. "no usable background color".
+ * — i.e. "no usable background color". A fractional alpha (e.g. `rgba(r,g,b,0.5)`)
+ * is treated as opaque — no compositing is done; mermaid shape fills are opaque.
  */
 export function parseCssColor(value: string): RGB | null {
   const m = value.match(/rgba?\(([^)]+)\)/i);

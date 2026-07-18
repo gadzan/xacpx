@@ -51,6 +51,14 @@ test("skips nodes whose shape has no resolvable fill (fill:none)", () => {
   expect(textFill(root)).toBe("rgb(204, 204, 204)");
 });
 
+test("skips nodes whose label color is unresolvable (text fill:none)", () => {
+  // Shape fill resolves (dark) so we reach the text-color check; the text fill
+  // does not, so the pass must leave the label untouched rather than recolor it.
+  const root = nodeSvg("rgb(31, 32, 32)", "none");
+  applyNodeLabelContrast(root);
+  expect(textFill(root)).toBe("none");
+});
+
 test("hydrateMermaidBlocks fixes a low-contrast node label end to end", async () => {
   __setMermaidLoaderForTest(() =>
     Promise.resolve({
