@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { decodeMermaidSource } from "./mermaid-source";
+import { parseCssColor, contrastRatio, pickReadableTextColor } from "./wcag-contrast";
 
 export type MermaidTheme = "dark" | "light";
 
@@ -8,6 +9,10 @@ export interface MermaidLike {
   initialize(config: Record<string, unknown>): void;
   render(id: string, text: string): Promise<{ svg: string }>;
 }
+
+// WCAG graphical-object minimum. Node labels below this against their fill are
+// illegible (e.g. mermaid dark's #ccc text on an author-pinned light fill ≈ 1.5).
+const MIN_LABEL_CONTRAST = 3.0;
 
 let loaderOverride: null | (() => Promise<MermaidLike>) = null;
 let modPromise: Promise<MermaidLike> | null = null;
@@ -22,6 +27,31 @@ export function __setMermaidLoaderForTest(loader: null | (() => Promise<MermaidL
   initializedTheme = null;
   seq = 0;
   svgCache.clear();
+}
+
+/**
+ * Fix illegible flowchart node labels in place. For each `g.node` under `root`,
+ * if its label <text> has < MIN_LABEL_CONTRAST against the node's shape fill,
+ * override the text color to black/white (whichever is more readable). No-op for
+ * labels that are already readable (zero regression) and for shapes with no
+ * resolvable fill (none/transparent — unknown background, left to the theme).
+ *
+ * Reads live computed styles, so it must run AFTER the SVG is in the document.
+ * Theme-agnostic: it also fixes light-theme author-pinned dark fills.
+ */
+export function applyNodeLabelContrast(root: HTMLElement): void {
+  const nodes = root.querySelectorAll<SVGGElement>("g.node");
+  nodes.forEach((node) => {
+    const shape = node.querySelector<SVGElement>("rect, polygon, path, circle, ellipse");
+    const text = node.querySelector<SVGElement>("text");
+    if (!shape || !text) return;
+    const fill = parseCssColor(getComputedStyle(shape).fill);
+    if (!fill) return; // none / transparent — unknown background, leave to theme
+    const color = parseCssColor(getComputedStyle(text).fill);
+    if (!color) return;
+    if (contrastRatio(color, fill) >= MIN_LABEL_CONTRAST) return;
+    text.style.fill = pickReadableTextColor(fill);
+  });
 }
 
 function loadMermaid(): Promise<MermaidLike> {
