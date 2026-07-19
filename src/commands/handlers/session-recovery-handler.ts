@@ -4,9 +4,16 @@ import { isPartialPromptOutputError, summarizeTransportError } from "../transpor
 import { AutoInstallFailedError } from "../../recovery/errors";
 import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import { t } from "../../i18n";
+import {
+  DEFAULT_ADAPTER_REGISTRY,
+  isNpmAdapterRegistryNotFoundOutput,
+} from "../../adapters/adapter-registry";
+import { managedAdapterRegistryFromCommand } from "../../adapters/adapter-catalog";
 
 export function renderTransportError(session: ResolvedSession, error: unknown): RouterResponse {
   const message = error instanceof Error ? error.message : String(error);
+  const registryError = renderAdapterRegistryError(session, message);
+  if (registryError) return registryError;
 
   if (message.includes("No acpx session found")) {
     if (session.transient) {
@@ -78,11 +85,27 @@ export function renderSessionCreationError(session: ResolvedSession, error: unkn
 
   const message = error instanceof Error ? error.message : String(error);
 
+  const registryError = renderAdapterRegistryError(session, message);
+  if (registryError) return {
+    text: [
+      t().recovery.sessionCreationFailed,
+      registryError.text,
+    ].join("\n"),
+  };
+
   if (message.includes("timed out") && message.includes("sessions new")) {
     return renderSessionCreationFailure(session, message);
   }
 
   throw error;
+}
+
+function renderAdapterRegistryError(session: ResolvedSession, message: string): RouterResponse | null {
+  const registry = managedAdapterRegistryFromCommand(session.agentCommand);
+  if (!registry || !isNpmAdapterRegistryNotFoundOutput(message)) return null;
+  return {
+    text: t().recovery.adapterRegistryE404(registry, DEFAULT_ADAPTER_REGISTRY),
+  };
 }
 
 export function renderSessionCreationVerificationError(session: ResolvedSession): RouterResponse {

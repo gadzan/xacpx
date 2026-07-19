@@ -238,6 +238,7 @@ export interface NativeSessionMessages {
 }
 
 export interface RecoveryMessages {
+  adapterRegistryE404: (registry: string, officialRegistry: string) => string;
   // renderTransportError — transient session
   transientSessionFailed: string;
   transientSessionHint: string;
@@ -918,6 +919,27 @@ export interface CliMessages {
   agentSaved: (name: string) => string;
   agentNotFound: (name: string) => string;
   agentRemoved: (name: string) => string;
+
+  // adapter commands
+  adapterListHeader: string;
+  adapterListRow: (id: string, effective: string, defaultVersion: string, source: string) => string;
+  adapterSourceDefault: string;
+  adapterSourceConfigured: string;
+  adapterUnsupported: (id: string) => string;
+  adapterInvalidVersion: (version: string) => string;
+  adapterVersionUnavailable: (id: string, version: string) => string;
+  adapterLatestUnavailable: (id: string) => string;
+  adapterCheckRow: (id: string, effective: string, latest: string) => string;
+  adapterAlreadyLatest: (id: string, version: string) => string;
+  adapterVerifying: (id: string, version: string) => string;
+  adapterSaved: (id: string, version: string) => string;
+  adapterReset: (id: string, version: string) => string;
+  adapterFailed: (id: string, detail: string) => string;
+  adapterRestartRequired: string;
+  adapterRegistryCurrent: (registry: string, source: string) => string;
+  adapterRegistrySaved: (registry: string) => string;
+  adapterRegistryReset: (registry: string) => string;
+  adapterInvalidRegistry: (detail: string) => string;
 
   // later commands
   laterIdEmpty: string;

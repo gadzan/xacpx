@@ -44,7 +44,12 @@ test("builds reap targets from worker bindings, resolving cwd and agent command"
   const targets = workerBindingReapTargets(state.orchestration, createConfig());
 
   expect(targets).toEqual([
-    { agent: "codex", cwd: "/tmp/backend", transportSession: "backend:codex:wk" },
+    {
+      agent: "codex",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+      cwd: "/tmp/backend",
+      transportSession: "backend:codex:wk",
+    },
     {
       agent: "opencode",
       agentCommand: "npx -y opencode-ai acp",
@@ -66,7 +71,12 @@ test("falls back to workspace cwd when the binding has no explicit cwd", () => {
   const targets = workerBindingReapTargets(state.orchestration, createConfig());
 
   expect(targets).toEqual([
-    { agent: "codex", cwd: "/tmp/backend", transportSession: "backend:codex:wk" },
+    {
+      agent: "codex",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+      cwd: "/tmp/backend",
+      transportSession: "backend:codex:wk",
+    },
   ]);
 });
 
@@ -105,7 +115,12 @@ test("collectReapTargets combines logical sessions and worker bindings", () => {
   expect(targets).toEqual([
     { agent: "codex", cwd: "/tmp/a", transportSession: "wx:alice" },
     { agent: "opencode", agentCommand: "npx -y opencode-ai acp", cwd: "/tmp/b", transportSession: "wx:bob" },
-    { agent: "codex", cwd: "/tmp/backend", transportSession: "backend:codex:wk" },
+    {
+      agent: "codex",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+      cwd: "/tmp/backend",
+      transportSession: "backend:codex:wk",
+    },
   ]);
 });
 

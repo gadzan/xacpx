@@ -43,6 +43,9 @@ import { renderLaterList } from "./scheduled/scheduled-render";
 import { ScheduledTaskService, normalizeId } from "./scheduled/scheduled-service";
 import { maybeRunFirstUseOnboarding, type FirstRunOnboardingPlan } from "./onboarding.js";
 import { handleUpdateCli, type UpdateCliDeps } from "./cli-update.js";
+import { handleAdapterCli, type AdapterCliDeps } from "./adapters/adapter-cli";
+import { getAdapterNpmVersion } from "./adapters/adapter-npm";
+import { verifyAdapterVersion } from "./adapters/adapter-verifier";
 import type { AppConfig } from "./config/types";
 import type { AppState } from "./state/types";
 import { readVersion } from "./version.js";
@@ -257,6 +260,7 @@ interface CliDeps {
   channelCliDeps?: Partial<ChannelCliDeps>;
   pluginCliDeps?: Partial<PluginCliDeps>;
   updateCliDeps?: Partial<UpdateCliDeps>;
+  adapterCliDeps?: Partial<AdapterCliDeps>;
   loadConfiguredPluginsForChannelCli?: () => Promise<void>;
   isInteractive?: () => boolean;
   promptText?: (message: string) => Promise<string>;
@@ -367,6 +371,17 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
         for (const line of t().cli.helpLines) {
           print(line);
         }
+        return 1;
+      }
+      return result;
+    }
+    case "adapter": {
+      const result = await handleAdapterCli(args.slice(1), createAdapterCliDeps({
+        print,
+        overrides: deps.adapterCliDeps,
+      }));
+      if (result === null) {
+        for (const line of t().cli.helpLines) print(line);
         return 1;
       }
       return result;
@@ -895,6 +910,26 @@ async function createCliConfigStore(): Promise<ConfigStore> {
   const configPath = resolveConfigPathForCurrentEnv();
   await ensureConfigExists(configPath);
   return new ConfigStore(configPath);
+}
+
+function createAdapterCliDeps(input: {
+  print: (line: string) => void;
+  overrides?: Partial<AdapterCliDeps>;
+}): AdapterCliDeps {
+  let storePromise: Promise<ConfigStore> | undefined;
+  const getStore = (): Promise<ConfigStore> => storePromise ??= createCliConfigStore();
+  const defaults: AdapterCliDeps = {
+    loadVersions: async () => (await (await getStore()).load()).transport.adapterVersions ?? {},
+    saveVersions: async (versions) => { await (await getStore()).replaceAdapterVersions(versions); },
+    loadRegistry: async () => (await (await getStore()).load()).transport.adapterRegistry,
+    saveRegistry: async (registry) => { await (await getStore()).updateTransport({ adapterRegistry: registry }); },
+    getLatestVersion: async (id, registry) => await getAdapterNpmVersion(id, undefined, registry),
+    versionExists: async (id, version, registry) =>
+      await getAdapterNpmVersion(id, version, registry) === version,
+    verifyVersion: verifyAdapterVersion,
+    print: input.print,
+  };
+  return { ...defaults, ...input.overrides, print: input.overrides?.print ?? input.print };
 }
 
 export async function resolveLoginChannelForCli(): Promise<ReturnType<typeof createMessageChannel>> {

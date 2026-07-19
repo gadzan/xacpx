@@ -124,6 +124,7 @@ The essentials to get going. Full references: **CLI → [cli-reference.md](./doc
 | `xacpx login` / `logout` | Log in / out of WeChat |
 | `xacpx start` / `stop` / `restart` / `status` | Manage the background service |
 | `xacpx update` | Update xacpx and installed plugins |
+| `xacpx adapter list` / `update <name>` / `registry` | Manage verified Codex/Claude ACP adapter pins and their npm registry |
 | `xacpx doctor` | Run environment diagnostics |
 | `xacpx channel add <name>` | Add a message channel (Feishu / Yuanbao / …) |
 | `xacpx ws add` / `xacpx agent add <name>` | Register a workspace / agent |

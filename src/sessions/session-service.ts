@@ -1,4 +1,9 @@
-import { resolveRuntimeAgentCommand } from "../config/resolve-agent-command";
+import {
+  isLegacyCodexCommand,
+  resolveAgentCommand,
+  resolveConfiguredAgentCommand,
+} from "../config/resolve-agent-command";
+import { preferCurrentManagedAdapterCommand } from "../adapters/adapter-catalog";
 import type { AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -657,11 +662,22 @@ export class SessionService {
     // resolution (including per-session overrides via `session.reply_mode`) is unchanged.
     const channelId = getChannelIdFromChatKey(session.alias);
     const effectiveReplyMode = channelId === "relay" ? "stream" : undefined;
+    const currentAgentCommand = resolveConfiguredAgentCommand(agentConfig, this.config.transport);
+    const configuredAgentCommand = resolveAgentCommand(agentConfig.driver, agentConfig.command);
+    const recordedAgentCommand = agentConfig.driver === "codex" &&
+      session.transport_agent_command &&
+      isLegacyCodexCommand(session.transport_agent_command)
+      ? undefined
+      : session.transport_agent_command;
 
     return {
       alias: session.alias,
       agent: session.agent,
-      agentCommand: session.transport_agent_command ?? resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, this.config.transport.preferLocalAgents !== false),
+      agentCommand: configuredAgentCommand ?? preferCurrentManagedAdapterCommand(
+        agentConfig.driver,
+        recordedAgentCommand,
+        currentAgentCommand,
+      ),
       // Session-level model wins; otherwise fall back to the agent config default.
       model: session.model ?? agentConfig.model,
       displayName: session.display_name,

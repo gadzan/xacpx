@@ -1,4 +1,10 @@
 import { readFile } from "node:fs/promises";
+import {
+  isExactAdapterVersion,
+  isManagedAdapterId,
+  type AdapterVersionOverrides,
+} from "../adapters/adapter-catalog";
+import { normalizeAdapterRegistry } from "../adapters/adapter-registry";
 
 import { normalizeWorkspacePath } from "../commands/workspace-path";
 import { isLegacyPluginPackageName, normalizePluginPackageName } from "../plugins/plugin-renames";
@@ -167,6 +173,8 @@ export function parseConfig(
   ) {
     throw new Error("transport.sessionInitTimeoutMs must be a positive number");
   }
+  const adapterVersions = parseAdapterVersions(transport.adapterVersions);
+  const adapterRegistry = parseAdapterRegistry(transport.adapterRegistry);
   if (
     "permissionMode" in transport &&
     transport.permissionMode !== "approve-all" &&
@@ -344,6 +352,8 @@ export function parseConfig(
         : {}),
       ...(typeof transport.permissionPolicy === "string" ? { permissionPolicy: transport.permissionPolicy } : {}),
       ...(typeof transport.preferLocalAgents === "boolean" ? { preferLocalAgents: transport.preferLocalAgents } : {}),
+      ...(adapterVersions ? { adapterVersions } : {}),
+      ...(adapterRegistry ? { adapterRegistry } : {}),
       ...(typeof transport.turnIdleTimeoutSeconds === "number"
         ? { turnIdleTimeoutSeconds: transport.turnIdleTimeoutSeconds }
         : {}),
@@ -400,6 +410,33 @@ export function parseConfig(
         }
       : {}),
   };
+}
+
+function parseAdapterVersions(raw: unknown): AdapterVersionOverrides | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new Error("transport.adapterVersions must be an object");
+  const result: AdapterVersionOverrides = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isManagedAdapterId(id)) {
+      throw new Error(`transport.adapterVersions contains unsupported adapter ${id}`);
+    }
+    if (typeof value !== "string" || !isExactAdapterVersion(value)) {
+      throw new Error(`transport.adapterVersions.${id} must be an exact semver version`);
+    }
+    result[id] = value;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseAdapterRegistry(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") throw new Error("transport.adapterRegistry must be an http(s) URL");
+  try {
+    return normalizeAdapterRegistry(raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`transport.adapterRegistry is invalid: ${detail}`);
+  }
 }
 
 function parsePluginConfig(raw: unknown, index: number): PluginConfig {

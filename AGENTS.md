@@ -84,6 +84,12 @@ There are two session concepts:
 2. Bundled `acpx` in `node_modules`
 3. `acpx` in shell `PATH`
 
+### Managed ACP Adapters
+
+- `src/adapters/` owns xacpx's exact Codex/Claude adapter defaults, the `xacpx adapter` CLI, adapter-only npm registry policy, and the ACP initialize probe used before saving a local version override.
+- Runtime resolution keeps an explicit `agents.<name>.command` highest priority; otherwise Codex/Claude use the configured or release-default exact npx pin through `transport.adapterRegistry`, which defaults to the public npm registry rather than the machine npm default.
+- User-facing commands and configuration are documented in [`docs/cli-reference.md`](docs/cli-reference.md) and [`docs/config-reference.md`](docs/config-reference.md).
+
 ### Test Layout
 
 - `tests/unit/` - Mirror of `src/` structure, `*.test.ts` files. Run by default.

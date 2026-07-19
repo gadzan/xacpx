@@ -187,6 +187,45 @@ test("leaves transport.preferLocalAgents undefined when omitted (defaults to pre
   await rm(dir, { recursive: true, force: true });
 });
 
+test("parses exact managed adapter version overrides", async () => {
+  const config = parseConfig({
+    transport: { adapterVersions: { codex: "1.1.2", claude: "0.58.1" } },
+    agents: {},
+    workspaces: {},
+  });
+  expect(config.transport.adapterVersions).toEqual({ codex: "1.1.2", claude: "0.58.1" });
+});
+
+test("parses and normalizes a custom adapter registry", () => {
+  const config = parseConfig({
+    transport: { adapterRegistry: "https://npm.corp.example/repository/npm" },
+    agents: {},
+    workspaces: {},
+  });
+  expect(config.transport.adapterRegistry).toBe("https://npm.corp.example/repository/npm/");
+});
+
+test("rejects unsafe adapter registry URLs", () => {
+  for (const adapterRegistry of [
+    "file:///tmp/npm",
+    "https://user:secret@npm.example/",
+    "https://npm.example/repository?token=secret",
+  ]) {
+    expect(() => parseConfig({
+      transport: { adapterRegistry }, agents: {}, workspaces: {},
+    })).toThrow("transport.adapterRegistry");
+  }
+});
+
+test("rejects ranges and unknown managed adapter ids", async () => {
+  expect(() => parseConfig({
+    transport: { adapterVersions: { codex: "^1.1.2" } }, agents: {}, workspaces: {},
+  })).toThrow("transport.adapterVersions.codex must be an exact semver version");
+  expect(() => parseConfig({
+    transport: { adapterVersions: { other: "1.0.0" } }, agents: {}, workspaces: {},
+  })).toThrow("transport.adapterVersions contains unsupported adapter other");
+});
+
 test("rejects a negative transport.queueOwnerTtlSeconds", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
   const path = join(dir, "config.json");

@@ -17,6 +17,8 @@ export const cli: CliMessages = {
     "xacpx doctor - 运行诊断",
     "xacpx version - 查看版本",
     "xacpx agent|agents list|add|rm|templates - 管理本机 Agent",
+    "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name> - 管理 ACP adapter 版本",
+    "xacpx adapter registry [set <url>|reset] - 管理 ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - 管理本机工作区（别名：ws）",
     "xacpx later|lt list|cancel <id> - 管理本机待执行定时任务",
     "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - 启动 MCP stdio 服务",
@@ -72,6 +74,28 @@ export const cli: CliMessages = {
   agentSaved: (name) => `Agent「${name}」已保存`,
   agentNotFound: (name) => `没有找到 Agent「${name}」。`,
   agentRemoved: (name) => `Agent「${name}」已删除`,
+
+  // adapter commands
+  adapterListHeader: "受管 ACP adapter：",
+  adapterListRow: (id, effective, defaultVersion, source) =>
+    `${id}：生效=${effective} 默认=${defaultVersion} 来源=${source}`,
+  adapterSourceDefault: "xacpx 默认",
+  adapterSourceConfigured: "本机配置",
+  adapterUnsupported: (id) => `不支持受管 adapter「${id}」。可用：codex、claude`,
+  adapterInvalidVersion: (version) => `Adapter 版本必须是精确 semver：${version}`,
+  adapterVersionUnavailable: (id, version) => `npm 未发布 ${id} adapter 版本 ${version}。`,
+  adapterLatestUnavailable: (id) => `无法从 npm 获取 ${id} adapter 的最新版本。`,
+  adapterCheckRow: (id, effective, latest) => `${id}：生效=${effective} 最新=${latest}`,
+  adapterAlreadyLatest: (id, version) => `${id} 已使用最新 adapter 版本 ${version}。`,
+  adapterVerifying: (id, version) => `正在通过 ACP initialize 验证 ${id} adapter ${version}…`,
+  adapterSaved: (id, version) => `${id} adapter 版本已设置为 ${version}。`,
+  adapterReset: (id, version) => `${id} adapter 本机覆盖已删除；当前生效版本为 ${version}。`,
+  adapterFailed: (id, detail) => `${id} adapter 更新失败：${detail}`,
+  adapterRestartRequired: "请重启 xacpx daemon 后再使用新的 adapter 配置。",
+  adapterRegistryCurrent: (registry, source) => `Adapter registry：${registry}（来源=${source}）`,
+  adapterRegistrySaved: (registry) => `Adapter registry 已设置为 ${registry}。`,
+  adapterRegistryReset: (registry) => `Adapter registry 本机覆盖已删除；当前使用 ${registry}。`,
+  adapterInvalidRegistry: (detail) => `Adapter registry 无效：${detail}`,
 
   // later commands
   laterIdEmpty: "定时任务 ID 不能为空。",

@@ -1,5 +1,6 @@
 import { expect, test, beforeEach } from "bun:test";
 import {
+  renderSessionCreationError,
   renderSessionCreationVerificationError,
   renderTransportError,
   tryRecoverMissingSession,
@@ -103,4 +104,37 @@ test("renderSessionCreationVerificationError leaves a clean workspace name unquo
   expect(reply.text).toContain(
     t().recovery.sessionCreationAttachHint("review", "codex", "backend"),
   );
+});
+
+test("runtime adapter E404 points session creation to the registry CLI", () => {
+  const reply = renderSessionCreationError(
+    session({
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.4",
+    }),
+    new Error("npm ERR! code E404\nnpm ERR! 404 Not Found"),
+  );
+
+  expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org/");
+  expect(reply.text).toContain("@agentclientprotocol");
+});
+
+test("runtime adapter E404 is actionable when a prompt cold-start fails", () => {
+  const reply = renderTransportError(
+    session({
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.4",
+    }),
+    new Error("npm ERR! code E404"),
+  );
+
+  expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org/");
+});
+
+test("a non-npm backend 404 is not misreported as an adapter registry failure", () => {
+  const error = new Error("model endpoint returned 404 Not Found");
+  expect(() => renderSessionCreationError(
+    session({
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.4",
+    }),
+    error,
+  )).toThrow(error);
 });

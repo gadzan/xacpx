@@ -11,7 +11,7 @@ import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
-import { resolveRuntimeAgentCommand } from "./config/resolve-agent-command";
+import { resolveConfiguredAgentCommand } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
@@ -498,7 +498,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
-      agentCommand: resolveRuntimeAgentCommand(agentConfig.driver, agentConfig.command, config.transport.preferLocalAgents !== false),
+      agentCommand: resolveConfiguredAgentCommand(agentConfig, config.transport),
       workspace: input.workspace,
       transportSession: input.workerSession,
       cwd: input.cwd,

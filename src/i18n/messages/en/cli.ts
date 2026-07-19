@@ -17,6 +17,8 @@ export const cli: CliMessages = {
     "xacpx doctor - Run diagnostics",
     "xacpx version - Show version",
     "xacpx agent|agents list|add|rm|templates - Manage local agents",
+    "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name> - Manage ACP adapter versions",
+    "xacpx adapter registry [set <url>|reset] - Manage the ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - Manage local workspaces (alias: ws)",
     "xacpx later|lt list|cancel <id> - Manage local scheduled tasks",
     "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - Start MCP stdio server",
@@ -72,6 +74,28 @@ export const cli: CliMessages = {
   agentSaved: (name) => `Agent "${name}" saved`,
   agentNotFound: (name) => `Agent "${name}" not found.`,
   agentRemoved: (name) => `Agent "${name}" removed`,
+
+  // adapter commands
+  adapterListHeader: "Managed ACP adapters:",
+  adapterListRow: (id, effective, defaultVersion, source) =>
+    `${id}: effective=${effective} default=${defaultVersion} source=${source}`,
+  adapterSourceDefault: "xacpx-default",
+  adapterSourceConfigured: "configured",
+  adapterUnsupported: (id) => `Unsupported managed adapter "${id}". Available: codex, claude`,
+  adapterInvalidVersion: (version) => `Adapter version must be an exact semver value: ${version}`,
+  adapterVersionUnavailable: (id, version) => `${id} adapter version ${version} is not published by npm.`,
+  adapterLatestUnavailable: (id) => `Could not resolve the latest ${id} adapter version from npm.`,
+  adapterCheckRow: (id, effective, latest) => `${id}: effective=${effective} latest=${latest}`,
+  adapterAlreadyLatest: (id, version) => `${id} already uses the latest adapter version ${version}.`,
+  adapterVerifying: (id, version) => `Verifying ${id} adapter ${version} with ACP initialize...`,
+  adapterSaved: (id, version) => `${id} adapter version set to ${version}.`,
+  adapterReset: (id, version) => `${id} adapter override removed; effective version is ${version}.`,
+  adapterFailed: (id, detail) => `Failed to update ${id} adapter: ${detail}`,
+  adapterRestartRequired: "Restart the xacpx daemon before using the new adapter settings.",
+  adapterRegistryCurrent: (registry, source) => `Adapter registry: ${registry} (source=${source})`,
+  adapterRegistrySaved: (registry) => `Adapter registry set to ${registry}.`,
+  adapterRegistryReset: (registry) => `Adapter registry override removed; using ${registry}.`,
+  adapterInvalidRegistry: (detail) => `Invalid adapter registry: ${detail}`,
 
   // later commands
   laterIdEmpty: "Scheduled task ID cannot be empty.",

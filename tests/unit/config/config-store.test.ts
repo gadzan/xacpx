@@ -318,6 +318,40 @@ test("updateTransport deletes a key when its patch value is explicitly undefined
   await rm(dir, { recursive: true, force: true });
 });
 
+test("replaces managed adapter versions atomically without touching other transport keys", async () => {
+  const { dir, path } = await makeConfigFile({
+    transport: {
+      type: "acpx-bridge",
+      command: "custom-acpx",
+      adapterVersions: { codex: "1.0.0" },
+      custom: true,
+    },
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  });
+
+  const store = new ConfigStore(path);
+  const config = await store.replaceAdapterVersions({ codex: "1.1.2", claude: "0.58.1" });
+
+  expect(config.transport.adapterVersions).toEqual({ codex: "1.1.2", claude: "0.58.1" });
+  expect(await readRaw(path)).toMatchObject({
+    transport: {
+      type: "acpx-bridge",
+      command: "custom-acpx",
+      adapterVersions: { codex: "1.1.2", claude: "0.58.1" },
+      custom: true,
+    },
+  });
+
+  await store.replaceAdapterVersions({});
+  expect((await readRaw(path)).transport).toEqual({
+    type: "acpx-bridge",
+    command: "custom-acpx",
+    custom: true,
+  });
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("updates channel reply mode while preserving channel ownerIds and unknown keys", async () => {
   const { dir, path } = await makeConfigFile({
     transport: { type: "acpx-cli" },
