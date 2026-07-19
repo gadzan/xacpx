@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx",
-  "version": "0.17.0-beta.7",
+  "version": "0.17.0-beta.8",
   "description": "随时随地通过聊天频道（微信 / 飞书 / 元宝等）远程控制 `acpx` 上的 Claude Code、Codex 等 Agents。",
   "keywords": [
     "acpx",
