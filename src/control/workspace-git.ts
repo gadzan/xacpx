@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -75,6 +75,19 @@ function expandHome(path: string): string {
   if (path === "~") return homedir();
   if (path.startsWith(`~${sep}`) || path.startsWith("~/")) return resolve(homedir(), path.slice(2));
   return path;
+}
+
+export function worktreePathsEqual(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === "win32") {
+    // Git for Windows may report C:/repo while fs.realpath returns C:\repo,
+    // and drive/path casing is not significant on Windows filesystems.
+    return win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase();
+  }
+  return left === right;
 }
 
 export class WorkspaceGit {
@@ -434,7 +447,7 @@ export class WorkspaceGit {
       path: item.path,
       ...(item.branch ? { branch: item.branch } : {}),
       ...(item.detached ? { detached: true } : {}),
-      current: item.path === currentRoot,
+      current: worktreePathsEqual(item.path, currentRoot),
       linked: index !== 0,
     }));
   }

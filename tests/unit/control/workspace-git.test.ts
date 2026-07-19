@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { WorkspaceGit } from "../../../src/control/workspace-git";
+import { WorkspaceGit, worktreePathsEqual } from "../../../src/control/workspace-git";
 
 const cleanups: string[] = [];
 
@@ -44,6 +44,17 @@ async function waitForFile(path: string): Promise<void> {
 
 afterEach(() => {
   for (const path of cleanups.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+describe("worktreePathsEqual", () => {
+  test("matches Git and Node representations of the same Windows path", () => {
+    expect(worktreePathsEqual("C:/Users/Alice/repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
+    expect(worktreePathsEqual("c:/users/alice/repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
+  });
+
+  test("keeps POSIX path comparison case-sensitive", () => {
+    expect(worktreePathsEqual("/tmp/Repo", "/tmp/repo", "linux")).toBe(false);
+  });
 });
 
 describe("WorkspaceGit status", () => {
