@@ -5,7 +5,7 @@ import { spawn as spawnPty } from "node-pty";
 import { resolveSpawnCommand } from "../../process/spawn-command";
 import {
   resolveClaudeSpawnEnvironment,
-  type ClaudeSettingsPolicy,
+  type ClaudeExecutionSettings,
 } from "../../adapters/claude-settings-policy";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
@@ -69,10 +69,7 @@ interface AcpxCliTransportOptions {
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
   /** Test seam for filtered per-agent process environments. */
-  resolveSpawnEnvironment?: (input: {
-    driver?: string;
-    settingsPolicy?: ClaudeSettingsPolicy;
-  }) => NodeJS.ProcessEnv | undefined;
+  resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
 }
 
 interface CommandResult {
@@ -182,7 +179,7 @@ async function defaultPtyRunner(command: string, args: string[], options?: RunOp
       cols: 80,
       rows: 24,
       cwd: process.cwd(),
-      env: { ...process.env, ...options?.env, XACPX_LANG: getLocale() } as Record<string, string>,
+      env: resolveChildEnvironment(process.env, options?.env, getLocale()),
     });
     let output = "";
 
@@ -222,10 +219,7 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly runPtyCommand: PtyRunner;
   private readonly queueOwnerLauncher: Pick<AcpxQueueOwnerLauncher, "launch">;
   private readonly streamingHooks: StreamingPromptHooks;
-  private readonly resolveSpawnEnvironment: (input: {
-    driver?: string;
-    settingsPolicy?: ClaudeSettingsPolicy;
-  }) => NodeJS.ProcessEnv | undefined;
+  private readonly resolveSpawnEnvironment: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
 
   constructor(
     options: AcpxCliTransportOptions,
@@ -434,7 +428,7 @@ export class AcpxCliTransport implements SessionTransport {
       session.transportSession,
       "model",
       modelId,
-    ]), this.withSpawnEnvironment(session, {
+    ]), this.withSpawnEnvironment({ ...session, model: modelId }, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "set-model",
     }));
@@ -899,15 +893,12 @@ export class AcpxCliTransport implements SessionTransport {
     };
   }
 
-  private spawnEnvironment(input: {
-    driver?: string;
-    settingsPolicy?: ClaudeSettingsPolicy;
-  }): NodeJS.ProcessEnv | undefined {
+  private spawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
     return this.resolveSpawnEnvironment(input);
   }
 
   private withSpawnEnvironment(
-    input: { driver?: string; settingsPolicy?: ClaudeSettingsPolicy },
+    input: ClaudeExecutionSettings,
     options?: RunOptions,
   ): RunOptions | undefined {
     const env = this.spawnEnvironment(input);
@@ -976,3 +967,21 @@ function renderCommandForError(args: string[]): string {
 
   return rendered.join(" ");
 }
+
+function resolveChildEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  explicitEnv: NodeJS.ProcessEnv | undefined,
+  locale: string,
+): Record<string, string> {
+  const source = explicitEnv ?? baseEnv;
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  env.XACPX_LANG = locale;
+  return env;
+}
+
+export const __acpxCliTransportForTests = {
+  resolveChildEnvironment,
+};

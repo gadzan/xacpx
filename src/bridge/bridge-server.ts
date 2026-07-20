@@ -10,6 +10,7 @@ import {
   type BridgeMethod,
   type BridgeResponse,
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
+import { isClaudeSettingsPolicy, type ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import { PromptCommandError } from "../transport/prompt-output";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
@@ -484,9 +485,9 @@ function agentExecutionSettings(params: Record<string, unknown>) {
 
 function asOptionalClaudeSettingsPolicy(
   value: unknown,
-): "provider-only" | "isolated" | "full-user" | undefined {
+): ClaudeSettingsPolicy | undefined {
   if (value === undefined) return undefined;
-  if (value === "provider-only" || value === "isolated" || value === "full-user") return value;
+  if (isClaudeSettingsPolicy(value)) return value;
   throw new BridgeInvalidRequestError(
     "settingsPolicy must be provider-only, isolated, or full-user",
   );

@@ -498,7 +498,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
+      driver: agentConfig.driver,
+      settingsPolicy: agentConfig.settingsPolicy,
       agentCommand: resolveConfiguredAgentCommand(agentConfig, config.transport),
+      model: agentConfig.model,
       workspace: input.workspace,
       transportSession: input.workerSession,
       cwd: input.cwd,

@@ -3,7 +3,10 @@ import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AcpxCliTransport } from "../../../../src/transport/acpx-cli/acpx-cli-transport";
+import {
+  AcpxCliTransport,
+  __acpxCliTransportForTests,
+} from "../../../../src/transport/acpx-cli/acpx-cli-transport";
 import { CommandTimeoutError } from "../../../../src/transport/command-timeouts";
 import type { AcpxQueueOwnerLauncher } from "../../../../src/transport/acpx-queue-owner-launcher";
 import type { ResolvedSession } from "../../../../src/transport/types";
@@ -25,6 +28,18 @@ const aliasSession: ResolvedSession = {
   transportSession: "backend:api-fix",
   cwd: "/tmp/backend",
 };
+
+test("filtered PTY environments are authoritative and can remove inherited flags", () => {
+  expect(__acpxCliTransportForTests.resolveChildEnvironment(
+    { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1", KEEP: "base" },
+    { KEEP: "filtered", ANTHROPIC_AUTH_TOKEN: "token" },
+    "zh-CN",
+  )).toEqual({
+    KEEP: "filtered",
+    ANTHROPIC_AUTH_TOKEN: "token",
+    XACPX_LANG: "zh-CN",
+  });
+});
 
 async function withFakeAcpxScript(body: string, runTest: (scriptPath: string) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-acpx-cli-test-"));
@@ -68,8 +83,8 @@ test("injects the filtered Claude environment into acpx-cli commands", async () 
   const run = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
   const transport = new AcpxCliTransport({
     command: "acpx",
-    resolveSpawnEnvironment: ({ driver, settingsPolicy }) =>
-      driver === "claude" && settingsPolicy === "provider-only"
+    resolveSpawnEnvironment: ({ driver, settingsPolicy, model }) =>
+      driver === "claude" && settingsPolicy === "provider-only" && model === "web-model"
         ? { FILTERED_PROVIDER: "yes" }
         : undefined,
   }, run);
@@ -78,6 +93,7 @@ test("injects the filtered Claude environment into acpx-cli commands", async () 
     ...session,
     driver: "claude",
     settingsPolicy: "provider-only",
+    model: "web-model",
   });
 
   expect(run).toHaveBeenCalledWith("acpx", expect.any(Array), expect.objectContaining({

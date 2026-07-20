@@ -55,9 +55,19 @@ jobs:
           node-version: 24
           cache: 'npm'
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       # Installs node-pty and resolves its Windows prebuilt binary (ConPTY).
       - name: Install dependencies
         run: npm ci
+
+      # Exercises the real Windows junction path used by filtered Claude
+      # profiles, including writes to state directories that did not exist yet.
+      - name: Claude profile junction smoke (Windows)
+        run: bun test tests/unit/adapters/claude-settings-policy.test.ts
 
       # Real ConPTY under the PRODUCTION runtime (Node) — spawns a live shell with a
       # forward-slash cwd and asserts the byte stream round-trips.

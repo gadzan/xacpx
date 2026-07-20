@@ -910,7 +910,7 @@ test("pathless external coordinator dispatches workers in the requested cwd", as
     configPath,
     JSON.stringify({
       transport: { type: "acpx-cli", command: "acpx" },
-      agents: { claude: { driver: "claude" } },
+      agents: { claude: { driver: "claude", settingsPolicy: "provider-only" } },
       workspaces: {},
     }),
   );
@@ -965,11 +965,15 @@ test("pathless external coordinator dispatches workers in the requested cwd", as
 
   expect(delegated.status).toBe("running");
   expect(ensureSession.mock.calls[0]?.[0]).toMatchObject({
+    driver: "claude",
+    settingsPolicy: "provider-only",
     cwd: expectedCwd,
     workspace: "standalone-project",
     transportSession: delegated.workerSession,
   });
   expect(prompt.mock.calls[0]?.[0]).toMatchObject({
+    driver: "claude",
+    settingsPolicy: "provider-only",
     cwd: expectedCwd,
     workspace: "standalone-project",
     transportSession: delegated.workerSession,

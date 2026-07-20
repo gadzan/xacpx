@@ -21,8 +21,8 @@ test("injects the filtered Claude environment into bridge acpx commands", async 
     },
     undefined,
     {
-      resolveSpawnEnvironment: ({ driver, settingsPolicy }) =>
-        driver === "claude" && settingsPolicy === "provider-only"
+      resolveSpawnEnvironment: ({ driver, settingsPolicy, model }) =>
+        driver === "claude" && settingsPolicy === "provider-only" && model === "web-model"
           ? { FILTERED_PROVIDER: "yes" }
           : undefined,
     },
@@ -32,6 +32,7 @@ test("injects the filtered Claude environment into bridge acpx commands", async 
     agent: "claude-provider",
     driver: "claude",
     settingsPolicy: "provider-only",
+    model: "web-model",
     cwd: "/repo",
     name: "demo",
   });

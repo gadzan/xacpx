@@ -164,10 +164,10 @@ export class AcpxQueueOwnerLauncher {
       })],
     });
     const spawnSpec = resolveSpawnCommand(this.acpxCommand, ["__queue-owner"]);
+    const childEnv = input.env ?? this.baseEnv;
     await this.spawnOwner(spawnSpec.command, spawnSpec.args, {
       env: {
-        ...stringEnv(this.baseEnv),
-        ...stringEnv(input.env ?? {}),
+        ...stringEnv(childEnv),
         XACPX_LANG: getLocale(),
         ACPX_QUEUE_OWNER_PAYLOAD: JSON.stringify(payload),
       },

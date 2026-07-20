@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import type { NonInteractivePermissions, PermissionMode, WechatReplyMode } from "../config/types";
 import {
   resolveClaudeSpawnEnvironment,
+  type ClaudeExecutionSettings,
   type ClaudeSettingsPolicy,
 } from "../adapters/claude-settings-policy";
 import { resolveSpawnCommand } from "../process/spawn-command";
@@ -147,10 +148,7 @@ interface BridgeRuntimeOptions {
   /** Test seam: clock used for the shared session-init deadline. */
   now?: () => number;
   /** Test seam for filtered per-agent process environments. */
-  resolveSpawnEnvironment?: (input: {
-    driver?: string;
-    settingsPolicy?: ClaudeSettingsPolicy;
-  }) => NodeJS.ProcessEnv | undefined;
+  resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
 }
 
 export class BridgeRuntime {
@@ -640,7 +638,7 @@ export class BridgeRuntime {
       "model",
       input.modelId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: input.modelId }, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-model",
     }));
@@ -843,15 +841,12 @@ export class BridgeRuntime {
     };
   }
 
-  private spawnEnvironment(input: {
-    driver?: string;
-    settingsPolicy?: ClaudeSettingsPolicy;
-  }): NodeJS.ProcessEnv | undefined {
+  private spawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
     return (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)(input);
   }
 
   private withSpawnEnvironment(
-    input: { driver?: string; settingsPolicy?: ClaudeSettingsPolicy },
+    input: ClaudeExecutionSettings,
     options?: CommandRunnerOptions,
   ): CommandRunnerOptions | undefined {
     const env = this.spawnEnvironment(input);

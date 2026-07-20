@@ -483,12 +483,16 @@ is required: `settingsPolicy` implicitly defaults to `"provider-only"`.
 (`ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN`) in the daemon environment or in the
 user settings `env` object. It then:
 
-- passes only `ANTHROPIC_*` entries to that Claude session's local acpx process;
-- exposes only `model`, `modelOverrides`, and `availableModels` as the user settings view;
+- imports only `ANTHROPIC_*` entries from user settings into that Claude session's
+  local acpx process environment;
+- maps `model` to `ANTHROPIC_MODEL` and passes only `modelOverrides` and
+  `availableModels` through the managed adapter's `CLAUDE_MODEL_CONFIG` seam;
 - keeps project/local Claude settings enabled, so their normal precedence is preserved;
 - excludes user hooks, plugins, skills, MCP servers, and permissions;
-- never writes provider credentials to xacpx config/state, the bridge protocol, or the
-  sanitized settings snapshot.
+- gives the adapter a filtered settings profile while linking Claude's session-state
+  directories back to the original profile, so native list/resume and transcript persistence
+  continue to use the existing history;
+- never writes provider credentials to xacpx config/state, disk, or the bridge protocol.
 
 Normal first-party Claude OAuth and `ANTHROPIC_API_KEY`-only setups do not trigger the
 compatibility layer and retain the existing behavior.

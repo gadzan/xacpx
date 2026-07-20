@@ -80,8 +80,13 @@ test("ensureSession surfaces non-model failures without retrying", async () => {
 
 test("setModel issues `set ... model <id>` with the new model consistently", async () => {
   const run = okRunner();
-  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
-  await transport.setModel(noModelSession, "claude-opus-4-8");
+  const transport = new AcpxCliTransport({
+    command: "acpx",
+    resolveSpawnEnvironment: ({ model }) => model === "claude-opus-4-8"
+      ? { RESOLVED_MODEL: model }
+      : undefined,
+  }, run, okRunner());
+  await transport.setModel({ ...noModelSession, driver: "claude" }, "claude-opus-4-8");
   const args = run.mock.calls[0][1] as string[];
   // operative positional command
   const setIdx = args.indexOf("set");
@@ -89,7 +94,10 @@ test("setModel issues `set ... model <id>` with the new model consistently", asy
   expect(args.slice(setIdx)).toEqual(["set", "-s", "backend:api-fix", "model", "claude-opus-4-8"]);
   // global --model agrees with the new id (not a stale old one)
   expect(args[args.indexOf("--model") + 1]).toBe("claude-opus-4-8");
-  expect(run.mock.calls[0][2]).toMatchObject({ stage: "set-model" });
+  expect(run.mock.calls[0][2]).toMatchObject({
+    stage: "set-model",
+    env: { RESOLVED_MODEL: "claude-opus-4-8" },
+  });
 });
 
 test("getSessionModel parses status json for current + available models", async () => {

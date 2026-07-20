@@ -57,6 +57,21 @@ test("creates a session with xacpx's pinned managed adapter", async () => {
   expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4");
 });
 
+test("carries Claude execution policy from config to a resolved session", async () => {
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.agents.claude = { driver: "claude", settingsPolicy: "provider-only" };
+  const service = new SessionService(config, store, createEmptyState());
+
+  const session = await service.createSession("review", "claude", "backend");
+
+  expect(session).toMatchObject({
+    agent: "claude",
+    driver: "claude",
+    settingsPolicy: "provider-only",
+  });
+});
+
 test("ignores a legacy raw codex command and falls back to xacpx's pinned adapter", async () => {
   const store = new MemoryStateStore();
   const config = createConfig();
