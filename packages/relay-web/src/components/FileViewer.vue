@@ -129,7 +129,7 @@ watch(content, (val) => {
   if (!editing.value || !props.path || !file.value) return;
   pendingEditDraft = { key: draftKey(props.sessionKey ?? "", props.path), text: val, disk: file.value.content };
   editDraftPersist.schedule();
-});
+}, { flush: "sync" });
 function flushEditDraft(): void {
   editDraftPersist.flush();
 }
