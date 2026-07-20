@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { WorkspaceGit, worktreePathsEqual } from "../../../src/control/workspace-git";
+import { WorkspaceGit, worktreePathIsWithin, worktreePathsEqual } from "../../../src/control/workspace-git";
 
 const cleanups: string[] = [];
 
@@ -16,6 +16,15 @@ function temp(prefix: string): string {
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+async function runGitWithWindowsWorktreePaths(root: string, args: string[]): Promise<string> {
+  const output = execFileSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (args.join("\0") !== ["worktree", "list", "--porcelain"].join("\0")) return output;
+  return output.replace(/^worktree (.+)$/gm, (_line, path: string) => `worktree ${path.replaceAll("/", "\\")}`);
 }
 
 function initRepo(): { repo: string; remote: string } {
@@ -50,6 +59,9 @@ describe("worktreePathsEqual", () => {
   test("matches Git and Node representations of the same Windows path", () => {
     expect(worktreePathsEqual("C:/Users/Alice/repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
     expect(worktreePathsEqual("c:/users/alice/repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
+    expect(worktreePathsEqual("C:/Users/Alice/repo/", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
+    expect(worktreePathsEqual("\\\\?\\C:\\Users\\Alice\\repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
+    expect(worktreePathsEqual("\\\\?\\UNC\\server\\share\\repo", "\\\\server\\share\\repo", "win32")).toBe(true);
   });
 
   test("keeps POSIX path comparison case-sensitive", () => {
@@ -57,7 +69,33 @@ describe("worktreePathsEqual", () => {
   });
 });
 
+describe("worktreePathIsWithin", () => {
+  test("matches Windows paths case-insensitively without accepting prefix siblings", () => {
+    expect(worktreePathIsWithin("C:/worktrees", "c:\\WORKTREES\\repo", "win32")).toBe(true);
+    expect(worktreePathIsWithin("C:/worktrees", "C:\\worktreesEVIL\\repo", "win32")).toBe(false);
+    expect(worktreePathIsWithin("C:/worktrees", "C:\\worktrees", "win32")).toBe(false);
+  });
+
+  test("keeps POSIX containment case-sensitive", () => {
+    expect(worktreePathIsWithin("/tmp/worktrees", "/tmp/worktrees/repo", "linux")).toBe(true);
+    expect(worktreePathIsWithin("/tmp/worktrees", "/tmp/Worktrees/repo", "linux")).toBe(false);
+  });
+});
+
 describe("WorkspaceGit status", () => {
+  test("matches Windows-shaped Git worktree output through the status wiring", async () => {
+    const { repo } = initRepo();
+    const service = new WorkspaceGit(
+      () => [{ name: "project", cwd: repo }],
+      { platform: "win32", runGit: runGitWithWindowsWorktreePaths },
+    );
+
+    const status = await service.status("project");
+
+    expect(worktreePathsEqual(status.worktree.root, realpathSync(repo), "win32")).toBe(true);
+    expect(status.worktrees).toContainEqual(expect.objectContaining({ current: true }));
+  });
+
   test("reports the symbolic branch in an unborn repository", async () => {
     const repo = temp("wsgit-empty-");
     git(repo, "init", "-q", "-b", "main");
@@ -287,6 +325,33 @@ describe("WorkspaceGit synchronization", () => {
 });
 
 describe("WorkspaceGit worktrees", () => {
+  test("removes a managed worktree when Git reports a Windows-shaped path", async () => {
+    const { repo } = initRepo();
+    const managedRoot = temp("wsgit-managed-");
+    const nativeService = new WorkspaceGit(
+      () => [{ name: "project", cwd: repo }],
+      { managedWorktreesRoot: managedRoot },
+    );
+    const created = await nativeService.createWorktree("project", {
+      branch: "feature/windows-rollback",
+      createBranch: true,
+      startPoint: "main",
+    });
+    const windowsService = new WorkspaceGit(
+      () => [{ name: "project", cwd: repo }],
+      {
+        managedWorktreesRoot: managedRoot,
+        platform: "win32",
+        runGit: runGitWithWindowsWorktreePaths,
+      },
+    );
+
+    await windowsService.removeManagedWorktree("project", created.path);
+
+    expect(existsSync(created.path)).toBe(false);
+    expect((await nativeService.status("project")).worktrees).toHaveLength(1);
+  });
+
   test("rejects a managed repo directory symlink before creating outside the root", async () => {
     const { repo } = initRepo();
     const managedRoot = temp("wsgit-managed-");
