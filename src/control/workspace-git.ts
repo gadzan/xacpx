@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -77,15 +77,69 @@ function expandHome(path: string): string {
   return path;
 }
 
+export function worktreePathsEqual(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === "win32") {
+    return normalizeWindowsWorktreePath(left) === normalizeWindowsWorktreePath(right);
+  }
+  return left === right;
+}
+
+export function worktreePathIsWithin(
+  parent: string,
+  child: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const normalizedParent = platform === "win32" ? normalizeWindowsWorktreePath(parent) : parent;
+  const normalizedChild = platform === "win32" ? normalizeWindowsWorktreePath(child) : child;
+  if (normalizedParent === normalizedChild) return false;
+  const separator = platform === "win32" ? win32.sep : sep;
+  const parentPrefix = normalizedParent.endsWith(separator)
+    ? normalizedParent
+    : normalizedParent + separator;
+  return normalizedChild.startsWith(parentPrefix);
+}
+
+function normalizeWindowsWorktreePath(path: string): string {
+  // Git for Windows may report C:/repo while fs.realpath returns C:\repo.
+  // Extended-length paths are the same filesystem location with a device prefix.
+  let normalized = win32.normalize(path);
+  const folded = normalized.toLowerCase();
+  if (folded.startsWith("\\\\?\\unc\\")) {
+    normalized = `\\\\${normalized.slice(8)}`;
+  } else if (folded.startsWith("\\\\?\\")) {
+    normalized = normalized.slice(4);
+  }
+  normalized = win32.normalize(normalized);
+  const root = win32.parse(normalized).root;
+  while (normalized.length > root.length && normalized.endsWith(win32.sep)) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized.toLowerCase();
+}
+
+export interface WorkspaceGitOptions {
+  managedWorktreesRoot?: string;
+  platform?: NodeJS.Platform;
+  runGit?: (root: string, args: string[]) => Promise<string>;
+}
+
 export class WorkspaceGit {
   private readonly managedWorktreesRoot: string;
+  private readonly platform: NodeJS.Platform;
+  private readonly runGitOverride: WorkspaceGitOptions["runGit"];
   private readonly writeTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly listWorkspaces: () => GitWorkspaceRef[],
-    options: { managedWorktreesRoot?: string } = {},
+    options: WorkspaceGitOptions = {},
   ) {
     this.managedWorktreesRoot = options.managedWorktreesRoot ?? join(homedir(), ".xacpx", "worktrees");
+    this.platform = options.platform ?? process.platform;
+    this.runGitOverride = options.runGit;
   }
 
   private async rootFor(workspace: string): Promise<string> {
@@ -103,6 +157,7 @@ export class WorkspaceGit {
   }
 
   private async runRaw(root: string, args: string[]): Promise<string> {
+    if (this.runGitOverride) return await this.runGitOverride(root, args);
     const result = await execFileAsync("git", ["-C", root, ...args], {
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL",
@@ -293,7 +348,7 @@ export class WorkspaceGit {
         await mkdir(repoDir);
       }
       const realRepoDir = await realpath(repoDir);
-      if (!realRepoDir.startsWith(managedRoot + sep)) throw new Error("worktree-path-unsafe");
+      if (!worktreePathIsWithin(managedRoot, realRepoDir, this.platform)) throw new Error("worktree-path-unsafe");
       const target = join(realRepoDir, branchKey);
       try {
         await lstat(target);
@@ -308,7 +363,7 @@ export class WorkspaceGit {
         await this.run(root, ["worktree", "add", target, branch]);
       }
       const createdPath = await realpath(target);
-      if (!createdPath.startsWith(managedRoot + sep)) throw new Error("worktree-path-unsafe");
+      if (!worktreePathIsWithin(managedRoot, createdPath, this.platform)) throw new Error("worktree-path-unsafe");
       return { path: createdPath, branch, linked: true };
     });
   }
@@ -321,9 +376,9 @@ export class WorkspaceGit {
       const root = await this.rootFor(workspace);
       const managedRoot = await realpath(this.managedWorktreesRoot);
       const target = await realpath(path);
-      if (!target.startsWith(managedRoot + sep)) throw new Error("worktree-outside-managed-root");
+      if (!worktreePathIsWithin(managedRoot, target, this.platform)) throw new Error("worktree-outside-managed-root");
       const worktrees = await this.readWorktrees(root);
-      const worktree = worktrees.find((item) => item.path === target);
+      const worktree = worktrees.find((item) => worktreePathsEqual(item.path, target, this.platform));
       if (!worktree) throw new Error("worktree-not-found");
       if (worktree.current) throw new Error("cannot-remove-current-worktree");
       await this.run(root, ["worktree", "remove", target]);
@@ -434,7 +489,7 @@ export class WorkspaceGit {
       path: item.path,
       ...(item.branch ? { branch: item.branch } : {}),
       ...(item.detached ? { detached: true } : {}),
-      current: item.path === currentRoot,
+      current: worktreePathsEqual(item.path, currentRoot, this.platform),
       linked: index !== 0,
     }));
   }
