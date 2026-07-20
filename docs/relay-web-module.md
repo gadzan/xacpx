@@ -80,6 +80,18 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   回合结果仍会经 `/ws` 事件流（`turn-output`/`turn-finished`）抵达，因此长回合不会冒出多余的错误横幅，消息也不标记为失败。
   `/命令`（`control.command.execute`，纯请求/响应、无流式）超时**仍会浮现**。
 
+## Subagent 执行轨迹
+
+- Claude ACP 的 `_meta.claudeCode.toolName="Agent"` 标准化为 `ToolUseEvent.isSubagent`；subagent 内部工具的
+  `parentToolUseId` 标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto` 原样进入 Relay Web。
+- 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；后台任务真正完成、主 Agent 续写结束后才转为
+  `success`。因此 Web 不会在 subagent 尚未结束时错误显示完成。
+- `TurnParts.vue` 保留原始有序 parts，仅在展示层按 `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具
+  仍按普通卡片渲染。
+- `SubagentStepCard.vue` 默认折叠：运行中轮播当前活动步骤，展开后显示紧凑时间线；“查看完整过程”打开
+  `SubagentTraceDialog.vue`，展示委派任务和每个子工具的完整详情。轮播尊重 `prefers-reduced-motion`，弹窗支持焦点圈定、
+  Esc 和点击遮罩关闭。
+
 ## 阶段五加固（审计修复）
 
 - **API 客户端始终带 JSON content-type**：无 body 的 mutating 请求也发 `content-type: application/json`，
@@ -170,7 +182,8 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - `src/views/LoginView.vue`、`src/views/DashboardView.vue`、`src/views/SettingsView.vue`；
 - `src/components/InstanceTree.vue`、`ChatPane.vue`、`MessageList.vue`、`PromptInput.vue`、
   `NewSessionDialog.vue`、`ManageInstanceDialog.vue`、`WorkspacesManager.vue`、`AgentsManager.vue`、
-  `TaskPanel.vue`、`ScheduledTasks.vue`、`OrchestrationTasks.vue`、`NoticeToast.vue`、`ConnectionBadge.vue`；
+  `TaskPanel.vue`、`ScheduledTasks.vue`、`OrchestrationTasks.vue`、`NoticeToast.vue`、`ConnectionBadge.vue`、
+  `TurnParts.vue`、`SubagentStepCard.vue`、`SubagentTraceDialog.vue`；
 - `src/router/index.ts`（含 `/settings` 路由）、`src/main.ts`、`src/App.vue`、`src/style.css`。
 
 ## 文件树浏览器（Files 面板 / 子项目 A）

@@ -145,6 +145,7 @@ function validToolStep(s: unknown): boolean {
   if (typeof c.toolCallId !== "string" || typeof c.toolName !== "string" || typeof c.title !== "string") return false;
   if (typeof c.kind !== "string" || !TOOL_STEP_KINDS.has(c.kind)) return false;
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status)) return false;
+  if (!optStr(c.parentToolCallId) || (c.isSubagent !== undefined && typeof c.isSubagent !== "boolean")) return false;
   if (!optStr(c.error)) return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null) return false;

@@ -216,6 +216,20 @@ test("accepts an error string on a failed tool-event step, rejects a non-string 
   })).toBeNull();
 });
 
+test("accepts subagent hierarchy fields and rejects malformed hierarchy metadata", () => {
+  const event = (extra: Record<string, unknown>) => ({
+    kind: "control-event", instanceId: "i1",
+    event: {
+      type: "tool-event", chatKey: "c", sessionAlias: "s",
+      step: { toolCallId: "t1", toolName: "Agent", kind: "think", status: "running", title: "Explore", ...extra },
+    },
+  });
+  expect(roundtrip(event({ isSubagent: true }))).not.toBeNull();
+  expect(roundtrip(event({ parentToolCallId: "parent-1" }))).not.toBeNull();
+  expect(roundtrip(event({ isSubagent: "yes" }))).toBeNull();
+  expect(roundtrip(event({ parentToolCallId: 42 }))).toBeNull();
+});
+
 test("rejects a tool-event step with an unknown detail tag", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

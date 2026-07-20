@@ -53,7 +53,14 @@ interface StreamEvent {
       size?: number;
       // ACP `usage_update` extras (acpx ≥0.11.0): cumulative cost + per-turn token breakdown.
       cost?: unknown;
-      _meta?: { usage?: unknown };
+      _meta?: {
+        usage?: unknown;
+        claudeCode?: {
+          toolName?: string;
+          parentToolUseId?: string;
+          toolResponse?: unknown;
+        };
+      };
       // ACP `available_commands_update`: agent-advertised slash commands.
       availableCommands?: unknown;
     };
@@ -329,6 +336,16 @@ function mergeToolCallUpdate(
     const next = (update as Record<string, unknown>)[key];
     if (!isEmptyToolField(next)) (merged as Record<string, unknown>)[key] = next;
   }
+  const nextMeta = update._meta;
+  if (nextMeta) {
+    merged._meta = {
+      ...merged._meta,
+      ...nextMeta,
+      ...(merged._meta?.claudeCode || nextMeta.claudeCode
+        ? { claudeCode: { ...merged._meta?.claudeCode, ...nextMeta.claudeCode } }
+        : {}),
+    };
+  }
   merged.toolCallId = toolCallId;
   state.toolCalls.set(toolCallId, merged);
   return merged;
@@ -354,16 +371,35 @@ function buildToolUseEvent(update: NonNullable<StreamEvent["params"]>["update"])
   const summaryRaw = summarizeToolInput(update.rawInput, title) || summarizeToolInput(update.rawOutput, title);
   const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
   const statusRaw = readString(update, "status");
+  // claude-agent-acp sometimes emits a sparse terminal update after the prompt
+  // result: `_meta.claudeCode.toolResponse` carries the completed tool result but
+  // `status` is omitted. Treating that frame as another running update leaves the
+  // dashboard spinner alive forever (notably for tools running inside an async
+  // Agent). A concrete toolResponse is terminal even when the adapter omitted the
+  // redundant status field.
+  const claudeToolResponse = update._meta?.claudeCode?.toolResponse;
+  const hasClaudeToolResponse = !isEmptyToolField(claudeToolResponse);
+  const isAsyncAgentLaunch =
+    update._meta?.claudeCode?.toolName === "Agent" &&
+    isRecord(claudeToolResponse) &&
+    claudeToolResponse.status === "async_launched";
   const status: ToolUseStatus =
-    statusRaw === "completed" || statusRaw === "success" ? "success"
+    isAsyncAgentLaunch ? "running"
+    : statusRaw === "completed" || statusRaw === "success" ? "success"
     : statusRaw === "failed" || statusRaw === "error" ? "error"
+    : hasClaudeToolResponse ? "success"
     : "running";
   const rawInput = update.rawInput;
   const content = update.content;
-  const rawOutput = update.rawOutput;
+  const rawOutput = update.rawOutput ?? claudeToolResponse;
   const locations = update.locations;
+  const claudeMeta = update._meta?.claudeCode;
+  const parentToolCallId = claudeMeta?.parentToolUseId?.trim();
+  const isSubagent = claudeMeta?.toolName === "Agent";
   return {
     toolCallId,
+    ...(parentToolCallId ? { parentToolCallId } : {}),
+    ...(isSubagent ? { isSubagent: true } : {}),
     toolName,
     kind,
     ...(summary ? { summary } : {}),

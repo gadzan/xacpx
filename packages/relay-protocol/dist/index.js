@@ -175,6 +175,8 @@ function validToolStep(s) {
     return false;
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status))
     return false;
+  if (!optStr(c.parentToolCallId) || c.isSubagent !== undefined && typeof c.isSubagent !== "boolean")
+    return false;
   if (!optStr(c.error))
     return false;
   if (c.detail !== undefined) {

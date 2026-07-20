@@ -169,6 +169,10 @@ export type ToolUseKind = "read" | "search" | "execute" | "edit" | "think" | "ot
 
 export interface ToolUseEvent {
   toolCallId: string;
+  /** Parent ACP tool call when this tool runs inside a delegated subagent. */
+  parentToolCallId?: string;
+  /** This tool call represents a delegated subagent task rather than an ordinary tool. */
+  isSubagent?: boolean;
   /** Free-form tool name from the agent (e.g. "Read File", "Bash"). */
   toolName: string;
   /** Coarse classifier produced by the transport from the agent's tool kind; channels use it to pick an icon. */

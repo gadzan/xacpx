@@ -17,9 +17,14 @@ import {
 } from "./transport-diagnostics";
 import { t } from "../i18n";
 import { stableCoordinatorSession } from "../orchestration/coordinator-identity";
+import {
+  followClaudeBackgroundTurn,
+  isClaudeAsyncAgentLaunch,
+} from "../transport/claude-background-followup";
 
 type AutoInstallFn = typeof defaultAutoInstall;
 type DiscoverPathsFn = typeof defaultDiscoverPaths;
+type FollowClaudeBackgroundTurnFn = typeof followClaudeBackgroundTurn;
 
 export interface TransportInvokerDeps {
   transport: SessionTransport;
@@ -29,6 +34,8 @@ export interface TransportInvokerDeps {
   resolveSessionAgentCommand: SessionAgentCommandResolver;
   autoInstall: AutoInstallFn;
   discoverPaths: DiscoverPathsFn;
+  /** Test seam for Claude's native-transcript continuation follower. */
+  followClaudeBackgroundTurn?: FollowClaudeBackgroundTurnFn;
 }
 
 export class TransportInvoker {
@@ -39,6 +46,7 @@ export class TransportInvoker {
   private readonly resolveSessionAgentCommand: SessionAgentCommandResolver;
   private readonly autoInstall: AutoInstallFn;
   private readonly discoverPaths: DiscoverPathsFn;
+  private readonly followClaudeBackgroundTurn: FollowClaudeBackgroundTurnFn;
 
   constructor(deps: TransportInvokerDeps) {
     this.transport = deps.transport;
@@ -48,6 +56,7 @@ export class TransportInvoker {
     this.resolveSessionAgentCommand = deps.resolveSessionAgentCommand;
     this.autoInstall = deps.autoInstall;
     this.discoverPaths = deps.discoverPaths;
+    this.followClaudeBackgroundTurn = deps.followClaudeBackgroundTurn ?? followClaudeBackgroundTurn;
   }
 
   private async measureTransportCall<T>(
@@ -263,6 +272,16 @@ export class TransportInvoker {
         perfSpan?.mark("transport.first_chunk");
       }
     };
+    const asyncClaudeToolCallIds = new Set<string>();
+    const pendingToolEvents = new Map<string, ToolUseEvent>();
+    const forwardToolEvent = onToolEvent
+      ? async (event: ToolUseEvent): Promise<void> => {
+          if (event.status === "running") pendingToolEvents.set(event.toolCallId, event);
+          else pendingToolEvents.delete(event.toolCallId);
+          if (isClaudeAsyncAgentLaunch(event)) asyncClaudeToolCallIds.add(event.toolCallId);
+          await onToolEvent(event);
+        }
+      : undefined;
     try {
       if (abortRequested) {
         throw new DOMException("Aborted before prompt started", "AbortError");
@@ -270,17 +289,91 @@ export class TransportInvoker {
       perfSpan?.mark("transport.prompt_dispatched", {
         transportKind: this.config?.transport.type ?? inferTransportKind(this.transport),
       });
-      return await this.measureTransportCall("prompt", session, () =>
-        this.transport.prompt(session, text, reply, replyContext, {
+      return await this.measureTransportCall("prompt", session, async () => {
+        const result = await this.transport.prompt(session, text, reply, replyContext, {
           ...(media ? { media } : {}),
           ...(reply ? { onSegment } : {}),
-          ...(onToolEvent ? { onToolEvent } : {}),
+          ...(forwardToolEvent ? { onToolEvent: forwardToolEvent } : {}),
           ...(onThought ? { onThought } : {}),
           ...(onPlan ? { onPlan } : {}),
           ...(onUsage ? { onUsage } : {}),
           ...(onCommands ? { onCommands } : {}),
-        }),
-      );
+        });
+
+        const isClaude = (session.driver ?? session.agent) === "claude";
+        if (!isClaude || asyncClaudeToolCallIds.size === 0 || !reply || !forwardToolEvent) {
+          return result;
+        }
+
+        let agentSessionId = session.agentSessionId;
+        if (!agentSessionId) {
+          try {
+            agentSessionId = await this.transport.getAgentSessionId?.(session);
+          } catch (error) {
+            await this.logger.error(
+              "transport.claude_background_followup.session_id_failed",
+              "failed to resolve Claude session id for background follow-up",
+              { alias: session.alias, error: error instanceof Error ? error.message : String(error) },
+            );
+          }
+        }
+        if (!agentSessionId) {
+          for (const event of [...pendingToolEvents.values()]) {
+            await forwardToolEvent({
+              ...event,
+              rawOutput: { message: "Claude background continuation could not be tracked: session id unavailable" },
+              status: "error",
+            });
+          }
+          return result;
+        }
+
+        await this.logger.info(
+          "transport.claude_background_followup.started",
+          "following Claude background-agent continuation",
+          { alias: session.alias, agentSessionId, taskCount: asyncClaudeToolCallIds.size },
+        );
+        const followup = await this.followClaudeBackgroundTurn({
+          cwd: session.cwd,
+          sessionId: agentSessionId,
+          launchedToolCallIds: asyncClaudeToolCallIds,
+          ...(abortSignal ? { signal: abortSignal } : {}),
+          onText: async (chunk) => {
+            onSegment(chunk);
+            await reply(chunk);
+          },
+          ...(onThought ? { onThought } : {}),
+          onToolEvent: forwardToolEvent,
+        });
+
+        if (followup.status === "completed") {
+          // Child tool updates can arrive after ACP's response without an explicit
+          // terminal status, or disappear with the closed request entirely. Once
+          // Claude's resumed main turn is complete, no tool from the original ACP
+          // turn can still be running; close any remaining cards deterministically.
+          for (const event of [...pendingToolEvents.values()]) {
+            await forwardToolEvent({ ...event, status: "success" });
+          }
+        } else {
+          for (const event of [...pendingToolEvents.values()]) {
+            await forwardToolEvent({
+              ...event,
+              rawOutput: { message: `Claude background continuation ${followup.status}` },
+              status: "error",
+            });
+          }
+        }
+        await this.logger.info(
+          `transport.claude_background_followup.${followup.status}`,
+          `Claude background-agent follow-up ${followup.status}`,
+          {
+            alias: session.alias,
+            agentSessionId,
+            completedTaskCount: followup.completedToolCallIds.length,
+          },
+        );
+        return result;
+      });
     } catch (error) {
       localOutcome = isAbortError(error) || abortRequested ? "aborted" : "error";
       throw error;
