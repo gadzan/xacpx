@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { resolveClaudeSpawnEnvironment } from "../../../src/adapters/claude-settings-policy";
 
@@ -52,7 +52,7 @@ test("provider-only imports provider env and overlays settings without moving se
   expect(env?.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBeUndefined();
   expect(env?.CLAUDE_CONFIG_DIR).toBe(dirname(profilePath));
   expect(linkedState).toEqual({
-    source: "/profiles/claude",
+    source: resolve("/profiles/claude"),
     profile: dirname(profilePath),
   });
   expect(JSON.parse(profileContent)).toEqual({
@@ -168,7 +168,7 @@ test("isolated hides user settings while linking the original session storage", 
   expect(env?.CLAUDE_CONFIG_DIR).toBe(dirname(profilePath));
   expect(env?.CLAUDE_MODEL_CONFIG).toBeUndefined();
   expect(JSON.parse(profileContent)).toEqual({});
-  expect(linkedState).toEqual({ source: "/profiles/isolated", profile: dirname(profilePath) });
+  expect(linkedState).toEqual({ source: resolve("/profiles/isolated"), profile: dirname(profilePath) });
 });
 
 test("provider-only clears an inherited full-user opt-in", () => {
