@@ -64,6 +64,27 @@ test("ensures a session with raw agent command by invoking acpx with the normal 
   expect(runPty).not.toHaveBeenCalled();
 });
 
+test("injects the filtered Claude environment into acpx-cli commands", async () => {
+  const run = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({
+    command: "acpx",
+    resolveSpawnEnvironment: ({ driver, settingsPolicy }) =>
+      driver === "claude" && settingsPolicy === "provider-only"
+        ? { FILTERED_PROVIDER: "yes" }
+        : undefined,
+  }, run);
+
+  await transport.ensureSession({
+    ...session,
+    driver: "claude",
+    settingsPolicy: "provider-only",
+  });
+
+  expect(run).toHaveBeenCalledWith("acpx", expect.any(Array), expect.objectContaining({
+    env: { FILTERED_PROVIDER: "yes" },
+  }));
+});
+
 test("injects --permission-policy when configured", async () => {
   const run = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));

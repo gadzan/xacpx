@@ -82,6 +82,7 @@ export class ConfigStore {
         driver: agent.driver,
         ...(agent.command ? { command: agent.command } : {}),
         ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.settingsPolicy ? { settingsPolicy: agent.settingsPolicy } : {}),
       };
     });
   }

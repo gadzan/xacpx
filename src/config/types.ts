@@ -1,5 +1,6 @@
 import type { Locale } from "../i18n/resolve-locale";
 import type { AdapterVersionOverrides } from "../adapters/adapter-catalog";
+import type { ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 
 export type PermissionMode = "approve-all" | "approve-reads" | "deny-all";
 export type NonInteractivePermissions = "deny" | "fail";
@@ -98,6 +99,8 @@ export interface AgentConfig {
   command?: string;
   /** Default LLM model id for sessions of this agent (e.g. `gpt-5.2[high]`); a session-level model overrides it. */
   model?: string;
+  /** Claude user-settings exposure. Defaults to filtered third-party provider/model settings. */
+  settingsPolicy?: ClaudeSettingsPolicy;
 }
 
 export interface WorkspaceConfig {

@@ -55,6 +55,8 @@ export class AcpxBridgeTransport implements SessionTransport {
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
     await this.client.request("resumeAgentSession", {
       agent: session.agent,
+      driver: session.driver,
+      settingsPolicy: session.settingsPolicy,
       ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
       cwd: session.cwd,
       name: session.transportSession,
@@ -307,6 +309,8 @@ export class AcpxBridgeTransport implements SessionTransport {
   private toParams(session: ResolvedSession): Record<string, unknown> {
     return {
       agent: session.agent,
+      driver: session.driver,
+      settingsPolicy: session.settingsPolicy,
       agentCommand: session.agentCommand,
       cwd: session.cwd,
       name: session.transportSession,

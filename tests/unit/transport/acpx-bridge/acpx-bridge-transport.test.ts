@@ -38,6 +38,8 @@ test("proxies ensureSession through the bridge client", async () => {
 
   expect(request).toHaveBeenCalledWith("ensureSession", {
     agent: "codex",
+    driver: undefined,
+    settingsPolicy: undefined,
     agentCommand: "./node_modules/.bin/codex-acp",
     cwd: "/tmp/backend",
     name: "backend:api-fix",
@@ -45,6 +47,24 @@ test("proxies ensureSession through the bridge client", async () => {
     mcpSourceHandle: undefined,
     replyMode: "verbose",
   }, undefined);
+});
+
+test("passes Claude settings policy metadata without provider secrets", async () => {
+  const request = mock(async () => ({}));
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.ensureSession({
+    ...session,
+    agent: "claude-provider",
+    driver: "claude",
+    settingsPolicy: "provider-only",
+  });
+
+  expect(request).toHaveBeenCalledWith(
+    "ensureSession",
+    expect.objectContaining({ driver: "claude", settingsPolicy: "provider-only" }),
+    undefined,
+  );
 });
 
 test("effectiveReplyMode 'stream' wins over an undefined replyMode in ensureSession params", async () => {

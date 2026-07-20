@@ -11,6 +11,34 @@ import {
 } from "../../../src/bridge/bridge-runtime";
 import type { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
+test("injects the filtered Claude environment into bridge acpx commands", async () => {
+  const observed: Array<NodeJS.ProcessEnv | undefined> = [];
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async (_command, _args, options) => {
+      observed.push(options?.env);
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    undefined,
+    {
+      resolveSpawnEnvironment: ({ driver, settingsPolicy }) =>
+        driver === "claude" && settingsPolicy === "provider-only"
+          ? { FILTERED_PROVIDER: "yes" }
+          : undefined,
+    },
+  );
+
+  await runtime.ensureSession({
+    agent: "claude-provider",
+    driver: "claude",
+    settingsPolicy: "provider-only",
+    cwd: "/repo",
+    name: "demo",
+  });
+
+  expect(observed).toEqual([{ FILTERED_PROVIDER: "yes" }]);
+});
+
 test("rawStream flushes partial paragraphs verbatim on the tight cadence", async () => {
   const segments: string[] = [];
   let currentTime = 0;

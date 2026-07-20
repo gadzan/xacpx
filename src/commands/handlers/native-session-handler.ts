@@ -1,6 +1,7 @@
 import { resolveConfiguredAgentCommand } from "../../config/resolve-agent-command";
 import { getChannelIdFromChatKey, scopeDisplayAliasToInternal, toDisplaySessionAlias } from "../../channels/channel-scope";
 import type { AgentSession, AgentSessionListQuery, AgentSessionListResult, ResolvedSession } from "../../transport/types";
+import type { ClaudeSettingsPolicy } from "../../adapters/claude-settings-policy";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../workspace-name";
 import { basenameForWorkspacePath, normalizeWorkspacePath, pathExists, sameWorkspacePath } from "../workspace-path";
 import type { CommandRouterContext, RouterResponse, SessionLifecycleOps } from "../router-types";
@@ -20,6 +21,7 @@ interface NativeTarget {
   agentCommand?: string;
   /** Resolved acpx driver for `agent` (e.g. a `my-codex` agent has driver `codex`). */
   driver?: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
   workspace: string;
   workspaceLabel: string;
   cwd: string;
@@ -89,6 +91,7 @@ export async function handleNativeSessionList(
     agent: target.agent,
     agentCommand: target.agentCommand,
     ...(target.driver ? { driver: target.driver } : {}),
+    ...(target.settingsPolicy ? { settingsPolicy: target.settingsPolicy } : {}),
     cwd: target.cwd,
     ...(input.cursor ? { cursor: input.cursor } : {}),
     ...(input.all ? {} : { filterCwd: target.cwd }),
@@ -260,6 +263,7 @@ async function resolveNativeTarget(
     agentDisplayName: displayAgentName(agent),
     agentCommand: resolveConfiguredAgentCommand(agentConfig, context.config?.transport),
     driver: agentConfig.driver,
+    settingsPolicy: agentConfig.settingsPolicy,
     workspace: workspaceResolution.workspace,
     workspaceLabel: workspaceResolution.workspaceLabel,
     cwd: workspaceResolution.cwd,

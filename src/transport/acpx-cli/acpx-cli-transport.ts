@@ -3,6 +3,10 @@ import { spawn } from "node:child_process";
 import { spawn as spawnPty } from "node-pty";
 
 import { resolveSpawnCommand } from "../../process/spawn-command";
+import {
+  resolveClaudeSpawnEnvironment,
+  type ClaudeSettingsPolicy,
+} from "../../adapters/claude-settings-policy";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
@@ -64,6 +68,11 @@ interface AcpxCliTransportOptions {
   permissionPolicy?: string;
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
+  /** Test seam for filtered per-agent process environments. */
+  resolveSpawnEnvironment?: (input: {
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+  }) => NodeJS.ProcessEnv | undefined;
 }
 
 interface CommandResult {
@@ -76,6 +85,7 @@ interface RunOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   stage?: AcpxCommandStage;
+  env?: NodeJS.ProcessEnv;
 }
 
 function managementTimeoutError(
@@ -119,7 +129,10 @@ const require = createRequire(import.meta.url);
 async function defaultRunner(command: string, args: string[], options?: RunOptions): Promise<CommandResult> {
   return await new Promise((resolve, reject) => {
     const spawnSpec = resolveSpawnCommand(command, args);
-    const child = spawn(spawnSpec.command, spawnSpec.args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
+      env: options?.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
 
@@ -169,7 +182,7 @@ async function defaultPtyRunner(command: string, args: string[], options?: RunOp
       cols: 80,
       rows: 24,
       cwd: process.cwd(),
-      env: { ...process.env, XACPX_LANG: getLocale() } as Record<string, string>,
+      env: { ...process.env, ...options?.env, XACPX_LANG: getLocale() } as Record<string, string>,
     });
     let output = "";
 
@@ -209,6 +222,10 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly runPtyCommand: PtyRunner;
   private readonly queueOwnerLauncher: Pick<AcpxQueueOwnerLauncher, "launch">;
   private readonly streamingHooks: StreamingPromptHooks;
+  private readonly resolveSpawnEnvironment: (input: {
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+  }) => NodeJS.ProcessEnv | undefined;
 
   constructor(
     options: AcpxCliTransportOptions,
@@ -236,6 +253,7 @@ export class AcpxCliTransport implements SessionTransport {
         : {}),
     });
     this.streamingHooks = streamingHooks;
+    this.resolveSpawnEnvironment = options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment;
   }
 
   // acpx-cli transport does not stream stderr back to the caller, so "note" progress
@@ -269,6 +287,7 @@ export class AcpxCliTransport implements SessionTransport {
     const runEnsure = session.agentCommand ? this.run : this.runWithPty;
     await runEnsure.call(this, args, {
       timeoutMs: this.sessionInitTimeoutMs,
+      env: this.spawnEnvironment(session),
     });
   }
 
@@ -284,6 +303,7 @@ export class AcpxCliTransport implements SessionTransport {
         ]);
         return await this.runCommandWithTimeout(this.runCommand, args, {
           timeoutMs: this.sessionInitTimeoutMs,
+          env: this.spawnEnvironment(query),
         });
       },
       formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
@@ -312,6 +332,7 @@ export class AcpxCliTransport implements SessionTransport {
       const result = await this.runCommandWithTimeout(this.runCommand, args, {
         timeoutMs: Math.max(deadline - Date.now(), 1),
         stage: "session-history",
+        env: this.spawnEnvironment(session),
       });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
@@ -360,6 +381,7 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onUsage,
           options?.onCommands,
           rawStream,
+          this.spawnEnvironment(session),
         );
         const baseText = getPromptText(result);
         if (!reply) {
@@ -375,7 +397,10 @@ export class AcpxCliTransport implements SessionTransport {
       }
       // Prompts are deliberately NOT bounded by a total-duration timeout:
       // long agent turns are legitimate (see command-timeouts.ts).
-      const result = await this.runCommand(this.command, args);
+      const spawnOptions = this.withSpawnEnvironment(session);
+      const result = spawnOptions
+        ? await this.runCommand(this.command, args, spawnOptions)
+        : await this.runCommand(this.command, args);
       return { text: getPromptText(result) };
     } finally {
       try {
@@ -392,7 +417,10 @@ export class AcpxCliTransport implements SessionTransport {
       "-s",
       session.transportSession,
       modeId,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "set-mode" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "set-mode",
+    }));
   }
 
   // acpx's generic config setter: `<agent> set -s <name> model '<id>'`. Build args
@@ -406,7 +434,10 @@ export class AcpxCliTransport implements SessionTransport {
       session.transportSession,
       "model",
       modelId,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "set-model" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "set-model",
+    }));
   }
 
   // Read the session's current model and the agent-advertised available ids from
@@ -421,6 +452,7 @@ export class AcpxCliTransport implements SessionTransport {
     const result = await this.runCommandWithTimeout(this.runCommand, args, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "get-session-model",
+      env: this.spawnEnvironment(session),
     });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
@@ -442,7 +474,10 @@ export class AcpxCliTransport implements SessionTransport {
       "cancel",
       "-s",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "cancel" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "cancel",
+    }));
     return {
       cancelled: true,
       message: output.trim(),
@@ -461,6 +496,7 @@ export class AcpxCliTransport implements SessionTransport {
     const runResume = session.agentCommand ? this.run : this.runWithPty;
     await runResume.call(this, args, {
       timeoutMs: this.sessionInitTimeoutMs,
+      env: this.spawnEnvironment(session),
     });
   }
 
@@ -476,7 +512,10 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "close",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "remove-session" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "remove-session",
+    }));
     if (result.code === 0) {
       return;
     }
@@ -521,7 +560,10 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "has-session" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "has-session",
+    }));
 
     return result.code === 0;
   }
@@ -531,6 +573,7 @@ export class AcpxCliTransport implements SessionTransport {
       return;
     }
     const record = await this.readSessionRecord(session);
+    const env = this.spawnEnvironment(session);
     await this.queueOwnerLauncher.launch({
       acpxRecordId: record.acpxRecordId,
       coordinatorSession: session.mcpCoordinatorSession,
@@ -538,6 +581,7 @@ export class AcpxCliTransport implements SessionTransport {
       permissionMode: this.permissionMode,
       nonInteractivePermissions: this.nonInteractivePermissions,
       ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
+      ...(env ? { env } : {}),
     });
   }
 
@@ -546,7 +590,10 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "read-session-record" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "read-session-record",
+    }));
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
@@ -587,7 +634,7 @@ export class AcpxCliTransport implements SessionTransport {
     const spawnSpec = resolveSpawnCommand(this.command, args);
 
     if (!options?.timeoutMs) {
-      return await runner(spawnSpec.command, spawnSpec.args, undefined);
+      return await runner(spawnSpec.command, spawnSpec.args, options);
     }
 
     const abortController = new AbortController();
@@ -622,10 +669,14 @@ export class AcpxCliTransport implements SessionTransport {
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
     rawStream: boolean = false,
+    env?: NodeJS.ProcessEnv,
   ): Promise<{ result: CommandResult; overflowCount: number }> {
     const hooks = this.streamingHooks;
     const doSpawn = hooks.spawnPrompt
-      ?? ((cmd, spawnArgs) => spawn(cmd, spawnArgs, { stdio: ["ignore", "pipe", "pipe"] }) as unknown as PromptStreamProcess);
+      ?? ((cmd, spawnArgs) => spawn(cmd, spawnArgs, {
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      }) as unknown as PromptStreamProcess);
     const setIntervalFn = hooks.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
     const clearIntervalFn = hooks.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
     // Raw streaming drains the buffer on a tight cadence (~5×/s) for low-latency token
@@ -846,6 +897,21 @@ export class AcpxCliTransport implements SessionTransport {
       nonInteractivePermissions: this.nonInteractivePermissions,
       permissionPolicy: this.permissionPolicy,
     };
+  }
+
+  private spawnEnvironment(input: {
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+  }): NodeJS.ProcessEnv | undefined {
+    return this.resolveSpawnEnvironment(input);
+  }
+
+  private withSpawnEnvironment(
+    input: { driver?: string; settingsPolicy?: ClaudeSettingsPolicy },
+    options?: RunOptions,
+  ): RunOptions | undefined {
+    const env = this.spawnEnvironment(input);
+    return env ? { ...(options ?? {}), env } : options;
   }
 
   private sessionInput(session: ResolvedSession) {

@@ -88,6 +88,47 @@ test("smoke check uses explicit --agent and --workspace selection", async () => 
   expect(result.details ?? []).toContain("workspace: frontend (explicit --workspace)");
 });
 
+test("smoke check uses the selected agent's configured default model", async () => {
+  const transport = createRecordingTransport();
+
+  const result = await checkSmoke(
+    { smoke: true, agent: "claude", workspace: "frontend", verbose: true },
+    {
+      loadConfig: async () => createConfig({
+        agents: {
+          codex: { driver: "codex" },
+          claude: { driver: "claude", model: "provider/default-model" },
+        },
+      }),
+      createTransport: async () => transport,
+    },
+  );
+
+  expect(result.severity).toBe("pass");
+  expect(transport.session?.model).toBe("provider/default-model");
+  expect(result.details ?? []).toContain("model: provider/default-model (agent default)");
+});
+
+test("smoke check carries the Claude settings policy to the real transport seam", async () => {
+  const transport = createRecordingTransport();
+  await checkSmoke(
+    { smoke: true, agent: "claude" },
+    {
+      loadConfig: async () => createConfig({
+        agents: {
+          claude: { driver: "claude", settingsPolicy: "isolated" },
+        },
+      }),
+      createTransport: async () => transport,
+    },
+  );
+
+  expect(transport.session).toEqual(expect.objectContaining({
+    driver: "claude",
+    settingsPolicy: "isolated",
+  }));
+});
+
 test("smoke check fails when explicit agent or workspace is missing", async () => {
   const missingAgent = await checkSmoke(
     { smoke: true, agent: "missing" },

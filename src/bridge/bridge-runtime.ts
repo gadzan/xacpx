@@ -4,6 +4,10 @@ import { dirname, join, win32 } from "node:path";
 import { spawn } from "node:child_process";
 
 import type { NonInteractivePermissions, PermissionMode, WechatReplyMode } from "../config/types";
+import {
+  resolveClaudeSpawnEnvironment,
+  type ClaudeSettingsPolicy,
+} from "../adapters/claude-settings-policy";
 import { resolveSpawnCommand } from "../process/spawn-command";
 import { terminateProcessTree } from "../process/terminate-process-tree";
 import { getPromptText } from "../transport/prompt-output";
@@ -75,6 +79,8 @@ export interface CommandRunnerOptions {
   timeoutMs?: number;
   /** Stable operation name included in timeout diagnostics. */
   stage?: AcpxCommandStage;
+  /** Per-agent environment; provider credentials never cross the bridge JSON protocol. */
+  env?: NodeJS.ProcessEnv;
 }
 type CommandRunner = (command: string, args: string[], options?: CommandRunnerOptions) => Promise<CommandResult>;
 type SessionCreateRunner = (command: string, args: string[], cwd: string, options?: CommandRunnerOptions) => Promise<CommandResult>;
@@ -83,6 +89,8 @@ type RepairSessionIndexFn = () => Promise<boolean>;
 
 interface BridgeSessionInput {
   agent: string;
+  driver?: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
   agentCommand?: string;
   cwd: string;
   name: string;
@@ -105,6 +113,7 @@ interface StreamingPromptRunnerOptions {
   formatToolCalls?: boolean;
   toolEventMode?: ToolEventMode;
   rawStream?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 
 interface PromptStreamProcess {
@@ -137,6 +146,11 @@ interface BridgeRuntimeOptions {
   managementCommandTimeoutMs?: number;
   /** Test seam: clock used for the shared session-init deadline. */
   now?: () => number;
+  /** Test seam for filtered per-agent process environments. */
+  resolveSpawnEnvironment?: (input: {
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+  }) => NodeJS.ProcessEnv | undefined;
 }
 
 export class BridgeRuntime {
@@ -179,6 +193,7 @@ export class BridgeRuntime {
     agent: string;
     agentCommand?: string;
     driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     cursor?: string;
     filterCwd?: string;
@@ -193,7 +208,9 @@ export class BridgeRuntime {
           ...(input.cursor ? ["--cursor", input.cursor] : []),
         ], { format: "json" }));
         // Mirrors acpx-cli, which bounds sessions list by sessionInitTimeoutMs.
-        return await this.run(spec.command, spec.args, { timeoutMs: this.sessionInitTimeoutMs() });
+        return await this.run(spec.command, spec.args, this.withSpawnEnvironment(input, {
+          timeoutMs: this.sessionInitTimeoutMs(),
+        }));
       },
       formatError: (result) => result.stderr || result.stdout || `sessions list failed with exit code ${result.code}`,
       // Codex's session list leaks native subagent threads; hide them (fail-open).
@@ -205,6 +222,8 @@ export class BridgeRuntime {
   async resumeAgentSession(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
     agentSessionId: string;
@@ -220,7 +239,12 @@ export class BridgeRuntime {
     const timeoutMs = this.sessionInitTimeoutMs();
     let result: CommandResult;
     try {
-      result = await this.runSessionCreate(spawnSpec.command, spawnSpec.args, input.cwd, { timeoutMs });
+      result = await this.runSessionCreate(
+        spawnSpec.command,
+        spawnSpec.args,
+        input.cwd,
+        this.withSpawnEnvironment(input, { timeoutMs }),
+      );
     } catch (error) {
       if (error instanceof CommandTimeoutError) {
         throw new Error(`session initialization timed out after ${timeoutMs / 1000}s`);
@@ -250,6 +274,8 @@ export class BridgeRuntime {
   async hasSession(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<{ exists: boolean }> {
@@ -258,10 +284,10 @@ export class BridgeRuntime {
       "show",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "has-session",
-    });
+    }));
 
     return { exists: result.code === 0 };
   }
@@ -269,6 +295,8 @@ export class BridgeRuntime {
   async tailSessionHistory(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
     lines: number;
@@ -288,10 +316,10 @@ export class BridgeRuntime {
     let lastResult: CommandResult | undefined;
     for (const tailArgs of candidates) {
       const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, tailArgs));
-      const result = await this.run(spawnSpec.command, spawnSpec.args, {
+      const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
         timeoutMs: Math.max(deadline - Date.now(), 1),
         stage: "session-history",
-      });
+      }));
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
       }
@@ -394,7 +422,10 @@ export class BridgeRuntime {
 
     const ensured = await runWithVerboseFallback(
       ["sessions", "ensure", "--name", input.name],
-      (command, args) => this.run(command, args, { onStderrLine, timeoutMs: remainingTimeoutMs() }),
+      (command, args) => this.run(command, args, this.withSpawnEnvironment(input, {
+        onStderrLine,
+        timeoutMs: remainingTimeoutMs(),
+      })),
     );
     if (ensured.code === 0) {
       onProgress?.("ready");
@@ -404,7 +435,9 @@ export class BridgeRuntime {
     const existingSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ["sessions", "show", input.name]));
     const runShowProbe = async (): Promise<CommandResult> => {
       try {
-        return await this.run(existingSpec.command, existingSpec.args, { timeoutMs: remainingTimeoutMs() });
+        return await this.run(existingSpec.command, existingSpec.args, this.withSpawnEnvironment(input, {
+          timeoutMs: remainingTimeoutMs(),
+        }));
       } catch (error) {
         if (error instanceof CommandTimeoutError) {
           throw sessionInitTimedOutError();
@@ -421,7 +454,10 @@ export class BridgeRuntime {
     onProgress?.("initializing");
     const created = await runWithVerboseFallback(
       ["sessions", "new", "--name", input.name],
-      (command, args) => this.runSessionCreate(command, args, input.cwd, { onStderrLine, timeoutMs: remainingTimeoutMs() }),
+      (command, args) => this.runSessionCreate(command, args, input.cwd, this.withSpawnEnvironment(input, {
+        onStderrLine,
+        timeoutMs: remainingTimeoutMs(),
+      })),
     );
 
     if (created.code === 0) {
@@ -501,8 +537,9 @@ export class BridgeRuntime {
             formatToolCalls,
             toolEventMode,
             rawStream,
+            env: this.spawnEnvironment(input),
           })
-        : await this.run(spawnSpec.command, spawnSpec.args);
+        : await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input));
       return { text: getPromptText(result) };
     } finally {
       try {
@@ -518,12 +555,14 @@ export class BridgeRuntime {
       return;
     }
     const record = await this.readSessionRecord(input);
+    const env = this.spawnEnvironment(input);
     await this.queueOwnerLauncher.launch({
       acpxRecordId: record.acpxRecordId,
       coordinatorSession: input.mcpCoordinatorSession,
       ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
       permissionMode: this.options.permissionMode ?? "approve-all",
       nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
+      ...(env ? { env } : {}),
     });
   }
 
@@ -533,10 +572,10 @@ export class BridgeRuntime {
       "show",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "read-session-record",
-    });
+    }));
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "sessions show failed");
     }
@@ -548,6 +587,8 @@ export class BridgeRuntime {
   async getAgentSessionId(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<{ agentSessionId: string | undefined }> {
@@ -558,6 +599,8 @@ export class BridgeRuntime {
   async setMode(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
     modeId: string;
@@ -568,10 +611,10 @@ export class BridgeRuntime {
       input.name,
       input.modeId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-mode",
-    });
+    }));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set-mode failed");
@@ -583,6 +626,8 @@ export class BridgeRuntime {
   async setModel(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
     modelId: string;
@@ -595,10 +640,10 @@ export class BridgeRuntime {
       "model",
       input.modelId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-model",
-    });
+    }));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set-model failed");
@@ -610,6 +655,8 @@ export class BridgeRuntime {
   async getSessionModel(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<{ current?: string; available: string[] }> {
@@ -618,10 +665,10 @@ export class BridgeRuntime {
       "-s",
       input.name,
     ], { format: "json" }));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "get-session-model",
-    });
+    }));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "status failed");
@@ -641,6 +688,8 @@ export class BridgeRuntime {
   async cancel(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<{ cancelled: boolean; message: string }> {
@@ -649,10 +698,10 @@ export class BridgeRuntime {
       "-s",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "cancel",
-    });
+    }));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "cancel failed");
@@ -667,6 +716,8 @@ export class BridgeRuntime {
   async removeSession(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
@@ -675,10 +726,10 @@ export class BridgeRuntime {
       "close",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "remove-session",
-    });
+    }));
 
     if (result.code === 0) {
       return {};
@@ -692,6 +743,8 @@ export class BridgeRuntime {
   async deleteSession(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
@@ -713,6 +766,8 @@ export class BridgeRuntime {
   async freeWarmProcess(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
@@ -787,6 +842,21 @@ export class BridgeRuntime {
       permissionPolicy: this.options.permissionPolicy,
     };
   }
+
+  private spawnEnvironment(input: {
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+  }): NodeJS.ProcessEnv | undefined {
+    return (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)(input);
+  }
+
+  private withSpawnEnvironment(
+    input: { driver?: string; settingsPolicy?: ClaudeSettingsPolicy },
+    options?: CommandRunnerOptions,
+  ): CommandRunnerOptions | undefined {
+    const env = this.spawnEnvironment(input);
+    return env ? { ...(options ?? {}), env } : options;
+  }
 }
 
 export interface SpawnCaptureOptions extends CommandRunnerOptions {
@@ -804,7 +874,11 @@ export function spawnCapture(
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const spawnFn = options?.spawnFn ?? spawn;
-    const child = spawnFn(command, args, { cwd: options?.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnFn(command, args, {
+      cwd: options?.cwd,
+      env: options?.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     let stdout = "";
@@ -872,7 +946,10 @@ export async function runStreamingPrompt(
   options: StreamingPromptRunnerOptions = {},
 ): Promise<CommandResult> {
   const spawnPrompt = options.spawnPrompt ?? ((spawnCommand, spawnArgs) =>
-    spawn(spawnCommand, spawnArgs, { stdio: ["ignore", "pipe", "pipe"] }) as unknown as PromptStreamProcess);
+    spawn(spawnCommand, spawnArgs, {
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }) as unknown as PromptStreamProcess);
   const setIntervalFn = options.setIntervalFn ?? ((fn, delay) => setInterval(fn, delay));
   const clearIntervalFn = options.clearIntervalFn ?? ((timer) => clearInterval(timer as NodeJS.Timeout));
   const rawStream = options.rawStream ?? false;

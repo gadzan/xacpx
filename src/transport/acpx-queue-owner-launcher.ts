@@ -60,6 +60,8 @@ export interface LaunchQueueOwnerInput {
   nonInteractivePermissions: NonInteractivePermissions;
   /** Session options forwarded to the warm queue owner (e.g. the resolved model id). */
   sessionOptions?: QueueOwnerPayload["sessionOptions"];
+  /** Per-agent environment inherited by the queue owner and its ACP adapter. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export function buildXacpxMcpServerSpec(input: {
@@ -165,6 +167,7 @@ export class AcpxQueueOwnerLauncher {
     await this.spawnOwner(spawnSpec.command, spawnSpec.args, {
       env: {
         ...stringEnv(this.baseEnv),
+        ...stringEnv(input.env ?? {}),
         XACPX_LANG: getLocale(),
         ACPX_QUEUE_OWNER_PAYLOAD: JSON.stringify(payload),
       },

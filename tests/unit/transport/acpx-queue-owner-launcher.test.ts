@@ -144,6 +144,30 @@ test("forwards a configured ttlMs into the queue owner payload", async () => {
   expect(payload.ttlMs).toBe(1_800_000);
 });
 
+test("forwards a filtered per-agent environment to the queue owner", async () => {
+  let spawnedEnv: Record<string, string> | undefined;
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    baseEnv: { BASE: "yes", ANTHROPIC_AUTH_TOKEN: "stale" },
+    spawnOwner: async (_command, _args, options) => { spawnedEnv = options.env; },
+    terminateOwner: async () => {},
+  });
+
+  await launcher.launch({
+    acpxRecordId: "record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    env: { ANTHROPIC_AUTH_TOKEN: "filtered", CLAUDE_CONFIG_DIR: "C:/filtered" },
+  });
+
+  expect(spawnedEnv).toEqual(expect.objectContaining({
+    BASE: "yes",
+    ANTHROPIC_AUTH_TOKEN: "filtered",
+    CLAUDE_CONFIG_DIR: "C:/filtered",
+  }));
+});
+
 test("forwards ttlMs of 0 (keep alive forever) into the queue owner payload", async () => {
   const spawns: Array<{ env: Record<string, string> }> = [];
   const launcher = new AcpxQueueOwnerLauncher({
