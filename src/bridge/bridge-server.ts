@@ -10,6 +10,7 @@ import {
   type BridgeMethod,
   type BridgeResponse,
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
+import { isClaudeSettingsPolicy, type ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import { PromptCommandError } from "../transport/prompt-output";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
@@ -154,6 +155,7 @@ export class BridgeServer {
       case "hasSession":
         return await this.runtime.hasSession({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -161,6 +163,7 @@ export class BridgeServer {
       case "tailSessionHistory":
         return await this.runtime.tailSessionHistory({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -171,6 +174,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           agentCommand: asOptionalString(params.agentCommand),
           driver: asOptionalString(params.driver),
+          settingsPolicy: asOptionalClaudeSettingsPolicy(params.settingsPolicy),
           cwd: requireString(params, "cwd"),
           cursor: asOptionalString(params.cursor),
           filterCwd: asOptionalString(params.filterCwd),
@@ -178,6 +182,7 @@ export class BridgeServer {
       case "ensureSession":
         return await this.runtime.ensureSession({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -204,6 +209,7 @@ export class BridgeServer {
         const resolvedToolEventMode = asOptionalToolEventMode(params.toolEventMode);
         return await this.runtime.prompt({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -261,6 +267,7 @@ export class BridgeServer {
       case "resumeAgentSession":
         return await this.runtime.resumeAgentSession({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -269,6 +276,7 @@ export class BridgeServer {
       case "setMode":
         return await this.runtime.setMode({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -277,6 +285,7 @@ export class BridgeServer {
       case "setModel":
         return await this.runtime.setModel({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -285,6 +294,7 @@ export class BridgeServer {
       case "getSessionModel":
         return await this.runtime.getSessionModel({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -292,6 +302,7 @@ export class BridgeServer {
       case "cancel":
         return await this.runtime.cancel({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -299,6 +310,7 @@ export class BridgeServer {
       case "removeSession":
         return await this.runtime.removeSession({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -306,6 +318,7 @@ export class BridgeServer {
       case "deleteSession":
         return await this.runtime.deleteSession({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -313,6 +326,7 @@ export class BridgeServer {
       case "freeWarmProcess":
         return await this.runtime.freeWarmProcess({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -320,6 +334,7 @@ export class BridgeServer {
       case "getAgentSessionId":
         return await this.runtime.getAgentSessionId({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -459,6 +474,23 @@ function asOptionalString(value: unknown): string | undefined {
   }
 
   return value;
+}
+
+function agentExecutionSettings(params: Record<string, unknown>) {
+  return {
+    driver: asOptionalString(params.driver),
+    settingsPolicy: asOptionalClaudeSettingsPolicy(params.settingsPolicy),
+  };
+}
+
+function asOptionalClaudeSettingsPolicy(
+  value: unknown,
+): ClaudeSettingsPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (isClaudeSettingsPolicy(value)) return value;
+  throw new BridgeInvalidRequestError(
+    "settingsPolicy must be provider-only, isolated, or full-user",
+  );
 }
 
 function asOptionalPromptMediaInput(value: unknown): PromptMediaInput | undefined {

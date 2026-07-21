@@ -673,6 +673,8 @@ export class SessionService {
     return {
       alias: session.alias,
       agent: session.agent,
+      driver: agentConfig.driver,
+      settingsPolicy: agentConfig.settingsPolicy,
       agentCommand: configuredAgentCommand ?? preferCurrentManagedAdapterCommand(
         agentConfig.driver,
         recordedAgentCommand,

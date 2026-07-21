@@ -33,6 +33,30 @@ test("loads a valid config file", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("loads an explicit Claude settings policy and leaves the default implicit", () => {
+  const explicit = parseConfig({
+    transport: {},
+    agents: { claude: { driver: "claude", settingsPolicy: "isolated" } },
+    workspaces: {},
+  });
+  const implicit = parseConfig({
+    transport: {},
+    agents: { claude: { driver: "claude" } },
+    workspaces: {},
+  });
+
+  expect(explicit.agents.claude.settingsPolicy).toBe("isolated");
+  expect(implicit.agents.claude.settingsPolicy).toBeUndefined();
+});
+
+test("rejects an invalid Claude settings policy", () => {
+  expect(() => parseConfig({
+    transport: {},
+    agents: { claude: { driver: "claude", settingsPolicy: "everything" } },
+    workspaces: {},
+  })).toThrow("settingsPolicy must be provider-only, isolated, or full-user");
+});
+
 test("loads a workspace without allowed_agents", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-config-"));
   const path = join(dir, "config.json");

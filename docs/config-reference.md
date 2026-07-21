@@ -470,6 +470,60 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | `driver` | `string` | Yes | Agent driver type, passed as the first positional argument to acpx |
 | `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins |
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
+| `settingsPolicy` | `"provider-only"` \| `"isolated"` \| `"full-user"` | No | Claude user-settings policy. The implicit default is `"provider-only"`; other drivers ignore this field. See below |
+
+### Claude third-party provider settings
+
+acpx isolates built-in Claude sessions from Claude **user** settings by default. xacpx
+adds a narrower compatibility layer for third-party providers configured only in
+`~/.claude/settings.json` (or the active `CLAUDE_CONFIG_DIR`). No explicit configuration
+is required: `settingsPolicy` implicitly defaults to `"provider-only"`.
+
+`"provider-only"` activates only when xacpx finds a third-party provider marker
+(`ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN`) in the daemon environment or in the
+user settings `env` object. It then:
+
+- imports only `ANTHROPIC_*` entries from user settings into that Claude session's
+  local acpx process environment;
+- maps `model` to `ANTHROPIC_MODEL` and passes only `modelOverrides` and
+  `availableModels` through the managed adapter's `CLAUDE_MODEL_CONFIG` seam;
+- keeps project/local Claude settings enabled, so their normal precedence is preserved;
+- excludes user hooks, plugins, skills, MCP servers, and permissions;
+- gives the adapter a filtered settings profile while linking Claude's session-state
+  directories back to the original profile, so native list/resume and transcript persistence
+  continue to use the existing history;
+- never writes provider credentials to xacpx config/state, disk, or the bridge protocol.
+
+Normal first-party Claude OAuth and `ANTHROPIC_API_KEY`-only setups do not trigger the
+compatibility layer and retain the existing behavior.
+
+Two explicit overrides are available per Claude agent:
+
+```json
+{
+  "agents": {
+    "claude": {
+      "driver": "claude",
+      "settingsPolicy": "isolated"
+    }
+  }
+}
+```
+
+- `"isolated"`: hide user settings completely, including provider/model fields.
+- `"full-user"`: opt into the original complete user settings. This can execute globally
+  configured hooks/plugins in the daemon context, so use it only when that is intentional.
+
+Daemon-level `ANTHROPIC_*` values override values extracted from user settings. An
+explicit session model still overrides the agent model, which overrides provider/default
+model selection. Do not use the literal model id `default` as a substitute for missing
+provider settings; it is a model choice, not a provider configuration source.
+
+Verify the same agent/workspace path that the daemon will use:
+
+```bash
+xacpx doctor --smoke --agent claude --workspace <workspace> --verbose
+```
 
 Notes:
 

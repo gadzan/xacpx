@@ -76,6 +76,34 @@ test("handles tailSessionHistory over ndjson", async () => {
   }))).resolves.toBe('{"id":"tail-1","ok":true,"result":{"text":"ok:5"}}\n');
 });
 
+test("forwards validated Claude settings policy metadata over ndjson", async () => {
+  let captured: Record<string, unknown> | undefined;
+  const runtime = {
+    ensureSession: async (input: Record<string, unknown>) => {
+      captured = input;
+      return {};
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  await server.handleLine(JSON.stringify({
+    id: "claude-policy",
+    method: "ensureSession",
+    params: {
+      agent: "claude-provider",
+      driver: "claude",
+      settingsPolicy: "provider-only",
+      cwd: "/repo",
+      name: "demo",
+    },
+  }));
+
+  expect(captured).toEqual(expect.objectContaining({
+    driver: "claude",
+    settingsPolicy: "provider-only",
+  }));
+});
+
 test("reuses an existing session when ensure fails but status probe finds it", async () => {
   const calls: string[][] = [];
   const runtime = new BridgeRuntime("acpx", async (_command, args) => {

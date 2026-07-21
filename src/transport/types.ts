@@ -1,4 +1,5 @@
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
+import type { ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
@@ -59,6 +60,9 @@ export interface PermissionPolicy {
 export interface ResolvedSession {
   alias: string;
   agent: string;
+  /** Resolved ACP driver behind the configured agent alias. */
+  driver?: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
   agentCommand?: string;
   /**
    * LLM model id to run this session under (e.g. `gpt-5.2[high]`). Resolved from
@@ -116,6 +120,7 @@ export interface AgentSessionListQuery {
   agentCommand?: string;
   /** Resolved acpx driver for `agent` (e.g. a custom `my-codex` agent has driver `codex`). Used to gate driver-specific list filtering. */
   driver?: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
   cwd: string;
   cursor?: string;
   filterCwd?: string;

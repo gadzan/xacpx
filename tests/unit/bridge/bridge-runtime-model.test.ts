@@ -30,18 +30,31 @@ test("prompt omits --model when no model is set", async () => {
 
 test("setModel issues `set ... model <id>` with the new model", async () => {
   const calls: string[][] = [];
-  const run = async (_command: string, args: string[]) => {
+  const environments: Array<NodeJS.ProcessEnv | undefined> = [];
+  const run = async (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
     calls.push(args);
+    environments.push(options?.env);
     return { code: 0, stdout: "", stderr: "" };
   };
-  const runtime = new BridgeRuntime("acpx", run);
+  const runtime = new BridgeRuntime("acpx", run, undefined, {
+    resolveSpawnEnvironment: ({ model }) => model === "claude-opus-4-8"
+      ? { RESOLVED_MODEL: model }
+      : undefined,
+  });
 
-  await runtime.setModel({ agent: "codex", cwd: "/repo", name: "s1", modelId: "claude-opus-4-8" });
+  await runtime.setModel({
+    agent: "claude-provider",
+    driver: "claude",
+    cwd: "/repo",
+    name: "s1",
+    modelId: "claude-opus-4-8",
+  });
 
   const args = calls[0];
   const setIdx = args.indexOf("set");
   expect(args.slice(setIdx)).toEqual(["set", "-s", "s1", "model", "claude-opus-4-8"]);
   expect(args[args.indexOf("--model") + 1]).toBe("claude-opus-4-8");
+  expect(environments).toEqual([{ RESOLVED_MODEL: "claude-opus-4-8" }]);
 });
 
 test("setModel throws on a non-zero exit", async () => {

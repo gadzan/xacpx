@@ -232,6 +232,7 @@ export class SessionControlService {
       agent,
       ...(agentCommand ? { agentCommand } : {}),
       ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
+      ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
       cwd: workspaceConfig.cwd,
       filterCwd: workspaceConfig.cwd,
     });

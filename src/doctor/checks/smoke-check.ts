@@ -260,6 +260,8 @@ function buildSession(options: {
   return {
     alias: "xacpx-doctor",
     agent: options.agent,
+    driver: agentConfig.driver,
+    settingsPolicy: agentConfig.settingsPolicy,
     // Resolve the SAME way the runtime spawn paths do, so the smoke test validates the
     // real agent command (incl. a locally-preferred native CLI), not acpx's npx fallback.
     ...((): { agentCommand?: string } => {
@@ -268,6 +270,10 @@ function buildSession(options: {
     })(),
     workspace: options.workspace,
     transportSession: `xacpx-doctor-${timestamp}`,
+    // Match SessionService.resolve(): a configured agent model is the default for
+    // every new logical session. Omitting it here made `doctor --smoke` exercise the
+    // adapter default instead of the model the real relay/command path would use.
+    ...(agentConfig.model ? { model: agentConfig.model } : {}),
     replyMode: options.config.channel.replyMode,
     cwd: workspaceConfig.cwd,
   };
@@ -308,6 +314,9 @@ function buildDetails(options: {
     `config path: ${options.runtimePaths.configPath}`,
     `agent: ${options.session.agent} (${options.agentReason})`,
     `workspace: ${options.session.workspace} (${options.workspaceReason})`,
+    options.session.model
+      ? `model: ${options.session.model} (agent default)`
+      : "model: adapter default (no agent default configured)",
     `transport session: ${options.session.transportSession}`,
     `reply: ${JSON.stringify(options.replyText)}`,
   ];

@@ -5,6 +5,7 @@ import {
   type AdapterVersionOverrides,
 } from "../adapters/adapter-catalog";
 import { normalizeAdapterRegistry } from "../adapters/adapter-registry";
+import { isClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 
 import { normalizeWorkspacePath } from "../commands/workspace-path";
 import { isLegacyPluginPackageName, normalizePluginPackageName } from "../plugins/plugin-renames";
@@ -300,12 +301,16 @@ export function parseConfig(
   const agents: Record<string, AgentConfig> = {};
   for (const [name, agent] of Object.entries(rawAgents)) {
     const driver = agent.driver;
+    if ("settingsPolicy" in agent && !isClaudeSettingsPolicy(agent.settingsPolicy)) {
+      throw new Error(`agent "${name}" settingsPolicy must be provider-only, isolated, or full-user`);
+    }
     const command = typeof agent.command === "string" ? resolveAgentCommand(driver, agent.command) : undefined;
     const model = typeof agent.model === "string" && agent.model.trim().length > 0 ? agent.model.trim() : undefined;
     agents[name] = {
       driver,
       ...(command ? { command } : {}),
       ...(model ? { model } : {}),
+      ...(isClaudeSettingsPolicy(agent.settingsPolicy) ? { settingsPolicy: agent.settingsPolicy } : {}),
     };
   }
 
