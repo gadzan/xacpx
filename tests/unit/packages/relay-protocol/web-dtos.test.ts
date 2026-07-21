@@ -117,6 +117,8 @@ test("parseWebServerEvent accepts a turn-usage control event and rejects malform
   // …and reject non-numeric or missing used/size, or it would crash the meter's math.
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1 } })).toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: "x", size: 200000 } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1, size: 2, cost: { amount: "free" } } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1, size: 2, breakdown: { inputTokens: -1 } } })).toBeNull();
 });
 
 test("parseWebServerEvent accepts a queue-updated control event and rejects malformed ones", () => {
@@ -247,6 +249,10 @@ test("accepts a deep-valid state snapshot and rejects mismatched or malformed ro
   expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], instanceId: "i2" }] })).toBeNull();
   expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], parts: [{ type: "text", text: 42 }] }] })).toBeNull();
   expect(roundtrip({ ...snapshot, usage: "bad" })).toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], parts: [{ type: "tool", step: { ...snapshot.turns[0].parts[0].step, durationMs: -1 } }] }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, usage: [{ ...snapshot.usage[0], cost: { amount: "bad" } }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, usage: [{ ...snapshot.usage[0], breakdown: { totalTokens: -1 } }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, commands: [{ ...snapshot.commands[0], commands: [{ name: "compact", hasInput: "yes" }] }] })).toBeNull();
 });
 
 test("rejects a tool-event step with an unknown detail tag", () => {
@@ -316,6 +322,18 @@ test("parseWebClientMessage rejects subscribe with a non-array / non-string inst
   const bad2 = { protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE, payload: { kind: "subscribe", instanceIds: [1, 2] } } as never;
   expect(parseWebClientMessage(bad1)).toBeNull();
   expect(parseWebClientMessage(bad2)).toBeNull();
+});
+
+test("parseWebClientMessage bounds subscribe count and instance id length", () => {
+  const envelope = (instanceIds: string[]) => ({
+    protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE,
+    payload: { kind: "subscribe", instanceIds },
+  }) as never;
+  expect(parseWebClientMessage(envelope(Array.from({ length: 256 }, (_, i) => `i${i}`)))).not.toBeNull();
+  expect(parseWebClientMessage(envelope(Array.from({ length: 257 }, (_, i) => `i${i}`)))).toBeNull();
+  expect(parseWebClientMessage(envelope(["x".repeat(128)]))).not.toBeNull();
+  expect(parseWebClientMessage(envelope(["x".repeat(129)]))).toBeNull();
+  expect(parseWebClientMessage(envelope([""]))).toBeNull();
 });
 
 test("parseWebClientMessage still round-trips terminal-input (regression)", () => {

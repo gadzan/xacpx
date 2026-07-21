@@ -149,6 +149,75 @@ test("loadHistory pulls cached messages for the selected session", async () => {
   expect(store.messages.map((m) => m.text)).toEqual(["hi"]);
 });
 
+test("a delayed history response cannot overwrite a newly selected session", async () => {
+  let resolveBackend!: (response: Response) => void;
+  const backendResponse = new Promise<Response>((resolve) => { resolveBackend = resolve; });
+  vi.stubGlobal("fetch", vi.fn((path: string) => {
+    if (path.includes("/sessions/backend/")) return backendResponse;
+    return Promise.resolve(new Response(JSON.stringify({
+      messages: [{ id: 2, instanceId: "i1", sessionAlias: "frontend", direction: "out", text: "frontend history", createdAt: "t2" }],
+    }), { status: 200 }));
+  }));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const staleLoad = store.loadHistory();
+  store.select("i1", "frontend");
+  await store.loadHistory();
+
+  resolveBackend(new Response(JSON.stringify({
+    messages: [{ id: 1, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "stale backend", createdAt: "t1" }],
+  }), { status: 200 }));
+  await staleLoad;
+
+  expect(store.sessionAlias).toBe("frontend");
+  expect(store.messages.map((message) => message.text)).toEqual(["frontend history"]);
+});
+
+test("turn-finished invalidates an older history read and converges on the persisted final", async () => {
+  let resolveStale!: (response: Response) => void;
+  const staleResponse = new Promise<Response>((resolve) => { resolveStale = resolve; });
+  let calls = 0;
+  const fetchMock = vi.fn(() => {
+    calls += 1;
+    if (calls === 1) return staleResponse;
+    return Promise.resolve(new Response(JSON.stringify({
+      messages: [{ id: 9, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "complete", createdAt: "persisted" }],
+    }), { status: 200 }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "complete" } } as never);
+  const staleLoad = store.loadHistory();
+
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
+  await vi.waitFor(() => expect(store.messages).toEqual([
+    expect.objectContaining({ id: 9, text: "complete" }),
+  ]));
+
+  resolveStale(new Response(JSON.stringify({ messages: [] }), { status: 200 }));
+  await staleLoad;
+  expect(store.messages).toHaveLength(1);
+  expect(store.messages[0]).toMatchObject({ id: 9, text: "complete" });
+});
+
+test("a final row loaded before turn-finished is not left duplicated", async () => {
+  const persisted = { id: 7, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "done", createdAt: "persisted" };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ messages: [persisted] }), { status: 200 })));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "done" } } as never);
+  await store.loadHistory();
+
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
+  await vi.waitFor(() => expect(store.messages).toEqual([expect.objectContaining({ id: 7, text: "done" })]));
+});
+
 test("seedActiveTurns rebuilds a live turn (working dot + HUD) lost on refresh", () => {
   const store = useChatStore();
   store.seedActiveTurns([

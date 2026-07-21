@@ -154,6 +154,12 @@ export const useChatStore = defineStore("chat", () => {
   const HISTORY_PAGE = 100;
   const hasMoreOlder = ref(false);
   const loadingOlder = ref(false);
+  // An async history response may replace messages only if the user is still on
+  // the same selection, it is the newest request, and no transcript mutation
+  // happened while it was in flight.
+  let historyRequestSequence = 0;
+  let transcriptRevision = 0;
+  const touchTranscript = (): void => { transcriptRevision += 1; };
 
   function ensureTurn(k: string): LiveTurn {
     let t = liveTurns.value[k];
@@ -191,6 +197,7 @@ export const useChatStore = defineStore("chat", () => {
         status,
         ...(structured ? { structured } : {}),
       });
+      touchTranscript();
     }
   }
 
@@ -199,6 +206,8 @@ export const useChatStore = defineStore("chat", () => {
     sessionAlias.value = alias;
     persistSelection(id, alias);
     messages.value = [];
+    touchTranscript();
+    historyRequestSequence += 1;
     error.value = "";
     hasMoreOlder.value = false;
     loadingOlder.value = false;
@@ -218,6 +227,8 @@ export const useChatStore = defineStore("chat", () => {
     sessionAlias.value = null;
     clearPersistedSelection();
     messages.value = [];
+    touchTranscript();
+    historyRequestSequence += 1;
     error.value = "";
     hasMoreOlder.value = false;
     loadingOlder.value = false;
@@ -225,10 +236,17 @@ export const useChatStore = defineStore("chat", () => {
 
   async function loadHistory(): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
+    const id = instanceId.value;
+    const alias = sessionAlias.value;
+    const requestSequence = ++historyRequestSequence;
+    const revision = transcriptRevision;
     const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
-      `/api/instances/${instanceId.value}/sessions/${sessionAlias.value}/messages?limit=${HISTORY_PAGE}`,
+      `/api/instances/${id}/sessions/${alias}/messages?limit=${HISTORY_PAGE}`,
     );
+    if (id !== instanceId.value || alias !== sessionAlias.value) return;
+    if (requestSequence !== historyRequestSequence || revision !== transcriptRevision) return;
     messages.value = rows;
+    touchTranscript();
     hasMoreOlder.value = hasMore ?? false;
   }
 
@@ -248,7 +266,10 @@ export const useChatStore = defineStore("chat", () => {
       );
       // The session may have changed while awaiting; only apply if still selected.
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
-      if (older.length > 0) messages.value = [...older, ...messages.value];
+      if (older.length > 0) {
+        messages.value = [...older, ...messages.value];
+        touchTranscript();
+      }
       hasMoreOlder.value = hasMore ?? false;
     } catch {
       // Best-effort: leave hasMoreOlder set so a later scroll retries.
@@ -362,6 +383,7 @@ export const useChatStore = defineStore("chat", () => {
           createdAt: new Date().toISOString(),
           ...(e.scheduled ? { scheduled: e.scheduled } : {}),
         });
+        touchTranscript();
       }
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
@@ -399,6 +421,10 @@ export const useChatStore = defineStore("chat", () => {
       // the finish raced ahead of seedActiveTurns (no live turn existed to flush yet).
       finishedTurns.add(bufKey(event.instanceId, e.sessionAlias));
       flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
+      // Keep the immediate live flush for responsiveness, then converge on the
+      // persisted rows. Starting this request invalidates any older history read,
+      // so HTTP/WS arrival order cannot delete or permanently duplicate the final.
+      if (selected) void loadHistory().catch(() => {});
       // A result that landed in a session the user isn't viewing earns an unread dot.
       if (!selected && (status === "done" || status === "error")) {
         const k = bufKey(event.instanceId, e.sessionAlias);
@@ -424,6 +450,7 @@ export const useChatStore = defineStore("chat", () => {
         : {}),
     };
     messages.value.push(optimistic);
+    touchTranscript();
     // `optimistic` above is the RAW object; the array element is a reactive proxy. Mutating the
     // raw ref (optimistic.failed = true) never trips Vue's set-trap, so the failed bubble would
     // only surface on the next list change (the next message). Mark failure through the proxy so
@@ -443,12 +470,14 @@ export const useChatStore = defineStore("chat", () => {
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";
         entry.failed = true;
+        touchTranscript();
       }
     } catch (e) {
       const isTimeout = e instanceof ApiError && (e.status === 504 || e.code === "timeout");
       if (!isTimeout) {
         error.value = e instanceof ApiError ? e.code : "send-failed";
         entry.failed = true;
+        touchTranscript();
       }
     } finally {
       sending.value = false;
@@ -461,7 +490,10 @@ export const useChatStore = defineStore("chat", () => {
   async function resend(message: ChatMessage): Promise<void> {
     if (!message.failed || message.direction !== "in") return;
     const idx = messages.value.indexOf(message);
-    if (idx >= 0) messages.value.splice(idx, 1);
+    if (idx >= 0) {
+      messages.value.splice(idx, 1);
+      touchTranscript();
+    }
     await send(message.text);
   }
 

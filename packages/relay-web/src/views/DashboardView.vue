@@ -205,6 +205,7 @@ function onSelect(instanceId: string, alias: string) {
 }
 
 let everOnline = false;
+const subscribedInstanceIds = (): string[] => instances.instances.map((instance) => instance.id);
 async function reloadSnapshot() {
   await instances.loadInstances().catch(() => {});
   if (chat.instanceId && chat.sessionAlias) {
@@ -216,18 +217,20 @@ async function reloadSnapshot() {
 function onStatus(online: boolean) {
   conn.setOnline(online);
   if (online) {
-    sendSubscribe(chat.instanceId ? [chat.instanceId] : []);
+    // Subscribe to every owned instance so background turns keep their working/unread
+    // state accurate even while the user is viewing a different instance.
+    sendSubscribe(subscribedInstanceIds());
     if (everOnline) void reloadSnapshot();
     everOnline = true;
   }
 }
 
-// Re-scope the hub fan-out to the viewed instance. The hub replies to subscribe with an
-// ordered, authoritative state-snapshot on the same socket; no racing HTTP live-turn seed
-// is needed here. loadHistory remains separate because completed turns live in SQLite.
-watch(() => chat.instanceId, (id) => {
-  sendSubscribe(id ? [id] : []);
-});
+// Instance additions/removals change the account-wide subscription. Each accepted id gets
+// an ordered authoritative snapshot before subsequent deltas on the same socket.
+watch(
+  () => instances.instances.map((instance) => instance.id).join("\0"),
+  () => { if (conn.online) sendSubscribe(subscribedInstanceIds()); },
+);
 
 onMounted(async () => {
   window.addEventListener("keydown", onGlobalKey);
@@ -243,15 +246,18 @@ onMounted(async () => {
     // If the selected turn completed while the browser was offline, the authoritative
     // snapshot clears its stale live card. Reload persisted history immediately so the
     // completed answer replaces it without requiring a manual page refresh.
-    if (event.kind === "state-snapshot" && event.instanceId === chat.instanceId && chat.sessionAlias) {
+    if (
+      event.kind === "state-snapshot"
+      && event.instanceId === chat.instanceId
+      && chat.sessionAlias
+      && !event.turns.some((turn) => turn.sessionAlias === chat.sessionAlias)
+    ) {
       void chat.loadHistory().catch(() => {});
     }
     tasks.applyEvent(event);
     notices.applyEvent(event);
     terminals.applyEvent(event);
   }, onStatus);
-  // Re-seed any in-flight turns (sidebar "working" dots + live view) lost on refresh.
-  await chat.loadActiveTurns().catch(() => {});
   // Return to the session that was open before the refresh. Gate only on the instance
   // existing (the eager session list may still be loading); loadHistory handles a
   // since-deleted session gracefully by showing an empty pane.

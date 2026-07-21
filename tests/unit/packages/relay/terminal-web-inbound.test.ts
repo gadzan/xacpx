@@ -4,7 +4,10 @@ import { webClientEnvelope, encodeEnvelope, MSG } from "@ganglion/xacpx-relay-pr
 
 function deps(owned: boolean) {
   return {
-    instances: { getOwned: mock((id: string, acc: string) => (owned && id === "i1" && acc === "a1" ? { id: "i1" } : undefined)) },
+    instances: {
+      getOwned: mock((id: string, acc: string) => (owned && id === "i1" && acc === "a1" ? { id: "i1" } : undefined)),
+      listByAccount: mock((acc: string) => (owned && acc === "a1" ? [{ id: "i1" }] : [])),
+    },
     gateway: { sendEvent: mock(() => true) },
     webGateway: { setSubscription: mock(() => {}), send: mock(() => true) },
     stateSnapshot: mock(() => ({ turns: [], usage: [], commands: [] })),
@@ -48,4 +51,6 @@ test("a subscribe frame filters ownership, installs the subscription, and sends 
     { kind: "state-snapshot", instanceId: "i1", turns: [], usage: [], commands: [] },
   ]);
   expect((d.gateway.sendEvent as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((d.instances.listByAccount as ReturnType<typeof mock>).mock.calls).toEqual([["a1"]]);
+  expect((d.instances.getOwned as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });

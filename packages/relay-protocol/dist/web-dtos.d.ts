@@ -102,6 +102,8 @@ export declare function validControlEvent(e: unknown): boolean;
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export declare function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null;
 export declare const WEB_CLIENT_TYPE = "web.client";
+export declare const MAX_WEB_SUBSCRIPTION_INSTANCES = 256;
+export declare const MAX_WEB_INSTANCE_ID_LENGTH = 128;
 export type WebClientMessage = {
     kind: "terminal-input";
     instanceId: string;

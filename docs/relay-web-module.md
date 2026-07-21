@@ -31,7 +31,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 ## 「快照 + 事件增量」模型
 
-看板状态由 REST 初始快照和 WebSocket 有序增量共同维护：
+看板状态由 REST 持久化快照和 WebSocket 有序运行态共同维护：
 
 - **快照**：REST 拉取——`GET /api/instances` 列实例，RPC `control.sessions.list` 列会话，
   会话历史经消息缓存 API 拉取（见服务端 `/api/instances/:id/sessions/:alias/messages`）；
@@ -41,14 +41,18 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `tasksStore.applyEvent`（`scheduled-changed`/`orchestration-changed` 信号触发重拉）、
   `noticesStore.applyEvent`（`instance.notice` toast）；并把 `connectEvents` 的 `onStatus`
   回调接到 `connectionStore.setOnline`，驱动连接徽标。
-- **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe([instanceId])`
-  告诉 hub 本 socket 当前查看的实例，hub 据此只把该实例的 `control-event` 发给它
+- **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe(instanceIds)`
+  告诉 hub 本账号拥有的实例集合，hub 据此只把这些实例的 `control-event` 发给它
   （`instance-status`/`notice` 仍账号全量）。触发点：连接/重连成功（`onStatus(true)` 每次都重发，
-  所以断线重连会自动重新订阅）、切换实例（`watch(chat.instanceId)`）。hub 安装订阅后会在**同一
-  WebSocket** 上立即发送该实例的 `state-snapshot`，随后才会排入新的增量事件。Web 以它权威替换该实例
+  所以断线重连会自动重新订阅）、账号实例列表变化。这样即使用户正在查看另一个实例，后台会话的
+  working/unread 状态也会继续更新。hub 安装订阅后会在**同一 WebSocket** 上依次发送各实例的
+  `state-snapshot`，随后才会排入新的增量事件。Web 以它权威替换对应实例
   的 live turns：补齐离线期间遗漏的 text/tool/subagent parts，并清掉已在离线期间完成的旧 spinner；
   当前会话同时重拉 SQLite 历史以显示最终回复。这样避免了 HTTP active-turn 快照与 WS 增量跨通道竞态。
-  **未发过 `subscribe` = 收全部**（向后兼容），空数组 `[]` = 收无。
+  首屏不再并行调用 `/api/active-turns`；历史请求还带会话、请求代次和本地消息修订校验，旧响应不能覆盖
+  新会话或刚完成的回复。`turn-finished` 会先即时定型 UI，再重拉持久化历史消除临时行重复。
+  **未发过 `subscribe` = 收全部**（向后兼容），空数组 `[]` = 收无；单次订阅最多 256 个、instance id
+  最长 128 字符，浏览器 WS 帧最大 256 KiB，hub 通过一次账号实例查询完成去重和所有权过滤。
 
 ## 右栏任务面板（阶段四）
 

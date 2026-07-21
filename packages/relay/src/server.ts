@@ -24,6 +24,7 @@ import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
 const MAX_MESSAGES_PER_SESSION = 2000;
 const MAX_TOOL_STEPS = 200;
 const REASONING_CAP = 16000;
+const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 
 export interface RelayRuntime {
   db: SqlDriver;
@@ -318,7 +319,10 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     gatewayWss = new WebSocketServer({ noServer: true });
   }
 
-  const webWss = new WebSocketServer({ noServer: true });
+  // Browser upstream frames are small control/terminal messages. Bound them so an
+  // authenticated client cannot force ws to buffer an arbitrarily large subscribe
+  // array or terminal paste before protocol validation runs.
+  const webWss = new WebSocketServer({ noServer: true, maxPayload: WEB_CLIENT_MAX_PAYLOAD_BYTES });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? "").split("?")[0] ?? "";
     if (path === "/ws") {
