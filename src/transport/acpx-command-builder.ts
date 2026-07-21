@@ -101,11 +101,22 @@ export function parseAcpxSessionRecordId(
   stdout: string,
 ): { acpxRecordId: string; agentSessionId?: string } | undefined {
   try {
-    const parsed = JSON.parse(stdout) as { acpxRecordId?: unknown; id?: unknown; agentSessionId?: unknown };
+    const parsed = JSON.parse(stdout) as {
+      acpxRecordId?: unknown;
+      id?: unknown;
+      acpSessionId?: unknown;
+      agentSessionId?: unknown;
+    };
     const acpxRecordId = typeof parsed.acpxRecordId === "string"
       ? parsed.acpxRecordId
       : typeof parsed.id === "string" ? parsed.id : undefined;
-    const agentSessionId = typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
+    const providerSessionId = typeof parsed.agentSessionId === "string" && parsed.agentSessionId.length > 0
+      ? parsed.agentSessionId
+      : undefined;
+    const acpSessionId = typeof parsed.acpSessionId === "string" && parsed.acpSessionId.length > 0
+      ? parsed.acpSessionId
+      : undefined;
+    const agentSessionId = providerSessionId ?? acpSessionId;
     if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
       return { acpxRecordId, agentSessionId };
     }

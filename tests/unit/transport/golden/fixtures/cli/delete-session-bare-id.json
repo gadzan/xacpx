@@ -1,6 +1,6 @@
 {
   "record": [
-    "runCommand(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions show backend:demo @30000)",
+    "runCommand(acpx --format json --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions show backend:demo @30000)",
     "runCommand(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions close backend:demo @30000)"
   ],
   "outcome": {}

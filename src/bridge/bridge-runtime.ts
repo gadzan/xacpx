@@ -569,7 +569,7 @@ export class BridgeRuntime {
       "sessions",
       "show",
       input.name,
-    ]));
+    ], { format: "json" }));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "read-session-record",
