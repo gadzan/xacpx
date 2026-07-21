@@ -125,7 +125,7 @@ var WEB_EVENT_TYPE = "web.event";
 function webEventEnvelope(event) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
-var WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "notice"]);
+var WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "state-snapshot", "notice"]);
 var CONTROL_EVENT_TYPE_MAP = {
   "turn-output": true,
   "turn-started": true,
@@ -186,6 +186,41 @@ function validToolStep(s) {
       return false;
   }
   return true;
+}
+function validTurnPart(p) {
+  if (typeof p !== "object" || p === null)
+    return false;
+  const c = p;
+  if (c.type === "text" || c.type === "reasoning")
+    return typeof c.text === "string";
+  if (c.type === "tool")
+    return validToolStep(c.step);
+  return false;
+}
+function validStateSnapshot(candidate) {
+  const instanceId = candidate.instanceId;
+  if (typeof instanceId !== "string")
+    return false;
+  if (!Array.isArray(candidate.turns) || !candidate.turns.every((turn) => {
+    if (typeof turn !== "object" || turn === null)
+      return false;
+    const c = turn;
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.parts) && c.parts.every(validTurnPart) && (c.status === "working" || c.status === "streaming") && typeof c.startedAt === "number";
+  }))
+    return false;
+  if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
+    if (typeof usage !== "object" || usage === null)
+      return false;
+    const c = usage;
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
+  }))
+    return false;
+  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const c = entry;
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every((command) => command !== null && typeof command === "object" && typeof command.name === "string");
+  });
 }
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
@@ -252,6 +287,8 @@ function parseWebServerEvent(envelope) {
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean")
     return null;
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event))
+    return null;
+  if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate))
     return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice))
     return null;

@@ -71,10 +71,21 @@ export interface SessionCommandsSnapshotDto {
   commands: AgentCommandDto[];
 }
 
+/** Authoritative per-instance state sent on the same WebSocket immediately after
+ *  a browser subscription is installed. Because the snapshot and later deltas
+ *  share one ordered channel, the browser can safely replace stale pre-disconnect
+ *  turns without racing an HTTP snapshot against live control events. */
+export interface InstanceStateSnapshotDto {
+  turns: LiveTurnSnapshotDto[];
+  usage: SessionUsageSnapshotDto[];
+  commands: SessionCommandsSnapshotDto[];
+}
+
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent =
   | { kind: "instance-status"; instanceId: string; online: boolean }
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
+  | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
   | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload };
 
 /** Wrap a server→web push event in a relay envelope. */
@@ -82,7 +93,7 @@ export function webEventEnvelope(event: WebServerEvent): RelayEnvelope {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
 
-const WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "notice"]);
+const WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "state-snapshot", "notice"]);
 
 /** Compile-time-exhaustive whitelist of inner control-event discriminants. The
  *  `satisfies Record<ControlEventDto["type"], true>` clause makes tsc fail if a new
@@ -152,6 +163,46 @@ function validToolStep(s: unknown): boolean {
     if (!validToolDetail(c.detail as Record<string, unknown>)) return false;
   }
   return true;
+}
+
+function validTurnPart(p: unknown): boolean {
+  if (typeof p !== "object" || p === null) return false;
+  const c = p as Record<string, unknown>;
+  if (c.type === "text" || c.type === "reasoning") return typeof c.text === "string";
+  if (c.type === "tool") return validToolStep(c.step);
+  return false;
+}
+
+function validStateSnapshot(candidate: Record<string, unknown>): boolean {
+  const instanceId = candidate.instanceId;
+  if (typeof instanceId !== "string") return false;
+  if (!Array.isArray(candidate.turns) || !candidate.turns.every((turn) => {
+    if (typeof turn !== "object" || turn === null) return false;
+    const c = turn as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.sessionAlias === "string"
+      && Array.isArray(c.parts)
+      && c.parts.every(validTurnPart)
+      && (c.status === "working" || c.status === "streaming")
+      && typeof c.startedAt === "number";
+  })) return false;
+  if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
+    if (typeof usage !== "object" || usage === null) return false;
+    const c = usage as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.sessionAlias === "string"
+      && typeof c.used === "number"
+      && typeof c.size === "number";
+  })) return false;
+  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const c = entry as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.sessionAlias === "string"
+      && Array.isArray(c.commands)
+      && c.commands.every((command) => command !== null && typeof command === "object"
+        && typeof (command as Record<string, unknown>).name === "string");
+  });
 }
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
@@ -228,6 +279,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind)) return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
+  if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
   return payload as WebServerEvent;
 }

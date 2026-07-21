@@ -31,7 +31,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 ## 「快照 + 事件增量」模型
 
-看板状态由两条路径维护，重连先拉快照再订阅事件：
+看板状态由 REST 初始快照和 WebSocket 有序增量共同维护：
 
 - **快照**：REST 拉取——`GET /api/instances` 列实例，RPC `control.sessions.list` 列会话，
   会话历史经消息缓存 API 拉取（见服务端 `/api/instances/:id/sessions/:alias/messages`）；
@@ -44,9 +44,11 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe([instanceId])`
   告诉 hub 本 socket 当前查看的实例，hub 据此只把该实例的 `control-event` 发给它
   （`instance-status`/`notice` 仍账号全量）。触发点：连接/重连成功（`onStatus(true)` 每次都重发，
-  所以断线重连会自动重新订阅）、切换实例（`watch(chat.instanceId)`）。切换实例后还会
-  `loadActiveTurns()` 重新补种在别处订阅期间漏掉的在飞回合。**未发过 `subscribe` = 收全部**
-  （向后兼容），空数组 `[]` = 收无。
+  所以断线重连会自动重新订阅）、切换实例（`watch(chat.instanceId)`）。hub 安装订阅后会在**同一
+  WebSocket** 上立即发送该实例的 `state-snapshot`，随后才会排入新的增量事件。Web 以它权威替换该实例
+  的 live turns：补齐离线期间遗漏的 text/tool/subagent parts，并清掉已在离线期间完成的旧 spinner；
+  当前会话同时重拉 SQLite 历史以显示最终回复。这样避免了 HTTP active-turn 快照与 WS 增量跨通道竞态。
+  **未发过 `subscribe` = 收全部**（向后兼容），空数组 `[]` = 收无。
 
 ## 右栏任务面板（阶段四）
 
@@ -96,8 +98,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 - **API 客户端始终带 JSON content-type**：无 body 的 mutating 请求也发 `content-type: application/json`，
   与服务端新增的 CSRF 415 守卫对齐（不会被 415 误杀），保留 CSRF 预检属性（见 docs/relay-module.md）。
-- **重连重拉快照 + 重连定时器清理**：重连后重新拉一遍快照（实例 + 当前会话的历史/任务）避免 ghost state；
-  `connectEvents` 在 teardown 时清掉待定的重连定时器，避免泄漏 socket。
+- **重连有序快照 + 重连定时器清理**：重连后重新拉实例、当前会话历史/任务；在飞回合由 subscribe 后
+  同 socket 返回的 `state-snapshot` 权威校准，避免 ghost state 和离线分片缺失。`connectEvents` 在 teardown
+  时清掉待定的重连定时器，避免泄漏 socket。
 - **聊天错误浮现**：回合失败（`turn-finished ok:false`）现在浮现 `errorMessage` 并把队尾消息标记为失败；
   `chat.error` 渲染为可关闭的横幅；切换会话时清空错误；发送失败把乐观插入的消息标记为失败。
 - **取消运行中回合**：可从聊天面板取消在途回合（`control.prompt.cancel`）。

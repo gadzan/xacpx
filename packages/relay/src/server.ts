@@ -5,7 +5,7 @@ import { WebSocketServer } from "ws";
 
 import {
   MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
-  type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
+  type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent,
 } from "@ganglion/xacpx-relay-protocol";
 
@@ -32,6 +32,7 @@ export interface RelayRuntime {
   messages: MessageStore;
   gateway: InstanceGateway;
   webGateway: WebGateway;
+  stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
   app: ReturnType<typeof createApp>;
   close(): void;
 }
@@ -109,6 +110,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     }
     return out;
   };
+  const stateSnapshot = (instanceId: string): InstanceStateSnapshotDto => ({
+    turns: listActiveTurns(instanceId),
+    usage: listSessionUsage(instanceId),
+    commands: listSessionCommands(instanceId),
+  });
   // Coalescing appenders — consecutive same-type chunks merge into one part.
   const pushTextPart = (a: TurnAccumulator, chunk: string) => {
     const last = a.parts[a.parts.length - 1];
@@ -240,7 +246,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     logger,
   });
-  return { db, accounts, instances, messages, gateway, webGateway, app, close: () => db.close() };
+  return { db, accounts, instances, messages, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
 }
 
 export interface StartRelayOptions {
@@ -321,7 +327,12 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       if (!account) { socket.destroy(); return; }
       webWss.handleUpgrade(req, socket, head, (ws) => {
         runtime.webGateway.register(account.id, ws);
-        ws.on("message", (data: unknown) => handleWebClientMessage({ instances: runtime.instances, gateway: runtime.gateway, webGateway: runtime.webGateway }, account.id, ws, String(data)));
+        ws.on("message", (data: unknown) => handleWebClientMessage({
+          instances: runtime.instances,
+          gateway: runtime.gateway,
+          webGateway: runtime.webGateway,
+          stateSnapshot: runtime.stateSnapshot,
+        }, account.id, ws, String(data)));
       });
       return;
     }

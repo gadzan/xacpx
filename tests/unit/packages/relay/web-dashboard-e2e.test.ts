@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 
-import { decodeEnvelope, parseWebServerEvent } from "../../../../packages/relay-protocol/src/index";
+import { decodeEnvelope, encodeEnvelope, parseWebServerEvent, webClientEnvelope } from "../../../../packages/relay-protocol/src/index";
 import { startRelayServer } from "../../../../packages/relay/src/server";
 import { CredentialStore } from "../../../../packages/channel-relay/src/credential-store";
 import { createControlBridge, subscribeControlEvents } from "../../../../packages/channel-relay/src/control-bridge";
@@ -83,8 +83,29 @@ test("instance event flows to web client and is cached as history", async () => 
   // The advertised command list rides along too so a refresh restores the "/" hints.
   expect(commands).toEqual([{ instanceId: instId0, sessionAlias: "backend", commands: [{ name: "compact", description: "Compact" }] }]);
 
+  // Subscription acknowledgement is an authoritative snapshot on the SAME socket.
+  // Later streamed deltas are therefore ordered after it, unlike the HTTP snapshot.
+  ws.send(encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: [instId0] })));
+  await new Promise((r) => setTimeout(r, 50));
+  const stateSnapshot = events
+    .map((raw) => { const d = decodeEnvelope(raw); return d.ok ? parseWebServerEvent(d.envelope) : null; })
+    .find((event) => event?.kind === "state-snapshot");
+  expect(stateSnapshot).toMatchObject({
+    kind: "state-snapshot",
+    instanceId: instId0,
+    turns: [{ sessionAlias: "backend", status: "streaming", parts: [{ type: "text", text: "done" }] }],
+  });
+
   listeners.forEach((l) => l({ type: "turn-finished", chatKey: "relay:x", sessionAlias: "backend", ok: true }));
   await new Promise((r) => setTimeout(r, 200));
+
+  const orderedWebEvents = events
+    .map((raw) => { const d = decodeEnvelope(raw); return d.ok ? parseWebServerEvent(d.envelope) : null; })
+    .filter((event) => event !== null);
+  const snapshotIndex = orderedWebEvents.findIndex((event) => event.kind === "state-snapshot");
+  const finishIndex = orderedWebEvents.findIndex((event) => event.kind === "control-event" && event.event.type === "turn-finished");
+  expect(snapshotIndex).toBeGreaterThanOrEqual(0);
+  expect(finishIndex).toBeGreaterThan(snapshotIndex);
 
   // After the turn settles, the turn snapshot is empty (flushed to history) — but the
   // usage meter is session-scoped and PERSISTS, so the context bar survives a refresh.

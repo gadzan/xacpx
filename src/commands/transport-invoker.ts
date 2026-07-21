@@ -300,7 +300,7 @@ export class TransportInvoker {
           ...(onCommands ? { onCommands } : {}),
         });
 
-        const isClaude = (session.driver ?? session.agent) === "claude";
+        const isClaude = (this.config?.agents[session.agent]?.driver ?? session.agent) === "claude";
         if (!isClaude || asyncClaudeToolCallIds.size === 0 || !reply || !forwardToolEvent) {
           return result;
         }

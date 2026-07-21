@@ -183,6 +183,56 @@ test("a turn-finished racing ahead of seedActiveTurns does not resurrect the fin
   expect(store.sessionAttention("i1", "fresh")).toBe("working"); // guard isn't over-broad
 });
 
+test("an ordered state snapshot replaces content missed while the browser was offline", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "A" } } as never);
+
+  store.applyEvent({
+    kind: "state-snapshot", instanceId: "i1",
+    turns: [{ instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 1, parts: [{ type: "text", text: "ABC" }] }],
+    usage: [], commands: [],
+  } as never);
+  expect(store.streaming).toBe("ABC");
+
+  // Same-socket ordering guarantees this delta follows the snapshot and is appended once.
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "D" } } as never);
+  expect(store.streaming).toBe("ABCD");
+});
+
+test("a snapshot clears a stale finished turn without touching another instance", () => {
+  const store = useChatStore();
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "done-offline" } } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i2", event: { type: "turn-started", chatKey: "c", sessionAlias: "still-live" } } as never);
+  expect(store.sessionAttention("i1", "done-offline")).toBe("working");
+
+  store.applyEvent({ kind: "state-snapshot", instanceId: "i1", turns: [], usage: [], commands: [] } as never);
+  expect(store.sessionAttention("i1", "done-offline")).toBe("idle");
+  expect(store.sessionAttention("i2", "still-live")).toBe("working");
+});
+
+test("a state snapshot restores a complete folded subagent trace", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({
+    kind: "state-snapshot", instanceId: "i1",
+    turns: [{
+      instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 1,
+      parts: [
+        { type: "tool", step: { toolCallId: "agent-1", toolName: "Agent", kind: "think", status: "running", title: "Research", isSubagent: true } },
+        { type: "tool", step: { toolCallId: "grep-1", parentToolCallId: "agent-1", toolName: "Grep", kind: "search", status: "success", title: "wechat" } },
+        { type: "text", text: "主 Agent 继续整理" },
+      ],
+    }],
+    usage: [], commands: [],
+  } as never);
+  expect(store.liveToolSteps).toHaveLength(2);
+  expect(store.liveToolSteps[0]).toMatchObject({ isSubagent: true });
+  expect(store.liveToolSteps[1]).toMatchObject({ parentToolCallId: "agent-1" });
+  expect(store.streaming).toBe("主 Agent 继续整理");
+});
+
 test("loadActiveTurns fetches the in-flight snapshot and seeds it", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
     turns: [{ instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 5, parts: [{ type: "text", text: "live" }] }],

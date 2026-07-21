@@ -230,6 +230,25 @@ test("accepts subagent hierarchy fields and rejects malformed hierarchy metadata
   expect(roundtrip(event({ parentToolCallId: 42 }))).toBeNull();
 });
 
+test("accepts a deep-valid state snapshot and rejects mismatched or malformed rows", () => {
+  const snapshot = {
+    kind: "state-snapshot", instanceId: "i1",
+    turns: [{
+      instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 10,
+      parts: [
+        { type: "tool", step: { toolCallId: "agent-1", toolName: "Agent", kind: "think", status: "running", title: "Explore", isSubagent: true } },
+        { type: "text", text: "working" },
+      ],
+    }],
+    usage: [{ instanceId: "i1", sessionAlias: "backend", used: 10, size: 100 }],
+    commands: [{ instanceId: "i1", sessionAlias: "backend", commands: [{ name: "compact" }] }],
+  };
+  expect(roundtrip(snapshot)).not.toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], instanceId: "i2" }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], parts: [{ type: "text", text: 42 }] }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, usage: "bad" })).toBeNull();
+});
+
 test("rejects a tool-event step with an unknown detail tag", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

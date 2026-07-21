@@ -23,6 +23,10 @@ vi.mock("../api/events", () => ({
 
 // DashboardView now uses useRouter()/<router-link>; mock to avoid a real router.
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// Dashboard imports InstanceTree -> AgentIcon at module evaluation time. Stub the raw
+// SVG catalog so this behavioral suite does not depend on Windows being able to open
+// every optional @lobehub icon file (some hosts return EPERM for openclaw-color.svg).
+vi.mock("../lib/agent-icons", () => ({ agentIconSvg: () => null }));
 
 import DashboardView from "../views/DashboardView.vue";
 import { useInstancesStore } from "../stores/instances";
@@ -88,7 +92,7 @@ test("re-pulls the snapshot on reconnect", async () => {
   expect(spy).toHaveBeenCalled();
 });
 
-test("subscribes to the active instance on connect and on instance change", async () => {
+test("subscribes to the active instance and relies on its ordered WS snapshot", async () => {
   const chat = useChatStore();
   const loadActiveTurns = vi.spyOn(chat, "loadActiveTurns").mockResolvedValue(undefined);
   mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
@@ -98,18 +102,15 @@ test("subscribes to the active instance on connect and on instance change", asyn
   captured.onStatus?.(true);
   expect(sendSubscribe).toHaveBeenLastCalledWith([]);
 
-  // Clear the mount-time loadActiveTurns call (onMounted seeds it once) so the assertion below
-  // isolates the SWITCH-triggered re-seed — otherwise the check passes even if the watch's
-  // loadActiveTurns call were reverted.
+  // Initial page bootstrap still uses the global HTTP snapshot for sidebar state.
   loadActiveTurns.mockClear();
 
-  // Selecting an instance re-scopes the socket to it, and re-seeds any in-flight turns that
-  // were dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the
-  // global in-flight snapshot — the real self-heal on switch).
+  // Selecting an instance re-scopes the socket. The hub responds on that socket with the
+  // authoritative snapshot, so selection must not start a racing HTTP active-turn request.
   chat.select("iA", "backend");
   await flushPromises();
   expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
-  expect(loadActiveTurns).toHaveBeenCalledTimes(1);
+  expect(loadActiveTurns).not.toHaveBeenCalled();
 });
 
 test("re-subscribes on reconnect, not only on the first connect", async () => {
@@ -133,4 +134,18 @@ test("re-subscribes on reconnect, not only on the first connect", async () => {
   await flushPromises();
   expect(sendSubscribe).toHaveBeenCalledTimes(1);
   expect(sendSubscribe).toHaveBeenLastCalledWith(["iA"]);
+});
+
+test("an ordered snapshot for the selected instance reloads completed history", async () => {
+  const chat = useChatStore();
+  vi.spyOn(chat, "loadActiveTurns").mockResolvedValue(undefined);
+  const loadHistory = vi.spyOn(chat, "loadHistory").mockResolvedValue(undefined);
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+
+  chat.select("iA", "backend");
+  loadHistory.mockClear();
+  captured.onEvent?.({ kind: "state-snapshot", instanceId: "iA", turns: [], usage: [], commands: [] });
+  await flushPromises();
+  expect(loadHistory).toHaveBeenCalledTimes(1);
 });

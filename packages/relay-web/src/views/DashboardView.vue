@@ -207,7 +207,6 @@ function onSelect(instanceId: string, alias: string) {
 let everOnline = false;
 async function reloadSnapshot() {
   await instances.loadInstances().catch(() => {});
-  await chat.loadActiveTurns().catch(() => {}); // re-seed live HUDs / working dots
   if (chat.instanceId && chat.sessionAlias) {
     await instances.loadSessions(chat.instanceId).catch(() => {});
     await chat.loadHistory().catch(() => {});
@@ -223,12 +222,11 @@ function onStatus(online: boolean) {
   }
 }
 
-// Re-scope the hub fan-out to the viewed instance, and re-seed any in-flight turns that were
-// dropped for this socket while it was subscribed elsewhere (loadActiveTurns is the global
-// in-flight snapshot — the real self-heal, alongside onSelect's loadHistory).
+// Re-scope the hub fan-out to the viewed instance. The hub replies to subscribe with an
+// ordered, authoritative state-snapshot on the same socket; no racing HTTP live-turn seed
+// is needed here. loadHistory remains separate because completed turns live in SQLite.
 watch(() => chat.instanceId, (id) => {
   sendSubscribe(id ? [id] : []);
-  if (id) void chat.loadActiveTurns().catch(() => {});
 });
 
 onMounted(async () => {
@@ -242,6 +240,12 @@ onMounted(async () => {
   disconnect = connectEvents((event) => {
     instances.applyEvent(event);
     chat.applyEvent(event);
+    // If the selected turn completed while the browser was offline, the authoritative
+    // snapshot clears its stale live card. Reload persisted history immediately so the
+    // completed answer replaces it without requiring a manual page refresh.
+    if (event.kind === "state-snapshot" && event.instanceId === chat.instanceId && chat.sessionAlias) {
+      void chat.loadHistory().catch(() => {});
+    }
     tasks.applyEvent(event);
     notices.applyEvent(event);
     terminals.applyEvent(event);

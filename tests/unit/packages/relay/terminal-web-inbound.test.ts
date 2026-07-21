@@ -6,7 +6,8 @@ function deps(owned: boolean) {
   return {
     instances: { getOwned: mock((id: string, acc: string) => (owned && id === "i1" && acc === "a1" ? { id: "i1" } : undefined)) },
     gateway: { sendEvent: mock(() => true) },
-    webGateway: { setSubscription: mock(() => {}) },
+    webGateway: { setSubscription: mock(() => {}), send: mock(() => true) },
+    stateSnapshot: mock(() => ({ turns: [], usage: [], commands: [] })),
   };
 }
 const sock = {} as never; // opaque socket handle; identity is all setSubscription needs
@@ -38,9 +39,13 @@ test("garbage upstream frame is ignored", () => {
   expect((d.gateway.sendEvent as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });
 
-test("a subscribe frame updates the socket subscription and is NOT forwarded to the connector", () => {
+test("a subscribe frame filters ownership, installs the subscription, and sends an ordered snapshot", () => {
   const d = deps(true);
   handleWebClientMessage(d as never, "a1", sock, encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1", "i2"] })));
-  expect((d.webGateway.setSubscription as ReturnType<typeof mock>).mock.calls[0]).toEqual([sock, ["i1", "i2"]]);
+  expect((d.webGateway.setSubscription as ReturnType<typeof mock>).mock.calls[0]).toEqual([sock, ["i1"]]);
+  expect((d.webGateway.send as ReturnType<typeof mock>).mock.calls[0]).toEqual([
+    sock,
+    { kind: "state-snapshot", instanceId: "i1", turns: [], usage: [], commands: [] },
+  ]);
   expect((d.gateway.sendEvent as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });

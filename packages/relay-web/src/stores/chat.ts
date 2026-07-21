@@ -271,6 +271,42 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** Replace one instance's live state from the ordered subscription snapshot.
+   *  Unlike the best-effort HTTP seed above, this is authoritative: frames sent
+   *  before it are represented by the snapshot, and later deltas arrive after it
+   *  on the same WebSocket. Clearing absent turns is what releases stale spinners
+   *  when a turn completed while the browser was disconnected. */
+  function applyStateSnapshot(
+    instId: string,
+    turns: LiveTurnSnapshotDto[],
+    usageSnapshot: SessionUsageSnapshotDto[],
+    commandsSnapshot: SessionCommandsSnapshotDto[],
+  ): void {
+    const prefix = `${instId}\0`;
+
+    const nextTurns = { ...liveTurns.value };
+    for (const k of Object.keys(nextTurns)) if (k.startsWith(prefix)) delete nextTurns[k];
+    for (const turn of turns) {
+      const k = bufKey(instId, turn.sessionAlias);
+      nextTurns[k] = { parts: turn.parts as TurnPart[], status: turn.status, startedAt: turn.startedAt };
+    }
+    liveTurns.value = nextTurns;
+
+    // A snapshot is a newer ordering boundary than any finish guard retained from
+    // the old socket. Active rows in it are real new/current turns, not stale seeds.
+    for (const k of [...finishedTurns]) if (k.startsWith(prefix)) finishedTurns.delete(k);
+
+    const nextUsage = { ...usage.value };
+    for (const k of Object.keys(nextUsage)) if (k.startsWith(prefix)) delete nextUsage[k];
+    usage.value = nextUsage;
+    seedUsage(usageSnapshot);
+
+    const nextCommands = { ...agentCommands.value };
+    for (const k of Object.keys(nextCommands)) if (k.startsWith(prefix)) delete nextCommands[k];
+    agentCommands.value = nextCommands;
+    seedCommands(commandsSnapshot);
+  }
+
   /** Seed the per-session context-usage meter from the hub's snapshot (after a
    *  refresh/reconnect), so the usage bar reappears without waiting for the next turn. */
   function seedUsage(snapshots: SessionUsageSnapshotDto[]): void {
@@ -301,6 +337,10 @@ export const useChatStore = defineStore("chat", () => {
       for (const k of Object.keys(liveTurns.value)) if (k.startsWith(prefix)) delete liveTurns.value[k];
       const next = new Set([...unread.value].filter((k) => !k.startsWith(prefix)));
       if (next.size !== unread.value.size) unread.value = next;
+      return;
+    }
+    if (event.kind === "state-snapshot") {
+      applyStateSnapshot(event.instanceId, event.turns, event.usage, event.commands);
       return;
     }
     if (event.kind !== "control-event") return;
@@ -455,5 +495,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyEvent, send, resend, cancel, cancelQueuedItem };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem };
 });
