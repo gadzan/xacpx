@@ -177,12 +177,12 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         await pendingSet;
         if (effortActiveContext !== context || effortRevision !== revision) return;
       }
-      const r = await api.rpc<SessionEffortResult>(instanceId, "control.session.effort.get", { sessionAlias: alias });
+      const effortResult = await api.rpc<SessionEffortResult>(instanceId, "control.session.effort.get", { sessionAlias: alias });
       if (effortActiveContext !== context || effortRevision !== revision) return;
-      if (isErrorPayload(r)) { clearEffortState(); return; }
-      effortCurrent.value = typeof r.current === "string" ? r.current : undefined;
+      if (isErrorPayload(effortResult)) { clearEffortState(); return; }
+      effortCurrent.value = typeof effortResult.current === "string" ? effortResult.current : undefined;
       authoritativeEfforts.set(context, { revision, current: effortCurrent.value });
-      effortAvailable.value = Array.isArray(r.available) ? r.available : [];
+      effortAvailable.value = Array.isArray(effortResult.available) ? effortResult.available : [];
     } catch {
       if (effortActiveContext === context && effortRevision === revision) clearEffortState();
     } finally {
@@ -200,19 +200,19 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     effortCurrent.value = effort;
     const operation = (async (): Promise<boolean> => {
       try {
-        const r = await api.rpc<SessionEffortSetResult>(instanceId, "control.session.effort.set", {
+        const setResult = await api.rpc<SessionEffortSetResult>(instanceId, "control.session.effort.set", {
           sessionAlias: alias,
           effort,
         });
-        if (isErrorPayload(r) || r.ok === false) {
+        if (isErrorPayload(setResult) || setResult.ok === false) {
           if (effortActiveContext === context && effortRevision === revision) {
-            effortCurrent.value = typeof r === "object" && r !== null && "current" in r
-              && typeof r.current === "string" ? r.current : previous;
-            reportEffortSwitchFailure(isErrorPayload(r) ? r.error.message : `requested ${effort} was not applied`);
+            effortCurrent.value = typeof setResult === "object" && setResult !== null && "current" in setResult
+              && typeof setResult.current === "string" ? setResult.current : previous;
+            reportEffortSwitchFailure(isErrorPayload(setResult) ? setResult.error.message : `requested ${effort} was not applied`);
           }
           return false;
         }
-        const observed = typeof r.current === "string" ? r.current : effort;
+        const observed = typeof setResult.current === "string" ? setResult.current : effort;
         authoritativeEfforts.set(context, { revision, current: observed });
         if (effortActiveContext === context && effortRevision === revision) effortCurrent.value = observed;
         return true;

@@ -150,6 +150,37 @@ test("getSessionEffort reads the adapter-advertised thought-level config option"
   expect(args.slice(0, 2)).toEqual(["--format", "json"]);
 });
 
+test("getSessionEffort flattens adapter-advertised grouped effort options", async () => {
+  const record = JSON.stringify({
+    acpx: {
+      config_options: [{
+        id: "reasoning_effort",
+        category: "thought_level",
+        currentValue: "high",
+        options: [
+          {
+            group: "standard",
+            name: "Standard",
+            options: [{ value: "low" }, { value: "medium" }, { value: "high" }],
+          },
+          {
+            group: "extended",
+            name: "Extended",
+            options: [{ value: "xhigh" }],
+          },
+        ],
+      }],
+    },
+  });
+  const run = mock(async () => ({ code: 0, stdout: record, stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+
+  await expect(transport.getSessionEffort(modelSession)).resolves.toEqual({
+    current: "high",
+    available: ["low", "medium", "high", "xhigh"],
+  });
+});
+
 test("setSessionEffort uses the config id advertised by the adapter", async () => {
   const calls: string[][] = [];
   const run = mock(async (_command: string, args: string[]) => {

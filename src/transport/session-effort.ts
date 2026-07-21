@@ -25,8 +25,7 @@ export function parseSessionEffortRecord(raw: string): EffortConfigOption | unde
     if (!isRecord(candidate) || typeof candidate.id !== "string") continue;
     if (candidate.category !== "thought_level" && !EFFORT_CONFIG_IDS.has(candidate.id)) continue;
     const available = Array.isArray(candidate.options)
-      ? candidate.options.flatMap((option) =>
-          isRecord(option) && typeof option.value === "string" ? [option.value] : [])
+      ? candidate.options.flatMap(effortOptionValues)
       : [];
     return {
       configId: candidate.id,
@@ -35,6 +34,12 @@ export function parseSessionEffortRecord(raw: string): EffortConfigOption | unde
     };
   }
   return undefined;
+}
+
+function effortOptionValues(option: unknown): string[] {
+  if (!isRecord(option)) return [];
+  if (typeof option.value === "string") return [option.value];
+  return Array.isArray(option.options) ? option.options.flatMap(effortOptionValues) : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
