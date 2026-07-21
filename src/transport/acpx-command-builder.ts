@@ -110,9 +110,13 @@ export function parseAcpxSessionRecordId(
     const acpxRecordId = typeof parsed.acpxRecordId === "string"
       ? parsed.acpxRecordId
       : typeof parsed.id === "string" ? parsed.id : undefined;
-    const agentSessionId = typeof parsed.acpSessionId === "string"
+    const providerSessionId = typeof parsed.agentSessionId === "string" && parsed.agentSessionId.length > 0
+      ? parsed.agentSessionId
+      : undefined;
+    const acpSessionId = typeof parsed.acpSessionId === "string" && parsed.acpSessionId.length > 0
       ? parsed.acpSessionId
-      : typeof parsed.agentSessionId === "string" ? parsed.agentSessionId : undefined;
+      : undefined;
+    const agentSessionId = providerSessionId ?? acpSessionId;
     if (acpxRecordId && /^[\w.:-]+$/.test(acpxRecordId) && acpxRecordId.length >= 8) {
       return { acpxRecordId, agentSessionId };
     }

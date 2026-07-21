@@ -80,6 +80,21 @@ describe("parseAcpxSessionRecordId", () => {
     expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","acpSessionId":"z"}')).toEqual({ acpxRecordId: "abcd1234", agentSessionId: "z" }));
   test("json acpxRecordId + agentSessionId", () =>
     expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","agentSessionId":"z"}')).toEqual({ acpxRecordId: "abcd1234", agentSessionId: "z" }));
+  test("prefers provider-native agentSessionId when both session ids are present", () =>
+    expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","acpSessionId":"acp-session","agentSessionId":"native-session"}')).toEqual({
+      acpxRecordId: "abcd1234",
+      agentSessionId: "native-session",
+    }));
+  test("falls back to acpSessionId when agentSessionId is empty", () =>
+    expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","acpSessionId":"acp-session","agentSessionId":""}')).toEqual({
+      acpxRecordId: "abcd1234",
+      agentSessionId: "acp-session",
+    }));
+  test("ignores an empty acpSessionId when agentSessionId is present", () =>
+    expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","acpSessionId":"","agentSessionId":"native-session"}')).toEqual({
+      acpxRecordId: "abcd1234",
+      agentSessionId: "native-session",
+    }));
   test("json id fallback", () =>
     expect(parseAcpxSessionRecordId('{"id":"abcd1234"}')).toEqual({ acpxRecordId: "abcd1234", agentSessionId: undefined }));
   test("bare first line when JSON.parse throws", () =>
