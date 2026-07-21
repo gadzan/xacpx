@@ -584,7 +584,7 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ]), this.withSpawnEnvironment(session, {
+    ], "json"), this.withSpawnEnvironment(session, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "read-session-record",
     }));
@@ -915,8 +915,8 @@ export class AcpxCliTransport implements SessionTransport {
     };
   }
 
-  private buildArgs(session: ResolvedSession, tail: string[]): string[] {
-    return sharedBuildSessionArgs(this.sessionInput(session), tail, { format: "quiet" });
+  private buildArgs(session: ResolvedSession, tail: string[], format: "quiet" | "json" = "quiet"): string[] {
+    return sharedBuildSessionArgs(this.sessionInput(session), tail, { format });
   }
 
   private buildAgentQueryArgs(query: AgentSessionListQuery, format: "json" | "quiet", tail: string[]): string[] {

@@ -76,6 +76,8 @@ describe("isMissingAcpxSessionError", () => {
 });
 
 describe("parseAcpxSessionRecordId", () => {
+  test("acpx 0.12 json acpxRecordId + acpSessionId", () =>
+    expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","acpSessionId":"z"}')).toEqual({ acpxRecordId: "abcd1234", agentSessionId: "z" }));
   test("json acpxRecordId + agentSessionId", () =>
     expect(parseAcpxSessionRecordId('{"acpxRecordId":"abcd1234","agentSessionId":"z"}')).toEqual({ acpxRecordId: "abcd1234", agentSessionId: "z" }));
   test("json id fallback", () =>

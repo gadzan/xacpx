@@ -2227,10 +2227,10 @@ test("onCommands: handler error rejects the prompt", async () => {
   ).rejects.toThrow("commands handler boom");
 });
 
-test("getAgentSessionId returns the agentSessionId from sessions show", async () => {
+test("getAgentSessionId requests JSON and returns acpx 0.12 acpSessionId", async () => {
   const run = mock(async () => ({
     code: 0,
-    stdout: JSON.stringify({ acpxRecordId: "acpx-rec-1", agentSessionId: "agent-xyz" }),
+    stdout: JSON.stringify({ acpxRecordId: "acpx-rec-1", acpSessionId: "agent-xyz" }),
     stderr: "",
   }));
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -2241,7 +2241,7 @@ test("getAgentSessionId returns the agentSessionId from sessions show", async ()
   expect(id).toBe("agent-xyz");
   expect(run).toHaveBeenCalledWith(
     "acpx",
-    expect.arrayContaining(["sessions", "show", "backend:api-fix"]),
+    expect.arrayContaining(["--format", "json", "sessions", "show", "backend:api-fix"]),
     expect.objectContaining({ timeoutMs: 30_000 }),
   );
 });
