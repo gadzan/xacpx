@@ -31,7 +31,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 ## 「快照 + 事件增量」模型
 
-看板状态由两条路径维护，重连先拉快照再订阅事件：
+看板状态由 REST 持久化快照和 WebSocket 有序运行态共同维护：
 
 - **快照**：REST 拉取——`GET /api/instances` 列实例，RPC `control.sessions.list` 列会话，
   会话历史经消息缓存 API 拉取（见服务端 `/api/instances/:id/sessions/:alias/messages`）；
@@ -41,12 +41,18 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `tasksStore.applyEvent`（`scheduled-changed`/`orchestration-changed` 信号触发重拉）、
   `noticesStore.applyEvent`（`instance.notice` toast）；并把 `connectEvents` 的 `onStatus`
   回调接到 `connectionStore.setOnline`，驱动连接徽标。
-- **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe([instanceId])`
-  告诉 hub 本 socket 当前查看的实例，hub 据此只把该实例的 `control-event` 发给它
+- **实例订阅（`control-event` 扇出收敛）**：`DashboardView` 通过 `sendSubscribe(instanceIds)`
+  告诉 hub 本账号拥有的实例集合，hub 据此只把这些实例的 `control-event` 发给它
   （`instance-status`/`notice` 仍账号全量）。触发点：连接/重连成功（`onStatus(true)` 每次都重发，
-  所以断线重连会自动重新订阅）、切换实例（`watch(chat.instanceId)`）。切换实例后还会
-  `loadActiveTurns()` 重新补种在别处订阅期间漏掉的在飞回合。**未发过 `subscribe` = 收全部**
-  （向后兼容），空数组 `[]` = 收无。
+  所以断线重连会自动重新订阅）、账号实例列表变化。这样即使用户正在查看另一个实例，后台会话的
+  working/unread 状态也会继续更新。hub 安装订阅后会在**同一 WebSocket** 上依次发送各实例的
+  `state-snapshot`，随后才会排入新的增量事件。Web 以它权威替换对应实例
+  的 live turns：补齐离线期间遗漏的 text/tool/subagent parts，并清掉已在离线期间完成的旧 spinner；
+  当前会话同时重拉 SQLite 历史以显示最终回复。这样避免了 HTTP active-turn 快照与 WS 增量跨通道竞态。
+  首屏不再并行调用 `/api/active-turns`；历史请求还带会话、请求代次和本地消息修订校验，旧响应不能覆盖
+  新会话或刚完成的回复。`turn-finished` 会先即时定型 UI，再重拉持久化历史消除临时行重复。
+  **未发过 `subscribe` = 收全部**（向后兼容），空数组 `[]` = 收无；订阅携带账号的完整实例集合，
+  instance id 最长 128 字符，浏览器 WS 帧最大 256 KiB，hub 通过一次账号实例查询完成去重和所有权过滤。
 
 ## 右栏任务面板（阶段四）
 
@@ -80,12 +86,26 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   回合结果仍会经 `/ws` 事件流（`turn-output`/`turn-finished`）抵达，因此长回合不会冒出多余的错误横幅，消息也不标记为失败。
   `/命令`（`control.command.execute`，纯请求/响应、无流式）超时**仍会浮现**。
 
+## Subagent 执行轨迹
+
+- Claude ACP 的 `_meta.claudeCode.toolName="Agent"` 标准化为 `ToolUseEvent.isSubagent`；subagent 内部工具的
+  `parentToolUseId` 标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto` 原样进入 Relay Web。
+- 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
+  主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
+  `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。
+- `TurnParts.vue` 保留原始有序 parts，仅在展示层按 `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具
+  仍按普通卡片渲染。
+- `SubagentStepCard.vue` 默认折叠：运行中轮播当前活动步骤，展开后显示紧凑时间线；“查看完整过程”打开
+  `SubagentTraceDialog.vue`，按父子深度展示委派任务、嵌套 Agent 和每个子工具的完整详情。轮播尊重 `prefers-reduced-motion`，弹窗支持焦点圈定、
+  Esc 和点击遮罩关闭。
+
 ## 阶段五加固（审计修复）
 
 - **API 客户端始终带 JSON content-type**：无 body 的 mutating 请求也发 `content-type: application/json`，
   与服务端新增的 CSRF 415 守卫对齐（不会被 415 误杀），保留 CSRF 预检属性（见 docs/relay-module.md）。
-- **重连重拉快照 + 重连定时器清理**：重连后重新拉一遍快照（实例 + 当前会话的历史/任务）避免 ghost state；
-  `connectEvents` 在 teardown 时清掉待定的重连定时器，避免泄漏 socket。
+- **重连有序快照 + 重连定时器清理**：重连后重新拉实例、当前会话历史/任务；在飞回合由 subscribe 后
+  同 socket 返回的 `state-snapshot` 权威校准，避免 ghost state 和离线分片缺失。`connectEvents` 在 teardown
+  时清掉待定的重连定时器，避免泄漏 socket。
 - **聊天错误浮现**：回合失败（`turn-finished ok:false`）现在浮现 `errorMessage` 并把队尾消息标记为失败；
   `chat.error` 渲染为可关闭的横幅；切换会话时清空错误；发送失败把乐观插入的消息标记为失败。
 - **取消运行中回合**：可从聊天面板取消在途回合（`control.prompt.cancel`）。
@@ -170,7 +190,8 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - `src/views/LoginView.vue`、`src/views/DashboardView.vue`、`src/views/SettingsView.vue`；
 - `src/components/InstanceTree.vue`、`ChatPane.vue`、`MessageList.vue`、`PromptInput.vue`、
   `NewSessionDialog.vue`、`ManageInstanceDialog.vue`、`WorkspacesManager.vue`、`AgentsManager.vue`、
-  `TaskPanel.vue`、`ScheduledTasks.vue`、`OrchestrationTasks.vue`、`NoticeToast.vue`、`ConnectionBadge.vue`；
+  `TaskPanel.vue`、`ScheduledTasks.vue`、`OrchestrationTasks.vue`、`NoticeToast.vue`、`ConnectionBadge.vue`、
+  `TurnParts.vue`、`SubagentStepCard.vue`、`SubagentTraceDialog.vue`；
 - `src/router/index.ts`（含 `/settings` 路由）、`src/main.ts`、`src/App.vue`、`src/style.css`。
 
 ## 文件树浏览器（Files 面板 / 子项目 A）

@@ -130,6 +130,19 @@ test("think uses description as prose text", () => {
   expect(step.detail).toEqual({ type: "text", text: "Explore code" });
 });
 
+test("preserves subagent ownership metadata for Relay Web grouping", () => {
+  const parent = toolUseEventToStepDto({
+    toolCallId: "agent-1", toolName: "Task", kind: "think", status: "running",
+    isSubagent: true, rawInput: { description: "Inspect notifications" },
+  });
+  const child = toolUseEventToStepDto({
+    toolCallId: "grep-1", parentToolCallId: "agent-1", toolName: "Grep", kind: "search", status: "success",
+    rawInput: { pattern: "wechat" },
+  });
+  expect(parent).toMatchObject({ toolCallId: "agent-1", isSubagent: true });
+  expect(child).toMatchObject({ toolCallId: "grep-1", parentToolCallId: "agent-1" });
+});
+
 test("a failed read surfaces the error message from rawOutput.error", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t9", toolName: "read", kind: "read", status: "error",

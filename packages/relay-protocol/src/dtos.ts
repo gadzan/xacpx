@@ -135,6 +135,10 @@ export type ToolDetailDto =
 /** One collapsed tool-call step, normalized at the connector from a core ToolUseEvent. */
 export interface ToolStepDto {
   toolCallId: string;
+  /** Parent tool call for steps executed inside a delegated subagent. */
+  parentToolCallId?: string;
+  /** Marks the Agent/Task tool call that owns a delegated subagent trace. */
+  isSubagent?: boolean;
   toolName: string;
   kind: ToolStepKind;
   status: ToolStepStatus;

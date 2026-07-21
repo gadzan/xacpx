@@ -71,10 +71,21 @@ export interface SessionCommandsSnapshotDto {
   commands: AgentCommandDto[];
 }
 
+/** Authoritative per-instance state sent on the same WebSocket immediately after
+ *  a browser subscription is installed. Because the snapshot and later deltas
+ *  share one ordered channel, the browser can safely replace stale pre-disconnect
+ *  turns without racing an HTTP snapshot against live control events. */
+export interface InstanceStateSnapshotDto {
+  turns: LiveTurnSnapshotDto[];
+  usage: SessionUsageSnapshotDto[];
+  commands: SessionCommandsSnapshotDto[];
+}
+
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent =
   | { kind: "instance-status"; instanceId: string; online: boolean }
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
+  | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
   | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload };
 
 /** Wrap a server→web push event in a relay envelope. */
@@ -82,7 +93,7 @@ export function webEventEnvelope(event: WebServerEvent): RelayEnvelope {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
 
-const WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "notice"]);
+const WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "state-snapshot", "notice"]);
 
 /** Compile-time-exhaustive whitelist of inner control-event discriminants. The
  *  `satisfies Record<ControlEventDto["type"], true>` clause makes tsc fail if a new
@@ -112,6 +123,32 @@ const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVE
 
 const TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
 const TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
+const finiteNonNegative = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+function validUsageCost(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return (c.amount === undefined || finiteNonNegative(c.amount))
+    && (c.currency === undefined || (typeof c.currency === "string" && c.currency.length <= 32));
+}
+
+function validUsageBreakdown(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return ["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens", "totalTokens"]
+    .every((key) => c[key] === undefined || finiteNonNegative(c[key]));
+}
+
+function validAgentCommand(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128
+    && (c.description === undefined || (typeof c.description === "string" && c.description.length <= 4096))
+    && (c.hasInput === undefined || typeof c.hasInput === "boolean");
+}
 
 /** Validate the inner fields of a ToolDetailDto per its discriminant — a known
  *  tag is not enough; junk/missing fields must be rejected so a buggy connector
@@ -145,12 +182,55 @@ function validToolStep(s: unknown): boolean {
   if (typeof c.toolCallId !== "string" || typeof c.toolName !== "string" || typeof c.title !== "string") return false;
   if (typeof c.kind !== "string" || !TOOL_STEP_KINDS.has(c.kind)) return false;
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status)) return false;
+  if (!optStr(c.parentToolCallId) || (c.isSubagent !== undefined && typeof c.isSubagent !== "boolean")) return false;
+  if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs)) return false;
   if (!optStr(c.error)) return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null) return false;
     if (!validToolDetail(c.detail as Record<string, unknown>)) return false;
   }
   return true;
+}
+
+function validTurnPart(p: unknown): boolean {
+  if (typeof p !== "object" || p === null) return false;
+  const c = p as Record<string, unknown>;
+  if (c.type === "text" || c.type === "reasoning") return typeof c.text === "string";
+  if (c.type === "tool") return validToolStep(c.step);
+  return false;
+}
+
+function validStateSnapshot(candidate: Record<string, unknown>): boolean {
+  const instanceId = candidate.instanceId;
+  if (typeof instanceId !== "string") return false;
+  if (!Array.isArray(candidate.turns) || !candidate.turns.every((turn) => {
+    if (typeof turn !== "object" || turn === null) return false;
+    const c = turn as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.sessionAlias === "string"
+      && Array.isArray(c.parts)
+      && c.parts.every(validTurnPart)
+      && (c.status === "working" || c.status === "streaming")
+      && finiteNonNegative(c.startedAt);
+  })) return false;
+  if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
+    if (typeof usage !== "object" || usage === null) return false;
+    const c = usage as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.sessionAlias === "string"
+      && finiteNonNegative(c.used)
+      && finiteNonNegative(c.size)
+      && validUsageCost(c.cost)
+      && validUsageBreakdown(c.breakdown);
+  })) return false;
+  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const c = entry as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.sessionAlias === "string"
+      && Array.isArray(c.commands)
+      && c.commands.every(validAgentCommand);
+  });
 }
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
@@ -175,11 +255,13 @@ export function validControlEvent(e: unknown): boolean {
     case "plan":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
     case "turn-usage":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && finiteNonNegative(c.used) && finiteNonNegative(c.size)
+        && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
     case "agent-commands":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
         && Array.isArray(c.commands)
-        && c.commands.every((x) => x !== null && typeof x === "object" && typeof (x as { name?: unknown }).name === "string");
+        && c.commands.every(validAgentCommand);
     case "queue-updated":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
     case "session-history":
@@ -227,6 +309,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind)) return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
+  if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
   return payload as WebServerEvent;
 }
@@ -234,6 +317,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
 // --- web→hub upstream messages (new direction; no prior precedent) ---
 
 export const WEB_CLIENT_TYPE = "web.client";
+export const MAX_WEB_INSTANCE_ID_LENGTH = 128;
 
 export type WebClientMessage =
   | { kind: "terminal-input"; instanceId: string; terminalId: string; data: string }
@@ -251,7 +335,8 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
   if (typeof p !== "object" || p === null) return null;
   const c = p as Record<string, unknown>;
   if (c.kind === "subscribe") {
-    return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string")
+    return Array.isArray(c.instanceIds)
+      && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH)
       ? (p as WebClientMessage)
       : null;
   }

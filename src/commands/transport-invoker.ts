@@ -272,6 +272,7 @@ export class TransportInvoker {
       });
       return await this.measureTransportCall("prompt", session, () =>
         this.transport.prompt(session, text, reply, replyContext, {
+          ...(abortSignal ? { signal: abortSignal } : {}),
           ...(media ? { media } : {}),
           ...(reply ? { onSegment } : {}),
           ...(onToolEvent ? { onToolEvent } : {}),

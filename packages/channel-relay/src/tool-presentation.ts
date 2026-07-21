@@ -103,6 +103,8 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       : undefined;
   const base: Omit<ToolStepDto, "title" | "detail"> = {
     toolCallId: event.toolCallId,
+    ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
+    ...(event.isSubagent ? { isSubagent: true } : {}),
     toolName: event.toolName,
     kind: event.kind,
     status: event.status,

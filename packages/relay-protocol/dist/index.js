@@ -125,7 +125,7 @@ var WEB_EVENT_TYPE = "web.event";
 function webEventEnvelope(event) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
-var WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "notice"]);
+var WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "state-snapshot", "notice"]);
 var CONTROL_EVENT_TYPE_MAP = {
   "turn-output": true,
   "turn-started": true,
@@ -147,6 +147,29 @@ var CONTROL_EVENT_TYPE_MAP = {
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
 var TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
+var finiteNonNegative = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+function validUsageCost(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return (c.amount === undefined || finiteNonNegative(c.amount)) && (c.currency === undefined || typeof c.currency === "string" && c.currency.length <= 32);
+}
+function validUsageBreakdown(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return ["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens", "totalTokens"].every((key) => c[key] === undefined || finiteNonNegative(c[key]));
+}
+function validAgentCommand(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128 && (c.description === undefined || typeof c.description === "string" && c.description.length <= 4096) && (c.hasInput === undefined || typeof c.hasInput === "boolean");
+}
 function validToolDetail(d) {
   switch (d.type) {
     case "diff":
@@ -175,6 +198,10 @@ function validToolStep(s) {
     return false;
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status))
     return false;
+  if (!optStr(c.parentToolCallId) || c.isSubagent !== undefined && typeof c.isSubagent !== "boolean")
+    return false;
+  if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs))
+    return false;
   if (!optStr(c.error))
     return false;
   if (c.detail !== undefined) {
@@ -184,6 +211,41 @@ function validToolStep(s) {
       return false;
   }
   return true;
+}
+function validTurnPart(p) {
+  if (typeof p !== "object" || p === null)
+    return false;
+  const c = p;
+  if (c.type === "text" || c.type === "reasoning")
+    return typeof c.text === "string";
+  if (c.type === "tool")
+    return validToolStep(c.step);
+  return false;
+}
+function validStateSnapshot(candidate) {
+  const instanceId = candidate.instanceId;
+  if (typeof instanceId !== "string")
+    return false;
+  if (!Array.isArray(candidate.turns) || !candidate.turns.every((turn) => {
+    if (typeof turn !== "object" || turn === null)
+      return false;
+    const c = turn;
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.parts) && c.parts.every(validTurnPart) && (c.status === "working" || c.status === "streaming") && finiteNonNegative(c.startedAt);
+  }))
+    return false;
+  if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
+    if (typeof usage !== "object" || usage === null)
+      return false;
+    const c = usage;
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && finiteNonNegative(c.used) && finiteNonNegative(c.size) && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
+  }))
+    return false;
+  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const c = entry;
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
+  });
 }
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
@@ -206,9 +268,9 @@ function validControlEvent(e) {
     case "plan":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
     case "turn-usage":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.used === "number" && typeof c.size === "number";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && finiteNonNegative(c.used) && finiteNonNegative(c.size) && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
     case "agent-commands":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every((x) => x !== null && typeof x === "object" && typeof x.name === "string");
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
     case "queue-updated":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
     case "session-history":
@@ -251,11 +313,14 @@ function parseWebServerEvent(envelope) {
     return null;
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event))
     return null;
+  if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate))
+    return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice))
     return null;
   return payload;
 }
 var WEB_CLIENT_TYPE = "web.client";
+var MAX_WEB_INSTANCE_ID_LENGTH = 128;
 function webClientEnvelope(msg) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
 }
@@ -267,7 +332,7 @@ function parseWebClientMessage(envelope) {
     return null;
   const c = p;
   if (c.kind === "subscribe") {
-    return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string") ? p : null;
+    return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH) ? p : null;
   }
   if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string")
     return null;
@@ -527,5 +592,6 @@ export {
   WEB_CLIENT_TYPE,
   RELAY_PROTOCOL_VERSION,
   MSG,
+  MAX_WEB_INSTANCE_ID_LENGTH,
   CONTROL_PAYLOAD_VALIDATORS
 };

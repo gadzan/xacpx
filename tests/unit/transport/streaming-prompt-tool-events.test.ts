@@ -362,3 +362,86 @@ test("a search whose terminal frame carries only status keeps its kind/title/que
   expect(last.rawInput).toEqual({ pattern: "TODO", path: "src/" });
   expect(last.status).toBe("success");
 });
+
+test("Claude sparse toolResponse update is terminal even when status is omitted", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "grep-1",
+    kind: "search",
+    title: 'grep -i -l "wechat" repo',
+    rawInput: { pattern: "wechat" },
+    status: "pending",
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "grep-1",
+    _meta: { claudeCode: { toolName: "Grep", toolResponse: { filenames: [], numFiles: 0 } } },
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "grep-1",
+    toolName: 'grep -i -l "wechat" repo',
+    kind: "search",
+    status: "success",
+    rawOutput: { filenames: [], numFiles: 0 },
+  });
+});
+
+test("Claude Agent and its nested tools preserve subagent hierarchy across sparse updates", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (event) => events.push(event));
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "agent-1",
+    kind: "think",
+    title: "Task",
+    status: "pending",
+    _meta: { claudeCode: { toolName: "Agent" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "agent-1",
+    title: "Find notification code",
+    rawInput: { description: "Find notification code", subagent_type: "Explore" },
+    _meta: { claudeCode: { toolName: "Agent" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "agent-1",
+    status: "completed",
+    _meta: { claudeCode: { toolResponse: { isAsync: true, status: "async_launched" } } },
+  });
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "grep-1",
+    kind: "search",
+    title: 'grep "wechat"',
+    rawInput: { pattern: "wechat" },
+    status: "pending",
+    _meta: { claudeCode: { toolName: "Grep", parentToolUseId: "agent-1" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "grep-1",
+    _meta: { claudeCode: { toolResponse: { filenames: ["a.ts"] } } },
+  });
+
+  expect([...events].reverse().find((event) => event.toolCallId === "agent-1")).toMatchObject({
+    toolCallId: "agent-1",
+    isSubagent: true,
+    status: "running",
+  });
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "grep-1",
+    parentToolCallId: "agent-1",
+    status: "success",
+  });
+});

@@ -117,6 +117,8 @@ test("parseWebServerEvent accepts a turn-usage control event and rejects malform
   // …and reject non-numeric or missing used/size, or it would crash the meter's math.
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1 } })).toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: "x", size: 200000 } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1, size: 2, cost: { amount: "free" } } })).toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-usage", chatKey: "k", sessionAlias: "a", used: 1, size: 2, breakdown: { inputTokens: -1 } } })).toBeNull();
 });
 
 test("parseWebServerEvent accepts a queue-updated control event and rejects malformed ones", () => {
@@ -216,6 +218,43 @@ test("accepts an error string on a failed tool-event step, rejects a non-string 
   })).toBeNull();
 });
 
+test("accepts subagent hierarchy fields and rejects malformed hierarchy metadata", () => {
+  const event = (extra: Record<string, unknown>) => ({
+    kind: "control-event", instanceId: "i1",
+    event: {
+      type: "tool-event", chatKey: "c", sessionAlias: "s",
+      step: { toolCallId: "t1", toolName: "Agent", kind: "think", status: "running", title: "Explore", ...extra },
+    },
+  });
+  expect(roundtrip(event({ isSubagent: true }))).not.toBeNull();
+  expect(roundtrip(event({ parentToolCallId: "parent-1" }))).not.toBeNull();
+  expect(roundtrip(event({ isSubagent: "yes" }))).toBeNull();
+  expect(roundtrip(event({ parentToolCallId: 42 }))).toBeNull();
+});
+
+test("accepts a deep-valid state snapshot and rejects mismatched or malformed rows", () => {
+  const snapshot = {
+    kind: "state-snapshot", instanceId: "i1",
+    turns: [{
+      instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 10,
+      parts: [
+        { type: "tool", step: { toolCallId: "agent-1", toolName: "Agent", kind: "think", status: "running", title: "Explore", isSubagent: true } },
+        { type: "text", text: "working" },
+      ],
+    }],
+    usage: [{ instanceId: "i1", sessionAlias: "backend", used: 10, size: 100 }],
+    commands: [{ instanceId: "i1", sessionAlias: "backend", commands: [{ name: "compact" }] }],
+  };
+  expect(roundtrip(snapshot)).not.toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], instanceId: "i2" }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], parts: [{ type: "text", text: 42 }] }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, usage: "bad" })).toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], parts: [{ type: "tool", step: { ...snapshot.turns[0].parts[0].step, durationMs: -1 } }] }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, usage: [{ ...snapshot.usage[0], cost: { amount: "bad" } }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, usage: [{ ...snapshot.usage[0], breakdown: { totalTokens: -1 } }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, commands: [{ ...snapshot.commands[0], commands: [{ name: "compact", hasInput: "yes" }] }] })).toBeNull();
+});
+
 test("rejects a tool-event step with an unknown detail tag", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",
@@ -283,6 +322,18 @@ test("parseWebClientMessage rejects subscribe with a non-array / non-string inst
   const bad2 = { protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE, payload: { kind: "subscribe", instanceIds: [1, 2] } } as never;
   expect(parseWebClientMessage(bad1)).toBeNull();
   expect(parseWebClientMessage(bad2)).toBeNull();
+});
+
+test("parseWebClientMessage accepts the dashboard's complete instance set and bounds instance id length", () => {
+  const envelope = (instanceIds: string[]) => ({
+    protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE,
+    payload: { kind: "subscribe", instanceIds },
+  }) as never;
+  expect(parseWebClientMessage(envelope(Array.from({ length: 256 }, (_, i) => `i${i}`)))).not.toBeNull();
+  expect(parseWebClientMessage(envelope(Array.from({ length: 257 }, (_, i) => `i${i}`)))).not.toBeNull();
+  expect(parseWebClientMessage(envelope(["x".repeat(128)]))).not.toBeNull();
+  expect(parseWebClientMessage(envelope(["x".repeat(129)]))).toBeNull();
+  expect(parseWebClientMessage(envelope([""]))).toBeNull();
 });
 
 test("parseWebClientMessage still round-trips terminal-input (regression)", () => {

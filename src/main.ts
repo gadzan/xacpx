@@ -39,6 +39,7 @@ import { runConsole } from "./run-console";
 import { spawnAcpxBridgeClient } from "./transport/acpx-bridge/acpx-bridge-client";
 import { AcpxBridgeTransport } from "./transport/acpx-bridge/acpx-bridge-transport";
 import { AcpxCliTransport } from "./transport/acpx-cli/acpx-cli-transport";
+import { createClaudeBackgroundFollowupTransport } from "./transport/claude-background-followup-transport";
 import type { ResolvedSession, SessionTransport } from "./transport/types";
 import { reapQueueOwners } from "./transport/queue-owner-reaper";
 import { collectReapTargets } from "./transport/collect-reap-targets";
@@ -253,7 +254,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const activeTurns = createActiveTurnRegistry();
   const scheduledService = new ScheduledTaskService(state, debouncedStateStore, { stateMutex });
   const pendingWorkerDispatches = new Set<Promise<void>>();
-  const transport =
+  const baseTransport =
     config.transport.type === "acpx-bridge"
       ? await (deps.createBridgeTransport?.() ??
           Promise.resolve(
@@ -285,6 +286,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           ))
       : (deps.createCliTransport?.(acpxCommand) ??
           new AcpxCliTransport({ ...config.transport, command: acpxCommand }));
+  const transport = createClaudeBackgroundFollowupTransport(baseTransport, {
+    logger,
+    resolveDriver: (agent) => config.agents[agent]?.driver,
+  });
   // Per-chatKey outbound quota (WeChat 24h budget). Shared across SDK boundary
   // (inbound reset / final reservation) and orchestration deliveries (mid gate).
   // Observer pipes every quota decision into the AppLogger so the path is

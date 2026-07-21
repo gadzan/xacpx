@@ -59,6 +59,31 @@ export class WebGateway {
     this.subscriptions.set(socket, new Set(instanceIds));
   }
 
+  /** Send one ordered event to a specific browser socket. Used for subscription
+   *  snapshots so the authoritative state is sequenced before later broadcasts. */
+  send(socket: WebSocketLike, event: WebServerEvent): boolean {
+    return this.sendEncoded(socket, encodeEnvelope(webEventEnvelope(event)));
+  }
+
+  private sendEncoded(socket: WebSocketLike, data: string, accountId?: string): boolean {
+    if (typeof socket.readyState === "number" && socket.readyState !== WS_OPEN) return false;
+    if (typeof socket.bufferedAmount === "number" && socket.bufferedAmount > BACKPRESSURE_MAX) {
+      this.options.logger?.info("relay.web.backpressure_evict", "evicting slow web client", {
+        ...(accountId ? { accountId } : {}),
+        bufferedAmount: socket.bufferedAmount,
+      });
+      try { socket.terminate?.(); } catch { /* already gone */ }
+      return false;
+    }
+    try {
+      socket.send(data);
+      return true;
+    } catch (err) {
+      this.options.logger?.error("relay.web.broadcast_failed", "web event send failed", { error: String(err) });
+      return false;
+    }
+  }
+
   broadcast(accountId: string, event: WebServerEvent): void {
     const set = this.byAccount.get(accountId);
     if (!set) return;
@@ -73,19 +98,7 @@ export class WebGateway {
         if (sub && !sub.has(event.instanceId)) continue;
       }
       // One dead/throwing socket must not starve the remaining dashboards.
-      if (typeof socket.readyState === "number" && socket.readyState !== WS_OPEN) continue;
-      // Backpressure: a stalled client's send buffer grows without bound. Evict it (it
-      // reconnects and re-attaches, replaying the bounded scrollback) rather than OOM the hub.
-      if (typeof socket.bufferedAmount === "number" && socket.bufferedAmount > BACKPRESSURE_MAX) {
-        this.options.logger?.info("relay.web.backpressure_evict", "evicting slow web client", { accountId, bufferedAmount: socket.bufferedAmount });
-        try { socket.terminate?.(); } catch { /* already gone */ }
-        continue;
-      }
-      try {
-        socket.send(data);
-      } catch (err) {
-        this.options.logger?.error("relay.web.broadcast_failed", "broadcast send failed", { error: String(err) });
-      }
+      this.sendEncoded(socket, data, accountId);
     }
   }
 }

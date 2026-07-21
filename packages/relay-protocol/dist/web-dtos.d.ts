@@ -67,6 +67,15 @@ export interface SessionCommandsSnapshotDto {
     sessionAlias: string;
     commands: AgentCommandDto[];
 }
+/** Authoritative per-instance state sent on the same WebSocket immediately after
+ *  a browser subscription is installed. Because the snapshot and later deltas
+ *  share one ordered channel, the browser can safely replace stale pre-disconnect
+ *  turns without racing an HTTP snapshot against live control events. */
+export interface InstanceStateSnapshotDto {
+    turns: LiveTurnSnapshotDto[];
+    usage: SessionUsageSnapshotDto[];
+    commands: SessionCommandsSnapshotDto[];
+}
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent = {
     kind: "instance-status";
@@ -76,7 +85,10 @@ export type WebServerEvent = {
     kind: "control-event";
     instanceId: string;
     event: ControlEventDto;
-} | {
+} | ({
+    kind: "state-snapshot";
+    instanceId: string;
+} & InstanceStateSnapshotDto) | {
     kind: "notice";
     instanceId: string;
     notice: InstanceNoticePayload;
@@ -90,6 +102,7 @@ export declare function validControlEvent(e: unknown): boolean;
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export declare function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null;
 export declare const WEB_CLIENT_TYPE = "web.client";
+export declare const MAX_WEB_INSTANCE_ID_LENGTH = 128;
 export type WebClientMessage = {
     kind: "terminal-input";
     instanceId: string;
