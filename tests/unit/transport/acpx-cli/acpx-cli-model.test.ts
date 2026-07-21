@@ -118,3 +118,66 @@ test("getSessionModel returns an empty available list when status output is not 
   const result = await transport.getSessionModel(modelSession);
   expect(result.available).toEqual([]);
 });
+
+test("getSessionEffort reads the adapter-advertised thought-level config option", async () => {
+  const record = JSON.stringify({
+    acpx: {
+      config_options: [
+        {
+          id: "reasoning_effort",
+          category: "thought_level",
+          currentValue: "medium",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ],
+    },
+  });
+  const run = mock(async () => ({ code: 0, stdout: record, stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+
+  await expect(transport.getSessionEffort(modelSession)).resolves.toEqual({
+    current: "medium",
+    available: ["low", "medium", "high"],
+  });
+  const args = run.mock.calls[0][1] as string[];
+  expect(args).toContain("sessions");
+  expect(args).toContain("show");
+  expect(args).toContain("backend:api-fix");
+  expect(args.slice(0, 2)).toEqual(["--format", "json"]);
+});
+
+test("setSessionEffort uses the config id advertised by the adapter", async () => {
+  const calls: string[][] = [];
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("sessions")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpx: {
+            config_options: [{
+              id: "effort",
+              category: "thought_level",
+              currentValue: "medium",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+
+  await transport.setSessionEffort(modelSession, "high");
+
+  const setArgs = calls.find((args) => args.includes("set"));
+  expect(setArgs?.slice(setArgs.indexOf("set"))).toEqual([
+    "set", "-s", "backend:api-fix", "effort", "high",
+  ]);
+});

@@ -84,6 +84,7 @@ export function bridgeRequestTimeoutMs(
       return 2 * sessionInitTimeoutMs + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
     case "deleteSession":
     case "freeWarmProcess":
+    case "setSessionEffort":
       // Two sequential management commands (sessions show + close/owner kill).
       return 2 * DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
     default:

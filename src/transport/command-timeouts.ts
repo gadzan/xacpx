@@ -11,7 +11,7 @@
 
 /**
  * Default timeout for one-shot management commands (sessions show/close,
- * cancel, set-mode, set model, status, history). These normally finish in
+ * cancel, set-mode, set model/effort, status, history). These normally finish in
  * well under a second; 30s only trips when acpx itself is hung.
  */
 export const DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS = 30_000;
@@ -42,6 +42,8 @@ export type AcpxCommandStage =
   | "set-mode"
   | "set-model"
   | "get-session-model"
+  | "set-session-effort"
+  | "get-session-effort"
   | "cancel"
   | "remove-session";
 

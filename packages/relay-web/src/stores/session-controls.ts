@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import {
   isErrorPayload,
+  type SessionEffortResult,
+  type SessionEffortSetResult,
   type SessionModelResult,
   type SessionModelSetResult,
 } from "@ganglion/xacpx-relay-protocol";
@@ -14,10 +16,17 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   const current = ref<string | undefined>(undefined);
   const available = ref<string[]>([]);
   const loading = ref(false);
+  const effortCurrent = ref<string | undefined>(undefined);
+  const effortAvailable = ref<string[]>([]);
+  const effortLoading = ref(false);
   let activeContext: string | null = null;
   let requestRevision = 0;
   const pendingModelSets = new Map<string, Promise<void>>();
   const authoritativeModels = new Map<string, { revision: number; current: string | undefined }>();
+  let effortActiveContext: string | null = null;
+  let effortRevision = 0;
+  const pendingEffortSets = new Map<string, Promise<void>>();
+  const authoritativeEfforts = new Map<string, { revision: number; current: string | undefined }>();
 
   const contextKey = (instanceId: string, alias: string): string => `${instanceId}\u0000${alias}`;
   const isCurrentRequest = (context: string, revision: number): boolean =>
@@ -38,11 +47,20 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     available.value = [];
   }
 
+  function clearEffortState(): void {
+    effortCurrent.value = undefined;
+    effortAvailable.value = [];
+  }
+
   function reset(): void {
     activeContext = null;
     requestRevision += 1;
     loading.value = false;
     clearModelState();
+    effortActiveContext = null;
+    effortRevision += 1;
+    effortLoading.value = false;
+    clearEffortState();
   }
 
   async function loadModel(instanceId: string | null, alias: string | null): Promise<void> {
@@ -140,7 +158,85 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     }
   }
 
-  return { current, available, loading, reset, loadModel, setModel };
+  async function loadEffort(instanceId: string | null, alias: string | null): Promise<void> {
+    if (!instanceId || !alias) {
+      effortActiveContext = null;
+      effortRevision += 1;
+      effortLoading.value = false;
+      clearEffortState();
+      return;
+    }
+    const context = contextKey(instanceId, alias);
+    if (effortActiveContext !== context) clearEffortState();
+    effortActiveContext = context;
+    const revision = ++effortRevision;
+    effortLoading.value = true;
+    try {
+      const pendingSet = pendingEffortSets.get(context);
+      if (pendingSet) {
+        await pendingSet;
+        if (effortActiveContext !== context || effortRevision !== revision) return;
+      }
+      const r = await api.rpc<SessionEffortResult>(instanceId, "control.session.effort.get", { sessionAlias: alias });
+      if (effortActiveContext !== context || effortRevision !== revision) return;
+      if (isErrorPayload(r)) { clearEffortState(); return; }
+      effortCurrent.value = typeof r.current === "string" ? r.current : undefined;
+      authoritativeEfforts.set(context, { revision, current: effortCurrent.value });
+      effortAvailable.value = Array.isArray(r.available) ? r.available : [];
+    } catch {
+      if (effortActiveContext === context && effortRevision === revision) clearEffortState();
+    } finally {
+      if (effortActiveContext === context && effortRevision === revision) effortLoading.value = false;
+    }
+  }
+
+  async function setEffort(instanceId: string, alias: string, effort: string): Promise<boolean> {
+    const context = contextKey(instanceId, alias);
+    if (effortActiveContext !== context) clearEffortState();
+    effortActiveContext = context;
+    const previous = authoritativeEfforts.get(context)?.current ?? effortCurrent.value;
+    const revision = ++effortRevision;
+    effortLoading.value = false;
+    effortCurrent.value = effort;
+    const operation = (async (): Promise<boolean> => {
+      try {
+        const r = await api.rpc<SessionEffortSetResult>(instanceId, "control.session.effort.set", {
+          sessionAlias: alias,
+          effort,
+        });
+        if (isErrorPayload(r) || r.ok === false) {
+          if (effortActiveContext === context && effortRevision === revision) {
+            effortCurrent.value = typeof r === "object" && r !== null && "current" in r
+              && typeof r.current === "string" ? r.current : previous;
+            reportEffortSwitchFailure(isErrorPayload(r) ? r.error.message : `requested ${effort} was not applied`);
+          }
+          return false;
+        }
+        const observed = typeof r.current === "string" ? r.current : effort;
+        authoritativeEfforts.set(context, { revision, current: observed });
+        if (effortActiveContext === context && effortRevision === revision) effortCurrent.value = observed;
+        return true;
+      } catch (error) {
+        if (effortActiveContext === context && effortRevision === revision) {
+          effortCurrent.value = previous;
+          reportEffortSwitchFailure(error instanceof Error ? error.message : "set-failed");
+        }
+        return false;
+      }
+    })();
+    const settled = operation.then(() => undefined, () => undefined);
+    pendingEffortSets.set(context, settled);
+    try {
+      return await operation;
+    } finally {
+      if (pendingEffortSets.get(context) === settled) pendingEffortSets.delete(context);
+    }
+  }
+
+  return {
+    current, available, loading, reset, loadModel, setModel,
+    effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort,
+  };
 });
 
 function reportModelSwitchFailure(detail: string): void {
@@ -148,4 +244,9 @@ function reportModelSwitchFailure(detail: string): void {
   // available in browser diagnostics while the user sees the app's standard toast.
   console.error("[relay-web] model switch failed", detail);
   pushToast("error", "chat.modelSetFailed");
+}
+
+function reportEffortSwitchFailure(detail: string): void {
+  console.error("[relay-web] effort switch failed", detail);
+  pushToast("error", "chat.effortSetFailed");
 }

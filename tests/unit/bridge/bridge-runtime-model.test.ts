@@ -81,3 +81,56 @@ test("getSessionModel returns empty available list on non-json output", async ()
   const result = await runtime.getSessionModel({ agent: "codex", cwd: "/repo", name: "s1" });
   expect(result.available).toEqual([]);
 });
+
+test("getSessionEffort reads the adapter-advertised effort option", async () => {
+  const run = async (_command: string, args: string[]) => {
+    expect(args).toContain("sessions");
+    expect(args).toContain("show");
+    return {
+      code: 0,
+      stdout: JSON.stringify({
+        acpx: {
+          config_options: [{
+            id: "reasoning_effort",
+            category: "thought_level",
+            currentValue: "high",
+            options: [{ value: "medium" }, { value: "high" }, { value: "xhigh" }],
+          }],
+        },
+      }),
+      stderr: "",
+    };
+  };
+  const runtime = new BridgeRuntime("acpx", run);
+
+  await expect(runtime.getSessionEffort({ agent: "codex", cwd: "/repo", name: "s1" }))
+    .resolves.toEqual({ current: "high", available: ["medium", "high", "xhigh"] });
+});
+
+test("setSessionEffort uses the adapter-advertised config id", async () => {
+  const calls: string[][] = [];
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("sessions")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpx: { config_options: [{
+            id: "effort",
+            category: "thought_level",
+            currentValue: "medium",
+            options: [{ value: "medium" }, { value: "high" }],
+          }] },
+        }),
+        stderr: "",
+      };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run);
+
+  await runtime.setSessionEffort({ agent: "codex", cwd: "/repo", name: "s1", effort: "high" });
+
+  const setArgs = calls.find((args) => args.includes("set"));
+  expect(setArgs?.slice(setArgs.indexOf("set"))).toEqual(["set", "-s", "s1", "effort", "high"]);
+});

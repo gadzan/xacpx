@@ -63,8 +63,8 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   // Archive/unarchive resolve the alias within the caller's chat scope too; without
   // the stamp the connector calls getChannelIdFromChatKey(undefined) and throws.
   MSG.sessionsArchive, MSG.sessionsUnarchive,
-  // Model get/set resolve the session within the caller's chat scope.
-  MSG.sessionModelGet, MSG.sessionModelSet,
+  // Model and effort get/set resolve the session within the caller's chat scope.
+  MSG.sessionModelGet, MSG.sessionModelSet, MSG.sessionEffortGet, MSG.sessionEffortSet,
   // Terminal create carries sessionAlias; stamp chatKey/senderId/isOwner so the
   // connector can resolve the session within the caller's chat scope.
   MSG.terminalCreate,

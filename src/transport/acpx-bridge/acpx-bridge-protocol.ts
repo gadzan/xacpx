@@ -15,6 +15,8 @@ export type BridgeMethod =
   | "setMode"
   | "setModel"
   | "getSessionModel"
+  | "setSessionEffort"
+  | "getSessionEffort"
   | "cancel"
   | "removeSession"
   | "deleteSession"

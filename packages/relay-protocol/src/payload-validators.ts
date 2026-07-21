@@ -40,6 +40,8 @@ import {
   type ScheduledListPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
+  type SessionEffortGetPayload,
+  type SessionEffortSetPayload,
   type SessionsArchivePayload,
   type SessionsCreatePayload,
   type SessionsListPayload,
@@ -252,6 +254,15 @@ const validateSessionModelSet: Validator<SessionModelSetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.modelId) ? (o as unknown as SessionModelSetPayload) : null;
 };
+const validateSessionEffortGet: Validator<SessionEffortGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as unknown as SessionEffortGetPayload) : null;
+};
+const validateSessionEffortSet: Validator<SessionEffortSetPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.effort)
+    ? (o as unknown as SessionEffortSetPayload) : null;
+};
 const validateTerminalCreate: Validator<TerminalCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && optNum(o.cols) && optNum(o.rows)
@@ -282,6 +293,7 @@ export type ControlRpcType =
   | typeof MSG.fsRead | typeof MSG.fsDiff | typeof MSG.fsSearch | typeof MSG.fsCreate
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
+  | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage | typeof MSG.gitCommit
   | typeof MSG.gitFetch | typeof MSG.gitPull | typeof MSG.gitPush | typeof MSG.gitCheckout
   | typeof MSG.gitWorktreeCreate
@@ -332,6 +344,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
+  [MSG.sessionEffortGet]: validateSessionEffortGet,
+  [MSG.sessionEffortSet]: validateSessionEffortSet,
   [MSG.terminalCreate]: validateTerminalCreate,
   [MSG.terminalAttach]: validateTerminalAttach,
   [MSG.upload]: validateUpload,

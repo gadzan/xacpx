@@ -57,6 +57,8 @@ function makeFakeControl(overrides: Record<string, unknown> = {}) {
       return { cancelled: true };
     },
     executeCommand: async (input: unknown) => { record("executeCommand", input); return "output"; },
+    getSessionEffort: async () => ({ current: "medium", available: ["low", "medium", "high"] }),
+    setSessionEffort: async (_chatKey: string, _alias: string, effort: string) => ({ current: effort, applied: true }),
     listScheduledTasks: (chatKey: string) => [{
       id: "ab12", chat_key: chatKey, session_alias: "a",
       execute_at: "2026-06-14T10:00:00.000Z", message: "m", status: "pending", created_at: "2026-06-13T10:00:00.000Z",
@@ -155,6 +157,32 @@ test("session.model.set returns the authoritative reconciled model", async () =>
     sessionAlias: "a",
     modelId: "requested-model",
   }))).toEqual({ ok: false, current: "provider/fallback-model" });
+});
+
+test("session effort get/set dispatch through the structured control methods", async () => {
+  const calls: unknown[][] = [];
+  const { control } = makeFakeControl({
+    getSessionEffort: async (...args: unknown[]) => {
+      calls.push(["get", ...args]);
+      return { current: "medium", available: ["low", "medium", "high"] };
+    },
+    setSessionEffort: async (...args: unknown[]) => {
+      calls.push(["set", ...args]);
+      return { current: "high", applied: true };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+
+  await expect(dispatch(bridge, req(MSG.sessionEffortGet, {
+    chatKey: "relay:acct", sessionAlias: "a",
+  }))).resolves.toEqual({ current: "medium", available: ["low", "medium", "high"] });
+  await expect(dispatch(bridge, req(MSG.sessionEffortSet, {
+    chatKey: "relay:acct", sessionAlias: "a", effort: "high",
+  }))).resolves.toEqual({ ok: true, current: "high" });
+  expect(calls).toEqual([
+    ["get", "relay:acct", "a"],
+    ["set", "relay:acct", "a", "high"],
+  ]);
 });
 
 test("session.model.set uses the earlier of the Hub deadline and connector work budget", async () => {
@@ -619,6 +647,7 @@ test("core-bounded / long RPC types are exempt from the connector timeout", asyn
     listNativeSessions: () => new Promise(() => {}),
     executeCommand: () => new Promise(() => {}),
     setSessionModel: () => new Promise(() => {}),
+    setSessionEffort: () => new Promise(() => {}),
   });
   const bridge = createControlBridge(control as never, seams);
 
@@ -629,6 +658,11 @@ test("core-bounded / long RPC types are exempt from the connector timeout", asyn
     chatKey: "relay:acct",
     sessionAlias: "a",
     modelId: "model-b",
+  }), () => {});
+  bridge(req(MSG.sessionEffortSet, {
+    chatKey: "relay:acct",
+    sessionAlias: "a",
+    effort: "high",
   }), () => {});
 
   // No timer armed for any exempt type.

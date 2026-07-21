@@ -23,6 +23,8 @@ function makeDeps() {
     transport: {
       getSessionModel: async (s: typeof session) => ({ current: s.model, available: ["gpt-5.2[high]", "gpt-5.2[low]"] }),
       setModel: async (s: typeof session, id: string) => { calls.push(`transport:${s.alias}:${id}`); },
+      getSessionEffort: async () => ({ current: "medium", available: ["low", "medium", "high"] }),
+      setSessionEffort: async (s: typeof session, effort: string) => { calls.push(`effort:${s.alias}:${effort}`); },
     },
     logger: {
       error: async (event: string, message: string, context?: Record<string, unknown>) => {
@@ -234,4 +236,23 @@ test("getSessionModel falls back to the resolved model when the transport can't 
   const control = new ControlService(deps as never);
   const r = await control.getSessionModel("relay:acc", "backend");
   expect(r).toEqual({ current: "gpt-5.2[high]", available: [] });
+});
+
+test("getSessionEffort returns the adapter-advertised values", async () => {
+  const { deps } = makeDeps();
+  const control = new ControlService(deps as never);
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: "medium",
+    available: ["low", "medium", "high"],
+  });
+});
+
+test("setSessionEffort applies the selected value through the transport", async () => {
+  const { deps, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+  expect(calls).toEqual(["effort:internal-backend:high"]);
 });

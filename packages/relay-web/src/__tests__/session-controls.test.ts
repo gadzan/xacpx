@@ -238,4 +238,33 @@ describe("session-controls store", () => {
 
     expect(s.current).toBe("model-b");
   });
+
+  it("loadEffort fetches the adapter-advertised effort values", async () => {
+    rpc.mockResolvedValueOnce({ current: "medium", available: ["low", "medium", "high"] });
+    const s = useSessionControlsStore();
+
+    await s.loadEffort("i1", "backend");
+
+    expect(rpc).toHaveBeenCalledWith("i1", "control.session.effort.get", { sessionAlias: "backend" });
+    expect(s.effortCurrent).toBe("medium");
+    expect(s.effortAvailable).toEqual(["low", "medium", "high"]);
+  });
+
+  it("setEffort updates optimistically and rolls back on failure", async () => {
+    rpc.mockResolvedValueOnce({ current: "medium", available: ["medium", "high"] });
+    const s = useSessionControlsStore();
+    await s.loadEffort("i1", "backend");
+
+    let resolveSet!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveSet = resolve; }));
+    const pending = s.setEffort("i1", "backend", "high");
+    expect(s.effortCurrent).toBe("high");
+
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    resolveSet({ error: { code: "internal", message: "unsupported effort" } });
+    await expect(pending).resolves.toBe(false);
+    expect(s.effortCurrent).toBe("medium");
+    expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "chat.effortSetFailed" });
+    log.mockRestore();
+  });
 });

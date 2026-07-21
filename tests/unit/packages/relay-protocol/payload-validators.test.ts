@@ -48,6 +48,18 @@ test("upload requires filename, content, mimeType strings", () => {
   expect(parseControlPayload(MSG.upload, { filename: "a", content: "b64" })).toBeNull();
 });
 
+test("session effort RPC payloads require a session alias and effort value", () => {
+  expect(parseControlPayload(MSG.sessionEffortGet, {
+    chatKey: "relay:a1", sessionAlias: "backend",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionEffortSet, {
+    chatKey: "relay:a1", sessionAlias: "backend", effort: "high",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionEffortSet, {
+    chatKey: "relay:a1", sessionAlias: "backend",
+  })).toBeNull();
+});
+
 test("Git RPC payloads accept only structured operations", () => {
   expect(parseControlPayload(MSG.gitStatus, { workspace: "project" })).not.toBeNull();
   expect(parseControlPayload(MSG.gitStage, { workspace: "project", paths: ["a.ts"] })).not.toBeNull();

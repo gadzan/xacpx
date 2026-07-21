@@ -299,6 +299,29 @@ test("session archive/unarchive RPCs are chat-scoped (chatKey stamped, else the 
   }
 });
 
+test("session effort RPCs are chat-scoped", async () => {
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+
+  for (const [type, payload] of [
+    [MSG.sessionEffortGet, { sessionAlias: "s" }],
+    [MSG.sessionEffortSet, { sessionAlias: "s", effort: "high" }],
+  ] as const) {
+    rpcCalls.length = 0;
+    const res = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+      method: "POST", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ type, payload }),
+    });
+    expect(res.status).toBe(200);
+    expect((rpcCalls[0]?.payload as { chatKey?: string }).chatKey).toBe(`relay:${redeemed.accountId}`);
+  }
+});
+
 test("queue.cancel RPC is chat-scoped (chatKey stamped, else the connector's cancel is a no-op)", async () => {
   const { app, instances, loginToken, login, rpcCalls } = await makeApp();
   const { cookie } = await login(loginToken);

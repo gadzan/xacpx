@@ -100,9 +100,9 @@ export interface ControlServiceDeps {
     SessionService,
     "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setDisplayName"
   >;
-  // The active transport, for reading/switching a session's model. setModel/
-  // getSessionModel are optional on the interface — absence is handled gracefully.
-  transport: Pick<SessionTransport, "setModel" | "getSessionModel">;
+  // The active transport, for reading/switching a session's model and effort.
+  // These controls are optional on the interface — absence is handled gracefully.
+  transport: Pick<SessionTransport, "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort">;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
@@ -440,6 +440,27 @@ export class ControlService {
       await this.deps.sessions.setSessionModel(session.alias, modelId);
       return { current: modelId, applied: true };
     });
+  }
+
+  /** Read the reasoning-effort values advertised by the session's adapter. */
+  async getSessionEffort(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session || !this.deps.transport.getSessionEffort) return { available: [] };
+    return await this.deps.transport.getSessionEffort(session);
+  }
+
+  /** Set the adapter-advertised reasoning effort for a session. */
+  async setSessionEffort(
+    chatKey: string,
+    alias: string,
+    effort: string,
+  ): Promise<{ current?: string; applied: boolean }> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session) throw new Error("session not found");
+    const setEffort = this.deps.transport.setSessionEffort?.bind(this.deps.transport);
+    if (!setEffort) throw new Error("the active transport does not support setting reasoning effort");
+    await setEffort(session, effort);
+    return { current: effort, applied: true };
   }
 
   /** Serialize model mutations per logical session so stale reconciliation cannot win last. */
