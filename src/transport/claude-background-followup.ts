@@ -1,18 +1,24 @@
 import { access, open, readFile, readdir, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import type { ToolUseEvent, ToolUseKind } from "../channels/types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 250;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+const FINAL_SUBAGENT_DRAIN_MAX_POLLS = 4;
+const FINAL_SUBAGENT_DRAIN_STABLE_POLLS = 2;
 const ASYNC_AGENT_LAUNCH = /Async agent launched successfully|["']?status["']?\s*:\s*["']async_launched["']/i;
 
 export interface ClaudeBackgroundFollowupOptions {
   cwd: string;
   sessionId: string;
   launchedToolCallIds: Iterable<string>;
+  /** Latest ACP events already observed before the native transcript follower starts. */
+  initialToolEvents?: Iterable<ToolUseEvent>;
+  /** Claude agent transcript id keyed by the Agent/Task tool call that launched it. */
+  subagentIdsByToolCallId?: Iterable<readonly [string, string]>;
   signal?: AbortSignal;
   homeDir?: string;
   transcriptPath?: string;
@@ -27,6 +33,7 @@ export interface ClaudeBackgroundFollowupResult {
   status: "completed" | "timeout" | "unavailable";
   transcriptPath?: string;
   completedToolCallIds: string[];
+  failedToolCallIds: string[];
 }
 
 interface ClaudeRecord {
@@ -39,11 +46,22 @@ interface ClaudeRecord {
   };
 }
 
+interface JsonlCursor {
+  offset: number;
+  partial: string;
+}
+
 /** Detect the successful tool result Claude Code returns when an Agent was
  * launched asynchronously. Kept at the transport boundary so callers do not
  * need to know Claude's private task ids or output-file layout. */
 export function isClaudeAsyncAgentLaunch(event: ToolUseEvent): boolean {
   return ASYNC_AGENT_LAUNCH.test(textOfUnknown(event.rawOutput));
+}
+
+export function claudeAsyncAgentId(event: ToolUseEvent): string | undefined {
+  const fromObject = findStringField(event.rawOutput, new Set(["agentId", "agent_id"]));
+  if (fromObject) return fromObject;
+  return /\bagent(?:Id|_id)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)/i.exec(textOfUnknown(event.rawOutput))?.[1];
 }
 
 /** Find Claude Code's native JSONL transcript for an ACP session. Claude's
@@ -82,25 +100,35 @@ export async function followClaudeBackgroundTurn(
 ): Promise<ClaudeBackgroundFollowupResult> {
   const transcriptPath = options.transcriptPath ?? await findClaudeTranscriptPath(options);
   if (!transcriptPath) {
-    return { status: "unavailable", completedToolCallIds: [] };
+    return { status: "unavailable", completedToolCallIds: [], failedToolCallIds: [] };
   }
 
   let initial: Buffer;
   try {
     initial = await readFile(transcriptPath);
   } catch {
-    return { status: "unavailable", transcriptPath, completedToolCallIds: [] };
+    return { status: "unavailable", transcriptPath, completedToolCallIds: [], failedToolCallIds: [] };
   }
 
   const initialCompleteEnd = initial.lastIndexOf(0x0a);
   const initialComplete = initial.subarray(0, initialCompleteEnd >= 0 ? initialCompleteEnd : 0).toString("utf8");
-  let partial = initialCompleteEnd >= 0 ? initial.subarray(initialCompleteEnd + 1).toString("utf8") : initial.toString("utf8");
-  let offset = initial.length;
+  const mainCursor: JsonlCursor = {
+    offset: initial.length,
+    partial: initialCompleteEnd >= 0 ? initial.subarray(initialCompleteEnd + 1).toString("utf8") : initial.toString("utf8"),
+  };
   const initialRecords = initialComplete.split("\n").map(parseRecord);
   const launched = new Set([...options.launchedToolCallIds].filter(Boolean));
   const completed = new Set<string>();
+  const failed = new Set<string>();
   const toolEvents = new Map<string, ToolUseEvent>();
+  for (const event of options.initialToolEvents ?? []) toolEvents.set(event.toolCallId, event);
+  const parentToolCallIdByAgentId = new Map<string, string>();
+  for (const [toolCallId, agentId] of options.subagentIdsByToolCallId ?? []) {
+    if (toolCallId && agentId) parentToolCallIdByAgentId.set(agentId, toolCallId);
+  }
   const boundary = findPromptBoundary(initialRecords, launched);
+  let launchSeen = boundary >= 0 || initialRecords.some((record) => hasTrackedLaunch(record, launched));
+  let boundarySeen = boundary >= 0;
   let sequence = 0;
   let lastNotificationSequence = -1;
   let done = false;
@@ -117,10 +145,19 @@ export async function followClaudeBackgroundTurn(
 
     if (record.type === "user") {
       const userText = blocks.map(blockText).filter(Boolean).join("\n");
-      for (const id of taskNotificationToolIds(userText)) {
-        if (launched.has(id)) {
-          completed.add(id);
+      for (const notification of taskNotifications(userText)) {
+        if (launched.has(notification.toolCallId)) {
+          completed.add(notification.toolCallId);
+          if (notification.failed) failed.add(notification.toolCallId);
           lastNotificationSequence = sequence;
+          const previous = toolEvents.get(notification.toolCallId);
+          if (previous) {
+            await emitTool({
+              ...previous,
+              status: notification.failed ? "error" : "success",
+              ...(notification.failed ? { rawOutput: { message: "Claude background Agent failed" } } : {}),
+            });
+          }
         }
       }
       for (const block of blocks) {
@@ -134,6 +171,8 @@ export async function followClaudeBackgroundTurn(
           toolCallId,
           toolName: previous?.toolName ?? "Tool",
           kind: previous?.kind ?? "other",
+          ...(previous?.parentToolCallId ? { parentToolCallId: previous.parentToolCallId } : {}),
+          ...(previous?.isSubagent ? { isSubagent: true } : {}),
           ...(previous?.summary ? { summary: previous.summary } : {}),
           ...(previous?.rawInput !== undefined ? { rawInput: previous.rawInput } : {}),
           ...(output ? { rawOutput: output } : {}),
@@ -180,6 +219,94 @@ export async function followClaudeBackgroundTurn(
     }
   };
 
+  const processAfterBoundary = async (record: ClaudeRecord | undefined): Promise<void> => {
+    if (!record) return;
+    if (!boundarySeen) {
+      if (hasTrackedLaunch(record, launched)) launchSeen = true;
+      if (launchSeen && isMainEndTurn(record)) boundarySeen = true;
+      return;
+    }
+    await processRecord(record);
+  };
+
+  const processSubagentRecord = async (record: ClaudeRecord | undefined, parentToolCallId: string): Promise<void> => {
+    if (!record) return;
+    const blocks = contentBlocks(record.message?.content);
+    if (record.type === "assistant") {
+      for (const block of blocks) {
+        if (readString(block, "type") !== "tool_use") continue;
+        const toolCallId = readString(block, "id");
+        if (!toolCallId) continue;
+        const name = readString(block, "name") ?? "Tool";
+        const rawInput = (block as Record<string, unknown>).input;
+        const previous = toolEvents.get(toolCallId);
+        await emitTool({
+          ...previous,
+          toolCallId,
+          parentToolCallId: previous?.parentToolCallId ?? parentToolCallId,
+          ...((previous?.isSubagent || isAgentToolName(name)) ? { isSubagent: true } : {}),
+          toolName: previous?.toolName ?? name,
+          kind: previous?.kind ?? classifyToolKind(name),
+          ...(previous?.summary ? { summary: previous.summary } : toolSummary(rawInput) ? { summary: toolSummary(rawInput) } : {}),
+          ...(previous?.rawInput !== undefined ? { rawInput: previous.rawInput } : rawInput !== undefined ? { rawInput } : {}),
+          status: previous?.status === "success" || previous?.status === "error" ? previous.status : "running",
+        });
+      }
+      return;
+    }
+    if (record.type !== "user") return;
+    for (const block of blocks) {
+      if (readString(block, "type") !== "tool_result") continue;
+      const toolCallId = readString(block, "tool_use_id");
+      if (!toolCallId) continue;
+      const previous = toolEvents.get(toolCallId);
+      const output = blockText(block);
+      const event: ToolUseEvent = {
+        ...previous,
+        toolCallId,
+        parentToolCallId: previous?.parentToolCallId ?? parentToolCallId,
+        ...(previous?.isSubagent ? { isSubagent: true } : {}),
+        toolName: previous?.toolName ?? "Tool",
+        kind: previous?.kind ?? "other",
+        ...(previous?.summary ? { summary: previous.summary } : {}),
+        ...(previous?.rawInput !== undefined ? { rawInput: previous.rawInput } : {}),
+        ...(previous?.rawOutput !== undefined ? { rawOutput: previous.rawOutput } : output ? { rawOutput: output } : {}),
+        status: readBoolean(block, "is_error") || previous?.status === "error" ? "error" : "success",
+      };
+      if (event.isSubagent && isClaudeAsyncAgentLaunch(event)) {
+        const agentId = claudeAsyncAgentId(event);
+        if (agentId) parentToolCallIdByAgentId.set(agentId, event.toolCallId);
+      }
+      await emitTool(event);
+    }
+  };
+
+  const subagentCursors = new Map<string, JsonlCursor>();
+  const processSubagentTranscripts = async (): Promise<boolean> => {
+    const transcripts = await findSubagentTranscripts(transcriptPath);
+    let advanced = false;
+    let discoveredNestedAgent = true;
+    while (discoveredNestedAgent) {
+      const mappedAgentCount = parentToolCallIdByAgentId.size;
+      for (const subagent of transcripts) {
+        const parentToolCallId = parentToolCallIdByAgentId.get(subagent.agentId);
+        if (!parentToolCallId) continue;
+        const cursor = subagentCursors.get(subagent.path) ?? { offset: 0, partial: "" };
+        const previousOffset = cursor.offset;
+        const lines = await readJsonlDelta(subagent.path, cursor);
+        if (cursor.offset !== previousOffset) advanced = true;
+        subagentCursors.set(subagent.path, cursor);
+        for (const line of lines) await processSubagentRecord(parseRecord(line), parentToolCallId);
+      }
+      discoveredNestedAgent = parentToolCallIdByAgentId.size > mappedAgentCount;
+    }
+    return advanced;
+  };
+
+  // Claude stores each Agent's full trace beside the main transcript. Replay it
+  // before the recovered final answer, then keep polling it with the main file.
+  await processSubagentTranscripts();
+
   // Closing the race between ACP result delivery and this watcher starting: if
   // Claude already appended a task notification/final answer, recover it now.
   if (boundary >= 0) {
@@ -200,38 +327,27 @@ export async function followClaudeBackgroundTurn(
         status: "timeout",
         transcriptPath,
         completedToolCallIds: [...completed],
+        failedToolCallIds: [...failed],
       };
     }
 
     await waitForPoll(pollIntervalMs, options.signal);
-    let size: number;
-    try {
-      size = (await stat(transcriptPath)).size;
-    } catch {
-      continue;
-    }
-    if (size <= offset) continue;
-
-    let chunk: Buffer;
-    try {
-      const handle = await open(transcriptPath, "r");
-      try {
-        chunk = Buffer.alloc(size - offset);
-        const result = await handle.read(chunk, 0, chunk.length, offset);
-        chunk = chunk.subarray(0, result.bytesRead);
-      } finally {
-        await handle.close();
-      }
-    } catch {
-      continue;
-    }
-    offset += chunk.length;
-    partial += chunk.toString("utf8");
-    const lines = partial.split("\n");
-    partial = lines.pop() ?? "";
+    await processSubagentTranscripts();
+    const lines = await readJsonlDelta(transcriptPath, mainCursor);
     for (const line of lines) {
-      await processRecord(parseRecord(line));
+      await processAfterBoundary(parseRecord(line));
       if (done) break;
+    }
+  }
+
+  // The main transcript and Agent transcripts are separate files, so their
+  // writes can become visible in either order. After the main end_turn, allow
+  // subagent tails to settle for two polls, with a hard cap on the grace.
+  if (parentToolCallIdByAgentId.size > 0) {
+    let stablePolls = 0;
+    for (let poll = 0; poll < FINAL_SUBAGENT_DRAIN_MAX_POLLS && stablePolls < FINAL_SUBAGENT_DRAIN_STABLE_POLLS; poll += 1) {
+      await waitForPoll(pollIntervalMs, options.signal);
+      stablePolls = await processSubagentTranscripts() ? 0 : stablePolls + 1;
     }
   }
 
@@ -239,7 +355,41 @@ export async function followClaudeBackgroundTurn(
     status: "completed",
     transcriptPath,
     completedToolCallIds: [...completed],
+    failedToolCallIds: [...failed],
   };
+}
+
+async function readJsonlDelta(path: string, cursor: JsonlCursor): Promise<string[]> {
+  let size: number;
+  try {
+    size = (await stat(path)).size;
+  } catch {
+    return [];
+  }
+  if (size < cursor.offset) {
+    cursor.offset = 0;
+    cursor.partial = "";
+  }
+  if (size <= cursor.offset) return [];
+
+  let chunk: Buffer;
+  try {
+    const handle = await open(path, "r");
+    try {
+      chunk = Buffer.alloc(size - cursor.offset);
+      const result = await handle.read(chunk, 0, chunk.length, cursor.offset);
+      chunk = chunk.subarray(0, result.bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return [];
+  }
+  cursor.offset += chunk.length;
+  cursor.partial += chunk.toString("utf8");
+  const lines = cursor.partial.split("\n");
+  cursor.partial = lines.pop() ?? "";
+  return lines;
 }
 
 function findPromptBoundary(records: Array<ClaudeRecord | undefined>, launched: Set<string>): number {
@@ -261,6 +411,17 @@ function findPromptBoundary(records: Array<ClaudeRecord | undefined>, launched: 
     }
   }
   return -1;
+}
+
+function hasTrackedLaunch(record: ClaudeRecord | undefined, launched: Set<string>): boolean {
+  if (record?.type !== "assistant" || record.isSidechain === true) return false;
+  return contentBlocks(record.message?.content).some((block) =>
+    readString(block, "type") === "tool_use" && launched.has(readString(block, "id") ?? "")
+  );
+}
+
+function isMainEndTurn(record: ClaudeRecord): boolean {
+  return record.type === "assistant" && record.isSidechain !== true && record.message?.stop_reason === "end_turn";
 }
 
 function parseRecord(line: string): ClaudeRecord | undefined {
@@ -300,11 +461,41 @@ function textOfUnknown(value: unknown): string {
   }
 }
 
-function taskNotificationToolIds(text: string): string[] {
-  const ids: string[] = [];
-  const pattern = /<tool-use-id>([^<]+)<\/tool-use-id>/g;
-  for (let match = pattern.exec(text); match; match = pattern.exec(text)) ids.push(match[1]!.trim());
-  return ids;
+function findStringField(value: unknown, keys: ReadonlySet<string>): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findStringField(item, keys);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const object = value as Record<string, unknown>;
+  for (const key of keys) {
+    const candidate = object[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  for (const candidate of Object.values(object)) {
+    const found = findStringField(candidate, keys);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function taskNotifications(text: string): Array<{ toolCallId: string; failed: boolean }> {
+  const notifications: Array<{ toolCallId: string; failed: boolean }> = [];
+  const blocks = [...text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/gi)]
+    .map((match) => match[1] ?? "");
+  for (const block of blocks.length > 0 ? blocks : [text]) {
+    const toolCallId = /<tool-use-id>([^<]+)<\/tool-use-id>/i.exec(block)?.[1]?.trim();
+    if (!toolCallId) continue;
+    const status = /<status>([^<]+)<\/status>/i.exec(block)?.[1]?.trim().toLowerCase();
+    notifications.push({
+      toolCallId,
+      failed: status === "failed" || status === "error" || status === "cancelled" || status === "canceled",
+    });
+  }
+  return notifications;
 }
 
 function classifyToolKind(name: string): ToolUseKind {
@@ -315,6 +506,34 @@ function classifyToolKind(name: string): ToolUseKind {
   if (/(bash|shell|exec|run|terminal|command)/.test(normalized)) return "execute";
   if (/(think|reason|plan|agent|task)/.test(normalized)) return "think";
   return "other";
+}
+
+function isAgentToolName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return normalized === "agent" || normalized === "task";
+}
+
+async function findSubagentTranscripts(transcriptPath: string): Promise<Array<{ agentId: string; path: string }>> {
+  const sessionDir = join(dirname(transcriptPath), basename(transcriptPath, ".jsonl"), "subagents");
+  const found: Array<{ agentId: string; path: string }> = [];
+  const visit = async (directory: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile() && entry.name.startsWith("agent-") && entry.name.endsWith(".jsonl")) {
+        found.push({ agentId: entry.name.slice("agent-".length, -".jsonl".length), path });
+      }
+    }
+  };
+  await visit(sessionDir);
+  return found;
 }
 
 function toolSummary(input: unknown): string | undefined {

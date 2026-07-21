@@ -54,3 +54,28 @@ test("a subscribe frame filters ownership, installs the subscription, and sends 
   expect((d.instances.listByAccount as ReturnType<typeof mock>).mock.calls).toEqual([["a1"]]);
   expect((d.instances.getOwned as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });
+
+test("a subscribe frame installs and snapshots more than 256 owned instances", () => {
+  const instanceIds = Array.from({ length: 257 }, (_, index) => `i${index}`);
+  const d = {
+    instances: {
+      getOwned: mock(() => undefined),
+      listByAccount: mock(() => instanceIds.map((id) => ({ id }))),
+    },
+    gateway: { sendEvent: mock(() => true) },
+    webGateway: { setSubscription: mock(() => {}), send: mock(() => true) },
+    stateSnapshot: mock(() => ({ turns: [], usage: [], commands: [] })),
+  };
+
+  handleWebClientMessage(d as never, "a1", sock, encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds })));
+
+  expect((d.webGateway.setSubscription as ReturnType<typeof mock>).mock.calls[0]).toEqual([sock, instanceIds]);
+  expect((d.webGateway.send as ReturnType<typeof mock>).mock.calls).toHaveLength(257);
+  expect((d.webGateway.send as ReturnType<typeof mock>).mock.calls[256]?.[1]).toEqual({
+    kind: "state-snapshot",
+    instanceId: "i256",
+    turns: [],
+    usage: [],
+    commands: [],
+  });
+});

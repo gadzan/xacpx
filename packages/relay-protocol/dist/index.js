@@ -320,7 +320,6 @@ function parseWebServerEvent(envelope) {
   return payload;
 }
 var WEB_CLIENT_TYPE = "web.client";
-var MAX_WEB_SUBSCRIPTION_INSTANCES = 256;
 var MAX_WEB_INSTANCE_ID_LENGTH = 128;
 function webClientEnvelope(msg) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
@@ -333,7 +332,7 @@ function parseWebClientMessage(envelope) {
     return null;
   const c = p;
   if (c.kind === "subscribe") {
-    return Array.isArray(c.instanceIds) && c.instanceIds.length <= MAX_WEB_SUBSCRIPTION_INSTANCES && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH) ? p : null;
+    return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH) ? p : null;
   }
   if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string")
     return null;
@@ -593,7 +592,6 @@ export {
   WEB_CLIENT_TYPE,
   RELAY_PROTOCOL_VERSION,
   MSG,
-  MAX_WEB_SUBSCRIPTION_INSTANCES,
   MAX_WEB_INSTANCE_ID_LENGTH,
   CONTROL_PAYLOAD_VALIDATORS
 };

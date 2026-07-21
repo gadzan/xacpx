@@ -79,4 +79,75 @@ describe("subagent trace presentation", () => {
     await nextTick();
     expect(wrapper.find('[data-test="subagent-activity"]').text()).toContain("wechat");
   });
+
+  it("keeps nested subagent descendants visible in the full trace", async () => {
+    const nestedAgent: ToolStepDto = {
+      toolCallId: "agent-2",
+      parentToolCallId: "agent-1",
+      toolName: "Agent",
+      kind: "think",
+      status: "success",
+      title: "Inspect protocol",
+      isSubagent: true,
+    };
+    const nestedRead: ToolStepDto = {
+      toolCallId: "read-2",
+      parentToolCallId: "agent-2",
+      toolName: "Read",
+      kind: "read",
+      status: "success",
+      title: "Read web-dtos.ts",
+    };
+    const wrapper = mount(TurnParts, {
+      attachTo: document.body,
+      props: {
+        parts: [
+          { type: "tool", step: parent },
+          { type: "tool", step: nestedAgent },
+          { type: "tool", step: nestedRead },
+        ],
+      },
+      global: { plugins: [createPinia()] },
+    });
+
+    await wrapper.find('[data-test="subagent-header"]').trigger("click");
+    await wrapper.find('[data-test="subagent-open-trace"]').trigger("click");
+    await nextTick();
+
+    const dialog = document.querySelector('[data-test="subagent-trace-dialog"]');
+    expect(dialog?.textContent).toContain("Inspect protocol");
+    expect(dialog?.textContent).toContain("Read web-dtos.ts");
+    wrapper.unmount();
+  });
+
+  it("keeps interleaved nested trace steps in their original arrival order", () => {
+    const nestedAgent: ToolStepDto = {
+      toolCallId: "agent-2",
+      parentToolCallId: "agent-1",
+      toolName: "Agent",
+      kind: "think",
+      status: "running",
+      title: "Nested agent",
+      isSubagent: true,
+    };
+    const outerRead = child("outer-read", "Outer read");
+    const nestedRead: ToolStepDto = {
+      ...child("nested-read", "Nested read"),
+      parentToolCallId: "agent-2",
+    };
+    const wrapper = mount(TurnParts, {
+      props: {
+        parts: [
+          { type: "tool", step: parent },
+          { type: "tool", step: nestedAgent },
+          { type: "tool", step: outerRead },
+          { type: "tool", step: nestedRead },
+        ],
+      },
+      global: { plugins: [createPinia()] },
+    });
+
+    expect(wrapper.findComponent(SubagentStepCard).props("children").map((step: ToolStepDto) => step.toolCallId))
+      .toEqual(["agent-2", "outer-read", "nested-read"]);
+  });
 });

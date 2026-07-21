@@ -1,18 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { ToolStepDto, ToolStepStatus } from "@ganglion/xacpx-relay-protocol";
+import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Check, Loader2, X } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { resolveSubagentStatus } from "../lib/subagent-status";
+import { indexToolSteps, toolStepDepthWithin } from "../lib/subagent-trace";
 
 const props = defineProps<{ step: ToolStepDto; children: ToolStepDto[] }>();
 const emit = defineEmits<{ close: [] }>();
 const dialog = ref<HTMLElement | null>(null);
-const status = computed<ToolStepStatus>(() => {
-  if (props.step.status === "error" || props.children.some((child) => child.status === "error")) return "error";
-  if (props.step.status === "running" || props.children.some((child) => child.status === "running")) return "running";
-  return "success";
+const status = computed(() => resolveSubagentStatus(props.step, props.children));
+const traceRows = computed(() => {
+  const byId = indexToolSteps([props.step, ...props.children]);
+  return props.children.map((child) => ({
+    step: child,
+    depth: toolStepDepthWithin(child, props.step.toolCallId, byId),
+  }));
 });
 useModalA11y(dialog, () => emit("close"));
 </script>
@@ -58,8 +63,12 @@ useModalA11y(dialog, () => emit("close"));
             <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
             <ToolDetail :detail="step.detail" />
           </section>
-          <div v-if="children.length" class="space-y-2.5">
-            <ToolStepCard v-for="child in children" :key="child.toolCallId" :step="child" />
+          <div v-if="traceRows.length" class="space-y-2.5">
+            <div v-for="row in traceRows" :key="row.step.toolCallId"
+                 class="border-l border-border/70 pl-2"
+                 :style="{ marginLeft: `${row.depth * 16}px` }">
+              <ToolStepCard :step="row.step" />
+            </div>
           </div>
           <div v-else class="grid min-h-36 place-items-center rounded-xl border border-dashed border-border bg-bg/40 text-center">
             <div>

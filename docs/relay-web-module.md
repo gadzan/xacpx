@@ -51,8 +51,8 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   当前会话同时重拉 SQLite 历史以显示最终回复。这样避免了 HTTP active-turn 快照与 WS 增量跨通道竞态。
   首屏不再并行调用 `/api/active-turns`；历史请求还带会话、请求代次和本地消息修订校验，旧响应不能覆盖
   新会话或刚完成的回复。`turn-finished` 会先即时定型 UI，再重拉持久化历史消除临时行重复。
-  **未发过 `subscribe` = 收全部**（向后兼容），空数组 `[]` = 收无；单次订阅最多 256 个、instance id
-  最长 128 字符，浏览器 WS 帧最大 256 KiB，hub 通过一次账号实例查询完成去重和所有权过滤。
+  **未发过 `subscribe` = 收全部**（向后兼容），空数组 `[]` = 收无；订阅携带账号的完整实例集合，
+  instance id 最长 128 字符，浏览器 WS 帧最大 256 KiB，hub 通过一次账号实例查询完成去重和所有权过滤。
 
 ## 右栏任务面板（阶段四）
 
@@ -90,12 +90,13 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 - Claude ACP 的 `_meta.claudeCode.toolName="Agent"` 标准化为 `ToolUseEvent.isSubagent`；subagent 内部工具的
   `parentToolUseId` 标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto` 原样进入 Relay Web。
-- 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；后台任务真正完成、主 Agent 续写结束后才转为
-  `success`。因此 Web 不会在 subagent 尚未结束时错误显示完成。
+- 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
+  主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
+  `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。
 - `TurnParts.vue` 保留原始有序 parts，仅在展示层按 `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具
   仍按普通卡片渲染。
 - `SubagentStepCard.vue` 默认折叠：运行中轮播当前活动步骤，展开后显示紧凑时间线；“查看完整过程”打开
-  `SubagentTraceDialog.vue`，展示委派任务和每个子工具的完整详情。轮播尊重 `prefers-reduced-motion`，弹窗支持焦点圈定、
+  `SubagentTraceDialog.vue`，按父子深度展示委派任务、嵌套 Agent 和每个子工具的完整详情。轮播尊重 `prefers-reduced-motion`，弹窗支持焦点圈定、
   Esc 和点击遮罩关闭。
 
 ## 阶段五加固（审计修复）

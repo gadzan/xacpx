@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { ToolStepDto, ToolStepStatus } from "@ganglion/xacpx-relay-protocol";
+import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, ExternalLink, Loader2 } from "lucide-vue-next";
 import { KIND_ICON } from "../lib/tool-summary";
+import { resolveSubagentStatus } from "../lib/subagent-status";
 import SubagentTraceDialog from "./SubagentTraceDialog.vue";
 
 const props = defineProps<{ step: ToolStepDto; children: ToolStepDto[] }>();
@@ -12,11 +13,7 @@ const paused = ref(false);
 const activityIndex = ref(0);
 let activityTimer: ReturnType<typeof setInterval> | undefined;
 
-const status = computed<ToolStepStatus>(() => {
-  if (props.step.status === "error" || props.children.some((child) => child.status === "error")) return "error";
-  if (props.step.status === "running" || props.children.some((child) => child.status === "running")) return "running";
-  return "success";
-});
+const status = computed(() => resolveSubagentStatus(props.step, props.children));
 const activity = computed(() => {
   const running = props.children.filter((child) => child.status === "running");
   return running.length ? running : props.children.slice(-3);

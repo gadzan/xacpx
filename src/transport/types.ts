@@ -137,6 +137,8 @@ export type EnsureSessionProgress =
 export type PromptMediaInput = PromptMedia | PromptMedia[];
 
 export interface PromptOptions {
+  /** Abort the whole prompt lifecycle, including transport-owned continuations. */
+  signal?: AbortSignal;
   onSegment?: (text: string) => void | Promise<void>;
   /**
    * Structured side-channel for tool calls. See `toolEventMode` for routing.

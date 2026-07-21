@@ -5,6 +5,7 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import SubagentStepCard from "./SubagentStepCard.vue";
+import { hasToolStepAncestor, indexToolSteps } from "../lib/subagent-trace";
 
 // Renders a turn's transcript inline, in arrival order: text, reasoning (collapsed),
 // and tool calls interleaved exactly as the agent produced them — no Feishu-style
@@ -24,23 +25,24 @@ const renderParts = computed<RenderPart[]>(() => {
       .filter((part): part is Extract<TurnPartDto, { type: "tool" }> => part.type === "tool" && part.step.isSubagent === true)
       .map((part) => part.step.toolCallId),
   );
-  const children = new Map<string, ToolStepDto[]>();
-  for (const part of props.parts) {
-    if (part.type !== "tool" || !part.step.parentToolCallId || !parents.has(part.step.parentToolCallId)) continue;
-    const list = children.get(part.step.parentToolCallId) ?? [];
-    list.push(part.step);
-    children.set(part.step.parentToolCallId, list);
-  }
+  const toolParts = props.parts.filter(
+    (part): part is Extract<TurnPartDto, { type: "tool" }> => part.type === "tool",
+  );
+  const stepsById = indexToolSteps(toolParts.map((part) => part.step));
+
+  const descendantsOf = (parentToolCallId: string): ToolStepDto[] => toolParts
+    .map((part) => part.step)
+    .filter((step) => hasToolStepAncestor(step, stepsById, (ancestorId) => ancestorId === parentToolCallId));
 
   const result: RenderPart[] = [];
   props.parts.forEach((part, index) => {
-    if (part.type === "tool" && part.step.parentToolCallId && parents.has(part.step.parentToolCallId)) return;
+    if (part.type === "tool" && hasToolStepAncestor(part.step, stepsById, (ancestorId) => parents.has(ancestorId))) return;
     if (part.type === "tool" && part.step.isSubagent) {
       result.push({
         key: `subagent:${part.step.toolCallId}`,
         type: "subagent",
         step: part.step,
-        children: children.get(part.step.toolCallId) ?? [],
+        children: descendantsOf(part.step.toolCallId),
       });
       return;
     }

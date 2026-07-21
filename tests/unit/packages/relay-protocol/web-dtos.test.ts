@@ -324,13 +324,13 @@ test("parseWebClientMessage rejects subscribe with a non-array / non-string inst
   expect(parseWebClientMessage(bad2)).toBeNull();
 });
 
-test("parseWebClientMessage bounds subscribe count and instance id length", () => {
+test("parseWebClientMessage accepts the dashboard's complete instance set and bounds instance id length", () => {
   const envelope = (instanceIds: string[]) => ({
     protocolVersion: 1, kind: "event", type: WEB_CLIENT_TYPE,
     payload: { kind: "subscribe", instanceIds },
   }) as never;
   expect(parseWebClientMessage(envelope(Array.from({ length: 256 }, (_, i) => `i${i}`)))).not.toBeNull();
-  expect(parseWebClientMessage(envelope(Array.from({ length: 257 }, (_, i) => `i${i}`)))).toBeNull();
+  expect(parseWebClientMessage(envelope(Array.from({ length: 257 }, (_, i) => `i${i}`)))).not.toBeNull();
   expect(parseWebClientMessage(envelope(["x".repeat(128)]))).not.toBeNull();
   expect(parseWebClientMessage(envelope(["x".repeat(129)]))).toBeNull();
   expect(parseWebClientMessage(envelope([""]))).toBeNull();

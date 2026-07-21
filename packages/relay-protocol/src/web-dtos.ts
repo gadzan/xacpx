@@ -317,7 +317,6 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
 // --- web→hub upstream messages (new direction; no prior precedent) ---
 
 export const WEB_CLIENT_TYPE = "web.client";
-export const MAX_WEB_SUBSCRIPTION_INSTANCES = 256;
 export const MAX_WEB_INSTANCE_ID_LENGTH = 128;
 
 export type WebClientMessage =
@@ -337,7 +336,6 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
   const c = p as Record<string, unknown>;
   if (c.kind === "subscribe") {
     return Array.isArray(c.instanceIds)
-      && c.instanceIds.length <= MAX_WEB_SUBSCRIPTION_INSTANCES
       && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH)
       ? (p as WebClientMessage)
       : null;
