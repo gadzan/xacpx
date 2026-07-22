@@ -212,3 +212,73 @@ test("setSessionEffort uses the config id advertised by the adapter", async () =
     "set", "-s", "backend:api-fix", "effort", "high",
   ]);
 });
+
+test("setSessionEffort rejects values not advertised by the adapter", async () => {
+  const calls: string[][] = [];
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    return {
+      code: 0,
+      stdout: JSON.stringify({
+        acpx: { config_options: [{
+          id: "reasoning_effort",
+          category: "thought_level",
+          currentValue: "medium",
+          options: [{ value: "medium" }, { value: "high" }],
+        }] },
+      }),
+      stderr: "",
+    };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+
+  await expect(transport.setSessionEffort(modelSession, "extreme")).rejects.toThrow(
+    'reasoning effort "extreme" is not advertised',
+  );
+  expect(calls.some((args) => args.includes("set"))).toBe(false);
+});
+
+test("effort get/set apply the session's resolved provider environment", async () => {
+  const options: Array<{ env?: NodeJS.ProcessEnv } | undefined> = [];
+  const run = mock(async (_command: string, args: string[], runOptions?: { env?: NodeJS.ProcessEnv }) => {
+    options.push(runOptions);
+    return {
+      code: 0,
+      stdout: args.includes("sessions")
+        ? JSON.stringify({
+            acpx: { config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "medium",
+              options: [{ value: "medium" }, { value: "high" }],
+            }] },
+          })
+        : "",
+      stderr: "",
+    };
+  });
+  const transport = new AcpxCliTransport({
+    command: "acpx",
+    resolveSpawnEnvironment: ({ driver, settingsPolicy }) => ({
+      RESOLVED_DRIVER: driver ?? "",
+      RESOLVED_POLICY: settingsPolicy ?? "",
+    }),
+  }, run, okRunner());
+  const providerSession = {
+    ...modelSession,
+    agent: "claude-provider",
+    driver: "claude" as const,
+    settingsPolicy: "provider-only" as const,
+  };
+
+  await transport.getSessionEffort(providerSession);
+  await transport.setSessionEffort(providerSession, "high");
+
+  expect(options).toHaveLength(3);
+  for (const runOptions of options) {
+    expect(runOptions?.env).toEqual({
+      RESOLVED_DRIVER: "claude",
+      RESOLVED_POLICY: "provider-only",
+    });
+  }
+});

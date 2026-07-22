@@ -256,3 +256,32 @@ test("setSessionEffort applies the selected value through the transport", async 
   });
   expect(calls).toEqual(["effort:internal-backend:high"]);
 });
+
+test("setSessionEffort serializes rapid mutations for the same session", async () => {
+  const { deps, calls } = makeDeps();
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  deps.transport.setSessionEffort = async (s: typeof session, effort: string) => {
+    calls.push(`effort:${s.alias}:${effort}`);
+    if (effort === "low") {
+      markFirstStarted();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    }
+  };
+  const control = new ControlService(deps as never);
+
+  const first = control.setSessionEffort("relay:acc", "backend", "low");
+  await firstStarted;
+  const second = control.setSessionEffort("relay:acc", "backend", "high");
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+  expect(calls).toEqual(["effort:internal-backend:low"]);
+  releaseFirst();
+  await expect(first).resolves.toEqual({ current: "low", applied: true });
+  await expect(second).resolves.toEqual({ current: "high", applied: true });
+  expect(calls).toEqual([
+    "effort:internal-backend:low",
+    "effort:internal-backend:high",
+  ]);
+});

@@ -17,7 +17,7 @@
   connector/core 在串行队列出闸时拒绝已来不及安全完成的状态变更；两字段任一缺失即 fail closed。
 - 会话级模型与推理强度分别通过 `control.session.model.get/set` 和
   `control.session.effort.get/set` 暴露。Hub 会为这些 RPC 覆写可信的 `chatKey`；effort 的配置 id
-  与可选值由实例侧 adapter 广告，Hub/Web 不硬编码上游实现细节。
+  与可选值由实例侧 adapter 广告，实例 transport 会拒绝未广告值，Hub/Web 不硬编码上游实现细节。
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。

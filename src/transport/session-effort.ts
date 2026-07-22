@@ -9,6 +9,17 @@ const EFFORT_CONFIG_IDS = new Set([
 
 type EffortConfigOption = SessionEffortState & { configId: string };
 
+export function requireAdvertisedSessionEffort(raw: string, value: string): EffortConfigOption {
+  const advertised = parseSessionEffortRecord(raw);
+  if (!advertised) {
+    throw new Error("the active agent does not advertise a reasoning-effort option");
+  }
+  if (!advertised.available.includes(value)) {
+    throw new Error(`reasoning effort "${value}" is not advertised by the active agent`);
+  }
+  return advertised;
+}
+
 /** Locate the reasoning-effort select advertised by an ACP adapter in an acpx record. */
 export function parseSessionEffortRecord(raw: string): EffortConfigOption | undefined {
   let record: unknown;

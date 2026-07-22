@@ -306,6 +306,7 @@ export class BridgeServer {
       case "setSessionEffort":
         return await this.runtime.setSessionEffort({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
@@ -314,6 +315,7 @@ export class BridgeServer {
       case "getSessionEffort":
         return await this.runtime.getSessionEffort({
           agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),

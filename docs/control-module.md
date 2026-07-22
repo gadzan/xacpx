@@ -162,8 +162,9 @@ xacpx 不假定固定的配置 id：Codex adapter 常见的 `reasoning_effort`�
 
 `control.session.effort.set { sessionAlias, effort }` 先读取同一记录确定真实 config id，再通过
 acpx 的既有 `set <key> <value>` 命令设置，返回 `{ ok, current }`。设置值由 adapter 广告的
-`available` 驱动；具体可选值不在 xacpx 内硬编码。该路径同时支持 `acpx-cli` 与
-`acpx-bridge` transport，不修改或绕过上游 acpx。
+`available` 驱动且在 transport 边界再次校验；具体可选值不在 xacpx 内硬编码。该路径同时支持
+`acpx-cli` 与 `acpx-bridge` transport，保留会话的 driver/settings policy/provider 环境，
+不修改或绕过上游 acpx。同一逻辑会话的 model/effort 配置写入共用串行队列，避免旧操作最后落盘。
 串行队列出闸时，ControlService 会为最坏 90 秒的 set + readback 预留完整预算；剩余时间不足的
 请求在触碰 transport 前失败，避免排队重新吃掉 Hub 为状态变更保留的响应窗口。
 

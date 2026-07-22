@@ -22,8 +22,8 @@ describe("session-controls store", () => {
     const s = useSessionControlsStore();
     await s.loadModel("i1", "backend");
     expect(rpc).toHaveBeenCalledWith("i1", "control.session.model.get", { sessionAlias: "backend" });
-    expect(s.current).toBe("gpt-5.2[high]");
-    expect(s.available).toEqual(["gpt-5.2[high]", "gpt-5.2[low]"]);
+    expect(s.modelCurrent).toBe("gpt-5.2[high]");
+    expect(s.modelAvailable).toEqual(["gpt-5.2[high]", "gpt-5.2[low]"]);
   });
 
   it("loadModel coerces a malformed result to safe defaults (no array → [])", async () => {
@@ -32,15 +32,15 @@ describe("session-controls store", () => {
     rpc.mockResolvedValueOnce({});
     const s = useSessionControlsStore();
     await s.loadModel("i1", "backend");
-    expect(s.available).toEqual([]);
-    expect(s.current).toBeUndefined();
+    expect(s.modelAvailable).toEqual([]);
+    expect(s.modelCurrent).toBeUndefined();
   });
 
   it("loadModel resets on missing instance/alias without an rpc", async () => {
     const s = useSessionControlsStore();
     await s.loadModel(null, "backend");
     expect(rpc).not.toHaveBeenCalled();
-    expect(s.available).toEqual([]);
+    expect(s.modelAvailable).toEqual([]);
   });
 
   it("clears the previous session model while a new session is loading", async () => {
@@ -52,12 +52,12 @@ describe("session-controls store", () => {
     rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
     const pendingLoad = s.loadModel("i1", "session-b");
 
-    expect(s.current).toBeUndefined();
-    expect(s.available).toEqual([]);
-    expect(s.loading).toBe(true);
+    expect(s.modelCurrent).toBeUndefined();
+    expect(s.modelAvailable).toEqual([]);
+    expect(s.modelLoading).toBe(true);
     resolveLoad({ current: "model-b", available: ["model-b"] });
     await pendingLoad;
-    expect(s.current).toBe("model-b");
+    expect(s.modelCurrent).toBe("model-b");
   });
 
   it("setModel updates current optimistically before the RPC resolves", async () => {
@@ -66,24 +66,24 @@ describe("session-controls store", () => {
     const s = useSessionControlsStore();
     const p = s.setModel("i1", "backend", "claude-opus-4-8");
     // The chip reflects the choice immediately — before the (slow) backend set resolves.
-    expect(s.current).toBe("claude-opus-4-8");
+    expect(s.modelCurrent).toBe("claude-opus-4-8");
     resolveRpc({ ok: true });
     expect(await p).toBe(true);
     expect(rpc).toHaveBeenCalledWith("i1", "control.session.model.set", { sessionAlias: "backend", modelId: "claude-opus-4-8" });
-    expect(s.current).toBe("claude-opus-4-8");
+    expect(s.modelCurrent).toBe("claude-opus-4-8");
   });
 
   it("setModel reverts current and reports a concise global toast on an instance-side error", async () => {
     rpc.mockResolvedValueOnce({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] });
     const s = useSessionControlsStore();
     await s.loadModel("i1", "backend");
-    expect(s.current).toBe("gpt-5.2[high]");
+    expect(s.modelCurrent).toBe("gpt-5.2[high]");
     const detail = "acpx command timed out during set-model after 30s; stderr tail: adapter stalled";
     rpc.mockResolvedValueOnce({ error: { code: "internal", message: detail } });
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const ok = await s.setModel("i1", "backend", "bogus");
     expect(ok).toBe(false);
-    expect(s.current).toBe("gpt-5.2[high]"); // reverted, not left on "bogus"
+    expect(s.modelCurrent).toBe("gpt-5.2[high]"); // reverted, not left on "bogus"
     expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "chat.modelSetFailed" });
     expect(useToasts().value[0]?.params).toBeUndefined();
     expect(log).toHaveBeenCalledWith("[relay-web] model switch failed", detail);
@@ -100,7 +100,7 @@ describe("session-controls store", () => {
     const ok = await s.setModel("i1", "backend", "claude-opus-4-8");
 
     expect(ok).toBe(false);
-    expect(s.current).toBe("provider/fallback-model");
+    expect(s.modelCurrent).toBe("provider/fallback-model");
     expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "chat.modelSetFailed" });
     expect(log).toHaveBeenCalledWith(
       "[relay-web] model switch failed",
@@ -120,11 +120,11 @@ describe("session-controls store", () => {
 
     rpc.mockResolvedValueOnce({ current: "model-x", available: ["model-x"] });
     await s.loadModel("i1", "session-b");
-    expect(s.current).toBe("model-x");
+    expect(s.modelCurrent).toBe("model-x");
 
     resolveSet({ ok: true, current: "model-b" });
     await pendingSet;
-    expect(s.current).toBe("model-x");
+    expect(s.modelCurrent).toBe("model-x");
   });
 
   it("keeps the latest selection when model-set responses arrive out of order", async () => {
@@ -144,7 +144,7 @@ describe("session-controls store", () => {
     resolveB({ ok: true, current: "model-b" });
     await pendingB;
 
-    expect(s.current).toBe("model-c");
+    expect(s.modelCurrent).toBe("model-c");
   });
 
   it("returns to the last authoritative model when two rapid selections both fail", async () => {
@@ -165,7 +165,7 @@ describe("session-controls store", () => {
     resolveC({ error: { code: "internal", message: "model-c failed" } });
     await pendingC;
 
-    expect(s.current).toBe("model-a");
+    expect(s.modelCurrent).toBe("model-a");
     expect(useToasts().value).toHaveLength(1);
     log.mockRestore();
   });
@@ -175,15 +175,15 @@ describe("session-controls store", () => {
     rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
     const s = useSessionControlsStore();
     const pendingLoad = s.loadModel("i1", "backend");
-    expect(s.loading).toBe(true);
+    expect(s.modelLoading).toBe(true);
 
     rpc.mockResolvedValueOnce({ ok: true, current: "model-b" });
     await s.setModel("i1", "backend", "model-b");
-    expect(s.loading).toBe(false);
+    expect(s.modelLoading).toBe(false);
 
     resolveLoad({ current: "model-a", available: ["model-a"] });
     await pendingLoad;
-    expect(s.current).toBe("model-b");
+    expect(s.modelCurrent).toBe("model-b");
   });
 
   it("does not toast a stale model-set failure from the previous session", async () => {
@@ -201,7 +201,7 @@ describe("session-controls store", () => {
     resolveSet({ error: { code: "internal", message: "late failure" } });
     await pendingSet;
 
-    expect(s.current).toBe("model-x");
+    expect(s.modelCurrent).toBe("model-x");
     expect(useToasts().value).toEqual([]);
     expect(log).not.toHaveBeenCalled();
     log.mockRestore();
@@ -236,7 +236,7 @@ describe("session-controls store", () => {
     await pendingSet;
     await pendingReload;
 
-    expect(s.current).toBe("model-b");
+    expect(s.modelCurrent).toBe("model-b");
   });
 
   it("loadEffort fetches the adapter-advertised effort values", async () => {

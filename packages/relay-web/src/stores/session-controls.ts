@@ -10,12 +10,12 @@ import {
 import { api } from "../api/client";
 import { pushToast } from "../lib/use-toasts";
 
-/** Per-session model controls for the composer chip. The hub stamps chatKey for
+/** Per-session model and effort controls for the composer chips. The hub stamps chatKey for
  *  these chat-scoped RPCs, so the web only sends sessionAlias. */
 export const useSessionControlsStore = defineStore("session-controls", () => {
-  const current = ref<string | undefined>(undefined);
-  const available = ref<string[]>([]);
-  const loading = ref(false);
+  const modelCurrent = ref<string | undefined>(undefined);
+  const modelAvailable = ref<string[]>([]);
+  const modelLoading = ref(false);
   const effortCurrent = ref<string | undefined>(undefined);
   const effortAvailable = ref<string[]>([]);
   const effortLoading = ref(false);
@@ -43,8 +43,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   }
 
   function clearModelState(): void {
-    current.value = undefined;
-    available.value = [];
+    modelCurrent.value = undefined;
+    modelAvailable.value = [];
   }
 
   function clearEffortState(): void {
@@ -55,7 +55,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   function reset(): void {
     activeContext = null;
     requestRevision += 1;
-    loading.value = false;
+    modelLoading.value = false;
     clearModelState();
     effortActiveContext = null;
     effortRevision += 1;
@@ -69,7 +69,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     if (activeContext !== context) clearModelState();
     activeContext = context;
     const revision = ++requestRevision;
-    loading.value = true;
+    modelLoading.value = true;
     try {
       // A remount/session round-trip can request a fresh read while an earlier
       // selection for this same session is still being reconciled. Read only
@@ -83,15 +83,15 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: alias });
       if (!isCurrentRequest(context, revision)) return;
       if (isErrorPayload(r)) { clearModelState(); return; }
-      current.value = typeof r.current === "string" ? r.current : undefined;
-      recordAuthoritativeModel(context, revision, current.value);
+      modelCurrent.value = typeof r.current === "string" ? r.current : undefined;
+      recordAuthoritativeModel(context, revision, modelCurrent.value);
       // Never trust the wire to hand back an array — a malformed/partial result must
       // not blow up the composer's `available.length` reads (white-screens the input).
-      available.value = Array.isArray(r.available) ? r.available : [];
+      modelAvailable.value = Array.isArray(r.available) ? r.available : [];
     } catch {
       if (isCurrentRequest(context, revision)) clearModelState();
     } finally {
-      if (isCurrentRequest(context, revision)) loading.value = false;
+      if (isCurrentRequest(context, revision)) modelLoading.value = false;
     }
   }
 
@@ -102,18 +102,18 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     const context = contextKey(instanceId, alias);
     if (activeContext !== context) clearModelState();
     activeContext = context;
-    const prev = current.value;
+    const prev = modelCurrent.value;
     const revision = ++requestRevision;
     // This mutation supersedes any in-flight model load for the same UI store.
     // Its stale finally block is intentionally ignored, so clear the spinner now.
-    loading.value = false;
-    current.value = id;
+    modelLoading.value = false;
+    modelCurrent.value = id;
     const operation = (async (): Promise<boolean> => {
       try {
         const r = await api.rpc<SessionModelSetResult>(instanceId, "control.session.model.set", { sessionAlias: alias, modelId: id });
         if (isErrorPayload(r)) {
           if (isCurrentRequest(context, revision)) {
-            current.value = rollbackModel(context, prev);
+            modelCurrent.value = rollbackModel(context, prev);
             reportModelSwitchFailure(r.error.message);
           }
           return false;
@@ -124,7 +124,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
             : typeof r.current === "string" ? r.current : rollbackModel(context, prev);
           recordAuthoritativeModel(context, revision, observed);
           if (isCurrentRequest(context, revision)) {
-            current.value = observed;
+            modelCurrent.value = observed;
             reportModelSwitchFailure(
               `requested ${id}; authoritative model is ${r.current ?? "unknown"}`,
             );
@@ -136,12 +136,12 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           : typeof r.current === "string" ? r.current : id;
         recordAuthoritativeModel(context, revision, observed);
         if (isCurrentRequest(context, revision)) {
-          current.value = observed;
+          modelCurrent.value = observed;
         }
         return true;
       } catch (e) {
         if (isCurrentRequest(context, revision)) {
-          current.value = rollbackModel(context, prev);
+          modelCurrent.value = rollbackModel(context, prev);
           reportModelSwitchFailure(e instanceof Error ? e.message : "set-failed");
         }
         return false;
@@ -234,7 +234,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   }
 
   return {
-    current, available, loading, reset, loadModel, setModel,
+    modelCurrent, modelAvailable, modelLoading, reset, loadModel, setModel,
     effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort,
   };
 });

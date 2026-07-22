@@ -39,7 +39,7 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
-import { parseSessionEffortRecord } from "../session-effort";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../session-effort";
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -470,7 +470,10 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ], "json"), { timeoutMs: this.managementCommandTimeoutMs, stage: "get-session-effort" });
+    ], "json"), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "get-session-effort",
+    }));
     const effort = parseSessionEffortRecord(output);
     return effort
       ? { current: effort.current, available: effort.available }
@@ -482,16 +485,21 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ], "json"), { timeoutMs: this.managementCommandTimeoutMs, stage: "get-session-effort" });
-    const advertised = parseSessionEffortRecord(record);
-    if (!advertised) throw new Error("the active agent does not advertise a reasoning-effort option");
+    ], "json"), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "get-session-effort",
+    }));
+    const advertised = requireAdvertisedSessionEffort(record, effort);
     await this.run(this.buildArgs(session, [
       "set",
       "-s",
       session.transportSession,
       advertised.configId,
       effort,
-    ]), { timeoutMs: this.managementCommandTimeoutMs, stage: "set-session-effort" });
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "set-session-effort",
+    }));
   }
 
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {

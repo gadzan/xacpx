@@ -45,7 +45,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
-import { parseSessionEffortRecord } from "../transport/session-effort";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../transport/session-effort";
 
 type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
@@ -696,6 +696,8 @@ export class BridgeRuntime {
   async getSessionEffort(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
   }): Promise<SessionEffortState> {
@@ -709,13 +711,14 @@ export class BridgeRuntime {
   async setSessionEffort(input: {
     agent: string;
     agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
     name: string;
     effort: string;
   }): Promise<Record<string, never>> {
     const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
-    const advertised = parseSessionEffortRecord(record);
-    if (!advertised) throw new Error("the active agent does not advertise a reasoning-effort option");
+    const advertised = requireAdvertisedSessionEffort(record, input.effort);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "set",
       "-s",
@@ -723,10 +726,10 @@ export class BridgeRuntime {
       advertised.configId,
       input.effort,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, {
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-session-effort",
-    });
+    }));
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set effort failed");
     }

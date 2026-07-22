@@ -106,6 +106,8 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   才在其旁边显示独立的 effort chip。
 - effort 选项完全采用 adapter 返回的 `available`，不在 Web 中固定 `low/medium/high/xhigh`。
   选择后调用 `control.session.effort.set`，界面乐观更新；RPC 失败时回到最后确认值并显示全局 toast。
+- model 切换完成后会重新读取 effort，因为 adapter 可能按 model 广告不同的推理强度选项；仅当
+  composer 仍指向发起切换的同一会话时应用刷新结果。
 - session/实例切换以独立 context revision 丢弃 model 与 effort 的迟到响应，避免旧会话结果污染
   当前 composer。没有广告 effort 的 agent 不显示控件，也不会触发设置请求。
 

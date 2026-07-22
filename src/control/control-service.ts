@@ -206,7 +206,7 @@ export class ControlService {
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
   private readonly workspaceGit: WorkspaceGit;
-  private readonly modelSetTails = new Map<string, Promise<void>>();
+  private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
@@ -398,7 +398,7 @@ export class ControlService {
     if (!session) throw new Error("session not found");
     const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
     if (!setModel) throw new Error("the active transport does not support switching models");
-    return await this.runModelSetExclusive(session.alias, async () => {
+    return await this.runSessionConfigSetExclusive(session.alias, async () => {
       if (
         typeof options.deadlineAt === "number"
         && Number.isFinite(options.deadlineAt)
@@ -459,25 +459,27 @@ export class ControlService {
     if (!session) throw new Error("session not found");
     const setEffort = this.deps.transport.setSessionEffort?.bind(this.deps.transport);
     if (!setEffort) throw new Error("the active transport does not support setting reasoning effort");
-    await setEffort(session, effort);
-    return { current: effort, applied: true };
+    return await this.runSessionConfigSetExclusive(session.alias, async () => {
+      await setEffort(session, effort);
+      return { current: effort, applied: true };
+    });
   }
 
-  /** Serialize model mutations per logical session so stale reconciliation cannot win last. */
-  private async runModelSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.modelSetTails.get(sessionAlias) ?? Promise.resolve();
+  /** Serialize adapter configuration mutations per logical session so stale operations cannot win last. */
+  private async runSessionConfigSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionConfigSetTails.get(sessionAlias) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const tail = previous.catch(() => {}).then(() => gate);
-    this.modelSetTails.set(sessionAlias, tail);
+    this.sessionConfigSetTails.set(sessionAlias, tail);
 
     await previous.catch(() => {});
     try {
       return await operation();
     } finally {
       release();
-      if (this.modelSetTails.get(sessionAlias) === tail) {
-        this.modelSetTails.delete(sessionAlias);
+      if (this.sessionConfigSetTails.get(sessionAlias) === tail) {
+        this.sessionConfigSetTails.delete(sessionAlias);
       }
     }
   }
