@@ -228,11 +228,18 @@ export function parseConfig(
   const channel = raw.channel;
   const legacyWechat = raw.wechat;
   const orchestration = raw.orchestration;
+  const files = raw.files;
   if (logging !== undefined && !isRecord(logging)) {
     throw new Error("logging must be an object");
   }
   if (orchestration !== undefined && !isRecord(orchestration)) {
     throw new Error("orchestration must be an object");
+  }
+  if (files !== undefined && (!isRecord(files) || Array.isArray(files))) {
+    throw new Error("files must be an object");
+  }
+  if (isRecord(files) && "writeEnabled" in files && typeof files.writeEnabled !== "boolean") {
+    throw new Error("files.writeEnabled must be boolean");
   }
   if (
     isRecord(logging) &&
@@ -413,6 +420,9 @@ export function parseConfig(
               : {}),
           },
         }
+      : {}),
+    ...(isRecord(files)
+      ? { files: { writeEnabled: files.writeEnabled === true } }
       : {}),
   };
 }
