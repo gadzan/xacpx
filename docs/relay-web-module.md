@@ -371,6 +371,7 @@ export interface LiveTurn {
 
 **`MessageList.vue` 渲染**（`packages/relay-web/src/components/MessageList.vue`）
 
+- 已完成的历史 `out` 消息默认折叠为单行摘要卡片，标题保留时间及失败/停止状态；点击标题后显示完整内容和复制操作。实时 streaming 行保持展开，便于观察 Agent 当前输出。
 - 历史 `out` 消息：若 `m.structured?.toolSteps?.length` 则在 markdown 下方插入 `<ToolCallPanel>`；若 `m.structured?.reasoning` 则插入 `<ReasoningPanel :default-open="false">`（折叠）。
 - 实时流气泡：若 `liveTurn?.toolSteps.length` 则插入 `<ToolCallPanel>`（实时展开）；若 `liveTurn?.reasoning` 则插入 `<ReasoningPanel>`（`defaultOpen` 不传，默认展开）。
 
