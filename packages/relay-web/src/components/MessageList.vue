@@ -161,10 +161,10 @@ watch(
 <template>
   <div class="relative flex-1 overflow-hidden">
     <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-3 py-4 lg:px-5 lg:py-5" @scroll="onScroll">
-      <!-- Initial-history skeleton: bottom-anchored so the shimmering rows sit where the
-           transcript will land, then swap for the real content the instant rows arrive. -->
+      <!-- Initial-history skeleton: top-anchored to match how the real transcript stacks
+           top-to-bottom, then swap for the real content the instant rows arrive. -->
       <div v-if="showSkeleton" data-test="history-skeleton" aria-hidden="true"
-           class="mx-auto flex min-h-full max-w-3xl flex-col justify-end gap-5">
+           class="mx-auto flex max-w-3xl flex-col gap-5">
         <template v-for="(row, i) in SKELETON_ROWS" :key="i">
           <!-- user bubble -->
           <div v-if="row.kind === 'user'" class="flex justify-end" :style="{ '--sk-delay': `${i * 160}ms` }">
