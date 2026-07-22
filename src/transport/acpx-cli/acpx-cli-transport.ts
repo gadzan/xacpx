@@ -623,7 +623,7 @@ export class AcpxCliTransport implements SessionTransport {
       "sessions",
       "show",
       session.transportSession,
-    ]), this.withSpawnEnvironment(session, {
+    ], "json"), this.withSpawnEnvironment(session, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "read-session-record",
     }));

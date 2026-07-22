@@ -1,6 +1,6 @@
 {
   "record": [
-    "run(acpx --format quiet --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions show backend:demo @30000)"
+    "run(acpx --format json --cwd /tmp/backend --approve-all --non-interactive-permissions deny codex sessions show backend:demo @30000)"
   ],
   "outcome": {
     "threw": "failed to resolve acpx session record id"
