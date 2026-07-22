@@ -15,21 +15,24 @@ const manySteps = (n: number): ToolStepDto[] =>
   Array.from({ length: n }, (_, i) => ({ toolCallId: `t${i}`, toolName: "Read", kind: "read" as const, status: "success" as const, title: `f${i}.ts` }));
 
 describe("ToolCallPanel", () => {
-  it("shows a count and one row per step", () => {
+  it("shows a count while keeping rows collapsed by default", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     expect(w.find('[data-test="tool-count"]').text()).toContain("2");
-    expect(w.findAll('[data-test="tool-row"]').length).toBe(2);
+    expect(w.findAll('[data-test="tool-row"]').length).toBe(0);
+    expect(w.find("button").attributes("aria-expanded")).toBe("false");
   });
 
   it("expands a row to show its detail on click", async () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     expect(w.find('[data-test="cmd-output"]').exists()).toBe(false);
+    await w.find("button").trigger("click");
     await w.findAll('[data-test="tool-row"]')[0].trigger("click");
     expect(w.find('[data-test="cmd-output"]').text()).toContain("passed");
   });
 
-  it("marks a running step distinctly from a successful one", () => {
+  it("marks a running step distinctly from a successful one", async () => {
     const w = mount(ToolCallPanel, { props: { steps } });
+    await w.find("button").trigger("click");
     const rows = w.findAll('[data-test="tool-row"]');
     // Success → Check icon; running → spinning Loader2 icon (Lucide replaces the old emoji glyphs).
     expect(rows[0].find('[data-test="step-status-success"]').exists()).toBe(true);
@@ -58,9 +61,9 @@ describe("ToolCallPanel auto-collapse", () => {
     expect(w.findAll('[data-test="tool-row"]').length).toBe(8);
   });
 
-  it("keeps a short panel expanded and shows the count (no FUE dot)", () => {
+  it("keeps a short panel collapsed and shows the count (no FUE dot)", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
-    expect(w.findAll('[data-test="tool-row"]').length).toBe(2);
+    expect(w.findAll('[data-test="tool-row"]').length).toBe(0);
     expect(w.find('[data-test="fue-dot"]').exists()).toBe(false);
     expect(w.find('[data-test="tool-count"]').text()).toContain("2");
   });

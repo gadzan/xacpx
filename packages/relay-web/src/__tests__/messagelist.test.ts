@@ -27,20 +27,46 @@ function live(parts: LiveTurn["parts"]): LiveTurn {
 }
 
 describe("MessageList", () => {
-  it("collapses agent messages by default and expands the full markdown on demand", async () => {
+  it("shows agent text immediately while keeping inline tool details collapsed by default", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [msg({
+          direction: "out",
+          text: "**finished**",
+          structured: {
+            parts: [
+              {
+                type: "tool",
+                step: {
+                  toolCallId: "t1",
+                  toolName: "Bash",
+                  kind: "execute",
+                  status: "success",
+                  title: "npm test",
+                  detail: { type: "command", command: "npm test", output: "passed" },
+                },
+              },
+              { type: "text", text: "**finished**" },
+            ],
+          },
+        })],
+        liveTurn: null,
+      },
+    });
+
+    expect(wrapper.find('[data-test="msg-content"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="msg-out"]').html()).toContain("<strong>finished</strong>");
+    expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
+    expect(wrapper.find('[data-test="cmd-output"]').exists()).toBe(false);
+  });
+
+  it("renders agent output as markdown without a message-level expand step", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "out", text: "**bold**" })], liveTurn: null },
     });
     const out = wrapper.find('[data-test="msg-out"]');
-    const toggle = out.find('[data-test="msg-toggle"]');
-    expect(toggle.attributes("aria-expanded")).toBe("false");
-    expect(out.find('[data-test="msg-content"]').exists()).toBe(false);
-    expect(toggle.text()).toContain("**bold**");
-
-    await toggle.trigger("click");
-
-    expect(toggle.attributes("aria-expanded")).toBe("true");
     expect(out.find('[data-test="msg-content"]').exists()).toBe(true);
+    expect(out.find('[data-test="msg-toggle"]').exists()).toBe(false);
     expect(out.html()).toContain("<strong>bold</strong>");
   });
 
@@ -77,11 +103,10 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="msg-scheduled-badge"]').exists()).toBe(false);
   });
 
-  it("does not render raw HTML from agent output", async () => {
+  it("does not render raw HTML from agent output", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "out", text: "<script>alert(1)</script>" })], liveTurn: null },
     });
-    await wrapper.find('[data-test="msg-toggle"]').trigger("click");
     expect(wrapper.html()).not.toContain("<script>alert(1)</script>");
   });
 
@@ -101,31 +126,25 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="msg-failed"]').exists()).toBe(true);
   });
 
-  it("offers a copy button after expanding agent messages and hides jump-latest while pinned", async () => {
+  it("offers a copy button on agent messages and hides jump-latest while pinned", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "out", text: "copy me" })], liveTurn: null },
     });
-    await wrapper.find('[data-test="msg-toggle"]').trigger("click");
     expect(wrapper.find('[data-test="copy-button"]').exists()).toBe(true);
     // atBottom defaults true → the jump-latest affordance is hidden (v-show).
     const jump = wrapper.find('[data-test="jump-latest"]');
     expect(jump.exists() && jump.isVisible()).toBe(false);
   });
 
-  it("keeps time in the compact header and copy at the bottom of the expanded record", async () => {
+  it("puts copy + time in a dedicated action row at the bottom of the record", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "out", text: "hi", createdAt: "2026-06-13T08:30:00.000Z" })], liveTurn: null },
     });
-    await wrapper.find('[data-test="msg-toggle"]').trigger("click");
     const actions = wrapper.find('[data-test="msg-actions"]');
     expect(actions.exists()).toBe(true);
-    // Time stays visible while collapsed; the expanded action row carries only actions.
-    expect(wrapper.find('[data-test="msg-toggle"] [data-test="msg-time"]').exists()).toBe(true);
     expect(actions.find('[data-test="copy-button"]').exists()).toBe(true);
-    expect(actions.find('[data-test="msg-time"]').exists()).toBe(false);
-    // It is the last child of the expanded content (its own line at the bottom).
-    const content = wrapper.find('[data-test="msg-content"]').element;
-    expect(content.lastElementChild?.getAttribute("data-test")).toBe("msg-actions");
+    expect(actions.find('[data-test="msg-time"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="msg-out"]').element.lastElementChild?.getAttribute("data-test")).toBe("msg-actions");
   });
 
   it("shows a history skeleton while the initial page loads, then swaps in the transcript", async () => {
@@ -159,19 +178,19 @@ describe("MessageList", () => {
   });
 });
 
-it("renders legacy persisted tool steps (no parts) after expanding a completed out message", async () => {
+it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({ direction: "out", text: "done", status: "done", structured: { toolSteps: [{ toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" }] } })],
       liveTurn: null,
     },
   });
-  await wrapper.find('[data-test="msg-toggle"]').trigger("click");
   // Legacy rows (no `parts`) fall back to the aggregated panel.
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(true);
+  expect(wrapper.find('[data-test="tool-row"]').exists()).toBe(false);
 });
 
-it("renders persisted `parts` inline in arrival order (tool then text) after expanding", async () => {
+it("renders persisted `parts` inline in arrival order (tool then text)", () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
@@ -187,14 +206,13 @@ it("renders persisted `parts` inline in arrival order (tool then text) after exp
       liveTurn: null,
     },
   });
-  await wrapper.find('[data-test="msg-toggle"]').trigger("click");
   // Inline cards, not the aggregated legacy panel.
   expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(false);
   expect(wrapper.find('[data-test="msg-out"]').text()).toContain("all done");
 });
 
-it("shows a failed tool's error message in red after expanding", async () => {
+it("shows a failed tool's error message in red when its card is expanded", async () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
@@ -207,7 +225,8 @@ it("shows a failed tool's error message in red after expanding", async () => {
       liveTurn: null,
     },
   });
-  await wrapper.find('[data-test="msg-toggle"]').trigger("click");
+  expect(wrapper.find('[data-test="tool-step-error"]').exists()).toBe(false);
+  await wrapper.find('[data-test="tool-step-header"]').trigger("click");
   const err = wrapper.find('[data-test="tool-step-error"]');
   expect(err.exists()).toBe(true);
   expect(err.text()).toContain("File not found");

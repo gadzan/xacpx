@@ -9,49 +9,74 @@ function card(step: Partial<ToolStepDto>) {
   });
 }
 
+async function expand(w: ReturnType<typeof card>) {
+  await w.find('[data-test="tool-step-header"]').trigger("click");
+}
+
 const FATAL = "fatal: Unable to create '.git/index.lock': Operation not permitted";
 
 describe("ToolStepCard error banner de-duplication", () => {
-  it("hides the banner when the command output already prints the error", () => {
+  it("starts with tool details collapsed and expands from the header", async () => {
+    const w = card({
+      status: "success",
+      error: undefined,
+      detail: { type: "command", command: "npm test", output: "passed", exitCode: 0 },
+    });
+
+    expect(w.find('[data-test="tool-step-header"]').attributes("aria-expanded")).toBe("false");
+    expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(false);
+
+    await expand(w);
+
+    expect(w.find('[data-test="tool-step-header"]').attributes("aria-expanded")).toBe("true");
+    expect(w.find('[data-test="cmd-output"]').text()).toContain("passed");
+  });
+
+  it("hides the banner when the command output already prints the error", async () => {
     const w = card({
       error: FATAL,
       detail: { type: "command", command: "git commit -m x", output: `${FATAL}`, exitCode: 128 },
     });
+    await expand(w);
     // The failure is already visible in the command body (+ exit + red border), so the
     // banner would just repeat it.
     expect(w.find('[data-test="tool-step-error"]').exists()).toBe(false);
     expect(w.find('[data-test="cmd-output"]').text()).toContain("Operation not permitted");
   });
 
-  it("still shows the banner when the error is NOT in the output", () => {
+  it("still shows the banner when the error is NOT in the output", async () => {
     const w = card({
       error: "spawn failed: ENOENT",
       detail: { type: "command", command: "git commit -m x", output: "some unrelated stdout", exitCode: 1 },
     });
+    await expand(w);
     expect(w.find('[data-test="tool-step-error"]').text()).toContain("spawn failed: ENOENT");
   });
 
-  it("shows the banner when there is no detail body to carry the error", () => {
+  it("shows the banner when there is no detail body to carry the error", async () => {
     const w = card({ error: "permission denied", detail: undefined });
+    await expand(w);
     expect(w.find('[data-test="tool-step-error"]').text()).toContain("permission denied");
   });
 
-  it("matches against the pre-truncation prefix so a capped error still de-dups", () => {
+  it("matches against the pre-truncation prefix so a capped error still de-dups", async () => {
     const long = "x".repeat(2000);
     const w = card({
       // The connector caps `error` and appends a marker the output doesn't carry.
       error: `${long}\n…(truncated)`,
       detail: { type: "command", command: "run", output: `${long} ...more output...`, exitCode: 2 },
     });
+    await expand(w);
     expect(w.find('[data-test="tool-step-error"]').exists()).toBe(false);
   });
 
-  it("never shows a banner for a successful step", () => {
+  it("never shows a banner for a successful step", async () => {
     const w = card({
       status: "success",
       error: undefined,
       detail: { type: "command", command: "git status", output: "clean", exitCode: 0 },
     });
+    await expand(w);
     expect(w.find('[data-test="tool-step-error"]').exists()).toBe(false);
   });
 });
