@@ -91,8 +91,13 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 ## Subagent 执行轨迹
 
-- Claude ACP 的 `_meta.claudeCode.toolName="Agent"` 标准化为 `ToolUseEvent.isSubagent`；subagent 内部工具的
-  `parentToolUseId` 标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto` 原样进入 Relay Web。
+- Transport 在合并同一 `toolCallId` 的稀疏 ACP 更新后，按 resolved driver 将 provider 信号统一标准化为
+  `ToolUseEvent.isSubagent`：Claude 使用 `_meta.claudeCode.toolName="Agent"`，Qoder 使用
+  `_meta.qoder.toolName="Agent"`，Kimi 使用完整的 `prompt + subagent_type` Agent 输入，Codex 使用带线程与活动标识的
+  `_meta.codex.subagent`。识别规则按 driver 隔离，只有明确命中的委派工具才进入统一 subagent 卡片；普通 `Agent` 标题不会单独触发。
+- Claude subagent 内部工具的 `parentToolUseId` 继续标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto`
+  原样进入 Relay Web。Qoder、Kimi、Codex 当前 ACP 主流没有提供子工具父子关系，因此只展示统一父卡片和 adapter 已提供的结果，
+  不虚构执行时间线。
 - 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
   主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
   `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。

@@ -115,6 +115,7 @@ interface StreamingPromptRunnerOptions {
   now?: () => number;
   formatToolCalls?: boolean;
   toolEventMode?: ToolEventMode;
+  driver?: string;
   rawStream?: boolean;
   env?: NodeJS.ProcessEnv;
 }
@@ -536,6 +537,7 @@ export class BridgeRuntime {
         ? await this.runPromptCommand(spawnSpec.command, spawnSpec.args, onEvent, {
             formatToolCalls,
             toolEventMode,
+            driver: input.driver ?? input.agent,
             rawStream,
             env: this.spawnEnvironment(input),
           })
@@ -1015,6 +1017,7 @@ export async function runStreamingPrompt(
     const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
     const state = createStreamingPromptState(options.formatToolCalls ?? false, {
       mode: toolEventMode,
+      driver: options.driver,
       rawStream,
       ...(onEvent && (toolEventMode === "structured" || toolEventMode === "both")
         ? { onToolEvent: (toolEvent) => onEvent({ type: "prompt.tool_event", event: toolEvent }) }

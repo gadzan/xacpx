@@ -378,6 +378,7 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onCommands,
           rawStream,
           this.spawnEnvironment(session),
+          session.driver ?? session.agent,
         );
         const baseText = getPromptText(result);
         if (!reply) {
@@ -703,6 +704,7 @@ export class AcpxCliTransport implements SessionTransport {
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
     rawStream: boolean = false,
     env?: NodeJS.ProcessEnv,
+    driver?: string,
   ): Promise<{ result: CommandResult; overflowCount: number }> {
     const hooks = this.streamingHooks;
     const doSpawn = hooks.spawnPrompt
@@ -744,6 +746,7 @@ export class AcpxCliTransport implements SessionTransport {
 
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
+        driver,
         rawStream,
         ...(userOnToolEvent
           ? {

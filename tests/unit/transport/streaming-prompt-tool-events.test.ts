@@ -445,3 +445,142 @@ test("Claude Agent and its nested tools preserve subagent hierarchy across spars
     status: "success",
   });
 });
+
+test("Qoder Agent metadata produces a subagent event across a sparse terminal update", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "qoder",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "qoder-agent-1",
+    status: "pending",
+    kind: "think",
+    title: "Agent",
+    rawInput: {
+      description: "Pick a random number 1-100",
+      prompt: "Reply with one integer between 1 and 100.",
+      subagent_type: "general-purpose",
+    },
+    _meta: { qoder: { toolName: "Agent" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "qoder-agent-1",
+    status: "completed",
+    rawOutput: "47",
+  });
+
+  expect(events.at(-1)).toEqual({
+    toolCallId: "qoder-agent-1",
+    isSubagent: true,
+    toolName: "Agent",
+    kind: "think",
+    summary: "general-purpose: Pick a random number 1-100",
+    rawInput: {
+      description: "Pick a random number 1-100",
+      prompt: "Reply with one integer between 1 and 100.",
+      subagent_type: "general-purpose",
+    },
+    rawOutput: "47",
+    status: "success",
+  });
+});
+
+test("Kimi recognizes delegated work only after its incremental Agent input is complete", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "kimi",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "kimi-agent-1",
+    status: "pending",
+    kind: "other",
+    title: "Agent",
+  });
+  expect(events.at(-1)?.isSubagent).toBeUndefined();
+
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "kimi-agent-1",
+    status: "in_progress",
+    title: "Launching coder agent: Random number 1-100",
+    rawInput: {
+      prompt: "请随机说出 1 到 100 之间的一个整数。",
+      description: "Random number 1-100",
+      subagent_type: "coder",
+    },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "kimi-agent-1",
+    status: "completed",
+    rawOutput: "73",
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "kimi-agent-1",
+    isSubagent: true,
+    toolName: "Launching coder agent: Random number 1-100",
+    summary: "coder: Random number 1-100",
+    rawOutput: "73",
+    status: "success",
+  });
+});
+
+test("Codex subagent activity metadata produces a completed subagent launch event", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "codex",
+    onToolEvent: (event) => events.push(event),
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "codex-agent-1",
+        status: "completed",
+        kind: "other",
+        title: "Start subagent random_number",
+        rawInput: {
+          agentThreadId: "thread-child-1",
+          agentPath: "/root/random_number",
+          activityKind: "started",
+        },
+        _meta: {
+          codex: {
+            subagent: {
+              threadId: "thread-child-1",
+              path: "/root/random_number",
+              activity: "started",
+            },
+          },
+        },
+      },
+    },
+  }));
+
+  expect(events).toEqual([{
+    toolCallId: "codex-agent-1",
+    isSubagent: true,
+    toolName: "Start subagent random_number",
+    kind: "other",
+    rawInput: {
+      agentThreadId: "thread-child-1",
+      agentPath: "/root/random_number",
+      activityKind: "started",
+    },
+    status: "success",
+  }]);
+});

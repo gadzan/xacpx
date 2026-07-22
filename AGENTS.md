@@ -110,6 +110,20 @@ There are two session concepts:
 
 Uses **Bun** for development scripts and builds. Dependencies are in `package.json`. The lockfile is `bun.lock`.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the canonical triage label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context domain documentation layout. See `docs/agents/domain.md`.
+
 ## Maintaining AGENTS.md
 
 - Only write long-term stable constraints and navigation; volatile implementation details go to `docs/` or Code Wiki.
