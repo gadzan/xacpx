@@ -7,9 +7,9 @@ import { KIND_ICON } from "../lib/tool-summary";
 
 const props = defineProps<{ step: ToolStepDto }>();
 
-// Detail is shown inline by default (the user wants to see what write/read/exec did
-// without an extra click); the header still toggles it for long transcripts.
-const open = ref(true);
+// Keep the tool's one-line summary visible without letting command output, diffs, and
+// file previews dominate the message list. Users can expand the detail on demand.
+const open = ref(false);
 
 // The text the detail body already prints below (so we don't repeat it in the banner).
 const detailOutput = computed(() => {
@@ -46,7 +46,8 @@ function fmtDuration(ms?: number): string {
        class="overflow-hidden rounded-lg border bg-surface text-xs shadow-e1"
        :class="step.status === 'error' ? 'border-danger/40' : 'border-border'">
     <button type="button" data-test="tool-step-header"
-            class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg" @click="open = !open">
+            class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg"
+            :aria-expanded="open" @click="open = !open">
       <ChevronDown v-if="open" :size="13" class="shrink-0 text-fg-muted" />
       <ChevronRight v-else :size="13" class="shrink-0 text-fg-muted" />
       <component :is="KIND_ICON[step.kind]" :size="13" class="shrink-0 text-fg-muted" />
@@ -58,7 +59,7 @@ function fmtDuration(ms?: number): string {
         <AlertTriangle v-else data-test="step-status-error" :size="13" class="text-danger" />
       </span>
     </button>
-    <div v-if="open" class="border-t border-border px-3 pb-2.5 pt-2">
+    <div v-if="open" data-test="tool-step-detail" class="border-t border-border px-3 pb-2.5 pt-2">
       <div v-if="showErrorBanner" data-test="tool-step-error"
            class="mb-1.5 flex items-start gap-1.5 rounded bg-danger/10 px-2 py-1.5 text-danger">
         <AlertTriangle :size="13" class="mt-0.5 shrink-0" />

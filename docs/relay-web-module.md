@@ -345,13 +345,18 @@ export interface LiveTurn {
 **`ToolCallPanel.vue`**（`packages/relay-web/src/components/ToolCallPanel.vue`）
 
 - props: `steps: ToolStepDto[]`。
-- 可折叠面板（默认展开），列出每个 step（状态图标 ⏳/✅/❌、kind 图标、title、耗时）。
+- 兼容旧历史格式的聚合面板，默认折叠；展开后列出每个 step（状态图标、kind 图标、title、耗时）。
 - 点击行展开 `<ToolDetail>` 详情；折叠头显示总步数。
+
+**`ToolStepCard.vue`**（`packages/relay-web/src/components/ToolStepCard.vue`）
+
+- 有序 `parts` 中单个 tool call 的卡片，标题行始终可见，详情默认折叠。
+- 点击标题展开 `<ToolDetail>`；历史消息和实时 streaming 消息使用相同的默认折叠规则。
 
 **`ReasoningPanel.vue`**（`packages/relay-web/src/components/ReasoningPanel.vue`）
 
 - props: `reasoning: string; defaultOpen?: boolean`。
-- 可折叠（`defaultOpen` 默认 `true`）：实时展示时 `defaultOpen` 不传（为 true，展开）；历史消息中 `MessageList` 传 `:default-open="false"` → 折叠。
+- 可折叠，`defaultOpen` 默认 `false`；历史与实时 reasoning 都默认折叠，用户可按需展开。
 
 **`ToolDetail.vue`**（`packages/relay-web/src/components/ToolDetail.vue`）
 
@@ -377,9 +382,9 @@ export interface LiveTurn {
 
 **`MessageList.vue` 渲染**（`packages/relay-web/src/components/MessageList.vue`）
 
-- 已完成的历史 `out` 消息默认折叠为单行摘要卡片，标题保留时间及失败/停止状态；点击标题后显示完整内容和复制操作。实时 streaming 行保持展开，便于观察 Agent 当前输出。
-- 历史 `out` 消息：若 `m.structured?.toolSteps?.length` 则在 markdown 下方插入 `<ToolCallPanel>`；若 `m.structured?.reasoning` 则插入 `<ReasoningPanel :default-open="false">`（折叠）。
-- 实时流气泡：若 `liveTurn?.toolSteps.length` 则插入 `<ToolCallPanel>`（实时展开）；若 `liveTurn?.reasoning` 则插入 `<ReasoningPanel>`（`defaultOpen` 不传，默认展开）。
+- 历史 `out` 消息正文始终展开，复制、时间及失败/停止状态保持可见；消息本身没有折叠开关。
+- `structured.parts` 由 `TurnParts` 按到达顺序渲染：文本直接显示，`ToolStepCard` 与 `ReasoningPanel` 默认折叠；实时 streaming 行遵循同一规则。
+- 旧历史没有 `parts` 时回退到聚合 `ToolCallPanel` + markdown/reasoning，其中工具面板与 reasoning 同样默认折叠。
 
 ## 消息附件（图片 / 文件上传）
 

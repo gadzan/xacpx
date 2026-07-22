@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { AlertCircle, ChevronRight, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
@@ -21,31 +21,9 @@ function schedOf(m: ChatMessage): ScheduledOriginDto | undefined {
   return m.scheduled ?? m.structured?.scheduled;
 }
 
-// Completed agent messages are compact history cards. Each row starts collapsed and
-// owns its open state for as long as this message list stays mounted; live output uses
-// the separate streaming row below and remains fully visible while the agent works.
-const expandedMessages = ref<Set<string>>(new Set());
-const messageListId = useId();
-
 function messageKey(m: ChatMessage, index: number): string {
   const recordKey = m.id !== undefined ? `p${m.id}` : `o${m.createdAt}:${index}`;
   return `${m.instanceId}:${m.sessionAlias}:${recordKey}`;
-}
-
-function isMessageExpanded(m: ChatMessage, index: number): boolean {
-  return expandedMessages.value.has(messageKey(m, index));
-}
-
-function toggleMessage(m: ChatMessage, index: number): void {
-  const key = messageKey(m, index);
-  const next = new Set(expandedMessages.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  expandedMessages.value = next;
-}
-
-function messagePreview(m: ChatMessage): string {
-  return m.text.trim().replace(/\s+/g, " ");
 }
 
 // Initial-history skeleton: fills the pane while the first page of a freshly selected
@@ -59,9 +37,9 @@ const showSkeleton = computed(() =>
 // Alternates agent cards / user bubbles with varied widths so the placeholder reads as
 // a conversation, not a form. Rows pulse with a staggered delay (see --sk-delay).
 const SKELETON_ROWS = [
-  { kind: "agent", w: "64%", lines: 1 },
+  { kind: "agent", w: "64%", lines: 2 },
   { kind: "user", w: "44%", lines: 1 },
-  { kind: "agent", w: "82%", lines: 1 },
+  { kind: "agent", w: "82%", lines: 2 },
   { kind: "user", w: "58%", lines: 2 },
   { kind: "agent", w: "38%", lines: 1 },
 ] as const;
@@ -195,15 +173,12 @@ watch(
                    :style="{ width: n === row.lines ? '58%' : '100%' }" />
             </div>
           </div>
-          <!-- collapsed agent card -->
+          <!-- agent response -->
           <div v-else class="flex gap-2.5" :style="{ '--sk-delay': `${i * 160}ms` }">
             <div class="sk-bar mt-0.5 h-6 w-6 shrink-0 rounded-full bg-fg/10" />
-            <div class="min-w-0 flex-1 rounded-lg border border-border/60 bg-raised/25 px-2.5 py-2">
-              <div class="flex items-center gap-2">
-                <div class="sk-bar h-3 w-3 shrink-0 rounded bg-fg/10" />
-                <div class="sk-bar h-3 rounded bg-fg/10" :style="{ width: row.w }" />
-                <div class="sk-bar ml-auto h-2.5 w-9 shrink-0 rounded bg-fg/8" />
-              </div>
+            <div class="min-w-0 flex-1 space-y-2 py-1">
+              <div v-for="n in row.lines" :key="n" class="sk-bar h-3 rounded bg-fg/10"
+                   :style="{ width: n === row.lines ? row.w : '100%' }" />
             </div>
           </div>
         </template>
@@ -248,26 +223,11 @@ watch(
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
               <AgentIcon :driver="driver" :size="15" fill />
             </div>
-            <div data-test="msg-out" class="min-w-0 flex-1 overflow-hidden rounded-lg border border-border/70 bg-raised/35"
-                 :class="m.failed ? 'ring-1 ring-danger/40' : ''">
-              <button type="button" data-test="msg-toggle"
-                      class="flex w-full min-w-0 items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-fg/5"
-                      :aria-expanded="isMessageExpanded(m, i)"
-                      :aria-controls="`${messageListId}-agent-message-content-${i}`"
-                      :aria-label="$t(isMessageExpanded(m, i) ? 'chat.collapseAgentMessage' : 'chat.expandAgentMessage')"
-                      @click="toggleMessage(m, i)">
-                <ChevronRight :size="13" class="shrink-0 text-fg-muted transition-transform"
-                              :class="isMessageExpanded(m, i) ? 'rotate-90' : ''" />
-                <span class="min-w-0 flex-1 truncate text-[13px] text-fg-muted">
-                  {{ messagePreview(m) || $t("chat.agentActivity") }}
-                </span>
-                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex shrink-0 items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
-                <span v-if="m.failed" data-test="msg-failed" class="inline-flex shrink-0 items-center gap-1 text-[11px] text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
-                <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="shrink-0 font-mono text-[10.5px] tabular-nums text-fg-muted">{{ fmtTime(m.createdAt) }}</span>
-              </button>
-              <div v-if="isMessageExpanded(m, i)" :id="`${messageListId}-agent-message-content-${i}`" data-test="msg-content"
-                   class="space-y-2.5 border-t border-border/70 px-2.5 py-2.5">
-                <!-- Ordered transcript (text / reasoning / tools inline). -->
+            <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
+                 :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
+              <!-- Ordered transcript (text / reasoning / tools inline). Tool cards own
+                   their collapsed state; the surrounding agent message stays visible. -->
+              <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" />
                 <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
                 <template v-else>
@@ -275,11 +235,12 @@ watch(
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
                   <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
                 </template>
-                <!-- Time and status stay in the always-visible header; expanded content
-                     only needs the copy action on its own final line. -->
-                <div v-if="m.text" data-test="msg-actions" class="flex items-center pt-0.5 text-fg-muted">
-                  <CopyButton :text="m.text" />
-                </div>
+              </div>
+              <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
+                <CopyButton v-if="m.text" :text="m.text" />
+                <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
+                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
               </div>
             </div>
           </div>

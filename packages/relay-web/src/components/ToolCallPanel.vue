@@ -7,12 +7,13 @@ import FueDot from "./FueDot.vue";
 import FueCallout from "./FueCallout.vue";
 import { useFue } from "../lib/use-fue";
 import type { Rect } from "../lib/fue-placement";
-import { AUTO_COLLAPSE_THRESHOLD, KIND_ICON, summarizeSteps } from "../lib/tool-summary";
+import { GROUP_COLLAPSE_FUE_THRESHOLD, KIND_ICON, summarizeSteps } from "../lib/tool-summary";
 
 const props = defineProps<{ steps: ToolStepDto[] }>();
 
-// Long tool runs collapse by default so they don't bury the reply; short ones stay open.
-const open = ref(props.steps.length <= AUTO_COLLAPSE_THRESHOLD);
+// Legacy history stores tool calls as one aggregate panel. Keep that panel collapsed
+// too, regardless of step count, so old and current transcripts follow the same rule.
+const open = ref(false);
 const expanded = ref<Set<string>>(new Set());
 function toggleRow(id: string) {
   if (expanded.value.has(id)) expanded.value.delete(id); else expanded.value.add(id);
@@ -24,7 +25,7 @@ const summary = computed(() => summarizeSteps(props.steps));
 // First-User-Experience: the first time a user meets an auto-collapsed panel, nudge
 // them that it expands. The dot replaces the count badge until acknowledged.
 const fue = useFue("tool-group-collapse");
-const collapsible = computed(() => props.steps.length > AUTO_COLLAPSE_THRESHOLD);
+const collapsible = computed(() => props.steps.length > GROUP_COLLAPSE_FUE_THRESHOLD);
 const showFueDot = computed(() => collapsible.value && fue.status.value !== "acknowledged");
 const header = ref<HTMLElement | null>(null);
 const anchor = ref<Rect | null>(null);
@@ -47,7 +48,8 @@ function fmtDuration(ms?: number): string {
 <template>
   <div class="overflow-hidden rounded-lg border border-border bg-surface text-xs shadow-e1">
     <button ref="header" type="button"
-            class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg" @click="onHeaderClick">
+            class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg"
+            :aria-expanded="open" @click="onHeaderClick">
       <ChevronDown v-if="open" :size="13" class="shrink-0 text-fg-muted" />
       <ChevronRight v-else :size="13" class="shrink-0 text-fg-muted" />
       <span class="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-fg-muted"><Wrench :size="13" /> {{ $t("tools.toolSteps") }}</span>

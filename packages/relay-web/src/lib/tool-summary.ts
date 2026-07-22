@@ -24,8 +24,8 @@ export const STATUS_ICON: Record<ToolStepStatus, Component> = {
 const KIND_ORDER: ToolStepKind[] = ["read", "search", "execute", "edit", "think", "other"];
 const STATUS_ORDER: ToolStepStatus[] = ["running", "success", "error"];
 
-/** Many-step panels collapse by default so a long tool run doesn't bury the reply. */
-export const AUTO_COLLAPSE_THRESHOLD = 5;
+/** Only long legacy groups need the first-use hint; every group starts collapsed. */
+export const GROUP_COLLAPSE_FUE_THRESHOLD = 5;
 
 export interface SummaryEntry {
   icon: Component;
