@@ -64,49 +64,63 @@ export async function handleSessionShortcutCommand(
     };
   }
 
-  const transportSession = channelId === "weixin" ? alias : context.sessions.buildDefaultTransportSessionForChat(chatKey, display);
-  const session = ops.resolveSession(alias, agent, workspace.name, transportSession);
-  const releaseTransportReservation = await ops.reserveTransportSession(session.transportSession);
+  const releaseAliasReservation = context.sessions.tryReserveNewSessionAlias(alias);
+  if (!releaseAliasReservation) {
+    return renderShortcutSessionCreationError(workspace, display);
+  }
+
   try {
+    const stableTransportSession = channelId === "weixin" ? alias : context.sessions.buildDefaultTransportSessionForChat(chatKey, display);
+    const session = ops.resolveSession(
+      alias,
+      agent,
+      workspace.name,
+      context.sessions.buildFreshTransportSession(stableTransportSession),
+    );
+    const releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);
     try {
-      await ops.ensureTransportSession(session);
-      const exists = await ops.checkTransportSession(session);
-      if (!exists) {
+      try {
+        await ops.ensureTransportSession(session);
+        const exists = await ops.checkTransportSession(session);
+        if (!exists) {
+          return renderShortcutSessionCreationError(workspace, display);
+        }
+      } catch (err) {
+        if (err instanceof AutoInstallFailedError) throw err;
         return renderShortcutSessionCreationError(workspace, display);
       }
-    } catch (err) {
-      if (err instanceof AutoInstallFailedError) throw err;
-      return renderShortcutSessionCreationError(workspace, display);
-    }
 
-    await context.sessions.attachSession(alias, agent, workspace.name, session.transportSession);
-    await context.sessions.useSession(chatKey, alias);
-    try {
-      await ops.refreshSessionTransportAgentCommand(alias);
-    } catch (error) {
-      await context.logger.error("session.shortcut.agent_command_refresh_failed", "failed to refresh session agent command", {
+      await context.sessions.attachSession(alias, agent, workspace.name, session.transportSession);
+      await context.sessions.useSession(chatKey, alias);
+      try {
+        await ops.refreshSessionTransportAgentCommand(alias);
+      } catch (error) {
+        await context.logger.error("session.shortcut.agent_command_refresh_failed", "failed to refresh session agent command", {
+          alias,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      await context.logger.info("session.shortcut.created", "created new logical session from shortcut", {
         alias,
-        error: error instanceof Error ? error.message : String(error),
+        workspace: workspace.name,
+        agent,
+        workspaceReused: workspace.reused,
       });
-    }
-    await context.logger.info("session.shortcut.created", "created new logical session from shortcut", {
-      alias,
-      workspace: workspace.name,
-      agent,
-      workspaceReused: workspace.reused,
-    });
 
-    return {
-      text: [
-        t().shortcut.createdHeader(display),
-        workspace.reused
-          ? t().shortcut.createdReusedWorkspace(workspace.name)
-          : t().shortcut.createdNewWorkspace(workspace.name, workspace.cwd),
-        t().shortcut.createdNewSession(display),
-      ].join("\n"),
-    };
+      return {
+        text: [
+          t().shortcut.createdHeader(display),
+          workspace.reused
+            ? t().shortcut.createdReusedWorkspace(workspace.name)
+            : t().shortcut.createdNewWorkspace(workspace.name, workspace.cwd),
+          t().shortcut.createdNewSession(display),
+        ].join("\n"),
+      };
+    } finally {
+      await releaseTransportReservation();
+    }
   } finally {
-    await releaseTransportReservation();
+    releaseAliasReservation();
   }
 }
 

@@ -41,3 +41,17 @@ test("listBySession honors the limit, keeping the most recent", async () => {
   const rows = store.listBySession("a1", "i1", "backend", { limit: 2 }).messages;
   expect(rows.map((r) => r.text)).toEqual(["m3", "m4"]);
 });
+
+test("deleteBySession removes only the targeted instance and alias history", async () => {
+  const db = await freshDb();
+  const store = new MessageStore(db);
+  store.append("i1", "backend", "in", "old question");
+  store.append("i1", "backend", "out", "old answer");
+  store.append("i1", "other", "in", "keep alias");
+  store.append("i2", "backend", "in", "keep instance");
+
+  expect(store.deleteBySession("i1", "backend")).toBe(2);
+  expect(store.listBySession("a1", "i1", "backend").messages).toEqual([]);
+  expect(store.listBySession("a1", "i1", "other").messages.map((m) => m.text)).toEqual(["keep alias"]);
+  expect(store.listBySession("a2", "i2", "backend").messages.map((m) => m.text)).toEqual(["keep instance"]);
+});

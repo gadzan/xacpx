@@ -751,12 +751,13 @@ test("routes delegate requests through the current session coordinator context",
   const router = new CommandRouter(sessions, transport, config, undefined, undefined, undefined, orchestration);
 
   await router.handle("wx:user", "/session new coordinator --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "/delegate claude --role reviewer 审查当前方案", undefined, "ctx-123", "acc-1");
 
   expect(reply.text).toContain("task-1");
   expect(reply.text).toContain("backend:claude:reviewer:backend:coordinator");
   expect(getRequestDelegateMock(orchestration).mock.calls.at(-1)?.[0]).toEqual({
-    sourceHandle: "backend:coordinator",
+    sourceHandle: current?.transportSession,
     sourceKind: "coordinator",
     coordinatorSession: "backend:coordinator",
     workspace: "backend",
@@ -777,11 +778,12 @@ test("routes grouped delegate requests through the current coordinator session",
   const router = new CommandRouter(sessions, transport, config, undefined, undefined, undefined, orchestration);
 
   await router.handle("wx:user", "/session new coordinator --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "/dg claude --group group-review 审查当前方案", undefined, "ctx-123", "acc-1");
 
   expect(reply.text).toContain("task-group-1");
   expect(getRequestDelegateMock(orchestration).mock.calls.at(-1)?.[0]).toEqual({
-    sourceHandle: "backend:coordinator",
+    sourceHandle: current?.transportSession,
     sourceKind: "coordinator",
     coordinatorSession: "backend:coordinator",
     workspace: "backend",
@@ -1581,13 +1583,14 @@ test("retries cancel after recovering a missing transport session", async () => 
   const router = new CommandRouter(sessions, transport, undefined, undefined, undefined, resolveSessionAgentCommand);
 
   await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "/cancel");
 
   expect(reply.text).toContain("cancelled after recovery");
   expect(cancelMock.mock.calls).toHaveLength(2);
   expect(cancelMock.mock.calls.at(-1)?.[0]).toMatchObject({
     alias: "api-fix",
-    transportSession: "backend:api-fix",
+    transportSession: current?.transportSession,
     agentCommand: "npx @zed-industries/codex-acp@^0.9.5",
   });
 });
@@ -1616,15 +1619,15 @@ test("resets the current session by recreating its transport session", async () 
   expect(reply.text).toBe('会话「api-fix」已重置');
   expect(beforeReset).toMatchObject({
     alias: "api-fix",
-    transportSession: "backend:api-fix",
   });
+  expect(beforeReset?.transportSession).toMatch(/^backend:api-fix:reset-\d+$/);
   expect(afterReset).toMatchObject({
     alias: "api-fix",
     agent: "codex",
     workspace: "backend",
   });
-  expect(afterReset?.transportSession).not.toBe("backend:api-fix");
-  expect(afterReset?.transportSession.startsWith("backend:api-fix:reset-")).toBe(true);
+  expect(afterReset?.transportSession).not.toBe(beforeReset?.transportSession);
+  expect(afterReset?.transportSession).toMatch(/^backend:api-fix:reset-\d+$/);
   expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[0]).toMatchObject({
     alias: "api-fix",
     agent: "codex",
@@ -1680,6 +1683,7 @@ test("removing the current session without a previous one still reports a cleare
   const router = new CommandRouter(sessions, transport, config);
 
   await router.handle("wx:user", "/session new main --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "/session rm main");
 
   expect(reply.text).toContain("已删除会话「main」");
@@ -1694,6 +1698,7 @@ test("tears down the transport session when removing a logical session", async (
   const router = new CommandRouter(sessions, transport, config);
 
   await router.handle("wx:user", "/session new main --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "/session rm main");
 
   expect(reply.text).toContain("已删除会话「main」");
@@ -1701,7 +1706,7 @@ test("tears down the transport session when removing a logical session", async (
   expect(deleteMock.mock.calls).toHaveLength(1);
   expect(deleteMock.mock.calls[0]?.[0]).toMatchObject({
     alias: "main",
-    transportSession: "backend:main",
+    transportSession: current?.transportSession,
   });
   expect(reply.text).not.toContain("后端会话未能自动关闭");
 });
@@ -1882,10 +1887,11 @@ test("removes a session and purges orchestration references", async () => {
   const router = new CommandRouter(sessions, transport, config, undefined, undefined, undefined, orchestration);
 
   await router.handle("wx:user", "/session new main --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "/session rm main");
 
   expect(reply.text).toContain("已删除会话「main」");
-  expect(orchestration.purgeSessionReferences.mock.calls.at(-1)?.[0]).toBe("backend:main");
+  expect(orchestration.purgeSessionReferences.mock.calls.at(-1)?.[0]).toBe(current?.transportSession);
   expect(await orchestration.getTask("task-done")).toBeNull();
 });
 
@@ -1917,6 +1923,8 @@ test("routes prompts and cancel to the currently selected session after switchin
 
   await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
   await router.handle("wx:user", "/session new infra-fix --agent codex --ws backend");
+  const apiFix = await sessions.getSession("api-fix");
+  const infraFix = await sessions.getSession("infra-fix");
   await router.handle("wx:user", "/use api-fix");
   await router.handle("wx:user", "check logs");
   await router.handle("wx:user", "/use infra-fix");
@@ -1924,11 +1932,11 @@ test("routes prompts and cancel to the currently selected session after switchin
 
   expect(getPromptMock(transport).mock.calls.at(-1)?.[0]).toMatchObject({
     alias: "api-fix",
-    transportSession: "backend:api-fix",
+    transportSession: apiFix?.transportSession,
   });
   expect(getCancelMock(transport).mock.calls.at(-1)?.[0]).toMatchObject({
     alias: "infra-fix",
-    transportSession: "backend:infra-fix",
+    transportSession: infraFix?.transportSession,
   });
 });
 
@@ -2001,6 +2009,7 @@ test("/group add delegates through requestDelegate with the bound groupId", asyn
   const router = new CommandRouter(sessions, transport, config, undefined, undefined, undefined, orchestration);
 
   await router.handle("wx:user", "/session new coordinator --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle(
     "wx:user",
     "/group add group-review claude --role reviewer 审查当前方案",
@@ -2011,7 +2020,7 @@ test("/group add delegates through requestDelegate with the bound groupId", asyn
 
   expect(reply.text).toContain("task-group-add-1");
   expect(getRequestDelegateMock(orchestration).mock.calls.at(-1)?.[0]).toEqual({
-    sourceHandle: "backend:coordinator",
+    sourceHandle: current?.transportSession,
     sourceKind: "coordinator",
     coordinatorSession: "backend:coordinator",
     workspace: "backend",

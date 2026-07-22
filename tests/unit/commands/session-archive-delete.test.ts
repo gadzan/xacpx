@@ -15,9 +15,13 @@ function makeSession(): ResolvedSession {
 
 function makeSessions(overrides: {
   sharedCount: number;
+  lifecycleBusy?: boolean;
 }): SessionService {
   const session = makeSession();
   return {
+    tryReserveSessionAliasOperation: mock((_alias: string) =>
+      overrides.lifecycleBusy ? null : () => {},
+    ),
     getSession: mock(async (_alias: string) => session),
     countAliasesSharingTransport: mock(
       (_transportSession: string, _excludeAlias?: string) => overrides.sharedCount,
@@ -61,6 +65,18 @@ test("removeSessionWithTransport leaves the shared transport intact", async () =
   expect((transport.deleteSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   expect(result.transportTornDown).toBe(false);
   expect(result.sharedAliasCount).toBe(1);
+});
+
+test("removeSessionWithTransport refuses to race another alias lifecycle operation", async () => {
+  const sessions = makeSessions({ sharedCount: 0, lifecycleBusy: true });
+  const transport = makeTransport();
+  const router = new CommandRouter(sessions, transport);
+
+  await expect(router.removeSessionWithTransport("backend:demo")).rejects.toThrow(
+    /lifecycle operation in progress/,
+  );
+  expect((sessions.removeSession as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  expect((transport.deleteSession as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
 });
 
 test("archiveSessionWithTransport cancels the in-flight turn and reaps the warm process but KEEPS the acpx session resumable", async () => {

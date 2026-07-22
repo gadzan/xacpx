@@ -862,7 +862,7 @@ test("drops external coordinator records whose map key does not match coordinato
   await rm(dir, { recursive: true, force: true });
 });
 
-test("repairs external coordinator handles that collide with logical sessions in persisted state", async () => {
+test("repairs stable external coordinator handles that collide with reset-suffixed logical sessions", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
   const path = join(dir, "state.json");
   const store = new StateStore(path);
@@ -875,7 +875,7 @@ test("repairs external coordinator handles that collide with logical sessions in
           alias: "main",
           agent: "codex",
           workspace: "backend",
-          transport_session: "codex:backend",
+          transport_session: "codex:backend:reset-1700000000000",
           created_at: "2026-04-28T10:00:00.000Z",
           last_used_at: "2026-04-28T10:00:00.000Z",
         },

@@ -27,6 +27,7 @@ export const session: SessionMessages = {
       `请确认会话名是否正确，然后重新执行：/session attach ${alias} --agent ${agent} --ws ${workspace} --name <会话名>`,
     ].join("\n"),
   sessionAttached: (alias) => `会话「${alias}」已绑定并切换`,
+  sessionLifecycleBusy: (alias) => `会话「${alias}」正在执行另一项变更，请完成后重试。`,
 
   // renderSwitched / appendSwitchBackContext
   switched: (alias, agent, workspace) =>

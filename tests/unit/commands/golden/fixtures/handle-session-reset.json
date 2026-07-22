@@ -2,8 +2,10 @@
   "record": [
     "logger.debug(command.parsed)",
     "sessions.getCurrentSession(\"wx:user\")",
+    "sessions.tryReserveSessionAliasOperation(\"demo\")",
+    "sessions.buildFreshTransportSession(\"backend:demo\")",
     "sessions.resolveSession(\"demo\", \"codex\", \"backend\", \"backend:demo:reset-<n>\")",
-    "orchestration.reserveLogicalTransportSession(\"backend:demo:reset-<n>\")",
+    "orchestration.reserveLogicalTransportSession(\"backend:demo\")",
     "transport.ensureSession(session(demo/backend:demo:reset-<n>), fn)",
     "logger.info(transport.ensure_session)",
     "transport.hasSession(session(demo/backend:demo:reset-<n>))",

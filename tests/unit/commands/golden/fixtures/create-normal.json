@@ -1,13 +1,14 @@
 {
   "record": [
-    "sessions.getResolvedSessionByInternalAlias(\"relay:demo\")",
-    "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo\")",
+    "sessions.tryReserveNewSessionAlias(\"relay:demo\")",
+    "sessions.buildFreshTransportSession(\"backend:relay:demo\")",
+    "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo:reset-<n>\")",
     "orchestration.reserveLogicalTransportSession(\"backend:relay:demo\")",
-    "transport.ensureSession(session(relay:demo/backend:relay:demo), fn)",
+    "transport.ensureSession(session(relay:demo/backend:relay:demo:reset-<n>), fn)",
     "logger.info(transport.ensure_session)",
-    "transport.hasSession(session(relay:demo/backend:relay:demo))",
+    "transport.hasSession(session(relay:demo/backend:relay:demo:reset-<n>))",
     "logger.info(transport.has_session)",
-    "sessions.attachSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo\")",
+    "sessions.attachSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo:reset-<n>\")",
     "sessions.getSession(\"relay:demo\")"
   ],
   "outcome": {
@@ -17,7 +18,7 @@
       "driver": "codex",
       "agentCommand": "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
       "workspace": "backend",
-      "transportSession": "backend:relay:demo",
+      "transportSession": "backend:relay:demo:reset-<n>",
       "cwd": "/tmp/backend",
       "archived": false
     }

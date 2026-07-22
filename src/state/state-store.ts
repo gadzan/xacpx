@@ -22,6 +22,7 @@ import {
   type OrchestrationQueuedQuestionRecord,
   type WorkerBindingRecord,
 } from "../orchestration/orchestration-types";
+import { sameCoordinatorSession } from "../orchestration/coordinator-identity";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -735,7 +736,9 @@ function findExternalCoordinatorConflict(
   sessions: AppState["sessions"],
   orchestration: OrchestrationState,
 ): string | null {
-  if (Object.values(sessions).some((session) => session.transport_session === coordinatorSession)) {
+  if (Object.values(sessions).some((session) =>
+    sameCoordinatorSession(session.transport_session, coordinatorSession),
+  )) {
     return "a logical session";
   }
   if (orchestration.workerBindings[coordinatorSession]) {

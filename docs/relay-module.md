@@ -83,6 +83,8 @@
   （默认单端口时实例网关合并在同一 upgrade handler 的根 `/`；传 `--ws-port` 时网关另起专用端口），
   校验 `xrelay_session` cookie → 账号后 `webGateway.register(accountId, ws)`。
 - **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话的缓存历史。
+- **真实删除同步清历史**：`control.sessions.remove` 经 connector 成功确认后，Hub 删除对应
+  `(instance_id, session_alias)` 的缓存消息；归档不删除，因此恢复归档会话仍能看到历史。
 - **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 历史消息。
 - **command 回显历史（阶段四）**：`control.command.execute` 经 RPC 代理时，把输入文本 append 为 `in`、
   把返回 `output` append 为 `out`（与 `control.prompt` 的 `in` 回显并列），使 `/命令` 结果也能跨 reload 存活。

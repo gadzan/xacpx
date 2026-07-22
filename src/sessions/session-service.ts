@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   isLegacyCodexCommand,
   resolveAgentCommand,
@@ -7,7 +8,7 @@ import { preferCurrentManagedAdapterCommand } from "../adapters/adapter-catalog"
 import type { AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
-import { stableCoordinatorSession } from "../orchestration/coordinator-identity";
+import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestration/coordinator-identity";
 import type { StateStore } from "../state/state-store";
 import type { AppState, BackgroundResult, ChatContextState, LogicalSession } from "../state/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
@@ -74,6 +75,7 @@ interface SessionServiceOptions {
 export class SessionService {
   private readonly stateMutex: AsyncMutex;
   private readonly now: () => number;
+  private readonly pendingSessionAliasOperations = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -405,6 +407,46 @@ export class SessionService {
 
   buildDefaultTransportSessionForChat(chatKey: string, displayAlias: string): string {
     return buildDefaultTransportSession(getChannelIdFromChatKey(chatKey), displayAlias);
+  }
+
+  /**
+   * Claim an alias before any transport side effects begin. The claim is synchronous,
+   * so concurrent create entry points cannot both pass an existence check and orphan
+   * one of two newly-created transport sessions.
+   */
+  tryReserveNewSessionAlias(alias: string): (() => void) | null {
+    if (this.state.sessions[alias]) {
+      return null;
+    }
+    return this.tryReserveSessionAliasOperation(alias);
+  }
+
+  /** Exclusively claim any lifecycle operation that can replace an alias binding. */
+  tryReserveSessionAliasOperation(alias: string): (() => void) | null {
+    if (this.pendingSessionAliasOperations.has(alias)) {
+      return null;
+    }
+    this.pendingSessionAliasOperations.add(alias);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.pendingSessionAliasOperations.delete(alias);
+    };
+  }
+
+  /**
+   * Allocate a fresh acpx transport incarnation while preserving a stable logical
+   * coordinator identity. Explicit "new session" paths use this; archive/restore
+   * deliberately keep the transport already stored on the logical session.
+   */
+  buildFreshTransportSession(stableTransportSession: string): string {
+    // Timestamp keeps names diagnosable; a full 64-bit random nonce prevents reuse
+    // across daemon restarts, clock rollback, and independent SessionService instances.
+    const timestamp = Math.max(0, Math.trunc(this.now()));
+    const nonce = randomBytes(8).readBigUInt64BE().toString().padStart(20, "0");
+    const generation = `${timestamp}${nonce}`;
+    return `${stableTransportSession}:reset-${generation}`;
   }
 
   listInternalAliases(): string[] {
@@ -808,7 +850,11 @@ export class SessionService {
   ): Promise<ResolvedSession> {
     return await this.mutate(async () => {
       this.validateSession(alias, agent, workspace);
-      if (this.state.orchestration.externalCoordinators[transportSession]) {
+      if (
+        Object.keys(this.state.orchestration.externalCoordinators).some((coordinatorSession) =>
+          sameCoordinatorSession(coordinatorSession, transportSession),
+        )
+      ) {
         throw new Error(`transport session "${transportSession}" conflicts with an external coordinator`);
       }
       const existingSession = this.state.sessions[alias];

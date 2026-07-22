@@ -131,6 +131,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `control.workspaces.list`。
 - **可选自动别名**：别名输入留空时按 `‹workspace›-‹agent›` 自动生成（与现有别名去重，冲突时追加序号）；
   手填则用手填值。
+- **新建即新对话**：所有显式新建路径（Web `control.sessions.create`、`/session new` 与会话快捷创建）
+  都分配新的底层 transport incarnation；展示 alias 可复用，但删除后同名重建不会恢复残留的 agent 历史。
+  Web 删除成功时 Hub 还会清除 alias 对应的缓存消息。归档后恢复不走 create，也不清缓存，仍复用原历史。
 - **catalog 驱动的 agent 选择器**：agent 下拉来自 `control.agents.catalog` 的**全部 driver**——未安装的
   driver（`installed: unknown`）仍会列出但**置灰/禁用**，已配置 / `builtin` / PATH 探到的可选。
 - **workspace 选或输路径**：workspace 控件可从已配置项里选，也可直接**输入一个路径**——输入路径时按其

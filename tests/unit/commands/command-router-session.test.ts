@@ -79,7 +79,7 @@ test("stores recovered transport agent command after session creation", async ()
 
   expect(session).toMatchObject({
     alias: "api-fix",
-    transportSession: "backend:api-fix",
+    transportSession: expect.stringMatching(/^backend:api-fix:reset-\d+$/),
     agentCommand: "npx @zed-industries/codex-acp@^0.9.5",
   });
 });
@@ -129,8 +129,8 @@ test("createSessionWithTransport resolves, ensures the transport session, and bi
 
   const resolved = await router.createSessionWithTransport("relay:demo", "codex", "home");
 
-  expect(resolved.transportSession).toBe("home:relay:demo");
-  expect(ensured).toEqual(["home:relay:demo"]);
+  expect(resolved.transportSession).toMatch(/^home:relay:demo:reset-\d+$/);
+  expect(ensured).toEqual([resolved.transportSession]);
   expect(await sessions.getSession("relay:demo")).toBeTruthy();
 });
 
@@ -164,6 +164,146 @@ test("createSessionWithTransport refuses to overwrite an existing logical alias"
   );
   // The refused create must not touch the transport.
   expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls.length).toBe(ensureCalls);
+});
+
+test("concurrent same-alias creates claim the logical alias before transport side effects", async () => {
+  const { router, transport, config } = buildRouter();
+  config.workspaces.home = { cwd: "/tmp/home" };
+  let releaseEnsure!: () => void;
+  const ensureBlocked = new Promise<void>((resolve) => {
+    releaseEnsure = resolve;
+  });
+  let ensureStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    ensureStarted = resolve;
+  });
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    ensureStarted();
+    await ensureBlocked;
+  });
+
+  const first = router.createSessionWithTransport("relay:demo", "codex", "home");
+  await started;
+  const second = router.createSessionWithTransport("relay:demo", "codex", "home");
+
+  await expect(second).rejects.toThrow(/already exists|being created/);
+  releaseEnsure();
+  await expect(first).resolves.toBeTruthy();
+  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls).toHaveLength(1);
+});
+
+test("deleting then recreating the same alias does not resume residual transport history", async () => {
+  const { router, transport, config } = buildRouter();
+  config.workspaces.home = { cwd: "/tmp/home" };
+  const transportHistory = new Map<string, string[]>();
+  let resumedHistory: string[] = [];
+
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementation(
+    async (session: { transportSession: string }) => {
+      const existing = transportHistory.get(session.transportSession);
+      resumedHistory = existing ? [...existing] : [];
+      if (!existing) transportHistory.set(session.transportSession, []);
+    },
+  );
+  (transport.hasSession as ReturnType<typeof mock>).mockImplementation(async () => true);
+  // Real transports intentionally treat an unresolvable acpx record as an idempotent
+  // delete success. Model that residual-record case: the logical delete succeeds, but
+  // the old named transport history remains on disk.
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementation(async () => {});
+
+  const first = await router.createSessionWithTransport("relay:demo", "codex", "home");
+  transportHistory.set(first.transportSession, ["old conversation"]);
+  await router.archiveSessionWithTransport("relay:demo");
+  await router.removeSessionWithTransport("relay:demo");
+
+  const recreated = await router.createSessionWithTransport("relay:demo", "codex", "home");
+
+  expect(recreated.transportSession).not.toBe(first.transportSession);
+  expect(resumedHistory).toEqual([]);
+});
+
+test("slash-command delete then same-alias new does not resume residual transport history", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+  const transportHistory = new Map<string, string[]>();
+  let resumedHistory: string[] = [];
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementation(
+    async (session: { transportSession: string }) => {
+      const existing = transportHistory.get(session.transportSession);
+      resumedHistory = existing ? [...existing] : [];
+      if (!existing) transportHistory.set(session.transportSession, []);
+    },
+  );
+
+  await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  const first = sessions.getResolvedSessionByInternalAlias("api-fix")!;
+  transportHistory.set(first.transportSession, ["old conversation"]);
+  await router.handle("wx:user", "/session rm api-fix");
+  await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  const recreated = sessions.getResolvedSessionByInternalAlias("api-fix")!;
+
+  expect(recreated.transportSession).not.toBe(first.transportSession);
+  expect(resumedHistory).toEqual([]);
+});
+
+test("an attach cannot rebind an alias while reset is replacing its transport", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+  await router.handle("wx:user", "/session new main --agent codex --ws backend");
+  let markResetStarted!: () => void;
+  const resetStarted = new Promise<void>((resolve) => {
+    markResetStarted = resolve;
+  });
+  let releaseReset!: () => void;
+  const resetBlocked = new Promise<void>((resolve) => {
+    releaseReset = resolve;
+  });
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    markResetStarted();
+    await resetBlocked;
+  });
+
+  const reset = router.handle("wx:user", "/session reset");
+  await resetStarted;
+  const attach = await router.handle(
+    "wx:user",
+    "/session attach main --agent codex --ws backend --name existing-review",
+  );
+  releaseReset();
+  await reset;
+
+  expect(attach.text).not.toContain(t().session.sessionAttached("main"));
+  expect((await sessions.getSession("main"))?.transportSession).not.toBe("existing-review");
+});
+
+test("a remove cannot delete an alias while reset is replacing its transport", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+  await router.handle("wx:user", "/session new main --agent codex --ws backend");
+  let markResetStarted!: () => void;
+  const resetStarted = new Promise<void>((resolve) => {
+    markResetStarted = resolve;
+  });
+  let releaseReset!: () => void;
+  const resetBlocked = new Promise<void>((resolve) => {
+    releaseReset = resolve;
+  });
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    markResetStarted();
+    await resetBlocked;
+  });
+
+  const reset = router.handle("wx:user", "/session reset");
+  await resetStarted;
+  const remove = await router.handle("wx:user", "/session rm main");
+  releaseReset();
+  await reset;
+
+  expect(remove.text).not.toContain(t().session.sessionRemoved("main"));
+  expect(await sessions.getSession("main")).not.toBeNull();
 });
 
 test("/session new refuses an alias that already exists", async () => {
@@ -323,11 +463,11 @@ test("proxies /session tail [N] to the transport for the current session", async
   expect(defaultReply.text).toBe("history:50");
   expect(limitedReply.text).toBe("history:10");
   expect(tailSessionHistory).toHaveBeenCalledWith(
-    expect.objectContaining({ alias: "api-fix", transportSession: "backend:api-fix" }),
+    expect.objectContaining({ alias: "api-fix", transportSession: expect.stringMatching(/^backend:api-fix:reset-\d+$/) }),
     50,
   );
   expect(tailSessionHistory).toHaveBeenCalledWith(
-    expect.objectContaining({ alias: "api-fix", transportSession: "backend:api-fix" }),
+    expect.objectContaining({ alias: "api-fix", transportSession: expect.stringMatching(/^backend:api-fix:reset-\d+$/) }),
     10,
   );
 });
@@ -424,7 +564,7 @@ test("creates a workspace and session from the shortcut command", async () => {
   expect(await sessions.getCurrentSession("wx:user")).toMatchObject({
     alias: `${workspaceName}:codex`,
     workspace: workspaceName,
-    transportSession: `${workspaceName}:codex`,
+    transportSession: expect.stringMatching(new RegExp(`^${workspaceName}:codex:reset-\\d+$`)),
     cwd: normalizeWorkspacePath(dir),
   });
 
@@ -492,7 +632,7 @@ test("reuses an existing workspace and session from the workspace shortcut comma
   expect(await sessions.getCurrentSession("wx:user")).toMatchObject({
     alias: "weacpx:codex",
     workspace: "weacpx",
-    transportSession: "weacpx:codex",
+    transportSession: expect.stringMatching(/^weacpx:codex:reset-\d+$/),
   });
 });
 
@@ -577,7 +717,7 @@ test("creates uniquely named sessions for the explicit workspace shortcut create
   expect(reply.text).toContain(t().shortcut.createdHeader("weacpx:codex-2"));
   expect(await sessions.getCurrentSession("wx:user")).toMatchObject({
     alias: "weacpx:codex-2",
-    transportSession: "weacpx:codex-2",
+    transportSession: expect.stringMatching(/^weacpx:codex-2:reset-\d+$/),
   });
 });
 
@@ -618,7 +758,7 @@ test("creates uniquely named sessions for the explicit shortcut create command",
   expect(reply.text).toContain(t().shortcut.createdHeader(`${workspaceName}:codex-2`));
   expect(await sessions.getCurrentSession("wx:user")).toMatchObject({
     alias: `${workspaceName}:codex-2`,
-    transportSession: `${workspaceName}:codex-2`,
+    transportSession: expect.stringMatching(new RegExp(`^${workspaceName}:codex-2:reset-\\d+$`)),
   });
 
   await rm(dir, { recursive: true, force: true });
@@ -670,7 +810,7 @@ test("sets the mode on the current session", async () => {
 
   expect(reply.text).toContain("plan");
   expect(getSetModeMock(transport)).toHaveBeenCalledWith(
-    expect.objectContaining({ alias: "api-fix", transportSession: "backend:api-fix" }),
+    expect.objectContaining({ alias: "api-fix", transportSession: expect.stringMatching(/^backend:api-fix:reset-\d+$/) }),
     "plan",
   );
 });

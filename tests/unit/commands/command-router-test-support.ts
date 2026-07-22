@@ -19,6 +19,7 @@ import type {
 } from "../../../src/orchestration/orchestration-types";
 import type { ResolvedSession, SessionTransport } from "../../../src/transport/types";
 import type { AppLogger } from "../../../src/logging/app-logger";
+import { sameCoordinatorSession } from "../../../src/orchestration/coordinator-identity";
 
 export function createConfig(): AppConfig {
   return {
@@ -700,7 +701,8 @@ export function createOrchestrationService(options?: {
           task.status !== "completed" &&
           task.status !== "failed" &&
           task.status !== "cancelled" &&
-          (task.coordinatorSession === transportSession || task.workerSession === transportSession),
+          (sameCoordinatorSession(task.coordinatorSession, transportSession) ||
+            (task.workerSession !== undefined && sameCoordinatorSession(task.workerSession, transportSession))),
       )
       .map((task) => cloneTask(task));
   });
@@ -712,7 +714,8 @@ export function createOrchestrationService(options?: {
       const terminal =
         task.status === "completed" || task.status === "failed" || task.status === "cancelled";
       const references =
-        task.coordinatorSession === transportSession || task.workerSession === transportSession;
+        sameCoordinatorSession(task.coordinatorSession, transportSession) ||
+        (task.workerSession !== undefined && sameCoordinatorSession(task.workerSession, transportSession));
       if (terminal && references) {
         removedTasks += 1;
       } else {
