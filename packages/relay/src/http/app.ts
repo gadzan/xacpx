@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
 
-import { MSG, parseControlPayload, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
+import { isErrorPayload, MSG, parseControlPayload, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
@@ -95,6 +95,44 @@ function boundField<T extends string | undefined>(v: T): T {
   return (typeof v === "string" ? v.slice(0, MAX_ATTACHMENT_FIELD_LEN) : v) as T;
 }
 
+function rpcSessionAlias(type: string, payload: unknown): string | undefined {
+  const value = payload as { alias?: unknown; sessionAlias?: unknown };
+  if (type === MSG.prompt || type === MSG.commandExecute) {
+    return typeof value.sessionAlias === "string" && value.sessionAlias ? value.sessionAlias : undefined;
+  }
+  if (
+    type === MSG.sessionsCreate ||
+    type === MSG.sessionsRemove ||
+    type === MSG.sessionsArchive ||
+    type === MSG.sessionsUnarchive
+  ) {
+    return typeof value.alias === "string" && value.alias ? value.alias : undefined;
+  }
+  return undefined;
+}
+
+function createKeyedRpcLock(): (key: string) => Promise<() => void> {
+  const tails = new Map<string, Promise<void>>();
+  return async (key: string) => {
+    const previous = tails.get(key) ?? Promise.resolve();
+    let releaseCurrent!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const tail = previous.then(() => current);
+    tails.set(key, tail);
+    await previous;
+
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseCurrent();
+      if (tails.get(key) === tail) tails.delete(key);
+    };
+  };
+}
+
 type Vars = { Variables: { account: AccountRow } };
 
 export function createApp(deps: AppDeps): Hono<Vars> {
@@ -102,6 +140,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   const pairingTtlMs = deps.pairingTtlMs ?? 10 * 60 * 1000;
   const trustProxy = deps.trustProxy ?? false;
   const now = deps.now ?? (() => new Date());
+  const acquireSessionRpcLock = createKeyedRpcLock();
 
   // Per-IP failure tracking
   const loginFailures = new Map<string, { count: number; windowStart: number }>();
@@ -320,6 +359,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         isOwner: true,
       };
     }
+    let releaseSessionRpcLock: (() => void) | undefined;
     try {
       // Shape-validate the RPCs the hub persists BEFORE forwarding, so a malformed frame
       // can't poison history ahead of the connector's own boundary check. Error body carries
@@ -333,10 +373,20 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       if (body.type === MSG.upload && !parseControlPayload(MSG.upload, payload)) {
         return c.json({ error: "invalid-payload" }, 400);
       }
+      const removeInput = body.type === MSG.sessionsRemove
+        ? parseControlPayload(MSG.sessionsRemove, payload)
+        : undefined;
+      if (body.type === MSG.sessionsRemove && !removeInput) {
+        return c.json({ error: "invalid-payload" }, 400);
+      }
       if (body.type === MSG.upload) {
         const up = payload as { content?: string };
         const approxBytes = up.content ? Math.floor((up.content.length * 3) / 4) : 0;
         if (approxBytes > 10 * 1024 * 1024) return c.json({ error: "file-too-large" }, 413);
+      }
+      const sessionAlias = rpcSessionAlias(body.type, payload);
+      if (sessionAlias) {
+        releaseSessionRpcLock = await acquireSessionRpcLock(`${instance.id}\0${sessionAlias}`);
       }
       // Persist the inbound user message BEFORE awaiting the turn: sendRequest
       // resolves only after the agent's turn-finished event has already
@@ -363,6 +413,12 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
+      // A real delete has two histories: the connector-owned acpx record and the
+      // Hub-owned Web transcript. Purge the latter only after the connector confirms
+      // success; archive intentionally keeps both histories.
+      if (removeInput && !isErrorPayload(result)) {
+        deps.messages.deleteBySession(instance.id, removeInput.alias);
+      }
       if (body.type === MSG.commandExecute) {
         const p = payload as { sessionAlias?: string; text?: string };
         const output = (result as { output?: string } | undefined)?.output;
@@ -374,6 +430,8 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       if (message === "instance-offline") return c.json({ error: message }, 503);
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);
+    } finally {
+      releaseSessionRpcLock?.();
     }
   });
 

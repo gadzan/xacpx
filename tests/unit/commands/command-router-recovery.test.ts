@@ -55,13 +55,14 @@ test("recovers a missing session once after resolving transport agent command", 
   const router = new CommandRouter(sessions, transport, undefined, undefined, undefined, resolveSessionAgentCommand);
 
   await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
+  const current = await sessions.getCurrentSession("wx:user");
   const reply = await router.handle("wx:user", "hello");
 
   expect(reply.text).toContain("npx @zed-industries/codex-acp@^0.9.5");
   expect(getPromptMock(transport).mock.calls).toHaveLength(2);
   expect(getPromptMock(transport).mock.calls.at(-1)?.[0]).toMatchObject({
     alias: "api-fix",
-    transportSession: "backend:api-fix",
+    transportSession: current?.transportSession,
     agentCommand: "npx @zed-industries/codex-acp@^0.9.5",
   });
 });

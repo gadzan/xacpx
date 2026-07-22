@@ -20,6 +20,7 @@ export interface SessionMessages {
   sessionAlreadyExists: (alias: string, agent: string, workspace: string) => string;
   sessionAttachNotFound: (alias: string, agent: string, workspace: string) => string;
   sessionAttached: (alias: string) => string;
+  sessionLifecycleBusy: (alias: string) => string;
 
   // renderSwitched / appendSwitchBackContext
   switched: (alias: string, agent: string, workspace: string) => string;

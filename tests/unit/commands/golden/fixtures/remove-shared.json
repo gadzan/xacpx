@@ -1,5 +1,6 @@
 {
   "record": [
+    "sessions.tryReserveSessionAliasOperation(\"relay:demo\")",
     "sessions.getSession(\"relay:demo\")",
     "orchestration.listSessionBlockingTasks(\"backend:shared\")",
     "sessions.countAliasesSharingTransport(\"backend:shared\", \"relay:demo\")",

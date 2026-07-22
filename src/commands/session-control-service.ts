@@ -55,55 +55,80 @@ export class SessionControlService {
     // Refuse to overwrite an existing alias: silently re-pointing it would either
     // reuse the old transport session (stale history) or orphan it, and a native
     // session's agent_session_id would be silently dropped. Mirrors handleSessionNew.
-    const existing = this.sessions.getResolvedSessionByInternalAlias(internalAlias);
-    if (existing) {
+    const releaseAliasReservation = this.sessions.tryReserveNewSessionAlias(internalAlias);
+    if (!releaseAliasReservation) {
       throw new Error(`session "${internalAlias}" already exists`);
     }
 
-    const session = this.sessions.resolveSession(
-      internalAlias,
-      agent,
-      workspace,
-      `${workspace}:${internalAlias}`,
-    );
-    // An explicit model override must be on the ResolvedSession BEFORE
-    // ensureTransportSession so acpx creates the session under that model
-    // (it carries through as `--model`). Mirrors handleSessionNew.
-    const normalizedModel = model?.trim();
-    if (normalizedModel) {
-      session.model = normalizedModel;
-    }
-    const release = await this.reserveLogicalTransportSession(session.transportSession);
     try {
-      await this.invoker.ensureTransportSession(session);
-      const exists = await this.invoker.checkTransportSession(session);
-      if (!exists) {
-        throw new Error(`transport session "${session.transportSession}" could not be verified`);
-      }
-      await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+      const stableTransportSession = `${workspace}:${internalAlias}`;
+      const session = this.sessions.resolveSession(
+        internalAlias,
+        agent,
+        workspace,
+        this.sessions.buildFreshTransportSession(stableTransportSession),
+      );
+      // An explicit model override must be on the ResolvedSession BEFORE
+      // ensureTransportSession so acpx creates the session under that model
+      // (it carries through as `--model`). Mirrors handleSessionNew.
+      const normalizedModel = model?.trim();
       if (normalizedModel) {
-        await this.sessions.setSessionModel(internalAlias, normalizedModel);
+        session.model = normalizedModel;
       }
-      // Best-effort: a transient refresh failure must not fail a create that has
-      // already succeeded, bound, and verified. Mirrors the chat paths' use of
-      // refreshSessionTransportAgentCommandBestEffort.
+      // Reserve the stable coordinator identity rather than the incarnation-specific
+      // name. This preserves conflict detection with external coordinators while the
+      // transport name itself can rotate on every explicit create.
+      const release = await this.reserveLogicalTransportSession(stableTransportSession);
       try {
-        await this.invoker.refreshSessionTransportAgentCommand(internalAlias);
-      } catch (error) {
-        await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
-          alias: internalAlias,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        await this.invoker.ensureTransportSession(session);
+        const exists = await this.invoker.checkTransportSession(session);
+        if (!exists) {
+          throw new Error(`transport session "${session.transportSession}" could not be verified`);
+        }
+        await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+        if (normalizedModel) {
+          await this.sessions.setSessionModel(internalAlias, normalizedModel);
+        }
+        // Best-effort: a transient refresh failure must not fail a create that has
+        // already succeeded, bound, and verified. Mirrors the chat paths' use of
+        // refreshSessionTransportAgentCommandBestEffort.
+        try {
+          await this.invoker.refreshSessionTransportAgentCommand(internalAlias);
+        } catch (error) {
+          await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
+            alias: internalAlias,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return session;
+      } finally {
+        await release();
       }
-      return session;
     } finally {
-      await release();
+      releaseAliasReservation();
     }
   }
 
   /** Real delete: logical removal + acpx history delete, guarded so a transport
    *  session shared by another alias is left intact. */
   async removeSessionWithTransport(internalAlias: string): Promise<{
+    wasActive: boolean;
+    sharedAliasCount: number;
+    transportTornDown: boolean;
+    transportTeardownWarning?: string;
+  }> {
+    const releaseAliasOperation = this.sessions.tryReserveSessionAliasOperation(internalAlias);
+    if (!releaseAliasOperation) {
+      throw new Error(`session "${internalAlias}" has another lifecycle operation in progress`);
+    }
+    try {
+      return await this.removeSessionWithTransportUnderAliasClaim(internalAlias);
+    } finally {
+      releaseAliasOperation();
+    }
+  }
+
+  private async removeSessionWithTransportUnderAliasClaim(internalAlias: string): Promise<{
     wasActive: boolean;
     sharedAliasCount: number;
     transportTornDown: boolean;
@@ -255,45 +280,49 @@ export class SessionControlService {
     if (!this.transport.resumeAgentSession) {
       throw new Error("the active transport does not support native sessions");
     }
-    const existing = this.sessions.getResolvedSessionByInternalAlias(internalAlias);
-    if (existing) {
+    const releaseAliasReservation = this.sessions.tryReserveNewSessionAlias(internalAlias);
+    if (!releaseAliasReservation) {
       throw new Error(`session "${internalAlias}" already exists`);
     }
-    const session = this.sessions.resolveSession(
-      internalAlias,
-      agent,
-      workspace,
-      `${workspace}:${internalAlias}`,
-    );
-    const release = await this.reserveLogicalTransportSession(session.transportSession);
     try {
-      await this.transport.resumeAgentSession(session, agentSessionId);
-      const exists = await this.invoker.checkTransportSession(session);
-      if (!exists) {
-        throw new Error(`transport session "${session.transportSession}" could not be verified`);
-      }
-      await this.sessions.attachNativeSession({
-        alias: internalAlias,
+      const session = this.sessions.resolveSession(
+        internalAlias,
         agent,
         workspace,
-        transportSession: session.transportSession,
-        agentSessionId,
-        ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
-        ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
-      });
-      // Best-effort: a transient refresh failure must not fail an attach that already
-      // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
+        `${workspace}:${internalAlias}`,
+      );
+      const release = await this.reserveLogicalTransportSession(session.transportSession);
       try {
-        await this.invoker.refreshSessionTransportAgentCommand(internalAlias);
-      } catch (error) {
-        await this.logger.error("session.native.agent_command_refresh_failed", "failed to refresh native session agent command", {
+        await this.transport.resumeAgentSession(session, agentSessionId);
+        const exists = await this.invoker.checkTransportSession(session);
+        if (!exists) {
+          throw new Error(`transport session "${session.transportSession}" could not be verified`);
+        }
+        await this.sessions.attachNativeSession({
           alias: internalAlias,
-          error: error instanceof Error ? error.message : String(error),
+          agent,
+          workspace,
+          transportSession: session.transportSession,
+          agentSessionId,
+          ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
+          ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
         });
+        // Best-effort: a transient refresh failure must not fail an attach that already
+        // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
+        try {
+          await this.invoker.refreshSessionTransportAgentCommand(internalAlias);
+        } catch (error) {
+          await this.logger.error("session.native.agent_command_refresh_failed", "failed to refresh native session agent command", {
+            alias: internalAlias,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return session;
+      } finally {
+        await release();
       }
-      return session;
     } finally {
-      await release();
+      releaseAliasReservation();
     }
   }
 }

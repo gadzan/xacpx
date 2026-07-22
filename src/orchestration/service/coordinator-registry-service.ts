@@ -3,7 +3,7 @@
 // service that takes a collaborator: registerExternalCoordinator consults the shared
 // WorkerSessionManager's in-memory pending maps, so the facade must inject the same
 // instance it already constructed rather than build a second one.
-import { stableCoordinatorSession } from "../coordinator-identity";
+import { sameCoordinatorSession, stableCoordinatorSession } from "../coordinator-identity";
 import type {
   ExternalCoordinatorRecord,
   OrchestrationCoordinatorRouteContextRecord,
@@ -55,7 +55,9 @@ export class CoordinatorRegistryService {
       if (this.workerSessions.hasPendingLogicalTransportSession(coordinatorSession)) {
         throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing logical session`);
       }
-      if (Object.values(state.sessions).some((session) => session.transport_session === coordinatorSession)) {
+      if (Object.values(state.sessions).some((session) =>
+        sameCoordinatorSession(session.transport_session, coordinatorSession),
+      )) {
         throw new Error(`coordinatorSession "${coordinatorSession}" conflicts with an existing logical session`);
       }
       if (existing?.workspace && workspace && existing.workspace !== workspace) {

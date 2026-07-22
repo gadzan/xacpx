@@ -38,10 +38,20 @@ function build(opts: {
   const removeSession = mock(async (_s: ResolvedSession) => {
     if (opts.removeSessionThrows) throw new Error("close failed");
   });
+  let aliasReserved = false;
+  const tryReserveSessionAliasOperation = mock(() => {
+    if (aliasReserved) return null;
+    aliasReserved = true;
+    return () => {
+      aliasReserved = false;
+    };
+  });
 
   const context = {
     sessions: {
       getCurrentSession: mock(async () => opts.current),
+      buildFreshTransportSession: mock(() => "backend:review:reset-1700000000001"),
+      tryReserveSessionAliasOperation,
       attachNativeSession,
       attachSession,
       useSession,
@@ -116,6 +126,44 @@ test("a non-native session resets to xacpx and closes the previous transport ses
   expect(ctx.removeSession).toHaveBeenCalledTimes(1);
   expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({ transportSession: "backend:review" });
   expect(reply.text).toBe(t().misc.sessionResetSuccess("review"));
+});
+
+test("reset uses the shared fresh-incarnation allocator instead of the raw clock", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review:reset-1700000000000" });
+  const ctx = build({ current: previous });
+
+  await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(ctx.context.sessions.buildFreshTransportSession).toHaveBeenCalledWith("backend:review");
+  expect(ctx.ops.ensureTransportSession).toHaveBeenCalledWith(
+    expect.objectContaining({ transportSession: "backend:review:reset-1700000000001" }),
+  );
+});
+
+test("concurrent resets claim the alias before creating a replacement transport", async () => {
+  const previous = resolved({ source: "xacpx" });
+  const ctx = build({ current: previous });
+  let markEnsureStarted!: () => void;
+  const ensureStarted = new Promise<void>((resolve) => {
+    markEnsureStarted = resolve;
+  });
+  let releaseEnsure!: () => void;
+  const ensureBlocked = new Promise<void>((resolve) => {
+    releaseEnsure = resolve;
+  });
+  ctx.ops.ensureTransportSession.mockImplementationOnce(async () => {
+    markEnsureStarted();
+    await ensureBlocked;
+  });
+
+  const first = handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+  await ensureStarted;
+  const second = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(second.text).toBe(t().misc.sessionResetFailed("review"));
+  releaseEnsure();
+  await first;
+  expect(ctx.ops.ensureTransportSession).toHaveBeenCalledTimes(1);
 });
 
 test("does not close the previous transport for a non-native session another alias shares", async () => {

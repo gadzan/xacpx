@@ -1,6 +1,6 @@
 {
   "record": [
-    "sessions.getResolvedSessionByInternalAlias(\"relay:demo\")"
+    "sessions.tryReserveNewSessionAlias(\"relay:demo\")"
   ],
   "outcome": {
     "threw": "session \"relay:demo\" already exists"

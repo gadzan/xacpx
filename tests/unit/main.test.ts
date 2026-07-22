@@ -413,8 +413,16 @@ test("buildApp reserves logical session transport before session creation side e
     sessions: Record<string, unknown>;
     orchestration: { externalCoordinators: Record<string, unknown> };
   }>(statePath);
-  expect(saved.sessions.main).toMatchObject({ transport_session: "backend:main" });
+  expect((saved.sessions.main as { transport_session?: string }).transport_session).toMatch(
+    /^backend:main:reset-\d+$/,
+  );
   expect(saved.orchestration.externalCoordinators).toEqual({});
+  await expect(
+    runtime.orchestration.service.registerExternalCoordinator({
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+    }),
+  ).rejects.toThrow('coordinatorSession "backend:main" conflicts with an existing logical session');
 
   await runtime.dispose();
   await rm(dir, { recursive: true, force: true });
@@ -612,8 +620,9 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     alias: "main",
     agent: "codex",
     workspace: "backend",
-    transportSession: "backend:main",
   });
+  const coordinatorTransportSession = ensureSession.mock.calls.at(0)?.[0].transportSession;
+  expect(coordinatorTransportSession).toMatch(/^backend:main:reset-\d+$/);
   expect(ensureSession.mock.calls.at(1)?.[0]).toMatchObject({
     alias: "backend:claude:backend:main",
     agent: "claude",
@@ -672,7 +681,7 @@ test("wires orchestration into the runtime router so /delegate creates and persi
   expect(taskId).toBeDefined();
   expect(task).toBeDefined();
   expect(task).toMatchObject({
-    sourceHandle: "backend:main",
+    sourceHandle: coordinatorTransportSession,
     coordinatorSession: "backend:main",
     workerSession: "backend:claude:backend:main",
     workspace: "backend",

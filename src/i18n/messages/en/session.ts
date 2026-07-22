@@ -28,6 +28,8 @@ export const session: SessionMessages = {
       `Check the session name and retry: /session attach ${alias} --agent ${agent} --ws ${workspace} --name <session-name>`,
     ].join("\n"),
   sessionAttached: (alias) => `Session "${alias}" attached and switched.`,
+  sessionLifecycleBusy: (alias) =>
+    `Session "${alias}" is being changed by another operation. Retry after it finishes.`,
 
   // renderSwitched / appendSwitchBackContext
   switched: (alias, agent, workspace) =>

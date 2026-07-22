@@ -222,41 +222,60 @@ export async function handleSessionNew(
   if (existing) {
     return { text: t().session.sessionAlreadyExists(alias, existing.agent, existing.workspace) };
   }
+  const releaseAliasReservation = context.sessions.tryReserveNewSessionAlias(internalAlias);
+  if (!releaseAliasReservation) {
+    const claimed = context.sessions.getResolvedSessionByInternalAlias(internalAlias);
+    return {
+      text: claimed
+        ? t().session.sessionAlreadyExists(alias, claimed.agent, claimed.workspace)
+        : t().session.sessionAlreadyExists(alias, agent, workspace),
+    };
+  }
 
-  const session = context.lifecycle.resolveSession(internalAlias, agent, workspace, `${workspace}:${internalAlias}`);
+  try {
+    const stableTransportSession = `${workspace}:${internalAlias}`;
+    const session = context.lifecycle.resolveSession(
+      internalAlias,
+      agent,
+      workspace,
+      context.sessions.buildFreshTransportSession(stableTransportSession),
+    );
   // An explicit --model overrides the agent default for this session, and must be
   // on the ResolvedSession before ensureTransportSession so acpx creates the
   // session under that model.
-  const normalizedModel = model?.trim();
-  if (normalizedModel) {
-    session.model = normalizedModel;
-  }
-  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(session.transportSession);
-  try {
-    try {
-      await context.lifecycle.ensureTransportSession(session);
-      const exists = await context.lifecycle.checkTransportSession(session);
-      if (!exists) {
-        return context.recovery.renderSessionCreationVerificationError(session);
-      }
-    } catch (error) {
-      return context.recovery.renderSessionCreationError(session, error);
-    }
-
-    await context.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+    const normalizedModel = model?.trim();
     if (normalizedModel) {
-      await context.sessions.setSessionModel(internalAlias, normalizedModel);
+      session.model = normalizedModel;
     }
-    await context.sessions.useSession(chatKey, internalAlias);
-    await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.agent_command_refresh_failed");
-    await context.logger.info("session.created", "created and selected logical session", {
-      alias: internalAlias,
-      agent,
-      workspace,
-    });
-    return { text: t().session.sessionCreated(alias) };
+    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(stableTransportSession);
+    try {
+      try {
+        await context.lifecycle.ensureTransportSession(session);
+        const exists = await context.lifecycle.checkTransportSession(session);
+        if (!exists) {
+          return context.recovery.renderSessionCreationVerificationError(session);
+        }
+      } catch (error) {
+        return context.recovery.renderSessionCreationError(session, error);
+      }
+
+      await context.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+      if (normalizedModel) {
+        await context.sessions.setSessionModel(internalAlias, normalizedModel);
+      }
+      await context.sessions.useSession(chatKey, internalAlias);
+      await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.agent_command_refresh_failed");
+      await context.logger.info("session.created", "created and selected logical session", {
+        alias: internalAlias,
+        agent,
+        workspace,
+      });
+      return { text: t().session.sessionCreated(alias) };
+    } finally {
+      await releaseTransportReservation();
+    }
   } finally {
-    await releaseTransportReservation();
+    releaseAliasReservation();
   }
 }
 
@@ -280,29 +299,37 @@ export async function handleSessionAttach(
 ): Promise<RouterResponse> {
   const channelId = getChannelIdFromChatKey(chatKey);
   const internalAlias = scopeDisplayAliasToInternal(channelId, alias);
-  const attached = context.lifecycle.resolveSession(internalAlias, agent, workspace, transportSession);
-  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(attached.transportSession);
+  const releaseAliasOperation = context.sessions.tryReserveSessionAliasOperation(internalAlias);
+  if (!releaseAliasOperation) {
+    return { text: t().session.sessionLifecycleBusy(alias) };
+  }
   try {
-    const exists = await context.lifecycle.checkTransportSession(attached);
-    if (!exists) {
-      return {
-        text: t().session.sessionAttachNotFound(alias, agent, quoteWorkspaceNameIfNeeded(workspace)),
-      };
-    }
-    context.lifecycle.markSessionReady?.(attached);
+    const attached = context.lifecycle.resolveSession(internalAlias, agent, workspace, transportSession);
+    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(attached.transportSession);
+    try {
+      const exists = await context.lifecycle.checkTransportSession(attached);
+      if (!exists) {
+        return {
+          text: t().session.sessionAttachNotFound(alias, agent, quoteWorkspaceNameIfNeeded(workspace)),
+        };
+      }
+      context.lifecycle.markSessionReady?.(attached);
 
-    await context.sessions.attachSession(internalAlias, agent, workspace, transportSession);
-    await context.sessions.useSession(chatKey, internalAlias);
-    await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.attach.agent_command_refresh_failed");
-    await context.logger.info("session.attached", "attached existing transport session", {
-      alias: internalAlias,
-      agent,
-      workspace,
-      transportSession,
-    });
-    return { text: t().session.sessionAttached(alias) };
+      await context.sessions.attachSession(internalAlias, agent, workspace, transportSession);
+      await context.sessions.useSession(chatKey, internalAlias);
+      await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.attach.agent_command_refresh_failed");
+      await context.logger.info("session.attached", "attached existing transport session", {
+        alias: internalAlias,
+        agent,
+        workspace,
+        transportSession,
+      });
+      return { text: t().session.sessionAttached(alias) };
+    } finally {
+      await releaseTransportReservation();
+    }
   } finally {
-    await releaseTransportReservation();
+    releaseAliasOperation();
   }
 }
 
@@ -625,7 +652,24 @@ export async function handleSessionRemove(
   if (!session) {
     return { text: t().session.sessionNotFound(alias) };
   }
+  const releaseAliasOperation = context.sessions.tryReserveSessionAliasOperation(internalAlias);
+  if (!releaseAliasOperation) {
+    return { text: t().session.sessionLifecycleBusy(alias) };
+  }
+  try {
+    return await removeSessionUnderAliasClaim(context, chatKey, alias, internalAlias, session);
+  } finally {
+    releaseAliasOperation();
+  }
+}
 
+async function removeSessionUnderAliasClaim(
+  context: SessionHandlerContext,
+  chatKey: string,
+  alias: string,
+  internalAlias: string,
+  session: ResolvedSession,
+): Promise<RouterResponse> {
   if (context.orchestration) {
     const blocking = await context.orchestration.listSessionBlockingTasks(session.transportSession);
     if (blocking.length > 0) {

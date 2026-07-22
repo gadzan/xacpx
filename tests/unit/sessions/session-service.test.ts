@@ -998,3 +998,16 @@ test("mutations under the shared mutex commit immediately and coalesce into one 
   expect(inner.savedStates[0]!.sessions["api-fix"]!.archived).toBeUndefined();
   await debounced.dispose();
 });
+
+test("fresh transport incarnations do not collide across service instances with a fixed clock", () => {
+  const fixedNow = () => 1_700_000_000_000;
+  const first = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState(), { now: fixedNow });
+  const second = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState(), { now: fixedNow });
+
+  const firstName = first.buildFreshTransportSession("backend:review");
+  const secondName = second.buildFreshTransportSession("backend:review");
+
+  expect(firstName).toMatch(/^backend:review:reset-\d+$/);
+  expect(secondName).toMatch(/^backend:review:reset-\d+$/);
+  expect(secondName).not.toBe(firstName);
+});

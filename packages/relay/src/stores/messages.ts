@@ -86,6 +86,19 @@ export class MessageStore {
     };
   }
 
+  /** Permanently removes the Hub-cached history for one logical session. */
+  deleteBySession(instanceId: string, sessionAlias: string): number {
+    const before = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM messages WHERE instance_id = ? AND session_alias = ?",
+      [instanceId, sessionAlias],
+    );
+    this.db.run(
+      "DELETE FROM messages WHERE instance_id = ? AND session_alias = ?",
+      [instanceId, sessionAlias],
+    );
+    return before?.n ?? 0;
+  }
+
   /** Deletes messages older than maxAgeMs and/or beyond the newest maxPerSession per (instance, session). Returns rows deleted. */
   prune(opts: { maxAgeMs?: number; maxPerSession?: number }): number {
     let deleted = 0;
