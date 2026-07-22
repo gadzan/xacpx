@@ -20,8 +20,8 @@ export type ControlEvent =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
   // `prompt`/`scheduled` are populated only for turns started by a fired scheduled
   // task (relay channel), or a turn drained from the queue, letting the hub persist
-  // the inbound prompt and the web badge it. `queueItemId` is set when this turn was
-  // drained from the queue (Task 2), so the web can reconcile the queue chip.
+  // the inbound prompt and the web badge it. A drained turn carries `queueItemId` so
+  // the web can move its original optimistic bubble to the actual execution point.
   | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string }
   // Full ordered snapshot (replace-latest) of the pending prompt queue for a session,
   // emitted on every enqueue/drain/cancel.

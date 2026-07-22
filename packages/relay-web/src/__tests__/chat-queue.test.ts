@@ -48,6 +48,43 @@ it("sending while busy still issues control.prompt and pushes the optimistic bub
   expect(rpc).toHaveBeenCalledWith("i1", "control.prompt", { sessionAlias: "s", text: "queued msg" });
 });
 
+it("moves a drained queued prompt after the previous reply without duplicating it", async () => {
+  rpc.mockResolvedValueOnce({ ok: true, queued: true, queueItemId: "q1" });
+  const chat = useChatStore();
+  chat.select("i1", "s");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "first reply" } } as WebServerEvent);
+
+  await chat.send("queued prompt");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
+
+  expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
+    ["out", "first reply"],
+    ["in", "queued prompt"],
+  ]);
+});
+
+it("reconciles when the drain event arrives before the queued RPC response", async () => {
+  let resolveRpc!: (value: unknown) => void;
+  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
+  const chat = useChatStore();
+  chat.select("i1", "s");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "first reply" } } as WebServerEvent);
+
+  const sending = chat.send("queued prompt");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
+  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
+  await sending;
+
+  expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
+    ["out", "first reply"],
+    ["in", "queued prompt"],
+  ]);
+});
+
 it("cancelQueuedItem issues control.queue.cancel and optimistically drops the chip", async () => {
   rpc.mockResolvedValueOnce({ ok: true });
   const chat = useChatStore();

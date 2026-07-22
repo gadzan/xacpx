@@ -85,6 +85,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **prompt RPC 超时被吞掉**：`control.prompt` 的 RPC 超时（HTTP 504 / `ApiError.code "timeout"`）视为**非致命**——
   回合结果仍会经 `/ws` 事件流（`turn-output`/`turn-finished`）抵达，因此长回合不会冒出多余的错误横幅，消息也不标记为失败。
   `/命令`（`control.command.execute`，纯请求/响应、无流式）超时**仍会浮现**。
+- **排队 prompt 的执行顺序**：入队响应的 `queueItemId` 会写到乐观消息；对应
+  `turn-started` 到达时，store 移动这条原消息到上一轮回复之后（保留附件且不重复）。若事件与 RPC
+  响应竞态，则仍以同一 id 合并；回合结束后 Hub 历史以相同顺序收敛。
 
 ## Subagent 执行轨迹
 

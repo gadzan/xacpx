@@ -115,7 +115,8 @@ export function initSchema(db: SqlDriver): void {
       text TEXT NOT NULL,
       created_at TEXT NOT NULL,
       structured TEXT,
-      attachments TEXT
+      attachments TEXT,
+      queue_item_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
   `);
@@ -124,5 +125,8 @@ export function initSchema(db: SqlDriver): void {
   const messageCols = db.all<{ name: string }>("PRAGMA table_info(messages)");
   if (!messageCols.some((c) => c.name === "attachments")) {
     db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
+  }
+  if (!messageCols.some((c) => c.name === "queue_item_id")) {
+    db.exec("ALTER TABLE messages ADD COLUMN queue_item_id TEXT");
   }
 }

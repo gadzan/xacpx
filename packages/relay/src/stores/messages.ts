@@ -22,7 +22,16 @@ export interface MessagePage {
 }
 
 export class MessageStore {
+  /** Queue starts can race the HTTP response that supplies the queue id. A fallback
+   *  row keeps non-Web queue origins visible; the original persisted row replaces it
+   *  if the matching HTTP response arrives afterwards. */
+  private readonly startedQueueFallbacks = new Map<string, number | null>();
+
   constructor(private readonly db: SqlDriver, private readonly now: () => Date = () => new Date()) {}
+
+  private queueKey(instanceId: string, sessionAlias: string, queueItemId: string): string {
+    return `${instanceId}\0${sessionAlias}\0${queueItemId}`;
+  }
 
   append(
     instanceId: string,
@@ -31,7 +40,7 @@ export class MessageStore {
     text: string,
     structured?: StructuredTurn,
     attachments?: AttachmentMetadata[],
-  ): void {
+  ): number {
     this.db.run(
       "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments) VALUES (?,?,?,?,?,?,?)",
       [
@@ -44,6 +53,49 @@ export class MessageStore {
         attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
       ],
     );
+    return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
+  }
+
+  /** Associate an already-persisted Web prompt with the connector's queue id. */
+  markQueued(rowId: number, instanceId: string, sessionAlias: string, queueItemId: string): void {
+    this.db.run(
+      "UPDATE messages SET queue_item_id = ? WHERE id = ? AND instance_id = ? AND session_alias = ?",
+      [queueItemId, rowId, instanceId, sessionAlias],
+    );
+    const k = this.queueKey(instanceId, sessionAlias, queueItemId);
+    if (!this.startedQueueFallbacks.has(k)) return;
+    const fallbackId = this.startedQueueFallbacks.get(k);
+    if (fallbackId !== null && fallbackId !== undefined) {
+      this.db.run("DELETE FROM messages WHERE id = ?", [fallbackId]);
+    }
+    this.promoteQueued(instanceId, sessionAlias, queueItemId);
+  }
+
+  /** Move a queued inbound row to the current end of the transcript when execution
+   *  starts. Updating the integer key preserves the existing cursor contract. */
+  promoteQueued(instanceId: string, sessionAlias: string, queueItemId: string): boolean {
+    const row = this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ?",
+      [instanceId, sessionAlias, queueItemId],
+    );
+    const k = this.queueKey(instanceId, sessionAlias, queueItemId);
+    if (!row) {
+      this.startedQueueFallbacks.set(k, null);
+      return false;
+    }
+    const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
+    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [nextId, row.id]);
+    this.startedQueueFallbacks.delete(k);
+    return true;
+  }
+
+  recordQueuedFallback(instanceId: string, sessionAlias: string, queueItemId: string, rowId: number): void {
+    const k = this.queueKey(instanceId, sessionAlias, queueItemId);
+    if (this.startedQueueFallbacks.has(k)) this.startedQueueFallbacks.set(k, rowId);
+  }
+
+  forgetQueuedFallback(instanceId: string, sessionAlias: string, queueItemId: string): void {
+    this.startedQueueFallbacks.delete(this.queueKey(instanceId, sessionAlias, queueItemId));
   }
 
   /**

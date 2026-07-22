@@ -264,7 +264,7 @@ function validControlEvent(e) {
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":

@@ -94,6 +94,8 @@ function roundtrip(event: any) {
 
 test("accepts the new turn-status control events", () => {
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } })).not.toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", prompt: "queued", queueItemId: "q1" } })).not.toBeNull();
+  expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: 1 } })).toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-thought", chatKey: "c", sessionAlias: "s", chunk: "x" } })).not.toBeNull();
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

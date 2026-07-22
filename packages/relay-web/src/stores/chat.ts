@@ -69,6 +69,8 @@ const reasoningOf = (parts: TurnPart[]): string => parts.filter((p) => p.type ==
 export interface ChatMessage extends MessageRecordDto {
   failed?: boolean;
   status?: TurnStatus;
+  /** Client-only correlation for an optimistic prompt accepted into the queue. */
+  queueItemId?: string;
   // Present on an inbound prompt produced by a fired scheduled task — drives the
   // "⏰ Scheduled" badge so a turn that appears on its own has visible provenance.
   scheduled?: ScheduledOriginDto;
@@ -370,11 +372,27 @@ export const useChatStore = defineStore("chat", () => {
       const k = bufKey(event.instanceId, e.sessionAlias);
       finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
       ensureTurn(k);
-      // A scheduled-origin turn has no optimistic user bubble (no one typed it), so
-      // surface its prompt as an inbound message — with the schedule badge — when this
-      // session is the one being viewed. History persists the same "in" row server-side.
+      // Scheduled turns have no optimistic bubble; drained queue turns use queueItemId
+      // to move their existing bubble. Other clients can add the carried prompt here.
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
-      if (e.prompt && selected) {
+      if (e.queueItemId && selected) {
+        const queuedIndex = messages.value.findIndex((message) => message.queueItemId === e.queueItemId);
+        if (queuedIndex >= 0) {
+          const [queued] = messages.value.splice(queuedIndex, 1);
+          messages.value.push(queued!);
+          touchTranscript();
+        } else if (e.prompt) {
+          messages.value.push({
+            instanceId: event.instanceId,
+            sessionAlias: e.sessionAlias,
+            direction: "in",
+            text: e.prompt,
+            createdAt: new Date().toISOString(),
+            queueItemId: e.queueItemId,
+          });
+          touchTranscript();
+        }
+      } else if (e.prompt && selected) {
         messages.value.push({
           instanceId: event.instanceId,
           sessionAlias: e.sessionAlias,
@@ -462,7 +480,7 @@ export const useChatStore = defineStore("chat", () => {
       // not handled here; the console forwards control-channel `/` text to the agent
       // verbatim (see command-router passthrough). Only WeChat/Feishu, which lack a
       // GUI, still rely on xacpx command handling.
-      const res = await api.rpc<{ ok?: boolean; errorMessage?: string }>(instanceId.value, "control.prompt", {
+      const res = await api.rpc<{ ok?: boolean; errorMessage?: string; queued?: boolean; queueItemId?: string }>(instanceId.value, "control.prompt", {
         sessionAlias: sessionAlias.value,
         text,
         ...(attachments.length > 0 ? { media: attachments } : {}),
@@ -470,6 +488,20 @@ export const useChatStore = defineStore("chat", () => {
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";
         entry.failed = true;
+        touchTranscript();
+      } else if (res?.queued && res.queueItemId) {
+        const eventBubbleIndex = messages.value.findIndex(
+          (message) => message !== entry && message.queueItemId === res.queueItemId,
+        );
+        entry.queueItemId = res.queueItemId;
+        if (eventBubbleIndex >= 0) {
+          // The drain event won the race with the RPC response. Keep the original
+          // optimistic row (including attachments) at the event's position.
+          messages.value.splice(eventBubbleIndex, 1);
+          const entryIndex = messages.value.indexOf(entry);
+          if (entryIndex >= 0) messages.value.splice(entryIndex, 1);
+          messages.value.push(entry);
+        }
         touchTranscript();
       }
     } catch (e) {

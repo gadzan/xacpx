@@ -46,6 +46,63 @@ test("rpc prompt echoes the user message into history", async () => {
   runtime.close();
 });
 
+test("a queued prompt is persisted where it drains, after the previous turn reply", async () => {
+  const { runtime, cookie } = await loggedIn();
+  const accountId = runtime.accounts.findByUsername("admin")!.id;
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", accountId, {
+    protocolVersion: 1, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: `relay:${accountId}`, sessionAlias: "backend" });
+  (runtime.gateway as unknown as { sendRequest: () => Promise<unknown> }).sendRequest = async () => {
+    fire({ type: "turn-output", chatKey: `relay:${accountId}`, sessionAlias: "backend", chunk: "first reply" });
+    fire({ type: "turn-finished", chatKey: `relay:${accountId}`, sessionAlias: "backend", ok: true });
+    return { ok: true, queued: true, queueItemId: "q1" };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "queued prompt" } }),
+  });
+  fire({ type: "turn-started", chatKey: `relay:${accountId}`, sessionAlias: "backend", queueItemId: "q1", prompt: "queued prompt" });
+  fire({ type: "turn-output", chatKey: `relay:${accountId}`, sessionAlias: "backend", chunk: "second reply" });
+  fire({ type: "turn-finished", chatKey: `relay:${accountId}`, sessionAlias: "backend", ok: true });
+
+  const cached = runtime.messages.listBySession(accountId, "i1", "backend");
+  expect(cached.messages.map((message) => [message.direction, message.text])).toEqual([
+    ["out", "first reply"],
+    ["in", "queued prompt"],
+    ["out", "second reply"],
+  ]);
+  runtime.close();
+});
+
+test("queued history reconciles when turn-started races ahead of the prompt response", async () => {
+  const { runtime, cookie } = await loggedIn();
+  const accountId = runtime.accounts.findByUsername("admin")!.id;
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", accountId, {
+    protocolVersion: 1, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: `relay:${accountId}`, sessionAlias: "backend" });
+  (runtime.gateway as unknown as { sendRequest: () => Promise<unknown> }).sendRequest = async () => {
+    fire({ type: "turn-output", chatKey: `relay:${accountId}`, sessionAlias: "backend", chunk: "first reply" });
+    fire({ type: "turn-finished", chatKey: `relay:${accountId}`, sessionAlias: "backend", ok: true });
+    fire({ type: "turn-started", chatKey: `relay:${accountId}`, sessionAlias: "backend", queueItemId: "q1", prompt: "queued prompt" });
+    return { ok: true, queued: true, queueItemId: "q1" };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "queued prompt" } }),
+  });
+
+  const cached = runtime.messages.listBySession(accountId, "i1", "backend");
+  expect(cached.messages.map((message) => [message.direction, message.text])).toEqual([
+    ["out", "first reply"],
+    ["in", "queued prompt"],
+  ]);
+  runtime.close();
+});
+
 test("delete then same-alias create returns an empty Web history", async () => {
   const { runtime, cookie } = await loggedIn();
   (runtime.gateway as unknown as { sendRequest: () => Promise<unknown> }).sendRequest = async () => ({ ok: true });

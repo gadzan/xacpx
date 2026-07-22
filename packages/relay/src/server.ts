@@ -60,7 +60,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // `parts` records text / reasoning / tool events in arrival order so the web can
   // replay history inline (same model the live view builds). `steps`/`reasoning`/`text`
   // remain for the flat fallback + the persisted `text` column.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
+  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number; queueItemId?: string }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
@@ -169,11 +169,24 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           const event = raw as ControlEventDto;
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
-            turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
-            // A scheduled-origin turn carries its prompt here (a normal web turn persists
-            // its inbound message via the prompt RPC instead). Persist it so the fired
-            // task's prompt shows in history, not just the agent's out-of-context reply.
-            if (event.prompt) messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+            turnBuffers.set(key(instanceId, event.sessionAlias), {
+              text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now(),
+              ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
+            });
+            if (event.queueItemId) {
+              // A Web prompt was persisted at enqueue time; move that same row to its
+              // actual execution point. Other origins have no HTTP row, so fall back to
+              // the prompt carried by the event and reconcile if the HTTP response raced.
+              const promoted = messages.promoteQueued(instanceId, event.sessionAlias, event.queueItemId);
+              if (!promoted && event.prompt) {
+                const fallbackId = messages.append(instanceId, event.sessionAlias, "in", event.prompt);
+                messages.recordQueuedFallback(instanceId, event.sessionAlias, event.queueItemId, fallbackId);
+              }
+            } else if (event.prompt) {
+              // Scheduled turns have no enqueue-time HTTP request; persist their prompt
+              // directly when execution starts.
+              messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+            }
           } else if (event.type === "turn-output") {
             // Only append to an existing buffer; never lazily resurrect one. A buffer
             // is created solely by turn-started, so a stray streaming event arriving
@@ -195,6 +208,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
             if (!a) return;
+            if (a.queueItemId) messages.forgetQueuedFallback(instanceId, event.sessionAlias, a.queueItemId);
             const steps = [...a.steps.values()];
             // Treat whitespace-only reasoning as absent: it would otherwise persist as an
             // empty `structured.reasoning` and render as a blank reasoning panel in history.

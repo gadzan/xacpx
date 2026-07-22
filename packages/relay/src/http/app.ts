@@ -360,6 +360,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       };
     }
     let releaseSessionRpcLock: (() => void) | undefined;
+    let persistedPromptId: number | undefined;
     try {
       // Shape-validate the RPCs the hub persists BEFORE forwarding, so a malformed frame
       // can't poison history ahead of the connector's own boundary check. Error body carries
@@ -409,10 +410,22 @@ export function createApp(deps: AppDeps): Hono<Vars> {
               ...(previewUrl ? { previewUrl } : {}),
             };
           });
-          deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments);
+          persistedPromptId = deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments);
         }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
+      if (body.type === MSG.prompt && persistedPromptId !== undefined
+        && typeof result === "object" && result !== null
+        && (result as { queued?: unknown }).queued === true
+        && typeof (result as { queueItemId?: unknown }).queueItemId === "string") {
+        const p = payload as { sessionAlias: string };
+        deps.messages.markQueued(
+          persistedPromptId,
+          instance.id,
+          p.sessionAlias,
+          (result as { queueItemId: string }).queueItemId,
+        );
+      }
       // A real delete has two histories: the connector-owned acpx record and the
       // Hub-owned Web transcript. Purge the latter only after the connector confirms
       // success; archive intentionally keeps both histories.

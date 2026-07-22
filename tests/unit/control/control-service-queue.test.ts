@@ -109,10 +109,10 @@ test("queued prompts drain FIFO after the running turn finishes, each as its own
   nextChat();
   await tick(); // finish turn 1 → drain "second"
   const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
-  // Drained turn carries queueItemId but NOT prompt (persistence already happened at
-  // enqueue in the hub; re-emitting prompt would double-persist).
+  // Drained turns identify the original queued prompt so web clients can move their
+  // optimistic bubble to the point where the prompt actually starts executing.
   expect(started.at(-1)!.queueItemId).toBeDefined();
-  expect(started.at(-1)!.prompt).toBeUndefined();
+  expect(started.at(-1)!.prompt).toBe("second");
   // queue now shows only "third"
   const q = (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!;
   expect(q.items.map((i) => i.textPreview)).toEqual(["third"]);
