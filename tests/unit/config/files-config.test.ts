@@ -35,6 +35,24 @@ test("loadConfig preserves files.writeEnabled for runtime Git mutations", async 
   }
 });
 
+test("loadConfig rejects files arrays", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-files-config-"));
+  const path = join(dir, "config.json");
+
+  try {
+    await writeFile(path, JSON.stringify({
+      transport: {},
+      agents: {},
+      workspaces: {},
+      files: [],
+    }));
+
+    await expect(loadConfig(path)).rejects.toThrow("files must be an object");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("parseConfig rejects invalid files.writeEnabled values", () => {
   const raw = { transport: {}, agents: {}, workspaces: {} };
 

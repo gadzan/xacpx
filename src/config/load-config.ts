@@ -235,7 +235,7 @@ export function parseConfig(
   if (orchestration !== undefined && !isRecord(orchestration)) {
     throw new Error("orchestration must be an object");
   }
-  if (files !== undefined && !isRecord(files)) {
+  if (files !== undefined && (!isRecord(files) || Array.isArray(files))) {
     throw new Error("files must be an object");
   }
   if (isRecord(files) && "writeEnabled" in files && typeof files.writeEnabled !== "boolean") {
