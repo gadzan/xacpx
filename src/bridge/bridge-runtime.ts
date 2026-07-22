@@ -587,7 +587,7 @@ export class BridgeRuntime {
   }
 
   private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
-    const record = parseAcpxSessionRecordId(await this.readRawSessionRecord(input));
+    const record = parseAcpxSessionRecordId(await this.readRawSessionRecord(input, "read-session-record", "json"));
     if (record) return record;
     throw new Error("failed to resolve acpx session record id");
   }
