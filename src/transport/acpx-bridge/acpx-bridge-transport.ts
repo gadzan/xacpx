@@ -8,6 +8,7 @@ import type {
   ReplyQuotaContext,
   ResolvedSession,
   SessionTransport,
+  SessionEffortState,
 } from "../types";
 import {
   buildOverflowSummary,
@@ -268,6 +269,14 @@ export class AcpxBridgeTransport implements SessionTransport {
 
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
     return await this.client.request("getSessionModel", this.toParams(session));
+  }
+
+  async setSessionEffort(session: ResolvedSession, effort: string): Promise<void> {
+    await this.client.request("setSessionEffort", { ...this.toParams(session), effort });
+  }
+
+  async getSessionEffort(session: ResolvedSession): Promise<SessionEffortState> {
+    return await this.client.request("getSessionEffort", this.toParams(session));
   }
 
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {

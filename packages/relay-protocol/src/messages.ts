@@ -54,6 +54,8 @@ export const MSG = {
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
+  sessionEffortGet: "control.session.effort.get",
+  sessionEffortSet: "control.session.effort.set",
   terminalCreate: "control.terminal.create",
   terminalAttach: "control.terminal.attach",
   terminalInput: "instance.terminal.input",
@@ -497,6 +499,27 @@ export interface SessionModelResult {
   /** The session's current model id, if known. */
   current?: string;
   /** Agent-advertised model ids the session can switch to (may be empty). */
+  available: string[];
+}
+
+export interface SessionEffortGetPayload {
+  chatKey: string;
+  sessionAlias: string;
+}
+
+export interface SessionEffortSetPayload {
+  chatKey: string;
+  sessionAlias: string;
+  effort: string;
+}
+
+export interface SessionEffortSetResult {
+  ok: boolean;
+  current?: string | null;
+}
+
+export interface SessionEffortResult {
+  current?: string;
   available: string[];
 }
 

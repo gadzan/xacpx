@@ -50,6 +50,8 @@ export declare const MSG: {
     readonly upload: "control.upload";
     readonly sessionModelGet: "control.session.model.get";
     readonly sessionModelSet: "control.session.model.set";
+    readonly sessionEffortGet: "control.session.effort.get";
+    readonly sessionEffortSet: "control.session.effort.set";
     readonly terminalCreate: "control.terminal.create";
     readonly terminalAttach: "control.terminal.attach";
     readonly terminalInput: "instance.terminal.input";
@@ -513,6 +515,23 @@ export interface SessionModelResult {
     /** The session's current model id, if known. */
     current?: string;
     /** Agent-advertised model ids the session can switch to (may be empty). */
+    available: string[];
+}
+export interface SessionEffortGetPayload {
+    chatKey: string;
+    sessionAlias: string;
+}
+export interface SessionEffortSetPayload {
+    chatKey: string;
+    sessionAlias: string;
+    effort: string;
+}
+export interface SessionEffortSetResult {
+    ok: boolean;
+    current?: string | null;
+}
+export interface SessionEffortResult {
+    current?: string;
     available: string[];
 }
 export interface TerminalCreatePayload {

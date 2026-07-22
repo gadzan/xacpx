@@ -21,6 +21,7 @@ import type {
   ReplyQuotaContext,
   ResolvedSession,
   SessionTransport,
+  SessionEffortState,
 } from "../types";
 import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { isModelNotAdvertisedError } from "../model-not-advertised";
@@ -38,6 +39,7 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../session-effort";
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -59,7 +61,7 @@ interface AcpxCliTransportOptions {
   sessionInitTimeoutMs?: number;
   /**
    * Time bound for one-shot management commands (sessions show/close, cancel,
-   * set-mode, set model, status, history). A hung acpx here would otherwise
+   * set-mode, set model/effort, status, history). A hung acpx here would otherwise
    * wedge the session's serial request lane forever. Defaults to 30s.
    */
   managementCommandTimeoutMs?: number;
@@ -461,6 +463,43 @@ export class AcpxCliTransport implements SessionTransport {
     } catch {
       return { available: [] };
     }
+  }
+
+  async getSessionEffort(session: ResolvedSession): Promise<SessionEffortState> {
+    const output = await this.run(this.buildArgs(session, [
+      "sessions",
+      "show",
+      session.transportSession,
+    ], "json"), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "get-session-effort",
+    }));
+    const effort = parseSessionEffortRecord(output);
+    return effort
+      ? { current: effort.current, available: effort.available }
+      : { available: [] };
+  }
+
+  async setSessionEffort(session: ResolvedSession, effort: string): Promise<void> {
+    const record = await this.run(this.buildArgs(session, [
+      "sessions",
+      "show",
+      session.transportSession,
+    ], "json"), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "get-session-effort",
+    }));
+    const advertised = requireAdvertisedSessionEffort(record, effort);
+    await this.run(this.buildArgs(session, [
+      "set",
+      "-s",
+      session.transportSession,
+      advertised.configId,
+      effort,
+    ]), this.withSpawnEnvironment(session, {
+      timeoutMs: this.managementCommandTimeoutMs,
+      stage: "set-session-effort",
+    }));
   }
 
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {
@@ -915,7 +954,7 @@ export class AcpxCliTransport implements SessionTransport {
     };
   }
 
-  private buildArgs(session: ResolvedSession, tail: string[], format: "quiet" | "json" = "quiet"): string[] {
+  private buildArgs(session: ResolvedSession, tail: string[], format: "json" | "quiet" = "quiet"): string[] {
     return sharedBuildSessionArgs(this.sessionInput(session), tail, { format });
   }
 

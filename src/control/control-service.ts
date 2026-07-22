@@ -100,9 +100,9 @@ export interface ControlServiceDeps {
     SessionService,
     "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setDisplayName"
   >;
-  // The active transport, for reading/switching a session's model. setModel/
-  // getSessionModel are optional on the interface — absence is handled gracefully.
-  transport: Pick<SessionTransport, "setModel" | "getSessionModel">;
+  // The active transport, for reading/switching a session's model and effort.
+  // These controls are optional on the interface — absence is handled gracefully.
+  transport: Pick<SessionTransport, "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort">;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
@@ -206,7 +206,7 @@ export class ControlService {
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
   private readonly workspaceGit: WorkspaceGit;
-  private readonly modelSetTails = new Map<string, Promise<void>>();
+  private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: ControlServiceDeps) {
@@ -398,7 +398,7 @@ export class ControlService {
     if (!session) throw new Error("session not found");
     const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
     if (!setModel) throw new Error("the active transport does not support switching models");
-    return await this.runModelSetExclusive(session.alias, async () => {
+    return await this.runSessionConfigSetExclusive(session.alias, async () => {
       if (
         typeof options.deadlineAt === "number"
         && Number.isFinite(options.deadlineAt)
@@ -442,21 +442,71 @@ export class ControlService {
     });
   }
 
-  /** Serialize model mutations per logical session so stale reconciliation cannot win last. */
-  private async runModelSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.modelSetTails.get(sessionAlias) ?? Promise.resolve();
+  /** Read the reasoning-effort values advertised by the session's adapter. */
+  async getSessionEffort(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session || !this.deps.transport.getSessionEffort) return { available: [] };
+    return await this.deps.transport.getSessionEffort(session);
+  }
+
+  /** Set the adapter-advertised reasoning effort for a session. */
+  async setSessionEffort(
+    chatKey: string,
+    alias: string,
+    effort: string,
+  ): Promise<{ current?: string; applied: boolean }> {
+    const session = await this.resolveControlSession(chatKey, alias);
+    if (!session) throw new Error("session not found");
+    const setEffort = this.deps.transport.setSessionEffort?.bind(this.deps.transport);
+    if (!setEffort) throw new Error("the active transport does not support setting reasoning effort");
+    return await this.runSessionConfigSetExclusive(session.alias, async () => {
+      try {
+        await setEffort(session, effort);
+      } catch (error) {
+        const getEffort = this.deps.transport.getSessionEffort?.bind(this.deps.transport);
+        if (!isCommandTimeoutError(error) || !getEffort) throw error;
+        let observed: { current?: string; available: string[] };
+        try {
+          observed = await getEffort(session);
+        } catch {
+          // Preserve the original timeout when authoritative reconciliation fails.
+          throw error;
+        }
+        try {
+          await this.deps.logger?.error(
+            "control.session.effort.timeout_reconciled",
+            "Effort switch timed out; adopted authoritative transport state",
+            {
+              sessionAlias: session.alias,
+              requestedEffort: effort,
+              observedEffort: observed.current ?? null,
+              timeout: error instanceof Error ? error.message : String(error),
+            },
+          );
+        } catch {
+          // Logging is diagnostic only; reconciliation already succeeded.
+        }
+        return { current: observed.current, applied: observed.current === effort };
+      }
+      return { current: effort, applied: true };
+    });
+  }
+
+  /** Serialize adapter configuration mutations per logical session so stale operations cannot win last. */
+  private async runSessionConfigSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionConfigSetTails.get(sessionAlias) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const tail = previous.catch(() => {}).then(() => gate);
-    this.modelSetTails.set(sessionAlias, tail);
+    this.sessionConfigSetTails.set(sessionAlias, tail);
 
     await previous.catch(() => {});
     try {
       return await operation();
     } finally {
       release();
-      if (this.modelSetTails.get(sessionAlias) === tail) {
-        this.modelSetTails.delete(sessionAlias);
+      if (this.sessionConfigSetTails.get(sessionAlias) === tail) {
+        this.sessionConfigSetTails.delete(sessionAlias);
       }
     }
   }

@@ -152,6 +152,22 @@ RPC 错误返回，由 relay-web 浏览器诊断保留。同一逻辑会话的�
 仅在两者齐全时取更早值。绝对值保证传输耗时不会吃掉响应余量，相对 budget 限制跨机时钟偏差。
 旧 Hub 或部分字段缺失时，connector fail closed，将 deadline 设为接收时刻，使请求在触碰
 transport 前失败，而不是恢复到无期限排队。
+
+### 推理强度（effort）
+
+`control.session.effort.get` 从当前 transport session 的 acpx 记录读取 adapter 广告的
+`thought_level` 配置项，返回 `{ current, available }`；未广告该能力时 `available=[]`。
+xacpx 不假定固定的配置 id：Codex adapter 常见的 `reasoning_effort`、`effort`、
+`thought_level` 等名称均由记录中的 `category/id` 识别。
+
+`control.session.effort.set { sessionAlias, effort }` 先读取同一记录确定真实 config id，再通过
+acpx 的既有 `set <key> <value>` 命令设置，返回 `{ ok, current }`。设置值由 adapter 广告的
+`available` 驱动且在 transport 边界再次校验；具体可选值不在 xacpx 内硬编码。该路径同时支持
+`acpx-cli` 与 `acpx-bridge` transport，保留会话的 driver/settings policy/provider 环境，
+不修改或绕过上游 acpx。若 set 管理命令 timeout，ControlService 会通过 `getSessionEffort` 读取
+transport 权威值并返回实际的 `{ current, applied }`；查询失败时仍保留原始 timeout。成功对账会记录
+`control.session.effort.timeout_reconciled` 诊断事件。同一逻辑会话的 model/effort 配置写入共用串行队列，
+避免旧操作最后落盘。
 串行队列出闸时，ControlService 会为最坏 90 秒的 set + readback 预留完整预算；剩余时间不足的
 请求在触碰 transport 前失败，避免排队重新吃掉 Hub 为状态变更保留的响应窗口。
 

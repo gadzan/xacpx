@@ -78,6 +78,8 @@ export default {
     send: "Send",
     model: "model",
     modelSetFailed: "Failed to switch model. Try again.",
+    effort: "effort",
+    effortSetFailed: "Failed to switch effort. Try again.",
     working: "Agent is working… (Esc to stop)",
     message: "Message",
     mermaidError: "Diagram failed to render",

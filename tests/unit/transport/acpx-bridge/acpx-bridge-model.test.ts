@@ -42,3 +42,20 @@ test("getSessionModel proxies and returns the result", async () => {
   expect(result).toEqual({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] });
   expect(request.mock.calls[0][0]).toBe("getSessionModel");
 });
+
+test("getSessionEffort proxies and returns the result", async () => {
+  const request = mock(async () => ({ current: "high", available: ["medium", "high"] }));
+  const transport = new AcpxBridgeTransport({ request });
+  await expect(transport.getSessionEffort(session)).resolves.toEqual({
+    current: "high",
+    available: ["medium", "high"],
+  });
+  expect(request.mock.calls[0][0]).toBe("getSessionEffort");
+});
+
+test("setSessionEffort proxies the selected value", async () => {
+  const request = mock(async () => ({}));
+  const transport = new AcpxBridgeTransport({ request });
+  await transport.setSessionEffort(session, "xhigh");
+  expect(request).toHaveBeenCalledWith("setSessionEffort", expect.objectContaining({ effort: "xhigh" }));
+});

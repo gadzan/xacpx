@@ -95,6 +95,8 @@ var MSG = {
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   sessionModelSet: "control.session.model.set",
+  sessionEffortGet: "control.session.effort.get",
+  sessionEffortSet: "control.session.effort.set",
   terminalCreate: "control.terminal.create",
   terminalAttach: "control.terminal.attach",
   terminalInput: "instance.terminal.input",
@@ -510,6 +512,14 @@ var validateSessionModelSet = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.modelId) ? o : null;
 };
+var validateSessionEffortGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
+};
+var validateSessionEffortSet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.effort) ? o : null;
+};
 var validateTerminalCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && optNum(o.cols) && optNum(o.rows) ? o : null;
@@ -564,6 +574,8 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
+  [MSG.sessionEffortGet]: validateSessionEffortGet,
+  [MSG.sessionEffortSet]: validateSessionEffortSet,
   [MSG.terminalCreate]: validateTerminalCreate,
   [MSG.terminalAttach]: validateTerminalAttach,
   [MSG.upload]: validateUpload

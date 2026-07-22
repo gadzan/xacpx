@@ -34,6 +34,7 @@ import type {
   MissingOptionalDepErrorData,
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
 import type { AgentSessionListResult, PromptMediaInput } from "../transport/types";
+import type { SessionEffortState } from "../transport/types";
 import type { ToolEventMode } from "../transport/tool-event-mode.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import {
@@ -44,6 +45,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../transport/session-effort";
 
 type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
@@ -141,7 +143,7 @@ interface BridgeRuntimeOptions {
   sessionInitTimeoutMs?: number;
   /**
    * Time bound for one-shot management commands (sessions show/close, cancel,
-   * set-mode, set model, status, history, list). A hung acpx here would
+   * set-mode, set model/effort, status, history, list). A hung acpx here would
    * otherwise wedge the session's serial bridge lane forever. Defaults to 30s.
    */
   managementCommandTimeoutMs?: number;
@@ -564,20 +566,28 @@ export class BridgeRuntime {
     });
   }
 
-  private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
+  private async readRawSessionRecord(
+    input: BridgeSessionInput,
+    stage: AcpxCommandStage = "read-session-record",
+    format: "quiet" | "json" = "quiet",
+  ): Promise<string> {
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "sessions",
       "show",
       input.name,
-    ], { format: "json" }));
+    ], { format }));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
-      stage: "read-session-record",
+      stage,
     }));
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "sessions show failed");
     }
-    const record = parseAcpxSessionRecordId(result.stdout);
+    return result.stdout;
+  }
+
+  private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
+    const record = parseAcpxSessionRecordId(await this.readRawSessionRecord(input));
     if (record) return record;
     throw new Error("failed to resolve acpx session record id");
   }
@@ -681,6 +691,49 @@ export class BridgeRuntime {
     } catch {
       return { available: [] };
     }
+  }
+
+  async getSessionEffort(input: {
+    agent: string;
+    agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+    cwd: string;
+    name: string;
+  }): Promise<SessionEffortState> {
+    const output = await this.readRawSessionRecord(input, "get-session-effort", "json");
+    const effort = parseSessionEffortRecord(output);
+    return effort
+      ? { current: effort.current, available: effort.available }
+      : { available: [] };
+  }
+
+  async setSessionEffort(input: {
+    agent: string;
+    agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+    cwd: string;
+    name: string;
+    effort: string;
+  }): Promise<Record<string, never>> {
+    const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
+    const advertised = requireAdvertisedSessionEffort(record, input.effort);
+    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
+      "set",
+      "-s",
+      input.name,
+      advertised.configId,
+      input.effort,
+    ]));
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+      timeoutMs: this.managementCommandTimeoutMs(),
+      stage: "set-session-effort",
+    }));
+    if (result.code !== 0) {
+      throw new Error(result.stderr || result.stdout || "set effort failed");
+    }
+    return {};
   }
 
   async cancel(input: {

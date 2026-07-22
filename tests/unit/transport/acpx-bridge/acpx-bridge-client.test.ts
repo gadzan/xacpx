@@ -448,6 +448,7 @@ describe("per-request timeout", () => {
     expect(bridgeRequestTimeoutMs("cancel")).toBe(45_000);
     expect(bridgeRequestTimeoutMs("hasSession")).toBe(45_000);
     expect(bridgeRequestTimeoutMs("setMode")).toBe(45_000);
+    expect(bridgeRequestTimeoutMs("setSessionEffort")).toBe(75_000);
   });
 
   test("a response arriving in time clears the armed timer", async () => {

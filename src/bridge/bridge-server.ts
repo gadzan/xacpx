@@ -37,6 +37,8 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "setMode",
   "setModel",
   "getSessionModel",
+  "setSessionEffort",
+  "getSessionEffort",
   "cancel",
   "removeSession",
   "deleteSession",
@@ -53,6 +55,8 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "setMode",
   "setModel",
   "getSessionModel",
+  "setSessionEffort",
+  "getSessionEffort",
   "cancel",
   "removeSession",
   "deleteSession",
@@ -293,6 +297,23 @@ export class BridgeServer {
         });
       case "getSessionModel":
         return await this.runtime.getSessionModel({
+          agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+        });
+      case "setSessionEffort":
+        return await this.runtime.setSessionEffort({
+          agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+          effort: requireString(params, "effort"),
+        });
+      case "getSessionEffort":
+        return await this.runtime.getSessionEffort({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),

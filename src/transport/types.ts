@@ -217,6 +217,10 @@ export interface SessionTransport {
   setModel?(session: ResolvedSession, modelId: string): Promise<void>;
   /** Read the current model and the agent-advertised available model ids. Optional. */
   getSessionModel?(session: ResolvedSession): Promise<{ current?: string; available: string[] }>;
+  /** Set the adapter-advertised reasoning effort for this session. Optional. */
+  setSessionEffort?(session: ResolvedSession, effort: string): Promise<void>;
+  /** Read the current and adapter-advertised reasoning-effort values. Optional. */
+  getSessionEffort?(session: ResolvedSession): Promise<SessionEffortState>;
   cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }>;
   hasSession(session: ResolvedSession): Promise<boolean>;
   listAgentSessions?(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined>;
@@ -248,4 +252,9 @@ export interface SessionTransport {
   getAgentSessionId?(session: ResolvedSession): Promise<string | undefined>;
   updatePermissionPolicy?(policy: PermissionPolicy): Promise<void>;
   dispose?(): Promise<void>;
+}
+
+export interface SessionEffortState {
+  current?: string;
+  available: string[];
 }

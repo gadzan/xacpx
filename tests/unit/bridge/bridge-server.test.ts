@@ -104,6 +104,43 @@ test("forwards validated Claude settings policy metadata over ndjson", async () 
   }));
 });
 
+test("forwards Claude execution settings for effort get/set", async () => {
+  const captured: Record<string, unknown>[] = [];
+  const runtime = {
+    getSessionEffort: async (input: Record<string, unknown>) => {
+      captured.push(input);
+      return { available: [] };
+    },
+    setSessionEffort: async (input: Record<string, unknown>) => {
+      captured.push(input);
+      return {};
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+  const params = {
+    agent: "claude-provider",
+    driver: "claude",
+    settingsPolicy: "provider-only",
+    cwd: "/repo",
+    name: "demo",
+  };
+
+  await server.handleLine(JSON.stringify({ id: "effort-get", method: "getSessionEffort", params }));
+  await server.handleLine(JSON.stringify({
+    id: "effort-set",
+    method: "setSessionEffort",
+    params: { ...params, effort: "high" },
+  }));
+
+  expect(captured).toHaveLength(2);
+  for (const input of captured) {
+    expect(input).toEqual(expect.objectContaining({
+      driver: "claude",
+      settingsPolicy: "provider-only",
+    }));
+  }
+});
+
 test("reuses an existing session when ensure fails but status probe finds it", async () => {
   const calls: string[][] = [];
   const runtime = new BridgeRuntime("acpx", async (_command, args) => {

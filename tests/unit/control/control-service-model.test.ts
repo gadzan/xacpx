@@ -23,6 +23,8 @@ function makeDeps() {
     transport: {
       getSessionModel: async (s: typeof session) => ({ current: s.model, available: ["gpt-5.2[high]", "gpt-5.2[low]"] }),
       setModel: async (s: typeof session, id: string) => { calls.push(`transport:${s.alias}:${id}`); },
+      getSessionEffort: async () => ({ current: "medium", available: ["low", "medium", "high"] }),
+      setSessionEffort: async (s: typeof session, effort: string) => { calls.push(`effort:${s.alias}:${effort}`); },
     },
     logger: {
       error: async (event: string, message: string, context?: Record<string, unknown>) => {
@@ -234,4 +236,135 @@ test("getSessionModel falls back to the resolved model when the transport can't 
   const control = new ControlService(deps as never);
   const r = await control.getSessionModel("relay:acc", "backend");
   expect(r).toEqual({ current: "gpt-5.2[high]", available: [] });
+});
+
+test("getSessionEffort returns the adapter-advertised values", async () => {
+  const { deps } = makeDeps();
+  const control = new ControlService(deps as never);
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: "medium",
+    available: ["low", "medium", "high"],
+  });
+});
+
+test("setSessionEffort applies the selected value through the transport", async () => {
+  const { deps, calls } = makeDeps();
+  const control = new ControlService(deps as never);
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+  expect(calls).toEqual(["effort:internal-backend:high"]);
+});
+
+test("setSessionEffort reconciles a timed-out write that acpx actually applied", async () => {
+  const { deps, calls, logs } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    calls.push("effort:internal-backend:high");
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => {
+    calls.push("query-effort:internal-backend");
+    return { current: "high", available: ["low", "medium", "high"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+  expect(calls).toEqual([
+    "effort:internal-backend:high",
+    "query-effort:internal-backend",
+  ]);
+  expect(logs).toEqual([{
+    event: "control.session.effort.timeout_reconciled",
+    message: "Effort switch timed out; adopted authoritative transport state",
+    context: {
+      sessionAlias: "internal-backend",
+      requestedEffort: "high",
+      observedEffort: "high",
+      timeout: "acpx command timed out during set-session-effort after 30s: acpx set effort",
+    },
+  }]);
+});
+
+test("setSessionEffort returns the authoritative effort when timeout readback observes another value", async () => {
+  const { deps } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => ({
+    current: "medium",
+    available: ["low", "medium", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "medium",
+    applied: false,
+  });
+});
+
+test("setSessionEffort preserves the original timeout when effort readback fails", async () => {
+  const { deps } = makeDeps();
+  const timeout = new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  deps.transport.setSessionEffort = async () => { throw timeout; };
+  deps.transport.getSessionEffort = async () => { throw new Error("readback failed"); };
+  const control = new ControlService(deps as never);
+
+  let caught: unknown;
+  try {
+    await control.setSessionEffort("relay:acc", "backend", "high");
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(timeout);
+});
+
+test("setSessionEffort reconciliation succeeds even when diagnostic logging fails", async () => {
+  const { deps } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => ({
+    current: "high",
+    available: ["low", "medium", "high"],
+  });
+  deps.logger.error = async () => { throw new Error("logger unavailable"); };
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+});
+
+test("setSessionEffort serializes rapid mutations for the same session", async () => {
+  const { deps, calls } = makeDeps();
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  deps.transport.setSessionEffort = async (s: typeof session, effort: string) => {
+    calls.push(`effort:${s.alias}:${effort}`);
+    if (effort === "low") {
+      markFirstStarted();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    }
+  };
+  const control = new ControlService(deps as never);
+
+  const first = control.setSessionEffort("relay:acc", "backend", "low");
+  await firstStarted;
+  const second = control.setSessionEffort("relay:acc", "backend", "high");
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+  expect(calls).toEqual(["effort:internal-backend:low"]);
+  releaseFirst();
+  await expect(first).resolves.toEqual({ current: "low", applied: true });
+  await expect(second).resolves.toEqual({ current: "high", applied: true });
+  expect(calls).toEqual([
+    "effort:internal-backend:low",
+    "effort:internal-backend:high",
+  ]);
 });

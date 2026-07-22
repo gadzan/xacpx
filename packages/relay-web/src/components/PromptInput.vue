@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Brain, Check, ChevronDown, Gauge, Paperclip, Send, X } from "lucide-vue-next";
+import { Brain, Check, ChevronDown, Gauge, Paperclip, Send, SlidersHorizontal, X } from "lucide-vue-next";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { createDebouncedFlush } from "../lib/debounce-flush";
@@ -38,14 +38,40 @@ function toggleUsage(e: MouseEvent) {
 
 // Load the session's model for the composer chip whenever the session changes.
 const modelMenuOpen = ref(false);
+const effortMenuOpen = ref(false);
 watch(
   () => [props.instanceId, props.sessionAlias] as const,
-  ([id, alias]) => { void controls.loadModel(id ?? null, alias ?? null); modelMenuOpen.value = false; },
+  ([id, alias]) => {
+    void controls.loadModel(id ?? null, alias ?? null);
+    void controls.loadEffort(id ?? null, alias ?? null);
+    modelMenuOpen.value = false;
+    effortMenuOpen.value = false;
+  },
   { immediate: true },
 );
 async function pickModel(id: string) {
   modelMenuOpen.value = false;
-  if (props.instanceId && props.sessionAlias) await controls.setModel(props.instanceId, props.sessionAlias, id);
+  const instanceId = props.instanceId;
+  const sessionAlias = props.sessionAlias;
+  if (!instanceId || !sessionAlias) return;
+  await controls.setModel(instanceId, sessionAlias, id);
+  if (props.instanceId === instanceId && props.sessionAlias === sessionAlias) {
+    await controls.loadEffort(instanceId, sessionAlias);
+  }
+}
+async function pickEffort(effort: string) {
+  effortMenuOpen.value = false;
+  if (props.instanceId && props.sessionAlias) {
+    await controls.setEffort(props.instanceId, props.sessionAlias, effort);
+  }
+}
+function toggleModelMenu() {
+  effortMenuOpen.value = false;
+  modelMenuOpen.value = !modelMenuOpen.value;
+}
+function toggleEffortMenu() {
+  modelMenuOpen.value = false;
+  effortMenuOpen.value = !effortMenuOpen.value;
 }
 const text = ref(loadDraft(props.draftKey ?? ""));
 const textarea = ref<HTMLTextAreaElement | null>(null);
@@ -261,24 +287,46 @@ function onInput() {
         <div v-if="instanceId && sessionAlias" class="relative flex items-center gap-2">
           <button type="button" data-test="model-chip"
                   class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors disabled:opacity-60"
-                  :disabled="!controls.available.length"
-                  @click="modelMenuOpen = !modelMenuOpen">
+                  :disabled="!controls.modelAvailable.length"
+                  @click="toggleModelMenu">
             <Brain :size="14" class="text-accent" />
-            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.current ? formatModelLabel(controls.current) : $t("chat.model") }}</span>
-            <ChevronDown v-if="controls.available.length" :size="13" />
+            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.modelCurrent ? formatModelLabel(controls.modelCurrent) : $t("chat.model") }}</span>
+            <ChevronDown v-if="controls.modelAvailable.length" :size="13" />
           </button>
-          <ul v-if="modelMenuOpen && controls.available.length" data-test="model-menu"
+          <ul v-if="modelMenuOpen && controls.modelAvailable.length" data-test="model-menu"
               class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg">
-            <li v-for="m in controls.available" :key="m">
+            <li v-for="m in controls.modelAvailable" :key="m">
               <button type="button" data-test="model-option"
                       class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-                      :class="m === controls.current ? 'bg-accent/10 text-accent' : 'hover:bg-fg/10 text-fg-muted'"
+                      :class="m === controls.modelCurrent ? 'bg-accent/10 text-accent' : 'hover:bg-fg/10 text-fg-muted'"
                       @click="pickModel(m)">
                 <span class="font-mono">{{ formatModelLabel(m) }}</span>
-                <Check v-if="m === controls.current" :size="14" class="ml-auto" />
+                <Check v-if="m === controls.modelCurrent" :size="14" class="ml-auto" />
               </button>
             </li>
           </ul>
+          <div v-if="controls.effortAvailable.length" class="relative">
+            <button type="button" data-test="effort-chip"
+                    class="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised"
+                    :title="$t('chat.effort')"
+                    @click="toggleEffortMenu">
+              <SlidersHorizontal :size="14" class="text-accent" />
+              <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.effortCurrent ?? $t("chat.effort") }}</span>
+              <ChevronDown :size="13" />
+            </button>
+            <ul v-if="effortMenuOpen" data-test="effort-menu"
+                class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-32 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg">
+              <li v-for="effort in controls.effortAvailable" :key="effort">
+                <button type="button" data-test="effort-option"
+                        class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
+                        :class="effort === controls.effortCurrent ? 'bg-accent/10 text-accent' : 'hover:bg-fg/10 text-fg-muted'"
+                        @click="pickEffort(effort)">
+                  <span class="font-mono">{{ effort }}</span>
+                  <Check v-if="effort === controls.effortCurrent" :size="14" class="ml-auto" />
+                </button>
+              </li>
+            </ul>
+          </div>
           <!-- context-usage meter: click to open the cost / token-breakdown popover -->
           <button v-if="context" type="button" data-test="context-meter"
                   class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded pl-0.5 hover:opacity-80"

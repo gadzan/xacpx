@@ -69,6 +69,8 @@ export const CONTROL_RPC_TIMEOUT_MS = 60_000;
 //     status read (or two 45s bridge backstops). A 60s connector response timer
 //     would race that reconciliation without cancelling the underlying work;
 //     the Hub envelope budget instead prevents stale queued mutations from starting.
+//   - sessionEffortSet: discovers the adapter's config id, then applies it; both
+//     management commands have their own 30s subprocess timeout.
 // For all of these the hub's own 120s request timeout is the real backstop.
 const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.prompt,
@@ -76,6 +78,7 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.sessionsNativeList,
   MSG.commandExecute,
   MSG.sessionModelSet,
+  MSG.sessionEffortSet,
 ]);
 
 export interface ControlBridgeOptions {
@@ -431,6 +434,19 @@ async function dispatchControlRequest(
       const result = deadlineAt === undefined
         ? await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId)
         : await control.setSessionModel(input.chatKey, input.sessionAlias, input.modelId, { deadlineAt });
+      return { ok: result.applied, current: result.current ?? null };
+    }
+    case MSG.sessionEffortGet: {
+      const input = parseControlPayload(MSG.sessionEffortGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionEffortGet}: malformed payload`);
+      if (!input.sessionAlias) return errorPayload("bad-request", "sessionAlias is required");
+      return await control.getSessionEffort(input.chatKey, input.sessionAlias);
+    }
+    case MSG.sessionEffortSet: {
+      const input = parseControlPayload(MSG.sessionEffortSet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.sessionEffortSet}: malformed payload`);
+      if (!input.sessionAlias || !input.effort) return errorPayload("bad-request", "sessionAlias and effort are required");
+      const result = await control.setSessionEffort(input.chatKey, input.sessionAlias, input.effort);
       return { ok: result.applied, current: result.current ?? null };
     }
     case MSG.terminalCreate: {
