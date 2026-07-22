@@ -41,6 +41,16 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     const authoritative = authoritativeModels.get(context);
     return authoritative ? authoritative.current : fallback;
   }
+  function recordAuthoritativeEffort(context: string, revision: number, effort: string | undefined): void {
+    const existing = authoritativeEfforts.get(context);
+    if (!existing || revision >= existing.revision) {
+      authoritativeEfforts.set(context, { revision, current: effort });
+    }
+  }
+  function rollbackEffort(context: string, fallback: string | undefined): string | undefined {
+    const authoritative = authoritativeEfforts.get(context);
+    return authoritative ? authoritative.current : fallback;
+  }
 
   function clearModelState(): void {
     modelCurrent.value = undefined;
@@ -181,7 +191,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       if (effortActiveContext !== context || effortRevision !== revision) return;
       if (isErrorPayload(effortResult)) { clearEffortState(); return; }
       effortCurrent.value = typeof effortResult.current === "string" ? effortResult.current : undefined;
-      authoritativeEfforts.set(context, { revision, current: effortCurrent.value });
+      recordAuthoritativeEffort(context, revision, effortCurrent.value);
       effortAvailable.value = Array.isArray(effortResult.available) ? effortResult.available : [];
     } catch {
       if (effortActiveContext === context && effortRevision === revision) clearEffortState();
@@ -206,19 +216,23 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         });
         if (isErrorPayload(setResult) || setResult.ok === false) {
           if (effortActiveContext === context && effortRevision === revision) {
-            effortCurrent.value = typeof setResult === "object" && setResult !== null && "current" in setResult
-              && typeof setResult.current === "string" ? setResult.current : previous;
+            let observed = rollbackEffort(context, previous);
+            if (!isErrorPayload(setResult) && (setResult.current === null || typeof setResult.current === "string")) {
+              observed = setResult.current ?? undefined;
+              recordAuthoritativeEffort(context, revision, observed);
+            }
+            effortCurrent.value = observed;
             reportEffortSwitchFailure(isErrorPayload(setResult) ? setResult.error.message : `requested ${effort} was not applied`);
           }
           return false;
         }
         const observed = typeof setResult.current === "string" ? setResult.current : effort;
-        authoritativeEfforts.set(context, { revision, current: observed });
+        recordAuthoritativeEffort(context, revision, observed);
         if (effortActiveContext === context && effortRevision === revision) effortCurrent.value = observed;
         return true;
       } catch (error) {
         if (effortActiveContext === context && effortRevision === revision) {
-          effortCurrent.value = previous;
+          effortCurrent.value = rollbackEffort(context, previous);
           reportEffortSwitchFailure(error instanceof Error ? error.message : "set-failed");
         }
         return false;

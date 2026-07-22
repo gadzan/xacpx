@@ -460,7 +460,34 @@ export class ControlService {
     const setEffort = this.deps.transport.setSessionEffort?.bind(this.deps.transport);
     if (!setEffort) throw new Error("the active transport does not support setting reasoning effort");
     return await this.runSessionConfigSetExclusive(session.alias, async () => {
-      await setEffort(session, effort);
+      try {
+        await setEffort(session, effort);
+      } catch (error) {
+        const getEffort = this.deps.transport.getSessionEffort?.bind(this.deps.transport);
+        if (!isCommandTimeoutError(error) || !getEffort) throw error;
+        let observed: { current?: string; available: string[] };
+        try {
+          observed = await getEffort(session);
+        } catch {
+          // Preserve the original timeout when authoritative reconciliation fails.
+          throw error;
+        }
+        try {
+          await this.deps.logger?.error(
+            "control.session.effort.timeout_reconciled",
+            "Effort switch timed out; adopted authoritative transport state",
+            {
+              sessionAlias: session.alias,
+              requestedEffort: effort,
+              observedEffort: observed.current ?? null,
+              timeout: error instanceof Error ? error.message : String(error),
+            },
+          );
+        } catch {
+          // Logging is diagnostic only; reconciliation already succeeded.
+        }
+        return { current: observed.current, applied: observed.current === effort };
+      }
       return { current: effort, applied: true };
     });
   }

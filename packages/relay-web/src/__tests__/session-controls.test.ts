@@ -267,4 +267,40 @@ describe("session-controls store", () => {
     expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "chat.effortSetFailed" });
     log.mockRestore();
   });
+
+  it("clears effort when a failed set reports an authoritative null current", async () => {
+    rpc.mockResolvedValueOnce({ current: "medium", available: ["medium", "high"] });
+    const s = useSessionControlsStore();
+    await s.loadEffort("i1", "backend");
+    rpc.mockResolvedValueOnce({ ok: false, current: null });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(s.setEffort("i1", "backend", "high")).resolves.toBe(false);
+
+    expect(s.effortCurrent).toBeUndefined();
+    log.mockRestore();
+  });
+
+  it("keeps the last applied effort when a rapid newer selection fails", async () => {
+    rpc.mockResolvedValueOnce({ current: "medium", available: ["medium", "high", "xhigh"] });
+    const s = useSessionControlsStore();
+    await s.loadEffort("i1", "backend");
+
+    let resolveHigh!: (value: unknown) => void;
+    let resolveXhigh!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveHigh = resolve; }));
+    const pendingHigh = s.setEffort("i1", "backend", "high");
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveXhigh = resolve; }));
+    const pendingXhigh = s.setEffort("i1", "backend", "xhigh");
+
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    resolveHigh({ ok: true, current: "high" });
+    await expect(pendingHigh).resolves.toBe(true);
+    resolveXhigh({ error: { code: "internal", message: "xhigh failed" } });
+    await expect(pendingXhigh).resolves.toBe(false);
+
+    expect(s.effortCurrent).toBe("high");
+    expect(useToasts().value).toHaveLength(1);
+    log.mockRestore();
+  });
 });

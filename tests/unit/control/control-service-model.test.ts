@@ -257,6 +257,89 @@ test("setSessionEffort applies the selected value through the transport", async 
   expect(calls).toEqual(["effort:internal-backend:high"]);
 });
 
+test("setSessionEffort reconciles a timed-out write that acpx actually applied", async () => {
+  const { deps, calls, logs } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    calls.push("effort:internal-backend:high");
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => {
+    calls.push("query-effort:internal-backend");
+    return { current: "high", available: ["low", "medium", "high"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+  expect(calls).toEqual([
+    "effort:internal-backend:high",
+    "query-effort:internal-backend",
+  ]);
+  expect(logs).toEqual([{
+    event: "control.session.effort.timeout_reconciled",
+    message: "Effort switch timed out; adopted authoritative transport state",
+    context: {
+      sessionAlias: "internal-backend",
+      requestedEffort: "high",
+      observedEffort: "high",
+      timeout: "acpx command timed out during set-session-effort after 30s: acpx set effort",
+    },
+  }]);
+});
+
+test("setSessionEffort returns the authoritative effort when timeout readback observes another value", async () => {
+  const { deps } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => ({
+    current: "medium",
+    available: ["low", "medium", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "medium",
+    applied: false,
+  });
+});
+
+test("setSessionEffort preserves the original timeout when effort readback fails", async () => {
+  const { deps } = makeDeps();
+  const timeout = new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  deps.transport.setSessionEffort = async () => { throw timeout; };
+  deps.transport.getSessionEffort = async () => { throw new Error("readback failed"); };
+  const control = new ControlService(deps as never);
+
+  let caught: unknown;
+  try {
+    await control.setSessionEffort("relay:acc", "backend", "high");
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(timeout);
+});
+
+test("setSessionEffort reconciliation succeeds even when diagnostic logging fails", async () => {
+  const { deps } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => ({
+    current: "high",
+    available: ["low", "medium", "high"],
+  });
+  deps.logger.error = async () => { throw new Error("logger unavailable"); };
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+});
+
 test("setSessionEffort serializes rapid mutations for the same session", async () => {
   const { deps, calls } = makeDeps();
   let releaseFirst!: () => void;
