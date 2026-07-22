@@ -13,12 +13,19 @@ interface MessageRow {
   created_at: string;
   structured: string | null;
   attachments: string | null;
+  queue_item_id: string | null;
 }
 
 export interface MessagePage {
   messages: MessageRecordDto[];
   /** True when older rows exist beyond this page (drives "load older" on scroll-up). */
   hasMore: boolean;
+}
+
+export interface QueueCorrelation {
+  instanceId: string;
+  sessionAlias: string;
+  queueItemId: string;
 }
 
 export class MessageStore {
@@ -31,7 +38,7 @@ export class MessageStore {
     text: string,
     structured?: StructuredTurn,
     attachments?: AttachmentMetadata[],
-  ): void {
+  ): number {
     this.db.run(
       "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments) VALUES (?,?,?,?,?,?,?)",
       [
@@ -44,6 +51,47 @@ export class MessageStore {
         attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
       ],
     );
+    return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
+  }
+
+  /** Associate an already-persisted Web prompt with the connector's queue id. */
+  markQueued(rowId: number, correlation: QueueCorrelation): void {
+    this.db.run(
+      "UPDATE messages SET queue_item_id = ? WHERE id = ? AND instance_id = ? AND session_alias = ?",
+      [correlation.queueItemId, rowId, correlation.instanceId, correlation.sessionAlias],
+    );
+    const fallback = this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 1",
+      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+    );
+    if (!fallback) return;
+    // The drain event arrived before the RPC response. Replace its lightweight row
+    // at the SAME sequence id, preserving execution order even if the turn already
+    // emitted and persisted its reply before this response arrived.
+    this.db.run("DELETE FROM messages WHERE id = ?", [fallback.id]);
+    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [fallback.id, rowId]);
+  }
+
+  /** Move a queued inbound row to the current end of the transcript when execution
+   *  starts. Updating the integer key preserves the existing cursor contract. */
+  promoteQueued(correlation: QueueCorrelation): boolean {
+    const row = this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 0",
+      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+    );
+    if (!row) return false;
+    const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
+    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [nextId, row.id]);
+    return true;
+  }
+
+  appendQueuedFallback(correlation: QueueCorrelation, text: string): number {
+    const rowId = this.append(correlation.instanceId, correlation.sessionAlias, "in", text);
+    this.db.run(
+      "UPDATE messages SET queue_item_id = ?, queue_fallback = 1 WHERE id = ?",
+      [correlation.queueItemId, rowId],
+    );
+    return rowId;
   }
 
   /**
@@ -62,7 +110,7 @@ export class MessageStore {
     const before = opts.before ?? null;
     // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
          AND (? IS NULL OR m.id < ?)
@@ -80,6 +128,7 @@ export class MessageStore {
         direction: r.direction,
         text: r.text,
         createdAt: r.created_at,
+        ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
         ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
         ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
       })),

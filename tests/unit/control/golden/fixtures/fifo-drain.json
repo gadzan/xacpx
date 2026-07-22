@@ -99,6 +99,7 @@
       "type": "turn-started",
       "chatKey": "c",
       "sessionAlias": "s",
+      "prompt": "second",
       "queueItemId": "<id-1>"
     }
   },
@@ -135,6 +136,7 @@
       "type": "turn-started",
       "chatKey": "c",
       "sessionAlias": "s",
+      "prompt": "third",
       "queueItemId": "<id-2>"
     }
   },

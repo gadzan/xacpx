@@ -197,8 +197,8 @@ export interface QueueItemDto {
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
-  // `prompt`/`scheduled` are set only for turns started by a fired scheduled task,
-  // so the hub can persist the inbound prompt and the web can badge it.
+  // `prompt` is set for scheduled turns and drained queued prompts. `queueItemId`
+  // associates the latter with the message originally persisted at enqueue time.
   | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }

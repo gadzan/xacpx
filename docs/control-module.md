@@ -84,7 +84,8 @@
 - **`queues`** — 交互式 `prompt`（`queueable: true`）遇忙时把提示词追加进 per-session FIFO
   队列并回 `{ ok: true, queued: true, queueItemId }`；定时轮次（非 `queueable`）遇忙则直接回
   `{ ok: false, errorMessage: "turn-already-running" }`，不入队。turn 结束时按 FIFO 依次
-  drain，每个队列头作为下一轮 turn 运行。
+  drain，每个队列头作为下一轮 turn 运行；其 `turn-started` 同时携带原 prompt 与
+  `queueItemId`，让 Relay Web 精确关联入队时的乐观消息和实际执行位置。
 - **`draining`** — 一轮结束到下一轮（drained head）重新注册 `inFlight` 之间的短暂交接窗口
   里，`submit` 把 `draining.has(key)` 也视为忙态，防止有提示词在这个缝隙里起并行 turn。
 

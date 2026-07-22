@@ -99,6 +99,7 @@
       "type": "turn-started",
       "chatKey": "c",
       "sessionAlias": "s",
+      "prompt": "second",
       "queueItemId": "<id-1>"
     }
   }

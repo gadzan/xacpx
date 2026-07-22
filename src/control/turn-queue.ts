@@ -287,9 +287,9 @@ export class TurnQueue {
       this.emitQueueUpdated(chatKey, sessionAlias);
       // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses the
       // busy gate (drained: true), re-registers inFlight and clears `draining` at its top — all
-      // synchronously before the first await — so there is no parallel-turn window. Pass
-      // queueItemId ONLY, never prompt: the hub already persisted the inbound at enqueue, so
-      // re-emitting prompt would double-persist and duplicate the bubble.
+      // synchronously before the first await — so there is no parallel-turn window. The
+      // prompt and queueItemId let web clients associate the optimistic enqueue-time bubble
+      // with this execution-time event without guessing by message text.
       void this.submit({
         chatKey,
         sessionAlias,
@@ -300,7 +300,7 @@ export class TurnQueue {
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),
-        turnStarted: { queueItemId: next.id },
+        turnStarted: { prompt: next.text, queueItemId: next.id },
       });
     } else {
       // The queue emptied during the drain hand-off (e.g. a cancel removed the only queued

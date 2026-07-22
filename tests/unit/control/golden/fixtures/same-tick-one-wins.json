@@ -72,6 +72,7 @@
       "type": "turn-started",
       "chatKey": "c",
       "sessionAlias": "s",
+      "prompt": "B",
       "queueItemId": "<id-1>"
     }
   },

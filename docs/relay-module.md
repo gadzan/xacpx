@@ -85,7 +85,9 @@
 - **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话的缓存历史。
 - **真实删除同步清历史**：`control.sessions.remove` 经 connector 成功确认后，Hub 删除对应
   `(instance_id, session_alias)` 的缓存消息；归档不删除，因此恢复归档会话仍能看到历史。
-- **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 历史消息。
+- **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 历史消息；
+  若返回 `queued + queueItemId`，Hub 在对应出队 `turn-started` 到达时把同一行移动到真实执行点，
+  因而刷新后的历史仍按“上一轮回复 → 出队 prompt”排列。
 - **command 回显历史（阶段四）**：`control.command.execute` 经 RPC 代理时，把输入文本 append 为 `in`、
   把返回 `output` append 为 `out`（与 `control.prompt` 的 `in` 回显并列），使 `/命令` 结果也能跨 reload 存活。
 - **`--web-root` 静态托管**：`createRelayRuntime({ webRoot })` → Hono `serveStatic` 托管 SPA

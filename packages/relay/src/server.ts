@@ -170,10 +170,20 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
             turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
-            // A scheduled-origin turn carries its prompt here (a normal web turn persists
-            // its inbound message via the prompt RPC instead). Persist it so the fired
-            // task's prompt shows in history, not just the agent's out-of-context reply.
-            if (event.prompt) messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+            if (event.queueItemId) {
+              // A Web prompt was persisted at enqueue time; move that same row to its
+              // actual execution point. Other origins have no HTTP row, so fall back to
+              // the prompt carried by the event and reconcile if the HTTP response raced.
+              const correlation = { instanceId, sessionAlias: event.sessionAlias, queueItemId: event.queueItemId };
+              const promoted = messages.promoteQueued(correlation);
+              if (!promoted && event.prompt) {
+                messages.appendQueuedFallback(correlation, event.prompt);
+              }
+            } else if (event.prompt) {
+              // Scheduled turns have no enqueue-time HTTP request; persist their prompt
+              // directly when execution starts.
+              messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+            }
           } else if (event.type === "turn-output") {
             // Only append to an existing buffer; never lazily resurrect one. A buffer
             // is created solely by turn-started, so a stray streaming event arriving
