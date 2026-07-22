@@ -354,11 +354,26 @@ function mergeToolCallUpdate(
   }
   const nextMeta = update._meta;
   if (nextMeta) {
+    const previousMeta = merged._meta;
     merged._meta = {
-      ...merged._meta,
+      ...previousMeta,
       ...nextMeta,
-      ...(merged._meta?.claudeCode || nextMeta.claudeCode
-        ? { claudeCode: { ...merged._meta?.claudeCode, ...nextMeta.claudeCode } }
+      ...(previousMeta?.qoder || nextMeta.qoder
+        ? { qoder: { ...previousMeta?.qoder, ...nextMeta.qoder } }
+        : {}),
+      ...(previousMeta?.codex || nextMeta.codex
+        ? {
+            codex: {
+              ...previousMeta?.codex,
+              ...nextMeta.codex,
+              ...(previousMeta?.codex?.subagent || nextMeta.codex?.subagent
+                ? { subagent: { ...previousMeta?.codex?.subagent, ...nextMeta.codex?.subagent } }
+                : {}),
+            },
+          }
+        : {}),
+      ...(previousMeta?.claudeCode || nextMeta.claudeCode
+        ? { claudeCode: { ...previousMeta?.claudeCode, ...nextMeta.claudeCode } }
         : {}),
     };
   }
@@ -414,7 +429,7 @@ function buildToolUseEvent(
   const locations = update.locations;
   const claudeMeta = update._meta?.claudeCode;
   const parentToolCallId = claudeMeta?.parentToolUseId?.trim();
-  const isSubagent = claudeMeta?.toolName === "Agent"
+  const isSubagent = ((driver === undefined || driver === "claude") && claudeMeta?.toolName === "Agent")
     || (driver === "qoder" && update._meta?.qoder?.toolName === "Agent")
     || (driver === "kimi" && isKimiSubagentInput(rawInput))
     || (driver === "codex" && isCodexSubagentMeta(update._meta?.codex?.subagent));
