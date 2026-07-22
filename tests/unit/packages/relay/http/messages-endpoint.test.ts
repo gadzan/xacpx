@@ -87,6 +87,8 @@ test("queued history reconciles when turn-started races ahead of the prompt resp
     fire({ type: "turn-output", chatKey: `relay:${accountId}`, sessionAlias: "backend", chunk: "first reply" });
     fire({ type: "turn-finished", chatKey: `relay:${accountId}`, sessionAlias: "backend", ok: true });
     fire({ type: "turn-started", chatKey: `relay:${accountId}`, sessionAlias: "backend", queueItemId: "q1", prompt: "queued prompt" });
+    fire({ type: "turn-output", chatKey: `relay:${accountId}`, sessionAlias: "backend", chunk: "second reply" });
+    fire({ type: "turn-finished", chatKey: `relay:${accountId}`, sessionAlias: "backend", ok: true });
     return { ok: true, queued: true, queueItemId: "q1" };
   };
 
@@ -99,6 +101,7 @@ test("queued history reconciles when turn-started races ahead of the prompt resp
   expect(cached.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
     ["in", "queued prompt"],
+    ["out", "second reply"],
   ]);
   runtime.close();
 });

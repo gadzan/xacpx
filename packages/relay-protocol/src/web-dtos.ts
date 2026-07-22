@@ -28,6 +28,9 @@ export interface MessageRecordDto {
   direction: MessageDirection;
   text: string;
   createdAt: string;
+  /** Present while an inbound Web prompt is queued, so a history reload can still
+   *  associate it with the later drain event. Cleared when execution starts. */
+  queueItemId?: string;
   /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
    *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
    *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/

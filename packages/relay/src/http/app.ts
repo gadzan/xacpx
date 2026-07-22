@@ -419,12 +419,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         && (result as { queued?: unknown }).queued === true
         && typeof (result as { queueItemId?: unknown }).queueItemId === "string") {
         const p = payload as { sessionAlias: string };
-        deps.messages.markQueued(
-          persistedPromptId,
-          instance.id,
-          p.sessionAlias,
-          (result as { queueItemId: string }).queueItemId,
-        );
+        deps.messages.markQueued(persistedPromptId, {
+          instanceId: instance.id,
+          sessionAlias: p.sessionAlias,
+          queueItemId: (result as { queueItemId: string }).queueItemId,
+        });
       }
       // A real delete has two histories: the connector-owned acpx record and the
       // Hub-owned Web transcript. Purge the latter only after the connector confirms

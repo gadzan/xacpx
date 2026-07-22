@@ -69,8 +69,6 @@ const reasoningOf = (parts: TurnPart[]): string => parts.filter((p) => p.type ==
 export interface ChatMessage extends MessageRecordDto {
   failed?: boolean;
   status?: TurnStatus;
-  /** Client-only correlation for an optimistic prompt accepted into the queue. */
-  queueItemId?: string;
   // Present on an inbound prompt produced by a fired scheduled task — drives the
   // "⏰ Scheduled" badge so a turn that appears on its own has visible provenance.
   scheduled?: ScheduledOriginDto;
@@ -490,17 +488,14 @@ export const useChatStore = defineStore("chat", () => {
         entry.failed = true;
         touchTranscript();
       } else if (res?.queued && res.queueItemId) {
-        const eventBubbleIndex = messages.value.findIndex(
-          (message) => message !== entry && message.queueItemId === res.queueItemId,
-        );
         entry.queueItemId = res.queueItemId;
-        if (eventBubbleIndex >= 0) {
+        if (messages.value.some((message) => message !== entry && message.queueItemId === res.queueItemId)) {
           // The drain event won the race with the RPC response. Keep the original
-          // optimistic row (including attachments) at the event's position.
-          messages.value.splice(eventBubbleIndex, 1);
+          // optimistic row (including attachments) at the event bubble's position.
           const entryIndex = messages.value.indexOf(entry);
           if (entryIndex >= 0) messages.value.splice(entryIndex, 1);
-          messages.value.push(entry);
+          const eventBubbleIndex = messages.value.findIndex((message) => message.queueItemId === res.queueItemId);
+          if (eventBubbleIndex >= 0) messages.value.splice(eventBubbleIndex, 1, entry);
         }
         touchTranscript();
       }

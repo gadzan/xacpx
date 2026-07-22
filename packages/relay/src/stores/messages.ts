@@ -13,6 +13,7 @@ interface MessageRow {
   created_at: string;
   structured: string | null;
   attachments: string | null;
+  queue_item_id: string | null;
 }
 
 export interface MessagePage {
@@ -21,17 +22,14 @@ export interface MessagePage {
   hasMore: boolean;
 }
 
+export interface QueueCorrelation {
+  instanceId: string;
+  sessionAlias: string;
+  queueItemId: string;
+}
+
 export class MessageStore {
-  /** Queue starts can race the HTTP response that supplies the queue id. A fallback
-   *  row keeps non-Web queue origins visible; the original persisted row replaces it
-   *  if the matching HTTP response arrives afterwards. */
-  private readonly startedQueueFallbacks = new Map<string, number | null>();
-
   constructor(private readonly db: SqlDriver, private readonly now: () => Date = () => new Date()) {}
-
-  private queueKey(instanceId: string, sessionAlias: string, queueItemId: string): string {
-    return `${instanceId}\0${sessionAlias}\0${queueItemId}`;
-  }
 
   append(
     instanceId: string,
@@ -57,45 +55,43 @@ export class MessageStore {
   }
 
   /** Associate an already-persisted Web prompt with the connector's queue id. */
-  markQueued(rowId: number, instanceId: string, sessionAlias: string, queueItemId: string): void {
+  markQueued(rowId: number, correlation: QueueCorrelation): void {
     this.db.run(
       "UPDATE messages SET queue_item_id = ? WHERE id = ? AND instance_id = ? AND session_alias = ?",
-      [queueItemId, rowId, instanceId, sessionAlias],
+      [correlation.queueItemId, rowId, correlation.instanceId, correlation.sessionAlias],
     );
-    const k = this.queueKey(instanceId, sessionAlias, queueItemId);
-    if (!this.startedQueueFallbacks.has(k)) return;
-    const fallbackId = this.startedQueueFallbacks.get(k);
-    if (fallbackId !== null && fallbackId !== undefined) {
-      this.db.run("DELETE FROM messages WHERE id = ?", [fallbackId]);
-    }
-    this.promoteQueued(instanceId, sessionAlias, queueItemId);
+    const fallback = this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 1",
+      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+    );
+    if (!fallback) return;
+    // The drain event arrived before the RPC response. Replace its lightweight row
+    // at the SAME sequence id, preserving execution order even if the turn already
+    // emitted and persisted its reply before this response arrived.
+    this.db.run("DELETE FROM messages WHERE id = ?", [fallback.id]);
+    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [fallback.id, rowId]);
   }
 
   /** Move a queued inbound row to the current end of the transcript when execution
    *  starts. Updating the integer key preserves the existing cursor contract. */
-  promoteQueued(instanceId: string, sessionAlias: string, queueItemId: string): boolean {
+  promoteQueued(correlation: QueueCorrelation): boolean {
     const row = this.db.get<{ id: number }>(
-      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ?",
-      [instanceId, sessionAlias, queueItemId],
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 0",
+      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
     );
-    const k = this.queueKey(instanceId, sessionAlias, queueItemId);
-    if (!row) {
-      this.startedQueueFallbacks.set(k, null);
-      return false;
-    }
+    if (!row) return false;
     const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
     this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [nextId, row.id]);
-    this.startedQueueFallbacks.delete(k);
     return true;
   }
 
-  recordQueuedFallback(instanceId: string, sessionAlias: string, queueItemId: string, rowId: number): void {
-    const k = this.queueKey(instanceId, sessionAlias, queueItemId);
-    if (this.startedQueueFallbacks.has(k)) this.startedQueueFallbacks.set(k, rowId);
-  }
-
-  forgetQueuedFallback(instanceId: string, sessionAlias: string, queueItemId: string): void {
-    this.startedQueueFallbacks.delete(this.queueKey(instanceId, sessionAlias, queueItemId));
+  appendQueuedFallback(correlation: QueueCorrelation, text: string): number {
+    const rowId = this.append(correlation.instanceId, correlation.sessionAlias, "in", text);
+    this.db.run(
+      "UPDATE messages SET queue_item_id = ?, queue_fallback = 1 WHERE id = ?",
+      [correlation.queueItemId, rowId],
+    );
+    return rowId;
   }
 
   /**
@@ -114,7 +110,7 @@ export class MessageStore {
     const before = opts.before ?? null;
     // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
          AND (? IS NULL OR m.id < ?)
@@ -132,6 +128,7 @@ export class MessageStore {
         direction: r.direction,
         text: r.text,
         createdAt: r.created_at,
+        ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
         ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
         ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
       })),

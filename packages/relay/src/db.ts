@@ -116,7 +116,8 @@ export function initSchema(db: SqlDriver): void {
       created_at TEXT NOT NULL,
       structured TEXT,
       attachments TEXT,
-      queue_item_id TEXT
+      queue_item_id TEXT,
+      queue_fallback INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
   `);
@@ -128,5 +129,8 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "queue_item_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN queue_item_id TEXT");
+  }
+  if (!messageCols.some((c) => c.name === "queue_fallback")) {
+    db.exec("ALTER TABLE messages ADD COLUMN queue_fallback INTEGER NOT NULL DEFAULT 0");
   }
 }
