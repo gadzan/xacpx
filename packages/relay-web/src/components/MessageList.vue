@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, useId, watch } from "vue";
+import { computed, nextTick, ref, useId, watch } from "vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
@@ -11,7 +11,7 @@ import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
@@ -47,6 +47,24 @@ function toggleMessage(m: ChatMessage, index: number): void {
 function messagePreview(m: ChatMessage): string {
   return m.text.trim().replace(/\s+/g, " ");
 }
+
+// Initial-history skeleton: fills the pane while the first page of a freshly selected
+// session loads. Only when the transcript is truly empty — a background reload (e.g.
+// turn-finished convergence) or an already-streaming turn never triggers it.
+const showSkeleton = computed(() =>
+  (props.loadingHistory ?? false)
+  && props.messages.length === 0
+  && !(props.liveTurn && props.liveTurn.parts.length > 0));
+
+// Alternates agent cards / user bubbles with varied widths so the placeholder reads as
+// a conversation, not a form. Rows pulse with a staggered delay (see --sk-delay).
+const SKELETON_ROWS = [
+  { kind: "agent", w: "64%", lines: 1 },
+  { kind: "user", w: "44%", lines: 1 },
+  { kind: "agent", w: "82%", lines: 1 },
+  { kind: "user", w: "58%", lines: 2 },
+  { kind: "agent", w: "38%", lines: 1 },
+] as const;
 
 // Stick-to-bottom: keep the newest content in view while the user is at the bottom,
 // but don't yank them down if they've scrolled up to read history. A "jump to latest"
@@ -165,7 +183,32 @@ watch(
 <template>
   <div class="relative flex-1 overflow-hidden">
     <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-3 py-4 lg:px-5 lg:py-5" @scroll="onScroll">
-      <div class="mx-auto max-w-3xl space-y-5">
+      <!-- Initial-history skeleton: bottom-anchored so the shimmering rows sit where the
+           transcript will land, then swap for the real content the instant rows arrive. -->
+      <div v-if="showSkeleton" data-test="history-skeleton" aria-hidden="true"
+           class="mx-auto flex min-h-full max-w-3xl flex-col justify-end gap-5">
+        <template v-for="(row, i) in SKELETON_ROWS" :key="i">
+          <!-- user bubble -->
+          <div v-if="row.kind === 'user'" class="flex justify-end" :style="{ '--sk-delay': `${i * 160}ms` }">
+            <div class="space-y-1.5 rounded-2xl rounded-tr-md border border-accent/10 bg-accent/5 px-3.5 py-2.5" :style="{ width: row.w }">
+              <div v-for="n in row.lines" :key="n" class="sk-bar h-3 rounded bg-accent/15"
+                   :style="{ width: n === row.lines ? '58%' : '100%' }" />
+            </div>
+          </div>
+          <!-- collapsed agent card -->
+          <div v-else class="flex gap-2.5" :style="{ '--sk-delay': `${i * 160}ms` }">
+            <div class="sk-bar mt-0.5 h-6 w-6 shrink-0 rounded-full bg-fg/10" />
+            <div class="min-w-0 flex-1 rounded-lg border border-border/60 bg-raised/25 px-2.5 py-2">
+              <div class="flex items-center gap-2">
+                <div class="sk-bar h-3 w-3 shrink-0 rounded bg-fg/10" />
+                <div class="sk-bar h-3 rounded bg-fg/10" :style="{ width: row.w }" />
+                <div class="sk-bar ml-auto h-2.5 w-9 shrink-0 rounded bg-fg/8" />
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div v-else class="mx-auto max-w-3xl space-y-5">
         <!-- Older-history affordance: a spinner while a page loads, else a hint that more
              exists. Prepending older rows keeps the scroll position pinned (see watcher). -->
         <div v-if="loadingOlder" data-test="loading-older" class="flex justify-center py-1 text-[11px] text-fg-muted">
@@ -277,5 +320,19 @@ watch(
 .cv-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 88px;
+}
+
+/* Skeleton shimmer: each row inherits --sk-delay from its root so the pulse cascades
+   top-to-bottom instead of breathing in unison. */
+.sk-bar {
+  animation: sk-pulse 1.8s ease-in-out infinite;
+  animation-delay: var(--sk-delay, 0ms);
+}
+@keyframes sk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sk-bar { animation: none; }
 }
 </style>

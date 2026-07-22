@@ -154,6 +154,10 @@ export const useChatStore = defineStore("chat", () => {
   const HISTORY_PAGE = 100;
   const hasMoreOlder = ref(false);
   const loadingOlder = ref(false);
+  // True while the initial history page for a freshly selected session is in flight —
+  // drives the transcript skeleton. Background reloads (turn-finished convergence) set
+  // it too, but the skeleton only renders when the pane is empty, so those never flash.
+  const loadingHistory = ref(false);
   // An async history response may replace messages only if the user is still on
   // the same selection, it is the newest request, and no transcript mutation
   // happened while it was in flight.
@@ -211,6 +215,7 @@ export const useChatStore = defineStore("chat", () => {
     error.value = "";
     hasMoreOlder.value = false;
     loadingOlder.value = false;
+    loadingHistory.value = false;
     // Viewing a session clears its unread signal.
     const k = bufKey(id, alias);
     if (unread.value.has(k)) {
@@ -232,6 +237,7 @@ export const useChatStore = defineStore("chat", () => {
     error.value = "";
     hasMoreOlder.value = false;
     loadingOlder.value = false;
+    loadingHistory.value = false;
   }
 
   async function loadHistory(): Promise<void> {
@@ -240,14 +246,21 @@ export const useChatStore = defineStore("chat", () => {
     const alias = sessionAlias.value;
     const requestSequence = ++historyRequestSequence;
     const revision = transcriptRevision;
-    const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
-      `/api/instances/${id}/sessions/${alias}/messages?limit=${HISTORY_PAGE}`,
-    );
-    if (id !== instanceId.value || alias !== sessionAlias.value) return;
-    if (requestSequence !== historyRequestSequence || revision !== transcriptRevision) return;
-    messages.value = rows;
-    touchTranscript();
-    hasMoreOlder.value = hasMore ?? false;
+    loadingHistory.value = true;
+    try {
+      const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
+        `/api/instances/${id}/sessions/${alias}/messages?limit=${HISTORY_PAGE}`,
+      );
+      if (id !== instanceId.value || alias !== sessionAlias.value) return;
+      if (requestSequence !== historyRequestSequence || revision !== transcriptRevision) return;
+      messages.value = rows;
+      touchTranscript();
+      hasMoreOlder.value = hasMore ?? false;
+    } finally {
+      // Only the newest request owns the flag — a stale response must not dismiss
+      // the skeleton a newer selection just raised.
+      if (requestSequence === historyRequestSequence) loadingHistory.value = false;
+    }
   }
 
   /** Fetch the page of history immediately older than the oldest row we hold and PREPEND
@@ -527,5 +540,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem };
 });

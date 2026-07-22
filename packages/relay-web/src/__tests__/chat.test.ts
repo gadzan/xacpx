@@ -174,6 +174,40 @@ test("a delayed history response cannot overwrite a newly selected session", asy
   expect(store.messages.map((message) => message.text)).toEqual(["frontend history"]);
 });
 
+test("loadingHistory is raised while the initial history fetch is in flight", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })));
+  const store = useChatStore();
+  store.select("i1", "backend");
+  expect(store.loadingHistory).toBe(false); // select alone doesn't raise it
+  const load = store.loadHistory();
+  expect(store.loadingHistory).toBe(true);
+  await load;
+  expect(store.loadingHistory).toBe(false);
+});
+
+test("a stale history response cannot dismiss the skeleton a newer selection raised", async () => {
+  let resolveBackend!: (response: Response) => void;
+  const backendResponse = new Promise<Response>((resolve) => { resolveBackend = resolve; });
+  vi.stubGlobal("fetch", vi.fn((path: string) => {
+    if (path.includes("/sessions/backend/")) return backendResponse;
+    return Promise.resolve(new Response(JSON.stringify({ messages: [] }), { status: 200 }));
+  }));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const staleLoad = store.loadHistory();
+  expect(store.loadingHistory).toBe(true);
+  // Switching away drops the skeleton immediately (the new load raises it again).
+  store.select("i1", "frontend");
+  expect(store.loadingHistory).toBe(false);
+  await store.loadHistory();
+  expect(store.loadingHistory).toBe(false);
+  // The stale backend response landing late must not re-touch the flag.
+  resolveBackend(new Response(JSON.stringify({ messages: [] }), { status: 200 }));
+  await staleLoad;
+  expect(store.loadingHistory).toBe(false);
+});
+
 test("turn-finished invalidates an older history read and converges on the persisted final", async () => {
   let resolveStale!: (response: Response) => void;
   const staleResponse = new Promise<Response>((resolve) => { resolveStale = resolve; });
