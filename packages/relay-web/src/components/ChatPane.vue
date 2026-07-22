@@ -177,6 +177,7 @@ const verb = computed(() => {
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
+                   :loading-history="chat.loadingHistory"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
            inset is applied ONCE here (the bottommost element) and never stacks on top of the

@@ -127,6 +127,36 @@ describe("MessageList", () => {
     const content = wrapper.find('[data-test="msg-content"]').element;
     expect(content.lastElementChild?.getAttribute("data-test")).toBe("msg-actions");
   });
+
+  it("shows a history skeleton while the initial page loads, then swaps in the transcript", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, loadingHistory: true },
+    });
+    const skeleton = wrapper.find('[data-test="history-skeleton"]');
+    expect(skeleton.exists()).toBe(true);
+    expect(skeleton.attributes("aria-hidden")).toBe("true");
+    expect(wrapper.find('[data-test="msg-out"]').exists()).toBe(false);
+
+    await wrapper.setProps({ messages: [msg({ direction: "out", text: "hi" })], loadingHistory: false });
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="msg-out"]').exists()).toBe(true);
+  });
+
+  it("keeps the skeleton hidden once messages exist, even if a reload is in flight", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "hey" })], liveTurn: null, loadingHistory: true },
+    });
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="msg-in"]').exists()).toBe(true);
+  });
+
+  it("prefers live streaming content over the skeleton", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: live([{ type: "text", text: "working" }]), loadingHistory: true },
+    });
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="msg-streaming"]').exists()).toBe(true);
+  });
 });
 
 it("renders legacy persisted tool steps (no parts) after expanding a completed out message", async () => {
