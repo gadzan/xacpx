@@ -145,6 +145,7 @@ export const useChatStore = defineStore("chat", () => {
   // still has no queueItemId. Keep that session on its optimistic transcript until
   // the response establishes correlation; a later finish reloads authoritative rows.
   const pendingPromptRequests = new Map<string, number>();
+  const deferredHistoryLoads = new Set<string>();
   const error = ref("");
   // "View" on a fired scheduled task asks MessageList to scroll to that run. Nonce-keyed
   // so repeat clicks on the same task re-trigger the jump (a plain id wouldn't change).
@@ -242,7 +243,11 @@ export const useChatStore = defineStore("chat", () => {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;
-    if ((pendingPromptRequests.get(bufKey(id, alias)) ?? 0) > 0) return;
+    const historyKey = bufKey(id, alias);
+    if ((pendingPromptRequests.get(historyKey) ?? 0) > 0) {
+      deferredHistoryLoads.add(historyKey);
+      return;
+    }
     const requestSequence = ++historyRequestSequence;
     const revision = transcriptRevision;
     const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
@@ -518,7 +523,11 @@ export const useChatStore = defineStore("chat", () => {
     } finally {
       const remaining = (pendingPromptRequests.get(pendingKey) ?? 1) - 1;
       if (remaining > 0) pendingPromptRequests.set(pendingKey, remaining);
-      else pendingPromptRequests.delete(pendingKey);
+      else {
+        pendingPromptRequests.delete(pendingKey);
+        const shouldReload = deferredHistoryLoads.delete(pendingKey);
+        if (shouldReload && selectedKey.value === pendingKey) void loadHistory().catch(() => {});
+      }
       sending.value = false;
     }
   }

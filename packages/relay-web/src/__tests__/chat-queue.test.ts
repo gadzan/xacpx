@@ -119,14 +119,15 @@ it("keeps queue correlation across the previous turn history reload", async () =
   ]);
 });
 
-it("does not let history overwrite a prompt before its queued RPC response", async () => {
+it("defers history convergence until the queued RPC response establishes correlation", async () => {
   let resolveRpc!: (value: unknown) => void;
   rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
   const fetchMock = vi.fn().mockResolvedValue({
     json: async () => ({
       messages: [
-        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1" },
-        { id: 2, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t2" },
+        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t1" },
+        { id: 2, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t2" },
+        { id: 3, instanceId: "i1", sessionAlias: "s", direction: "out", text: "second reply", createdAt: "t3" },
       ],
       hasMore: false,
     }),
@@ -142,15 +143,46 @@ it("does not let history overwrite a prompt before its queued RPC response", asy
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "second reply" } } as WebServerEvent);
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
+  expect(fetchMock).not.toHaveBeenCalled();
   resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
   await sending;
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
     ["in", "queued prompt"],
     ["out", "second reply"],
   ]);
+});
+
+it("retries a deferred history load after reselecting a session during prompt RPC", async () => {
+  let resolveRpc!: (value: unknown) => void;
+  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
+  const fetchMock = vi.fn().mockResolvedValue({
+    json: async () => ({
+      messages: [
+        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1", queueItemId: "q1" },
+      ],
+      hasMore: false,
+    }),
+  });
+  globalThis.fetch = fetchMock as typeof fetch;
+  const chat = useChatStore();
+  chat.select("i1", "s");
+  const sending = chat.send("queued prompt");
+  chat.select("i1", "other");
+  chat.select("i1", "s");
+  await chat.loadHistory();
+  expect(chat.messages).toEqual([]);
+  expect(fetchMock).not.toHaveBeenCalled();
+
+  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
+  await sending;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
 });
 
 it("cancelQueuedItem issues control.queue.cancel and optimistically drops the chip", async () => {
