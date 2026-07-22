@@ -141,6 +141,10 @@ export const useChatStore = defineStore("chat", () => {
   const busy = computed(() => liveTurn.value !== null);
 
   const sending = ref(false);
+  // A turn-finished event may trigger history convergence while a queued prompt RPC
+  // still has no queueItemId. Keep that session on its optimistic transcript until
+  // the response establishes correlation; a later finish reloads authoritative rows.
+  const pendingPromptRequests = new Map<string, number>();
   const error = ref("");
   // "View" on a fired scheduled task asks MessageList to scroll to that run. Nonce-keyed
   // so repeat clicks on the same task re-trigger the jump (a plain id wouldn't change).
@@ -238,6 +242,7 @@ export const useChatStore = defineStore("chat", () => {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;
+    if ((pendingPromptRequests.get(bufKey(id, alias)) ?? 0) > 0) return;
     const requestSequence = ++historyRequestSequence;
     const revision = transcriptRevision;
     const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
@@ -453,11 +458,15 @@ export const useChatStore = defineStore("chat", () => {
 
   async function send(text: string, attachments: PromptAttachmentRef[] = []): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
+    const id = instanceId.value;
+    const alias = sessionAlias.value;
+    const pendingKey = bufKey(id, alias);
+    pendingPromptRequests.set(pendingKey, (pendingPromptRequests.get(pendingKey) ?? 0) + 1);
     error.value = "";
     sending.value = true;
     const optimistic: ChatMessage = {
-      instanceId: instanceId.value,
-      sessionAlias: sessionAlias.value,
+      instanceId: id,
+      sessionAlias: alias,
       direction: "in",
       text,
       createdAt: new Date().toISOString(),
@@ -478,8 +487,8 @@ export const useChatStore = defineStore("chat", () => {
       // not handled here; the console forwards control-channel `/` text to the agent
       // verbatim (see command-router passthrough). Only WeChat/Feishu, which lack a
       // GUI, still rely on xacpx command handling.
-      const res = await api.rpc<{ ok?: boolean; errorMessage?: string; queued?: boolean; queueItemId?: string }>(instanceId.value, "control.prompt", {
-        sessionAlias: sessionAlias.value,
+      const res = await api.rpc<{ ok?: boolean; errorMessage?: string; queued?: boolean; queueItemId?: string }>(id, "control.prompt", {
+        sessionAlias: alias,
         text,
         ...(attachments.length > 0 ? { media: attachments } : {}),
       });
@@ -507,6 +516,9 @@ export const useChatStore = defineStore("chat", () => {
         touchTranscript();
       }
     } finally {
+      const remaining = (pendingPromptRequests.get(pendingKey) ?? 1) - 1;
+      if (remaining > 0) pendingPromptRequests.set(pendingKey, remaining);
+      else pendingPromptRequests.delete(pendingKey);
       sending.value = false;
     }
   }

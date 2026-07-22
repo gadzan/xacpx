@@ -119,6 +119,40 @@ it("keeps queue correlation across the previous turn history reload", async () =
   ]);
 });
 
+it("does not let history overwrite a prompt before its queued RPC response", async () => {
+  let resolveRpc!: (value: unknown) => void;
+  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
+  const fetchMock = vi.fn().mockResolvedValue({
+    json: async () => ({
+      messages: [
+        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1" },
+        { id: 2, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t2" },
+      ],
+      hasMore: false,
+    }),
+  });
+  globalThis.fetch = fetchMock as typeof fetch;
+  const chat = useChatStore();
+  chat.select("i1", "s");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "first reply" } } as WebServerEvent);
+
+  const sending = chat.send("queued prompt");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "second reply" } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
+  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
+  await sending;
+
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
+    ["out", "first reply"],
+    ["in", "queued prompt"],
+    ["out", "second reply"],
+  ]);
+});
+
 it("cancelQueuedItem issues control.queue.cancel and optimistically drops the chip", async () => {
   rpc.mockResolvedValueOnce({ ok: true });
   const chat = useChatStore();
