@@ -411,7 +411,9 @@ function buildToolUseEvent(
   // dashboard spinner alive forever (notably for tools running inside an async
   // Agent). A concrete toolResponse is terminal even when the adapter omitted the
   // redundant status field.
-  const claudeToolResponse = update._meta?.claudeCode?.toolResponse;
+  const isClaudeDriver = driver === undefined || driver === "claude";
+  const claudeMeta = isClaudeDriver ? update._meta?.claudeCode : undefined;
+  const claudeToolResponse = claudeMeta?.toolResponse;
   const hasClaudeToolResponse = !isEmptyToolField(claudeToolResponse);
   const isAsyncAgentLaunch =
     update._meta?.claudeCode?.toolName === "Agent" &&
@@ -427,9 +429,8 @@ function buildToolUseEvent(
   const content = update.content;
   const rawOutput = update.rawOutput ?? claudeToolResponse;
   const locations = update.locations;
-  const claudeMeta = update._meta?.claudeCode;
   const parentToolCallId = claudeMeta?.parentToolUseId?.trim();
-  const isSubagent = ((driver === undefined || driver === "claude") && claudeMeta?.toolName === "Agent")
+  const isSubagent = (claudeMeta?.toolName === "Agent")
     || (driver === "qoder" && update._meta?.qoder?.toolName === "Agent")
     || (driver === "kimi" && isKimiSubagentInput(rawInput))
     || (driver === "codex" && isCodexSubagentMeta(update._meta?.codex?.subagent));

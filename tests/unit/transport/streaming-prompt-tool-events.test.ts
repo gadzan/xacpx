@@ -633,3 +633,38 @@ test("provider subagent signals are driver-gated and malformed metadata fails op
     _meta: { codex: { subagent: { activity: "started" } } },
   })?.isSubagent).toBeUndefined();
 });
+
+test("wrong-driver Claude metadata does not alter an ordinary tool event", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "custom",
+    onToolEvent: (event) => events.push(event),
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "ordinary-1",
+        status: "completed",
+        kind: "other",
+        title: "Agent",
+        _meta: {
+          claudeCode: {
+            toolName: "Agent",
+            parentToolUseId: "unrelated-parent",
+            toolResponse: { status: "async_launched", agentId: "unexpected" },
+          },
+        },
+      },
+    },
+  }));
+
+  expect(events).toEqual([{
+    toolCallId: "ordinary-1",
+    toolName: "Agent",
+    kind: "other",
+    status: "success",
+  }]);
+});
