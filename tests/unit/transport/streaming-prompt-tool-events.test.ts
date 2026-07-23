@@ -445,3 +445,226 @@ test("Claude Agent and its nested tools preserve subagent hierarchy across spars
     status: "success",
   });
 });
+
+test("Qoder Agent metadata produces a subagent event across a sparse terminal update", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "qoder",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "qoder-agent-1",
+    status: "pending",
+    kind: "think",
+    title: "Agent",
+    rawInput: {
+      description: "Pick a random number 1-100",
+      prompt: "Reply with one integer between 1 and 100.",
+      subagent_type: "general-purpose",
+    },
+    _meta: { qoder: { toolName: "Agent" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "qoder-agent-1",
+    status: "completed",
+    rawOutput: "47",
+    _meta: { qoder: {} },
+  });
+
+  expect(events.at(-1)).toEqual({
+    toolCallId: "qoder-agent-1",
+    isSubagent: true,
+    toolName: "Agent",
+    kind: "think",
+    summary: "general-purpose: Pick a random number 1-100",
+    rawInput: {
+      description: "Pick a random number 1-100",
+      prompt: "Reply with one integer between 1 and 100.",
+      subagent_type: "general-purpose",
+    },
+    rawOutput: "47",
+    status: "success",
+  });
+});
+
+test("Kimi recognizes delegated work only after its incremental Agent input is complete", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "kimi",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "kimi-agent-1",
+    status: "pending",
+    kind: "other",
+    title: "Agent",
+  });
+  expect(events.at(-1)?.isSubagent).toBeUndefined();
+
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "kimi-agent-1",
+    status: "in_progress",
+    title: "Launching coder agent: Random number 1-100",
+    rawInput: {
+      prompt: "请随机说出 1 到 100 之间的一个整数。",
+      description: "Random number 1-100",
+      subagent_type: "coder",
+    },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "kimi-agent-1",
+    status: "completed",
+    rawOutput: "73",
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "kimi-agent-1",
+    isSubagent: true,
+    toolName: "Launching coder agent: Random number 1-100",
+    summary: "coder: Random number 1-100",
+    rawOutput: "73",
+    status: "success",
+  });
+});
+
+test("Codex subagent metadata survives a sparse terminal namespace update", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "codex",
+    onToolEvent: (event) => events.push(event),
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "codex-agent-1",
+        status: "in_progress",
+        kind: "other",
+        title: "Start subagent random_number",
+        rawInput: {
+          agentThreadId: "thread-child-1",
+          agentPath: "/root/random_number",
+          activityKind: "started",
+        },
+        _meta: {
+          codex: {
+            subagent: {
+              threadId: "thread-child-1",
+              path: "/root/random_number",
+              activity: "started",
+            },
+          },
+        },
+      },
+    },
+  }));
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "codex-agent-1",
+        status: "completed",
+        _meta: { codex: { subagent: { activity: "started" } } },
+      },
+    },
+  }));
+
+  expect(events.at(-1)).toEqual({
+    toolCallId: "codex-agent-1",
+    isSubagent: true,
+    toolName: "Start subagent random_number",
+    kind: "other",
+    rawInput: {
+      agentThreadId: "thread-child-1",
+      agentPath: "/root/random_number",
+      activityKind: "started",
+    },
+    status: "success",
+  });
+});
+
+test("provider subagent signals are driver-gated and malformed metadata fails open", () => {
+  const parse = (driver: string, update: Record<string, unknown>): ToolUseEvent | undefined => {
+    const events: ToolUseEvent[] = [];
+    const state = createStreamingPromptState(false, {
+      driver,
+      onToolEvent: (event) => events.push(event),
+    });
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+    return events.at(-1);
+  };
+  const base = {
+    sessionUpdate: "tool_call",
+    toolCallId: "agent-1",
+    status: "completed",
+    kind: "other",
+    title: "Agent",
+  };
+
+  expect(parse("custom", { ...base, _meta: { claudeCode: { toolName: "Agent" } } })?.isSubagent).toBeUndefined();
+  expect(parse("custom", { ...base, _meta: { qoder: { toolName: "Agent" } } })?.isSubagent).toBeUndefined();
+  expect(parse("custom", {
+    ...base,
+    rawInput: { prompt: "delegate", subagent_type: "coder" },
+  })?.isSubagent).toBeUndefined();
+  expect(parse("custom", {
+    ...base,
+    _meta: { codex: { subagent: { threadId: "thread-1", activity: "started" } } },
+  })?.isSubagent).toBeUndefined();
+  expect(parse("qoder", { ...base, _meta: { qoder: { toolName: "" } } })?.isSubagent).toBeUndefined();
+  expect(parse("kimi", { ...base, rawInput: { prompt: "delegate" } })?.isSubagent).toBeUndefined();
+  expect(parse("codex", {
+    ...base,
+    _meta: { codex: { subagent: { activity: "started" } } },
+  })?.isSubagent).toBeUndefined();
+});
+
+test("wrong-driver Claude metadata does not alter an ordinary tool event", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "custom",
+    onToolEvent: (event) => events.push(event),
+  });
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "ordinary-1",
+        status: "completed",
+        kind: "other",
+        title: "Agent",
+        _meta: {
+          claudeCode: {
+            toolName: "Agent",
+            parentToolUseId: "unrelated-parent",
+            toolResponse: { status: "async_launched", agentId: "unexpected" },
+          },
+        },
+      },
+    },
+  }));
+
+  expect(events).toEqual([{
+    toolCallId: "ordinary-1",
+    toolName: "Agent",
+    kind: "other",
+    status: "success",
+  }]);
+});

@@ -18,6 +18,8 @@ export interface StreamingPromptState {
   // reflects the full call (rich title + diff), not just the last sparse frame.
   toolCalls: Map<string, MergedToolUpdate>;
   toolEventMode: ToolEventMode;
+  /** Resolved ACP driver used for provider-gated event normalization. */
+  driver?: string;
   // Raw streaming (replyMode "stream"): the consumer renders one live bubble that
   // concatenates chunks verbatim, so we DON'T split on paragraph boundaries or trim.
   // Agent text accumulates raw in `buffer`; a short flush timer drains it as-is. This
@@ -55,6 +57,16 @@ interface StreamEvent {
       cost?: unknown;
       _meta?: {
         usage?: unknown;
+        qoder?: {
+          toolName?: string;
+        };
+        codex?: {
+          subagent?: {
+            threadId?: string;
+            path?: string;
+            activity?: string;
+          };
+        };
         claudeCode?: {
           toolName?: string;
           parentToolUseId?: string;
@@ -71,6 +83,7 @@ export type CreateStreamingPromptStateOptions =
   | ((event: ToolUseEvent) => void | Promise<void>)
   | {
       mode?: ToolEventMode;
+      driver?: string;
       rawStream?: boolean;
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
@@ -90,6 +103,7 @@ export function createStreamingPromptState(
   let onUsage: ((usage: PromptUsage) => void | Promise<void>) | undefined;
   let onCommands: ((commands: AgentCommand[]) => void | Promise<void>) | undefined;
   let rawStream = false;
+  let driver: string | undefined;
 
   if (options === undefined) {
     toolEventMode = "text";
@@ -105,6 +119,7 @@ export function createStreamingPromptState(
     onUsage = options.onUsage;
     onCommands = options.onCommands;
     rawStream = options.rawStream ?? false;
+    driver = options.driver?.trim().toLowerCase() || undefined;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
       onToolEvent,
@@ -120,6 +135,7 @@ export function createStreamingPromptState(
     emittedToolCallIds: new Set(),
     toolCalls: new Map(),
     toolEventMode,
+    driver,
     rawStream,
     onToolEvent,
     onThought,
@@ -187,7 +203,7 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
       const merged = update.toolCallId
         ? mergeToolCallUpdate(state, update.toolCallId, update)
         : update;
-      const toolEvent = buildToolUseEvent(merged);
+      const toolEvent = buildToolUseEvent(merged, state.driver);
       if (toolEvent) void state.onToolEvent(toolEvent);
     }
 
@@ -338,11 +354,26 @@ function mergeToolCallUpdate(
   }
   const nextMeta = update._meta;
   if (nextMeta) {
+    const previousMeta = merged._meta;
     merged._meta = {
-      ...merged._meta,
+      ...previousMeta,
       ...nextMeta,
-      ...(merged._meta?.claudeCode || nextMeta.claudeCode
-        ? { claudeCode: { ...merged._meta?.claudeCode, ...nextMeta.claudeCode } }
+      ...(previousMeta?.qoder || nextMeta.qoder
+        ? { qoder: { ...previousMeta?.qoder, ...nextMeta.qoder } }
+        : {}),
+      ...(previousMeta?.codex || nextMeta.codex
+        ? {
+            codex: {
+              ...previousMeta?.codex,
+              ...nextMeta.codex,
+              ...(previousMeta?.codex?.subagent || nextMeta.codex?.subagent
+                ? { subagent: { ...previousMeta?.codex?.subagent, ...nextMeta.codex?.subagent } }
+                : {}),
+            },
+          }
+        : {}),
+      ...(previousMeta?.claudeCode || nextMeta.claudeCode
+        ? { claudeCode: { ...previousMeta?.claudeCode, ...nextMeta.claudeCode } }
         : {}),
     };
   }
@@ -351,7 +382,10 @@ function mergeToolCallUpdate(
   return merged;
 }
 
-function buildToolUseEvent(update: NonNullable<StreamEvent["params"]>["update"]): ToolUseEvent | null {
+function buildToolUseEvent(
+  update: NonNullable<StreamEvent["params"]>["update"],
+  driver?: string,
+): ToolUseEvent | null {
   if (!update) return null;
   const toolCallId = update.toolCallId;
   if (!toolCallId) return null;
@@ -377,7 +411,9 @@ function buildToolUseEvent(update: NonNullable<StreamEvent["params"]>["update"])
   // dashboard spinner alive forever (notably for tools running inside an async
   // Agent). A concrete toolResponse is terminal even when the adapter omitted the
   // redundant status field.
-  const claudeToolResponse = update._meta?.claudeCode?.toolResponse;
+  const isClaudeDriver = driver === undefined || driver === "claude";
+  const claudeMeta = isClaudeDriver ? update._meta?.claudeCode : undefined;
+  const claudeToolResponse = claudeMeta?.toolResponse;
   const hasClaudeToolResponse = !isEmptyToolField(claudeToolResponse);
   const isAsyncAgentLaunch =
     update._meta?.claudeCode?.toolName === "Agent" &&
@@ -393,9 +429,11 @@ function buildToolUseEvent(update: NonNullable<StreamEvent["params"]>["update"])
   const content = update.content;
   const rawOutput = update.rawOutput ?? claudeToolResponse;
   const locations = update.locations;
-  const claudeMeta = update._meta?.claudeCode;
   const parentToolCallId = claudeMeta?.parentToolUseId?.trim();
-  const isSubagent = claudeMeta?.toolName === "Agent";
+  const isSubagent = (claudeMeta?.toolName === "Agent")
+    || (driver === "qoder" && update._meta?.qoder?.toolName === "Agent")
+    || (driver === "kimi" && isKimiSubagentInput(rawInput))
+    || (driver === "codex" && isCodexSubagentMeta(update._meta?.codex?.subagent));
   return {
     toolCallId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
@@ -409,6 +447,19 @@ function buildToolUseEvent(update: NonNullable<StreamEvent["params"]>["update"])
     ...(locations !== undefined ? { locations } : {}),
     status,
   };
+}
+
+function isKimiSubagentInput(rawInput: unknown): boolean {
+  return isRecord(rawInput)
+    && readFirstString(rawInput, ["prompt"]) !== undefined
+    && readFirstString(rawInput, ["subagent_type", "subagentType"]) !== undefined;
+}
+
+function isCodexSubagentMeta(meta: { threadId?: string; activity?: string } | undefined): boolean {
+  return typeof meta?.threadId === "string"
+    && meta.threadId.trim().length > 0
+    && typeof meta.activity === "string"
+    && meta.activity.trim().length > 0;
 }
 
 function summarizeToolInput(rawInput: unknown, title = ""): string | undefined {
