@@ -267,20 +267,99 @@ const TOOL_KIND_ICON: Record<string, string> = {
   other: "\u{1F527}",
 };
 
+// Full-width space: ASCII leading spaces collapse in Feishu markdown, so
+// nesting depth is conveyed with an ideographic space that survives rendering.
+const INDENT_UNIT = "\u3000";
+
+function statusBadge(status: string): string {
+  return status === "running" ? "⏳" : status === "error" ? "❌" : "✅";
+}
+
+function stepSummarySuffix(step: ToolUseStep): string {
+  return step.summary ? `: ${truncateInline(step.summary, 80)}` : "";
+}
+
+function stepDurationSuffix(step: ToolUseStep): string {
+  return step.durationMs !== undefined ? ` _(${formatElapsedMs(step.durationMs)})_` : "";
+}
+
+/** Walk the parentToolCallId chain, cycle-safe, yielding ancestor ids present in the batch. */
+function* ancestorIds(step: ToolUseStep, byId: Map<string, ToolUseStep>): Generator<string> {
+  let parentId = step.parentToolCallId;
+  const seen = new Set<string>();
+  while (parentId && byId.has(parentId) && !seen.has(parentId)) {
+    yield parentId;
+    seen.add(parentId);
+    parentId = byId.get(parentId)?.parentToolCallId;
+  }
+}
+
+/** How many subagent ancestors a step has — its indentation level (0 = top level). */
+function subagentAncestorDepth(step: ToolUseStep, byId: Map<string, ToolUseStep>): number {
+  let depth = 0;
+  for (const id of ancestorIds(step, byId)) {
+    if (byId.get(id)?.isSubagent) depth += 1;
+  }
+  return depth;
+}
+
+function isDescendantOf(step: ToolUseStep, ancestorId: string, byId: Map<string, ToolUseStep>): boolean {
+  for (const id of ancestorIds(step, byId)) {
+    if (id === ancestorId) return true;
+  }
+  return false;
+}
+
+/**
+ * Fold the flat tool-step list into a subagent-aware, insertion-ordered
+ * display list: top-level steps (ordinary tools + top-level subagents) render
+ * at the root, and every subagent is immediately followed by its descendants.
+ * Mirrors the relay-web SubagentStepCard fold, adapted to a single markdown
+ * block. Provider-agnostic — reads only `isSubagent`/`parentToolCallId`.
+ */
 function buildToolUsePanel(steps: ToolUseStep[] | undefined): Record<string, unknown> | null {
   if (!steps || steps.length === 0) return null;
-  const visibleSteps = steps.slice(0, TOOL_PANEL_MAX_STEPS);
-  const lines = visibleSteps.map((step) => {
-    const icon = TOOL_KIND_ICON[step.kind] ?? TOOL_KIND_ICON.other;
-    const statusBadge =
-      step.status === "running" ? "⏳"
-      : step.status === "error" ? "❌"
-      : "✅";
-    const summary = step.summary ? `: ${truncateInline(step.summary, 80)}` : "";
-    const dur = step.durationMs !== undefined ? ` _(${formatElapsedMs(step.durationMs)})_` : "";
-    return `${statusBadge} ${icon} **${step.toolName}**${summary}${dur}`;
-  });
-  const omitted = steps.length - visibleSteps.length;
+  const byId = new Map(steps.map((step) => [step.toolCallId, step]));
+
+  const descendantCount = (parentId: string): number =>
+    steps.reduce((n, step) => (isDescendantOf(step, parentId, byId) ? n + 1 : n), 0);
+
+  // Display order: iterate top-level roots (no subagent ancestor); a subagent
+  // root is immediately trailed by all its descendants in insertion order, so
+  // nested steps never surface twice.
+  const displayOrder: ToolUseStep[] = [];
+  for (const step of steps) {
+    if (subagentAncestorDepth(step, byId) > 0) continue;
+    displayOrder.push(step);
+    if (step.isSubagent) {
+      for (const candidate of steps) {
+        if (candidate !== step && isDescendantOf(candidate, step.toolCallId, byId)) {
+          displayOrder.push(candidate);
+        }
+      }
+    }
+  }
+
+  const visible = displayOrder.slice(0, TOOL_PANEL_MAX_STEPS);
+  const lines: string[] = [];
+  for (const step of visible) {
+    const depth = subagentAncestorDepth(step, byId);
+    const indent = depth > 0 ? `${INDENT_UNIT.repeat(depth)}└ ` : "";
+    if (step.isSubagent) {
+      const children = descendantCount(step.toolCallId);
+      lines.push(`${indent}${statusBadge(step.status)} ${t().subagentHeader(step.toolName, children)}${stepSummarySuffix(step)}`);
+      // Truthful fallback: providers that report only the delegating call
+      // (Qoder/Kimi/Codex) leave the trace empty — never fabricate children.
+      if (children === 0) {
+        lines.push(`${INDENT_UNIT.repeat(depth + 1)}└ _${t().subagentNoActivity}_`);
+      }
+    } else {
+      const icon = TOOL_KIND_ICON[step.kind] ?? TOOL_KIND_ICON.other;
+      lines.push(`${indent}${statusBadge(step.status)} ${icon} **${step.toolName}**${stepSummarySuffix(step)}${stepDurationSuffix(step)}`);
+    }
+  }
+
+  const omitted = displayOrder.length - visible.length;
   if (omitted > 0) {
     lines.push(t().toolPanelOmitted(omitted));
   }
@@ -303,6 +382,7 @@ function buildToolUsePanel(steps: ToolUseStep[] | undefined): Record<string, unk
     ],
   };
 }
+
 
 function truncateInline(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 3)}...` : s;

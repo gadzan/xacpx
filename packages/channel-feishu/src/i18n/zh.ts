@@ -38,6 +38,8 @@ export const zh: FeishuMessages = {
   reasoningHeaderElapsed: (elapsed) => `🧠 已思考 ${elapsed}`,
   toolPanelOmitted: (count) => `… 还有 ${count} 个工具调用未显示`,
   toolPanelHeader: (count) => `🔧 工具调用 (${count})`,
+  subagentHeader: (toolName, childCount) => `🤖 **${toolName}** _(子代理 · ${childCount} 步)_`,
+  subagentNoActivity: "无记录活动",
   planPanelHeader: (done, total) => `📋 任务清单 (${done}/${total})`,
   planPanelOmitted: (count) => `… 还有 ${count} 项未显示`,
 

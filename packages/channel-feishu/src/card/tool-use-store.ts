@@ -44,6 +44,11 @@ export class ToolUseStore {
         : event.status !== "running"
           ? { durationMs: 0 }
           : {}),
+      // Subagent classification comes from the transport and is fixed at
+      // start (like toolName/kind) — carry it through so the panel can fold
+      // the delegating parent and indent its children.
+      ...(event.isSubagent ? { isSubagent: true } : {}),
+      ...(event.parentToolCallId !== undefined ? { parentToolCallId: event.parentToolCallId } : {}),
     };
     this.stepsById.set(event.toolCallId, step);
     this.order.push(event.toolCallId);

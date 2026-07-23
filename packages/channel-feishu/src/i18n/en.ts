@@ -23,6 +23,9 @@ export const en: FeishuMessages = {
   reasoningHeaderElapsed: (elapsed) => `🧠 Thought for ${elapsed}`,
   toolPanelOmitted: (count) => `… ${count} more tool call${count === 1 ? "" : "s"} not shown`,
   toolPanelHeader: (count) => `🔧 Tool calls (${count})`,
+  subagentHeader: (toolName, childCount) =>
+    `🤖 **${toolName}** _(subagent · ${childCount} step${childCount === 1 ? "" : "s"})_`,
+  subagentNoActivity: "no recorded activity",
   planPanelHeader: (done, total) => `📋 Plan (${done}/${total})`,
   planPanelOmitted: (count) => `… ${count} more item${count === 1 ? "" : "s"} not shown`,
 
