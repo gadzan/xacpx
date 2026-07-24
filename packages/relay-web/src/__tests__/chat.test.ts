@@ -175,6 +175,43 @@ test("a delayed history response cannot overwrite a newly selected session", asy
   expect(store.messages.map((message) => message.text)).toEqual(["frontend history"]);
 });
 
+test("switching to a working session keeps history when its turn starts during the fetch", async () => {
+  let resolveHistory!: (response: Response) => void;
+  const historyResponse = new Promise<Response>((resolve) => { resolveHistory = resolve; });
+  const historyBody = {
+    messages: [
+      { id: 1, instanceId: "i1", sessionAlias: "working", direction: "out", text: "older history", createdAt: "t1" },
+      { id: 2, instanceId: "i1", sessionAlias: "working", direction: "in", text: "current task", createdAt: "t2" },
+    ],
+  };
+  let requests = 0;
+  vi.stubGlobal("fetch", vi.fn(() => (
+    ++requests === 1
+      ? historyResponse
+      : Promise.resolve(new Response(JSON.stringify(historyBody), { status: 200 }))
+  )));
+
+  const store = useChatStore();
+  store.select("i1", "working");
+  const historyLoad = store.loadHistory();
+
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "turn-started",
+      chatKey: "relay:x",
+      sessionAlias: "working",
+      prompt: "current task",
+    },
+  });
+
+  resolveHistory(new Response(JSON.stringify(historyBody), { status: 200 }));
+  await historyLoad;
+
+  expect(store.messages.map((message) => message.text)).toEqual(["older history", "current task"]);
+});
+
 test("loadingHistory is raised while the initial history fetch is in flight", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })));
   const store = useChatStore();
