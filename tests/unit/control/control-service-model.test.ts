@@ -306,6 +306,23 @@ test("a fresh web read reconciles a persisted effort the adapter no longer adver
   expect(calls).toEqual(["persist-effort:internal-backend:high"]);
 });
 
+test("a fresh web read does not return an adapter current outside its advertised efforts", async () => {
+  const { deps, calls } = makeDeps();
+  await deps.sessions.setSessionEffort("internal-backend", "xhigh");
+  calls.length = 0;
+  deps.transport.getSessionEffort = async () => ({
+    current: "xhigh",
+    available: ["low", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: undefined,
+    available: ["low", "high"],
+  });
+  expect(calls).toEqual(["persist-effort:internal-backend:"]);
+});
+
 test("effort read reconciliation cannot race a newer user selection", async () => {
   const { deps, calls } = makeDeps();
   await deps.sessions.setSessionEffort("internal-backend", "xhigh");

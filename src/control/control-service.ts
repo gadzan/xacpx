@@ -451,16 +451,18 @@ export class ControlService {
       const session = await this.resolveControlSession(chatKey, alias);
       if (!session) return { available: [] };
       const observed = await getEffort(session);
+      let current = session.effort && observed.available.includes(session.effort)
+        ? session.effort
+        : observed.current;
       if (session.effort && observed.available.length > 0 && !observed.available.includes(session.effort)) {
         const reconciled = observed.current && observed.available.includes(observed.current)
           ? observed.current
           : undefined;
         await this.deps.sessions.setSessionEffort(session.alias, reconciled);
+        current = reconciled;
       }
       return {
-        current: session.effort && observed.available.includes(session.effort)
-          ? session.effort
-          : observed.current,
+        current,
         available: observed.available,
       };
     });
