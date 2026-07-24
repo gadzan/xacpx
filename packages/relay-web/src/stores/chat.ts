@@ -263,7 +263,13 @@ export const useChatStore = defineStore("chat", () => {
         `/api/instances/${id}/sessions/${alias}/messages?limit=${HISTORY_PAGE}`,
       );
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
-      if (requestSequence !== historyRequestSequence || revision !== transcriptRevision) return;
+      if (requestSequence !== historyRequestSequence) return;
+      // A live event may mutate the selected transcript while this request is in
+      // flight (most notably turn-started when switching to a working session).
+      // The response can no longer replace local state safely, but abandoning it
+      // would leave the pane with only the live turn. Retry against the same
+      // selection so persisted history and the current turn converge.
+      if (revision !== transcriptRevision) return loadHistory();
       messages.value = rows;
       touchTranscript();
       hasMoreOlder.value = hasMore ?? false;
