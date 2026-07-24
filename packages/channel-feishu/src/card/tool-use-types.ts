@@ -12,4 +12,8 @@ export interface ToolUseStep {
   status: ToolUseStatus;
   startedAt: number;
   durationMs?: number;
+  /** Marks the delegating Agent/Task tool that owns a subagent trace. */
+  isSubagent?: boolean;
+  /** Links a child step to its subagent parent for fold/indent rendering. */
+  parentToolCallId?: string;
 }

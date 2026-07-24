@@ -67,3 +67,26 @@ test("later summary updates an earlier placeholder summary", () => {
   store.record(event({ toolCallId: "t1", summary: "foo.ts" }));
   expect(store.steps()[0].summary).toBe("foo.ts");
 });
+
+test("late-arriving subagent classification upgrades an existing step", () => {
+  // Kimi's opening tool_call ships a sparse rawInput, so the transport can't
+  // classify the delegation until a later merged frame — the step must promote
+  // isSubagent/parentToolCallId when they finally appear.
+  const store = new ToolUseStore(() => 0);
+  store.record(event({ toolCallId: "task-1", toolName: "Task", kind: "other" }));
+  expect(store.steps()[0].isSubagent).toBeUndefined();
+  store.record(
+    event({ toolCallId: "task-1", toolName: "Task", kind: "other", isSubagent: true, parentToolCallId: "root" }),
+  );
+  expect(store.steps()[0].isSubagent).toBe(true);
+  expect(store.steps()[0].parentToolCallId).toBe("root");
+});
+
+test("subagent classification is never cleared by a later sparse frame", () => {
+  const store = new ToolUseStore(() => 0);
+  store.record(event({ toolCallId: "task-1", isSubagent: true, parentToolCallId: "root" }));
+  // A terminal frame that omits the subagent fields must not regress them.
+  store.record(event({ toolCallId: "task-1", status: "success" }));
+  expect(store.steps()[0].isSubagent).toBe(true);
+  expect(store.steps()[0].parentToolCallId).toBe("root");
+});

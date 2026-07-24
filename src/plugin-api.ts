@@ -16,6 +16,10 @@ export type {
   ToolUseKind,
   ToolUseStatus,
 } from "./channels/types.js";
+// Text-channel subagent degradation: a shared formatter + per-turn dedup
+// tracker so WeChat/Yuanbao surface delegations as one honest line each,
+// consuming the same normalized `isSubagent` contract the web card uses.
+export { formatSubagentNotice, SubagentNoticeTracker } from "./channels/subagent-notice.js";
 // Streaming side-channel payloads (context usage + advertised commands) so
 // channel plugins can render token/context footers and command hints. These
 // originate in the transport layer; surfaced here as the public plugin contract.

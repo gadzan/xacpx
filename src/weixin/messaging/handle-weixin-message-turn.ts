@@ -28,6 +28,7 @@ import { markdownToPlainText, sendMessageWeixin } from "./send.js";
 import type { PendingFinalChunk } from "./quota-manager.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import { normalizeMediaArray } from "../../channels/media-types.js";
+import { SubagentNoticeTracker } from "../../channels/subagent-notice.js";
 import { createNoopPerfTracer, type PerfTracer } from "../../perf/perf-tracer.js";
 import { t } from "../../i18n/index.js";
 
@@ -425,6 +426,10 @@ export async function handleWeixinMessageTurn(
   };
 
   const requestText = appendAttachmentNotes(bodyFromItemList(full.item_list), attachmentNotes);
+  // Text-only degradation: WeChat can't render the subagent card, so a
+  // delegation surfaces as one honest line via the existing reply path.
+  // Ordinary tool calls stay hidden; the tracker dedups per toolCallId.
+  const subagentNotices = new SubagentNoticeTracker();
   const request: Omit<ChatRequest, "reply"> = {
     accountId: deps.accountId,
     conversationId: buildWeixinChatKey(deps.accountId, full.from_user_id ?? ""),
@@ -444,6 +449,10 @@ export async function handleWeixinMessageTurn(
       // it, instead of re-reading current_session (which may have changed while
       // the prompt waited on the per-session lane).
       ...(deps.boundSessionAlias ? { boundSessionAlias: deps.boundSessionAlias } : {}),
+    },
+    onToolEvent: (event) => {
+      const line = subagentNotices.notice(event);
+      if (line) void sendReplySegment(line);
     },
     perfSpan,
   };

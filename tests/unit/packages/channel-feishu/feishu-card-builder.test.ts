@@ -390,3 +390,80 @@ test("buildCard reasoning header omits elapsed when reasoningElapsedMs is zero",
   expect(headerJson).toContain(t().reasoningHeader);
   expect(headerJson).not.toContain(t().reasoningHeaderElapsed(""));
 });
+
+// ---- subagent folding ----
+
+function toolPanelContent(card: ReturnType<typeof buildCard>): string {
+  const panel = (card.body as { elements: Array<Record<string, unknown>> }).elements[0];
+  const inner = (panel.elements as Array<{ content: string }>)[0];
+  return inner.content;
+}
+
+test("buildToolUsePanel folds subagent children under the delegating parent", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "working",
+    toolSteps: [
+      { toolCallId: "sa", toolName: "Task", kind: "other", status: "running", startedAt: 0, isSubagent: true, summary: "research the API" },
+      { toolCallId: "c1", toolName: "Read File", kind: "read", status: "success", startedAt: 1, durationMs: 20, parentToolCallId: "sa", summary: "api.ts" },
+      { toolCallId: "c2", toolName: "Bash", kind: "execute", status: "success", startedAt: 2, durationMs: 40, parentToolCallId: "sa", summary: "grep foo" },
+    ],
+  });
+  const content = toolPanelContent(card);
+  // Parent renders as a subagent header with the descendant count.
+  expect(content).toContain(t().subagentHeader("Task", 2));
+  expect(content).toContain("research the API");
+  // Children render indented (full-width space + tree marker) beneath.
+  expect(content).toContain("└ ");
+  expect(content).toContain("Read File");
+  expect(content).toContain("api.ts");
+  expect(content).toContain("Bash");
+  // Header counts every step (parent + 2 children).
+  const panel = (card.body as { elements: Array<Record<string, unknown>> }).elements[0];
+  expect(JSON.stringify(panel.header)).toContain(t().toolPanelHeader(3));
+});
+
+test("buildToolUsePanel shows a no-activity placeholder for a childless subagent", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "working",
+    toolSteps: [
+      { toolCallId: "sa", toolName: "Task", kind: "other", status: "success", startedAt: 0, isSubagent: true },
+    ],
+  });
+  const content = toolPanelContent(card);
+  expect(content).toContain(t().subagentHeader("Task", 0));
+  expect(content).toContain(t().subagentNoActivity);
+});
+
+test("buildToolUsePanel renders an orphan child (parent absent) as an ordinary top-level tool", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "working",
+    toolSteps: [
+      { toolCallId: "c1", toolName: "Read File", kind: "read", status: "success", startedAt: 0, parentToolCallId: "missing" },
+    ],
+  });
+  const content = toolPanelContent(card);
+  // No subagent ancestor is present → not indented, no tree marker.
+  expect(content).toContain("**Read File**");
+  expect(content).not.toContain("└ ");
+  expect(content).not.toContain(t().subagentNoActivity);
+});
+
+test("buildToolUsePanel keeps ordinary flat tools unchanged (no subagent markers)", () => {
+  const card = buildCard({
+    state: "streaming",
+    text: "working",
+    toolSteps: [
+      { toolCallId: "t1", toolName: "Read File", kind: "read", status: "success", startedAt: 0, durationMs: 30 },
+      { toolCallId: "t2", toolName: "Bash", kind: "execute", status: "running", startedAt: 1 },
+    ],
+  });
+  const content = toolPanelContent(card);
+  expect(content).toContain("**Read File**");
+  expect(content).toContain("**Bash**");
+  expect(content).not.toContain("└ ");
+  expect(content).not.toContain(t().subagentNoActivity);
+});
+

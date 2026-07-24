@@ -1,4 +1,4 @@
-import { createConversationExecutor, resolveTurnLane } from "xacpx/plugin-api";
+import { createConversationExecutor, resolveTurnLane, SubagentNoticeTracker } from "xacpx/plugin-api";
 import { t, setChannelLocale } from "./i18n/index.js";
 import type {
   ActiveTurnRegistry,
@@ -490,6 +490,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
         });
         try {
           heartbeat.start();
+          const subagentNotices = new SubagentNoticeTracker();
           const response = await this.agent.chat({
             accountId: account.accountId,
             conversationId: chatKey,
@@ -505,6 +506,14 @@ export class YuanbaoChannel implements MessageChannelRuntime {
               ...(input.chatType === "group" ? { groupId: target } : {}),
               isOwner: Boolean(raw.bot_owner_id && raw.from_account === raw.bot_owner_id),
               ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+            },
+            // Text-only degradation: no card, so a delegation surfaces as one
+            // honest line. Ordinary tool calls stay hidden to avoid flooding
+            // the chat; the tracker dedups start/terminal per toolCallId.
+            onToolEvent: (event) => {
+              if (this.isAborted() || !inForeground()) return;
+              const line = subagentNotices.notice(event);
+              if (line) void queue.push(line);
             },
             reply: async (text) => {
               if (this.isAborted()) return;
