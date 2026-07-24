@@ -20,7 +20,7 @@ beforeAll(() => {
 });
 
 test("@ganglion/xacpx-channel-yuanbao exports a valid plugin definition", () => {
-  const validated = validateWeacpxPlugin(plugin, "@ganglion/xacpx-channel-yuanbao", { currentXacpxVersion: "0.8.0" });
+  const validated = validateWeacpxPlugin(plugin, "@ganglion/xacpx-channel-yuanbao", { currentXacpxVersion: "0.17.0-beta.13" });
 
   expect(validated.name).toBe("@ganglion/xacpx-channel-yuanbao");
   expect(validated.channels?.map((channel) => channel.type)).toEqual(["yuanbao"]);
@@ -29,7 +29,7 @@ test("@ganglion/xacpx-channel-yuanbao exports a valid plugin definition", () => 
 
 test("@ganglion/xacpx-channel-yuanbao declares compatibility metadata", () => {
   expect(plugin.apiVersion).toBe(1);
-  expect(plugin.minXacpxVersion).toBe("0.8.0");
+  expect(plugin.minXacpxVersion).toBe("0.17.0-beta.13");
 });
 
 test("yuanbao plugin factory creates the YuanbaoChannel runtime", () => {
