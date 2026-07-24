@@ -169,6 +169,12 @@ acpx 的既有 `set <key> <value>` 命令设置，返回 `{ ok, current }`。设
 transport 权威值并返回实际的 `{ current, applied }`；查询失败时仍保留原始 timeout。成功对账会记录
 `control.session.effort.timeout_reconciled` 诊断事件。同一逻辑会话的 model/effort 配置写入共用串行队列，
 避免旧操作最后落盘。
+成功设置或 timeout 对账得到的权威 effort 会写入逻辑 session state。后续
+`control.session.effort.get` 仍从 adapter 读取 `available`，但当持久化值仍在广告列表中时将其作为
+`current` 返回；每次 prompt 会先把仍受支持的持久化值写入 acpx 的 desired config，再启动
+queue owner，使新 ACP session 通过 acpx 的 reconnect replay 恢复该值。这样 adapter/queue owner
+随任务结束而重建时，Web 重载和实际 Agent 运行都不会回到 adapter 默认值；若 adapter 不再广告
+该值则采用当前受支持值，不阻断 prompt。
 串行队列出闸时，ControlService 会为最坏 90 秒的 set + readback 预留完整预算；剩余时间不足的
 请求在触碰 transport 前失败，避免排队重新吃掉 Hub 为状态变更保留的响应窗口。
 

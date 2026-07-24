@@ -76,6 +76,31 @@ test("handles tailSessionHistory over ndjson", async () => {
   }))).resolves.toBe('{"id":"tail-1","ok":true,"result":{"text":"ok:5"}}\n');
 });
 
+test("forwards persisted effort from bridge prompt params", async () => {
+  let captured: Record<string, unknown> | undefined;
+  const runtime = {
+    prompt: async (input: Record<string, unknown>) => {
+      captured = input;
+      return { text: "ok" };
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  await server.handleLine(JSON.stringify({
+    id: "prompt-effort",
+    method: "prompt",
+    params: {
+      agent: "codex",
+      cwd: "/repo",
+      name: "demo",
+      text: "hello",
+      effort: "high",
+    },
+  }));
+
+  expect(captured).toMatchObject({ effort: "high" });
+});
+
 test("forwards validated Claude settings policy metadata over ndjson", async () => {
   let captured: Record<string, unknown> | undefined;
   const runtime = {

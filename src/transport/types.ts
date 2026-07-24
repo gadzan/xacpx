@@ -70,6 +70,8 @@ export interface ResolvedSession {
    * no `--model` is passed and acpx uses the agent adapter's default.
    */
   model?: string;
+  /** Persisted reasoning-effort preference to reapply when the adapter process is recreated. */
+  effort?: string;
   /** Cosmetic per-session display label (relay-web only). Mirrors LogicalSession.display_name;
    *  undefined when unset. Does not affect identity or transport. */
   displayName?: string;

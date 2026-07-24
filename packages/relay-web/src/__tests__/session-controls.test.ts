@@ -268,6 +268,22 @@ describe("session-controls store", () => {
     log.mockRestore();
   });
 
+  it("waitForEffortSet waits for the active effort mutation in the same session", async () => {
+    const s = useSessionControlsStore();
+    let resolveSet!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveSet = resolve; }));
+    const setting = s.setEffort("i1", "backend", "high");
+    let settled = false;
+    const waiting = s.waitForEffortSet("i1", "backend")!.then(() => { settled = true; });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    resolveSet({ current: "high", applied: true });
+    await setting;
+    await waiting;
+    expect(settled).toBe(true);
+  });
+
   it("clears effort when a failed set reports an authoritative null current", async () => {
     rpc.mockResolvedValueOnce({ current: "medium", available: ["medium", "high"] });
     const s = useSessionControlsStore();

@@ -14,11 +14,16 @@ const session = {
 function makeDeps() {
   const calls: string[] = [];
   const logs: Array<{ event: string; message: string; context?: Record<string, unknown> }> = [];
+  const resolvedSession: typeof session & { effort?: string } = { ...session };
   const deps = {
     sessions: {
       resolveAliasForChat: async (_chatKey: string, alias: string) => `internal-${alias}`,
-      getSession: async (internalAlias: string) => (internalAlias === "internal-backend" ? session : null),
+      getSession: async (internalAlias: string) => (internalAlias === "internal-backend" ? resolvedSession : null),
       setSessionModel: async (alias: string, id: string) => { calls.push(`persist:${alias}:${id}`); },
+      setSessionEffort: async (alias: string, effort: string | undefined) => {
+        calls.push(`persist-effort:${alias}:${effort ?? ""}`);
+        resolvedSession.effort = effort;
+      },
     },
     transport: {
       getSessionModel: async (s: typeof session) => ({ current: s.model, available: ["gpt-5.2[high]", "gpt-5.2[low]"] }),
@@ -254,7 +259,85 @@ test("setSessionEffort applies the selected value through the transport", async 
     current: "high",
     applied: true,
   });
-  expect(calls).toEqual(["effort:internal-backend:high"]);
+  expect(calls).toEqual(["effort:internal-backend:high", "persist-effort:internal-backend:high"]);
+});
+
+test("the selected effort survives an adapter task ending and a fresh web read", async () => {
+  const { deps } = makeDeps();
+  let adapterEffort = "medium";
+  deps.transport.setSessionEffort = async (_session: typeof session, effort: string) => {
+    adapterEffort = effort;
+  };
+  deps.transport.getSessionEffort = async () => ({
+    current: adapterEffort,
+    available: ["low", "medium", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: "high",
+    applied: true,
+  });
+
+  // The adapter process that accepted the setting exits with the completed
+  // task. A newly opened Web page reads through a fresh adapter process.
+  adapterEffort = "medium";
+
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: "high",
+    available: ["low", "medium", "high"],
+  });
+});
+
+test("a fresh web read reconciles a persisted effort the adapter no longer advertises", async () => {
+  const { deps, calls } = makeDeps();
+  await deps.sessions.setSessionEffort("internal-backend", "xhigh");
+  calls.length = 0;
+  deps.transport.getSessionEffort = async () => ({
+    current: "high",
+    available: ["low", "medium", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: "high",
+    available: ["low", "medium", "high"],
+  });
+  expect(calls).toEqual(["persist-effort:internal-backend:high"]);
+});
+
+test("effort read reconciliation cannot race a newer user selection", async () => {
+  const { deps, calls } = makeDeps();
+  await deps.sessions.setSessionEffort("internal-backend", "xhigh");
+  calls.length = 0;
+  let markReadStarted!: () => void;
+  let releaseRead!: () => void;
+  const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
+  const readRelease = new Promise<void>((resolve) => { releaseRead = resolve; });
+  deps.transport.getSessionEffort = async () => {
+    markReadStarted();
+    await readRelease;
+    return { current: "high", available: ["low", "medium", "high"] };
+  };
+  const control = new ControlService(deps as never);
+
+  const read = control.getSessionEffort("relay:acc", "backend");
+  await readStarted;
+  const write = control.setSessionEffort("relay:acc", "backend", "low");
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  expect(calls).toEqual([]);
+
+  releaseRead();
+  await expect(read).resolves.toEqual({
+    current: "high",
+    available: ["low", "medium", "high"],
+  });
+  await expect(write).resolves.toEqual({ current: "low", applied: true });
+  expect(calls).toEqual([
+    "persist-effort:internal-backend:high",
+    "effort:internal-backend:low",
+    "persist-effort:internal-backend:low",
+  ]);
 });
 
 test("setSessionEffort reconciles a timed-out write that acpx actually applied", async () => {
@@ -276,6 +359,7 @@ test("setSessionEffort reconciles a timed-out write that acpx actually applied",
   expect(calls).toEqual([
     "effort:internal-backend:high",
     "query-effort:internal-backend",
+    "persist-effort:internal-backend:high",
   ]);
   expect(logs).toEqual([{
     event: "control.session.effort.timeout_reconciled",
@@ -290,7 +374,7 @@ test("setSessionEffort reconciles a timed-out write that acpx actually applied",
 });
 
 test("setSessionEffort returns the authoritative effort when timeout readback observes another value", async () => {
-  const { deps } = makeDeps();
+  const { deps, calls } = makeDeps();
   deps.transport.setSessionEffort = async () => {
     throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
   };
@@ -304,6 +388,7 @@ test("setSessionEffort returns the authoritative effort when timeout readback ob
     current: "medium",
     applied: false,
   });
+  expect(calls).toEqual(["persist-effort:internal-backend:medium"]);
 });
 
 test("setSessionEffort preserves the original timeout when effort readback fails", async () => {
@@ -365,6 +450,8 @@ test("setSessionEffort serializes rapid mutations for the same session", async (
   await expect(second).resolves.toEqual({ current: "high", applied: true });
   expect(calls).toEqual([
     "effort:internal-backend:low",
+    "persist-effort:internal-backend:low",
     "effort:internal-backend:high",
+    "persist-effort:internal-backend:high",
   ]);
 });

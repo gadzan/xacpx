@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
+import { useSessionControlsStore } from "./session-controls";
 
 // Remember which session was open so a page refresh returns to it (selection is not
 // part of the route). Paired with the active-turn snapshot, a refresh mid-turn lands
@@ -478,6 +479,8 @@ export const useChatStore = defineStore("chat", () => {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;
+    const pendingEffortSet = useSessionControlsStore().waitForEffortSet(id, alias);
+    if (pendingEffortSet) await pendingEffortSet;
     const pendingKey = bufKey(id, alias);
     pendingPromptRequests.set(pendingKey, (pendingPromptRequests.get(pendingKey) ?? 0) + 1);
     error.value = "";

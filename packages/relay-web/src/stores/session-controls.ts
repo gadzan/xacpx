@@ -247,9 +247,13 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     }
   }
 
+  function waitForEffortSet(instanceId: string, alias: string): Promise<void> | undefined {
+    return pendingEffortSets.get(contextKey(instanceId, alias));
+  }
+
   return {
     modelCurrent, modelAvailable, modelLoading, reset, loadModel, setModel,
-    effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort,
+    effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort, waitForEffortSet,
   };
 });
 

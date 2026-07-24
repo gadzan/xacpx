@@ -22,6 +22,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
+import { useSessionControlsStore } from "../stores/session-controls";
 import { ApiError } from "../api/client";
 import PromptInput from "../components/PromptInput.vue";
 
@@ -419,6 +420,32 @@ test("surfaces an error when send fails", async () => {
   await chat.send("hello");
   expect(chat.error).toBe("instance-offline");
   expect(chat.sending).toBe(false);
+});
+
+test("send waits for the selected effort to finish persisting", async () => {
+  let resolveEffort!: (value: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((resolve) => { resolveEffort = resolve; }));
+  rpc.mockResolvedValueOnce({ ok: true });
+  const controls = useSessionControlsStore();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+
+  const setting = controls.setEffort("i1", "backend", "high");
+  const sending = chat.send("use the new effort");
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  expect(rpc).toHaveBeenCalledTimes(1);
+  expect(rpc).toHaveBeenNthCalledWith(1, "i1", "control.session.effort.set", {
+    sessionAlias: "backend",
+    effort: "high",
+  });
+
+  resolveEffort({ current: "high", applied: true });
+  await setting;
+  await sending;
+  expect(rpc).toHaveBeenNthCalledWith(2, "i1", "control.prompt", {
+    sessionAlias: "backend",
+    text: "use the new effort",
+  });
 });
 
 test("a failed send flips the bubble to failed REACTIVELY (not only on the next push)", async () => {

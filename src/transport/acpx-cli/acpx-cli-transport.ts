@@ -347,6 +347,9 @@ export class AcpxCliTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
+    if (session.effort?.trim()) {
+      await this.reapplySessionEffort(session, session.effort.trim());
+    }
     await this.launchMcpQueueOwnerIfNeeded(session);
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
     const args = this.buildPromptArgs(session, text, structuredPrompt?.filePath);
@@ -482,7 +485,21 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async setSessionEffort(session: ResolvedSession, effort: string): Promise<void> {
-    const record = await this.run(this.buildArgs(session, [
+    const record = await this.readSessionEffortRecord(session);
+    await this.applyAdvertisedSessionEffort(session, effort, record);
+  }
+
+  private async reapplySessionEffort(session: ResolvedSession, effort: string): Promise<void> {
+    const record = await this.readSessionEffortRecord(session);
+    const observed = parseSessionEffortRecord(record);
+    if (!observed?.available.includes(effort)) {
+      return;
+    }
+    await this.applyAdvertisedSessionEffort(session, effort, record);
+  }
+
+  private async readSessionEffortRecord(session: ResolvedSession): Promise<string> {
+    return await this.run(this.buildArgs(session, [
       "sessions",
       "show",
       session.transportSession,
@@ -490,6 +507,13 @@ export class AcpxCliTransport implements SessionTransport {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "get-session-effort",
     }));
+  }
+
+  private async applyAdvertisedSessionEffort(
+    session: ResolvedSession,
+    effort: string,
+    record: string,
+  ): Promise<void> {
     const advertised = requireAdvertisedSessionEffort(record, effort);
     await this.run(this.buildArgs(session, [
       "set",

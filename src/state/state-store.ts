@@ -531,6 +531,7 @@ function isSessionRecord(value: unknown): value is AppState["sessions"][string] 
     isOptionalString(value.attached_at) &&
     isOptionalString(value.transport_agent_command) &&
     isOptionalString(value.mode_id) &&
+    isOptionalString(value.effort) &&
     (value.reply_mode === undefined || isReplyMode(value.reply_mode)) &&
     isString(value.created_at) &&
     isString(value.last_used_at)

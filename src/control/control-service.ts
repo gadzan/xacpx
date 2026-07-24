@@ -98,7 +98,7 @@ export interface ControlServiceDeps {
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
-    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setDisplayName"
+    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setSessionEffort" | "setDisplayName"
   >;
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
@@ -444,9 +444,26 @@ export class ControlService {
 
   /** Read the reasoning-effort values advertised by the session's adapter. */
   async getSessionEffort(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
-    const session = await this.resolveControlSession(chatKey, alias);
-    if (!session || !this.deps.transport.getSessionEffort) return { available: [] };
-    return await this.deps.transport.getSessionEffort(session);
+    const initialSession = await this.resolveControlSession(chatKey, alias);
+    const getEffort = this.deps.transport.getSessionEffort?.bind(this.deps.transport);
+    if (!initialSession || !getEffort) return { available: [] };
+    return await this.runSessionConfigSetExclusive(initialSession.alias, async () => {
+      const session = await this.resolveControlSession(chatKey, alias);
+      if (!session) return { available: [] };
+      const observed = await getEffort(session);
+      if (session.effort && observed.available.length > 0 && !observed.available.includes(session.effort)) {
+        const reconciled = observed.current && observed.available.includes(observed.current)
+          ? observed.current
+          : undefined;
+        await this.deps.sessions.setSessionEffort(session.alias, reconciled);
+      }
+      return {
+        current: session.effort && observed.available.includes(session.effort)
+          ? session.effort
+          : observed.current,
+        available: observed.available,
+      };
+    });
   }
 
   /** Set the adapter-advertised reasoning effort for a session. */
@@ -472,6 +489,7 @@ export class ControlService {
           // Preserve the original timeout when authoritative reconciliation fails.
           throw error;
         }
+        await this.deps.sessions.setSessionEffort(session.alias, observed.current);
         try {
           await this.deps.logger?.error(
             "control.session.effort.timeout_reconciled",
@@ -488,6 +506,7 @@ export class ControlService {
         }
         return { current: observed.current, applied: observed.current === effort };
       }
+      await this.deps.sessions.setSessionEffort(session.alias, effort);
       return { current: effort, applied: true };
     });
   }
@@ -698,6 +717,10 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
+    if (this.sessionConfigSetTails.size > 0) {
+      const internalAlias = await this.deps.sessions.resolveAliasForChat(input.chatKey, input.sessionAlias);
+      await this.sessionConfigSetTails.get(internalAlias)?.catch(() => {});
+    }
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,

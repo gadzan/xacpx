@@ -144,6 +144,7 @@ export class SessionService {
       // Carry the same-agent model so a recreated session is ensured under the
       // same model that gets persisted (keeps acpx and state in agreement).
       model: sameAgentExisting?.model,
+      effort: sameAgentExisting?.effort,
       created_at: existing?.created_at ?? new Date().toISOString(),
       last_used_at: new Date().toISOString(),
     });
@@ -724,6 +725,7 @@ export class SessionService {
       ),
       // Session-level model wins; otherwise fall back to the agent config default.
       model: session.model ?? agentConfig.model,
+      effort: session.effort,
       displayName: session.display_name,
       workspace: session.workspace,
       transportSession: session.transport_session,
@@ -753,6 +755,26 @@ export class SessionService {
         session.model = normalized;
       } else {
         delete session.model;
+      }
+
+      session.last_used_at = new Date(this.now()).toISOString();
+      await this.persist();
+    });
+  }
+
+  /** Persist (or clear) a session's reasoning-effort preference by internal alias. */
+  async setSessionEffort(alias: string, effort: string | undefined): Promise<void> {
+    await this.mutate(async () => {
+      const session = this.state.sessions[alias];
+      if (!session) {
+        throw new Error(`session "${alias}" does not exist`);
+      }
+
+      const normalized = effort?.trim();
+      if (normalized) {
+        session.effort = normalized;
+      } else {
+        delete session.effort;
       }
 
       session.last_used_at = new Date(this.now()).toISOString();
@@ -882,6 +904,7 @@ export class SessionService {
             : {}),
         mode_id: sameAgentExisting?.mode_id,
         model: sameAgentExisting?.model,
+        effort: sameAgentExisting?.effort,
         reply_mode: sameAgentExisting?.reply_mode,
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
