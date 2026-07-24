@@ -27,6 +27,14 @@ export class ToolUseStore {
       } else if (event.status !== "running" && existing.durationMs === undefined) {
         existing.durationMs = Math.max(0, this.now() - existing.startedAt);
       }
+      // Subagent classification can arrive AFTER the first frame: Kimi's opening
+      // tool_call ships a sparse rawInput (no subagent_type yet), and Codex fills
+      // its subagent _meta progressively, so the transport only sets
+      // isSubagent/parentToolCallId on a later merged update. Promote those
+      // positive signals when they appear; the transport never negates them, so
+      // we upgrade but never clear.
+      if (event.isSubagent) existing.isSubagent = true;
+      if (event.parentToolCallId !== undefined) existing.parentToolCallId = event.parentToolCallId;
       // Tool name and kind don't change post-start.
       this.revision += 1;
       return;
@@ -44,9 +52,8 @@ export class ToolUseStore {
         : event.status !== "running"
           ? { durationMs: 0 }
           : {}),
-      // Subagent classification comes from the transport and is fixed at
-      // start (like toolName/kind) — carry it through so the panel can fold
-      // the delegating parent and indent its children.
+      // Seed subagent classification when the first frame already carries it;
+      // later frames upgrade it in the existing-step branch above.
       ...(event.isSubagent ? { isSubagent: true } : {}),
       ...(event.parentToolCallId !== undefined ? { parentToolCallId: event.parentToolCallId } : {}),
     };

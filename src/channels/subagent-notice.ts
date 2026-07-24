@@ -24,22 +24,19 @@ export function formatSubagentNotice(event: ToolUseEvent): string {
 
 /**
  * Per-turn accumulator that decides when a subagent event warrants a notice
- * line, deduping by toolCallId. A delegation emits once on first sighting and
- * once more on its terminal transition (success/error) — never on repeated
- * `running` updates. Non-subagent events yield nothing.
+ * line, deduping by toolCallId. Each delegation surfaces exactly once — on its
+ * first sighting, whatever status that is (a delegation first seen already
+ * terminal still gets its single line). Every later frame for the same id is
+ * swallowed, so a `running → success` pair never doubles up. Non-subagent
+ * events yield nothing.
  */
 export class SubagentNoticeTracker {
-  private readonly lastEmitted = new Map<string, ToolUseStatus>();
+  private readonly emitted = new Set<string>();
 
   notice(event: ToolUseEvent): string | null {
     if (!event.isSubagent) return null;
-    const previous = this.lastEmitted.get(event.toolCallId);
-    if (previous === event.status) return null;
-    // Emit on first sighting, or when a terminal state arrives after running.
-    if (previous === undefined || event.status !== "running") {
-      this.lastEmitted.set(event.toolCallId, event.status);
-      return formatSubagentNotice(event);
-    }
-    return null;
+    if (this.emitted.has(event.toolCallId)) return null;
+    this.emitted.add(event.toolCallId);
+    return formatSubagentNotice(event);
   }
 }

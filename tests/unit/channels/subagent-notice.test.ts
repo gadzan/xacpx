@@ -32,17 +32,15 @@ test("tracker ignores non-subagent events", () => {
   expect(tracker.notice(event({}))).toBeNull();
 });
 
-test("tracker emits once on first sighting and once on terminal transition", () => {
+test("tracker emits exactly once per delegation, swallowing later frames", () => {
   const tracker = new SubagentNoticeTracker();
   const first = tracker.notice(event({ isSubagent: true, status: "running", summary: "job" }));
   expect(first).toBe("↳ [subagent] job (running)");
   // Repeated running updates are suppressed.
   expect(tracker.notice(event({ isSubagent: true, status: "running", summary: "job" }))).toBeNull();
-  // Terminal transition emits again.
-  const done = tracker.notice(event({ isSubagent: true, status: "success", summary: "job" }));
-  expect(done).toBe("↳ [subagent] job (done)");
-  // No duplicate for the same terminal status.
+  // The terminal transition must NOT produce a second line — one notice per delegation.
   expect(tracker.notice(event({ isSubagent: true, status: "success", summary: "job" }))).toBeNull();
+  expect(tracker.notice(event({ isSubagent: true, status: "error", summary: "job" }))).toBeNull();
 });
 
 test("tracker emits a single line when a delegation is first seen already terminal", () => {

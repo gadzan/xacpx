@@ -440,6 +440,31 @@ async start(input: ChannelStartInput): Promise<void> {
 
 ---
 
+### 5.2 Subagent notices for text channels (`formatSubagentNotice` / `SubagentNoticeTracker`)
+
+When a turn drives a subagent (an `Agent` / `Task` delegation), the transport marks the corresponding tool events with `isSubagent: true` (and, when the provider supplies it, `parentToolCallId`). Rich channels like the Feishu card or the web dashboard fold these into a nested trace. A text-only channel (WeChat, Yuanbao) can't render that, so `xacpx/plugin-api` exports two helpers that degrade the trace to one honest line per delegation:
+
+```ts
+import { SubagentNoticeTracker, formatSubagentNotice, type ToolUseEvent } from "xacpx/plugin-api";
+
+// Create ONE tracker per turn (not per event), then feed it every tool event.
+const notices = new SubagentNoticeTracker();
+
+const request = {
+  // ...
+  onToolEvent: (event: ToolUseEvent) => {
+    const line = notices.notice(event); // → "↳ [subagent] <task> (running)" or null
+    if (line) void sendLine(line);       // your channel's foreground-gated send
+  },
+};
+```
+
+- `SubagentNoticeTracker.notice(event)` returns a line **only** for `isSubagent` events, and **at most once per `toolCallId`** — the first sighting emits, every later frame (including the terminal one) is swallowed, so a `running → success` pair never doubles up. Ordinary tool calls always return `null` to avoid flooding a linear chat.
+- `formatSubagentNotice(event)` is the stateless formatter behind it (prefers `event.summary`, falls back to `toolName`, truncates long titles). Use it directly only if you need custom dedup.
+- The helpers never invent child activity they can't prove — they surface the delegation itself, nothing more.
+
+---
+
 ## 6. Outbound quota: `OutboundQuota`
 
 ```ts

@@ -2,7 +2,7 @@ import type { PlanEntry, PromptUsage } from "xacpx/plugin-api";
 import { t } from "../i18n/index.js";
 import { en } from "../i18n/en.js";
 import { zh } from "../i18n/zh.js";
-import type { ToolUseStep } from "./tool-use-types.js";
+import type { ToolUseStatus, ToolUseStep } from "./tool-use-types.js";
 
 export const STREAMING_ELEMENT_ID = "streaming_content";
 export const REASONING_ELEMENT_ID = "reasoning_content";
@@ -271,7 +271,7 @@ const TOOL_KIND_ICON: Record<string, string> = {
 // nesting depth is conveyed with an ideographic space that survives rendering.
 const INDENT_UNIT = "\u3000";
 
-function statusBadge(status: string): string {
+function statusBadge(status: ToolUseStatus): string {
   return status === "running" ? "⏳" : status === "error" ? "❌" : "✅";
 }
 

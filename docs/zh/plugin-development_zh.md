@@ -440,6 +440,31 @@ async start(input: ChannelStartInput): Promise<void> {
 
 ---
 
+### 5.2 文本频道的子代理提示（`formatSubagentNotice` / `SubagentNoticeTracker`）
+
+当一轮对话触发子代理（`Agent` / `Task` 委派）时，传输层会给对应的工具事件打上 `isSubagent: true`（若 provider 提供，还会带 `parentToolCallId`）。飞书卡片、Web 面板这类富频道会把它们折叠成嵌套轨迹；纯文本频道（微信、元宝）渲染不了，因此 `xacpx/plugin-api` 导出两个 helper，把轨迹降级为“每次委派一行”的诚实呈现：
+
+```ts
+import { SubagentNoticeTracker, formatSubagentNotice, type ToolUseEvent } from "xacpx/plugin-api";
+
+// 每一轮对话只建一个 tracker（不是每个事件建一个），把该轮的每个工具事件都喂给它。
+const notices = new SubagentNoticeTracker();
+
+const request = {
+  // ...
+  onToolEvent: (event: ToolUseEvent) => {
+    const line = notices.notice(event); // → "↳ [subagent] <task> (running)" 或 null
+    if (line) void sendLine(line);       // 你的频道自己的前台门控发送
+  },
+};
+```
+
+- `SubagentNoticeTracker.notice(event)` **只**对 `isSubagent` 事件返回一行，且**同一个 `toolCallId` 最多一行**——首次出现时输出，之后的所有帧（包括终止帧）都被吞掉，所以 `running → success` 不会重复出两行。普通工具调用一律返回 `null`，避免刷屏。
+- `formatSubagentNotice(event)` 是它背后的无状态格式化函数（优先取 `event.summary`，退回 `toolName`，超长标题会截断）。只有当你需要自定义去重时才直接用它。
+- 这两个 helper 绝不会编造无法证实的子步骤——它们只呈现委派本身。
+
+---
+
 ## 6. 出站配额：`OutboundQuota`
 
 ```ts
