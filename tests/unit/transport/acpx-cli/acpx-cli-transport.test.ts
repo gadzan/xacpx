@@ -1395,6 +1395,97 @@ test("starts a queue owner with orchestration MCP before prompting an MCP-bound 
   }]);
 });
 
+test("persists effort before launching the queue owner so reconnect replays it", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "high",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const effortRecord = JSON.stringify({
+    acpxRecordId: "acpx-record-1",
+    acpx: {
+      config_options: [{
+        id: "reasoning_effort",
+        category: "thought_level",
+        currentValue: "medium",
+        options: [{ value: "medium" }, { value: "high" }],
+      }],
+    },
+  });
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: effortRecord, stderr: "" };
+    }
+    if (args.includes("set")) {
+      events.push("set:high");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    events.push("prompt");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    launch: async () => {
+      events.push("launch");
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["set:high", "launch", "prompt"]);
+});
+
+test("does not block a prompt when the persisted effort is no longer advertised", async () => {
+  const events: string[] = [];
+  const staleSession: ResolvedSession = {
+    ...session,
+    effort: "xhigh",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "high",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) events.push("set");
+    else events.push("prompt");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    launch: async () => {
+      events.push("launch");
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await expect(transport.prompt(staleSession, "hello")).resolves.toEqual({ text: "worker response" });
+  expect(events).toEqual(["launch", "prompt"]);
+});
+
 // --- toolEventMode wiring tests ---
 
 function makeToolCallLine(toolCallId: string, title: string, kind = "read"): string {

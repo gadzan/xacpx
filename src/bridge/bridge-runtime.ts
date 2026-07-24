@@ -98,6 +98,7 @@ interface BridgeSessionInput {
   cwd: string;
   name: string;
   model?: string;
+  effort?: string;
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
   replyMode?: "stream" | "final" | "verbose";
@@ -515,6 +516,9 @@ export class BridgeRuntime {
   }
 
   async prompt(input: BridgeSessionInput & { text: string }, onEvent?: (event: BridgePromptStreamEvent) => void): Promise<{ text: string }> {
+    if (input.effort?.trim()) {
+      await this.reapplySessionEffort(input, input.effort.trim());
+    }
     await this.launchMcpQueueOwnerIfNeeded(input);
     const structuredPrompt = await createStructuredPromptFile(input.text, input.media);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildPromptArgs(input, [
@@ -720,13 +724,31 @@ export class BridgeRuntime {
     effort: string;
   }): Promise<Record<string, never>> {
     const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
-    const advertised = requireAdvertisedSessionEffort(record, input.effort);
+    await this.applyAdvertisedSessionEffort(input, input.effort, record);
+    return {};
+  }
+
+  private async reapplySessionEffort(input: BridgeSessionInput, effort: string): Promise<void> {
+    const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
+    const observed = parseSessionEffortRecord(record);
+    if (!observed?.available.includes(effort)) {
+      return;
+    }
+    await this.applyAdvertisedSessionEffort(input, effort, record);
+  }
+
+  private async applyAdvertisedSessionEffort(
+    input: BridgeSessionInput,
+    effort: string,
+    record: string,
+  ): Promise<void> {
+    const advertised = requireAdvertisedSessionEffort(record, effort);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "set",
       "-s",
       input.name,
       advertised.configId,
-      input.effort,
+      effort,
     ]));
     const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
@@ -735,7 +757,6 @@ export class BridgeRuntime {
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set effort failed");
     }
-    return {};
   }
 
   async cancel(input: {

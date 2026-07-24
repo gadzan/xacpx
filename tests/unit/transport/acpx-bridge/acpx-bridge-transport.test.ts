@@ -131,11 +131,12 @@ test("includes orchestration MCP identity in bridge prompt params", async () => 
   const request = mock(async () => ({ text: "ok" }));
   const transport = new AcpxBridgeTransport({ request });
 
-  await transport.prompt(mcpSession, "hello");
+  await transport.prompt({ ...mcpSession, effort: "high" }, "hello");
 
   expect(request.mock.calls[0]?.[1]).toMatchObject({
     mcpCoordinatorSession: "backend:main",
     mcpSourceHandle: "backend:claude:backend:main",
+    effort: "high",
   });
 });
 

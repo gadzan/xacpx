@@ -327,6 +327,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       mcpSourceHandle: session.mcpSourceHandle,
       replyMode: session.effectiveReplyMode ?? session.replyMode ?? "verbose",
       ...(session.model?.trim() ? { model: session.model.trim() } : {}),
+      ...(session.effort?.trim() ? { effort: session.effort.trim() } : {}),
     };
   }
 }

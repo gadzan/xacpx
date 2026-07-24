@@ -218,6 +218,7 @@ export class BridgeServer {
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           model: asOptionalString(params.model),
+          effort: asOptionalString(params.effort),
           mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
           mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           text: requirePromptText(params, media),

@@ -47,6 +47,13 @@ const MODEL_SET_SETTLE_BUDGET_MS = 2 * (
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS
 );
 
+function normalizeAdvertisedEffortCurrent(observed: { current?: string; available: string[] }): string | undefined {
+  if (observed.available.length === 0) return observed.current;
+  return observed.current && observed.available.includes(observed.current)
+    ? observed.current
+    : undefined;
+}
+
 export interface ModelSetRequestOptions {
   /** Connector-side deadline derived from the Hub request lifetime. */
   deadlineAt?: number;
@@ -98,7 +105,7 @@ export interface ControlServiceDeps {
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
-    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setDisplayName"
+    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setSessionEffort" | "setDisplayName"
   >;
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
@@ -444,9 +451,26 @@ export class ControlService {
 
   /** Read the reasoning-effort values advertised by the session's adapter. */
   async getSessionEffort(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
-    const session = await this.resolveControlSession(chatKey, alias);
-    if (!session || !this.deps.transport.getSessionEffort) return { available: [] };
-    return await this.deps.transport.getSessionEffort(session);
+    const initialSession = await this.resolveControlSession(chatKey, alias);
+    const getEffort = this.deps.transport.getSessionEffort?.bind(this.deps.transport);
+    if (!initialSession || !getEffort) return { available: [] };
+    return await this.runSessionConfigSetExclusive(initialSession.alias, async () => {
+      const session = await this.resolveControlSession(chatKey, alias);
+      if (!session) return { available: [] };
+      const observed = await getEffort(session);
+      const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
+      let current = session.effort && observed.available.includes(session.effort)
+        ? session.effort
+        : observedCurrent;
+      if (session.effort && observed.available.length > 0 && !observed.available.includes(session.effort)) {
+        await this.deps.sessions.setSessionEffort(session.alias, observedCurrent);
+        current = observedCurrent;
+      }
+      return {
+        current,
+        available: observed.available,
+      };
+    });
   }
 
   /** Set the adapter-advertised reasoning effort for a session. */
@@ -472,6 +496,8 @@ export class ControlService {
           // Preserve the original timeout when authoritative reconciliation fails.
           throw error;
         }
+        const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
+        await this.deps.sessions.setSessionEffort(session.alias, observedCurrent);
         try {
           await this.deps.logger?.error(
             "control.session.effort.timeout_reconciled",
@@ -479,15 +505,16 @@ export class ControlService {
             {
               sessionAlias: session.alias,
               requestedEffort: effort,
-              observedEffort: observed.current ?? null,
+              observedEffort: observedCurrent ?? null,
               timeout: error instanceof Error ? error.message : String(error),
             },
           );
         } catch {
           // Logging is diagnostic only; reconciliation already succeeded.
         }
-        return { current: observed.current, applied: observed.current === effort };
+        return { current: observedCurrent, applied: observedCurrent === effort };
       }
+      await this.deps.sessions.setSessionEffort(session.alias, effort);
       return { current: effort, applied: true };
     });
   }
@@ -698,6 +725,10 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
+    if (this.sessionConfigSetTails.size > 0) {
+      const internalAlias = await this.deps.sessions.resolveAliasForChat(input.chatKey, input.sessionAlias);
+      await this.sessionConfigSetTails.get(internalAlias)?.catch(() => {});
+    }
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,

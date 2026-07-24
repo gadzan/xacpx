@@ -33,6 +33,8 @@ export interface LogicalSession {
   mode_id?: string;
   /** Per-session LLM model override (e.g. `gpt-5.2[high]`); falls back to the agent config default. */
   model?: string;
+  /** Per-session reasoning-effort preference advertised by the active ACP adapter. */
+  effort?: string;
   /** Per-session cosmetic display label shown in the relay-web dashboard only.
    *  Never affects identity (`alias`), `/use`, or the transport session. Cleared → UI shows alias. */
   display_name?: string;

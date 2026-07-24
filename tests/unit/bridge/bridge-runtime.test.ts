@@ -672,6 +672,91 @@ test("prompt starts queue owner with orchestration MCP identity", async () => {
   }]);
 });
 
+test("prompt persists effort before launching the queue owner so reconnect replays it", async () => {
+  const events: string[] = [];
+  const effortRecord = JSON.stringify({
+    acpxRecordId: "acpx-record-1",
+    acpx: {
+      config_options: [{
+        id: "reasoning_effort",
+        category: "thought_level",
+        currentValue: "medium",
+        options: [{ value: "medium" }, { value: "high" }],
+      }],
+    },
+  });
+  const queueOwnerLauncher = {
+    launch: async () => {
+      events.push("launch");
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: effortRecord, stderr: "" };
+    }
+    if (args.includes("set")) {
+      events.push("set:high");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    events.push("prompt");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+
+  await runtime.prompt({
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    effort: "high",
+    mcpCoordinatorSession: "backend:main",
+  });
+
+  expect(events).toEqual(["set:high", "launch", "prompt"]);
+});
+
+test("prompt continues when the persisted effort is no longer advertised", async () => {
+  const events: string[] = [];
+  const queueOwnerLauncher = {
+    launch: async () => {
+      events.push("launch");
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "high",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) events.push("set");
+    else events.push("prompt");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+
+  await expect(runtime.prompt({
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    effort: "xhigh",
+    mcpCoordinatorSession: "backend:main",
+  })).resolves.toEqual({ text: "worker response" });
+  expect(events).toEqual(["launch", "prompt"]);
+});
+
 test("prompt forwards --ttl when queueOwnerTtlSeconds is configured", async () => {
   const calls: string[][] = [];
   const run = async (_command: string, args: string[]) => {
