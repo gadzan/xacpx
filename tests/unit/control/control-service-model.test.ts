@@ -252,6 +252,34 @@ test("getSessionEffort returns the adapter-advertised values", async () => {
   });
 });
 
+test("getSessionEffort omits an unpersisted adapter current outside the advertised efforts", async () => {
+  const { deps } = makeDeps();
+  deps.transport.getSessionEffort = async () => ({
+    current: "xhigh",
+    available: ["low", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: undefined,
+    available: ["low", "high"],
+  });
+});
+
+test("getSessionEffort normalizes a blank current when efforts are advertised", async () => {
+  const { deps } = makeDeps();
+  deps.transport.getSessionEffort = async () => ({
+    current: "",
+    available: ["low", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.getSessionEffort("relay:acc", "backend")).resolves.toEqual({
+    current: undefined,
+    available: ["low", "high"],
+  });
+});
+
 test("setSessionEffort applies the selected value through the transport", async () => {
   const { deps, calls } = makeDeps();
   const control = new ControlService(deps as never);
@@ -406,6 +434,24 @@ test("setSessionEffort returns the authoritative effort when timeout readback ob
     applied: false,
   });
   expect(calls).toEqual(["persist-effort:internal-backend:medium"]);
+});
+
+test("setSessionEffort omits an unsupported effort from timeout readback", async () => {
+  const { deps, calls } = makeDeps();
+  deps.transport.setSessionEffort = async () => {
+    throw new CommandTimeoutError(30_000, "acpx set effort", { stage: "set-session-effort" });
+  };
+  deps.transport.getSessionEffort = async () => ({
+    current: "xhigh",
+    available: ["low", "high"],
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(control.setSessionEffort("relay:acc", "backend", "high")).resolves.toEqual({
+    current: undefined,
+    applied: false,
+  });
+  expect(calls).toEqual(["persist-effort:internal-backend:"]);
 });
 
 test("setSessionEffort preserves the original timeout when effort readback fails", async () => {

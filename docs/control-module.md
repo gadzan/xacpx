@@ -6,7 +6,8 @@
 `OrchestrationService` / `ConsoleAgent`（ChatAgent），自身无持久状态。每轮对话的
 并发闸门与执行体已从门面里拆出：并发生命周期（in-flight / 队列 / drain 三态）由
 `TurnQueue` 持有，单轮执行体由 `SessionTurnRunner` 承担，`ControlService.prompt` 只是把
-调用转交给 `TurnQueue.submit`。
+调用转交给 `TurnQueue.submit`；唯一的提交前协调是等待同一逻辑会话已登记的 model/effort
+配置操作完成，避免紧随配置变更的 prompt 使用旧值。该等待不持有或改变 turn 并发状态。
 
 ## 文件
 
@@ -14,7 +15,7 @@
   orchestration / prompt / executeCommand。导出类型：`ControlServiceDeps`、
   `ControlSessionInfo`、`ControlPromptInput`、`ControlPromptResult`、
   `ControlExecuteCommandInput`。`prompt` / `runScheduledTurn` / `cancelTurn` /
-  `cancelQueuedItem` 都转发给 `TurnQueue`。
+  `cancelQueuedItem` 都转发给 `TurnQueue`；`prompt` 在转发前等待同会话已登记的配置操作。
 - **`src/control/turn-queue.ts`** — `TurnQueue`：三态并发闸门
   （`inFlight` / `queues` / `draining`）。构造时注入 `{ runTurn, emitQueueUpdated,
   detectSessionsChanged }`。**无会话依赖**——回合结束后的 `sessions-changed` 检测经
@@ -174,7 +175,8 @@ transport 权威值并返回实际的 `{ current, applied }`；查询失败时�
 `current` 返回；每次 prompt 会先把仍受支持的持久化值写入 acpx 的 desired config，再启动
 queue owner，使新 ACP session 通过 acpx 的 reconnect replay 恢复该值。这样 adapter/queue owner
 随任务结束而重建时，Web 重载和实际 Agent 运行都不会回到 adapter 默认值；若 adapter 不再广告
-该值则采用当前受支持值，不阻断 prompt。
+该值则采用当前受支持值，不阻断 prompt。adapter 报告的 `current` 在 `available` 非空时也必须位于
+其中，否则 GET 与 timeout 对账都将其规范化为未设置，避免向 Web 返回或持久化不受支持的值。
 串行队列出闸时，ControlService 会为最坏 90 秒的 set + readback 预留完整预算；剩余时间不足的
 请求在触碰 transport 前失败，避免排队重新吃掉 Hub 为状态变更保留的响应窗口。
 

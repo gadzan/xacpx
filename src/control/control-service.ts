@@ -47,6 +47,13 @@ const MODEL_SET_SETTLE_BUDGET_MS = 2 * (
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS
 );
 
+function normalizeAdvertisedEffortCurrent(observed: { current?: string; available: string[] }): string | undefined {
+  if (observed.available.length === 0) return observed.current;
+  return observed.current && observed.available.includes(observed.current)
+    ? observed.current
+    : undefined;
+}
+
 export interface ModelSetRequestOptions {
   /** Connector-side deadline derived from the Hub request lifetime. */
   deadlineAt?: number;
@@ -451,15 +458,13 @@ export class ControlService {
       const session = await this.resolveControlSession(chatKey, alias);
       if (!session) return { available: [] };
       const observed = await getEffort(session);
+      const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
       let current = session.effort && observed.available.includes(session.effort)
         ? session.effort
-        : observed.current;
+        : observedCurrent;
       if (session.effort && observed.available.length > 0 && !observed.available.includes(session.effort)) {
-        const reconciled = observed.current && observed.available.includes(observed.current)
-          ? observed.current
-          : undefined;
-        await this.deps.sessions.setSessionEffort(session.alias, reconciled);
-        current = reconciled;
+        await this.deps.sessions.setSessionEffort(session.alias, observedCurrent);
+        current = observedCurrent;
       }
       return {
         current,
@@ -491,7 +496,8 @@ export class ControlService {
           // Preserve the original timeout when authoritative reconciliation fails.
           throw error;
         }
-        await this.deps.sessions.setSessionEffort(session.alias, observed.current);
+        const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
+        await this.deps.sessions.setSessionEffort(session.alias, observedCurrent);
         try {
           await this.deps.logger?.error(
             "control.session.effort.timeout_reconciled",
@@ -499,14 +505,14 @@ export class ControlService {
             {
               sessionAlias: session.alias,
               requestedEffort: effort,
-              observedEffort: observed.current ?? null,
+              observedEffort: observedCurrent ?? null,
               timeout: error instanceof Error ? error.message : String(error),
             },
           );
         } catch {
           // Logging is diagnostic only; reconciliation already succeeded.
         }
-        return { current: observed.current, applied: observed.current === effort };
+        return { current: observedCurrent, applied: observedCurrent === effort };
       }
       await this.deps.sessions.setSessionEffort(session.alias, effort);
       return { current: effort, applied: true };
