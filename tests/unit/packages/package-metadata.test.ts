@@ -16,10 +16,10 @@ test("root package publishes as xacpx and exposes plugin-api", () => {
   });
 });
 
-test("root package version is 0.17.0-beta.13", () => {
+test("root package version is 0.17.0", () => {
   const pkg = readJson("package.json");
 
-  expect(pkg.version).toBe("0.17.0-beta.13");
+  expect(pkg.version).toBe("0.17.0");
 });
 
 test("first-party channel plugins peer depend on xacpx", () => {
@@ -33,7 +33,7 @@ test("first-party channel plugins peer depend on xacpx", () => {
     expect(pkg.publishConfig.access).toBe("public");
   }
   expect(feishu.peerDependencies.xacpx).toBe(">=0.9.0-0");
-  expect(yuanbao.peerDependencies.xacpx).toBe(">=0.17.0-beta.13");
+  expect(yuanbao.peerDependencies.xacpx).toBe(">=0.17.0");
 });
 
 test("deprecated weacpx compat shim forwards plugin-api to xacpx", () => {

@@ -7,19 +7,19 @@ import { validatePluginCompatibility } from "../../../../src/plugins/compatibili
 test("relay connector requires the git-ops-capable xacpx core", () => {
   const pkg = JSON.parse(readFileSync("packages/channel-relay/package.json", "utf8"));
 
-  expect(plugin.minXacpxVersion).toBe("0.17.0-beta.11");
-  expect(pkg.peerDependencies.xacpx).toBe(">=0.17.0-beta.11");
+  expect(plugin.minXacpxVersion).toBe("0.17.0");
+  expect(pkg.peerDependencies.xacpx).toBe(">=0.17.0");
 
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.17.0-beta.6",
+    currentXacpxVersion: "0.16.0",
   })).toThrow();
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.17.0-beta.11",
+    currentXacpxVersion: "0.17.0",
   })).not.toThrow();
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.17.0",
+    currentXacpxVersion: "0.18.0",
   })).not.toThrow();
 });
