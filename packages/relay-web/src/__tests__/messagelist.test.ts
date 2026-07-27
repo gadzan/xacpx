@@ -1,10 +1,17 @@
 import { mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+
+// MessageList imports AgentIcon at module evaluation time. Stub the raw SVG catalog so
+// this suite does not depend on Windows being able to open every optional @lobehub icon
+// file (some hosts return EPERM for openclaw-color.svg).
+vi.mock("../lib/agent-icons", () => ({ agentIconSvg: () => null }));
+
 import MessageList from "../components/MessageList.vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
+import CopyButton from "../components/CopyButton.vue";
 
 // StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
 // diagrams on theme change, so every mount here needs an active Pinia instance.
@@ -70,14 +77,41 @@ describe("MessageList", () => {
     expect(out.html()).toContain("<strong>bold</strong>");
   });
 
-  it("keeps user input as plain text (no markdown rendering)", () => {
+  it("renders user input as markdown, same as agent output", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "in", text: "**not bold**" })], liveTurn: null },
+      props: { messages: [msg({ direction: "in", text: "**bold input**" })], liveTurn: null },
     });
     const inEl = wrapper.find('[data-test="msg-in"]');
     expect(inEl.exists()).toBe(true);
-    expect(inEl.html()).not.toContain("<strong>");
-    expect(inEl.text()).toContain("**not bold**");
+    expect(inEl.html()).toContain("<strong>bold input</strong>");
+  });
+
+  it("escapes raw HTML from user input instead of dropping it", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "<script>alert(1)</script>" })], liveTurn: null },
+    });
+    const inEl = wrapper.find('[data-test="msg-in"]');
+    expect(inEl.text()).toContain("alert(1)");
+    expect(wrapper.find("script").exists()).toBe(false);
+  });
+
+  it("wraps user code fences and tables in scrollable containers", () => {
+    const text = "```js\nconst x = 1\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |";
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text })], liveTurn: null },
+    });
+    const inEl = wrapper.find('[data-test="msg-in"]');
+    expect(inEl.find("pre").exists()).toBe(true);
+    expect(inEl.find(".md-table-wrap").exists()).toBe(true);
+  });
+
+  it("offers a copy button on user messages carrying the verbatim source text", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "**raw source**" })], liveTurn: null },
+    });
+    const copy = wrapper.findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("**raw source**");
   });
 
   it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
