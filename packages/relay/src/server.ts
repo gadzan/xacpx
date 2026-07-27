@@ -25,6 +25,47 @@ const MAX_MESSAGES_PER_SESSION = 2000;
 const MAX_TOOL_STEPS = 200;
 const REASONING_CAP = 16000;
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
+// Per-string bound on tool-step / seeded-history content entering the turn buffer. Full
+// file diffs or command output can reach megabytes; everything buffered is broadcast,
+// snapshotted and persisted into the message's `structured` column, then served 100
+// rows per history page. Compliant connectors already cap at 8000/4000 chars
+// (tool-presentation.ts) — this is defence in depth against non-conforming connectors.
+// Counted in UTF-16 code units (string.length), not bytes.
+const TOOL_DETAIL_CAP = 32 * 1024;
+
+const capText = (s: string): string => (s.length > TOOL_DETAIL_CAP ? `${s.slice(0, TOOL_DETAIL_CAP)}…` : s);
+
+function hasOversizedString(value: unknown): boolean {
+  if (typeof value === "string") return value.length > TOOL_DETAIL_CAP;
+  if (Array.isArray(value)) return value.some(hasOversizedString);
+  if (value !== null && typeof value === "object") return Object.values(value).some(hasOversizedString);
+  return false;
+}
+
+function capDeep<T>(value: T): T {
+  if (typeof value === "string") return capText(value) as T;
+  if (Array.isArray(value)) return value.map(capDeep) as T;
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = capDeep(v);
+    return out as T;
+  }
+  return value;
+}
+
+/** Returns the step with every oversized string truncated — title, error, and all
+ *  detail variants (diff texts, command/search output, read preview, fields, …) —
+ *  or the original step when everything already fits (the common case: no copies
+ *  on the hot path). Deep-generic so future detail variants are covered by default. */
+export function capToolStep(step: ToolStepDto): ToolStepDto {
+  return hasOversizedString(step) ? capDeep(step) : step;
+}
+
+/** Same bound for a session-history seed's `structured` payload (toolSteps / parts /
+ *  reasoning), which enters the DB without passing through the turn buffer. */
+export function capSeededStructured<T>(structured: T): T {
+  return hasOversizedString(structured) ? capDeep(structured) : structured;
+}
 
 export interface RelayRuntime {
   db: SqlDriver;
@@ -166,7 +207,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             });
             return;
           }
-          const event = raw as ControlEventDto;
+          // Cap oversized tool steps BEFORE broadcast so the live view and the
+          // persisted history stay byte-identical, and an oversized event from a
+          // non-conforming connector isn't fanned out untruncated to every browser.
+          const event = ((): ControlEventDto => {
+            const e = raw as ControlEventDto;
+            return e.type === "tool-event" ? { ...e, step: capToolStep(e.step) } : e;
+          })();
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
             turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
@@ -194,6 +241,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           } else if (event.type === "tool-event") {
             const a = turnBuffers.get(key(instanceId, event.sessionAlias));
             if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
+              // Already capped before broadcast above.
               a.steps.set(event.step.toolCallId, event.step);
               pushToolPart(a, event.step);
             }
@@ -233,7 +281,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const existing = messages.listBySession(accountId, instanceId, event.sessionAlias, { limit: 1 });
             if (existing.messages.length === 0) {
               for (const row of event.messages) {
-                messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured);
+                messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured ? capSeededStructured(row.structured) : row.structured);
               }
             }
           }

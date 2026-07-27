@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
@@ -52,6 +52,69 @@ const atBottom = ref(true);
 const THRESHOLD = 48; // px from bottom still counts as "at bottom"
 const TOP_THRESHOLD = 240; // px from top that triggers a "load older" page fetch
 
+// Progressive tail-first mounting: switching to a session with a long history would
+// otherwise create every row's component tree (markdown-it parse + DOMPurify per text
+// part) in a single tick. Mount only the newest INITIAL_ROWS immediately, then reveal
+// the older rows in rAF batches — `content-visibility` already keeps them cheap to
+// paint, this keeps them cheap to CREATE. `hiddenCount` = oldest rows not yet mounted.
+const INITIAL_ROWS = 30;
+const REVEAL_BATCH = 30;
+const hiddenCount = ref(0);
+const visibleMessages = computed(() => (hiddenCount.value > 0 ? props.messages.slice(hiddenCount.value) : props.messages));
+let revealRaf = 0;
+
+function revealStep(): void {
+  revealRaf = 0;
+  if (hiddenCount.value <= 0) return;
+  // Revealing rows PREPENDS content: pin the viewport the same way load-older does —
+  // re-stick to the bottom when pinned there, else keep distance-from-bottom invariant.
+  const el = scroller.value;
+  const anchor = el && !atBottom.value ? el.scrollHeight - el.scrollTop : null;
+  hiddenCount.value = Math.max(0, hiddenCount.value - REVEAL_BATCH);
+  void nextTick(() => {
+    const e = scroller.value;
+    if (e) {
+      if (anchor !== null) e.scrollTop = e.scrollHeight - anchor;
+      else if (atBottom.value) e.scrollTop = e.scrollHeight;
+    }
+    if (hiddenCount.value > 0) revealRaf = requestAnimationFrame(revealStep);
+  });
+}
+
+function scheduleReveal(): void {
+  if (hiddenCount.value <= 0 || revealRaf) return;
+  // jsdom / engines without rAF: mount everything synchronously (tests see full lists).
+  if (typeof requestAnimationFrame !== "function") {
+    hiddenCount.value = 0;
+    return;
+  }
+  revealRaf = requestAnimationFrame(revealStep);
+}
+
+onBeforeUnmount(() => {
+  if (revealRaf) cancelAnimationFrame(revealRaf);
+  revealRaf = 0;
+  if (settleRaf) cancelAnimationFrame(settleRaf);
+  settleRaf = 0;
+});
+
+// Arm progressive mounting when a freshly selected session's rows land: only a jump
+// from empty to many rows re-arms it — an in-place replace (turn-finished history
+// convergence) keeps stable keys and reuses mounted components, so hiding rows again
+// would only cause churn. Session switches empty `messages` first (chat.select), so
+// the 0→N transition is a reliable "new transcript" signal.
+watch(
+  () => props.messages.length,
+  (now, prev) => {
+    if (prev === 0 && now > INITIAL_ROWS) {
+      hiddenCount.value = now - INITIAL_ROWS;
+      scheduleReveal();
+    } else if (hiddenCount.value > now) {
+      hiddenCount.value = Math.max(0, now - INITIAL_ROWS);
+    }
+  },
+);
+
 // Distance-from-bottom captured when a "load older" fetch starts, so we can restore the
 // exact scroll position after the older page is PREPENDED (prepend only grows the top, so
 // distance-from-bottom is content-invariant). Null when no prepend is pending.
@@ -61,6 +124,9 @@ function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+  // Near the top while older rows are still mounting locally → nothing to fetch yet;
+  // the reveal loop is already draining hiddenCount.
+  if (hiddenCount.value > 0) return;
   // Near the top with older history available → fetch the previous page. Capture the
   // anchor first; the prepend watcher below restores position once the rows arrive.
   if (el.scrollTop <= TOP_THRESHOLD && props.hasMoreOlder && !props.loadingOlder && pendingDistFromBottom === null) {
@@ -190,8 +256,11 @@ watch(
           <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
         </div>
         <!-- Stable keys (persisted id, else an optimistic-row key) so a prepend doesn't
-             re-key/re-render every row — avoids markdown re-parse + scroll jank. -->
-        <template v-for="(m, i) in messages" :key="messageKey(m, i)">
+             re-key/re-render every row — avoids markdown re-parse + scroll jank.
+             `visibleMessages` mounts tail-first (progressive reveal, see hiddenCount);
+             the key index is translated back to the FULL-array index so optimistic-row
+             keys stay stable while older rows are still being revealed above. -->
+        <template v-for="(m, i) in visibleMessages" :key="messageKey(m, hiddenCount + i)">
           <!-- USER row -->
           <div v-if="m.direction === 'in'" class="cv-row flex justify-end"
                :data-scheduled-task="schedOf(m)?.taskId">

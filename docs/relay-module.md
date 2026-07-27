@@ -150,6 +150,11 @@
 - `DIFF_CAP = 4000` 字符（diff oldText / newText 各自上限）。
 - `REASONING_CAP = 16000` 字符（在服务端侧对 reasoning chunk 累积截断）。
 - **工具步数上限 `MAX_TOOL_STEPS = 200`**（服务端 server.ts 中校验，超出步数的新步骤静默丢弃）。
+- **hub 侧 `TOOL_DETAIL_CAP = 32K 字符`（UTF-16 code units）**（server.ts `capToolStep` / `capSeededStructured`，纵深防御）：
+  递归截断 tool step 内所有超限字符串（title/error 以及 detail 的 diff、命令/搜索输出、read 预览、text、fields 等）。
+  tool-event 在 **broadcast 之前** 截断，保证 live 视图与持久化历史一致；`session-history` 回填的 `structured` 同样过闸。
+  规范的 connector 已经在上面 TEXT_CAP/DIFF_CAP 处截过，正常流量不受影响（字符串都在限内时原样返回，零拷贝）；
+  这道闸拦的是绕过规整的非规范/旧版 connector，避免超大 detail 撑爆持久化 `structured` 列、历史分页 payload 和浏览器扇出。
 - 按 `kind` 分派到具体 `ToolDetailDto` 变体（`diff / read / command / search / text / fields`），不向线路侧暴露任何原始 JSON。
 
 ### 服务端累积与持久化（packages/relay/src/server.ts）

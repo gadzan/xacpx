@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, markRaw, ref } from "vue";
 import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 import { useSessionControlsStore } from "./session-controls";
@@ -73,6 +73,14 @@ export interface ChatMessage extends MessageRecordDto {
   // Present on an inbound prompt produced by a fired scheduled task — drives the
   // "⏰ Scheduled" badge so a turn that appears on its own has visible provenance.
   scheduled?: ScheduledOriginDto;
+}
+
+// History rows are immutable once loaded (updates arrive as whole-row replacements), so
+// deep-proxying their potentially huge `structured` payload (full tool diffs, command
+// output, ordered parts) is pure overhead — markRaw keeps it out of Vue's reactivity.
+function rawStructured<T extends MessageRecordDto>(row: T): T {
+  if (row.structured) row.structured = markRaw(row.structured);
+  return row;
 }
 
 export const useChatStore = defineStore("chat", () => {
@@ -195,7 +203,7 @@ export const useChatStore = defineStore("chat", () => {
     if (hasContent && selected) {
       const hasStructured = toolSteps.length > 0 || reasoning.length > 0;
       const structured = hasStructured
-        ? { toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts }
+        ? markRaw({ toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts })
         : undefined;
       messages.value.push({
         instanceId: instId,
@@ -270,7 +278,7 @@ export const useChatStore = defineStore("chat", () => {
       // would leave the pane with only the live turn. Retry against the same
       // selection so persisted history and the current turn converge.
       if (revision !== transcriptRevision) return loadHistory();
-      messages.value = rows;
+      messages.value = rows.map(rawStructured);
       touchTranscript();
       hasMoreOlder.value = hasMore ?? false;
     } finally {
@@ -297,7 +305,7 @@ export const useChatStore = defineStore("chat", () => {
       // The session may have changed while awaiting; only apply if still selected.
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
       if (older.length > 0) {
-        messages.value = [...older, ...messages.value];
+        messages.value = [...older.map(rawStructured), ...messages.value];
         touchTranscript();
       }
       hasMoreOlder.value = hasMore ?? false;
