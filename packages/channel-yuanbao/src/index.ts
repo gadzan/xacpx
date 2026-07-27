@@ -9,7 +9,7 @@ export { yuanbaoCliProvider } from "./yuanbao-provider.js";
 const plugin: XacpxPlugin = {
   apiVersion: 1,
   name: "@ganglion/xacpx-channel-yuanbao",
-  minXacpxVersion: "0.17.0-beta.13",
+  minXacpxVersion: "0.17.0",
   channels: [
     {
       type: "yuanbao",

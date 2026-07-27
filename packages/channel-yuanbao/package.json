@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-yuanbao",
-  "version": "0.6.0-beta.0",
+  "version": "0.6.0",
   "description": "Tencent Yuanbao channel plugin for xacpx.",
   "license": "MIT",
   "keywords": ["xacpx", "yuanbao", "channel", "plugin"],
@@ -20,7 +20,7 @@
   },
   "files": ["dist", "README.md"],
   "peerDependencies": {
-    "xacpx": ">=0.17.0-beta.13"
+    "xacpx": ">=0.17.0"
   },
   "peerDependenciesMeta": {
     "xacpx": {

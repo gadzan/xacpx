@@ -2,7 +2,7 @@ import type { AppLogger } from "xacpx/plugin-api";
 import type { WsSyncCommand, WsSyncInformationData } from "./access/ws/types.js";
 
 // 与 packages/channel-yuanbao/package.json 的 version 一致；同步测试校验防漂移。
-export const PLUGIN_VERSION = "0.6.0-beta.0";
+export const PLUGIN_VERSION = "0.6.0";
 
 // 元宝协议 SyncInformationType.SYNC_INFORMATION_TYPE_COMMANDS。
 const SYNC_TYPE_COMMANDS = 1;
