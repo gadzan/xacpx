@@ -156,7 +156,7 @@ it("defers history convergence until the queued RPC response establishes correla
   ]);
 });
 
-it("retries a deferred history load after reselecting a session during prompt RPC", async () => {
+it("reloads history immediately after reselecting a session during prompt RPC", async () => {
   let resolveRpc!: (value: unknown) => void;
   rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
   const fetchMock = vi.fn().mockResolvedValue({
@@ -173,15 +173,17 @@ it("retries a deferred history load after reselecting a session during prompt RP
   const sending = chat.send("queued prompt");
   chat.select("i1", "other");
   chat.select("i1", "s");
+  // The reselected pane is empty — history must load right away rather than defer
+  // until the prompt RPC settles, or the pane would show only the live turn.
   await chat.loadHistory();
-  expect(chat.messages).toEqual([]);
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
 
   resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
   await sending;
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  // Settling the RPC must not duplicate the prompt row.
   expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
 });
 
