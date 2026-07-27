@@ -208,6 +208,11 @@ watch(
                 <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
                 <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
               </div>
+              <!-- Markdown rendering is lossy (headers, lists, fences reshape the text);
+                   copy hands back the verbatim source the user actually sent. -->
+              <div v-if="m.text" class="mt-0.5 flex items-center text-fg-muted">
+                <CopyButton :text="m.text" />
+              </div>
               <!-- Failed sends get a compact retry affordance on their own line below. -->
               <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
                 <span data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] font-medium text-danger">

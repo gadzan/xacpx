@@ -11,6 +11,7 @@ import MessageList from "../components/MessageList.vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
+import CopyButton from "../components/CopyButton.vue";
 
 // StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
 // diagrams on theme change, so every mount here needs an active Pinia instance.
@@ -85,11 +86,32 @@ describe("MessageList", () => {
     expect(inEl.html()).toContain("<strong>bold input</strong>");
   });
 
-  it("does not render raw HTML from user input", () => {
+  it("escapes raw HTML from user input instead of dropping it", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "in", text: "<script>alert(1)</script>" })], liveTurn: null },
     });
-    expect(wrapper.html()).not.toContain("<script>alert(1)</script>");
+    const inEl = wrapper.find('[data-test="msg-in"]');
+    expect(inEl.text()).toContain("alert(1)");
+    expect(wrapper.find("script").exists()).toBe(false);
+  });
+
+  it("wraps user code fences and tables in scrollable containers", () => {
+    const text = "```js\nconst x = 1\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |";
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text })], liveTurn: null },
+    });
+    const inEl = wrapper.find('[data-test="msg-in"]');
+    expect(inEl.find("pre").exists()).toBe(true);
+    expect(inEl.find(".md-table-wrap").exists()).toBe(true);
+  });
+
+  it("offers a copy button on user messages carrying the verbatim source text", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "**raw source**" })], liveTurn: null },
+    });
+    const copy = wrapper.findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("**raw source**");
   });
 
   it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
