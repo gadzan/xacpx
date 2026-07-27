@@ -489,9 +489,11 @@ user settings `env` object. It then:
   `availableModels` through the managed adapter's `CLAUDE_MODEL_CONFIG` seam;
 - keeps project/local Claude settings enabled, so their normal precedence is preserved;
 - excludes user hooks, plugins, skills, MCP servers, and permissions;
-- gives the adapter a filtered settings profile while linking Claude's session-state
+- gives the adapter a filtered settings profile while linking Claude's durable session-state
   directories back to the original profile, so native list/resume and transcript persistence
-  continue to use the existing history;
+  continue to use the existing history; Claude-managed runtime directories such as
+  `session-env` and `shell-snapshots` remain local to the filtered profile because Claude
+  may recreate them during a turn;
 - never writes provider credentials to xacpx config/state, disk, or the bridge protocol.
 
 Normal first-party Claude OAuth and `ANTHROPIC_API_KEY`-only setups do not trigger the
