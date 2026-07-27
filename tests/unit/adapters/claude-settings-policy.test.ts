@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -125,6 +126,82 @@ test("different sanitized settings use immutable profile directories", () => {
 
   expect(profileDirs).toHaveLength(2);
   expect(profileDirs[0]).not.toBe(profileDirs[1]);
+});
+
+test("profile layout changes do not reuse incompatible legacy directories", () => {
+  const root = mkdtempSync(join(tmpdir(), "xacpx-claude-profile-layout-"));
+  const sourceConfigDir = join(root, "source");
+  const profileRoot = join(root, "profiles");
+  const serialized = "{}\n";
+  const legacyDigest = createHash("sha256")
+    .update(sourceConfigDir)
+    .update("\0")
+    .update("provider-only")
+    .update("\0")
+    .update(serialized)
+    .digest("hex")
+    .slice(0, 20);
+  const legacyProfileDir = join(profileRoot, legacyDigest);
+  mkdirSync(join(legacyProfileDir, "projects"), { recursive: true });
+  mkdirSync(sourceConfigDir, { recursive: true });
+  writeFileSync(join(sourceConfigDir, "settings.json"), JSON.stringify({
+    env: { ANTHROPIC_BASE_URL: "https://provider.example" },
+  }));
+
+  try {
+    const env = resolveClaudeSpawnEnvironment(
+      { driver: "claude" },
+      {
+        baseEnv: { CLAUDE_CONFIG_DIR: sourceConfigDir },
+        profileRoot,
+      },
+    );
+
+    expect(env?.CLAUDE_CONFIG_DIR).toBeDefined();
+    expect(env?.CLAUDE_CONFIG_DIR).not.toBe(legacyProfileDir);
+    writeFileSync(join(env!.CLAUDE_CONFIG_DIR!, "projects", "new.jsonl"), "new");
+    expect(readFileSync(join(sourceConfigDir, "projects", "new.jsonl"), "utf8")).toBe("new");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude-managed runtime directories can be recreated between prompts", () => {
+  const root = mkdtempSync(join(tmpdir(), "xacpx-claude-runtime-dirs-"));
+  const sourceConfigDir = join(root, "source");
+  const profileRoot = join(root, "profiles");
+  mkdirSync(sourceConfigDir, { recursive: true });
+  writeFileSync(join(sourceConfigDir, "settings.json"), JSON.stringify({
+    env: { ANTHROPIC_BASE_URL: "https://provider.example" },
+  }));
+
+  try {
+    const options = {
+      baseEnv: { CLAUDE_CONFIG_DIR: sourceConfigDir },
+      profileRoot,
+    };
+    const firstEnv = resolveClaudeSpawnEnvironment({ driver: "claude" }, options);
+    const profileDir = firstEnv?.CLAUDE_CONFIG_DIR;
+    expect(profileDir).toBeDefined();
+    expect(existsSync(join(profileDir!, "session-env"))).toBe(false);
+    expect(existsSync(join(profileDir!, "shell-snapshots"))).toBe(false);
+
+    mkdirSync(join(profileDir!, "session-env"), { recursive: true });
+    mkdirSync(join(profileDir!, "shell-snapshots"), { recursive: true });
+    writeFileSync(join(profileDir!, "session-env", "turn.env"), "session");
+    writeFileSync(join(profileDir!, "shell-snapshots", "turn.sh"), "snapshot");
+
+    const secondEnv = resolveClaudeSpawnEnvironment({ driver: "claude" }, options);
+    expect(secondEnv?.CLAUDE_CONFIG_DIR).toBe(profileDir);
+    expect(lstatSync(join(profileDir!, "session-env")).isSymbolicLink()).toBe(false);
+    expect(lstatSync(join(profileDir!, "shell-snapshots")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(profileDir!, "session-env", "turn.env"), "utf8")).toBe("session");
+    expect(readFileSync(join(profileDir!, "shell-snapshots", "turn.sh"), "utf8")).toBe("snapshot");
+    expect(existsSync(join(sourceConfigDir, "session-env"))).toBe(false);
+    expect(existsSync(join(sourceConfigDir, "shell-snapshots"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("default provider-only stays inert for normal first-party Claude settings", () => {
