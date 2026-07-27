@@ -203,10 +203,15 @@ watch(
                 <Clock :size="11" />{{ $t("chat.scheduled") }}
               </span>
               <div data-test="msg-in"
-                   class="rounded-2xl rounded-tr-md border px-3.5 py-2"
+                   class="min-w-0 max-w-full rounded-2xl rounded-tr-md border px-3.5 py-2"
                    :class="m.failed ? 'border-danger/30 bg-danger/5' : 'border-accent/15 bg-accent/10'">
-                <p class="whitespace-pre-wrap text-[14px] leading-relaxed text-fg">{{ m.text }}</p>
+                <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
                 <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
+              </div>
+              <!-- Markdown rendering is lossy (headers, lists, fences reshape the text);
+                   copy hands back the verbatim source the user actually sent. -->
+              <div v-if="m.text" class="mt-0.5 flex items-center text-fg-muted">
+                <CopyButton :text="m.text" />
               </div>
               <!-- Failed sends get a compact retry affordance on their own line below. -->
               <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">

@@ -187,6 +187,11 @@ onBeforeUnmount(() => {
 <style>
 /* Tailwind's preflight strips element styling, so restore the markdown basics for
    v-html content. Non-scoped on purpose: scoped styles cannot reach v-html output. */
+.stream-md {
+  /* Long unbreakable runs (bare URLs, tokens, linkified <a>) must wrap instead of
+     drawing past the bubble; pre/table overflow is handled by their scroll containers. */
+  overflow-wrap: anywhere;
+}
 .stream-md > :first-child {
   margin-top: 0;
 }

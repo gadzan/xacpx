@@ -30,7 +30,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           </div>
           <div class="min-w-0 flex-1 pt-0.5">
             <h2 class="text-[15px] font-semibold text-fg">{{ pending.title }}</h2>
-            <p v-if="pending.message" class="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-muted">{{ pending.message }}</p>
+            <p v-if="pending.message" class="mt-1 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-fg-muted">{{ pending.message }}</p>
           </div>
         </div>
         <div class="mt-5 flex justify-end gap-2">

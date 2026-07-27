@@ -75,7 +75,7 @@ async function cancel(id: string) {
     </div>
     <!-- expanded details -->
     <div v-if="open" :data-test="`scheduled-detail-${task.id}`" class="space-y-1 border-t border-border px-2 py-1.5">
-      <p class="whitespace-pre-wrap text-[12.5px] text-fg">{{ task.message }}</p>
+      <p class="whitespace-pre-wrap break-words text-[12.5px] text-fg">{{ task.message }}</p>
       <p class="font-mono text-[10.5px] tabular-nums text-fg-muted">{{ fmtDateTime(task.executeAt) }}</p>
       <p v-if="task.status === 'failed' && task.lastError" :data-test="`scheduled-error-${task.id}`" class="rounded bg-danger/10 px-2 py-1 text-[11px] text-danger">{{ task.lastError }}</p>
     </div>
