@@ -195,7 +195,9 @@ watch(
           <!-- USER row -->
           <div v-if="m.direction === 'in'" class="cv-row flex justify-end"
                :data-scheduled-task="schedOf(m)?.taskId">
-            <div class="flex max-w-[80%] flex-col items-end">
+            <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table
+                 min-content and can defeat the max-w-[80%] cap. -->
+            <div class="flex min-w-0 max-w-[80%] flex-col items-end">
               <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
               <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
                     class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10.5px] font-medium text-accent"
