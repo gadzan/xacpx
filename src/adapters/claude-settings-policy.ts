@@ -9,6 +9,11 @@ export type ClaudeSettingsPolicy = "provider-only" | "isolated" | "full-user";
 
 export const DEFAULT_CLAUDE_SETTINGS_POLICY: ClaudeSettingsPolicy = "provider-only";
 
+// Bump this when the filtered profile's on-disk layout changes. Reusing a
+// digest created by an older layout can leave real directories where the
+// current version requires links, and must not make every future prompt fail.
+const CLAUDE_SETTINGS_PROFILE_LAYOUT_VERSION = "persistent-state-links-v1";
+
 export function isClaudeSettingsPolicy(value: unknown): value is ClaudeSettingsPolicy {
   return value === "provider-only" || value === "isolated" || value === "full-user";
 }
@@ -126,6 +131,8 @@ function installSettingsProfile(
     .update("\0")
     .update(policy)
     .update("\0")
+    .update(CLAUDE_SETTINGS_PROFILE_LAYOUT_VERSION)
+    .update("\0")
     .update(serialized)
     .digest("hex")
     .slice(0, 20);
@@ -139,17 +146,20 @@ function installSettingsProfile(
   setEnvironmentValue(env, "CLAUDE_CONFIG_DIR", profileDir, platform);
 }
 
-const CLAUDE_SESSION_STATE_DIRS = [
+// Link only durable state that native list/resume and transcript discovery need.
+// Claude recreates session-env and shell-snapshots during a running turn. If
+// either is a junction, Claude can replace it with a real directory and poison
+// the next prompt's link validation. Those runtime-owned directories therefore
+// stay local to the filtered profile.
+const CLAUDE_PERSISTENT_SESSION_STATE_DIRS = [
   "projects",
   "file-history",
   "plans",
   "todos",
-  "session-env",
   "tasks",
   "teams",
   "sessions",
   "transcripts",
-  "shell-snapshots",
 ] as const;
 
 function linkClaudeSessionState(
@@ -157,7 +167,7 @@ function linkClaudeSessionState(
   profileDir: string,
   platform: NodeJS.Platform,
 ): void {
-  for (const name of CLAUDE_SESSION_STATE_DIRS) {
+  for (const name of CLAUDE_PERSISTENT_SESSION_STATE_DIRS) {
     const source = join(sourceConfigDir, name);
     // Create lazy state stores in the native profile before linking them. If
     // Claude created them under the filtered profile instead, that state would
