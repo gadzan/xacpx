@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.17.1] - 2026-07-27
+
+- Fix Claude profile reuse on Windows: `session-env` and `shell-snapshots` are now left profile-local because Claude may recreate them between turns. Durable Claude settings state remains linked into the managed profile.
+
 ## [terminal batch beta] - 2026-07-05
 
 A four-package beta shipping two terminal features together: **Windows support** and **content replay across reload**. Versions: `@ganglion/xacpx-relay-protocol` 0.1.11, `@ganglion/xacpx` (core) 0.17.0-beta.4, `@ganglion/xacpx-channel-relay` 0.3.3-beta.4, `@ganglion/xacpx-relay` (hub) 0.9.12-beta.19 — all on the npm `next` dist-tag. Update the core/daemon and the hub, restart both, then hard-reload the dashboard.
