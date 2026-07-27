@@ -158,7 +158,10 @@ export class WorkspaceGit {
 
   private async runRaw(root: string, args: string[]): Promise<string> {
     if (this.runGitOverride) return await this.runGitOverride(root, args);
-    const result = await execFileAsync("git", ["-C", root, ...args], {
+    // gc.auto=0: commit/fetch may spawn a detached background `git gc --auto` that
+    // inherits our stderr pipe; execFile then waits for stdio close, times out, and
+    // reports "Command failed" even though the git command itself succeeded.
+    const result = await execFileAsync("git", ["-C", root, "-c", "gc.auto=0", ...args], {
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL",
       maxBuffer: GIT_MAX_BUFFER,
