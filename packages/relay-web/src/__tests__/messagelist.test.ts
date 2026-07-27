@@ -1,6 +1,12 @@
 import { mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+
+// MessageList imports AgentIcon at module evaluation time. Stub the raw SVG catalog so
+// this suite does not depend on Windows being able to open every optional @lobehub icon
+// file (some hosts return EPERM for openclaw-color.svg).
+vi.mock("../lib/agent-icons", () => ({ agentIconSvg: () => null }));
+
 import MessageList from "../components/MessageList.vue";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
@@ -70,14 +76,20 @@ describe("MessageList", () => {
     expect(out.html()).toContain("<strong>bold</strong>");
   });
 
-  it("keeps user input as plain text (no markdown rendering)", () => {
+  it("renders user input as markdown, same as agent output", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [msg({ direction: "in", text: "**not bold**" })], liveTurn: null },
+      props: { messages: [msg({ direction: "in", text: "**bold input**" })], liveTurn: null },
     });
     const inEl = wrapper.find('[data-test="msg-in"]');
     expect(inEl.exists()).toBe(true);
-    expect(inEl.html()).not.toContain("<strong>");
-    expect(inEl.text()).toContain("**not bold**");
+    expect(inEl.html()).toContain("<strong>bold input</strong>");
+  });
+
+  it("does not render raw HTML from user input", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "in", text: "<script>alert(1)</script>" })], liveTurn: null },
+    });
+    expect(wrapper.html()).not.toContain("<script>alert(1)</script>");
   });
 
   it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
