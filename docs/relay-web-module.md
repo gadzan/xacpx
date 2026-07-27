@@ -170,6 +170,23 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   in-use 错误并浮现）。
 - **Workspaces 管理器**：列已配置 workspace，可删除（`control.workspaces.remove {name}`，占用时同样 in-use 拒绝）。
 
+## 切换会话的渲染性能
+
+长历史会话的切换开销主要在**组件创建**（每个文本 part 同步跑 markdown-it + DOMPurify），
+`content-visibility: auto` 只省 layout/paint。两道针对性优化：
+
+- **尾部优先渐进挂载**（`MessageList.vue`）：历史页落地（0→N）时先只挂载最新 30 行
+  （`INITIAL_ROWS`），随后 rAF 每帧向上补 30 行（`REVEAL_BATCH`）直到全量；`hiddenCount`
+  记录未挂载的最旧行数。展开是顶部 prepend：钉底时展开后重新钉底，用户已上滚则按
+  distance-from-bottom 不变式锚定视口。`hiddenCount > 0` 时顶部滚动**不**触发 `loadOlder`
+  （先本地展开）。turn-finished 收敛整页替换**不**重置 hiddenCount（key 稳定、组件复用）。
+  无 rAF 环境（jsdom 测试）同步全量挂载。
+- **`structured` 脱离深度响应式**（`stores/chat.ts` `rawStructured`）：历史行不可变、只会整行
+  替换，`loadHistory`/`loadOlder`/`flushTurn` 对 `structured`（parts/toolSteps/diff 全文）做
+  `markRaw`，避免 Vue 深代理化数百 KB 的对象树。
+
+hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
+
 ## 流式 Markdown 渲染
 
 - `src/lib/render-markdown.ts` —— `renderMarkdown(text, { streaming })` 把 markdown 渲染成**已净化**的 HTML：

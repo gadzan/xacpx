@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
 // MessageList imports AgentIcon at module evaluation time. Stub the raw SVG catalog so
@@ -362,4 +362,76 @@ it("renders live tool steps inline in the streaming bubble", () => {
   });
   expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
   expect(wrapper.find('[data-test="msg-streaming"]').text()).toContain("thinking");
+});
+
+describe("progressive tail-first mounting", () => {
+  let rafQueue: FrameRequestCallback[];
+
+  beforeEach(() => {
+    rafQueue = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const many = (n: number): ChatMessage[] =>
+    Array.from({ length: n }, (_, i) => msg({ direction: "in", text: `m${i}`, id: i + 1 }));
+
+  async function flushFrames(wrapper: ReturnType<typeof mount>): Promise<void> {
+    while (rafQueue.length) {
+      for (const cb of rafQueue.splice(0)) cb(0);
+      await wrapper.vm.$nextTick();
+    }
+  }
+
+  it("mounts only the newest rows when a large history lands, then reveals the rest in batches", async () => {
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: null, sessionKey: "a\0one" } });
+    await wrapper.setProps({ messages: many(80) });
+    // Only the tail is mounted immediately; older rows come in over later frames.
+    expect(wrapper.findAll(".cv-row").length).toBe(30);
+    expect(wrapper.text()).toContain("m79"); // newest row visible from frame one
+    await flushFrames(wrapper);
+    expect(wrapper.findAll(".cv-row").length).toBe(80);
+    expect(wrapper.text()).toContain("m0");
+  });
+
+  it("suppresses load-older while older rows are still revealing locally", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, hasMoreOlder: true, loadingOlder: false },
+    });
+    await wrapper.setProps({ messages: many(80) });
+    const scroller = wrapper.find('[data-test="msg-scroller"]');
+    const el = scroller.element as HTMLElement;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 800 });
+    el.scrollTop = 10; // within TOP_THRESHOLD
+    await scroller.trigger("scroll");
+    // Rows are still mounting locally — nothing to fetch yet.
+    expect(wrapper.emitted("loadOlder")).toBeFalsy();
+    await flushFrames(wrapper);
+    // The reveal/settle passes re-pin the scroller to the bottom; scroll back near the top.
+    el.scrollTop = 10;
+    await scroller.trigger("scroll");
+    expect(wrapper.emitted("loadOlder")).toBeTruthy();
+  });
+
+  it("mounts everything synchronously when rAF is unavailable (jsdom fallback)", async () => {
+    vi.stubGlobal("requestAnimationFrame", undefined);
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: null } });
+    await wrapper.setProps({ messages: many(80) });
+    expect(wrapper.findAll(".cv-row").length).toBe(80);
+  });
+
+  it("does not re-hide rows on an in-place history replace (turn-finished convergence)", async () => {
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: null } });
+    await wrapper.setProps({ messages: many(80) });
+    await flushFrames(wrapper);
+    expect(wrapper.findAll(".cv-row").length).toBe(80);
+    // Same-session reload replaces the array with fresh row objects (stable keys).
+    await wrapper.setProps({ messages: many(81) });
+    expect(wrapper.findAll(".cv-row").length).toBe(81);
+  });
 });
