@@ -102,15 +102,19 @@ describe("session-tail-cache", () => {
     expect(read("alice", "i1", "old")).toBeNull(); // the eviction victim
   });
 
-  it("gives up silently when the quota retry also fails", () => {
+  it("gives up silently when the quota retry also fails, without orphaning the stale entry", () => {
+    write("alice", "i1", "s1", [row(1, "old")]);
+    const entryKey = Object.keys(localStorage).find((k) => k.startsWith("xacpx.chat.tail.v1.") && k.endsWith(".s1"))!;
     const original = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
       if (key.startsWith("xacpx.chat.tail.v1.")) throw new DOMException("quota", "QuotaExceededError");
       original.call(this, key, value);
     });
-    expect(() => write("alice", "i1", "s1", [row(1)])).not.toThrow();
+    expect(() => write("alice", "i1", "s1", [row(2, "new")])).not.toThrow();
     vi.restoreAllMocks();
     expect(read("alice", "i1", "s1")).toBeNull();
+    // The previous stored value must not linger as an index-less orphan holding quota.
+    expect(localStorage.getItem(entryKey)).toBeNull();
   });
 
   it("drop purges one session; dropAll purges everything", () => {

@@ -182,10 +182,13 @@ export function write(user: string, instanceId: string, alias: string, rows: Mes
     try {
       store();
     } catch {
-      // Quota exceeded: evict the LRU entry and retry once, then give up.
-      if (!evictLru()) { saveIndex(index.filter((r) => r.key !== key)); return; }
+      // Quota exceeded: evict the LRU entry and retry once, then give up. Giving up
+      // must also remove any PREVIOUS stored value under this key (the failed setItem
+      // left it in place): an index-less orphan would hold quota — the very resource
+      // exhausted here — invisibly to LRU/TTL/reconcile.
+      if (!evictLru()) { saveIndex(removeEntry(index, key)); return; }
       try { store(); } catch {
-        saveIndex(index.filter((r) => r.key !== key));
+        saveIndex(removeEntry(index, key));
         return;
       }
     }

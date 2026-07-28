@@ -200,6 +200,31 @@ export const useChatStore = defineStore("chat", () => {
   }, 500);
   if (typeof window !== "undefined") window.addEventListener("pagehide", () => cacheWrite.flush());
 
+  // True while `messages` holds ONLY rows seeded from the tail cache — i.e. no
+  // optimistic/live rows a wholesale history replace could clobber. loadHistory's
+  // pending-prompt guard treats such a transcript as empty (the #199 semantics:
+  // fetching over it clobbers nothing), cleared by the first authoritative replace
+  // or any local push.
+  let seededFromCache = false;
+
+  /** Purge one session's cached tail. Routed through the chat store (not called on
+   *  the cache module directly) so a purge also cancels a pending debounced
+   *  write-back targeting that session — otherwise a write scheduled just before an
+   *  archive/remove would fire after the drop and resurrect the entry as a ghost. */
+  function purgeTailCache(id: string, alias: string): void {
+    if (instanceId.value === id && sessionAlias.value === alias) cacheWrite.cancel();
+    const user = useAuthStore().account?.username;
+    if (user) tailCache.drop(user, id, alias);
+  }
+
+  /** Reconcile an instance's cached tails against its authoritative alive unarchived
+   *  aliases (see purgeTailCache for why this lives on the chat store). */
+  function reconcileTailCache(id: string, aliveAliases: string[]): void {
+    if (instanceId.value === id && sessionAlias.value !== null && !aliveAliases.includes(sessionAlias.value)) cacheWrite.cancel();
+    const user = useAuthStore().account?.username;
+    if (user) tailCache.reconcile(user, id, aliveAliases);
+  }
+
   /** Finalize a live turn: clear it (so `busy`/HUD release) and, if it streamed any
    *  content into the selected session, flush it into a persisted-shaped message.
    *  Used by both turn-finished and the optimistic local cancel. Idempotent — a
@@ -231,6 +256,7 @@ export const useChatStore = defineStore("chat", () => {
         ...(structured ? { structured } : {}),
       });
       touchTranscript();
+      seededFromCache = false;
       cacheWrite.schedule();
     }
   }
@@ -254,11 +280,13 @@ export const useChatStore = defineStore("chat", () => {
     // suppresses it). loadHistory() replaces this wholesale when the authoritative
     // page arrives; stable p${id} row keys make that replace flicker-free.
     const user = useAuthStore().account?.username;
+    seededFromCache = false;
     if (user) {
       const cached = tailCache.read(user, id, alias);
       if (cached && cached.length > 0) {
         messages.value = cached.map(rawStructured);
         touchTranscript();
+        seededFromCache = true;
       }
     }
     // Viewing a session clears its unread signal.
@@ -274,6 +302,7 @@ export const useChatStore = defineStore("chat", () => {
    *  selected session is deleted out from under the view. */
   function clearSelection(): void {
     cacheWrite.flush();
+    seededFromCache = false;
     instanceId.value = null;
     sessionAlias.value = null;
     clearPersistedSelection();
@@ -300,11 +329,13 @@ export const useChatStore = defineStore("chat", () => {
     // background convergence reloads: a non-empty transcript may hold an optimistic
     // prompt row whose queueItemId correlation the pending RPC hasn't established yet,
     // and replacing it would break the drain-event dedupe. A freshly selected pane is
-    // empty (select() cleared it), so fetching history there clobbers nothing —
-    // skipping it would leave only the live turn visible until the RPC settles.
+    // empty or holds only cache-seeded persisted rows (select() cleared it, then may
+    // have seeded the tail cache — spec #205), so fetching history there clobbers
+    // nothing — skipping it would leave the stale tail + live turn (without the just
+    // sent prompt) visible until the RPC settles.
     if ((pendingPromptRequests.get(historyKey) ?? 0) > 0) {
       deferredHistoryLoads.add(historyKey);
-      if (messages.value.length > 0) return;
+      if (messages.value.length > 0 && !seededFromCache) return;
     }
     const requestSequence = ++historyRequestSequence;
     const revision = transcriptRevision;
@@ -323,6 +354,7 @@ export const useChatStore = defineStore("chat", () => {
       if (revision !== transcriptRevision) return loadHistory();
       messages.value = rows.map(rawStructured);
       touchTranscript();
+      seededFromCache = false;
       hasMoreOlder.value = hasMore ?? false;
       // Authoritative rows landed — refresh this session's cached tail (debounced).
       cacheWrite.schedule();
@@ -472,6 +504,7 @@ export const useChatStore = defineStore("chat", () => {
             queueItemId: e.queueItemId,
           });
           touchTranscript();
+          seededFromCache = false;
         }
       } else if (e.prompt && selected) {
         messages.value.push({
@@ -483,6 +516,7 @@ export const useChatStore = defineStore("chat", () => {
           ...(e.scheduled ? { scheduled: e.scheduled } : {}),
         });
         touchTranscript();
+        seededFromCache = false;
       }
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
@@ -556,6 +590,7 @@ export const useChatStore = defineStore("chat", () => {
     };
     messages.value.push(optimistic);
     touchTranscript();
+    seededFromCache = false;
     // `optimistic` above is the RAW object; the array element is a reactive proxy. Mutating the
     // raw ref (optimistic.failed = true) never trips Vue's set-trap, so the failed bubble would
     // only surface on the next list change (the next message). Mark failure through the proxy so
@@ -650,5 +685,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem, purgeTailCache, reconcileTailCache };
 });
