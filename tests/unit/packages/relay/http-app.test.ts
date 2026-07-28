@@ -299,6 +299,28 @@ test("session archive/unarchive RPCs are chat-scoped (chatKey stamped, else the 
   }
 });
 
+test("session rename RPC is chat-scoped (chatKey stamped, client-forged chatKey overridden)", async () => {
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+
+  // Rename resolves the alias within the caller's chat scope, and the connector's
+  // payload validator requires chatKey — an unstamped rename fails as invalid-payload
+  // and the label silently never persists. The hub must stamp chatKey server-side,
+  // overriding whatever the client supplied (forged value here).
+  const res = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsRename, payload: { chatKey: "forged", alias: "s", displayName: "New label" } }),
+  });
+  expect(res.status).toBe(200);
+  const stamped = rpcCalls[0]?.payload as { chatKey?: string };
+  expect(stamped.chatKey).toBe(`relay:${redeemed.accountId}`);
+});
+
 test("session effort RPCs are chat-scoped", async () => {
   const { app, instances, loginToken, login, rpcCalls } = await makeApp();
   const { cookie } = await login(loginToken);

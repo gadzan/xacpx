@@ -9,6 +9,7 @@ import { useTerminalStore } from "../stores/terminal";
 import { killSessionTerminal } from "../lib/session-terminal";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
+import { pushToast } from "../lib/use-toasts";
 import { useSwipeActions } from "../lib/use-swipe-actions";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
@@ -108,7 +109,11 @@ function commitRename(id: string, alias: string) {
   if (renamingFor.value !== `${id}:${alias}`) return; // already cancelled
   const next = renameDraft.value.trim();
   renamingFor.value = null;
-  void store.renameSession(id, alias, next).catch(() => {});
+  // Surface failures (e.g. the store's "needs a newer connector" upgrade hint) as an
+  // error toast — the inline input is already gone, so silence would look like success.
+  void store.renameSession(id, alias, next).catch((e: unknown) => {
+    pushToast("error", "instance.sessionRenameFailed", { msg: e instanceof Error ? e.message : String(e) });
+  });
 }
 function cancelRename() {
   renamingFor.value = null;

@@ -107,7 +107,8 @@ function rpcSessionAlias(type: string, payload: unknown): string | undefined {
     type === MSG.sessionsCreate ||
     type === MSG.sessionsRemove ||
     type === MSG.sessionsArchive ||
-    type === MSG.sessionsUnarchive
+    type === MSG.sessionsUnarchive ||
+    type === MSG.sessionsRename
   ) {
     return typeof value.alias === "string" && value.alias ? value.alias : undefined;
   }
