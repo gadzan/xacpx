@@ -143,6 +143,79 @@ test("preserves subagent ownership metadata for Relay Web grouping", () => {
   expect(child).toMatchObject({ toolCallId: "grep-1", parentToolCallId: "agent-1" });
 });
 
+test("subagent step carries the delegated prompt and streamed output (Qoder shape)", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "agent-q", toolName: "Agent", kind: "think", status: "running",
+    isSubagent: true,
+    rawInput: { prompt: "Investigate the notification flow", subagent_type: "Explore" },
+    content: [{ type: "content", content: { type: "text", text: "Found 3 handlers in notify.ts" } }],
+  });
+  expect(step.detail).toEqual({ type: "text", text: "Investigate the notification flow", output: "Found 3 handlers in notify.ts" });
+});
+
+test("subagent output falls back to rawOutput.text (Kimi shape)", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "agent-k", toolName: "Task", kind: "think", status: "success",
+    isSubagent: true,
+    rawInput: { prompt: "Summarize the diff", subagent_type: "general-purpose" },
+    rawOutput: { text: "The diff renames two symbols." },
+  });
+  expect(step.detail).toEqual({ type: "text", text: "Summarize the diff", output: "The diff renames two symbols." });
+});
+
+test("subagent output falls back to Codex terminal formatted_output", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "agent-c", toolName: "Agent", kind: "think", status: "success",
+    isSubagent: true, summary: "Delegate: audit deps",
+    rawOutput: { formatted_output: "no vulnerable packages", exit_code: 0 },
+  });
+  expect(step.detail).toEqual({ type: "text", text: "Delegate: audit deps", output: "no vulnerable packages" });
+});
+
+test("subagent step omits output when the adapter reports none", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "agent-p", toolName: "Task", kind: "think", status: "running",
+    isSubagent: true, rawInput: { prompt: "Kick off a long task" },
+  });
+  expect(step.detail).toEqual({ type: "text", text: "Kick off a long task" });
+});
+
+test("subagent prompt and output are capped at TEXT_CAP", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "agent-big", toolName: "Agent", kind: "think", status: "running",
+    isSubagent: true,
+    rawInput: { prompt: "p".repeat(9000) },
+    rawOutput: { stdout: "o".repeat(8500) + "TAIL-MARKER" },
+  });
+  const d = step.detail as { type: "text"; text: string; output?: string };
+  expect(d.type).toBe("text");
+  expect(d.text.length).toBeLessThanOrEqual(8100);
+  expect(d.text.endsWith("…(truncated)")).toBe(true);
+  // Output is tail-truncated (not head-truncated): the newest streamed content keeps
+  // changing after the cap is hit, so the web card's tail line/heartbeat stay alive.
+  expect(d.output?.length).toBeLessThanOrEqual(8100);
+  expect(d.output?.startsWith("(truncated)…\n")).toBe(true);
+  expect(d.output?.endsWith("TAIL-MARKER")).toBe(true);
+});
+
+test("subagent detail keeps the output even when a child-tool trace exists", () => {
+  // Claude emits parent-linked child events alongside the parent's own streamed output;
+  // the parent step must still carry `output` so the dialog can show the result report
+  // next to the timeline.
+  const parent = toolUseEventToStepDto({
+    toolCallId: "agent-t", toolName: "Task", kind: "think", status: "success",
+    isSubagent: true,
+    rawInput: { prompt: "Audit the deps" },
+    content: [{ type: "content", content: { type: "text", text: "All dependencies are clean." } }],
+  });
+  const child = toolUseEventToStepDto({
+    toolCallId: "grep-t", parentToolCallId: "agent-t", toolName: "Grep", kind: "search", status: "success",
+    rawInput: { pattern: "lodash" },
+  });
+  expect(parent.detail).toEqual({ type: "text", text: "Audit the deps", output: "All dependencies are clean." });
+  expect(child).toMatchObject({ parentToolCallId: "agent-t" });
+});
+
 test("a failed read surfaces the error message from rawOutput.error", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t9", toolName: "read", kind: "read", status: "error",

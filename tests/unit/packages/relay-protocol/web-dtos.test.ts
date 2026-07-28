@@ -274,6 +274,7 @@ test("rejects a tool-event whose detail has a known tag but missing/junk inner f
   expect(roundtrip(step({ type: "command", command: "ls", exitCode: "0" }))).toBeNull(); // exitCode not a number
   expect(roundtrip(step({ type: "search" }))).toBeNull(); // missing query
   expect(roundtrip(step({ type: "text" }))).toBeNull(); // missing text
+  expect(roundtrip(step({ type: "text", text: "p", output: 42 }))).toBeNull(); // output not a string
   expect(roundtrip(step({ type: "read" }))).toBeNull(); // missing path
   expect(roundtrip(step({ type: "fields", fields: [{ label: "a" }] }))).toBeNull(); // field missing value
   expect(roundtrip(step({ type: "fields", fields: "nope" }))).toBeNull(); // fields not an array
@@ -289,6 +290,7 @@ test("accepts well-formed per-variant tool details", () => {
   expect(roundtrip(step({ type: "command", command: "ls", output: "f", exitCode: 0 }))).not.toBeNull();
   expect(roundtrip(step({ type: "search", query: "rg x" }))).not.toBeNull();
   expect(roundtrip(step({ type: "text", text: "thinking" }))).not.toBeNull();
+  expect(roundtrip(step({ type: "text", text: "prompt", output: "the subagent report" }))).not.toBeNull();
   expect(roundtrip(step({ type: "fields", fields: [{ label: "a", value: "b" }], output: "o" }))).not.toBeNull();
 });
 

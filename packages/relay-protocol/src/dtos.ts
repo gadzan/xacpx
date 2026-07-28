@@ -129,7 +129,10 @@ export type ToolDetailDto =
   | { type: "read"; path: string; lines?: string; preview?: string }
   | { type: "command"; command: string; output?: string; exitCode?: number }
   | { type: "search"; query: string; output?: string }
-  | { type: "text"; text: string }
+  // `output` carries a subagent's streamed/finished result text (see isSubagent steps),
+  // rendered as its report; ordinary prose text steps omit it. Optional so old connectors
+  // and old web builds stay wire-compatible.
+  | { type: "text"; text: string; output?: string }
   | { type: "fields"; fields: Array<{ label: string; value: string }>; output?: string };
 
 /** One collapsed tool-call step, normalized at the connector from a core ToolUseEvent. */
