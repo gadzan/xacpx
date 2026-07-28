@@ -62,6 +62,27 @@ test("isSessionWarm caches the record id across polls", async () => {
   expect(readPid).toHaveBeenCalledTimes(2);
 });
 
+test("session lifecycle ops drop the cached record id so warmth re-resolves", async () => {
+  readPid.mockClear();
+  readPid.mockResolvedValue(undefined);
+  const transport = makeTransport();
+  const readRecord = spyOn(transport as never, "readSessionRecord")
+    .mockResolvedValueOnce({ acpxRecordId: "ws:rec-A" } as never)
+    .mockResolvedValueOnce({ acpxRecordId: "ws:rec-B" } as never);
+
+  await transport.isSessionWarm(session);
+  expect(readPid).toHaveBeenLastCalledWith("ws:rec-A");
+
+  // Recreating a record under the same transport-session name (e.g. native
+  // re-attach after delete) must invalidate the cache, or warmth polls keep
+  // reading the dead record's lock forever.
+  await transport.resumeAgentSession(session, "ses_abc");
+
+  await transport.isSessionWarm(session);
+  expect(readRecord).toHaveBeenCalledTimes(2);
+  expect(readPid).toHaveBeenLastCalledWith("ws:rec-B");
+});
+
 test("isSessionWarm is false when the session record can't be resolved", async () => {
   readPid.mockClear();
   const transport = makeTransport();

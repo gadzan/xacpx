@@ -106,6 +106,12 @@ export class SessionWarmthTracker {
       if (flipped) {
         this.events.emit({ type: "sessions-changed" });
       }
+    } catch (error) {
+      // tick() is fired-and-forgotten from start(); a rejection here would be an
+      // unhandled promise rejection that can kill the daemon on every interval.
+      await this.logger?.error("warmth.tick_failed", "session warmth tick threw", {
+        message: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       this.ticking = false;
     }
