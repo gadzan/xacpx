@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type SessionModelResult, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 import { useChatStore } from "./chat";
+import { loadGroupMode, saveGroupMode, type SidebarGroupMode } from "../lib/sidebar-group-mode";
 
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
 // payload (the gateway resolves, it does not reject), so api.rpc won't throw.
@@ -53,6 +54,21 @@ export interface InstanceView {
 
 export const useInstancesStore = defineStore("instances", () => {
   const instances = ref<InstanceView[]>([]);
+
+  // Per-instance sidebar grouping mode (flat / by-workspace / by-agent). Reactive
+  // mirror of the localStorage preference so the sidebar re-renders the moment the
+  // manage dialog changes it. Reads are pure (no render-phase writes): until the
+  // first setGroupMode we fall through to localStorage directly.
+  const groupModes = ref<Record<string, SidebarGroupMode>>({});
+
+  function groupModeFor(instanceId: string): SidebarGroupMode {
+    return groupModes.value[instanceId] ?? loadGroupMode(instanceId);
+  }
+
+  function setGroupMode(instanceId: string, mode: SidebarGroupMode): void {
+    groupModes.value[instanceId] = mode;
+    saveGroupMode(instanceId, mode);
+  }
 
   async function loadInstances(): Promise<void> {
     const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
@@ -313,5 +329,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
+  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
 });

@@ -187,6 +187,21 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   （`control.agents.create {name,driver}`）/删除（`control.agents.remove {name}`，正被会话占用时实例侧返回
   in-use 错误并浮现）。
 - **Workspaces 管理器**：列已配置 workspace，可删除（`control.workspaces.remove {name}`，占用时同样 in-use 拒绝）。
+- **General tab 的「侧栏分组」三选**（不分组 / 按工作区 / 按 Agent）：按实例记忆的**纯视图偏好**，见下节。
+
+## 侧栏会话分组（workspace / agent 二级分组）
+
+- 每个实例可独立选择侧栏分组模式：`instance`（平铺，默认）/ `workspace` / `agent`。偏好存
+  localStorage（`xacpx.sidebar.groupMode.<instanceId>`，helpers 在 `src/lib/sidebar-group-mode.ts`），
+  响应式镜像在 instances store（`groupModeFor`/`setGroupMode`），改动即时生效。
+- **组只由 session 派生**（不读 workspaces/agents 目录 → 无空组），按服务器首现顺序排列；组内 active
+  保持顺序、archived 沉底置灰。分组模式下**取消 10 行截断**（组折叠即长度控制，折叠为会话内状态、不持久化）。
+- **视觉**：实例=浅色卡片、组=更浅一层的底色块 + 极小缩进（tinted-zone，三种模式视觉同构）。组头 =
+  折叠箭头 + 类型图标（workspace→文件夹 / agent→品牌图标）+ 名称 + 计数；agent 分组下行内品牌图标去除。
+- **前缀去重**（仅展示层）：workspace 组内剥掉 `<组名>-` 前缀、agent 组内剥掉 `-<组名>` 后缀
+  （对应 `<workspace>-<agent>` 自动 alias），hover title 恒为全名；剥空则不剥。
+- **组头悬停 ＋**（触屏常显）打开 `NewSessionDialog` 并预填本组 workspace/agent
+  （`presetWorkspace`/`presetAgent` props，仍可改）；实例 footer 的 ＋ 不变。移动端零特化。
 
 ## 切换会话的渲染性能
 
