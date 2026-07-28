@@ -138,6 +138,25 @@ describe("subagent trace presentation", () => {
     expect(dialog).not.toBeNull();
     expect(dialog?.textContent).toContain("Investigate the flow");
     expect(document.querySelector('[data-test="subagent-dialog-report"]')?.textContent).toContain("Done: nothing to change.");
+    expect(dialog?.textContent).not.toContain("0 activity steps");
+    wrapper.unmount();
+  });
+
+  it("shows both the result report and the trace timeline when trace and output coexist", async () => {
+    const step: ToolStepDto = { ...parent, status: "success", detail: { type: "text", text: "Investigate the flow", output: "Done: fixed the handler." } };
+    const children = [child("grep-1", "weixin"), child("grep-2", "wechat")];
+    const wrapper = mount(SubagentStepCard, { attachTo: document.body, props: { step, children } });
+    // Collapsed presentation stays trace-driven: activity rotation, not the output tail.
+    expect(wrapper.find('[data-test="subagent-activity"]').text()).toContain("weixin");
+    expect(wrapper.find('[data-test="subagent-detail-snippet"]').exists()).toBe(false);
+    await wrapper.find('[data-test="subagent-header"]').trigger("click");
+    await wrapper.find('[data-test="subagent-open-trace"]').trigger("click");
+    await nextTick();
+    const dialog = document.querySelector('[data-test="subagent-trace-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(document.querySelector('[data-test="subagent-dialog-report"]')?.textContent).toContain("Done: fixed the handler.");
+    expect(document.body.querySelectorAll('[data-test="tool-step-card"]')).toHaveLength(2);
+    expect(dialog?.textContent).toContain("2 activity steps");
     wrapper.unmount();
   });
 

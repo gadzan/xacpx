@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { ToolDetailDto, ToolStepDto } from "@ganglion/xacpx-relay-protocol";
+import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Check, Loader2, X } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { resolveSubagentStatus } from "../lib/subagent-status";
-import { indexToolSteps, toolStepDepthWithin } from "../lib/subagent-trace";
+import { indexToolSteps, subagentDetailOutput, toolStepDepthWithin } from "../lib/subagent-trace";
 
 const props = defineProps<{ step: ToolStepDto; children: ToolStepDto[] }>();
 const emit = defineEmits<{ close: [] }>();
@@ -21,19 +21,10 @@ const traceRows = computed(() => {
   }));
 });
 
-// The subagent's streamed/finished output rides on the step detail (text.output and the
-// analogous fields on other shapes). Shown as a result section — markdown once finished,
-// a raw tail while running — so traceless delegations render a report instead of nothing.
-function detailOutput(d: ToolDetailDto | undefined): string {
-  if (!d) return "";
-  return d.type === "text" ? d.output ?? ""
-    : d.type === "command" ? d.output ?? ""
-    : d.type === "search" ? d.output ?? ""
-    : d.type === "read" ? d.preview ?? ""
-    : d.type === "fields" ? d.output ?? ""
-    : "";
-}
-const outputText = computed(() => detailOutput(props.step.detail));
+// The subagent's streamed/finished output rides on the step detail. Shown as a result
+// section — markdown once finished, a raw tail while running — so traceless delegations
+// render a report instead of nothing.
+const outputText = computed(() => subagentDetailOutput(props.step.detail));
 useModalA11y(dialog, () => emit("close"));
 </script>
 
@@ -63,7 +54,8 @@ useModalA11y(dialog, () => emit("close"));
                 </span>
               </div>
               <h2 id="subagent-trace-title" class="mt-1.5 truncate text-[16px] font-semibold text-fg">{{ step.title }}</h2>
-              <p class="mt-0.5 text-[11px] text-fg-muted">{{ $t("tools.traceCount", { count: children.length }) }}</p>
+              <!-- Traceless delegations have no child steps; "0 activity steps" would read as broken. -->
+              <p v-if="children.length" class="mt-0.5 text-[11px] text-fg-muted">{{ $t("tools.traceCount", { count: children.length }) }}</p>
             </div>
             <button type="button" data-test="subagent-dialog-close" :aria-label="$t('common.dismiss')"
                     class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"

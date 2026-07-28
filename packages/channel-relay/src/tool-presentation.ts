@@ -7,6 +7,11 @@ const DIFF_CAP = 4000;
 function cap(s: string, n = TEXT_CAP): string {
   return s.length > n ? s.slice(0, n) + "\n…(truncated)" : s;
 }
+/** Keep the tail instead of the head — for streams that append over time (subagent
+ * output), so the newest content keeps changing after the cap is hit. */
+function capTail(s: string, n = TEXT_CAP): string {
+  return s.length > n ? "(truncated)…\n" + s.slice(s.length - n) : s;
+}
 function asString(v: unknown): string | undefined {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
@@ -120,7 +125,9 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const prompt =
       asString(input.prompt) ?? asString(input.description) ?? asString(input.task) ?? asString(input.instructions) ?? event.summary ?? "";
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    const detail: ToolDetailDto = { type: "text", text: cap(prompt), ...(out ? { output: cap(out) } : {}) };
+    // Tail-truncate: subagent output accumulates while streaming, so a head cap would
+    // freeze the visible text (and the web card's heartbeat) once it passes TEXT_CAP.
+    const detail: ToolDetailDto = { type: "text", text: cap(prompt), ...(out ? { output: capTail(out) } : {}) };
     return { ...base, title: fallbackTitle, detail };
   }
 

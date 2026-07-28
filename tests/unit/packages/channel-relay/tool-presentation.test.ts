@@ -185,13 +185,35 @@ test("subagent prompt and output are capped at TEXT_CAP", () => {
     toolCallId: "agent-big", toolName: "Agent", kind: "think", status: "running",
     isSubagent: true,
     rawInput: { prompt: "p".repeat(9000) },
-    rawOutput: { stdout: "o".repeat(9000) },
+    rawOutput: { stdout: "o".repeat(8500) + "TAIL-MARKER" },
   });
   const d = step.detail as { type: "text"; text: string; output?: string };
   expect(d.type).toBe("text");
   expect(d.text.length).toBeLessThanOrEqual(8100);
   expect(d.text.endsWith("…(truncated)")).toBe(true);
-  expect(d.output?.endsWith("…(truncated)")).toBe(true);
+  // Output is tail-truncated (not head-truncated): the newest streamed content keeps
+  // changing after the cap is hit, so the web card's tail line/heartbeat stay alive.
+  expect(d.output?.length).toBeLessThanOrEqual(8100);
+  expect(d.output?.startsWith("(truncated)…\n")).toBe(true);
+  expect(d.output?.endsWith("TAIL-MARKER")).toBe(true);
+});
+
+test("subagent detail keeps the output even when a child-tool trace exists", () => {
+  // Claude emits parent-linked child events alongside the parent's own streamed output;
+  // the parent step must still carry `output` so the dialog can show the result report
+  // next to the timeline.
+  const parent = toolUseEventToStepDto({
+    toolCallId: "agent-t", toolName: "Task", kind: "think", status: "success",
+    isSubagent: true,
+    rawInput: { prompt: "Audit the deps" },
+    content: [{ type: "content", content: { type: "text", text: "All dependencies are clean." } }],
+  });
+  const child = toolUseEventToStepDto({
+    toolCallId: "grep-t", parentToolCallId: "agent-t", toolName: "Grep", kind: "search", status: "success",
+    rawInput: { pattern: "lodash" },
+  });
+  expect(parent.detail).toEqual({ type: "text", text: "Audit the deps", output: "All dependencies are clean." });
+  expect(child).toMatchObject({ parentToolCallId: "agent-t" });
 });
 
 test("a failed read surfaces the error message from rawOutput.error", () => {

@@ -4,6 +4,7 @@ import type { ToolDetailDto, ToolStepDto } from "@ganglion/xacpx-relay-protocol"
 import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, ExternalLink, Loader2 } from "lucide-vue-next";
 import { KIND_ICON } from "../lib/tool-summary";
 import { resolveSubagentStatus } from "../lib/subagent-status";
+import { subagentDetailOutput } from "../lib/subagent-trace";
 import SubagentTraceDialog from "./SubagentTraceDialog.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 
@@ -33,17 +34,8 @@ function detailPrompt(d: ToolDetailDto | undefined): string {
     : d.type === "fields" ? d.fields.map((f) => f.value).find((v) => v.trim()) ?? ""
     : "";
 }
-function detailOutput(d: ToolDetailDto | undefined): string {
-  if (!d) return "";
-  return d.type === "text" ? d.output ?? ""
-    : d.type === "command" ? d.output ?? ""
-    : d.type === "search" ? d.output ?? ""
-    : d.type === "read" ? d.preview ?? ""
-    : d.type === "fields" ? d.output ?? ""
-    : "";
-}
 const promptText = computed(() => detailPrompt(props.step.detail));
-const outputText = computed(() => detailOutput(props.step.detail));
+const outputText = computed(() => subagentDetailOutput(props.step.detail));
 const detailSnippet = computed(() => {
   const text = outputText.value || promptText.value;
   const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -65,6 +57,19 @@ const nowMs = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | undefined;
 watch(outputText, () => { lastChangeAt.value = Date.now(); });
 
+// The 1s clock only matters while the run is live; finished/historical cards would
+// otherwise keep an idle interval each. Start it lazily and stop on terminal status.
+function startClock() {
+  if (clockTimer !== undefined) return;
+  clockTimer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
+}
+function stopClock() {
+  if (clockTimer === undefined) return;
+  clearInterval(clockTimer);
+  clockTimer = undefined;
+}
+watch(status, (value) => { if (value === "running") startClock(); else stopClock(); });
+
 function compact(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -85,7 +90,7 @@ watch([outputText, open], async () => {
 watch(() => activity.value.map((step) => step.toolCallId).join("\0"), () => { activityIndex.value = 0; });
 
 onMounted(() => {
-  clockTimer = setInterval(() => { if (status.value === "running") nowMs.value = Date.now(); }, 1000);
+  if (status.value === "running") startClock();
   const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (reduceMotion) return;
   activityTimer = setInterval(() => {
@@ -94,7 +99,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   if (activityTimer) clearInterval(activityTimer);
-  if (clockTimer) clearInterval(clockTimer);
+  stopClock();
 });
 </script>
 
