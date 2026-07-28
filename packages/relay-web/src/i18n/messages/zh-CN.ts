@@ -297,6 +297,12 @@ export default {
     renameSaving: "保存中…",
     renameFailed: "重命名失败",
     sessionRenameFailed: "重命名失败：{msg}",
+    groupModeLabel: "侧栏分组",
+    groupModeHint: "该实例的会话在侧栏中的分组方式。",
+    groupModeInstance: "不分组（平铺）",
+    groupModeWorkspace: "按工作区",
+    groupModeAgent: "按 Agent",
+    groupNewSession: "在 {name} 中新建会话",
   },
   agents: {
     title: "Agent",

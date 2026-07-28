@@ -299,6 +299,12 @@ export default {
     renameSaving: "Saving…",
     renameFailed: "rename failed",
     sessionRenameFailed: "Rename failed: {msg}",
+    groupModeLabel: "Sidebar grouping",
+    groupModeHint: "How this instance's sessions are grouped in the sidebar.",
+    groupModeInstance: "None (flat)",
+    groupModeWorkspace: "By workspace",
+    groupModeAgent: "By agent",
+    groupNewSession: "New session in {name}",
   },
   agents: {
     title: "Agents",

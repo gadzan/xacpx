@@ -14,6 +14,13 @@ const { t } = useI18n();
 
 const coreVersion = computed(() => store.byId(props.instanceId)?.coreVersion ?? null);
 
+// Sidebar grouping mode for THIS instance (view preference, localStorage-backed).
+const GROUP_MODES = ["instance", "workspace", "agent"] as const;
+const groupMode = computed(() => store.groupModeFor(props.instanceId));
+function pickGroupMode(mode: (typeof GROUP_MODES)[number]): void {
+  store.setGroupMode(props.instanceId, mode);
+}
+
 const loading = ref(true);
 type Tab = "general" | "workspaces" | "agents";
 const TABS = ["general", "workspaces", "agents"] as const;
@@ -108,6 +115,19 @@ onMounted(async () => {
                 <button data-test="rename-save" class="shrink-0 rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
                         :disabled="renaming || !name.trim()" @click="saveName">{{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}</button>
               </div>
+            </section>
+            <section class="space-y-2">
+              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.groupModeLabel") }}</h3>
+              <div class="flex gap-1" role="radiogroup" :aria-label="$t('instance.groupModeLabel')">
+                <button v-for="m in GROUP_MODES" :key="m" type="button" role="radio"
+                        :aria-checked="groupMode === m" :data-test="`group-mode-${m}`"
+                        class="flex-1 rounded px-2 py-1.5 text-xs"
+                        :class="groupMode === m ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                        @click="pickGroupMode(m)">
+                  {{ m === 'instance' ? $t('instance.groupModeInstance') : m === 'workspace' ? $t('instance.groupModeWorkspace') : $t('instance.groupModeAgent') }}
+                </button>
+              </div>
+              <p class="text-xs text-fg-muted">{{ $t("instance.groupModeHint") }}</p>
             </section>
             <section class="space-y-1">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.versionLabel") }}</h3>
