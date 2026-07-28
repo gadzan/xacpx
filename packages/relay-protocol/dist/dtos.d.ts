@@ -117,6 +117,7 @@ export type ToolDetailDto = {
 } | {
     type: "text";
     text: string;
+    output?: string;
 } | {
     type: "fields";
     fields: Array<{

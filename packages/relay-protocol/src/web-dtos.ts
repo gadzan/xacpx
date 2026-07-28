@@ -167,7 +167,7 @@ function validToolDetail(d: Record<string, unknown>): boolean {
     case "search":
       return isStr(d.query) && optStr(d.output);
     case "text":
-      return isStr(d.text);
+      return isStr(d.text) && optStr(d.output);
     case "fields":
       return (
         Array.isArray(d.fields) &&

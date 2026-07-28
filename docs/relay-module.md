@@ -156,6 +156,10 @@
   规范的 connector 已经在上面 TEXT_CAP/DIFF_CAP 处截过，正常流量不受影响（字符串都在限内时原样返回，零拷贝）；
   这道闸拦的是绕过规整的非规范/旧版 connector，避免超大 detail 撑爆持久化 `structured` 列、历史分页 payload 和浏览器扇出。
 - 按 `kind` 分派到具体 `ToolDetailDto` 变体（`diff / read / command / search / text / fields`），不向线路侧暴露任何原始 JSON。
+- **子代理步骤（`event.isSubagent`）独立于 `kind` 规整**：`detail = { type: "text", text: <委派 prompt>, output?: <子代理流式/最终输出> }`。
+  prompt 取自既有输入抽取链（`prompt / description / task / instructions / summary`），output 取自既有块/`rawOutput` 抽取链
+  （`textFromBlocks ?? stdout ?? formatted_output ?? text ?? 标量 rawOutput`），二者均按 `TEXT_CAP` 截断。`output` 为可选字段，
+  旧连接器省略、旧 Web 忽略即回退到仅展示 prompt（fail-open）。非子代理的 `think` 步骤保持原有 `text` 形态不变。
 
 ### 服务端累积与持久化（packages/relay/src/server.ts）
 

@@ -282,16 +282,16 @@ function onInput() {
                 @input="onInput"
                 @keydown="onKeydown"
                 @paste="onPaste" />
-      <div class="flex items-center justify-between px-2.5 pb-2.5 pt-0.5">
+      <div class="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">
         <!-- model chip (left) -->
-        <div v-if="instanceId && sessionAlias" class="relative flex items-center gap-2">
+        <div v-if="instanceId && sessionAlias" class="relative flex min-w-0 flex-1 items-center gap-2">
           <button type="button" data-test="model-chip"
-                  class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors disabled:opacity-60"
+                  class="flex min-w-0 items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors disabled:opacity-60"
                   :disabled="!controls.modelAvailable.length"
                   @click="toggleModelMenu">
-            <Brain :size="14" class="text-accent" />
-            <span class="font-mono text-[11.5px] font-medium text-fg">{{ controls.modelCurrent ? formatModelLabel(controls.modelCurrent) : $t("chat.model") }}</span>
-            <ChevronDown v-if="controls.modelAvailable.length" :size="13" />
+            <Brain :size="14" class="shrink-0 text-accent" />
+            <span class="min-w-0 truncate font-mono text-[11.5px] font-medium text-fg">{{ controls.modelCurrent ? formatModelLabel(controls.modelCurrent) : $t("chat.model") }}</span>
+            <ChevronDown v-if="controls.modelAvailable.length" :size="13" class="shrink-0" />
           </button>
           <ul v-if="modelMenuOpen && controls.modelAvailable.length" data-test="model-menu"
               class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg">
@@ -305,7 +305,7 @@ function onInput() {
               </button>
             </li>
           </ul>
-          <div v-if="controls.effortAvailable.length" class="relative">
+          <div v-if="controls.effortAvailable.length" class="relative shrink-0">
             <button type="button" data-test="effort-chip"
                     class="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised"
                     :title="$t('chat.effort')"
@@ -349,7 +349,7 @@ function onInput() {
         <span v-else />
 
         <!-- send / stop (right) -->
-        <div class="flex items-center gap-1.5">
+        <div class="flex shrink-0 items-center gap-1.5">
           <!-- attach button -->
           <button type="button" data-test="attach-btn" :title="$t('chat.attach.add')"
                   class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors"
@@ -357,7 +357,7 @@ function onInput() {
             <Paperclip :size="15" />
           </button>
           <button type="submit" data-test="composer-send" :disabled="composer.uploading || (!text.trim() && !composer.pending.filter(p => p.status === 'ready').length)"
-                  class="flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
+                  class="flex items-center gap-1.5 whitespace-nowrap pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none">
             {{ $t("chat.send") }}
             <Send :size="14" />
           </button>

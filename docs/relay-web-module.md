@@ -96,16 +96,21 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `_meta.qoder.toolName="Agent"`，Kimi 使用完整的 `prompt + subagent_type` Agent 输入，Codex 使用带线程与活动标识的
   `_meta.codex.subagent`。识别规则按 driver 隔离，只有明确命中的委派工具才进入统一 subagent 卡片；普通 `Agent` 标题不会单独触发。
 - Claude subagent 内部工具的 `parentToolUseId` 继续标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto`
-  原样进入 Relay Web。Qoder、Kimi、Codex 当前 ACP 主流没有提供子工具父子关系，因此只展示统一父卡片和 adapter 已提供的结果，
-  不虚构执行时间线。
+  原样进入 Relay Web。Qoder、Kimi、Codex 当前 ACP 主流没有提供子工具父子关系，因此不虚构执行时间线；channel-relay
+  在 `event.isSubagent` 步骤上把委派 prompt 放入 `detail.text`、把子代理流式/最终输出放入 `detail.output`，
+  卡片据此展示实时进度与结果报告。
 - 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
   主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
   `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。
 - `TurnParts.vue` 保留原始有序 parts，仅在展示层按 `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具
   仍按普通卡片渲染。
-- `SubagentStepCard.vue` 默认折叠：运行中轮播当前活动步骤，展开后显示紧凑时间线；“查看完整过程”打开
-  `SubagentTraceDialog.vue`，按父子深度展示委派任务、嵌套 Agent 和每个子工具的完整详情。轮播尊重 `prefers-reduced-motion`，弹窗支持焦点圈定、
-  Esc 和点击遮罩关闭。
+- `SubagentStepCard.vue` 以 `children.length > 0` 判定是否具备真实 trace（provider 无关，仅看数据是否到达）。
+  有 trace：默认折叠、运行中轮播当前活动步骤，展开后显示紧凑时间线与 `traceCount`。无 trace：折叠行显示 `detail.output`
+  尾行（回退到 prompt）、运行时长与“{ago} 前更新”心跳；展开显示委派 prompt 折叠行 + 输出块（运行中为定高、贴底滚动的
+  mono `<pre>`，结束后切换为经 `StreamMarkdown`（`renderMarkdown` = markdown-it `html:false` + DOMPurify）渲染的结果报告）。
+  时长/心跳为客户端近似值（刷新会重置，历史行永不处于运行态）。“查看完整过程”打开 `SubagentTraceDialog.vue`：保留委派任务区，
+  新增结果报告区（结束后 markdown、运行中 mono 尾行），仅在既无子步骤也无委派/输出时才显示空态占位。轮播尊重
+  `prefers-reduced-motion`，弹窗支持焦点圈定、Esc 和点击遮罩关闭。
 
 ## Composer 的模型与 effort 控件
 

@@ -183,7 +183,7 @@ function validToolDetail(d) {
     case "search":
       return isStr(d.query) && optStr(d.output);
     case "text":
-      return isStr(d.text);
+      return isStr(d.text) && optStr(d.output);
     case "fields":
       return Array.isArray(d.fields) && d.fields.every((f) => f !== null && typeof f === "object" && isStr(f.label) && isStr(f.value)) && optStr(d.output);
     default:

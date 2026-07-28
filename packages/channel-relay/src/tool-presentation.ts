@@ -112,6 +112,18 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     ...(errMsg ? { error: cap(errMsg, 2000) } : {}),
   };
 
+  // Delegated subagent (Agent/Task) steps: many adapters (qoder/kimi/codex) never emit
+  // child tool events with parent links, so the web card has no timeline to show. Carry
+  // the delegated prompt as `text` and the subagent's streamed/finished output as `output`
+  // so the card can show live progress and render a result report — independent of `kind`.
+  if (event.isSubagent) {
+    const prompt =
+      asString(input.prompt) ?? asString(input.description) ?? asString(input.task) ?? asString(input.instructions) ?? event.summary ?? "";
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    const detail: ToolDetailDto = { type: "text", text: cap(prompt), ...(out ? { output: cap(out) } : {}) };
+    return { ...base, title: fallbackTitle, detail };
+  }
+
   if (event.kind === "edit") {
     const diff = diffBlock(blocks);
     if (diff) {

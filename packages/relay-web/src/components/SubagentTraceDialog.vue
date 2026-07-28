@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
+import type { ToolDetailDto, ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Check, Loader2, X } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
 import ToolStepCard from "./ToolStepCard.vue";
+import StreamMarkdown from "./StreamMarkdown.vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { resolveSubagentStatus } from "../lib/subagent-status";
 import { indexToolSteps, toolStepDepthWithin } from "../lib/subagent-trace";
@@ -19,6 +20,20 @@ const traceRows = computed(() => {
     depth: toolStepDepthWithin(child, props.step.toolCallId, byId),
   }));
 });
+
+// The subagent's streamed/finished output rides on the step detail (text.output and the
+// analogous fields on other shapes). Shown as a result section — markdown once finished,
+// a raw tail while running — so traceless delegations render a report instead of nothing.
+function detailOutput(d: ToolDetailDto | undefined): string {
+  if (!d) return "";
+  return d.type === "text" ? d.output ?? ""
+    : d.type === "command" ? d.output ?? ""
+    : d.type === "search" ? d.output ?? ""
+    : d.type === "read" ? d.preview ?? ""
+    : d.type === "fields" ? d.output ?? ""
+    : "";
+}
+const outputText = computed(() => detailOutput(props.step.detail));
 useModalA11y(dialog, () => emit("close"));
 </script>
 
@@ -63,6 +78,11 @@ useModalA11y(dialog, () => emit("close"));
             <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
             <ToolDetail :detail="step.detail" />
           </section>
+          <section v-if="outputText" data-test="subagent-dialog-report" class="mb-5 rounded-xl border border-border bg-bg/60 p-3">
+            <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.report") }}</p>
+            <StreamMarkdown v-if="status !== 'running'" :text="outputText" />
+            <pre v-else class="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-bg/60 p-2 font-mono text-[11px] leading-relaxed text-fg-muted">{{ outputText }}</pre>
+          </section>
           <div v-if="traceRows.length" class="space-y-2.5">
             <div v-for="row in traceRows" :key="row.step.toolCallId"
                  class="border-l border-border/70 pl-2"
@@ -70,10 +90,11 @@ useModalA11y(dialog, () => emit("close"));
               <ToolStepCard :step="row.step" />
             </div>
           </div>
-          <div v-else class="grid min-h-36 place-items-center rounded-xl border border-dashed border-border bg-bg/40 text-center">
+          <div v-else-if="!step.detail && !outputText" class="grid min-h-36 place-items-center rounded-xl border border-dashed border-border bg-bg/40 text-center">
             <div>
-              <Loader2 :size="18" class="mx-auto animate-spin motion-reduce:animate-none text-accent" />
-              <p class="mt-2 text-[12px] text-fg-muted">{{ $t("tools.waitingForActivity") }}</p>
+              <Loader2 v-if="status === 'running'" :size="18" class="mx-auto animate-spin motion-reduce:animate-none text-accent" />
+              <Check v-else :size="18" class="mx-auto text-run" />
+              <p class="mt-2 text-[12px] text-fg-muted">{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</p>
             </div>
           </div>
         </div>

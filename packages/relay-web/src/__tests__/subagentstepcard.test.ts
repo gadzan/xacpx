@@ -80,6 +80,67 @@ describe("subagent trace presentation", () => {
     expect(wrapper.find('[data-test="subagent-activity"]').text()).toContain("wechat");
   });
 
+  it("shows the step's own detail text while running with no children", () => {
+    const wrapper = mount(SubagentStepCard, { props: { step: parent, children: [] } });
+    const snippet = wrapper.find('[data-test="subagent-detail-snippet"]');
+    expect(snippet.exists()).toBe(true);
+    expect(snippet.text()).toContain("Search the repository thoroughly.");
+  });
+
+  it("shows a running message when no children and no detail are available", () => {
+    const bare: ToolStepDto = { ...parent, detail: undefined };
+    const wrapper = mount(SubagentStepCard, { props: { step: bare, children: [] } });
+    expect(wrapper.find('[data-test="subagent-activity"]').text()).toContain("Running — no activity details yet");
+  });
+
+  it("shows no-recorded-activity when finished with no children and no detail", () => {
+    const done: ToolStepDto = { ...parent, status: "success", detail: undefined };
+    const wrapper = mount(SubagentStepCard, { props: { step: done, children: [] } });
+    expect(wrapper.find('[data-test="subagent-activity"]').text()).toContain("No recorded activity");
+  });
+
+  it("shows the output tail and a heartbeat while running without a trace", () => {
+    const step: ToolStepDto = { ...parent, detail: { type: "text", text: "Investigate the flow", output: "line one\nline two tail" } };
+    const wrapper = mount(SubagentStepCard, { props: { step, children: [] } });
+    const activity = wrapper.find('[data-test="subagent-activity"]');
+    expect(activity.find('[data-test="subagent-detail-snippet"]').text()).toContain("line two tail");
+    expect(activity.text()).toContain("updated");
+  });
+
+  it("streams the raw output tail when expanded while running without a trace", async () => {
+    const step: ToolStepDto = { ...parent, detail: { type: "text", text: "Investigate the flow", output: "partial output so far" } };
+    const wrapper = mount(SubagentStepCard, { props: { step, children: [] } });
+    await wrapper.find('[data-test="subagent-header"]').trigger("click");
+    const report = wrapper.find('[data-test="subagent-report"]');
+    expect(report.exists()).toBe(true);
+    expect(wrapper.find('[data-test="subagent-stream"]').text()).toContain("partial output so far");
+    wrapper.unmount();
+  });
+
+  it("renders the finished report as markdown when expanded without a trace", async () => {
+    const step: ToolStepDto = { ...parent, status: "success", detail: { type: "text", text: "Investigate the flow", output: "## Result\n\nAll good." } };
+    const wrapper = mount(SubagentStepCard, { props: { step, children: [] } });
+    await wrapper.find('[data-test="subagent-header"]').trigger("click");
+    const report = wrapper.find('[data-test="subagent-report"]');
+    expect(report.exists()).toBe(true);
+    expect(report.text()).toContain("All good.");
+    expect(wrapper.find('[data-test="subagent-stream"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("shows the delegated prompt and a result report in the trace dialog without a trace", async () => {
+    const step: ToolStepDto = { ...parent, status: "success", detail: { type: "text", text: "Investigate the flow", output: "Done: nothing to change." } };
+    const wrapper = mount(SubagentStepCard, { attachTo: document.body, props: { step, children: [] } });
+    await wrapper.find('[data-test="subagent-header"]').trigger("click");
+    await wrapper.find('[data-test="subagent-open-trace"]').trigger("click");
+    await nextTick();
+    const dialog = document.querySelector('[data-test="subagent-trace-dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("Investigate the flow");
+    expect(document.querySelector('[data-test="subagent-dialog-report"]')?.textContent).toContain("Done: nothing to change.");
+    wrapper.unmount();
+  });
+
   it("keeps nested subagent descendants visible in the full trace", async () => {
     const nestedAgent: ToolStepDto = {
       toolCallId: "agent-2",
