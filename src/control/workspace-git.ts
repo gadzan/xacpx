@@ -446,7 +446,7 @@ export class WorkspaceGit {
         ...(worktreePath ? { worktreePath } : {}),
       };
     });
-    const statusRaw = await this.runRaw(root, ["-c", "core.quotePath=false", "status", "--porcelain", "-z"]);
+    const statusRaw = await this.runRaw(root, ["-c", "core.quotePath=false", "status", "--porcelain", "-z", "--untracked-files=all"]);
     const files: Array<{ path: string; status: string }> = [];
     const fields = statusRaw.split("\0");
     for (let index = 0; index < fields.length; index += 1) {

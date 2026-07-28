@@ -538,7 +538,7 @@ export class WorkspaceFs {
     try {
       const { stdout } = await execFileAsync(
         "git",
-        ["-C", root, "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
+        ["-C", root, "-c", "core.quotePath=false", "status", "--porcelain", "-z", "--untracked-files=all"],
         { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" },
       );
       const fields = stdout.split("\0");
