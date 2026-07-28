@@ -18,7 +18,8 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
+import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
@@ -230,6 +231,7 @@ export class BridgeRuntime {
     name: string;
     agentSessionId: string;
   }): Promise<Record<string, never>> {
+    this.invalidateRecordIdCache(input);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "sessions",
       "new",
@@ -336,6 +338,7 @@ export class BridgeRuntime {
     input: BridgeSessionInput,
     onProgress?: (progress: EnsureSessionProgress) => void,
   ): Promise<Record<string, never>> {
+    this.invalidateRecordIdCache(input);
     try {
       return await this.attemptEnsureSession(input, onProgress);
     } catch (error) {
@@ -795,6 +798,7 @@ export class BridgeRuntime {
     cwd: string;
     name: string;
   }): Promise<Record<string, never>> {
+    this.invalidateRecordIdCache(input);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, [
       "sessions",
       "close",
@@ -856,6 +860,44 @@ export class BridgeRuntime {
     // open, so the next prompt resumes with full history.
     await terminateAcpxQueueOwner(acpxRecordId);
     return {};
+  }
+
+  private readonly recordIdCache = new Map<string, string>();
+
+  // Record ids are stable per transport session — cache to avoid spawning
+  // `acpx sessions show` on every warmth poll tick.
+  private recordIdCacheKey(input: { agent: string; agentCommand?: string; cwd: string; name: string }): string {
+    return JSON.stringify([input.agent, input.agentCommand ?? null, input.cwd, input.name]);
+  }
+
+  // Any lifecycle op that can create/close a record under the same transport
+  // session name (notably native re-attach after delete reuses the name) must
+  // drop the cached record id, or warmth polls keep reading the dead record's
+  // lock forever.
+  private invalidateRecordIdCache(input: { agent: string; agentCommand?: string; cwd: string; name: string }): void {
+    this.recordIdCache.delete(this.recordIdCacheKey(input));
+  }
+
+  async isSessionWarm(input: {
+    agent: string;
+    agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+    cwd: string;
+    name: string;
+  }): Promise<{ warm: boolean }> {
+    const cacheKey = this.recordIdCacheKey(input);
+    let acpxRecordId = this.recordIdCache.get(cacheKey);
+    if (!acpxRecordId) {
+      try {
+        ({ acpxRecordId } = await this.readSessionRecord(input));
+      } catch {
+        return { warm: false }; // acpx session gone → nothing can be warm
+      }
+      this.recordIdCache.set(cacheKey, acpxRecordId);
+    }
+    const pid = await readQueueOwnerPid(acpxRecordId);
+    return { warm: pid !== undefined && isProcessAlive(pid) };
   }
 
   async shutdown(): Promise<Record<string, never>> {

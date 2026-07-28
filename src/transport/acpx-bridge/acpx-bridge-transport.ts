@@ -295,6 +295,11 @@ export class AcpxBridgeTransport implements SessionTransport {
     await this.client.request("freeWarmProcess", this.toParams(session));
   }
 
+  async isSessionWarm(session: ResolvedSession): Promise<boolean> {
+    const result = await this.client.request<{ warm: boolean }>("isSessionWarm", this.toParams(session));
+    return result.warm === true;
+  }
+
   async getAgentSessionId(session: ResolvedSession): Promise<string | undefined> {
     const result = await this.client.request<{ agentSessionId?: string }>(
       "getAgentSessionId",

@@ -44,7 +44,7 @@ export interface TurnResult {
 // lives in TurnQueue, which decides whether to call run() at all.
 export class SessionTurnRunner {
   constructor(
-    private readonly deps: Pick<ControlServiceDeps, "agent" | "sessions" | "events" | "uploadStore">,
+    private readonly deps: Pick<ControlServiceDeps, "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth">,
   ) {}
 
   async run(req: TurnRequest, signal: AbortSignal, onActivity?: () => void): Promise<TurnResult> {
@@ -76,6 +76,12 @@ export class SessionTurnRunner {
     }
     if (wasArchived) {
       this.deps.events.emit({ type: "sessions-changed" });
+    }
+    if (internalAlias && this.deps.sessionWarmth) {
+      // This prompt is about to spawn (or reuse) the warm queue owner — correct
+      // the tracker now so the cold indicator clears without waiting for a poll.
+      const bound = await this.deps.sessions.getSession(internalAlias).catch(() => null);
+      if (bound) this.deps.sessionWarmth.markWarm(bound);
     }
     this.deps.events.emit({
       type: "turn-started",

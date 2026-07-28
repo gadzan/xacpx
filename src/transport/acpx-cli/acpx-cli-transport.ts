@@ -34,7 +34,8 @@ import {
 } from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner } from "../acpx-queue-owner-launcher";
+import { isProcessAlive } from "../../daemon/daemon-files";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
@@ -256,6 +257,7 @@ export class AcpxCliTransport implements SessionTransport {
   // is never emitted. Users on this transport still see the initial "spawn" hint from
   // CommandRouter (emitted before the call) but will not receive mid-flight updates.
   async ensureSession(session: ResolvedSession, _onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
+    this.invalidateRecordIdCache(session);
     try {
       await this.runEnsureSession(session);
     } catch (error) {
@@ -543,6 +545,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
+    this.invalidateRecordIdCache(session);
     const args = this.buildArgs(session, [
       "sessions",
       "new",
@@ -566,6 +569,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async removeSession(session: ResolvedSession): Promise<void> {
+    this.invalidateRecordIdCache(session);
     const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "close",
@@ -611,6 +615,41 @@ export class AcpxCliTransport implements SessionTransport {
     // history lost on next prompt). Terminating the owner leaves the record open,
     // so the next prompt resumes the same conversation with full history.
     await terminateAcpxQueueOwner(acpxRecordId);
+  }
+
+  private readonly recordIdCache = new Map<string, string>();
+
+  // Same composite key as reapQueueOwners/defaultResolveRecordId — the record
+  // id is stable for a given transport session, so cache it to avoid spawning
+  // `acpx sessions show` on every poll tick.
+  private recordIdCacheKey(session: ResolvedSession): string {
+    return JSON.stringify([session.agent, session.agentCommand ?? null, session.cwd, session.transportSession]);
+  }
+
+  // Any lifecycle op that can create/close a record under the same transport
+  // session name (notably native re-attach after delete reuses the name) must
+  // drop the cached record id, or warmth polls keep reading the dead record's
+  // lock forever.
+  private invalidateRecordIdCache(session: ResolvedSession): void {
+    this.recordIdCache.delete(this.recordIdCacheKey(session));
+  }
+
+  async isSessionWarm(session: ResolvedSession): Promise<boolean> {
+    const cacheKey = this.recordIdCacheKey(session);
+    let acpxRecordId = this.recordIdCache.get(cacheKey);
+    if (!acpxRecordId) {
+      try {
+        ({ acpxRecordId } = await this.readSessionRecord(session));
+      } catch {
+        return false; // acpx session gone → nothing can be warm
+      }
+      this.recordIdCache.set(cacheKey, acpxRecordId);
+    }
+    const pid = await readQueueOwnerPid(acpxRecordId);
+    if (pid === undefined) {
+      return false;
+    }
+    return isProcessAlive(pid);
   }
 
   async hasSession(session: ResolvedSession): Promise<boolean> {

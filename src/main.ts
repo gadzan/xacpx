@@ -54,6 +54,7 @@ import { renderTaskHeartbeat, renderTaskProgress } from "./formatting/render-tex
 import { QuotaManager } from "./weixin/messaging/quota-manager";
 import { createControlEventBus } from "./control/control-event-bus";
 import { ControlService } from "./control/control-service";
+import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
@@ -806,6 +807,18 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     () => void uploadStore.cleanup().catch(() => {}),
     60 * 60 * 1000,
   );
+  // Warmth poller for the relay-web cold-session indicator: samples queue-owner
+  // liveness every 60s and nudges dashboards via `sessions-changed` when a session
+  // silently goes cold (TTL expiry). Only when the transport can observe liveness.
+  const sessionWarmth = transport.isSessionWarm
+    ? new SessionWarmthTracker({
+        listSessions: () => sessions.listAllResolvedSessions(),
+        isWarm: (session) => transport.isSessionWarm!(session),
+        events: controlEvents,
+        logger,
+      })
+    : undefined;
+  sessionWarmth?.start();
   const control = new ControlService({
     logger,
     agent,
@@ -821,6 +834,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     archiveSessionWithTransport: (internalAlias) => router.archiveSessionWithTransport(internalAlias),
     unarchiveSession: (internalAlias) => router.unarchiveSession(internalAlias),
     activeTurns,
+    ...(sessionWarmth ? { sessionWarmth } : {}),
     scheduled: scheduledService,
     orchestration,
     events: controlEvents,
@@ -992,6 +1006,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     dispose: async () => {
       scheduledScheduler.stop();
+      sessionWarmth?.stop();
       configWatcher.close();
       clearInterval(uploadCleanupInterval);
       terminalService.disposeAll();

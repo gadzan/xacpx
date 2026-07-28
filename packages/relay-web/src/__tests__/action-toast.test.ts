@@ -4,8 +4,8 @@ import { showActionToast, useActionToastState, runToastAction, dismissToast } fr
 describe("action toast", () => {
   it("exposes the message + action and runs the action once", () => {
     const action = vi.fn();
-    showActionToast({ message: 'Archived "x"', actionLabel: "Undo", action });
-    expect(useActionToastState().value?.message).toContain("Archived");
+    showActionToast({ message: 'Slept "x"', actionLabel: "Undo", action });
+    expect(useActionToastState().value?.message).toContain("Slept");
     runToastAction();
     expect(action).toHaveBeenCalledTimes(1);
     expect(useActionToastState().value).toBeNull();

@@ -257,6 +257,19 @@ function createDefaultQueueOwnerTerminator(_acpxCommand: string): QueueOwnerTerm
   };
 }
 
+export async function readQueueOwnerPid(sessionId: string): Promise<number | undefined> {
+  let owner: { pid?: unknown } | undefined;
+  try {
+    owner = JSON.parse(await readFile(queueLockFilePath(sessionId), "utf8")) as { pid?: unknown };
+  } catch {
+    return undefined;
+  }
+  if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
+    return owner.pid;
+  }
+  return undefined;
+}
+
 export async function terminateAcpxQueueOwner(sessionId: string): Promise<void> {
   const lockPath = queueLockFilePath(sessionId);
   let owner: { pid?: unknown } | undefined;

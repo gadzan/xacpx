@@ -245,6 +245,13 @@ export interface SessionTransport {
    */
   freeWarmProcess?(session: ResolvedSession): Promise<void>;
   /**
+   * Whether this session's warm queue-owner process is currently alive (=
+   * the next prompt responds immediately instead of cold-starting). False
+   * when the owner exited via TTL, archive, or any other reason. Optional:
+   * transports that can't observe process liveness omit it.
+   */
+  isSessionWarm?(session: ResolvedSession): Promise<boolean>;
+  /**
    * Read the underlying agent-native session id for an existing transport
    * session. Used by `/clear` to keep a native session native: the fresh
    * post-clear session is itself backed by a new agent rollout, and this

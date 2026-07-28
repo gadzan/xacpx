@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, ChevronDown, ChevronRight, Folder, Link2, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
+import { ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, Trash2, Unplug } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -388,6 +388,11 @@ const rowSwipes = computed(() => {
                   <Link2 v-if="s.native" data-test="native-badge" :size="12"
                          :aria-label="$t('instance.sessionNativeBadgeTitle')" :title="$t('instance.sessionNativeBadgeTitle')"
                          class="shrink-0 text-info" :class="s.archived ? 'opacity-60' : ''" />
+                  <!-- Cold indicator: awake session whose warm process has exited (TTL or otherwise);
+                       next message cold-starts. Absent `warm` (old instance) shows nothing. -->
+                  <Unplug v-if="!s.archived && s.warm === false" data-test="cold-indicator" :size="12"
+                          :aria-label="$t('instance.sessionColdTitle')" :title="$t('instance.sessionColdTitle')"
+                          class="shrink-0 text-fg-muted" />
                   <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
                         class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
                 </button>
@@ -401,9 +406,9 @@ const rowSwipes = computed(() => {
               <!-- Swipe-revealed action blocks (touch). Sit just past the right edge; the
                    `@click.stop` prevents the row tap from also firing. -->
               <template v-if="inst.online">
-                <button v-if="!s.archived" data-test="swipe-archive" :aria-label="$t('instance.archiveSession')" :title="$t('instance.archiveSession')"
+                <button v-if="!s.archived" data-test="swipe-archive" :aria-label="$t('instance.archiveSession')" :title="$t('instance.sleepTooltip')"
                         class="flex w-14 shrink-0 items-center justify-center bg-warn text-white transition-colors hover:bg-warn/90"
-                        @click.stop="onArchive(inst.id, s.alias)"><Archive :size="16" /></button>
+                        @click.stop="onArchive(inst.id, s.alias)"><Moon :size="16" /></button>
                 <button data-test="swipe-delete" :aria-label="$t('common.delete')" :title="$t('common.delete')"
                         class="flex w-14 shrink-0 items-center justify-center bg-danger text-white transition-colors hover:bg-danger/90"
                         @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="16" /></button>
@@ -419,7 +424,7 @@ const rowSwipes = computed(() => {
             <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
                  class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
               <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
-              <button v-if="!s.archived" data-test="action-archive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Archive :size="12" />{{ $t("instance.archiveSession") }}</button>
+              <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
               <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
             </div>
             </div>

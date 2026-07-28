@@ -66,6 +66,10 @@ export interface ControlSessionInfo {
   transportSession: string;
   running: boolean;
   archived: boolean;
+  /** Whether the session's agent process is currently alive (next prompt responds
+   *  without a cold start). Omitted when unknown — e.g. the transport can't observe
+   *  liveness or the warmth tracker hasn't sampled this session yet. */
+  warm?: boolean;
   /** True when this logical session was attached to an existing agent-side (native) rollout
    *  rather than freshly created. Mirrors LogicalSession.source === "agent-side"; omitted for
    *  fresh xacpx sessions so the wire stays minimal. */
@@ -131,6 +135,8 @@ export interface ControlServiceDeps {
     nativeMeta?: { title?: string | null; updatedAt?: string },
   ) => Promise<ResolvedSession>;
   activeTurns: Pick<ActiveTurnRegistry, "isActiveAnywhere">;
+  /** Warmth tracker view for the cold-session indicator; absent ⇒ `warm` omitted from listings. */
+  sessionWarmth?: Pick<import("./session-warmth-tracker").SessionWarmthTracker, "isWarm" | "markWarm" | "markCold">;
   scheduled: Pick<ScheduledTaskService, "listPending" | "listRecentForChat" | "createTask" | "cancelPending">;
   orchestration: Pick<OrchestrationService, "listTasks" | "getTask" | "requestTaskCancellation">;
   events: ControlEventBus;
@@ -565,17 +571,22 @@ export class ControlService {
     return this.deps.sessions
       .listAllResolvedSessions()
       .filter((session) => isSessionAliasVisibleInChannel(session.alias, channelId))
-      .map((session) => ({
-        alias: toDisplaySessionAlias(session.alias),
-        agent: session.agent,
-        workspace: session.workspace,
-        transportSession: session.transportSession,
-        running: this.deps.activeTurns.isActiveAnywhere(session.alias),
-        archived: session.archived === true,
-        ...(session.source === "agent-side" ? { native: true } : {}),
-        ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-        ...(session.displayName ? { displayName: session.displayName } : {}),
-      }));
+      .map((session) => {
+        const running = this.deps.activeTurns.isActiveAnywhere(session.alias);
+        const warm = running ? true : this.deps.sessionWarmth?.isWarm(session);
+        return {
+          alias: toDisplaySessionAlias(session.alias),
+          agent: session.agent,
+          workspace: session.workspace,
+          transportSession: session.transportSession,
+          running,
+          archived: session.archived === true,
+          ...(warm !== undefined ? { warm } : {}),
+          ...(session.source === "agent-side" ? { native: true } : {}),
+          ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+          ...(session.displayName ? { displayName: session.displayName } : {}),
+        };
+      });
   }
 
   /**
@@ -647,6 +658,10 @@ export class ControlService {
   async archiveSession(chatKey: string, alias: string): Promise<void> {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
     await this.deps.archiveSessionWithTransport(internalAlias);
+    // Archive just killed the warm owner — correct the tracker now so an
+    // immediate undo-wake doesn't show a stale warm reading until the next poll.
+    const session = await this.deps.sessions.getSession(internalAlias).catch(() => undefined);
+    if (session) this.deps.sessionWarmth?.markCold(session);
     this.deps.events.emit({ type: "sessions-changed" });
   }
 
