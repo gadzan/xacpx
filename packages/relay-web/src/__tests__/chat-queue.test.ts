@@ -187,6 +187,55 @@ it("reloads history immediately after reselecting a session during prompt RPC", 
   expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
 });
 
+it("converges after the RPC settles when the reselect fetch raced the queueItemId stamp", async () => {
+  let resolveRpc!: (value: unknown) => void;
+  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
+  const fetchMock = vi.fn()
+    // Reselect fetch races the RPC: the hub persisted the prompt row on enqueue, but
+    // markQueued hasn't stamped its queueItemId yet — the row arrives uncorrelated.
+    .mockResolvedValueOnce({
+      json: async () => ({
+        messages: [
+          { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1" },
+        ],
+        hasMore: false,
+      }),
+    })
+    // The post-settle convergence reload returns the authoritative correlated row.
+    .mockResolvedValue({
+      json: async () => ({
+        messages: [
+          { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1", queueItemId: "q1" },
+        ],
+        hasMore: false,
+      }),
+    });
+  globalThis.fetch = fetchMock as typeof fetch;
+  const chat = useChatStore();
+  chat.select("i1", "s");
+  const sending = chat.send("queued prompt");
+  chat.select("i1", "other");
+  chat.select("i1", "s");
+  await chat.loadHistory();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
+
+  // The drain event can't correlate the uncorrelated row, so it pushes its own bubble —
+  // a transient duplicate that the convergence reload below must eliminate.
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
+  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt", "queued prompt"]);
+
+  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
+  await sending;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // RPC settle triggered the deferred convergence reload with the authoritative row.
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(chat.messages.map((message) => [message.text, message.queueItemId])).toEqual([
+    ["queued prompt", "q1"],
+  ]);
+});
+
 it("cancelQueuedItem issues control.queue.cancel and optimistically drops the chip", async () => {
   rpc.mockResolvedValueOnce({ ok: true });
   const chat = useChatStore();

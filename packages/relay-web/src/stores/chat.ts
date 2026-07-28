@@ -251,14 +251,20 @@ export const useChatStore = defineStore("chat", () => {
     const id = instanceId.value;
     const alias = sessionAlias.value;
     const historyKey = bufKey(id, alias);
-    // Defer only background convergence reloads: a non-empty transcript may hold an
-    // optimistic prompt row whose queueItemId correlation the pending RPC hasn't
-    // established yet, and replacing it would break the drain-event dedupe. A freshly
-    // selected pane is empty (select() cleared it), so fetching history there clobbers
-    // nothing — skipping it would leave only the live turn visible until the RPC settles.
-    if ((pendingPromptRequests.get(historyKey) ?? 0) > 0 && messages.value.length > 0) {
+    // While a prompt RPC is pending, history is not yet authoritative for that prompt:
+    // the hub persists the "in" row on enqueue, but its queueItemId is only stamped
+    // once the RPC response arrives (markQueued). Rows fetched inside that window lack
+    // the correlation id, so a later drain event can't match them and would push a
+    // duplicate bubble. Always schedule a convergence reload for after the RPC settles
+    // (send()'s finally) to pull the authoritative rows back. Beyond that, defer only
+    // background convergence reloads: a non-empty transcript may hold an optimistic
+    // prompt row whose queueItemId correlation the pending RPC hasn't established yet,
+    // and replacing it would break the drain-event dedupe. A freshly selected pane is
+    // empty (select() cleared it), so fetching history there clobbers nothing —
+    // skipping it would leave only the live turn visible until the RPC settles.
+    if ((pendingPromptRequests.get(historyKey) ?? 0) > 0) {
       deferredHistoryLoads.add(historyKey);
-      return;
+      if (messages.value.length > 0) return;
     }
     const requestSequence = ++historyRequestSequence;
     const revision = transcriptRevision;
