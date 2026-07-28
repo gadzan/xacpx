@@ -283,6 +283,26 @@ describe("WorkspaceFs git diff", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
+  test("expands an untracked directory into individual files instead of a collapsed dir", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "seed.txt"), "x\n");
+    git("add", "."); git("commit", "-qm", "init");
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "a.txt"), "a\n");
+    writeFileSync(join(repo, "sub", "b.txt"), "b\n");
+    const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
+    const d = await gfs.gitDiff("g");
+    const paths = d.files.map((f) => f.path);
+    expect(paths).toContain("sub/a.txt");
+    expect(paths).toContain("sub/b.txt");
+    expect(paths).not.toContain("sub/"); // plain --porcelain would collapse to the dir
+    rmSync(repo, { recursive: true, force: true });
+  });
+
   test("synthesizes an all-additions diff for an untracked file", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });

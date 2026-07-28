@@ -523,6 +523,8 @@ export class WorkspaceFs {
     return { workspace, query, matches: [], hits, truncated };
   }
 
+  // Git here is read-only (rev-parse/status/diff), so no `-c gc.auto=0` guard is needed;
+  // add one (see workspace-git.ts runRaw) if a write command (commit/fetch/...) ever lands here.
   async gitDiff(workspace: string, relPath?: string): Promise<WorkspaceDiff> {
     const { root, rel } = await this.resolve(workspace, relPath);
     try {
@@ -538,7 +540,7 @@ export class WorkspaceFs {
     try {
       const { stdout } = await execFileAsync(
         "git",
-        ["-C", root, "-c", "core.quotePath=false", "status", "--porcelain", "-z"],
+        ["-C", root, "-c", "core.quotePath=false", "status", "--porcelain", "-z", "--untracked-files=all"],
         { maxBuffer: GIT_MAX_BUFFER, timeout: GIT_TIMEOUT_MS, killSignal: "SIGKILL" },
       );
       const fields = stdout.split("\0");

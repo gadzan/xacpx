@@ -157,8 +157,13 @@ export class WorkspaceGit {
   }
 
   private async runRaw(root: string, args: string[]): Promise<string> {
-    if (this.runGitOverride) return await this.runGitOverride(root, args);
-    const result = await execFileAsync("git", ["-C", root, ...args], {
+    // gc.auto=0: commit/fetch may spawn a detached background `git gc --auto` that
+    // inherits our stderr pipe; execFile then waits for stdio close, times out, and
+    // reports "Command failed" even though the git command itself succeeded.
+    // Assemble the full argv before the test override so injected runners see it too.
+    const fullArgs = ["-C", root, "-c", "gc.auto=0", ...args];
+    if (this.runGitOverride) return await this.runGitOverride(root, fullArgs);
+    const result = await execFileAsync("git", fullArgs, {
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL",
       maxBuffer: GIT_MAX_BUFFER,
@@ -443,16 +448,22 @@ export class WorkspaceGit {
         ...(worktreePath ? { worktreePath } : {}),
       };
     });
-    const statusRaw = await this.runRaw(root, ["-c", "core.quotePath=false", "status", "--porcelain", "-z"]);
     const files: Array<{ path: string; status: string }> = [];
-    const fields = statusRaw.split("\0");
-    for (let index = 0; index < fields.length; index += 1) {
-      const field = fields[index];
-      if (!field) continue;
-      const status = field.slice(0, 2);
-      const path = field.slice(3);
-      if (status[0] === "R" || status[0] === "C") index += 1;
-      files.push({ path, status });
+    try {
+      // -uall expansion can exceed GIT_MAX_BUFFER in pathological repos; degrade to an
+      // empty file list instead of failing the whole status call (branch/worktree info stays).
+      const statusRaw = await this.runRaw(root, ["-c", "core.quotePath=false", "status", "--porcelain", "-z", "--untracked-files=all"]);
+      const fields = statusRaw.split("\0");
+      for (let index = 0; index < fields.length; index += 1) {
+        const field = fields[index];
+        if (!field) continue;
+        const status = field.slice(0, 2);
+        const path = field.slice(3);
+        if (status[0] === "R" || status[0] === "C") index += 1;
+        files.push({ path, status });
+      }
+    } catch {
+      /* status failed — leave files empty, return the rest of the status */
     }
     files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
