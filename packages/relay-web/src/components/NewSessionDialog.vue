@@ -9,7 +9,10 @@ import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form
 import { fmtDateTime } from "../lib/format";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
-const props = defineProps<{ instanceId: string; instanceName: string }>();
+// presetAgent / presetWorkspace: seed the pickers (group-header ＋ in the grouped
+// sidebar prefills its own group). Still changeable — they only override the default
+// first-option selection.
+const props = defineProps<{ instanceId: string; instanceName: string; presetAgent?: string; presetWorkspace?: string }>();
 const emit = defineEmits<{ created: [alias: string]; close: [] }>();
 
 const { t } = useI18n();
@@ -109,9 +112,19 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
-  // default selections
-  agentValue.value = inst.value?.agents[0]?.name ?? inst.value?.agentCatalog.find((c) => c.installed !== "unknown")?.driver ?? "";
-  workspaceSel.value = inst.value?.workspaces[0]?.name ?? "";
+  // default selections — a preset (from the grouped sidebar's group ＋) wins when it
+  // still exists in the loaded options; otherwise fall back to the first option.
+  const agents = inst.value?.agents ?? [];
+  agentValue.value =
+    (props.presetAgent && agents.some((a) => a.name === props.presetAgent) ? props.presetAgent : undefined)
+    ?? agents[0]?.name
+    ?? inst.value?.agentCatalog.find((c) => c.installed !== "unknown")?.driver
+    ?? "";
+  const workspaces = inst.value?.workspaces ?? [];
+  workspaceSel.value =
+    (props.presetWorkspace && workspaces.some((w) => w.name === props.presetWorkspace) ? props.presetWorkspace : undefined)
+    ?? workspaces[0]?.name
+    ?? "";
 });
 
 // configured agent NAMEs (to know if a chosen value needs agent auto-create)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, ChevronDown, ChevronRight, Link2, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
+import { Archive, ChevronDown, ChevronRight, Folder, Link2, Loader2, MoreHorizontal, Pencil, Plus, Settings2, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -11,6 +11,7 @@ import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
 import { pushToast } from "../lib/use-toasts";
 import { useSwipeActions } from "../lib/use-swipe-actions";
+import { groupSessions, dedupedSessionName, archivedLast } from "../lib/sidebar-group-mode";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
@@ -33,7 +34,7 @@ function driverFor(inst: InstanceView, agentName: string): string | undefined {
   return inst.agents.find((a) => a.name === agentName)?.driver;
 }
 const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
-const dialogFor = ref<{ id: string; name: string } | null>(null);
+const dialogFor = ref<{ id: string; name: string; presetAgent?: string; presetWorkspace?: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
 
 // 1Hz clock so working-session elapsed badges tick.
@@ -71,12 +72,6 @@ function toggle(id: string) {
   if (isExpanded(id)) void store.loadSessions(id).catch(() => {});
 }
 
-// Archived sessions sink to the bottom of their instance group (stable: actives keep
-// server order, archived last) so the active work stays at the top of the list.
-function orderedSessions<T extends { archived?: boolean }>(sessions: T[]): T[] {
-  return [...sessions].sort((a, b) => Number(a.archived ?? false) - Number(b.archived ?? false));
-}
-
 // Long session lists get noisy fast — cap the rendered rows per instance and let the
 // user opt into the rest via "show N more" (mirrors the instance collapse/expand
 // pattern above, but keyed independently since either can toggle without the other).
@@ -89,8 +84,63 @@ function toggleSessions(id: string) {
   sessionsExpanded.value = next;
 }
 function visibleSessions(inst: InstanceView): InstanceView["sessions"] {
-  const all = orderedSessions(inst.sessions);
+  const all = archivedLast(inst.sessions);
   return sessionsExpanded.value.has(inst.id) ? all : all.slice(0, SESSION_CAP);
+}
+
+// ── Second-level grouping (workspace / agent) ───────────────────────────────
+// The per-instance mode lives in the store (localStorage-backed). Flat mode keeps
+// the SESSION_CAP truncation; grouped modes render every session — group collapse
+// is the length control there.
+function groupModeOf(inst: InstanceView) {
+  return store.groupModeFor(inst.id);
+}
+
+interface SidebarSection {
+  /** Group name (workspace or agent), or null for the flat (ungrouped) section. */
+  key: string | null;
+  sessions: InstanceView["sessions"];
+}
+function sectionsFor(inst: InstanceView): SidebarSection[] {
+  const mode = groupModeOf(inst);
+  if (mode === "instance") return [{ key: null, sessions: visibleSessions(inst) }];
+  return groupSessions(inst.sessions, mode);
+}
+
+// Group collapse is in-session view state only (not persisted), keyed by mode so
+// switching modes never carries stale collapse over.
+const collapsedGroups = ref<Set<string>>(new Set());
+function grpKey(inst: InstanceView, key: string): string {
+  return `${inst.id}:${groupModeOf(inst)}:${key}`;
+}
+function isGroupCollapsed(inst: InstanceView, key: string): boolean {
+  return collapsedGroups.value.has(grpKey(inst, key));
+}
+function toggleGroup(inst: InstanceView, key: string): void {
+  const k = grpKey(inst, key);
+  const next = new Set(collapsedGroups.value);
+  if (next.has(k)) next.delete(k);
+  else next.add(k);
+  collapsedGroups.value = next;
+  openSwipeFor.value = null;
+}
+
+// Display-only dedup of the `<workspace>-<agent>` auto-alias inside a group; the
+// row's hover title always carries the full name.
+function rowName(inst: InstanceView, s: { alias: string; displayName?: string }, sectionKey: string | null): string {
+  const name = s.displayName || s.alias;
+  const mode = groupModeOf(inst);
+  if (sectionKey === null || mode === "instance") return name;
+  return dedupedSessionName(name, sectionKey, mode);
+}
+
+// Group-header ＋: open the create dialog with the group's own value prefilled.
+function openGroupDialog(inst: InstanceView, key: string): void {
+  dialogFor.value = {
+    id: inst.id,
+    name: inst.name,
+    ...(groupModeOf(inst) === "workspace" ? { presetWorkspace: key } : { presetAgent: key }),
+  };
 }
 
 // Desktop overflow (⋯) menu open-state, keyed by `${instanceId}:${alias}`.
@@ -237,8 +287,12 @@ const rowSwipes = computed(() => {
 
 <template>
   <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5">
-    <!-- One instance group: header row + indented session rows + per-instance footer. -->
-    <div v-for="inst in store.instances" :key="inst.id" :class="inst.online ? '' : 'opacity-60'">
+    <!-- One instance card: header row + session area (flat or grouped) + footer.
+         The card background is the level-1 zone of the tinted-zone hierarchy; group
+         zones inside are one step lighter (visually isomorphic across all modes). -->
+    <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
+         class="rounded-lg border border-border bg-surface/60 p-[3px]"
+         :class="inst.online ? '' : 'opacity-60'">
       <!-- Instance header: chevron + online/offline dot + name + session count. -->
       <button
         class="group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised"
@@ -253,106 +307,134 @@ const rowSwipes = computed(() => {
         <span v-else class="text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
       </button>
 
-      <!-- Indented session rows under an accent-able left rule. -->
-      <div v-show="isExpanded(inst.id)" class="ml-2.5 mt-px space-y-px border-l border-border pl-2.5">
-        <div
-          v-for="s in visibleSessions(inst)"
-          :key="s.alias"
-          data-test="session-row"
-          class="group relative rounded-md"
-        >
-          <!-- Clip layer: bounds ONLY the swipe track so the off-screen action blocks
-               stay hidden until revealed. The row itself is NOT clipped, so the ⋯
-               dropdown (rendered below as a row child) can overflow past the row. -->
-          <div class="overflow-hidden rounded-md">
-          <!-- Swipe track: full-width row content followed by the off-screen action
-               blocks. Swiping right→left translates the track left to reveal them. -->
-          <div
-            data-test="swipe-track"
-            class="flex touch-pan-y ease-out"
-            :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-200'"
-            :style="{ transform: rowTransform(inst.id, s) }"
-            v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
-          >
-            <!-- Foreground row content (spans the full row width). -->
-            <div class="relative flex w-full shrink-0 items-center rounded-md transition-colors"
-                 :class="isSelected(inst.id, s.alias) ? 'bg-accent/10' : 'hover:bg-raised'">
-              <!-- Selected row: left accent bar. -->
-              <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
-              <button
-                class="flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
-                @click="onRowTap(inst.id, s.alias)"
-              >
-                <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
-                <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
-                      class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
-                <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
-                      class="h-2 w-2 shrink-0 rounded-full bg-info" />
-                <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
-                <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
-                     saves horizontal space; the agent name stays available on hover. -->
-                <AgentIcon :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
-                           :class="s.archived ? 'opacity-60' : ''" />
-                <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
-                       v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
-                       class="min-w-0 flex-1 rounded border border-accent bg-bg px-1 py-px text-[13px] text-fg outline-none"
-                       @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
-                       @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
-                       v-focus />
-                <span v-else data-test="session-name" class="min-w-0 truncate text-[12.5px] font-medium"
-                      :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ s.displayName || s.alias }}</span>
-                <!-- Archived state is shown visually by the dimmed name (no text badge), but that
-                     greying carries no signal for screen readers — keep a visually-hidden label so
-                     archived status is still announced. -->
-                <span v-if="s.archived" data-test="archived-label" class="sr-only">{{ $t("instance.sessionArchivedLabel") }}</span>
-                <!-- Native (agent-side / resumed) sessions get a small link glyph instead of a text
-                     badge to keep the row uncluttered. -->
-                <Link2 v-if="s.native" data-test="native-badge" :size="12"
-                       :aria-label="$t('instance.sessionNativeBadgeTitle')" :title="$t('instance.sessionNativeBadgeTitle')"
-                       class="shrink-0 text-info" :class="s.archived ? 'opacity-60' : ''" />
-                <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
-                      class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
-              </button>
-              <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
-              <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
-                <button data-test="session-menu" :aria-label="$t('common.more')"
-                        class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
-                        @click.stop="openSwipeFor = null; openMenuFor = openMenuFor === `${inst.id}:${s.alias}` ? null : `${inst.id}:${s.alias}`"><MoreHorizontal :size="13" /></button>
+      <!-- Session area: flat rows, or tinted group zones (workspace/agent mode).
+           Instead of a border-l indent rail, hierarchy reads from background tint +
+           a very small indent — grouped rows keep almost the full row width. -->
+      <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
+        <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
+             :class="grp.key !== null ? 'rounded-md bg-fg/[0.035] p-0.5' : 'space-y-px'"
+             :data-test="grp.key !== null ? 'session-group' : undefined">
+          <!-- Group header: chevron + kind icon + name + count; hover ＋ creates in-group. -->
+          <div v-if="grp.key !== null" class="group/hdr flex items-center gap-0.5">
+            <button data-test="group-header" :aria-expanded="!isGroupCollapsed(inst, grp.key)"
+                    class="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 text-left transition-colors hover:bg-fg/5"
+                    @click="toggleGroup(inst, grp.key)">
+              <ChevronDown v-if="!isGroupCollapsed(inst, grp.key)" :size="11" class="shrink-0 text-fg-muted" />
+              <ChevronRight v-else :size="11" class="shrink-0 text-fg-muted" />
+              <Folder v-if="groupModeOf(inst) === 'workspace'" :size="12" class="shrink-0 text-fg-muted" />
+              <AgentIcon v-else :driver="driverFor(inst, grp.key)" :title="grp.key" :size="13" />
+              <span data-test="group-name" class="min-w-0 truncate text-[11.5px] font-semibold text-fg-muted">{{ grp.key }}</span>
+              <span data-test="group-count" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
+            </button>
+            <button data-test="group-new-session" :title="$t('instance.groupNewSession', { name: grp.key })" :aria-label="$t('instance.groupNewSession', { name: grp.key })"
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded text-accent transition-colors hover:bg-accent/10 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
+                    @click.stop="openGroupDialog(inst, grp.key)"><Plus :size="12" /></button>
+          </div>
+          <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
+            <div
+              v-for="s in grp.sessions"
+              :key="s.alias"
+              data-test="session-row"
+              class="group relative rounded-md"
+            >
+            <!-- Clip layer: bounds ONLY the swipe track so the off-screen action blocks
+                 stay hidden until revealed. The row itself is NOT clipped, so the ⋯
+                 dropdown (rendered below as a row child) can overflow past the row. -->
+            <div class="overflow-hidden rounded-md">
+            <!-- Swipe track: full-width row content followed by the off-screen action
+                 blocks. Swiping right→left translates the track left to reveal them. -->
+            <div
+              data-test="swipe-track"
+              class="flex touch-pan-y ease-out"
+              :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-200'"
+              :style="{ transform: rowTransform(inst.id, s) }"
+              v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
+            >
+              <!-- Foreground row content (spans the full row width). -->
+              <div class="relative flex w-full shrink-0 items-center rounded-md transition-colors"
+                   :class="isSelected(inst.id, s.alias) ? 'bg-accent/10' : 'hover:bg-raised'">
+                <!-- Selected row: left accent bar. -->
+                <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+                <button
+                  class="flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+                  @click="onRowTap(inst.id, s.alias)"
+                >
+                  <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
+                  <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
+                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
+                  <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"
+                        class="h-2 w-2 shrink-0 rounded-full bg-info" />
+                  <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
+                  <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
+                       saves horizontal space; the agent name stays available on hover. Redundant
+                       inside an agent-mode group (the group header already carries it) → dropped. -->
+                  <AgentIcon v-if="groupModeOf(inst) !== 'agent'" :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
+                             :class="s.archived ? 'opacity-60' : ''" />
+                  <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
+                         v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
+                         class="min-w-0 flex-1 rounded border border-accent bg-bg px-1 py-px text-[13px] text-fg outline-none"
+                         @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
+                         @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
+                         v-focus />
+                  <span v-else data-test="session-name" class="min-w-0 truncate text-[12.5px] font-medium"
+                        :title="s.displayName || s.alias"
+                        :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
+                  <!-- Archived state is shown visually by the dimmed name (no text badge), but that
+                       greying carries no signal for screen readers — keep a visually-hidden label so
+                       archived status is still announced. -->
+                  <span v-if="s.archived" data-test="archived-label" class="sr-only">{{ $t("instance.sessionArchivedLabel") }}</span>
+                  <!-- Native (agent-side / resumed) sessions get a small link glyph instead of a text
+                       badge to keep the row uncluttered. -->
+                  <Link2 v-if="s.native" data-test="native-badge" :size="12"
+                         :aria-label="$t('instance.sessionNativeBadgeTitle')" :title="$t('instance.sessionNativeBadgeTitle')"
+                         class="shrink-0 text-info" :class="s.archived ? 'opacity-60' : ''" />
+                  <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
+                        class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
+                </button>
+                <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
+                <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
+                  <button data-test="session-menu" :aria-label="$t('common.more')"
+                          class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                          @click.stop="openSwipeFor = null; openMenuFor = openMenuFor === `${inst.id}:${s.alias}` ? null : `${inst.id}:${s.alias}`"><MoreHorizontal :size="13" /></button>
+                </div>
               </div>
+              <!-- Swipe-revealed action blocks (touch). Sit just past the right edge; the
+                   `@click.stop` prevents the row tap from also firing. -->
+              <template v-if="inst.online">
+                <button v-if="!s.archived" data-test="swipe-archive" :aria-label="$t('instance.archiveSession')" :title="$t('instance.archiveSession')"
+                        class="flex w-14 shrink-0 items-center justify-center bg-warn text-white transition-colors hover:bg-warn/90"
+                        @click.stop="onArchive(inst.id, s.alias)"><Archive :size="16" /></button>
+                <button data-test="swipe-delete" :aria-label="$t('common.delete')" :title="$t('common.delete')"
+                        class="flex w-14 shrink-0 items-center justify-center bg-danger text-white transition-colors hover:bg-danger/90"
+                        @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="16" /></button>
+              </template>
             </div>
-            <!-- Swipe-revealed action blocks (touch). Sit just past the right edge; the
-                 `@click.stop` prevents the row tap from also firing. -->
-            <template v-if="inst.online">
-              <button v-if="!s.archived" data-test="swipe-archive" :aria-label="$t('instance.archiveSession')" :title="$t('instance.archiveSession')"
-                      class="flex w-14 shrink-0 items-center justify-center bg-warn text-white transition-colors hover:bg-warn/90"
-                      @click.stop="onArchive(inst.id, s.alias)"><Archive :size="16" /></button>
-              <button data-test="swipe-delete" :aria-label="$t('common.delete')" :title="$t('common.delete')"
-                      class="flex w-14 shrink-0 items-center justify-center bg-danger text-white transition-colors hover:bg-danger/90"
-                      @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="16" /></button>
-            </template>
-          </div>
-          </div>
-          <!-- ⋯ dropdown: a child of the ROW (not the clip layer), so it overflows the
-               row downward instead of being clipped to the row's height.
-               `@mousedown.stop`: the document-level mousedown listener nulls openMenuFor,
-               which would unmount this menu in the microtask BEFORE the item's click
-               fires (mousedown → Vue flush → mouseup → click on a detached node), so
-               archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
-          <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
-               class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
-            <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
-            <button v-if="!s.archived" data-test="action-archive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Archive :size="12" />{{ $t("instance.archiveSession") }}</button>
-            <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
+            </div>
+            <!-- ⋯ dropdown: a child of the ROW (not the clip layer), so it overflows the
+                 row downward instead of being clipped to the row's height.
+                 `@mousedown.stop`: the document-level mousedown listener nulls openMenuFor,
+                 which would unmount this menu in the microtask BEFORE the item's click
+                 fires (mousedown → Vue flush → mouseup → click on a detached node), so
+                 archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
+            <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
+                 class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
+              <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
+              <button v-if="!s.archived" data-test="action-archive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Archive :size="12" />{{ $t("instance.archiveSession") }}</button>
+              <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
+            </div>
+            </div>
           </div>
         </div>
 
-        <button v-if="orderedSessions(inst.sessions).length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
+        <!-- The row cap only applies in flat mode — grouped modes render everything
+             and rely on per-group collapse to keep the list short. -->
+        <button v-if="groupModeOf(inst) === 'instance' && inst.sessions.length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
                 data-test="sessions-show-more"
                 class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
                 @click.stop="toggleSessions(inst.id)">
-          {{ $t("instance.showMoreSessions", { n: orderedSessions(inst.sessions).length - SESSION_CAP }) }}
+          {{ $t("instance.showMoreSessions", { n: inst.sessions.length - SESSION_CAP }) }}
         </button>
-        <button v-else-if="orderedSessions(inst.sessions).length > SESSION_CAP"
+        <button v-else-if="groupModeOf(inst) === 'instance' && inst.sessions.length > SESSION_CAP"
                 data-test="sessions-collapse"
                 class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
                 @click.stop="toggleSessions(inst.id)">
@@ -377,6 +459,7 @@ const rowSwipes = computed(() => {
     </div>
 
     <NewSessionDialog v-if="dialogFor" :instance-id="dialogFor.id" :instance-name="dialogFor.name"
+                      :preset-agent="dialogFor.presetAgent" :preset-workspace="dialogFor.presetWorkspace"
                       @close="dialogFor = null" @created="onSessionCreated" />
     <ManageInstanceDialog v-if="manageFor" :instance-id="manageFor.id" :instance-name="manageFor.name"
                           @close="manageFor = null" />
