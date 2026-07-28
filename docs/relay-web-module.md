@@ -166,6 +166,19 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   store `renameSession` 提交后乐观更新本地行。**空值清除**（回退显示 `alias`），不做唯一性约束。
 - 侧边栏与 `ChatPane` 头部均渲染 `displayName || alias`。微信 `/sessions`、`/use` 不受影响。
 
+## 会话睡眠（原「归档」）与冷会话指示器
+
+- **睡眠 = 归档的用户可见新名字**：仅改 relay-web 文案（zh-CN「睡眠/已睡眠」，en "Sleep/sleeping"），
+  RPC `control.sessions.archive`、`SessionDto.archived` 字段与代码标识符全部不变。`⋯` 菜单项与
+  滑动动作块图标换为 `Moon`，并带原生 `title` tooltip（`instance.sleepTooltip`）说明「睡眠会立即
+  关闭会话进程，历史保留，发消息即唤醒」；移动端靠睡眠后的 toast（`instance.sessionArchivedToast`）
+  传达同一信息。微信端术语统一是独立 follow-up。
+- **冷会话指示器**：`SessionDto` 可选字段 `warm?: boolean`（实例侧 `SessionWarmthTracker` 60s 轮询
+  queue-owner lock pid，温度翻转时推 `sessions-changed`，见 [docs/control-module.md](control-module.md)）。
+  仅「醒着且 `warm === false`」的会话行显示 `Unplug` 小图标（`data-test="cold-indicator"`，
+  title = `instance.sessionColdTitle`：进程已退出，下条消息将冷启动）；`warm` 缺失（老实例）或已睡眠
+  的行不显示。Hub 对 RPC 响应透传，老实例无需升级即可兼容。
+
 ## 实例配置管理 Modal（`ManageInstanceDialog.vue`）
 
 - 每个实例行的 **「Manage」** 按钮（实例树）打开一个按实例的管理弹窗，内含 workspace + agent 两个管理器

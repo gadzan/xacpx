@@ -31,6 +31,13 @@
   `createControlEventBus` 工厂：支持 `turn-output` / `turn-finished` /
   `sessions-changed` / `scheduled-changed` / `orchestration-changed` 五类事件；
   监听器异常彼此隔离（经注入的 `logger.error` 记录，不外抛）。
+- **`src/control/session-warmth-tracker.ts`** — `SessionWarmthTracker`：常驻轮询器
+  （默认 60s），经 `transport.isSessionWarm`（queue-owner lock 文件 pid 存活检查）
+  观测每个 transport 会话的热/冷状态；任一会话温度翻转时发出 payload-free
+  `sessions-changed`。`isWarm(session)` 同步返回最近观测值（未观测为 undefined），
+  供 `listSessions` 填充 `warm` 字段；`markWarm`/`markCold` 供归档（睡眠）与 turn
+  启动等已知翻转点即时校正，不发事件。仅当 transport 实现可选方法 `isSessionWarm`
+  时才在 `main.ts` 创建并启动。
 - **`src/control/workspace-git.ts`** — `WorkspaceGit`：配置工作区范围内的结构化 Git
   门面。只用 `execFile` 参数数组调用 Git，不接受任意命令或客户端指定 worktree 路径；
   同一工作区的 Git 写操作按 FIFO 串行。托管 worktree 的仓库目录拒绝符号链接，并在
@@ -40,7 +47,7 @@
 
 | 方法 | 说明 |
 |------|------|
-| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）。 |
+| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。 |
 | `createSession(alias, agent, workspace)` | 创建逻辑会话，发出 `sessions-changed` 事件。 |
 | `removeSession(alias)` | 删除逻辑会话，发出 `sessions-changed` 事件；返回 `{ wasActive: boolean }`。 |
 | `listScheduledTasks(chatKey)` | 返回指定 chatKey 下的待执行定时任务列表。 |

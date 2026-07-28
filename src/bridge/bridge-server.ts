@@ -43,6 +43,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "removeSession",
   "deleteSession",
   "freeWarmProcess",
+  "isSessionWarm",
   "getAgentSessionId",
 ]);
 
@@ -61,6 +62,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "removeSession",
   "deleteSession",
   "freeWarmProcess",
+  "isSessionWarm",
   "getAgentSessionId",
 ]);
 
@@ -135,7 +137,7 @@ export class BridgeServer {
       return await this.dispatch(requestId, method, params, writeLine);
     }
 
-    const lane: BridgeRequestLane = method === "cancel" ? "control" : "normal";
+    const lane: BridgeRequestLane = method === "cancel" || method === "isSessionWarm" ? "control" : "normal";
     return await this.scheduler.run(sessionKey, lane, () => this.dispatch(requestId, method, params, writeLine));
   }
 
@@ -347,6 +349,14 @@ export class BridgeServer {
         });
       case "freeWarmProcess":
         return await this.runtime.freeWarmProcess({
+          agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+        });
+      case "isSessionWarm":
+        return await this.runtime.isSessionWarm({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),

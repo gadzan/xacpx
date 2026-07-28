@@ -21,6 +21,7 @@ export type BridgeMethod =
   | "removeSession"
   | "deleteSession"
   | "freeWarmProcess"
+  | "isSessionWarm"
   | "getAgentSessionId";
 
 export interface BridgeRequest {

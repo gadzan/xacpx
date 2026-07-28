@@ -69,6 +69,8 @@ test("listSessions maps resolved sessions with running flag", () => {
       transportSession: "xacpx-backend",
       running: true,
       archived: false,
+      // Running implies a live process, so warm is asserted even without a tracker.
+      warm: true,
     },
   ]);
 });
@@ -88,6 +90,41 @@ test("listSessions marks an agent-side (native) session with native: true", () =
   // Fresh sessions omit the flag entirely; only native ones carry native: true.
   expect("native" in fresh).toBe(false);
   expect(native.native).toBe(true);
+});
+
+test("listSessions omits warm entirely without a warmth tracker", () => {
+  const { deps } = makeDeps();
+  // Use a non-running alias — running sessions force warm: true regardless.
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "idle", agent: "codex", workspace: "/ws/docs", transportSession: "xacpx-idle" },
+  ];
+  const control = new ControlService(deps as never);
+
+  const [session] = control.listSessions("relay:acct");
+  expect("warm" in session!).toBe(false);
+});
+
+test("listSessions forces warm: true for running sessions and reads the tracker otherwise", () => {
+  const { deps } = makeDeps();
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "backend", agent: "claude", workspace: "/ws/backend", transportSession: "xacpx-backend" },
+    { alias: "idle-cold", agent: "codex", workspace: "/ws/docs", transportSession: "xacpx-idle" },
+    { alias: "unknown", agent: "codex", workspace: "/ws/docs", transportSession: "xacpx-unknown" },
+  ];
+  const warmth = new Map<string, boolean>([["xacpx-idle", false]]);
+  (deps as Record<string, unknown>).sessionWarmth = {
+    isWarm: (session: { transportSession: string }) => warmth.get(session.transportSession),
+    markWarm: () => {},
+    markCold: () => {},
+  };
+  const control = new ControlService(deps as never);
+
+  const sessions = control.listSessions("relay:acct");
+  // "backend" is running (activeTurns), so warm is forced true regardless of the tracker.
+  expect(sessions.find((s) => s.alias === "backend")!.warm).toBe(true);
+  expect(sessions.find((s) => s.alias === "idle-cold")!.warm).toBe(false);
+  // Tracker hasn't observed this one yet → field omitted, matching old-instance wire shape.
+  expect("warm" in sessions.find((s) => s.alias === "unknown")!).toBe(false);
 });
 
 test("createSession runs the transport lifecycle and emits sessions-changed", async () => {

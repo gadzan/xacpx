@@ -106,6 +106,21 @@ describe("InstanceTree session management", () => {
     expect(marks[0]!.attributes("title")).toBe("Resumed from an existing agent-side session");
   });
 
+  it("shows the cold indicator only on an awake session whose process has exited", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "cold", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false, warm: false },
+      { alias: "warm", agent: "codex", workspace: "home", transportSession: "t2", running: false, archived: false, warm: true },
+      { alias: "unknown", agent: "codex", workspace: "home", transportSession: "t3", running: false, archived: false },
+      { alias: "slept", agent: "codex", workspace: "home", transportSession: "t4", running: false, archived: true, warm: false },
+    ])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    // Only warm === false on a non-archived row lights up; warm/undefined/archived stay dark.
+    const cold = w.findAll('[data-test="cold-indicator"]');
+    expect(cold).toHaveLength(1);
+    expect(cold[0]!.attributes("title")).toBe("Process exited — next message cold-starts.");
+  });
+
   it("shows a spinner on an optimistic 'creating' session row", () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "", running: false, archived: false, creating: true }])] as never;

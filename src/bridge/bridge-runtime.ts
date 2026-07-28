@@ -18,7 +18,8 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
+import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
@@ -856,6 +857,32 @@ export class BridgeRuntime {
     // open, so the next prompt resumes with full history.
     await terminateAcpxQueueOwner(acpxRecordId);
     return {};
+  }
+
+  private readonly recordIdCache = new Map<string, string>();
+
+  async isSessionWarm(input: {
+    agent: string;
+    agentCommand?: string;
+    driver?: string;
+    settingsPolicy?: ClaudeSettingsPolicy;
+    cwd: string;
+    name: string;
+  }): Promise<{ warm: boolean }> {
+    // Record ids are stable per transport session — cache to avoid spawning
+    // `acpx sessions show` on every warmth poll tick.
+    const cacheKey = JSON.stringify([input.agent, input.agentCommand ?? null, input.cwd, input.name]);
+    let acpxRecordId = this.recordIdCache.get(cacheKey);
+    if (!acpxRecordId) {
+      try {
+        ({ acpxRecordId } = await this.readSessionRecord(input));
+      } catch {
+        return { warm: false }; // acpx session gone → nothing can be warm
+      }
+      this.recordIdCache.set(cacheKey, acpxRecordId);
+    }
+    const pid = await readQueueOwnerPid(acpxRecordId);
+    return { warm: pid !== undefined && isProcessAlive(pid) };
   }
 
   async shutdown(): Promise<Record<string, never>> {

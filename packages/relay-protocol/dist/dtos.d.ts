@@ -6,6 +6,11 @@ export interface SessionDto {
     transportSession: string;
     running: boolean;
     archived: boolean;
+    /** Whether the session's agent process is currently alive (next prompt responds without
+     *  a cold start). Drives the web cold-session indicator, shown only when `warm === false`.
+     *  Omitted when unknown — old instances that don't report warmth, or a session not yet
+     *  sampled — so old connectors and old web builds stay wire-compatible. */
+    warm?: boolean;
     /** True when this logical session was attached to an existing agent-side (native) rollout
      *  — e.g. a resumed codex session — rather than freshly created via `/session new`. Lets
      *  the web badge native sessions distinctly. Omitted (not `false`) for fresh sessions. */
