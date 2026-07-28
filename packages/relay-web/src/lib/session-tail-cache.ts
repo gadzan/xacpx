@@ -110,7 +110,9 @@ export function read(user: string, instanceId: string, alias: string): MessageRe
       return null;
     }
     const rows = JSON.parse(raw) as unknown;
-    if (!Array.isArray(rows) || rows.length === 0) {
+    // A corrupted entry (non-array, empty, or non-object elements) must be
+    // dropped here — the cache must never become an error source downstream.
+    if (!Array.isArray(rows) || rows.length === 0 || rows.some((r) => typeof r !== "object" || r === null)) {
       saveIndex(removeEntry(index, key));
       return null;
     }

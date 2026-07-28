@@ -117,6 +117,13 @@ describe("session-tail-cache", () => {
     expect(localStorage.getItem(entryKey)).toBeNull();
   });
 
+  it("drops a corrupted entry (non-object elements) instead of returning it", () => {
+    write("alice", "i1", "s1", [row(1)]);
+    localStorage.setItem("xacpx.chat.tail.v1.alice.i1.s1", "[null]");
+    expect(read("alice", "i1", "s1")).toBeNull();
+    expect(localStorage.getItem("xacpx.chat.tail.v1.alice.i1.s1")).toBeNull();
+  });
+
   it("drop purges one session; dropAll purges everything", () => {
     write("alice", "i1", "s1", [row(1)]);
     write("alice", "i1", "s2", [row(2)]);

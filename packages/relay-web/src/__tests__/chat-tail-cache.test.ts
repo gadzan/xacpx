@@ -160,8 +160,10 @@ test("an optimistic send clears the seeded state so a mid-prompt reload defers a
   void chat.send("hello"); // pushes an optimistic row → transcript no longer seed-only
   getMock.mockResolvedValue({ messages: [row(1), row(2, "hello")], hasMore: false });
   await chat.loadHistory();
-  // Guard defers: the optimistic row (pending queueItemId correlation) is protected.
-  expect(chat.messages.map((m) => m.text)).toEqual(["m1", "hello"]);
+  // Guard defers: the optimistic row (id undefined until the RPC settles) is
+  // protected. Asserting on ids distinguishes defer ([1, undefined]) from a
+  // full-page replace ([1, 2]) — texts would be identical either way.
+  expect(chat.messages.map((m) => m.id)).toEqual([1, undefined]);
 });
 
 test("write-back fires on the debounce timer without a session switch", async () => {
