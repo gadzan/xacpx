@@ -543,6 +543,7 @@ export class ControlService {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
     await this.deps.sessions.setDisplayName(session.alias, displayName);
+    this.deps.events.emit({ type: "sessions-changed" });
   }
 
   /** Resolve a chat-scoped display alias to its ResolvedSession, or null. */

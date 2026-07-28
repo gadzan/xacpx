@@ -296,6 +296,7 @@ export default {
     renameSave: "保存",
     renameSaving: "保存中…",
     renameFailed: "重命名失败",
+    sessionRenameFailed: "重命名失败：{msg}",
   },
   agents: {
     title: "Agent",

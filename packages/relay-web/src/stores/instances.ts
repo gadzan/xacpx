@@ -277,7 +277,7 @@ export const useInstancesStore = defineStore("instances", () => {
   // update the local row so the sidebar reflects the new name without a reload. Empty → cleared.
   async function renameSession(instanceId: string, alias: string, displayName: string): Promise<void> {
     const trimmed = displayName.trim();
-    await api.rpc(instanceId, "control.sessions.rename", { alias, displayName: trimmed });
+    unwrap(await api.rpc(instanceId, "control.sessions.rename", { alias, displayName: trimmed }));
     const row = byId(instanceId)?.sessions.find((s) => s.alias === alias);
     if (row) row.displayName = trimmed || undefined;
   }

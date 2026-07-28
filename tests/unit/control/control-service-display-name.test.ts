@@ -16,6 +16,7 @@ const session = {
 
 function makeDeps() {
   const calls: string[] = [];
+  const emitted: Array<{ type: string }> = [];
   const deps = {
     sessions: {
       resolveAliasForChat: async (_chatKey: string, alias: string) => `relay:internal-${alias}`,
@@ -24,23 +25,27 @@ function makeDeps() {
       listAllResolvedSessions: () => [session],
     },
     activeTurns: { isActiveAnywhere: () => false },
-    events: { emit: () => {} },
+    events: { emit: (event: { type: string }) => { emitted.push(event); } },
   };
-  return { deps, calls };
+  return { deps, calls, emitted };
 }
 
-test("setSessionDisplayName resolves the alias and persists the label", async () => {
-  const { deps, calls } = makeDeps();
+test("setSessionDisplayName resolves the alias, persists the label, and emits sessions-changed", async () => {
+  const { deps, calls, emitted } = makeDeps();
   const control = new ControlService(deps as never);
   await control.setSessionDisplayName("relay:acc", "backend", "My label");
   expect(calls).toEqual(["persist:relay:internal-backend:My label"]);
+  // relay-web only refreshes its session list on sessions-changed — without the
+  // emit the rename would not show up until an unrelated reload.
+  expect(emitted).toEqual([{ type: "sessions-changed" }]);
 });
 
-test("setSessionDisplayName throws when the session is not found", async () => {
-  const { deps } = makeDeps();
+test("setSessionDisplayName throws when the session is not found and emits nothing", async () => {
+  const { deps, emitted } = makeDeps();
   (deps.sessions as { getSession: unknown }).getSession = async () => null;
   const control = new ControlService(deps as never);
   await expect(control.setSessionDisplayName("relay:acc", "missing", "x")).rejects.toThrow("session not found");
+  expect(emitted).toEqual([]);
 });
 
 test("listSessions carries displayName in display form", async () => {

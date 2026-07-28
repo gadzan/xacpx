@@ -298,6 +298,7 @@ export default {
     renameSave: "Save",
     renameSaving: "Saving…",
     renameFailed: "rename failed",
+    sessionRenameFailed: "Rename failed: {msg}",
   },
   agents: {
     title: "Agents",

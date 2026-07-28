@@ -31,4 +31,29 @@ describe("instances renameSession", () => {
     expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.rename", { alias: "backend", displayName: "" });
     expect(store.instances[0]!.sessions[0]!.displayName).toBeUndefined();
   });
+
+  it("rejects on an RPC error payload and keeps the previous displayName", async () => {
+    const store = useInstancesStore();
+    store.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      agents: [], workspaces: [], agentCatalog: [],
+      sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false, displayName: "old" }],
+    }] as never;
+    vi.spyOn(api, "rpc").mockResolvedValue({ error: { code: "invalid-payload", message: "boom" } } as never);
+    await expect(store.renameSession("i1", "backend", "New label")).rejects.toThrow("boom");
+    // The optimistic local update happens only after unwrap succeeds — a failed
+    // rename must not leave the sidebar showing a label the connector never saved.
+    expect(store.instances[0]!.sessions[0]!.displayName).toBe("old");
+  });
+
+  it("maps an unknown-type error to the connector-upgrade hint", async () => {
+    const store = useInstancesStore();
+    store.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      agents: [], workspaces: [], agentCatalog: [],
+      sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }],
+    }] as never;
+    vi.spyOn(api, "rpc").mockResolvedValue({ error: { code: "unknown-type", message: "unsupported rpc type: control.sessions.rename" } } as never);
+    await expect(store.renameSession("i1", "backend", "New label")).rejects.toThrow(/needs a newer connector/);
+  });
 });
