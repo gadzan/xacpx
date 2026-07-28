@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { WorkspaceGit, worktreePathIsWithin, worktreePathsEqual } from "../../../src/control/workspace-git";
@@ -18,12 +18,13 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-async function runGitWithWindowsWorktreePaths(root: string, args: string[]): Promise<string> {
-  const output = execFileSync("git", ["-C", root, ...args], {
+async function runGitWithWindowsWorktreePaths(_root: string, args: string[]): Promise<string> {
+  // runRaw hands the override the full argv, already prefixed with ["-C", root, "-c", "gc.auto=0"].
+  const output = execFileSync("git", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (args.join("\0") !== ["worktree", "list", "--porcelain"].join("\0")) return output;
+  if (!args.join("\0").endsWith(["worktree", "list", "--porcelain"].join("\0"))) return output;
   return output.replace(/^worktree (.+)$/gm, (_line, path: string) => `worktree ${path.replaceAll("/", "\\")}`);
 }
 
@@ -110,6 +111,44 @@ describe("WorkspaceGit status", () => {
       behind: 0,
       files: [{ path: "first.txt", status: "??" }],
     });
+  });
+
+  test("lists each untracked file inside a directory instead of a collapsed dir entry", async () => {
+    const { repo } = initRepo();
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "a.txt"), "a\n");
+    writeFileSync(join(repo, "sub", "b.txt"), "b\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    const status = await service.status("project");
+
+    expect(status.files).toEqual([
+      { path: "sub/a.txt", status: "??" },
+      { path: "sub/b.txt", status: "??" },
+    ]);
+  });
+
+  test("passes gc.auto=0 to every git invocation, visible through the runGit override", async () => {
+    const { repo } = initRepo();
+    const seen: string[][] = [];
+    const service = new WorkspaceGit(
+      () => [{ name: "project", cwd: repo }],
+      {
+        runGit: async (_root, args) => {
+          seen.push(args);
+          return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        },
+      },
+    );
+
+    await service.status("project");
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (const args of seen) {
+      const index = args.indexOf("gc.auto=0");
+      expect(index).toBeGreaterThan(0);
+      expect(args[index - 1]).toBe("-c");
+    }
   });
 
   test("reports branch, upstream divergence, local branches, and linked worktrees", async () => {
