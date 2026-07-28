@@ -2,6 +2,9 @@ import { defineStore } from "pinia";
 import { computed, markRaw, ref } from "vue";
 import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
+import { createDebouncedFlush } from "../lib/debounce-flush";
+import * as tailCache from "../lib/session-tail-cache";
+import { useAuthStore } from "./auth";
 import { useSessionControlsStore } from "./session-controls";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -185,6 +188,18 @@ export const useChatStore = defineStore("chat", () => {
     return t;
   }
 
+  // Stale-while-revalidate tail cache (#205): select() seeds the first screen from
+  // localStorage synchronously; authoritative rows (loadHistory) are written back
+  // debounced so bursty turn-finished convergence doesn't hammer JSON.stringify.
+  // The writer reads selection/messages at FLUSH time, so a flush always persists
+  // what is actually displayed for the session it is keyed to.
+  const cacheWrite = createDebouncedFlush(() => {
+    const user = useAuthStore().account?.username;
+    if (!user || !instanceId.value || !sessionAlias.value) return;
+    tailCache.write(user, instanceId.value, sessionAlias.value, messages.value);
+  }, 500);
+  if (typeof window !== "undefined") window.addEventListener("pagehide", () => cacheWrite.flush());
+
   /** Finalize a live turn: clear it (so `busy`/HUD release) and, if it streamed any
    *  content into the selected session, flush it into a persisted-shaped message.
    *  Used by both turn-finished and the optimistic local cancel. Idempotent — a
@@ -216,10 +231,14 @@ export const useChatStore = defineStore("chat", () => {
         ...(structured ? { structured } : {}),
       });
       touchTranscript();
+      cacheWrite.schedule();
     }
   }
 
   function select(id: string, alias: string): void {
+    // Persist the outgoing session's tail before the transcript resets, so a quick
+    // back-and-forth switch still finds the freshest rows in the cache.
+    cacheWrite.flush();
     instanceId.value = id;
     sessionAlias.value = alias;
     persistSelection(id, alias);
@@ -230,6 +249,18 @@ export const useChatStore = defineStore("chat", () => {
     hasMoreOlder.value = false;
     loadingOlder.value = false;
     loadingHistory.value = false;
+    // Stale-while-revalidate: synchronously seed the transcript from the cached tail
+    // so the first screen renders instantly (no skeleton — messages.length > 0
+    // suppresses it). loadHistory() replaces this wholesale when the authoritative
+    // page arrives; stable p${id} row keys make that replace flicker-free.
+    const user = useAuthStore().account?.username;
+    if (user) {
+      const cached = tailCache.read(user, id, alias);
+      if (cached && cached.length > 0) {
+        messages.value = cached.map(rawStructured);
+        touchTranscript();
+      }
+    }
     // Viewing a session clears its unread signal.
     const k = bufKey(id, alias);
     if (unread.value.has(k)) {
@@ -242,6 +273,7 @@ export const useChatStore = defineStore("chat", () => {
   /** Drop the active selection back to the empty "no session" state — used when the
    *  selected session is deleted out from under the view. */
   function clearSelection(): void {
+    cacheWrite.flush();
     instanceId.value = null;
     sessionAlias.value = null;
     clearPersistedSelection();
@@ -292,6 +324,8 @@ export const useChatStore = defineStore("chat", () => {
       messages.value = rows.map(rawStructured);
       touchTranscript();
       hasMoreOlder.value = hasMore ?? false;
+      // Authoritative rows landed — refresh this session's cached tail (debounced).
+      cacheWrite.schedule();
     } finally {
       // Only the newest request owns the flag — a stale response must not dismiss
       // the skeleton a newer selection just raised.
