@@ -434,4 +434,17 @@ describe("progressive tail-first mounting", () => {
     await wrapper.setProps({ messages: many(81) });
     expect(wrapper.findAll(".cv-row").length).toBe(81);
   });
+
+  // Spec #205: a cache-seeded transcript (≤30 stale rows) is replaced by the full
+  // authoritative page without passing through 0 — the arming must still trigger so
+  // the ~70 prepended older rows mount in rAF batches, not one synchronous tick.
+  it("re-arms progressive mounting when a cache-seeded tail is replaced by the full page", async () => {
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: null } });
+    await wrapper.setProps({ messages: many(20) }); // cached tail seed (< INITIAL_ROWS)
+    expect(wrapper.findAll(".cv-row").length).toBe(20);
+    await wrapper.setProps({ messages: many(100) }); // authoritative replace
+    expect(wrapper.findAll(".cv-row").length).toBe(30); // only the tail mounts immediately
+    await flushFrames(wrapper);
+    expect(wrapper.findAll(".cv-row").length).toBe(100);
+  });
 });

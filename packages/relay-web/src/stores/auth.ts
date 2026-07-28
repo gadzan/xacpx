@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { ApiError, api } from "../api/client";
+import { dropAll as dropAllTailCaches } from "../lib/session-tail-cache";
 
 export interface Account {
   username: string;
@@ -35,6 +36,9 @@ export const useAuthStore = defineStore("auth", () => {
   async function logout(): Promise<void> {
     await api.post("/api/logout").catch(() => {});
     account.value = null;
+    // Shared-machine hygiene: the next login must not be able to read cached
+    // transcripts from localStorage (spec #205 user story 5).
+    dropAllTailCaches();
   }
 
   return { account, error, login, fetchMe, logout };

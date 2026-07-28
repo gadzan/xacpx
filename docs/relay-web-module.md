@@ -189,6 +189,19 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **`structured` 脱离深度响应式**（`stores/chat.ts` `rawStructured`）：历史行不可变、只会整行
   替换，`loadHistory`/`loadOlder`/`flushTurn` 对 `structured`（parts/toolSteps/diff 全文）做
   `markRaw`，避免 Vue 深代理化数百 KB 的对象树。
+- **localStorage 会话尾部缓存**（`src/lib/session-tail-cache.ts`，spec #205）：stale-while-revalidate。
+  `chat.select()` 同步用缓存的最近 ≤30 条持久化行播种首屏（`messages.length > 0` 抑制骨架屏），
+  `loadHistory()` 原样整页替换收敛（key 稳定无闪烁）；成功加载与 turn-finished 后防抖写回
+  （`debounce-flush`，切会话时 flush）。键 = `xacpx.chat.tail.v1.<username>.<instanceId>.<alias>`
+  + 索引键 `tail-index.v1`（LRU/TTL 记账）。三层淘汰：事件驱动（`archiveSession`/`removeSession`
+  → chat store `purgeTailCache`（drop + 取消待写回，防止防抖定时器复活刚清掉的条目），
+  `auth.logout` → `dropAll`）、对账（`loadSessions` 落地后 `reconcileTailCache` 掉该实例
+  非存活/已归档 alias——覆盖 Web 关闭期间其他端的归档删除）、兜底（单条 256KB / 全局 4MB LRU、
+  7 天 TTL、quota 溢出淘汰重试一次、旧版本键前缀懒清扫）。所有存储访问 try/catch（可能被禁用）。
+  仅含缓存播种行的 transcript 在 `loadHistory` 的 pending-prompt 守卫里视同为空
+  （`seededFromCache`，保持 #199 的重选中途拉取语义）；播种（≤30 行）→ 权威整页替换
+  不经过 0→N，`MessageList` 的渐进挂载对该替换同样重新触发
+  （prev ≤ INITIAL_ROWS 且一次增长 ≥ REVEAL_BATCH 视为新 transcript）。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 

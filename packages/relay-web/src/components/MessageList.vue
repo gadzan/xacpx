@@ -98,15 +98,20 @@ onBeforeUnmount(() => {
   settleRaf = 0;
 });
 
-// Arm progressive mounting when a freshly selected session's rows land: only a jump
-// from empty to many rows re-arms it — an in-place replace (turn-finished history
-// convergence) keeps stable keys and reuses mounted components, so hiding rows again
-// would only cause churn. Session switches empty `messages` first (chat.select), so
-// the 0→N transition is a reliable "new transcript" signal.
+// Arm progressive mounting when a freshly selected session's rows land. Two shapes:
+// the 0→many jump (select empties `messages` first, then history lands), and the
+// cache-seeded replace (≤INITIAL_ROWS stale rows from the tail cache swap to the full
+// authoritative page without passing through 0 — spec #205). The seeded rows are the
+// newest of the page, so stable keys keep them mounted; only the PREPENDED older rows
+// hide and reveal in rAF batches. The prev-length + big-jump guard keeps ordinary
+// in-place convergence (turn-finished reload, small append bursts) and load-older
+// prepends (prev is already ≥ a full page there) from churning mounted components.
 watch(
   () => props.messages.length,
   (now, prev) => {
-    if (prev === 0 && now > INITIAL_ROWS) {
+    const freshJump = prev === 0 && now > INITIAL_ROWS;
+    const cacheSeededReplace = prev > 0 && prev <= INITIAL_ROWS && now - prev >= REVEAL_BATCH;
+    if (freshJump || cacheSeededReplace) {
       hiddenCount.value = now - INITIAL_ROWS;
       scheduleReveal();
     } else if (hiddenCount.value > now) {

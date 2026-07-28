@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type SessionModelResult, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
+import { useChatStore } from "./chat";
 
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
 // payload (the gateway resolves, it does not reject), so api.rpc won't throw.
@@ -87,6 +88,10 @@ export const useInstancesStore = defineStore("instances", () => {
       inst.sessionsLoaded = true;
       if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
     }
+    // Tail-cache reconciliation (spec #205): as each instance's authoritative session
+    // list arrives, drop cached transcripts for sessions no longer alive/unarchived —
+    // covers archive/remove performed from other clients while the web was closed.
+    useChatStore().reconcileTailCache(instanceId, sessions.filter((s) => !s.archived).map((s) => s.alias));
   }
 
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
@@ -250,11 +255,16 @@ export const useInstancesStore = defineStore("instances", () => {
 
   async function removeSession(instanceId: string, alias: string): Promise<void> {
     await api.rpc(instanceId, "control.sessions.remove", { alias });
+    // Event-driven tail-cache purge (spec #205): a session archived/removed here must
+    // never resurface as a ghost transcript from localStorage. Routed through the chat
+    // store so a pending debounced write-back targeting it is cancelled too.
+    useChatStore().purgeTailCache(instanceId, alias);
     await loadSessions(instanceId);
   }
 
   async function archiveSession(instanceId: string, alias: string): Promise<void> {
     await api.rpc(instanceId, "control.sessions.archive", { alias });
+    useChatStore().purgeTailCache(instanceId, alias);
     await loadSessions(instanceId);
   }
 
