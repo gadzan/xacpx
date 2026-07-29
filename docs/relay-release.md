@@ -26,7 +26,7 @@
 |---|---|---|---|
 | `@ganglion/xacpx` | 用 `npm view` 核对 | 0.18.0 | 含会话热度（warmth）后端：`transport.isSessionWarm` + `SessionWarmthTracker` |
 | `@ganglion/xacpx-relay-protocol` | 用 `npm view` 核对 | 0.1.17 | `SessionDto.warm?` 可选字段 |
-| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.9.16 | 内嵌看板（IndexedDB 会话尾部缓存 + 睡眠保留缓存） |
+| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.9.17 | 内嵌看板（尾部缓存绑定 incarnation，同名重建不复活旧尾部） |
 | `@ganglion/xacpx-channel-relay` | 用 `npm view` 核对 | 0.3.4 | 连接器 |
 
 > 用 `npm view <pkg> version` 随时核对线上版本。
