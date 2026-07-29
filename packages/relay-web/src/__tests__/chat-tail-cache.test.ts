@@ -125,6 +125,32 @@ test("optimistic rows (no id) are never written to the cache", async () => {
   expect((await readEventually("alice", "i1", "s1"))!.map((r) => r.id)).toEqual([1]);
 });
 
+test("a history row with attachments is cached on switch-away (reactive proxy vs structured clone)", async () => {
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  // First visit pins an old snapshot [1] so a silent write failure is observable.
+  getMock.mockResolvedValue({ messages: [row(1)], hasMore: false });
+  await chat.loadHistory();
+  chat.select("i1", "other");
+  expect((await readEventually("alice", "i1", "s1"))!.map((r) => r.id)).toEqual([1]);
+  // Second visit: the tail now holds an attachment row. Read off the deeply
+  // reactive transcript it is a Vue Proxy, which IDB's structured clone rejects
+  // (DataCloneError) — the write must re-plain it, not silently fail and leave
+  // the cache frozen at [1] forever.
+  const withAttachment: MessageRecordDto = {
+    ...row(2, "here is a file"),
+    attachments: [{ id: "a1", filename: "shot.png", mimeType: "image/png", size: 123, kind: "image" }],
+  };
+  getMock.mockResolvedValue({ messages: [row(1), withAttachment], hasMore: false });
+  chat.select("i1", "s1");
+  await chat.loadHistory();
+  chat.select("i1", "other"); // flush the write-back
+  await vi.waitFor(async () => {
+    expect((await read("alice", "i1", "s1"))!.map((r) => r.id)).toEqual([1, 2]);
+  });
+  expect((await read("alice", "i1", "s1"))![1]!.attachments).toEqual(withAttachment.attachments);
+});
+
 test("loadHistory failure keeps showing the cached tail", async () => {
   await write("alice", "i1", "s1", [row(1), row(2)]);
   const chat = useChatStore();
