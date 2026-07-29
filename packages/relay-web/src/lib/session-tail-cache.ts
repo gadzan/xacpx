@@ -62,12 +62,21 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
         const store = db.createObjectStore(STORE, { keyPath: ["user", "instanceId", "alias"] });
-        store.createIndex("lastAccess", "lastAccess");
+        // Composite [lastAccess, bytes] index: a key-cursor walk yields both LRU
+        // order and byte accounting without ever deserializing `rows`.
+        store.createIndex("lru", ["lastAccess", "bytes"]);
       }
     };
-    req.onsuccess = () => { sweepLegacyLocalStorage(); resolve(req.result); };
+    let blocked = false;
+    req.onsuccess = () => {
+      // A blocked open can still succeed later; the promise already rejected,
+      // so close the orphan connection (a leak would block future upgrades).
+      if (blocked) { req.result.close(); return; }
+      sweepLegacyLocalStorage();
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error ?? new Error("open-failed"));
-    req.onblocked = () => reject(new Error("open-blocked"));
+    req.onblocked = () => { blocked = true; reject(new Error("open-blocked")); };
   });
   // A failed open must not be cached forever — a later call may succeed (e.g.
   // transient blocked state); the rejection itself is handled by each caller.
@@ -103,10 +112,13 @@ export async function resetTailCacheForTests(): Promise<void> {
 export async function read(user: string, instanceId: string, alias: string): Promise<MessageRecordDto[] | null> {
   try {
     const db = await openDb();
-    const tx = db.transaction(STORE, "readwrite");
-    const store = tx.objectStore(STORE);
     const key = keyOf(user, instanceId, alias);
-    const record = await asPromise<TailRecord | undefined>(store.get(key) as IDBRequest<TailRecord | undefined>);
+    // Readonly get still serializes after any earlier overlapping readwrite tx
+    // (IDB starts transactions in creation order), so a flush-write immediately
+    // before a seed-read is always observed.
+    const record = await asPromise<TailRecord | undefined>(
+      db.transaction(STORE, "readonly").objectStore(STORE).get(key) as IDBRequest<TailRecord | undefined>,
+    );
     const now = Date.now();
     const rows = record?.rows;
     // Expired or corrupted entries (non-array, empty, or non-object elements) are
@@ -116,12 +128,22 @@ export async function read(user: string, instanceId: string, alias: string): Pro
       && Array.isArray(rows) && rows.length > 0
       && !rows.some((r) => typeof r !== "object" || r === null);
     if (!valid) {
-      if (record) store.delete(key);
-      await txDone(tx);
+      if (record) {
+        try {
+          const tx = db.transaction(STORE, "readwrite");
+          tx.objectStore(STORE).delete(key);
+          await txDone(tx);
+        } catch { /* best-effort cleanup */ }
+      }
       return null;
     }
-    store.put({ ...record, lastAccess: now });
-    await txDone(tx);
+    // LRU touch in its own transaction: under real quota pressure the put can
+    // fail, and that must not nullify a hit whose rows are already in hand.
+    try {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put({ ...record, lastAccess: now });
+      await txDone(tx);
+    } catch { /* touch is best-effort */ }
     return rows as MessageRecordDto[];
   } catch { return null; }
 }
@@ -143,6 +165,41 @@ function toCachedRow(row: MessageRecordDto): MessageRecordDto {
   return out;
 }
 
+type LruEntry = { pk: [string, string, string]; lastAccess: number; bytes: number };
+/** Walk the [lastAccess, bytes] index with a KEY cursor — LRU order + byte
+ *  accounting without materializing a single `rows` payload. */
+const lruEntries = (index: IDBIndex): Promise<LruEntry[]> =>
+  new Promise((resolve, reject) => {
+    const entries: LruEntry[] = [];
+    const req = index.openKeyCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) { resolve(entries); return; }
+      const [lastAccess, bytes] = cursor.key as [number, number];
+      entries.push({ pk: cursor.primaryKey as [string, string, string], lastAccess, bytes });
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error ?? new Error("cursor-failed"));
+  });
+
+async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Promise<void> {
+  const tx = db.transaction(STORE, "readwrite");
+  const store = tx.objectStore(STORE);
+  store.put(record);
+  // One ascending-lastAccess pass: drop expired entries, then LRU-evict others
+  // while the total exceeds the budget (the fresh write is never a victim).
+  const entries = await lruEntries(store.index("lru"));
+  let total = entries.reduce((sum, e) => sum + (e.bytes || 0), 0);
+  for (const e of entries) {
+    if (e.pk[0] === record.user && e.pk[1] === record.instanceId && e.pk[2] === record.alias) continue;
+    if (now - e.lastAccess > TTL_MS || total > GLOBAL_BUDGET_BYTES) {
+      store.delete(e.pk);
+      total -= e.bytes || 0;
+    }
+  }
+  await txDone(tx);
+}
+
 /** Cache the tail of `rows` for a session: the last ≤30 persisted rows
  *  (id !== undefined). Expired entries and LRU victims beyond the global
  *  budget are pruned in the same transaction. */
@@ -152,29 +209,31 @@ export async function write(user: string, instanceId: string, alias: string, row
     const tail = rows.filter((r) => typeof r.id === "number").slice(-TAIL_ROWS).map(toCachedRow);
     const key = keyOf(user, instanceId, alias);
     const db = await openDb();
-    const tx = db.transaction(STORE, "readwrite");
-    const store = tx.objectStore(STORE);
     if (tail.length === 0) {
-      store.delete(key);
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(key);
       await txDone(tx);
       return;
     }
     const now = Date.now();
     // Serialized length ≈ UTF-16 code units; ×2 approximates the storage bytes.
     const bytes = JSON.stringify(tail).length * 2;
-    store.put({ user, instanceId, alias, rows: tail, lastAccess: now, bytes } satisfies TailRecord);
-    // One ascending-lastAccess pass: drop expired entries, then LRU-evict others
-    // while the total exceeds the budget (the fresh write is never a victim).
-    const all = await asPromise(store.index("lastAccess").getAll() as IDBRequest<TailRecord[]>);
-    let total = all.reduce((sum, r) => sum + (r.bytes || 0), 0);
-    for (const r of all) {
-      if (r.user === user && r.instanceId === instanceId && r.alias === alias) continue;
-      if (now - r.lastAccess > TTL_MS || total > GLOBAL_BUDGET_BYTES) {
-        store.delete(keyOf(r.user, r.instanceId, r.alias));
-        total -= r.bytes || 0;
-      }
+    const record: TailRecord = { user, instanceId, alias, rows: tail, lastAccess: now, bytes };
+    try {
+      await putAndEvict(db, record, now);
+    } catch (err) {
+      // Real quota exhausted below the 64MB logical budget (private browsing,
+      // storage-pressured device): the cache is disposable, so drop everything
+      // and retry the fresh write once — keeping the current session's tail is
+      // the best possible outcome there.
+      if ((err as DOMException | null)?.name !== "QuotaExceededError") throw err;
+      const clearTx = db.transaction(STORE, "readwrite");
+      clearTx.objectStore(STORE).clear();
+      await txDone(clearTx);
+      const retryTx = db.transaction(STORE, "readwrite");
+      retryTx.objectStore(STORE).put(record);
+      await txDone(retryTx);
     }
-    await txDone(tx);
   } catch { /* cache is an optimization, never an error source */ }
 }
 

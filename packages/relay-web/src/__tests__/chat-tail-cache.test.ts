@@ -66,6 +66,23 @@ test("select() seeds the transcript from the cached tail before any fetch (no sk
   expect(chat.loadingHistory).toBe(false);
 });
 
+test("a cache hit keeps the seeded tail visible during a slow fetch (skeleton suppressed)", async () => {
+  await write("alice", "i1", "s1", [row(1), row(2)]);
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  let resolveFetch!: (v: { messages: MessageRecordDto[]; hasMore: boolean }) => void;
+  getMock.mockReturnValue(new Promise((r) => { resolveFetch = r; }));
+  const load = chat.loadHistory();
+  // The skeleton renders only when `loadingHistory && messages.length === 0` —
+  // the awaited seed must land before loadingHistory is raised.
+  await vi.waitFor(() => expect(chat.loadingHistory).toBe(true));
+  expect(chat.messages.map((m) => m.id)).toEqual([1, 2]);
+  resolveFetch({ messages: [row(1), row(2), row(3)], hasMore: false });
+  await load;
+  expect(chat.messages.map((m) => m.id)).toEqual([1, 2, 3]);
+  chat.clearSelection(); // flush/cancel pending write-back so no timer leaks
+});
+
 test("select() leaves the transcript empty on cache miss or when logged out", async () => {
   const chat = useChatStore();
   chat.select("i1", "s1");

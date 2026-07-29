@@ -188,16 +188,18 @@ export const useChatStore = defineStore("chat", () => {
     return t;
   }
 
-  // Stale-while-revalidate tail cache (#205): select() seeds the first screen from
-  // localStorage synchronously; authoritative rows (loadHistory) are written back
-  // debounced so bursty turn-finished convergence doesn't hammer JSON.stringify.
-  // The writer reads selection/messages at FLUSH time, so a flush always persists
-  // what is actually displayed for the session it is keyed to.
+  // Stale-while-revalidate tail cache (#205): select() kicks off an async seed
+  // from IndexedDB (pendingSeed below); authoritative rows (loadHistory) are
+  // written back debounced so bursty turn-finished convergence doesn't hammer
+  // serialization. The writer reads selection/messages at FLUSH time, so a flush
+  // always persists what is actually displayed for the session it is keyed to.
   const cacheWrite = createDebouncedFlush(() => {
     const user = useAuthStore().account?.username;
     if (!user || !instanceId.value || !sessionAlias.value) return;
     void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value);
   }, 500);
+  // Best-effort: an IDB write started during unload may not commit (unlike the
+  // old synchronous localStorage flush); loadHistory converges on the next visit.
   if (typeof window !== "undefined") window.addEventListener("pagehide", () => cacheWrite.flush());
 
   // True while `messages` holds ONLY rows seeded from the tail cache — i.e. no
@@ -315,6 +317,7 @@ export const useChatStore = defineStore("chat", () => {
   function clearSelection(): void {
     cacheWrite.flush();
     seededFromCache = false;
+    pendingSeed = null;
     instanceId.value = null;
     sessionAlias.value = null;
     clearPersistedSelection();
@@ -331,8 +334,13 @@ export const useChatStore = defineStore("chat", () => {
     if (!instanceId.value || !sessionAlias.value) return;
     // Let a cache seed kicked off by select() land first (ms-scale IndexedDB read):
     // the guards below must observe the seeded transcript, and a hit keeps the
-    // skeleton suppressed during the fetch. No seed → stay synchronous.
-    if (pendingSeed) await pendingSeed;
+    // skeleton suppressed during the fetch. No seed → stay synchronous. A select()
+    // during the await replaces pendingSeed — loop until the awaited seed is the
+    // current one, then clear it (consumed).
+    for (let seed = pendingSeed; seed; seed = pendingSeed) {
+      await seed;
+      if (pendingSeed === seed) { pendingSeed = null; break; }
+    }
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;
