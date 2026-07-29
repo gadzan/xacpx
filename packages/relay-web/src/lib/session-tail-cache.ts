@@ -14,7 +14,8 @@ import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
  *  never become an error source. */
 
 const DB_NAME = "xacpx.chat-tail";
-const DB_VERSION = 1;
+// v2: the [lastAccess, bytes] "lru" index replaced the plain lastAccess index.
+const DB_VERSION = 2;
 const STORE = "tails";
 
 export const TAIL_ROWS = 30;
@@ -60,12 +61,13 @@ function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        const store = db.createObjectStore(STORE, { keyPath: ["user", "instanceId", "alias"] });
-        // Composite [lastAccess, bytes] index: a key-cursor walk yields both LRU
-        // order and byte accounting without ever deserializing `rows`.
-        store.createIndex("lru", ["lastAccess", "bytes"]);
-      }
+      // The cache is disposable: any schema change drops and recreates the
+      // store, guaranteeing the current index layout regardless of prior version.
+      if (db.objectStoreNames.contains(STORE)) db.deleteObjectStore(STORE);
+      const store = db.createObjectStore(STORE, { keyPath: ["user", "instanceId", "alias"] });
+      // Composite [lastAccess, bytes] index: a key-cursor walk yields both LRU
+      // order and byte accounting without ever deserializing `rows`.
+      store.createIndex("lru", ["lastAccess", "bytes"]);
     };
     let blocked = false;
     req.onsuccess = () => {
@@ -184,20 +186,27 @@ const lruEntries = (index: IDBIndex): Promise<LruEntry[]> =>
 
 async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Promise<void> {
   const tx = db.transaction(STORE, "readwrite");
-  const store = tx.objectStore(STORE);
-  store.put(record);
-  // One ascending-lastAccess pass: drop expired entries, then LRU-evict others
-  // while the total exceeds the budget (the fresh write is never a victim).
-  const entries = await lruEntries(store.index("lru"));
-  let total = entries.reduce((sum, e) => sum + (e.bytes || 0), 0);
-  for (const e of entries) {
-    if (e.pk[0] === record.user && e.pk[1] === record.instanceId && e.pk[2] === record.alias) continue;
-    if (now - e.lastAccess > TTL_MS || total > GLOBAL_BUDGET_BYTES) {
-      store.delete(e.pk);
-      total -= e.bytes || 0;
+  try {
+    const store = tx.objectStore(STORE);
+    store.put(record);
+    // One ascending-lastAccess pass: drop expired entries, then LRU-evict others
+    // while the total exceeds the budget (the fresh write is never a victim).
+    const entries = await lruEntries(store.index("lru"));
+    let total = entries.reduce((sum, e) => sum + (e.bytes || 0), 0);
+    for (const e of entries) {
+      if (e.pk[0] === record.user && e.pk[1] === record.instanceId && e.pk[2] === record.alias) continue;
+      if (now - e.lastAccess > TTL_MS || total > GLOBAL_BUDGET_BYTES) {
+        store.delete(e.pk);
+        total -= e.bytes || 0;
+      }
     }
+    await txDone(tx);
+  } catch (err) {
+    // A quota failure on the put request aborts the tx, surfacing to the pending
+    // cursor as AbortError — tx.error still holds the original QuotaExceededError
+    // that write()'s fallback keys on.
+    throw tx.error ?? err;
   }
-  await txDone(tx);
 }
 
 /** Cache the tail of `rows` for a session: the last ≤30 persisted rows
