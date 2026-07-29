@@ -174,6 +174,104 @@ test("loadSessions reconciles the cache against alive aliases, keeping sleeping 
   expect(await read("alice", "i1", "sleeping")).not.toBeNull(); // slept elsewhere → kept
 });
 
+test("a same-alias recreation from another client does not resurrect the old tail", async () => {
+  // Old tail cached under incarnation t-old (e.g. before the browser was closed).
+  await write("alice", "i1", "s1", [row(1, "pre-delete")], "t-old");
+  rpc.mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.list") {
+      return { sessions: [
+        // Same alias, new transport incarnation: deleted + recreated elsewhere.
+        { alias: "s1", agent: "a", workspace: "w", transportSession: "t-new", running: false, archived: false },
+      ] };
+    }
+    return { agents: [] };
+  });
+  await useInstancesStore().loadSessions("i1");
+  expect(await goneEventually("alice", "i1", "s1")).toBe(true); // old incarnation dropped
+  // Selecting the recreated session must not seed the deleted predecessor's rows.
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(chat.messages).toEqual([]);
+});
+
+const sessionsListOf = (transportSession: string) => async (_id: string, type: string) =>
+  type === "control.sessions.list"
+    ? { sessions: [{ alias: "s1", agent: "a", workspace: "w", transportSession, running: false, archived: false }] }
+    : { agents: [] };
+
+test("the debounced write-back carries the session's registered incarnation", async () => {
+  rpc.mockImplementation(sessionsListOf("t-A"));
+  await useInstancesStore().loadSessions("i1"); // registry: s1 → t-A
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  getMock.mockResolvedValue({ messages: [row(1)], hasMore: false });
+  await chat.loadHistory();
+  chat.select("i1", "other"); // flush the pending write-back
+  expect(await readEventually("alice", "i1", "s1")).not.toBeNull();
+  // Stored tag must be t-A, not the wildcard: a mismatching read misses.
+  expect(await read("alice", "i1", "s1", "t-B")).toBeNull();
+});
+
+test("select() does not seed a cached tail whose incarnation predates the live session", async () => {
+  rpc.mockImplementation(sessionsListOf("t-new"));
+  await useInstancesStore().loadSessions("i1"); // registry: s1 → t-new
+  // Entry lands after reconcile ran (e.g. written by a tab with a stale registry).
+  await write("alice", "i1", "s1", [row(1, "pre-delete")], "t-old");
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(chat.messages).toEqual([]);
+});
+
+test("a recreation observed while selected cancels the pending write-back (no re-poisoning)", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    rpc.mockImplementation(sessionsListOf("t-old"));
+    await useInstancesStore().loadSessions("i1"); // registry: s1 → t-old
+    const chat = useChatStore();
+    chat.select("i1", "s1");
+    getMock.mockResolvedValue({ messages: [row(1, "pre-delete")], hasMore: false });
+    await chat.loadHistory(); // schedules the debounced write-back
+    // Other client deletes + recreates s1; the refetch stays pending so the only
+    // write that COULD land is the poisoned predecessor flush.
+    getMock.mockReturnValue(new Promise(() => {}));
+    rpc.mockImplementation(sessionsListOf("t-new"));
+    await useInstancesStore().loadSessions("i1"); // must cancel the pending flush
+    vi.advanceTimersByTime(500); // the cancelled timer must not fire
+  } finally {
+    vi.useRealTimers();
+  }
+  await new Promise((r) => setTimeout(r, 30));
+  expect(await read("alice", "i1", "s1")).toBeNull();
+});
+
+test("first loadSessions after a wildcard seed cancels a live-turn flush (predecessor suspect)", async () => {
+  // Fresh page: registry empty, so the seed is a wildcard read of what may be a
+  // deleted predecessor's tail.
+  await write("alice", "i1", "s1", [row(1, "pre-delete")], "t-old");
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await vi.waitFor(() => expect(chat.messages.map((m) => m.text)).toEqual(["pre-delete"]));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    getMock.mockReturnValue(new Promise(() => {})); // convergence refetches stay pending
+    // A live turn flushes onto the seeded transcript and schedules a write-back.
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s1", chunk: "live" } });
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s1", ok: true } });
+    // The FIRST loadSessions reveals the session was recreated (t-new).
+    rpc.mockImplementation(sessionsListOf("t-new"));
+    await useInstancesStore().loadSessions("i1"); // must cancel the suspect flush
+    vi.advanceTimersByTime(500);
+  } finally {
+    vi.useRealTimers();
+  }
+  await new Promise((r) => setTimeout(r, 30));
+  // reconcile dropped the t-old entry; the cancelled flush must not write the
+  // predecessor rows back under t-new.
+  expect(await read("alice", "i1", "s1")).toBeNull();
+});
+
 test("logout drops every cached transcript (all users) plus legacy localStorage keys", async () => {
   await write("alice", "i1", "s1", [row(1)]);
   await write("bob", "i2", "s9", [row(2)]);

@@ -15,7 +15,10 @@ import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
 
 const DB_NAME = "xacpx.chat-tail";
 // v2: the [lastAccess, bytes] "lru" index replaced the plain lastAccess index.
-const DB_VERSION = 2;
+// v3: records carry the session incarnation (SessionDto.transportSession) plus
+// an "identity" index — a same-alias recreation must not resurrect the deleted
+// predecessor's tail.
+const DB_VERSION = 3;
 const STORE = "tails";
 
 export const TAIL_ROWS = 30;
@@ -31,7 +34,14 @@ type TailRecord = {
   rows: MessageRecordDto[];
   lastAccess: number;
   bytes: number;
+  /** Transport incarnation at write time; "" when unknown (matches anything).
+   *  Always a string so the identity index covers every record. */
+  incarnation: string;
 };
+
+/** Both sides known and different → the cached rows belong to a same-alias
+ *  predecessor session. Unknown ("") on either side matches anything. */
+const incarnationMismatch = (a: string, b: string): boolean => a !== "" && b !== "" && a !== b;
 
 const keyOf = (user: string, instanceId: string, alias: string): [string, string, string] =>
   [user, instanceId, alias];
@@ -68,6 +78,9 @@ function openDb(): Promise<IDBDatabase> {
       // Composite [lastAccess, bytes] index: a key-cursor walk yields both LRU
       // order and byte accounting without ever deserializing `rows`.
       store.createIndex("lru", ["lastAccess", "bytes"]);
+      // Identity index: reconcile checks alias liveness AND incarnation match
+      // via a key cursor — again without materializing any rows.
+      store.createIndex("identity", ["user", "instanceId", "alias", "incarnation"]);
     };
     let blocked = false;
     req.onsuccess = () => {
@@ -109,9 +122,10 @@ export async function resetTailCacheForTests(): Promise<void> {
   if (p) { try { (await p).close(); } catch { /* already broken */ } }
 }
 
-/** Read the cached tail for a session, or null on miss/expiry/corruption.
- *  A hit refreshes the entry's lastAccess (LRU touch). */
-export async function read(user: string, instanceId: string, alias: string): Promise<MessageRecordDto[] | null> {
+/** Read the cached tail for a session, or null on miss/expiry/corruption or an
+ *  incarnation mismatch (rows from a deleted same-alias predecessor). A hit
+ *  refreshes the entry's lastAccess (LRU touch). */
+export async function read(user: string, instanceId: string, alias: string, incarnation = ""): Promise<MessageRecordDto[] | null> {
   try {
     const db = await openDb();
     const key = keyOf(user, instanceId, alias);
@@ -123,10 +137,12 @@ export async function read(user: string, instanceId: string, alias: string): Pro
     );
     const now = Date.now();
     const rows = record?.rows;
-    // Expired or corrupted entries (non-array, empty, or non-object elements) are
-    // dropped here — the cache must never become an error source downstream.
+    // Expired, corrupted (non-array, empty, or non-object elements) or
+    // predecessor-incarnation entries are dropped here — the cache must never
+    // become an error source downstream.
     const valid = record !== undefined
       && now - record.lastAccess <= TTL_MS
+      && !incarnationMismatch(typeof record.incarnation === "string" ? record.incarnation : "", incarnation)
       && Array.isArray(rows) && rows.length > 0
       && !rows.some((r) => typeof r !== "object" || r === null);
     if (!valid) {
@@ -188,6 +204,17 @@ async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Pr
   const tx = db.transaction(STORE, "readwrite");
   try {
     const store = tx.objectStore(STORE);
+    // A write-back that doesn't know the incarnation yet ("" — e.g. the first
+    // flush after a page refresh, racing loadSessions) must not downgrade the
+    // entry's stored identity to the wildcard: preserve the previous tag.
+    if (record.incarnation === "") {
+      const prev = await asPromise<TailRecord | undefined>(
+        store.get(keyOf(record.user, record.instanceId, record.alias)) as IDBRequest<TailRecord | undefined>,
+      );
+      if (typeof prev?.incarnation === "string" && prev.incarnation !== "") {
+        record = { ...record, incarnation: prev.incarnation };
+      }
+    }
     store.put(record);
     // One ascending-lastAccess pass: drop expired entries, then LRU-evict others
     // while the total exceeds the budget (the fresh write is never a victim).
@@ -212,7 +239,7 @@ async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Pr
 /** Cache the tail of `rows` for a session: the last ≤30 persisted rows
  *  (id !== undefined). Expired entries and LRU victims beyond the global
  *  budget are pruned in the same transaction. */
-export async function write(user: string, instanceId: string, alias: string, rows: MessageRecordDto[]): Promise<void> {
+export async function write(user: string, instanceId: string, alias: string, rows: MessageRecordDto[], incarnation = ""): Promise<void> {
   try {
     // Snapshot synchronously — the caller's `rows` may mutate while IDB awaits.
     const tail = rows.filter((r) => typeof r.id === "number").slice(-TAIL_ROWS).map(toCachedRow);
@@ -227,7 +254,7 @@ export async function write(user: string, instanceId: string, alias: string, row
     const now = Date.now();
     // Serialized length ≈ UTF-16 code units; ×2 approximates the storage bytes.
     const bytes = JSON.stringify(tail).length * 2;
-    const record: TailRecord = { user, instanceId, alias, rows: tail, lastAccess: now, bytes };
+    const record: TailRecord = { user, instanceId, alias, rows: tail, lastAccess: now, bytes, incarnation };
     try {
       await putAndEvict(db, record, now);
     } catch (err) {
@@ -239,6 +266,8 @@ export async function write(user: string, instanceId: string, alias: string, row
       const clearTx = db.transaction(STORE, "readwrite");
       clearTx.objectStore(STORE).clear();
       await txDone(clearTx);
+      // The retry writes the caller's (possibly "") incarnation as-is: clear()
+      // just wiped any previous tag, and the next reconcile adopts the live one.
       const retryTx = db.transaction(STORE, "readwrite");
       retryTx.objectStore(STORE).put(record);
       await txDone(retryTx);
@@ -269,22 +298,43 @@ export async function dropAll(): Promise<void> {
   } catch { /* best-effort */ }
 }
 
-/** Drop cached entries for an instance whose alias is not in `aliveAliases` —
- *  covers sessions removed from other clients while the web was closed.
+export type AliveSession = { alias: string; incarnation?: string };
+
+/** Drop cached entries for an instance whose alias is not alive, or whose
+ *  incarnation no longer matches the live session (same-alias recreation) —
+ *  covers removals/recreations performed from other clients while the web was
+ *  closed. Entries stored with an unknown ("") incarnation adopt the live one,
+ *  so a later recreation is detectable even if the session is never revisited.
  *  Called as each instance's authoritative session list arrives. */
-export async function reconcile(user: string, instanceId: string, aliveAliases: Iterable<string>): Promise<void> {
+export async function reconcile(user: string, instanceId: string, aliveSessions: Iterable<AliveSession>): Promise<void> {
   try {
-    const alive = new Set(aliveAliases);
+    const alive = new Map<string, string>();
+    for (const s of aliveSessions) alive.set(s.alias, s.incarnation ?? "");
     const db = await openDb();
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
-    // [user, instanceId] prefix range: an array upper bound sorts after every
-    // string alias, so this spans exactly the instance's entries.
+    // [user, instanceId] prefix range over the identity index: an array upper
+    // bound sorts after every string alias, so this spans exactly the
+    // instance's entries. The KEY cursor exposes alias + stored incarnation
+    // (index key) and the primary key — no row payloads are materialized.
     const range = IDBKeyRange.bound([user, instanceId], [user, instanceId, []], false, true);
-    const keys = await asPromise(store.getAllKeys(range));
-    for (const k of keys) {
-      const alias = (k as [string, string, string])[2];
-      if (!alive.has(alias)) store.delete(k);
+    const adopt: Array<[IDBValidKey, string]> = [];
+    await new Promise<void>((resolve, reject) => {
+      const req = store.index("identity").openKeyCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        const [, , alias, stored] = cursor.key as [string, string, string, string];
+        const live = alive.get(alias);
+        if (live === undefined || incarnationMismatch(stored, live)) store.delete(cursor.primaryKey);
+        else if (stored === "" && live !== "") adopt.push([cursor.primaryKey, live]);
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error ?? new Error("cursor-failed"));
+    });
+    for (const [pk, live] of adopt) {
+      const rec = await asPromise<TailRecord | undefined>(store.get(pk) as IDBRequest<TailRecord | undefined>);
+      if (rec) store.put({ ...rec, incarnation: live });
     }
     await txDone(tx);
   } catch { /* best-effort */ }

@@ -188,6 +188,13 @@ export const useChatStore = defineStore("chat", () => {
     return t;
   }
 
+  // Known transport incarnations (SessionDto.transportSession) per session, fed
+  // by each instance's authoritative session list (reconcileTailCache). Binds
+  // cache entries to the session's identity: a same-alias recreation must not
+  // resurrect the deleted predecessor's tail. "" = not yet known (matches any).
+  const sessionIncarnations = new Map<string, string>();
+  const incarnationOf = (id: string, alias: string): string => sessionIncarnations.get(bufKey(id, alias)) ?? "";
+
   // Stale-while-revalidate tail cache (#205): select() kicks off an async seed
   // from IndexedDB (pendingSeed below); authoritative rows (loadHistory) are
   // written back debounced so bursty turn-finished convergence doesn't hammer
@@ -196,7 +203,7 @@ export const useChatStore = defineStore("chat", () => {
   const cacheWrite = createDebouncedFlush(() => {
     const user = useAuthStore().account?.username;
     if (!user || !instanceId.value || !sessionAlias.value) return;
-    void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value);
+    void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value, incarnationOf(instanceId.value, sessionAlias.value));
   }, 500);
   // Best-effort: an IDB write started during unload may not commit (unlike the
   // old synchronous localStorage flush); loadHistory converges on the next visit.
@@ -208,6 +215,12 @@ export const useChatStore = defineStore("chat", () => {
   // fetching over it clobbers nothing), cleared by the first authoritative replace
   // or any local push.
   let seededFromCache = false;
+  // True while ANY wildcard-seeded rows remain in the transcript (a live-turn
+  // flush appends but does not remove them; only an authoritative replace or a
+  // selection reset does). Unlike seededFromCache this survives flushTurn — it
+  // marks the transcript as a possible predecessor tail for the recreation
+  // guard in reconcileTailCache.
+  let seedRowsPresent = false;
   // The in-flight cache seed for the current selection (null when none was kicked
   // off) — loadHistory awaits it so its guards observe the seeded transcript
   // before deciding to fetch/skeleton.
@@ -219,16 +232,45 @@ export const useChatStore = defineStore("chat", () => {
    *  archive/remove would fire after the drop and resurrect the entry as a ghost. */
   function purgeTailCache(id: string, alias: string): void {
     if (instanceId.value === id && sessionAlias.value === alias) cacheWrite.cancel();
+    sessionIncarnations.delete(bufKey(id, alias));
     const user = useAuthStore().account?.username;
     if (user) void tailCache.drop(user, id, alias);
   }
 
   /** Reconcile an instance's cached tails against its authoritative alive
-   *  aliases (see purgeTailCache for why this lives on the chat store). */
-  function reconcileTailCache(id: string, aliveAliases: string[]): void {
-    if (instanceId.value === id && sessionAlias.value !== null && !aliveAliases.includes(sessionAlias.value)) cacheWrite.cancel();
+   *  sessions (alias + incarnation), keeping the incarnation registry in sync
+   *  (see purgeTailCache for why this lives on the chat store). */
+  function reconcileTailCache(id: string, alive: tailCache.AliveSession[]): void {
+    const aliveByAlias = new Map(alive.map((s) => [s.alias, s.incarnation ?? ""]));
+    if (instanceId.value === id && sessionAlias.value !== null) {
+      const incoming = aliveByAlias.get(sessionAlias.value);
+      if (incoming === undefined) {
+        cacheWrite.cancel();
+      } else {
+        // Same-alias recreation observed WHILE selected: the pane still shows the
+        // predecessor's transcript, so a pending debounced write-back would
+        // re-poison the cache under the NEW incarnation. Cancel it and refetch.
+        // A still-unknown prev ("") counts as suspect while wildcard-seeded rows
+        // remain in the transcript — the seed may be the predecessor's tail.
+        const prev = incarnationOf(id, sessionAlias.value);
+        const recreated = prev !== "" && incoming !== "" && prev !== incoming;
+        if (recreated || (prev === "" && incoming !== "" && seedRowsPresent)) {
+          cacheWrite.cancel();
+          if (recreated) void loadHistory().catch(() => {});
+        }
+      }
+    }
+    // Refresh the registry, pruning this instance's dead aliases so a stale
+    // incarnation cannot outlive its session.
+    const prefix = bufKey(id, "");
+    for (const key of sessionIncarnations.keys()) {
+      if (key.startsWith(prefix) && !aliveByAlias.has(key.slice(prefix.length))) sessionIncarnations.delete(key);
+    }
+    for (const s of alive) {
+      if (s.incarnation) sessionIncarnations.set(bufKey(id, s.alias), s.incarnation);
+    }
     const user = useAuthStore().account?.username;
-    if (user) void tailCache.reconcile(user, id, aliveAliases);
+    if (user) void tailCache.reconcile(user, id, alive);
   }
 
   /** Finalize a live turn: clear it (so `busy`/HUD release) and, if it streamed any
@@ -288,6 +330,7 @@ export const useChatStore = defineStore("chat", () => {
     // page arrives; stable p${id} row keys make that replace flicker-free.
     const user = useAuthStore().account?.username;
     seededFromCache = false;
+    seedRowsPresent = false;
     pendingSeed = user ? seedFromCache(user, id, alias) : null;
     // Viewing a session clears its unread signal.
     const k = bufKey(id, alias);
@@ -303,13 +346,14 @@ export const useChatStore = defineStore("chat", () => {
    *  while the read was in flight — those must never be clobbered by a seed. */
   async function seedFromCache(user: string, id: string, alias: string): Promise<void> {
     const revision = transcriptRevision;
-    const cached = await tailCache.read(user, id, alias);
+    const cached = await tailCache.read(user, id, alias, incarnationOf(id, alias));
     if (!cached || cached.length === 0) return;
     if (id !== instanceId.value || alias !== sessionAlias.value) return;
     if (messages.value.length > 0 || revision !== transcriptRevision) return;
     messages.value = cached.map(rawStructured);
     touchTranscript();
     seededFromCache = true;
+    seedRowsPresent = true;
   }
 
   /** Drop the active selection back to the empty "no session" state — used when the
@@ -317,6 +361,7 @@ export const useChatStore = defineStore("chat", () => {
   function clearSelection(): void {
     cacheWrite.flush();
     seededFromCache = false;
+    seedRowsPresent = false;
     pendingSeed = null;
     instanceId.value = null;
     sessionAlias.value = null;
@@ -380,6 +425,7 @@ export const useChatStore = defineStore("chat", () => {
       messages.value = rows.map(rawStructured);
       touchTranscript();
       seededFromCache = false;
+      seedRowsPresent = false;
       hasMoreOlder.value = hasMore ?? false;
       // Authoritative rows landed — refresh this session's cached tail (debounced).
       cacheWrite.schedule();
