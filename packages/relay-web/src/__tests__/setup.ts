@@ -1,3 +1,6 @@
+// jsdom does not implement IndexedDB; the session tail cache depends on it.
+// `fake-indexeddb/auto` installs indexedDB/IDBKeyRange/etc. as globals.
+import "fake-indexeddb/auto";
 import { config } from "@vue/test-utils";
 import { i18n } from "../i18n";
 

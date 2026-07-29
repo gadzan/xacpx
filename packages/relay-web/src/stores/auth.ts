@@ -37,8 +37,8 @@ export const useAuthStore = defineStore("auth", () => {
     await api.post("/api/logout").catch(() => {});
     account.value = null;
     // Shared-machine hygiene: the next login must not be able to read cached
-    // transcripts from localStorage (spec #205 user story 5).
-    dropAllTailCaches();
+    // transcripts from IndexedDB (spec #205 user story 5).
+    await dropAllTailCaches();
   }
 
   return { account, error, login, fetchMe, logout };

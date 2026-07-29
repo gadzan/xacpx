@@ -196,7 +196,7 @@ export const useChatStore = defineStore("chat", () => {
   const cacheWrite = createDebouncedFlush(() => {
     const user = useAuthStore().account?.username;
     if (!user || !instanceId.value || !sessionAlias.value) return;
-    tailCache.write(user, instanceId.value, sessionAlias.value, messages.value);
+    void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value);
   }, 500);
   if (typeof window !== "undefined") window.addEventListener("pagehide", () => cacheWrite.flush());
 
@@ -206,6 +206,10 @@ export const useChatStore = defineStore("chat", () => {
   // fetching over it clobbers nothing), cleared by the first authoritative replace
   // or any local push.
   let seededFromCache = false;
+  // The in-flight cache seed for the current selection (null when none was kicked
+  // off) — loadHistory awaits it so its guards observe the seeded transcript
+  // before deciding to fetch/skeleton.
+  let pendingSeed: Promise<void> | null = null;
 
   /** Purge one session's cached tail. Routed through the chat store (not called on
    *  the cache module directly) so a purge also cancels a pending debounced
@@ -214,15 +218,15 @@ export const useChatStore = defineStore("chat", () => {
   function purgeTailCache(id: string, alias: string): void {
     if (instanceId.value === id && sessionAlias.value === alias) cacheWrite.cancel();
     const user = useAuthStore().account?.username;
-    if (user) tailCache.drop(user, id, alias);
+    if (user) void tailCache.drop(user, id, alias);
   }
 
-  /** Reconcile an instance's cached tails against its authoritative alive unarchived
+  /** Reconcile an instance's cached tails against its authoritative alive
    *  aliases (see purgeTailCache for why this lives on the chat store). */
   function reconcileTailCache(id: string, aliveAliases: string[]): void {
     if (instanceId.value === id && sessionAlias.value !== null && !aliveAliases.includes(sessionAlias.value)) cacheWrite.cancel();
     const user = useAuthStore().account?.username;
-    if (user) tailCache.reconcile(user, id, aliveAliases);
+    if (user) void tailCache.reconcile(user, id, aliveAliases);
   }
 
   /** Finalize a live turn: clear it (so `busy`/HUD release) and, if it streamed any
@@ -275,20 +279,14 @@ export const useChatStore = defineStore("chat", () => {
     hasMoreOlder.value = false;
     loadingOlder.value = false;
     loadingHistory.value = false;
-    // Stale-while-revalidate: synchronously seed the transcript from the cached tail
-    // so the first screen renders instantly (no skeleton — messages.length > 0
-    // suppresses it). loadHistory() replaces this wholesale when the authoritative
+    // Stale-while-revalidate: seed the transcript from the cached tail so the first
+    // screen renders near-instantly (an IndexedDB read is ms-scale; loadHistory
+    // awaits pendingSeed before its guards/fetch so a hit still suppresses the
+    // skeleton). loadHistory() replaces the seed wholesale when the authoritative
     // page arrives; stable p${id} row keys make that replace flicker-free.
     const user = useAuthStore().account?.username;
     seededFromCache = false;
-    if (user) {
-      const cached = tailCache.read(user, id, alias);
-      if (cached && cached.length > 0) {
-        messages.value = cached.map(rawStructured);
-        touchTranscript();
-        seededFromCache = true;
-      }
-    }
+    pendingSeed = user ? seedFromCache(user, id, alias) : null;
     // Viewing a session clears its unread signal.
     const k = bufKey(id, alias);
     if (unread.value.has(k)) {
@@ -296,6 +294,20 @@ export const useChatStore = defineStore("chat", () => {
       next.delete(k);
       unread.value = next;
     }
+  }
+
+  /** Apply the cached tail for a freshly selected session, unless the selection
+   *  changed or the transcript gained rows (live turn / authoritative history)
+   *  while the read was in flight — those must never be clobbered by a seed. */
+  async function seedFromCache(user: string, id: string, alias: string): Promise<void> {
+    const revision = transcriptRevision;
+    const cached = await tailCache.read(user, id, alias);
+    if (!cached || cached.length === 0) return;
+    if (id !== instanceId.value || alias !== sessionAlias.value) return;
+    if (messages.value.length > 0 || revision !== transcriptRevision) return;
+    messages.value = cached.map(rawStructured);
+    touchTranscript();
+    seededFromCache = true;
   }
 
   /** Drop the active selection back to the empty "no session" state — used when the
@@ -316,6 +328,11 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function loadHistory(): Promise<void> {
+    if (!instanceId.value || !sessionAlias.value) return;
+    // Let a cache seed kicked off by select() land first (ms-scale IndexedDB read):
+    // the guards below must observe the seeded transcript, and a hit keeps the
+    // skeleton suppressed during the fetch. No seed → stay synchronous.
+    if (pendingSeed) await pendingSeed;
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;

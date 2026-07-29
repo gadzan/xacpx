@@ -172,7 +172,8 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   RPC `control.sessions.archive`、`SessionDto.archived` 字段与代码标识符全部不变。`⋯` 菜单项与
   滑动动作块图标换为 `Moon`，并带原生 `title` tooltip（`instance.sleepTooltip`）说明「睡眠会立即
   关闭会话进程，历史保留，发消息即唤醒」；移动端靠睡眠后的 toast（`instance.sessionArchivedToast`）
-  传达同一信息。微信端术语统一是独立 follow-up。
+  传达同一信息。微信端术语统一是独立 follow-up。**睡眠不再清本地 tail 缓存**（睡眠会话切回
+  仍可秒开首屏；仅删除会话与 logout 清缓存，见下文「IndexedDB 会话尾部缓存」）。
 - **冷会话指示器**：`SessionDto` 可选字段 `warm?: boolean`（实例侧 `SessionWarmthTracker` 60s 轮询
   queue-owner lock pid，温度翻转时推 `sessions-changed`，见 [docs/control-module.md](control-module.md)）。
   仅「醒着且 `warm === false`」的会话行显示 `Unplug` 小图标（`data-test="cold-indicator"`，
@@ -217,15 +218,21 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **`structured` 脱离深度响应式**（`stores/chat.ts` `rawStructured`）：历史行不可变、只会整行
   替换，`loadHistory`/`loadOlder`/`flushTurn` 对 `structured`（parts/toolSteps/diff 全文）做
   `markRaw`，避免 Vue 深代理化数百 KB 的对象树。
-- **localStorage 会话尾部缓存**（`src/lib/session-tail-cache.ts`，spec #205）：stale-while-revalidate。
-  `chat.select()` 同步用缓存的最近 ≤30 条持久化行播种首屏（`messages.length > 0` 抑制骨架屏），
-  `loadHistory()` 原样整页替换收敛（key 稳定无闪烁）；成功加载与 turn-finished 后防抖写回
-  （`debounce-flush`，切会话时 flush）。键 = `xacpx.chat.tail.v1.<username>.<instanceId>.<alias>`
-  + 索引键 `tail-index.v1`（LRU/TTL 记账）。三层淘汰：事件驱动（`archiveSession`/`removeSession`
-  → chat store `purgeTailCache`（drop + 取消待写回，防止防抖定时器复活刚清掉的条目），
-  `auth.logout` → `dropAll`）、对账（`loadSessions` 落地后 `reconcileTailCache` 掉该实例
-  非存活/已归档 alias——覆盖 Web 关闭期间其他端的归档删除）、兜底（单条 256KB / 全局 4MB LRU、
-  7 天 TTL、quota 溢出淘汰重试一次、旧版本键前缀懒清扫）。所有存储访问 try/catch（可能被禁用）。
+- **IndexedDB 会话尾部缓存**（`src/lib/session-tail-cache.ts`，spec #205，后迁 IndexedDB）：
+  stale-while-revalidate。`chat.select()` 发起异步种子读（chat store 的 `pendingSeed`；落地守卫
+  = 选中未变 + transcript 仍为空 + revision 未变），`loadHistory()` 入口先 `await pendingSeed`
+  （毫秒级）再决定骨架屏——缓存命中时 `messages.length > 0` 照旧抑制骨架屏；之后权威整页替换
+  收敛（key 稳定无闪烁）。成功加载与 turn-finished 后防抖写回（`debounce-flush`，切会话时
+  flush，写入 fire-and-forget）。存储 = DB `xacpx.chat-tail` / store `tails`，数组主键
+  `[user, instanceId, alias]`（reconcile 用前缀 KeyRange，无需转义含点 alias），值含
+  `rows`（≤30 条持久化行，剥离 client-only 字段）+ `lastAccess` + `bytes`。淘汰：事件驱动
+  （`removeSession` → chat store `purgeTailCache`（drop + 取消待写回），`auth.logout` →
+  `dropAll`；**睡眠不清缓存**——归档语义是可唤醒，缓存保留）、对账（`loadSessions` 落地后
+  `reconcileTailCache` 掉该实例非存活 alias，含睡眠中的都算存活——覆盖 Web 关闭期间其他端的
+  删除）、兜底（全局 64MB 按 `lastAccess` LRU 淘汰、30 天 TTL 惰性过期；**无单条预算**——
+  重工具输出的大行也整会话缓存）。首次打开 DB 时懒清扫旧版 localStorage 键
+  （`xacpx.chat.tail.*` / `xacpx.chat.tail-index.*`，不迁数据）。所有操作 try/catch +
+  `indexedDB` 缺失兼容：read 返回 null、其余静默 no-op（缓存永不成为错误源）。
   仅含缓存播种行的 transcript 在 `loadHistory` 的 pending-prompt 守卫里视同为空
   （`seededFromCache`，保持 #199 的重选中途拉取语义）；播种（≤30 行）→ 权威整页替换
   不经过 0→N，`MessageList` 的渐进挂载对该替换同样重新触发
