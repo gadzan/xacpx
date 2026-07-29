@@ -335,10 +335,16 @@ watch(
                class="mb-1 w-full rounded border border-border bg-raised px-1 text-[12px]" />
 
         <!-- directory tree: recursive rows (chevron + folder/file icon), lazy-expanded -->
-        <div class="min-h-0 flex-1 overflow-y-auto thin-scroll py-1 font-mono">
+        <div class="min-h-0 flex-1 overflow-y-auto thin-scroll py-1 font-mono transition-opacity" :class="files.loadingDirs.has('') && rootChildren.length ? 'opacity-50' : ''" :aria-busy="files.loadingDirs.has('')">
           <FileTreeNode v-for="e in rootChildren" :key="e.name" :entry="e" dir="" :depth="0"
                         :show-dotfiles="showDotfiles" :show-gitignored="showGitignored" @open-file="openTreeFile" />
-          <div v-if="!rootChildren.length && !files.loading" class="px-3 py-1 text-xs text-fg-muted">{{ $t("files.emptyDirectory") }}</div>
+          <div v-if="!rootChildren.length && files.loadingDirs.has('')" data-test="files-skeleton" aria-hidden="true" class="px-2.5">
+            <div v-for="(w, i) in [58, 72, 44, 66, 38, 51]" :key="i" class="flex items-center gap-2 py-1.5" :style="{ paddingLeft: `${(i % 3) * 12}px` }">
+              <div class="h-3 w-3 shrink-0 animate-pulse rounded-sm bg-fg/10 motion-reduce:animate-none" />
+              <div class="h-3 animate-pulse rounded bg-fg/5 motion-reduce:animate-none" :style="{ width: `${w}%` }" />
+            </div>
+          </div>
+          <div v-else-if="!rootChildren.length" class="px-3 py-1 text-xs text-fg-muted">{{ $t("files.emptyDirectory") }}</div>
         </div>
         </template>
       </div>
@@ -418,7 +424,7 @@ watch(
               <span class="break-all">{{ gitMessage.text }}</span>
             </div>
           </div>
-          <div class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-2">
+          <div class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-2 transition-opacity" :class="files.loading ? 'opacity-50' : ''" :aria-busy="files.loading">
             <div v-for="s in changeSections" :key="s.key" data-test="change-group">
               <div class="flex items-center">
                 <button class="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted transition-colors hover:text-fg"
@@ -472,10 +478,15 @@ watch(
           <span>{{ $t("files.notGitRepo") }}</span>
           <span class="text-[11px] text-fg-muted/70">{{ $t("files.notGitRepoBody") }}</span>
         </div>
-        <div v-else-if="!files.loading" class="p-3 text-xs text-fg-muted">{{ $t("files.noDiffLoaded") }}</div>
+        <div v-else-if="files.loading" data-test="changes-skeleton" aria-hidden="true" class="min-h-0 flex-1 overflow-hidden p-2.5">
+          <div class="mb-2 h-3 w-16 animate-pulse rounded bg-fg/10 motion-reduce:animate-none" />
+          <div v-for="(w, i) in [82, 64, 91, 55, 73, 47]" :key="i" class="flex items-center gap-2 px-1.5 py-1.5">
+            <div class="h-3 w-3 shrink-0 animate-pulse rounded-sm bg-fg/10 motion-reduce:animate-none" />
+            <div class="h-3 animate-pulse rounded bg-fg/5 motion-reduce:animate-none" :style="{ width: `${w}%` }" />
+          </div>
+        </div>
+        <div v-else class="p-3 text-xs text-fg-muted">{{ $t("files.noDiffLoaded") }}</div>
       </div>
-
-      <div v-if="files.loading" class="shrink-0 border-t border-border px-3 py-1 text-xs text-fg-muted">{{ $t("files.loading") }}</div>
     </template>
   </div>
 </template>
