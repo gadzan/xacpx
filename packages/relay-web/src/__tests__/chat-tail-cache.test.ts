@@ -246,6 +246,32 @@ test("a recreation observed while selected cancels the pending write-back (no re
   expect(await read("alice", "i1", "s1")).toBeNull();
 });
 
+test("first loadSessions after a wildcard seed cancels a live-turn flush (predecessor suspect)", async () => {
+  // Fresh page: registry empty, so the seed is a wildcard read of what may be a
+  // deleted predecessor's tail.
+  await write("alice", "i1", "s1", [row(1, "pre-delete")], "t-old");
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await vi.waitFor(() => expect(chat.messages.map((m) => m.text)).toEqual(["pre-delete"]));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    getMock.mockReturnValue(new Promise(() => {})); // convergence refetches stay pending
+    // A live turn flushes onto the seeded transcript and schedules a write-back.
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s1", chunk: "live" } });
+    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s1", ok: true } });
+    // The FIRST loadSessions reveals the session was recreated (t-new).
+    rpc.mockImplementation(sessionsListOf("t-new"));
+    await useInstancesStore().loadSessions("i1"); // must cancel the suspect flush
+    vi.advanceTimersByTime(500);
+  } finally {
+    vi.useRealTimers();
+  }
+  await new Promise((r) => setTimeout(r, 30));
+  // reconcile dropped the t-old entry; the cancelled flush must not write the
+  // predecessor rows back under t-new.
+  expect(await read("alice", "i1", "s1")).toBeNull();
+});
+
 test("logout drops every cached transcript (all users) plus legacy localStorage keys", async () => {
   await write("alice", "i1", "s1", [row(1)]);
   await write("bob", "i2", "s9", [row(2)]);

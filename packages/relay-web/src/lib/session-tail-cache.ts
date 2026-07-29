@@ -266,6 +266,8 @@ export async function write(user: string, instanceId: string, alias: string, row
       const clearTx = db.transaction(STORE, "readwrite");
       clearTx.objectStore(STORE).clear();
       await txDone(clearTx);
+      // The retry writes the caller's (possibly "") incarnation as-is: clear()
+      // just wiped any previous tag, and the next reconcile adopts the live one.
       const retryTx = db.transaction(STORE, "readwrite");
       retryTx.objectStore(STORE).put(record);
       await txDone(retryTx);
