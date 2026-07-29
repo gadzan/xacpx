@@ -102,8 +102,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
   主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
   `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。
-- `TurnParts.vue` 保留原始有序 parts，仅在展示层按 `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具
-  仍按普通卡片渲染。
+- `TurnParts.vue` 保留原始有序 parts，但展示时分为两条视觉通道：推理/工具按原相对顺序组成活动区，
+  所有 text part 拼回一个连续 Markdown 文档，避免工具事件切断段落、列表或代码围栏；同时按
+  `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具仍按普通卡片渲染。
 - `SubagentStepCard.vue` 以 `children.length > 0` 判定是否具备真实 trace（provider 无关，仅看数据是否到达）。
   有 trace：默认折叠、运行中轮播当前活动步骤，展开后显示紧凑时间线与 `traceCount`。无 trace：折叠行显示 `detail.output`
   尾行（回退到 prompt）、运行时长与“{ago} 前更新”心跳；展开显示委派 prompt 折叠行 + 输出块（运行中为定高、贴底滚动的
