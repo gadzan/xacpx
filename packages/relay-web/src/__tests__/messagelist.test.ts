@@ -180,8 +180,14 @@ describe("MessageList", () => {
     expect(bubble.find(".stream-md").text()).toBe(
       "先检查这一层的 flex，再确认间接约束行高。",
     );
-    expect(bubble.find('[data-test="tool-step-header"]').exists()).toBe(true);
-    expect(bubble.findComponent({ name: "ReasoningPanel" }).exists()).toBe(true);
+    const toolHeader = bubble.find('[data-test="tool-step-header"]');
+    const reasoningPanel = bubble.findComponent({ name: "ReasoningPanel" });
+    expect(toolHeader.exists()).toBe(true);
+    expect(reasoningPanel.exists()).toBe(true);
+    expect(
+      toolHeader.element.compareDocumentPosition(reasoningPanel.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("keeps the live indicator on the latest visible reasoning activity", () => {
@@ -192,6 +198,7 @@ describe("MessageList", () => {
           { type: "text", text: "partial answer" },
           { type: "reasoning", text: "checking one more thing" },
           { type: "reasoning", text: "   " },
+          { type: "text", text: " \n" },
         ]),
       },
     });

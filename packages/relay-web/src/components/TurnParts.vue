@@ -65,7 +65,7 @@ const narrative = computed(() =>
 const latestVisiblePart = computed(() => {
   for (let i = props.parts.length - 1; i >= 0; i -= 1) {
     const part = props.parts[i];
-    if (part.type !== "reasoning" || part.text.trim()) return part;
+    if (part.type === "tool" || part.text.trim()) return part;
   }
   return undefined;
 });

@@ -468,7 +468,8 @@ export interface LiveTurn {
 **`MessageList.vue` 渲染**（`packages/relay-web/src/components/MessageList.vue`）
 
 - 历史 `out` 消息正文始终展开，复制、时间及失败/停止状态保持可见；消息本身没有折叠开关。
-- `structured.parts` 由 `TurnParts` 按到达顺序渲染：文本直接显示，`ToolStepCard` 与 `ReasoningPanel` 默认折叠；实时 streaming 行遵循同一规则。
+- `structured.parts` 由 `TurnParts` 分成两条视觉通道：`ToolStepCard` 与 `ReasoningPanel`
+  按活动间的到达顺序组成默认折叠的活动区，所有文本拼成一个连续 Markdown 文档；实时 streaming 行遵循同一规则。
 - 旧历史没有 `parts` 时回退到聚合 `ToolCallPanel` + markdown/reasoning，其中工具面板与 reasoning 同样默认折叠。
 
 ## 消息附件（图片 / 文件上传）
