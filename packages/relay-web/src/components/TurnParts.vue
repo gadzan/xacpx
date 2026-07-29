@@ -7,19 +7,20 @@ import ToolStepCard from "./ToolStepCard.vue";
 import SubagentStepCard from "./SubagentStepCard.vue";
 import { hasToolStepAncestor, indexToolSteps } from "../lib/subagent-trace";
 
-// Renders a turn's transcript inline, in arrival order: text, reasoning (collapsed),
-// and tool calls interleaved exactly as the agent produced them — no Feishu-style
-// bucketing. When `streaming`, the final part shows the live affordance (caret/shimmer).
+// Preserve the wire transcript in `parts`, but present it as two visual lanes:
+// activity (reasoning/tools) followed by one continuous Markdown narrative. Tool
+// events must not split lists, code fences, or prose into separate Markdown roots.
 const props = defineProps<{ parts: TurnPartDto[]; streaming?: boolean }>();
 
+type ActivityPart = Exclude<TurnPartDto, { type: "text" }>;
 type RenderPart =
-  | { key: string; type: "part"; part: TurnPartDto }
+  | { key: string; type: "part"; part: ActivityPart }
   | { key: string; type: "subagent"; step: ToolStepDto; children: ToolStepDto[] };
 
 // ACP emits child tools as ordinary turn parts plus a parentToolCallId. Fold those
 // parts under their Agent task for display while preserving the wire/history shape.
 // If an old history row has only a child (no parent), it remains visible normally.
-const renderParts = computed<RenderPart[]>(() => {
+const renderActivities = computed<RenderPart[]>(() => {
   const parents = new Set(
     props.parts
       .filter((part): part is Extract<TurnPartDto, { type: "tool" }> => part.type === "tool" && part.step.isSubagent === true)
@@ -36,6 +37,8 @@ const renderParts = computed<RenderPart[]>(() => {
 
   const result: RenderPart[] = [];
   props.parts.forEach((part, index) => {
+    if (part.type === "text") return;
+    if (part.type === "reasoning" && !part.text.trim()) return;
     if (part.type === "tool" && hasToolStepAncestor(part.step, stepsById, (ancestorId) => parents.has(ancestorId))) return;
     if (part.type === "tool" && part.step.isSubagent) {
       result.push({
@@ -46,23 +49,48 @@ const renderParts = computed<RenderPart[]>(() => {
       });
       return;
     }
-    const key = part.type === "tool" ? `tool:${part.step.toolCallId}` : `${part.type}:${index}`;
+    const key = part.type === "tool" ? `tool:${part.step.toolCallId}` : `reasoning:${index}`;
     result.push({ key, type: "part", part });
   });
   return result;
 });
 
-const isLast = (i: number): boolean => props.streaming === true && i === renderParts.value.length - 1;
+const narrative = computed(() =>
+  props.parts
+    .filter((part): part is Extract<TurnPartDto, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join(""),
+);
+const hasVisibleNarrative = computed(() => narrative.value.trim().length > 0);
+
+const latestVisiblePart = computed(() => {
+  for (let i = props.parts.length - 1; i >= 0; i -= 1) {
+    const part = props.parts[i];
+    if (part.type === "tool" || part.text.trim()) return part;
+  }
+  return undefined;
+});
+const narrativeStreaming = computed(() =>
+  props.streaming === true && latestVisiblePart.value?.type === "text",
+);
+const isLastActivity = (i: number): boolean =>
+  props.streaming === true
+  && latestVisiblePart.value?.type === "reasoning"
+  && i === renderActivities.value.length - 1;
 </script>
 
 <template>
   <div class="space-y-2.5">
-    <template v-for="(item, i) in renderParts" :key="item.key">
-      <SubagentStepCard v-if="item.type === 'subagent'" :step="item.step" :children="item.children" />
-      <ReasoningPanel v-else-if="item.part.type === 'reasoning' && item.part.text.trim()" :reasoning="item.part.text" :streaming="isLast(i)" :default-open="false" />
-      <ToolStepCard v-else-if="item.part.type === 'tool'" :step="item.part.step" />
-      <StreamMarkdown v-else :text="item.part.text" :streaming="isLast(i)"
-                      class="text-[14px] leading-relaxed text-fg" :class="isLast(i) ? 'caret' : ''" />
-    </template>
+    <div v-if="renderActivities.length" data-test="turn-activity" class="space-y-2.5">
+      <template v-for="(item, i) in renderActivities" :key="item.key">
+        <SubagentStepCard v-if="item.type === 'subagent'" :step="item.step" :children="item.children" />
+        <ReasoningPanel v-else-if="item.part.type === 'reasoning'" :reasoning="item.part.text" :streaming="isLastActivity(i)" :default-open="false" />
+        <ToolStepCard v-else-if="item.part.type === 'tool'" :step="item.part.step" />
+      </template>
+    </div>
+    <StreamMarkdown v-if="hasVisibleNarrative" data-test="turn-narrative"
+                    :text="narrative" :streaming="narrativeStreaming"
+                    class="text-[14px] leading-relaxed text-fg"
+                    :class="narrativeStreaming ? 'caret' : ''" />
   </div>
 </template>

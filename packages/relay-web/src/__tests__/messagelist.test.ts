@@ -151,6 +151,88 @@ describe("MessageList", () => {
     const bubble = wrapper.find('[data-test="msg-streaming"]');
     expect(bubble.exists()).toBe(true);
     expect(bubble.html()).toContain("<strong>important</strong>");
+    expect(bubble.find(".stream-md.caret").exists()).toBe(true);
+  });
+
+  it("keeps a caret host when streaming Markdown ends with a horizontal rule", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: live([{ type: "text", text: "---" }]) },
+    });
+
+    const narrative = wrapper.find(".stream-md.caret");
+    expect(narrative.exists()).toBe(true);
+    expect(narrative.find(":scope > hr:last-child").exists()).toBe(true);
+  });
+
+  it("keeps live narrative continuous when activity arrives between text chunks", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "text", text: "先检查这一层的 flex，" },
+          {
+            type: "tool",
+            step: {
+              toolCallId: "read-1",
+              toolName: "Read",
+              kind: "read",
+              status: "success",
+              title: "index.css",
+            },
+          },
+          { type: "reasoning", text: "确认 Android 的约束行为。" },
+          { type: "text", text: "再确认间接约束行高。" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    expect(bubble.findAll(".stream-md")).toHaveLength(1);
+    expect(bubble.find(".stream-md").text()).toBe(
+      "先检查这一层的 flex，再确认间接约束行高。",
+    );
+    const toolHeader = bubble.find('[data-test="tool-step-header"]');
+    const reasoningPanel = bubble.findComponent({ name: "ReasoningPanel" });
+    expect(toolHeader.exists()).toBe(true);
+    expect(reasoningPanel.exists()).toBe(true);
+    expect(
+      toolHeader.element.compareDocumentPosition(reasoningPanel.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the live indicator on the latest visible reasoning activity", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "text", text: "partial answer" },
+          { type: "reasoning", text: "checking one more thing" },
+          { type: "reasoning", text: "   " },
+          { type: "text", text: " \n" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    expect(bubble.find('[data-test="reasoning-shimmer"]').exists()).toBe(true);
+    expect(bubble.find('[data-test="turn-narrative"]').classes()).not.toContain("caret");
+  });
+
+  it("does not render an empty narrative lane for whitespace-only text", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "reasoning", text: "checking" },
+          { type: "text", text: " \n" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    expect(bubble.findComponent({ name: "ReasoningPanel" }).exists()).toBe(true);
+    expect(bubble.find('[data-test="turn-narrative"]').exists()).toBe(false);
   });
 
   it("marks failed output messages", () => {
@@ -224,26 +306,32 @@ it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => 
   expect(wrapper.find('[data-test="tool-row"]').exists()).toBe(false);
 });
 
-it("renders persisted `parts` inline in arrival order (tool then text)", () => {
+it("replays persisted activity separately without breaking the narrative Markdown", () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
-        direction: "out", text: "all done", status: "done",
+        direction: "out", text: "**continuous prose**", status: "done",
         structured: {
           toolSteps: [{ toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" }],
           parts: [
+            { type: "text", text: "**continuous" },
             { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } },
-            { type: "text", text: "all done" },
+            { type: "reasoning", text: "checking" },
+            { type: "text", text: " prose**" },
           ],
         },
       })],
       liveTurn: null,
     },
   });
-  // Inline cards, not the aggregated legacy panel.
+
+  const output = wrapper.find('[data-test="msg-out"]');
+  expect(output.find('[data-test="turn-activity"]').exists()).toBe(true);
+  expect(output.findAll(".stream-md")).toHaveLength(1);
+  expect(output.find(".stream-md").html()).toContain("<strong>continuous prose</strong>");
   expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(false);
-  expect(wrapper.find('[data-test="msg-out"]').text()).toContain("all done");
+  expect(wrapper.findComponent({ name: "ReasoningPanel" }).exists()).toBe(true);
 });
 
 it("shows a failed tool's error message in red when its card is expanded", async () => {

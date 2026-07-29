@@ -102,8 +102,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
   主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
   `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。
-- `TurnParts.vue` 保留原始有序 parts，仅在展示层按 `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具
-  仍按普通卡片渲染。
+- `TurnParts.vue` 保留原始有序 parts，但展示时分为两条视觉通道：推理/工具按原相对顺序组成活动区，
+  所有 text part 拼回一个连续 Markdown 文档，避免工具事件切断段落、列表或代码围栏；同时按
+  `parentToolCallId` 把子工具归入对应 Agent，旧历史里没有父子字段的工具仍按普通卡片渲染。
 - `SubagentStepCard.vue` 以 `children.length > 0` 判定是否具备真实 trace（provider 无关，仅看数据是否到达）。
   有 trace：默认折叠、运行中轮播当前活动步骤，展开后显示紧凑时间线与 `traceCount`。无 trace：折叠行显示 `detail.output`
   尾行（回退到 prompt）、运行时长与“{ago} 前更新”心跳；展开显示委派 prompt 折叠行 + 输出块（运行中为定高、贴底滚动的
@@ -467,7 +468,8 @@ export interface LiveTurn {
 **`MessageList.vue` 渲染**（`packages/relay-web/src/components/MessageList.vue`）
 
 - 历史 `out` 消息正文始终展开，复制、时间及失败/停止状态保持可见；消息本身没有折叠开关。
-- `structured.parts` 由 `TurnParts` 按到达顺序渲染：文本直接显示，`ToolStepCard` 与 `ReasoningPanel` 默认折叠；实时 streaming 行遵循同一规则。
+- `structured.parts` 由 `TurnParts` 分成两条视觉通道：`ToolStepCard` 与 `ReasoningPanel`
+  按活动间的到达顺序组成默认折叠的活动区，所有文本拼成一个连续 Markdown 文档；实时 streaming 行遵循同一规则。
 - 旧历史没有 `parts` 时回退到聚合 `ToolCallPanel` + markdown/reasoning，其中工具面板与 reasoning 同样默认折叠。
 
 ## 消息附件（图片 / 文件上传）

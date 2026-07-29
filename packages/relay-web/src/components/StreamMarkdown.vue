@@ -7,6 +7,8 @@ import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import MermaidViewer from "./MermaidViewer.vue";
 import { useThemeStore } from "../stores/theme";
 
+defineOptions({ inheritAttrs: false });
+
 const { t } = useI18n();
 
 const props = defineProps<{ text: string; streaming?: boolean }>();
@@ -180,7 +182,7 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
-  <div ref="rootEl" class="stream-md text-sm" v-html="html" />
+  <div ref="rootEl" class="stream-md text-sm" v-bind="$attrs" v-html="html" />
   <MermaidViewer v-if="viewerSvg" :svg="viewerSvg" @close="viewerSvg = null" />
 </template>
 
