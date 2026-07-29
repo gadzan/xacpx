@@ -151,7 +151,7 @@ describe("MessageList", () => {
     const bubble = wrapper.find('[data-test="msg-streaming"]');
     expect(bubble.exists()).toBe(true);
     expect(bubble.html()).toContain("<strong>important</strong>");
-    expect(bubble.find(".caret").exists()).toBe(true);
+    expect(bubble.find(".stream-md.caret").exists()).toBe(true);
   });
 
   it("keeps live narrative continuous when activity arrives between text chunks", () => {
@@ -207,6 +207,22 @@ describe("MessageList", () => {
     const bubble = wrapper.find('[data-test="msg-streaming"]');
     expect(bubble.find('[data-test="reasoning-shimmer"]').exists()).toBe(true);
     expect(bubble.find('[data-test="turn-narrative"]').classes()).not.toContain("caret");
+  });
+
+  it("does not render an empty narrative lane for whitespace-only text", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "reasoning", text: "checking" },
+          { type: "text", text: " \n" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    expect(bubble.findComponent({ name: "ReasoningPanel" }).exists()).toBe(true);
+    expect(bubble.find('[data-test="turn-narrative"]').exists()).toBe(false);
   });
 
   it("marks failed output messages", () => {

@@ -61,6 +61,7 @@ const narrative = computed(() =>
     .map((part) => part.text)
     .join(""),
 );
+const hasVisibleNarrative = computed(() => narrative.value.trim().length > 0);
 
 const latestVisiblePart = computed(() => {
   for (let i = props.parts.length - 1; i >= 0; i -= 1) {
@@ -87,9 +88,9 @@ const isLastActivity = (i: number): boolean =>
         <ToolStepCard v-else-if="item.part.type === 'tool'" :step="item.part.step" />
       </template>
     </div>
-    <div v-if="narrative" data-test="turn-narrative"
-         class="text-[14px] leading-relaxed text-fg" :class="narrativeStreaming ? 'caret' : ''">
-      <StreamMarkdown :text="narrative" :streaming="narrativeStreaming" />
-    </div>
+    <StreamMarkdown v-if="hasVisibleNarrative" data-test="turn-narrative"
+                    :text="narrative" :streaming="narrativeStreaming"
+                    class="text-[14px] leading-relaxed text-fg"
+                    :class="narrativeStreaming ? 'caret' : ''" />
   </div>
 </template>
