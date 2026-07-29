@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.18.0] - 2026-07-29
+
+### Added
+
+- Session process warmth tracking: transports expose an optional `isSessionWarm` (queue-owner lock pid liveness) and a resident `SessionWarmthTracker` polls it every 60s, emitting `sessions-changed` only on warm/cold flips. `control.sessions.list` now carries an optional `warm` flag so dashboards can mark cold sessions (process exited, next message cold-starts). Archive/sleep and turn start correct the reading immediately.
+
+### Fixed
+
+- Dashboard git commands no longer trigger opportunistic `git gc` (auto-gc disabled), avoiding unexpected latency and lock contention on the control path.
+
 ## [0.17.1] - 2026-07-27
 
 - Fix Claude profile reuse on Windows: `session-env` and `shell-snapshots` are now left profile-local because Claude may recreate them between turns. Durable Claude settings state remains linked into the managed profile.
