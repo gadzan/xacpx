@@ -22,6 +22,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
+import { useInstancesStore } from "../stores/instances";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { ApiError } from "../api/client";
 import PromptInput from "../components/PromptInput.vue";
@@ -822,4 +823,84 @@ test("whitespace between non-blank reasoning chunks is preserved", () => {
   ev({ type: "turn-thought", chatKey: "relay:a1", sessionAlias: "backend", chunk: "line2" });
   ev({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
   expect(store.messages.at(-1)!.structured?.reasoning).toBe("line1\n\nline2");
+});
+
+function seedColdSleepingRow(warm: boolean | undefined, archived: boolean) {
+  const instancesStore = useInstancesStore();
+  instancesStore.instances = [{
+    id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [],
+    sessions: [{ alias: "backend", agent: "codex", workspace: "/w", transportSession: "t", running: false, archived, ...(warm === undefined ? {} : { warm }) }],
+  }];
+  return instancesStore.instances[0]!.sessions[0]!;
+}
+
+test("send optimistically clears the cold and sleeping indicators (prompt wakes/warms the session)", async () => {
+  const row = seedColdSleepingRow(false, true);
+  rpc.mockResolvedValueOnce({ ok: true });
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const sending = chat.send("wake up");
+  // Cleared BEFORE the RPC resolves — that's the optimistic part.
+  expect(row.warm).toBe(true);
+  expect(row.archived).toBe(false);
+  await sending;
+  expect(row.warm).toBe(true);
+  expect(row.archived).toBe(false);
+});
+
+test("a failed send restores the cold and sleeping indicators", async () => {
+  const row = seedColdSleepingRow(false, true);
+  rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  await chat.send("wake up");
+  expect(row.warm).toBe(false);
+  expect(row.archived).toBe(true);
+});
+
+test("an ok:false prompt result restores the cold indicator", async () => {
+  const row = seedColdSleepingRow(false, false);
+  rpc.mockResolvedValueOnce({ ok: false, errorMessage: "boom" });
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  await chat.send("hi");
+  expect(row.warm).toBe(false);
+});
+
+test("a prompt RPC timeout keeps the indicators cleared (turn may still be running)", async () => {
+  const row = seedColdSleepingRow(false, true);
+  rpc.mockRejectedValueOnce(new ApiError("timeout", 504));
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  await chat.send("hi");
+  expect(row.warm).toBe(true);
+  expect(row.archived).toBe(false);
+});
+
+test("send leaves an unknown-warmth row untouched (warm stays undefined)", async () => {
+  const row = seedColdSleepingRow(undefined, false);
+  rpc.mockResolvedValueOnce({ ok: true });
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  await chat.send("hi");
+  expect(row.warm).toBeUndefined();
+  expect(row.archived).toBe(false);
+});
+
+test("rollback after the row was replaced by a re-fetch is a no-op on the new row", async () => {
+  seedColdSleepingRow(false, true);
+  let rejectPrompt!: (e: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPrompt = reject; }));
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const sending = chat.send("wake up");
+  // Mid-flight, a sessions-changed re-fetch replaces the whole array with server truth.
+  const instancesStore = useInstancesStore();
+  instancesStore.instances[0]!.sessions = [{ alias: "backend", agent: "codex", workspace: "/w", transportSession: "t", running: false, archived: false, warm: true }];
+  const freshRow = instancesStore.instances[0]!.sessions[0]!;
+  rejectPrompt(new ApiError("instance-offline", 503));
+  await sending;
+  // The rollback mutated only the detached old row; server truth stays untouched.
+  expect(freshRow.warm).toBe(true);
+  expect(freshRow.archived).toBe(false);
 });
