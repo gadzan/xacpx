@@ -204,6 +204,17 @@ async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Pr
   const tx = db.transaction(STORE, "readwrite");
   try {
     const store = tx.objectStore(STORE);
+    // A write-back that doesn't know the incarnation yet ("" — e.g. the first
+    // flush after a page refresh, racing loadSessions) must not downgrade the
+    // entry's stored identity to the wildcard: preserve the previous tag.
+    if (record.incarnation === "") {
+      const prev = await asPromise<TailRecord | undefined>(
+        store.get(keyOf(record.user, record.instanceId, record.alias)) as IDBRequest<TailRecord | undefined>,
+      );
+      if (typeof prev?.incarnation === "string" && prev.incarnation !== "") {
+        record = { ...record, incarnation: prev.incarnation };
+      }
+    }
     store.put(record);
     // One ascending-lastAccess pass: drop expired entries, then LRU-evict others
     // while the total exceeds the budget (the fresh write is never a victim).
@@ -290,7 +301,9 @@ export type AliveSession = { alias: string; incarnation?: string };
 /** Drop cached entries for an instance whose alias is not alive, or whose
  *  incarnation no longer matches the live session (same-alias recreation) —
  *  covers removals/recreations performed from other clients while the web was
- *  closed. Called as each instance's authoritative session list arrives. */
+ *  closed. Entries stored with an unknown ("") incarnation adopt the live one,
+ *  so a later recreation is detectable even if the session is never revisited.
+ *  Called as each instance's authoritative session list arrives. */
 export async function reconcile(user: string, instanceId: string, aliveSessions: Iterable<AliveSession>): Promise<void> {
   try {
     const alive = new Map<string, string>();
@@ -303,6 +316,7 @@ export async function reconcile(user: string, instanceId: string, aliveSessions:
     // instance's entries. The KEY cursor exposes alias + stored incarnation
     // (index key) and the primary key — no row payloads are materialized.
     const range = IDBKeyRange.bound([user, instanceId], [user, instanceId, []], false, true);
+    const adopt: Array<[IDBValidKey, string]> = [];
     await new Promise<void>((resolve, reject) => {
       const req = store.index("identity").openKeyCursor(range);
       req.onsuccess = () => {
@@ -311,10 +325,15 @@ export async function reconcile(user: string, instanceId: string, aliveSessions:
         const [, , alias, stored] = cursor.key as [string, string, string, string];
         const live = alive.get(alias);
         if (live === undefined || incarnationMismatch(stored, live)) store.delete(cursor.primaryKey);
+        else if (stored === "" && live !== "") adopt.push([cursor.primaryKey, live]);
         cursor.continue();
       };
       req.onerror = () => reject(req.error ?? new Error("cursor-failed"));
     });
+    for (const [pk, live] of adopt) {
+      const rec = await asPromise<TailRecord | undefined>(store.get(pk) as IDBRequest<TailRecord | undefined>);
+      if (rec) store.put({ ...rec, incarnation: live });
+    }
     await txDone(tx);
   } catch { /* best-effort */ }
 }

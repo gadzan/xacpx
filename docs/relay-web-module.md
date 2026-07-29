@@ -226,9 +226,12 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   flush，写入 fire-and-forget）。存储 = DB `xacpx.chat-tail` / store `tails`，数组主键
   `[user, instanceId, alias]`（reconcile 用前缀 KeyRange，无需转义含点 alias），值含
   `rows`（≤30 条持久化行，剥离 client-only 字段）+ `lastAccess` + `bytes` + `incarnation`
-  （= `SessionDto.transportSession`；chat store 维护由 `loadSessions` 喂的 incarnation 注册表，
-  seed 读/写回都带上，`""` 为通配——**同名重建不复活旧尾部**：read 发现两侧都已知且不等即删条目
-  返 miss，reconcile 也会掉 alias 存活但 incarnation 变了的条目）。淘汰：事件驱动
+  （= `SessionDto.transportSession`；chat store 维护由 `loadSessions` 喂的 incarnation 注册表
+  （对账时同步剪掉死 alias 的注册项），seed 读/写回都带上，`""` 为通配——**同名重建不复活旧尾部**：
+  read 发现两侧都已知且不等即删条目返 miss；`""` 写回保留条目原有标签（刷新后首个 flush 抢跑
+  `loadSessions` 时不降级为通配），reconcile 会把存活会话的 live incarnation 盖到存 `""` 的条目上
+  （adoption），也会掉 alias 存活但 incarnation 变了的条目；选中中观察到同名重建时取消待写回并重拉
+  历史，防止把前任 transcript 打上新 incarnation 回写）。淘汰：事件驱动
   （`removeSession` → chat store `purgeTailCache`（drop + 取消待写回 + 清注册表项），`auth.logout` →
   `dropAll`；**睡眠不清缓存**——归档语义是可唤醒，缓存保留）、对账（`loadSessions` 落地后
   `reconcileTailCache` 掉该实例非存活 alias 或 incarnation 不匹配的条目，含睡眠中的都算存活——

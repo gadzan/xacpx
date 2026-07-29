@@ -181,6 +181,21 @@ describe("session-tail-cache", () => {
     expect(await read("alice", "i1", "s3")).not.toBeNull(); // unknown stored → kept
   });
 
+  it("a wildcard (\"\") write preserves the entry's previously stored incarnation", async () => {
+    await write("alice", "i1", "s1", [row(1)], "inc-A");
+    // e.g. the first flush after a page refresh, before loadSessions lands.
+    await write("alice", "i1", "s1", [row(2)], "");
+    expect((await read("alice", "i1", "s1", "inc-A"))!.map((r) => r.id)).toEqual([2]); // fresh rows, old tag
+    expect(await read("alice", "i1", "s1", "inc-B")).toBeNull(); // tag not downgraded to wildcard
+  });
+
+  it("reconcile stamps the live incarnation onto stored-\"\" entries (adoption)", async () => {
+    await write("alice", "i1", "s1", [row(1)]);
+    await reconcile("alice", "i1", [{ alias: "s1", incarnation: "inc-A" }]);
+    expect(await read("alice", "i1", "s1", "inc-A")).not.toBeNull();
+    expect(await read("alice", "i1", "s1", "inc-B")).toBeNull(); // adopted → recreation now detectable
+  });
+
   it("sweeps legacy localStorage keys once on first use", async () => {
     localStorage.setItem("xacpx.chat.tail.v1.alice.i1.s1", "[]");
     localStorage.setItem("xacpx.chat.tail-index.v1", "[]");

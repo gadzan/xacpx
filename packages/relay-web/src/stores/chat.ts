@@ -232,13 +232,34 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** Reconcile an instance's cached tails against its authoritative alive
-   *  sessions (alias + incarnation), refreshing the incarnation registry along
-   *  the way (see purgeTailCache for why this lives on the chat store). */
+   *  sessions (alias + incarnation), keeping the incarnation registry in sync
+   *  (see purgeTailCache for why this lives on the chat store). */
   function reconcileTailCache(id: string, alive: tailCache.AliveSession[]): void {
+    const aliveByAlias = new Map(alive.map((s) => [s.alias, s.incarnation ?? ""]));
+    if (instanceId.value === id && sessionAlias.value !== null) {
+      const incoming = aliveByAlias.get(sessionAlias.value);
+      if (incoming === undefined) {
+        cacheWrite.cancel();
+      } else {
+        // Same-alias recreation observed WHILE selected: the pane still shows the
+        // predecessor's transcript, so a pending debounced write-back would
+        // re-poison the cache under the NEW incarnation. Cancel it and refetch.
+        const prev = incarnationOf(id, sessionAlias.value);
+        if (prev !== "" && incoming !== "" && prev !== incoming) {
+          cacheWrite.cancel();
+          void loadHistory();
+        }
+      }
+    }
+    // Refresh the registry, pruning this instance's dead aliases so a stale
+    // incarnation cannot outlive its session.
+    const prefix = bufKey(id, "");
+    for (const key of sessionIncarnations.keys()) {
+      if (key.startsWith(prefix) && !aliveByAlias.has(key.slice(prefix.length))) sessionIncarnations.delete(key);
+    }
     for (const s of alive) {
       if (s.incarnation) sessionIncarnations.set(bufKey(id, s.alias), s.incarnation);
     }
-    if (instanceId.value === id && sessionAlias.value !== null && !alive.some((s) => s.alias === sessionAlias.value)) cacheWrite.cancel();
     const user = useAuthStore().account?.username;
     if (user) void tailCache.reconcile(user, id, alive);
   }
