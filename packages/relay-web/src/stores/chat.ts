@@ -31,8 +31,8 @@ export type TurnStatus = "working" | "streaming" | "done" | "cancelled" | "error
 /** Per-session context usage: window fill plus optional cost & token breakdown. */
 export type SessionUsage = { used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto };
 
-/** One transcript entry, kept in arrival order so text / reasoning / tool calls
- *  render inline exactly as the agent produced them (mirrors the hub's persistence). */
+/** One transcript entry, kept in arrival order to mirror the hub's persistence.
+ *  Presentation may derive activity / narrative lanes without mutating wire order. */
 export type TurnPart = TurnPartDto;
 
 export interface LiveTurn {

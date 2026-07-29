@@ -87,7 +87,9 @@ const isLastActivity = (i: number): boolean =>
         <ToolStepCard v-else-if="item.part.type === 'tool'" :step="item.part.step" />
       </template>
     </div>
-    <StreamMarkdown v-if="narrative" :text="narrative" :streaming="narrativeStreaming"
-                    class="text-[14px] leading-relaxed text-fg" :class="narrativeStreaming ? 'caret' : ''" />
+    <div v-if="narrative" data-test="turn-narrative"
+         class="text-[14px] leading-relaxed text-fg" :class="narrativeStreaming ? 'caret' : ''">
+      <StreamMarkdown :text="narrative" :streaming="narrativeStreaming" />
+    </div>
   </div>
 </template>
