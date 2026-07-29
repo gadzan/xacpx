@@ -119,7 +119,9 @@ select:focus, select:focus-visible {
 
 /* Streaming caret — accent blue. */
 @keyframes blink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
-.stream-md.caret > :last-child::after {
+.stream-md.caret > :last-child::after,
+/* <hr> is a void element and cannot reliably host ::after; keep a visible fallback. */
+.stream-md.caret:has(> hr:last-child)::after {
   content: ''; display: inline-block; width: 2px; height: 1em;
   background: rgb(var(--c-accent)); margin-left: 2px; vertical-align: text-bottom;
   animation: blink 1s step-end infinite;
@@ -135,7 +137,10 @@ select:focus, select:focus-visible {
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .pulse-dot, .shimmer-text, .stream-md.caret > :last-child::after { animation: none !important; }
+  .pulse-dot,
+  .shimmer-text,
+  .stream-md.caret > :last-child::after,
+  .stream-md.caret:has(> hr:last-child)::after { animation: none !important; }
 }
 
 /* Transient flash when jumping to a line (content-search hit). The decoration is removed

@@ -154,6 +154,16 @@ describe("MessageList", () => {
     expect(bubble.find(".stream-md.caret").exists()).toBe(true);
   });
 
+  it("keeps a caret host when streaming Markdown ends with a horizontal rule", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: live([{ type: "text", text: "---" }]) },
+    });
+
+    const narrative = wrapper.find(".stream-md.caret");
+    expect(narrative.exists()).toBe(true);
+    expect(narrative.find(":scope > hr:last-child").exists()).toBe(true);
+  });
+
   it("keeps live narrative continuous when activity arrives between text chunks", () => {
     const wrapper = mount(MessageList, {
       props: {
