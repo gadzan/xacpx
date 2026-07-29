@@ -5,6 +5,7 @@ import { api, ApiError } from "../api/client";
 import { createDebouncedFlush } from "../lib/debounce-flush";
 import * as tailCache from "../lib/session-tail-cache";
 import { useAuthStore } from "./auth";
+import { useInstancesStore } from "./instances";
 import { useSessionControlsStore } from "./session-controls";
 
 // Remember which session was open so a page refresh returns to it (selection is not
@@ -662,6 +663,25 @@ export const useChatStore = defineStore("chat", () => {
     messages.value.push(optimistic);
     touchTranscript();
     seededFromCache = false;
+    // Sending a prompt wakes an archived session and warms a cold one server-side
+    // (session-turn-runner clears both on prompt start), so flip the sidebar row's
+    // indicators now instead of leaving the cold/sleeping icon up until the
+    // sessions-changed push triggers a re-fetch. A failed send restores the prior
+    // values; if loadSessions replaced the row meanwhile, the rollback mutates a
+    // detached object and is a harmless no-op.
+    const sessionRow = useInstancesStore().byId(id)?.sessions.find((s) => s.alias === alias);
+    const prevWarm = sessionRow?.warm;
+    const prevArchived = sessionRow?.archived;
+    const clearedIndicators = sessionRow !== undefined && (sessionRow.warm === false || sessionRow.archived);
+    if (sessionRow) {
+      if (sessionRow.warm === false) sessionRow.warm = true;
+      if (sessionRow.archived) sessionRow.archived = false;
+    }
+    const rollbackIndicators = (): void => {
+      if (!sessionRow || !clearedIndicators) return;
+      sessionRow.warm = prevWarm;
+      sessionRow.archived = prevArchived ?? false;
+    };
     // `optimistic` above is the RAW object; the array element is a reactive proxy. Mutating the
     // raw ref (optimistic.failed = true) never trips Vue's set-trap, so the failed bubble would
     // only surface on the next list change (the next message). Mark failure through the proxy so
@@ -681,6 +701,7 @@ export const useChatStore = defineStore("chat", () => {
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";
         entry.failed = true;
+        rollbackIndicators();
         touchTranscript();
       } else if (res?.queued && res.queueItemId) {
         entry.queueItemId = res.queueItemId;
@@ -699,6 +720,7 @@ export const useChatStore = defineStore("chat", () => {
       if (!isTimeout) {
         error.value = e instanceof ApiError ? e.code : "send-failed";
         entry.failed = true;
+        rollbackIndicators();
         touchTranscript();
       }
     } finally {
