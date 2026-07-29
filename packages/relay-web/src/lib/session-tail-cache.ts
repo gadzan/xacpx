@@ -1,3 +1,4 @@
+import { toRaw } from "vue";
 import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
 
 /** Stale-while-revalidate tail cache for session transcripts (spec #205).
@@ -179,7 +180,11 @@ function toCachedRow(row: MessageRecordDto): MessageRecordDto {
   };
   if (row.queueItemId !== undefined) out.queueItemId = row.queueItemId;
   if (row.structured !== undefined) out.structured = row.structured;
-  if (row.attachments !== undefined) out.attachments = row.attachments;
+  // The transcript is deeply reactive and only `structured` is markRaw'd, so
+  // `attachments` arrives as a Vue Proxy — IDB's structured clone rejects
+  // proxies (DataCloneError), silently killing every write for a session whose
+  // tail holds an attachment row. toRaw yields the underlying plain tree.
+  if (row.attachments !== undefined) out.attachments = toRaw(row.attachments);
   return out;
 }
 
@@ -272,7 +277,12 @@ export async function write(user: string, instanceId: string, alias: string, row
       retryTx.objectStore(STORE).put(record);
       await txDone(retryTx);
     }
-  } catch { /* cache is an optimization, never an error source */ }
+  } catch (err) {
+    // The cache is an optimization, never an error source — but a swallowed
+    // write failure freezes the entry at its last snapshot forever (a
+    // DataCloneError on a reactive row did exactly that), so leave a trace.
+    console.debug("[relay-web] tail-cache write failed", err);
+  }
 }
 
 /** Purge one session's cache — the remove hook (sleeping sessions KEEP their
