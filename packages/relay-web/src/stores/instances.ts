@@ -105,9 +105,10 @@ export const useInstancesStore = defineStore("instances", () => {
       if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
     }
     // Tail-cache reconciliation (spec #205): as each instance's authoritative session
-    // list arrives, drop cached transcripts for sessions no longer alive/unarchived —
-    // covers archive/remove performed from other clients while the web was closed.
-    useChatStore().reconcileTailCache(instanceId, sessions.filter((s) => !s.archived).map((s) => s.alias));
+    // list arrives, drop cached transcripts for sessions no longer alive — covers
+    // removals performed from other clients while the web was closed. Sleeping
+    // (archived) sessions stay resumable and keep their cache.
+    useChatStore().reconcileTailCache(instanceId, sessions.map((s) => s.alias));
   }
 
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
@@ -271,8 +272,8 @@ export const useInstancesStore = defineStore("instances", () => {
 
   async function removeSession(instanceId: string, alias: string): Promise<void> {
     await api.rpc(instanceId, "control.sessions.remove", { alias });
-    // Event-driven tail-cache purge (spec #205): a session archived/removed here must
-    // never resurface as a ghost transcript from localStorage. Routed through the chat
+    // Event-driven tail-cache purge (spec #205): a removed session must never
+    // resurface as a ghost transcript from the cache. Routed through the chat
     // store so a pending debounced write-back targeting it is cancelled too.
     useChatStore().purgeTailCache(instanceId, alias);
     await loadSessions(instanceId);
@@ -280,7 +281,8 @@ export const useInstancesStore = defineStore("instances", () => {
 
   async function archiveSession(instanceId: string, alias: string): Promise<void> {
     await api.rpc(instanceId, "control.sessions.archive", { alias });
-    useChatStore().purgeTailCache(instanceId, alias);
+    // No cache purge: a sleeping session stays resumable, and its cached tail
+    // lets waking it paint instantly.
     await loadSessions(instanceId);
   }
 
