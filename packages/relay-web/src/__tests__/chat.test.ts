@@ -886,3 +886,21 @@ test("send leaves an unknown-warmth row untouched (warm stays undefined)", async
   expect(row.warm).toBeUndefined();
   expect(row.archived).toBe(false);
 });
+
+test("rollback after the row was replaced by a re-fetch is a no-op on the new row", async () => {
+  seedColdSleepingRow(false, true);
+  let rejectPrompt!: (e: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPrompt = reject; }));
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const sending = chat.send("wake up");
+  // Mid-flight, a sessions-changed re-fetch replaces the whole array with server truth.
+  const instancesStore = useInstancesStore();
+  instancesStore.instances[0]!.sessions = [{ alias: "backend", agent: "codex", workspace: "/w", transportSession: "t", running: false, archived: false, warm: true }];
+  const freshRow = instancesStore.instances[0]!.sessions[0]!;
+  rejectPrompt(new ApiError("instance-offline", 503));
+  await sending;
+  // The rollback mutated only the detached old row; server truth stays untouched.
+  expect(freshRow.warm).toBe(true);
+  expect(freshRow.archived).toBe(false);
+});

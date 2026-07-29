@@ -665,22 +665,28 @@ export const useChatStore = defineStore("chat", () => {
     seededFromCache = false;
     // Sending a prompt wakes an archived session and warms a cold one server-side
     // (session-turn-runner clears both on prompt start), so flip the sidebar row's
-    // indicators now instead of leaving the cold/sleeping icon up until the
-    // sessions-changed push triggers a re-fetch. A failed send restores the prior
-    // values; if loadSessions replaced the row meanwhile, the rollback mutates a
-    // detached object and is a harmless no-op.
+    // indicators immediately. `archived` converges anyway via the sessions-changed
+    // push, but cold→warm has NO push (markWarm deliberately skips the event), so
+    // this optimistic clear is the ONLY way the cold icon disappears before the
+    // next unrelated re-fetch. A failed send restores the prior values; if
+    // loadSessions replaced the row meanwhile, the rollback mutates a detached
+    // object and is a harmless no-op.
     const sessionRow = useInstancesStore().byId(id)?.sessions.find((s) => s.alias === alias);
     const prevWarm = sessionRow?.warm;
-    const prevArchived = sessionRow?.archived;
+    const prevArchived = sessionRow?.archived === true;
     const clearedIndicators = sessionRow !== undefined && (sessionRow.warm === false || sessionRow.archived);
     if (sessionRow) {
       if (sessionRow.warm === false) sessionRow.warm = true;
       if (sessionRow.archived) sessionRow.archived = false;
     }
+    // Conservative on ok:false: the prompt RPC resolves only after the turn ends, so
+    // a failure may still have warmed the process (turn ran, agent errored). We can't
+    // tell that apart from "turn never started", so restore the cold icon — worst
+    // case it over-reports cold and the next send clears it again.
     const rollbackIndicators = (): void => {
       if (!sessionRow || !clearedIndicators) return;
       sessionRow.warm = prevWarm;
-      sessionRow.archived = prevArchived ?? false;
+      sessionRow.archived = prevArchived;
     };
     // `optimistic` above is the RAW object; the array element is a reactive proxy. Mutating the
     // raw ref (optimistic.failed = true) never trips Vue's set-trap, so the failed bubble would
