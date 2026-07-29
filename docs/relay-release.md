@@ -24,10 +24,10 @@
 
 | 包 | npm | repo | 说明 |
 |---|---|---|---|
-| `@ganglion/xacpx` | 用 `npm view` 核对 | 0.17.0-beta.5 | 下次 relay connector 发布前，需先发布含 model-set deadline API 的 0.17.0-beta.6 |
-| `@ganglion/xacpx-relay-protocol` | 未发布 | 0.1.0 | 首发 |
-| `@ganglion/xacpx-relay` | 未发布 | 0.1.0 | 首发（内嵌看板） |
-| `@ganglion/xacpx-channel-relay` | 未发布 | 0.1.0 | 首发 |
+| `@ganglion/xacpx` | 用 `npm view` 核对 | 0.18.0 | 含会话热度（warmth）后端：`transport.isSessionWarm` + `SessionWarmthTracker` |
+| `@ganglion/xacpx-relay-protocol` | 用 `npm view` 核对 | 0.1.17 | `SessionDto.warm?` 可选字段 |
+| `@ganglion/xacpx-relay` | 用 `npm view` 核对 | 0.9.15 | 内嵌看板（睡眠文案 + 冷会话指示器 + 侧栏分组） |
+| `@ganglion/xacpx-channel-relay` | 用 `npm view` 核对 | 0.3.4 | 连接器 |
 
 > 用 `npm view <pkg> version` 随时核对线上版本。
 
