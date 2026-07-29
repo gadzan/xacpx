@@ -137,7 +137,7 @@ describe("session-tail-cache", () => {
     await write("alice", "i1", "s2", [row(2)]);
     await write("alice", "i2", "s2", [row(3)]);
     await write("bob", "i1", "s2", [row(4)]);
-    await reconcile("alice", "i1", ["s1"]);
+    await reconcile("alice", "i1", [{ alias: "s1" }]);
     expect(await read("alice", "i1", "s1")).not.toBeNull();
     expect(await read("alice", "i1", "s2")).toBeNull(); // dead alias dropped
     expect(await read("alice", "i2", "s2")).not.toBeNull(); // other instance untouched
@@ -147,9 +147,38 @@ describe("session-tail-cache", () => {
   it("handles dotted aliases/instance ids without cross-matching in reconcile", async () => {
     await write("alice", "i.1", "a.b", [row(1)]);
     await write("alice", "i.1", "a.b.c", [row(2)]);
-    await reconcile("alice", "i.1", ["a.b"]);
+    await reconcile("alice", "i.1", [{ alias: "a.b" }]);
     expect(await read("alice", "i.1", "a.b")).not.toBeNull();
     expect(await read("alice", "i.1", "a.b.c")).toBeNull();
+  });
+
+  it("read misses (and deletes) when the stored incarnation mismatches", async () => {
+    await write("alice", "i1", "s1", [row(1)], "inc-A");
+    expect(await read("alice", "i1", "s1", "inc-B")).toBeNull();
+    // Entry was deleted — even a wildcard read stays a miss now.
+    expect(await read("alice", "i1", "s1")).toBeNull();
+  });
+
+  it("treats an unknown incarnation (\"\") as a wildcard in both directions", async () => {
+    await write("alice", "i1", "s1", [row(1)], "inc-A");
+    expect(await read("alice", "i1", "s1", "")).not.toBeNull(); // reader doesn't know yet
+    await write("alice", "i1", "s2", [row(2)]); // writer didn't know
+    expect(await read("alice", "i1", "s2", "inc-B")).not.toBeNull();
+    expect(await read("alice", "i1", "s1", "inc-A")).not.toBeNull(); // exact match hits
+  });
+
+  it("reconcile drops an alive alias whose incarnation changed (same-alias recreation)", async () => {
+    await write("alice", "i1", "s1", [row(1)], "inc-old");
+    await write("alice", "i1", "s2", [row(2)], "inc-keep");
+    await write("alice", "i1", "s3", [row(3)]); // stored incarnation unknown
+    await reconcile("alice", "i1", [
+      { alias: "s1", incarnation: "inc-new" },
+      { alias: "s2", incarnation: "inc-keep" },
+      { alias: "s3", incarnation: "inc-x" },
+    ]);
+    expect(await read("alice", "i1", "s1")).toBeNull(); // recreated → old tail dropped
+    expect(await read("alice", "i1", "s2")).not.toBeNull(); // same incarnation kept
+    expect(await read("alice", "i1", "s3")).not.toBeNull(); // unknown stored → kept
   });
 
   it("sweeps legacy localStorage keys once on first use", async () => {
@@ -170,7 +199,7 @@ describe("session-tail-cache", () => {
       await expect(write("alice", "i1", "s1", [row(1)])).resolves.toBeUndefined();
       await expect(drop("alice", "i1", "s1")).resolves.toBeUndefined();
       await expect(dropAll()).resolves.toBeUndefined();
-      await expect(reconcile("alice", "i1", ["s1"])).resolves.toBeUndefined();
+      await expect(reconcile("alice", "i1", [{ alias: "s1" }])).resolves.toBeUndefined();
     } finally {
       vi.unstubAllGlobals();
     }

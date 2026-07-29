@@ -105,10 +105,11 @@ export const useInstancesStore = defineStore("instances", () => {
       if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
     }
     // Tail-cache reconciliation (spec #205): as each instance's authoritative session
-    // list arrives, drop cached transcripts for sessions no longer alive — covers
-    // removals performed from other clients while the web was closed. Sleeping
-    // (archived) sessions stay resumable and keep their cache.
-    useChatStore().reconcileTailCache(instanceId, sessions.map((s) => s.alias));
+    // list arrives, drop cached transcripts for sessions no longer alive or whose
+    // transport incarnation changed (same-alias recreation) — covers removals
+    // performed from other clients while the web was closed. Sleeping (archived)
+    // sessions stay resumable and keep their cache.
+    useChatStore().reconcileTailCache(instanceId, sessions.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
   }
 
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which

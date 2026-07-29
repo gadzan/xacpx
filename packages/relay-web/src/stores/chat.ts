@@ -188,6 +188,13 @@ export const useChatStore = defineStore("chat", () => {
     return t;
   }
 
+  // Known transport incarnations (SessionDto.transportSession) per session, fed
+  // by each instance's authoritative session list (reconcileTailCache). Binds
+  // cache entries to the session's identity: a same-alias recreation must not
+  // resurrect the deleted predecessor's tail. "" = not yet known (matches any).
+  const sessionIncarnations = new Map<string, string>();
+  const incarnationOf = (id: string, alias: string): string => sessionIncarnations.get(bufKey(id, alias)) ?? "";
+
   // Stale-while-revalidate tail cache (#205): select() kicks off an async seed
   // from IndexedDB (pendingSeed below); authoritative rows (loadHistory) are
   // written back debounced so bursty turn-finished convergence doesn't hammer
@@ -196,7 +203,7 @@ export const useChatStore = defineStore("chat", () => {
   const cacheWrite = createDebouncedFlush(() => {
     const user = useAuthStore().account?.username;
     if (!user || !instanceId.value || !sessionAlias.value) return;
-    void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value);
+    void tailCache.write(user, instanceId.value, sessionAlias.value, messages.value, incarnationOf(instanceId.value, sessionAlias.value));
   }, 500);
   // Best-effort: an IDB write started during unload may not commit (unlike the
   // old synchronous localStorage flush); loadHistory converges on the next visit.
@@ -219,16 +226,21 @@ export const useChatStore = defineStore("chat", () => {
    *  archive/remove would fire after the drop and resurrect the entry as a ghost. */
   function purgeTailCache(id: string, alias: string): void {
     if (instanceId.value === id && sessionAlias.value === alias) cacheWrite.cancel();
+    sessionIncarnations.delete(bufKey(id, alias));
     const user = useAuthStore().account?.username;
     if (user) void tailCache.drop(user, id, alias);
   }
 
   /** Reconcile an instance's cached tails against its authoritative alive
-   *  aliases (see purgeTailCache for why this lives on the chat store). */
-  function reconcileTailCache(id: string, aliveAliases: string[]): void {
-    if (instanceId.value === id && sessionAlias.value !== null && !aliveAliases.includes(sessionAlias.value)) cacheWrite.cancel();
+   *  sessions (alias + incarnation), refreshing the incarnation registry along
+   *  the way (see purgeTailCache for why this lives on the chat store). */
+  function reconcileTailCache(id: string, alive: tailCache.AliveSession[]): void {
+    for (const s of alive) {
+      if (s.incarnation) sessionIncarnations.set(bufKey(id, s.alias), s.incarnation);
+    }
+    if (instanceId.value === id && sessionAlias.value !== null && !alive.some((s) => s.alias === sessionAlias.value)) cacheWrite.cancel();
     const user = useAuthStore().account?.username;
-    if (user) void tailCache.reconcile(user, id, aliveAliases);
+    if (user) void tailCache.reconcile(user, id, alive);
   }
 
   /** Finalize a live turn: clear it (so `busy`/HUD release) and, if it streamed any
@@ -303,7 +315,7 @@ export const useChatStore = defineStore("chat", () => {
    *  while the read was in flight — those must never be clobbered by a seed. */
   async function seedFromCache(user: string, id: string, alias: string): Promise<void> {
     const revision = transcriptRevision;
-    const cached = await tailCache.read(user, id, alias);
+    const cached = await tailCache.read(user, id, alias, incarnationOf(id, alias));
     if (!cached || cached.length === 0) return;
     if (id !== instanceId.value || alias !== sessionAlias.value) return;
     if (messages.value.length > 0 || revision !== transcriptRevision) return;

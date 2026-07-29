@@ -174,6 +174,27 @@ test("loadSessions reconciles the cache against alive aliases, keeping sleeping 
   expect(await read("alice", "i1", "sleeping")).not.toBeNull(); // slept elsewhere → kept
 });
 
+test("a same-alias recreation from another client does not resurrect the old tail", async () => {
+  // Old tail cached under incarnation t-old (e.g. before the browser was closed).
+  await write("alice", "i1", "s1", [row(1, "pre-delete")], "t-old");
+  rpc.mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.list") {
+      return { sessions: [
+        // Same alias, new transport incarnation: deleted + recreated elsewhere.
+        { alias: "s1", agent: "a", workspace: "w", transportSession: "t-new", running: false, archived: false },
+      ] };
+    }
+    return { agents: [] };
+  });
+  await useInstancesStore().loadSessions("i1");
+  expect(await goneEventually("alice", "i1", "s1")).toBe(true); // old incarnation dropped
+  // Selecting the recreated session must not seed the deleted predecessor's rows.
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await new Promise((r) => setTimeout(r, 20));
+  expect(chat.messages).toEqual([]);
+});
+
 test("logout drops every cached transcript (all users) plus legacy localStorage keys", async () => {
   await write("alice", "i1", "s1", [row(1)]);
   await write("bob", "i2", "s9", [row(2)]);
