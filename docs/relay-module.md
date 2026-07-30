@@ -21,10 +21,11 @@
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
-- 账号模型：无密码、无角色、无邀请码；凭证为 CLI 铸造的登录令牌（`login_tokens` 表）。CLI 以令牌为中心：`add token` 建一个用户+令牌、`ls` 列出、`rm token <值或短id>` 删除该令牌背后的用户并级联删除其实例/会话/消息（底层 store 仍支持每账号多令牌）。
+- 账号模型：无密码、无角色；凭证为 CLI 铸造的登录令牌（`login_tokens` 表）。CLI 以令牌为中心：`add token` 建一个用户+令牌、`ls` 列出、`rm token <值或短id>` 删除该令牌背后的用户并级联删除其实例/会话/消息（底层 store 仍支持每账号多令牌）。
+- 邀请码：`add invite [--label] [--ttl <n>{m|h|d}，默认 7d] [--url <base>]` 铸造一次性邀请码（`invite_codes` 表，sha256 哈希落盘，明文只打印一次），生成 `/invite/<code>` 链接。受邀者打开页面**点击兑换**（绝不 on-mount 自动兑换，防链接预览烧码）调用 `POST /api/invites/redeem`（免登录，注册在鉴权网关之前；与 `/api/login` 共用限流桶；统一 401 `invalid-code` 不区分不存在/已用/过期），事务内创建新账号 + login token 并返回 `{token, username}`（不设 cookie，页面展示一次并提供"用此 token 登录"按钮）。`ls` 追加 invites 段（unused|used|expired），`rm invite <码或短id>` 删除，已用/过期由每小时 GC 清理（`pruneInviteCodes`）。
 - CSRF backstop：`/api/login`、RPC 以及 `POST /api/instances/pairing-token`
   统一要求 `content-type: application/json`（`requireJson`），否则返回 415。
-  `/api/register` 与 `/api/invites` 已移除（显式返回 404）；`/api/*` 鉴权网关仅豁免 `/api/login`。
+  `/api/register` 与 `/api/invites` 已移除（显式返回 404，注意与新的 `/api/invites/redeem` 是不同路径）；`/api/*` 鉴权网关仅豁免 `/api/login`。
 
 ## 连接器（@ganglion/xacpx-channel-relay）
 

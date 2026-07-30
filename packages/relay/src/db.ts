@@ -98,6 +98,15 @@ export function initSchema(db: SqlDriver): void {
       expires_at TEXT NOT NULL,
       used_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id TEXT PRIMARY KEY,
+      code_hash TEXT NOT NULL UNIQUE,
+      label TEXT,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      used_account_id TEXT REFERENCES accounts(id)
+    );
     CREATE TABLE IF NOT EXISTS instances (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),

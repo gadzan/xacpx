@@ -66,5 +66,18 @@ test("runMaintenance runs all prunes without throwing", async () => {
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
   const summary = runMaintenance({ accounts: acc, instances, messages }, { historyRetentionDays: 30, maxPerSession: 2000, now: () => new Date() });
-  expect(summary).toMatchObject({ messagesDeleted: expect.any(Number), sessionsDeleted: expect.any(Number), pairingTokensDeleted: expect.any(Number) });
+  expect(summary).toMatchObject({ messagesDeleted: expect.any(Number), sessionsDeleted: expect.any(Number), pairingTokensDeleted: expect.any(Number), inviteCodesDeleted: expect.any(Number) });
+});
+
+test("runMaintenance prunes expired invite codes and reports the count", async () => {
+  const db = await freshDb();
+  const acc = new AccountStore(db, { now: () => new Date("2020-01-01") });
+  const instances = new InstanceStore(db);
+  const messages = new MessageStore(db);
+  acc.issueInviteCode("old", 1000);
+  const summary = runMaintenance(
+    { accounts: acc, instances, messages },
+    { historyRetentionDays: 30, maxPerSession: 2000, now: () => new Date("2020-02-01") },
+  );
+  expect(summary.inviteCodesDeleted).toBe(1);
 });

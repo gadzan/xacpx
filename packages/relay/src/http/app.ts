@@ -237,6 +237,35 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   app.post("/api/register", (c) => c.json({ error: "not-found" }, 404));
   app.post("/api/invites", (c) => c.json({ error: "not-found" }, 404));
 
+  // Public: redeem a CLI-minted invite code for a brand-new account + login token.
+  // Registered BEFORE the /api/* auth gate (same mechanism as /api/login and the
+  // tombstones). Shares the login failure buckets: code guessing = token guessing.
+  // No session cookie on success — the token is the artifact the user must save.
+  app.post("/api/invites/redeem", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    const body = (await c.req.json().catch(() => ({}))) as { code?: string };
+    const nowMs = now().getTime();
+
+    sweepPerIpLoginFailures(nowMs);
+
+    const ip = clientIp(c, trustProxy);
+
+    if (isRateLimited(ip, nowMs)) {
+      deps.logger?.info("relay.invite.rejected", "invite redeem rejected", { reason: "rate-limited", ip });
+      return c.json({ error: "too-many-attempts" }, 429);
+    }
+
+    const r = deps.accounts.redeemInviteCode(body.code ?? "");
+    if (!r) {
+      recordFailure(ip, nowMs);
+      deps.logger?.info("relay.invite.rejected", "invite redeem rejected", { reason: "invalid-code", ip });
+      return c.json({ error: "invalid-code" }, 401);
+    }
+
+    deps.logger?.info("relay.invite.redeemed", "invite redeemed", { accountId: r.accountId });
+    return c.json({ token: r.token, username: r.username });
+  });
+
   app.use("/api/*", async (c, next) => {
     if (c.req.path === "/api/login") return next();
     const token = getCookie(c, SESSION_COOKIE);

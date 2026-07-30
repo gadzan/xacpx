@@ -56,6 +56,36 @@ export interface RenderMarkdownOptions {
   streaming?: boolean;
 }
 
+/**
+ * Return source offsets where a top-level Markdown block can safely hand over to
+ * non-Markdown turn activity. Gaps between blocks stay attached to the preceding
+ * block, so an activity observed after "\n\n" lands before the next block. Parsing
+ * the raw source is intentionally conservative: normalization may recognize more
+ * constructs, but it must never create an unsafe split inside the original source.
+ */
+export function markdownBlockBoundaries(text: string): number[] {
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") lineStarts.push(i + 1);
+  }
+
+  const ranges = md
+    .parse(text, {})
+    .filter((token) => token.level === 0 && token.map !== null)
+    .map((token) => token.map!)
+    .filter((range, index, all) =>
+      index === 0 || range[0] !== all[index - 1]![0] || range[1] !== all[index - 1]![1],
+    );
+
+  if (ranges.length === 0) return [text.length];
+  return ranges.map((_, index) => {
+    const nextStartLine = ranges[index + 1]?.[0];
+    return nextStartLine === undefined
+      ? text.length
+      : (lineStarts[nextStartLine] ?? text.length);
+  });
+}
+
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
   // Heal unterminated markup first (streaming), then run table normalization so it

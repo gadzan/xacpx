@@ -504,3 +504,98 @@ test("pruneExpired does not touch login_tokens", async () => {
   const tokens = store.listLoginTokens(account.id);
   expect(tokens.length).toBe(1);
 });
+
+// ── invite codes ──────────────────────────────────────────────────────────────
+
+test("issueInviteCode returns plaintext once and stores only the hash", async () => {
+  const { store, db } = await makeStore("2026-06-13T10:00:00.000Z");
+  const { id, code, expiresAt } = store.issueInviteCode("friend", 7 * 24 * 3_600_000);
+
+  expect(id).toBeString();
+  expect(code.length).toBeGreaterThan(20);
+  expect(expiresAt).toBe("2026-06-20T10:00:00.000Z");
+
+  const row = db.get<{ code_hash: string; label: string | null; used_at: string | null }>(
+    "SELECT code_hash, label, used_at FROM invite_codes WHERE id = ?", [id],
+  );
+  expect(row).toBeDefined();
+  expect(row!.code_hash).not.toBe(code);
+  expect(row!.code_hash).not.toContain(code);
+  expect(row!.label).toBe("friend");
+  expect(row!.used_at).toBeNull();
+});
+
+test("redeemInviteCode creates account + login token that resolves", async () => {
+  const { store, db } = await makeStore("2026-06-13T10:00:00.000Z");
+  const { id, code } = store.issueInviteCode("friend", 60_000);
+
+  const r = store.redeemInviteCode(code);
+  expect(r).not.toBeNull();
+  expect(r!.username.startsWith("u-")).toBe(true);
+  expect(store.findById(r!.accountId)?.username).toBe(r!.username);
+  const resolved = store.resolveLoginToken(r!.token);
+  expect(resolved?.account.id).toBe(r!.accountId);
+  expect(resolved?.loginTokenId).toBe(r!.loginTokenId);
+
+  // used_at / used_account_id stamped; invite label carried onto the login token
+  const row = db.get<{ used_at: string | null; used_account_id: string | null }>(
+    "SELECT used_at, used_account_id FROM invite_codes WHERE id = ?", [id],
+  );
+  expect(row!.used_at).toBe("2026-06-13T10:00:00.000Z");
+  expect(row!.used_account_id).toBe(r!.accountId);
+  expect(store.listLoginTokens(r!.accountId)[0]!.label).toBe("friend");
+});
+
+test("redeemInviteCode is single-use", async () => {
+  const { store } = await makeStore();
+  const { code } = store.issueInviteCode(undefined, 60_000);
+  expect(store.redeemInviteCode(code)).not.toBeNull();
+  expect(store.redeemInviteCode(code)).toBeNull();
+});
+
+test("redeemInviteCode returns null for expired or unknown code", async () => {
+  const { store, setNow } = await makeStore("2026-06-13T10:00:00.000Z");
+  const { code } = store.issueInviteCode(undefined, 60_000);
+  expect(store.redeemInviteCode("no-such-code")).toBeNull();
+  setNow("2026-06-13T10:01:00.000Z"); // <= boundary: expired exactly at expiry
+  expect(store.redeemInviteCode(code)).toBeNull();
+});
+
+test("inviteIdFor resolves by raw code, exact id, unique prefix; null on ambiguous", async () => {
+  const { store, db } = await makeStore();
+  const { id, code } = store.issueInviteCode(undefined, 60_000);
+  expect(store.inviteIdFor(code)).toBe(id);
+  expect(store.inviteIdFor(id)).toBe(id);
+  expect(store.inviteIdFor(id.slice(0, 8))).toBe(id);
+  expect(store.inviteIdFor("does-not-exist")).toBeNull();
+
+  const { generateToken, hashToken } = await import("../../../../packages/relay/src/auth");
+  for (const suffix of ["1", "2"]) {
+    db.run(
+      "INSERT INTO invite_codes (id, code_hash, label, created_at, expires_at) VALUES (?, ?, NULL, ?, ?)",
+      [`bbbb2222-0000-0000-0000-00000000000${suffix}`, hashToken(generateToken()),
+       "2026-06-13T10:00:00.000Z", "2026-12-31T00:00:00.000Z"],
+    );
+  }
+  expect(store.inviteIdFor("bbbb2222")).toBeNull();
+});
+
+test("removeInviteCode deletes and reports missing", async () => {
+  const { store } = await makeStore();
+  const { id, code } = store.issueInviteCode(undefined, 60_000);
+  expect(store.removeInviteCode(id)).toBe(true);
+  expect(store.redeemInviteCode(code)).toBeNull();
+  expect(store.removeInviteCode(id)).toBe(false);
+});
+
+test("pruneInviteCodes removes expired and used codes, keeps live ones", async () => {
+  const { store } = await makeStore("2026-06-13T10:00:00.000Z");
+  store.issueInviteCode("expired", 60_000);
+  const { code: usedCode } = store.issueInviteCode("used", 3_600_000);
+  const { id: liveId } = store.issueInviteCode("live", 3_600_000);
+  store.redeemInviteCode(usedCode);
+
+  const count = store.pruneInviteCodes(new Date("2026-06-13T10:05:00.000Z"));
+  expect(count).toBe(2);
+  expect(store.listInviteCodes().map((i) => i.id)).toEqual([liveId]);
+});

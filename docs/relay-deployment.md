@@ -61,7 +61,7 @@ xacpx-relay start \
 ## 关键事实
 
 - **单端口（默认）**：只暴露一个端口 8787 = HTTP API + 看板 + 看板 `/ws` + 实例网关（实例网关合并为 HTTP 端口上的 WebSocket upgrade，实例/连接器从根路径 `/` 注册）。运维只需开放一个端口、一个域名，反代单条 `reverse_proxy 127.0.0.1:8787` 即可。生产经反代终结 TLS，实例用 `wss://`。仅当你想把实例网关单独放到自己的端口上分别防火墙时，才传 `--ws-port <n>`（恢复旧的双端口布局）。
-- **`xacpx-relay` CLI 子命令**：`start` / `add token` / `ls` / `rm token <value-or-id>` / `update [--check]`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
+- **`xacpx-relay` CLI 子命令**：`start` / `add token` / `add invite` / `ls` / `rm token <value-or-id>` / `rm invite <code-or-id>` / `update [--check]`。**没有 `stop`/`status`**——用 `Ctrl-C`/`SIGTERM`（建议 systemd/pm2/Docker 托管）。
 - **`xacpx-relay update`**：自更新 hub 包（`npm i -g @ganglion/xacpx-relay@latest`；`PACKAGE_MANAGER=bun` 时改用 `bun add -g`）。`--check` 只比对当前与 npm 最新版本、打印结果而不安装。当前运行版本与「有可用更新」提示也会显示在看板设置页（见 [relay-module.md](relay-module.md) 的 `GET /api/version`）。更新后需自行重启 hub 进程（systemd/pm2/Docker 重启即可）。
 - **持久化**：全部在单个 SQLite 文件（`--db`）。默认 `~/.xacpx-relay/relay.db`（固定绝对路径，父目录自动创建）。备份即停机/静默期 `cp` 该文件。
 - **凭证**：访问令牌（access token）一令两用——既用于 Web 登录，也用于连接器首连（无需单独铸造配对令牌）。首连后实例换取长期凭证，写入 `<xacpx-home>/relay/credential.json`（0600），不进 `config.json`。
@@ -90,6 +90,30 @@ xacpx-relay rm token <value-or-id> --db /var/lib/xacpx-relay/relay.db
 ```
 
 删除令牌后，该令牌派生的所有 web 会话同步失效（下次请求返回 401）。**注意**：已建立的 `/ws` 长连接不会被立即强制断开——需等到客户端重连时才感知；若需硬切，重启 hub 即可。
+
+## 邀请码（add invite）
+
+不方便直接在服务器上替对方铸令牌时，可以生成**一次性邀请码**，通过链接交给对方自助兑换。兑换成功会创建一个新账号并**仅显示一次**其访问令牌（与 `add token` 语义一致）；邀请码单次有效，兑换/过期后作废。
+
+```bash
+# 生成邀请码（默认 7 天过期；--ttl 支持 30m / 12h / 7d）
+xacpx-relay add invite --label friend --ttl 3d --url https://relay.example.com --db /var/lib/xacpx-relay/relay.db
+# 输出示例：
+#   invite code: mJ3…（仅打印一次）
+#   redeem link: https://relay.example.com/invite/mJ3…
+#   (share it now — single-use, not shown again; expires 2026-08-02 12:00)
+# 不传 --url 时打印 redeem path: /invite/<code>，自行拼到 hub 域名后即可。
+
+# ls 会追加 invites 段（短 id / 标签 / 过期时间 / 状态 unused|used|expired）
+xacpx-relay ls --db /var/lib/xacpx-relay/relay.db
+
+# 删除邀请码（可传码原值、完整 id 或唯一 id 前缀；不影响已兑换出的账号）
+xacpx-relay rm invite <code-or-id> --db /var/lib/xacpx-relay/relay.db
+```
+
+- 兑换页面**点击按钮才兑换**，不会因链接预览/爬虫抓取而烧掉邀请码。
+- 兑换端点与登录共用同一限流桶（按 IP，反代后方记得 `--trust-proxy`）。
+- 已用/过期的邀请码由每小时自动 GC 清理，`ls` 中的 used/expired 条目随之消失。
 
 ## 反向代理与限流（--trust-proxy）
 
