@@ -60,6 +60,7 @@ export default {
   palette: { placeholder: "跳转到会话…", noMatches: "无匹配项" },
   chat: {
     selectSession: "选择一个会话",
+    resizeComposer: "拖动调整输入框高度",
     browseFiles: "浏览文件",
     viewChanges: "查看改动",
     changed: "处改动",

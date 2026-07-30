@@ -4,6 +4,7 @@ import { Brain, Check, ChevronDown, Gauge, Paperclip, Send, SlidersHorizontal, X
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { createDebouncedFlush } from "../lib/debounce-flush";
+import { clampPanelWidth, createBottomPanelResize } from "../lib/resize-panel";
 import UsagePopover from "./UsagePopover.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
@@ -76,6 +77,53 @@ function toggleEffortMenu() {
 const text = ref(loadDraft(props.draftKey ?? ""));
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
+
+// Desktop-only: drag the strip above the composer to resize the textarea height.
+// Mobile keeps the fixed rows="2" textarea, so `isDesktop` gates both the handle
+// and the inline height (an inline height would otherwise override rows on mobile).
+const HEIGHT_MIN = 60;
+const HEIGHT_MAX = 480;
+const HEIGHT_DEFAULT = 120;
+const HEIGHT_VIEWPORT_FRACTION = 0.5;
+// `matchMedia` is absent in some test/embedded runtimes; treat its absence as
+// "not desktop" so the resize handle and inline height simply don't engage.
+function queryDesktop(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(min-width: 1024px)").matches;
+}
+const isDesktop = ref(queryDesktop());
+const composerHeight = ref(clampPanelWidth(
+  Number(localStorage.getItem("xacpx.composerHeight")) || HEIGHT_DEFAULT,
+  HEIGHT_MIN, HEIGHT_MAX,
+  typeof window !== "undefined" ? window.innerHeight : undefined, HEIGHT_VIEWPORT_FRACTION));
+const heightDragging = ref(false);
+watch(composerHeight, (v) => localStorage.setItem("xacpx.composerHeight", String(v)));
+
+const heightResize = createBottomPanelResize({
+  getHeight: () => composerHeight.value,
+  setHeight: (h) => { composerHeight.value = h; },
+  min: HEIGHT_MIN,
+  max: HEIGHT_MAX,
+  maxViewportFraction: HEIGHT_VIEWPORT_FRACTION,
+  isEnabled: () => isDesktop.value,
+  // Lock the cursor + suppress text selection for the whole document while
+  // dragging, so a fast drag that outruns the thin handle still feels solid.
+  onDragStart: () => {
+    heightDragging.value = true;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+  },
+  onDragEnd: () => {
+    heightDragging.value = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  },
+});
+
+let desktopMql: MediaQueryList | null = null;
+function onDesktopChange(e: MediaQueryListEvent | MediaQueryList) {
+  isDesktop.value = e.matches;
+}
 
 // Agent slash-command autocomplete: when the composer holds a single `/`-token, offer the
 // session's advertised commands. Selecting one inserts `/name `; it then sends as a normal
@@ -151,9 +199,17 @@ watch(
 function flushDraft(): void {
   draftPersist.flush();
 }
-onMounted(() => window.addEventListener("pagehide", flushDraft));
+onMounted(() => {
+  window.addEventListener("pagehide", flushDraft);
+  if (typeof window.matchMedia === "function") {
+    desktopMql = window.matchMedia("(min-width: 1024px)");
+    isDesktop.value = desktopMql.matches;
+    desktopMql.addEventListener("change", onDesktopChange);
+  }
+});
 onBeforeUnmount(() => {
   window.removeEventListener("pagehide", flushDraft);
+  desktopMql?.removeEventListener("change", onDesktopChange);
   flushDraft();
 });
 
@@ -238,6 +294,14 @@ function onInput() {
        iOS home indicator (like native input bars) instead of leaving an extra gap below it. -->
   <form class="relative border-t border-border px-0 pt-3 lg:pt-3" @submit.prevent="submit"
         @drop.prevent="onDrop" @dragover.prevent>
+    <!-- Resize handle: a thin grab strip above the composer card (desktop only).
+         touch-none keeps a touch on it from scrolling; it's hidden < lg anyway.
+         Pointer-only enhancement over the rows="2" fallback, so it's aria-hidden
+         (no keyboard/value semantics to honor); the title gives a hover hint. -->
+    <div data-test="composer-resize" aria-hidden="true" :title='$t("chat.resizeComposer")'
+         class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none transition-colors lg:block"
+         :class="heightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
+         @pointerdown.prevent="heightResize.onPointerDown" />
     <!-- hidden file picker -->
     <input ref="fileInput" type="file" multiple class="hidden" data-test="attach-input" @change="onFilesPicked" />
     <!-- COMPOSER — single elevated card: textarea on top, controls row below.
@@ -278,6 +342,7 @@ function onInput() {
            blocking) and Esc still cancels the in-flight turn. -->
       <textarea ref="textarea" v-model="text" rows="2"
                 class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
+                :style="isDesktop ? { height: composerHeight + 'px' } : undefined"
                 :placeholder='busy ? $t("chat.working") : $t("chat.message")'
                 @input="onInput"
                 @keydown="onKeydown"
