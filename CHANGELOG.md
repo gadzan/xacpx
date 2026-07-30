@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.18.1] - 2026-07-30
+
+### Fixed
+
+- Transport now correctly follows Qoder background-agent continuations: parses stringified tool results before async-launch detection, preventing missed follow-up turns.
+
+## [relay 0.9.18] - 2026-07-30
+
+### Fixed
+
+- Dashboard tail cache: de-proxy attachment rows before IndexedDB writes to avoid structured-clone failures.
+- Files panel: replace bottom loading bar with in-place skeleton placeholders.
+- Narrative text stays continuous across streaming updates instead of resetting.
+- Optimistically clear cold/sleeping indicators on message send for snappier UX.
+
+## [relay-protocol 0.1.18] - 2026-07-30
+
+### Changed
+
+- Clarify `TurnPartDto` doc comment: presentation layers may derive separate activity and continuous narrative lanes while preserving relative order within each lane.
+
 ## [0.18.0] - 2026-07-29
 
 ### Added
