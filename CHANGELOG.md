@@ -1,5 +1,15 @@
 # Changelog
 
+## [relay 0.10.2] - 2026-07-30
+
+### Added
+
+- Transcript entrance choreography: messages hold hidden until pinned, then play a staggered reveal animation.
+
+### Fixed
+
+- Transcript scrollbar stays at pane edge beside the plan column instead of overlapping.
+
 ## [0.19.1] - 2026-07-30
 
 ### Fixed
