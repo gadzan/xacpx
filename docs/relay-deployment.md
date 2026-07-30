@@ -101,7 +101,7 @@ xacpx-relay add invite --label friend --ttl 3d --url https://relay.example.com -
 # 输出示例：
 #   invite code: mJ3…（仅打印一次）
 #   redeem link: https://relay.example.com/invite/mJ3…
-#   (share it now — single-use, not shown again; expires 2026-08-02 12:00)
+#   (share it now — single-use, not shown again; expires 2026-08-02 12:00 UTC)
 # 不传 --url 时打印 redeem path: /invite/<code>，自行拼到 hub 域名后即可。
 
 # ls 会追加 invites 段（短 id / 标签 / 过期时间 / 状态 unused|used|expired）
@@ -114,6 +114,7 @@ xacpx-relay rm invite <code-or-id> --db /var/lib/xacpx-relay/relay.db
 - 兑换页面**点击按钮才兑换**，不会因链接预览/爬虫抓取而烧掉邀请码。
 - 兑换端点与登录共用同一限流桶（按 IP，反代后方记得 `--trust-proxy`）。
 - 已用/过期的邀请码由每小时自动 GC 清理，`ls` 中的 used/expired 条目随之消失。
+- **注意**：邀请码明文出现在 URL 路径中，反向代理的 access log 会记录**未兑换**的邀请链接（兑换后即作废，无风险）。在意的话可缩短 `--ttl`，或在反代对 `/invite/` 路径关闭访问日志。
 
 ## 反向代理与限流（--trust-proxy）
 

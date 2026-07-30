@@ -780,6 +780,27 @@ test("invite redeem without JSON content-type → 415", async () => {
   expect(res.status).toBe(415);
 });
 
+test("invite redeem with an expired code → 401 invalid-code (same as unknown)", async () => {
+  const { app, accounts } = await makeApp();
+  const { code } = accounts.issueInviteCode(undefined, 0);
+  const res = await app.request("/api/invites/redeem", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }),
+  });
+  expect(res.status).toBe(401);
+  expect((await res.json() as { error: string }).error).toBe("invalid-code");
+});
+
+test("invite redeem with a non-string code → 401, not 500", async () => {
+  const { app } = await makeApp();
+  for (const code of [123, { a: 1 }, null, ["x"]]) {
+    const res = await app.request("/api/invites/redeem", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }),
+    });
+    expect(res.status).toBe(401);
+    expect((await res.json() as { error: string }).error).toBe("invalid-code");
+  }
+});
+
 test("invite redeem shares the login rate-limit bucket", async () => {
   const { app } = await makeApp();
   const badRedeem = () => app.request("/api/invites/redeem", {

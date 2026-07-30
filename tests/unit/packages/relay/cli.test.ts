@@ -267,6 +267,27 @@ test("parseTtlMs: default 7d, m/h/d units, malformed → null", () => {
   expect(parseTtlMs("7w")).toBeNull();
 });
 
+test("parseTtlMs: capped at 10 years — overflow returns null instead of a Date RangeError", () => {
+  expect(parseTtlMs("3650d")).toBe(3650 * 86_400_000);
+  expect(parseTtlMs("3651d")).toBeNull();
+  expect(parseTtlMs("999999999999d")).toBeNull();
+});
+
+test("add invite with --ttl missing its value prints usage instead of silently defaulting", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["add", "invite", "--ttl", "--label", "x", "--db", dbPath], io);
+  expect(code).toBe(1);
+  expect(io.lines.join("\n")).toContain("Usage");
+
+  const rt = await createRelayRuntime(dbPath);
+  try {
+    expect(rt.accounts.listInviteCodes().length).toBe(0);
+  } finally {
+    rt.close();
+  }
+});
+
 test("ls shows invite section with status transitions unused → used", async () => {
   const dbPath = makeTmpDb();
   const addIo = makeIo();

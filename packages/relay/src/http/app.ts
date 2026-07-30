@@ -255,7 +255,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       return c.json({ error: "too-many-attempts" }, 429);
     }
 
-    const r = deps.accounts.redeemInviteCode(body.code ?? "");
+    const r = deps.accounts.redeemInviteCode(typeof body.code === "string" ? body.code : "");
     if (!r) {
       recordFailure(ip, nowMs);
       deps.logger?.info("relay.invite.rejected", "invite redeem rejected", { reason: "invalid-code", ip });
@@ -267,7 +267,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   });
 
   app.use("/api/*", async (c, next) => {
-    if (c.req.path === "/api/login") return next();
+    // Belt-and-braces exemptions mirroring the pre-gate registrations above;
+    // registration order alone already keeps these public, but if the gate is
+    // ever hoisted the exemption keeps behavior identical.
+    if (c.req.path === "/api/login" || c.req.path === "/api/invites/redeem") return next();
     const token = getCookie(c, SESSION_COOKIE);
     const account = token ? deps.accounts.getSessionAccount(token) : null;
     if (!account) return c.json({ error: "unauthorized" }, 401);
