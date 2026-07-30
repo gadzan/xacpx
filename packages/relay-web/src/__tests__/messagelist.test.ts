@@ -619,3 +619,130 @@ describe("progressive tail-first mounting", () => {
     expect(wrapper.findAll(".cv-row").length).toBe(100);
   });
 });
+
+// Entrance choreography: a freshly selected session must not paint its intermediate
+// scroll states (flash at the top, then a yank to the bottom). The transcript HOLDs
+// invisible until the first content is pinned, then PLAYs a staggered rise.
+describe("entrance choreography", () => {
+  let rafQueue: FrameRequestCallback[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    rafQueue = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const many = (n: number): ChatMessage[] =>
+    Array.from({ length: n }, (_, i) => msg({ direction: "in", text: `m${i}`, id: i + 1 }));
+
+  async function flushFrames(wrapper: ReturnType<typeof mount>): Promise<void> {
+    while (rafQueue.length) {
+      for (const cb of rafQueue.splice(0)) cb(0);
+      await wrapper.vm.$nextTick();
+    }
+  }
+
+  it("holds a fresh selection hidden until content lands, then plays a staggered rise", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, sessionKey: "a\0one" },
+    });
+    // Mounted with a selection and no rows yet → the transcript wrapper is held.
+    expect(wrapper.find(".enter-hold").exists()).toBe(true);
+
+    await wrapper.setProps({ messages: many(5) });
+    // Rows exist but the bottom pin hasn't run — still hidden. (The ready watcher
+    // queues its rAF inside its own nextTick, one microtask after setProps.)
+    expect(wrapper.find(".enter-hold").exists()).toBe(true);
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    // Revealed: the hold lifts and rows cascade toward the newest message.
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    const rows = wrapper.findAll(".enter-row");
+    expect(rows.length).toBe(5);
+    expect(rows[4]!.attributes("style")).toContain("--enter-delay: 275ms"); // newest lands last
+    expect(rows[3]!.attributes("style")).toContain("--enter-delay: 220ms");
+
+    // After the play window the animation classes drop back to pristine rows.
+    vi.advanceTimersByTime(700);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    expect(wrapper.findAll(".cv-row").length).toBe(5);
+  });
+
+  it("re-holds on a session switch and releases an empty session when its load settles", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: many(3), liveTurn: null, sessionKey: "a\0one" },
+    });
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    // Switching sessions re-arms the hold (select() empties the transcript).
+    await wrapper.setProps({ messages: [], sessionKey: "a\0two" });
+    expect(wrapper.find(".enter-hold").exists()).toBe(true);
+    // While the initial page is in flight the skeleton branch takes over the pane.
+    await wrapper.setProps({ loadingHistory: true });
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(true);
+    // The page resolves empty → nothing to position, release immediately.
+    await wrapper.setProps({ loadingHistory: false });
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+  });
+
+  it("never holds longer than the safety window even without a ready signal", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, sessionKey: "a\0one" },
+    });
+    expect(wrapper.find(".enter-hold").exists()).toBe(true);
+    vi.advanceTimersByTime(800);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+  });
+
+  it("keeps the hold armed through a slow initial load and still plays on arrival", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, sessionKey: "a\0one" },
+    });
+    // The initial page goes in flight → the skeleton owns the pane and the safety
+    // cap suspends, so a >800ms load cannot burn the hold prematurely.
+    await wrapper.setProps({ loadingHistory: true });
+    vi.advanceTimersByTime(2000);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(true);
+    // The late page lands with rows → still held until the bottom pin settles.
+    await wrapper.setProps({ messages: many(5), loadingHistory: false });
+    expect(wrapper.find(".enter-hold").exists()).toBe(true);
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    expect(wrapper.findAll(".enter-row").length).toBe(5);
+  });
+
+  // Spec #205 SWR: the cached tail renders instantly (with the entrance), and the
+  // later authoritative replace must not re-hold the pane or replay the animation.
+  it("does not re-hold or replay the entrance when a cache seed is replaced by the authoritative page", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, sessionKey: "a\0one" },
+    });
+    await wrapper.setProps({ messages: many(20) }); // cached tail seed
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    vi.advanceTimersByTime(700); // entrance fully played → idle
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    // Authoritative page replaces the seed (loadHistory) — no second entrance.
+    await wrapper.setProps({ loadingHistory: true });
+    await wrapper.setProps({ messages: many(100), loadingHistory: false });
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    await flushFrames(wrapper); // progressive reveal of the prepended older rows
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    expect(wrapper.findAll(".cv-row").length).toBe(100);
+  });
+});

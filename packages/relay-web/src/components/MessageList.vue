@@ -96,6 +96,7 @@ onBeforeUnmount(() => {
   revealRaf = 0;
   if (settleRaf) cancelAnimationFrame(settleRaf);
   settleRaf = 0;
+  clearEnterWaits();
 });
 
 // Arm progressive mounting when a freshly selected session's rows land. Two shapes:
@@ -156,6 +157,118 @@ watch(
   },
 );
 
+// Entrance choreography: switching sessions repositions the scroller several times
+// before the pane rests at the newest message (the cache seed or first page lands,
+// then content-visibility estimates settle). Painting those intermediate states
+// reads as a flash-then-yank. Instead HOLD the transcript invisible (opacity only —
+// layout and scroll math run as usual) until the FIRST content is pinned to the
+// bottom, then PLAY a bottom-anchored staggered rise, so the first frame the user
+// perceives is already resting at the latest message. The later authoritative
+// replace of a cache-seeded tail is NOT covered by the hold — it stays flicker-free
+// through stable row keys and the bottom pin instead (spec #205).
+const enterPhase = ref<"idle" | "hold" | "play">("idle");
+let enterRaf = 0;
+let enterTimer: ReturnType<typeof setTimeout> | null = null;
+const ENTER_HOLD_MAX_MS = 800; // safety: never keep landed content hidden if the pin frames stall
+// Play window: must cover the CSS enter-rise duration (380ms, see <style>) plus the
+// newest row's stagger delay ((ENTER_STAGGER - 1) * ENTER_STEP_MS = 275ms) — keep the
+// three in step. Afterwards the anim classes drop so rows return to pristine.
+const ENTER_PLAY_MS = 700;
+
+function clearEnterWaits(): void {
+  if (enterRaf) { cancelAnimationFrame(enterRaf); enterRaf = 0; }
+  if (enterTimer !== null) { clearTimeout(enterTimer); enterTimer = null; }
+}
+
+function armEnterCap(): void {
+  if (enterTimer !== null) clearTimeout(enterTimer);
+  enterTimer = setTimeout(finishEnter, ENTER_HOLD_MAX_MS);
+}
+
+function beginEnter(): void {
+  clearEnterWaits();
+  enterPhase.value = "hold";
+  armEnterCap();
+}
+
+function finishEnter(): void {
+  if (enterPhase.value !== "hold") return;
+  clearEnterWaits();
+  enterPhase.value = "play";
+  // Back to pristine (no animation/filter classes) once the entrance has fully played.
+  enterTimer = setTimeout(() => {
+    enterTimer = null;
+    if (enterPhase.value === "play") enterPhase.value = "idle";
+  }, ENTER_PLAY_MS);
+}
+
+// The component may mount with a session already selected (page refresh restores the
+// selection before ChatPane renders) — that first load needs the same hold.
+if (props.sessionKey && props.messages.length === 0) beginEnter();
+
+// Ready signal 1: content landed (history rows or a live turn). Release only once the
+// bottom pin has settled — scrollToBottom's content-visibility settle loop re-pins for
+// up to 4 frames on long histories, so wait (bounded) for it to drain instead of a
+// fixed frame count; releasing earlier would let late settle frames move scrollTop
+// mid-PLAY.
+watch(
+  () => [props.messages.length, props.liveTurn?.parts.length ?? 0] as const,
+  ([msgs, liveParts]) => {
+    if (enterPhase.value !== "hold" || (msgs === 0 && liveParts === 0)) return;
+    void nextTick(() => {
+      if (enterPhase.value !== "hold") return;
+      if (typeof requestAnimationFrame !== "function") { finishEnter(); return; }
+      if (enterRaf) cancelAnimationFrame(enterRaf);
+      let framesLeft = 8;
+      const waitPinned = (): void => {
+        enterRaf = 0;
+        if (enterPhase.value !== "hold") return;
+        framesLeft -= 1;
+        // At least two frames for the pin to paint, then require the settle loop idle.
+        if (framesLeft <= 0 || (framesLeft <= 6 && settleRaf === 0)) { finishEnter(); return; }
+        enterRaf = requestAnimationFrame(waitPinned);
+      };
+      enterRaf = requestAnimationFrame(waitPinned);
+    });
+  },
+);
+
+// Ready signal 2 + slow-load guard: while the initial page is in flight the skeleton
+// owns the pane, so SUSPEND the safety cap — otherwise a >800ms load would burn the
+// hold behind the skeleton and the late-landing transcript would paint unheld (the
+// exact yank this exists to prevent). The load's completion always re-signals: an
+// empty session releases immediately (nothing to position); a page with rows is
+// released by ready signal 1's pin frames, with the cap re-armed as the fallback.
+watch(
+  () => props.loadingHistory,
+  (now, prev) => {
+    if (enterPhase.value !== "hold") return;
+    if (now) {
+      if (enterTimer !== null) { clearTimeout(enterTimer); enterTimer = null; }
+      return;
+    }
+    if (!prev) return;
+    if (props.messages.length === 0 && !(props.liveTurn && props.liveTurn.parts.length)) finishEnter();
+    else armEnterCap();
+  },
+);
+
+// Staggered rise: during PLAY every row shares the same rise, but the last few rows
+// cascade individually toward the newest message (largest delay = the freshest row
+// lands last). Older rows all start at delay 0 — most sit above the viewport anyway,
+// and content-visibility skips painting them.
+const ENTER_STAGGER = 6;
+const ENTER_STEP_MS = 55;
+const enterRowClass = computed(() => (enterPhase.value === "play" ? "enter-row" : ""));
+const newestRowIndex = computed(() =>
+  visibleMessages.value.length - (props.liveTurn && props.liveTurn.parts.length ? 0 : 1));
+function enterStyle(rowIndex: number): Record<string, string> | undefined {
+  if (enterPhase.value !== "play") return undefined;
+  const fromBottom = newestRowIndex.value - rowIndex;
+  const rank = Math.max(0, ENTER_STAGGER - 1 - fromBottom);
+  return rank > 0 ? { "--enter-delay": `${rank * ENTER_STEP_MS}ms` } : undefined;
+}
+
 let settleRaf = 0;
 function scrollToBottom(smooth = false): void {
   const el = scroller.value;
@@ -189,6 +302,7 @@ watch(
   () => {
     atBottom.value = true;
     pendingDistFromBottom = null;
+    beginEnter();
     void nextTick(() => scrollToBottom(false));
   },
 );
@@ -258,7 +372,7 @@ watch(
           </div>
         </template>
       </div>
-      <div v-else class="mx-auto max-w-3xl space-y-5">
+      <div v-else class="mx-auto max-w-3xl space-y-5" :class="{ 'enter-hold': enterPhase === 'hold' }">
         <!-- Older-history affordance: a spinner while a page loads, else a hint that more
              exists. Prepending older rows keeps the scroll position pinned (see watcher). -->
         <div v-if="loadingOlder" data-test="loading-older" class="flex justify-center py-1 text-[11px] text-fg-muted">
@@ -271,7 +385,8 @@ watch(
              keys stay stable while older rows are still being revealed above. -->
         <template v-for="(m, i) in visibleMessages" :key="messageKey(m, hiddenCount + i)">
           <!-- USER row -->
-          <div v-if="m.direction === 'in'" class="cv-row flex justify-end"
+          <div v-if="m.direction === 'in'" class="cv-row flex justify-end" :class="enterRowClass"
+               :style="enterStyle(i)"
                :data-scheduled-task="schedOf(m)?.taskId">
             <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table
                  min-content and can defeat the max-w-[80%] cap. -->
@@ -304,7 +419,7 @@ watch(
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <div v-else class="cv-row group flex gap-2.5">
+          <div v-else class="cv-row group flex gap-2.5" :class="enterRowClass" :style="enterStyle(i)">
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
               <AgentIcon :driver="driver" :size="15" fill />
             </div>
@@ -332,7 +447,8 @@ watch(
         </template>
 
         <!-- live streaming assistant row -->
-        <div v-if="liveTurn && liveTurn.parts.length" class="flex gap-2.5">
+        <div v-if="liveTurn && liveTurn.parts.length" class="flex gap-2.5" :class="enterRowClass"
+             :style="enterStyle(visibleMessages.length)">
           <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
             <AgentIcon :driver="driver" :size="15" fill />
           </div>
@@ -367,6 +483,34 @@ watch(
 .cv-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 88px;
+}
+
+/* Entrance choreography (see enterPhase): HOLD keeps the transcript laid out but
+   invisible while the scroller is being positioned — opacity (not display/visibility)
+   so scrollHeight/scrollTop math behaves exactly as when visible. PLAY then lifts the
+   rows in from below with a slight de-blur; each of the last few rows adds
+   --enter-delay so the cascade lands on the newest message. */
+.enter-hold {
+  opacity: 0;
+}
+.enter-row {
+  animation: enter-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+@keyframes enter-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .enter-row { animation: none; }
 }
 
 /* Skeleton shimmer: each row inherits --sk-delay from its root so the pulse cascades
