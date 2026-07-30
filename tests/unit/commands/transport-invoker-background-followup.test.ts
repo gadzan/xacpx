@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { TransportInvoker } from "../../../src/commands/transport-invoker";
 import { createNoopAppLogger } from "../../../src/logging/app-logger";
 import type { ToolUseEvent } from "../../../src/channels/types";
-import { createClaudeBackgroundFollowupTransport } from "../../../src/transport/claude-background-followup-transport";
+import { createBackgroundFollowupTransport } from "../../../src/transport/background-followup-transport";
 
 test("Claude async Agent continuation stays in the same turn and forwards the recovered final", async () => {
   const replies: string[] = [];
@@ -31,7 +31,7 @@ test("Claude async Agent continuation stays in the same turn and forwards the re
     getAgentSessionId: async () => "claude-session",
   };
   const logger = createNoopAppLogger();
-  const wrappedTransport = createClaudeBackgroundFollowupTransport(transport as never, {
+  const wrappedTransport = createBackgroundFollowupTransport(transport as never, {
     logger,
     followBackgroundTurn: async (options) => {
       followerCalled = true;
@@ -81,7 +81,7 @@ test("Claude async Agent continuation stays in the same turn and forwards the re
 test("a failed Claude Agent closes its still-running child tools as errors", async () => {
   const toolEvents: ToolUseEvent[] = [];
   const logger = createNoopAppLogger();
-  const transport = createClaudeBackgroundFollowupTransport({
+  const transport = createBackgroundFollowupTransport({
     prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
       await options.onToolEvent({
         toolCallId: "agent-1",
@@ -136,7 +136,7 @@ test("a failed Claude Agent closes its still-running child tools as errors", asy
 test("a failed top-level Claude Agent closes nested descendants as errors", async () => {
   const toolEvents: ToolUseEvent[] = [];
   const logger = createNoopAppLogger();
-  const transport = createClaudeBackgroundFollowupTransport({
+  const transport = createBackgroundFollowupTransport({
     prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
       for (const event of [
         { toolCallId: "agent-1", toolName: "Agent", kind: "think", isSubagent: true, rawOutput: { status: "async_launched", agentId: "abc" }, status: "running" },
@@ -178,7 +178,7 @@ test("a failed top-level Claude Agent closes nested descendants as errors", asyn
   expect([...toolEvents].reverse().find((event) => event.toolCallId === "nested-read")?.status).toBe("error");
 });
 
-test("the Claude follow-up decorator preserves optional transport capabilities and binding", async () => {
+test("the background follow-up decorator preserves optional transport capabilities and binding", async () => {
   let disposed = false;
   const delegate = {
     marker: "delegate",
@@ -188,7 +188,7 @@ test("the Claude follow-up decorator preserves optional transport capabilities a
       disposed = true;
     },
   };
-  const transport = createClaudeBackgroundFollowupTransport(delegate as never, {
+  const transport = createBackgroundFollowupTransport(delegate as never, {
     logger: createNoopAppLogger(),
   });
 
@@ -200,7 +200,7 @@ test("the Claude follow-up decorator preserves optional transport capabilities a
 test("a qoder session follows its background continuation with the qoder driver", async () => {
   const replies: string[] = [];
   let followedDriver: string | undefined;
-  const transport = createClaudeBackgroundFollowupTransport({
+  const transport = createBackgroundFollowupTransport({
     prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
       await options.onToolEvent({
         toolCallId: "agent-1",
@@ -242,7 +242,7 @@ test("a qoder session follows its background continuation with the qoder driver"
 
 test("an unsupported driver never starts the background follow-up", async () => {
   let followerCalled = false;
-  const transport = createClaudeBackgroundFollowupTransport({
+  const transport = createBackgroundFollowupTransport({
     prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
       await options.onToolEvent({
         toolCallId: "agent-1",
@@ -277,7 +277,7 @@ test("an unsupported driver never starts the background follow-up", async () => 
 
 test("a non-subagent tool whose output quotes the launch payload never starts the follow-up", async () => {
   let followerCalled = false;
-  const transport = createClaudeBackgroundFollowupTransport({
+  const transport = createBackgroundFollowupTransport({
     prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
       await options.onToolEvent({
         toolCallId: "read-1",

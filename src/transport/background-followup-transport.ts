@@ -1,17 +1,21 @@
 import type { ToolUseEvent } from "../channels/types.js";
 import type { AppLogger } from "../logging/app-logger.js";
 import {
-  claudeAsyncAgentId,
-  followClaudeBackgroundTurn,
-  isClaudeAsyncAgentLaunch,
-  type ClaudeBackgroundFollowupOptions,
-  type ClaudeBackgroundFollowupResult,
-} from "./claude-background-followup.js";
+  asyncAgentId,
+  followBackgroundTurn as defaultFollowBackgroundTurn,
+  isAsyncAgentLaunch,
+  type BackgroundFollowupOptions,
+  type BackgroundFollowupResult,
+} from "./background-followup.js";
 import type { PromptOptions, SessionTransport } from "./types.js";
 
-type FollowBackgroundTurn = (options: ClaudeBackgroundFollowupOptions) => Promise<ClaudeBackgroundFollowupResult>;
+type FollowBackgroundTurn = (options: BackgroundFollowupOptions) => Promise<BackgroundFollowupResult>;
 
-export interface ClaudeBackgroundFollowupTransportOptions {
+// Preserve the established telemetry namespace so existing log queries and
+// alerts keep working while the public code surface moves to provider-neutral names.
+const LEGACY_LOG_EVENT_PREFIX = "transport.claude_background_followup";
+
+export interface BackgroundFollowupTransportOptions {
   logger: AppLogger;
   followBackgroundTurn?: FollowBackgroundTurn;
   resolveDriver?: (agent: string) => string | undefined;
@@ -21,11 +25,11 @@ export interface ClaudeBackgroundFollowupTransportOptions {
  * Claude Code-compatible drivers (claude, qoder). Command routing remains
  * driver-agnostic; optional transport capabilities stay intact because every
  * property except prompt is read directly from the delegate. */
-export function createClaudeBackgroundFollowupTransport(
+export function createBackgroundFollowupTransport(
   delegate: SessionTransport,
-  options: ClaudeBackgroundFollowupTransportOptions,
+  options: BackgroundFollowupTransportOptions,
 ): SessionTransport {
-  const followBackgroundTurn = options.followBackgroundTurn ?? followClaudeBackgroundTurn;
+  const runBackgroundFollowup = options.followBackgroundTurn ?? defaultFollowBackgroundTurn;
 
   const prompt: SessionTransport["prompt"] = async (session, text, reply, replyContext, promptOptions) => {
     const latestToolEvents = new Map<string, ToolUseEvent>();
@@ -38,9 +42,9 @@ export function createClaudeBackgroundFollowupTransport(
           latestToolEvents.set(event.toolCallId, event);
           if (event.status === "running") pendingToolEvents.set(event.toolCallId, event);
           else pendingToolEvents.delete(event.toolCallId);
-          if (event.isSubagent && isClaudeAsyncAgentLaunch(event)) {
+          if (event.isSubagent && isAsyncAgentLaunch(event)) {
             asyncToolCallIds.add(event.toolCallId);
-            const agentId = claudeAsyncAgentId(event);
+            const agentId = asyncAgentId(event);
             if (agentId) subagentIdsByToolCallId.set(event.toolCallId, agentId);
           }
           await downstreamToolEvent(event);
@@ -62,7 +66,7 @@ export function createClaudeBackgroundFollowupTransport(
         agentSessionId = await delegate.getAgentSessionId?.(session);
       } catch (error) {
         await options.logger.error(
-          "transport.claude_background_followup.session_id_failed",
+          `${LEGACY_LOG_EVENT_PREFIX}.session_id_failed`,
           "failed to resolve agent session id for background follow-up",
           { alias: session.alias, error: error instanceof Error ? error.message : String(error) },
         );
@@ -80,11 +84,11 @@ export function createClaudeBackgroundFollowupTransport(
     }
 
     await options.logger.info(
-      "transport.claude_background_followup.started",
+      `${LEGACY_LOG_EVENT_PREFIX}.started`,
       "following background-agent continuation",
       { alias: session.alias, agentSessionId, driver, taskCount: asyncToolCallIds.size },
     );
-    const followup = await followBackgroundTurn({
+    const followup = await runBackgroundFollowup({
       cwd: session.cwd,
       sessionId: agentSessionId,
       driver,
@@ -122,7 +126,7 @@ export function createClaudeBackgroundFollowupTransport(
       });
     }
     await options.logger.info(
-      `transport.claude_background_followup.${followup.status}`,
+      `${LEGACY_LOG_EVENT_PREFIX}.${followup.status}`,
       `background-agent follow-up ${followup.status}`,
       {
         alias: session.alias,
