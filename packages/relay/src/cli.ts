@@ -69,6 +69,8 @@ function hasFlag(args: string[], name: string): boolean {
 /**
  * Parses an invite TTL like "30m", "12h", "7d" into milliseconds.
  * Returns null for malformed input; undefined input yields the 7-day default.
+ * Capped at 10 years — beyond that Date arithmetic overflows the ECMAScript
+ * time range and toISOString() throws instead of printing usage.
  */
 export function parseTtlMs(raw: string | undefined): number | null {
   if (raw === undefined) return 7 * 24 * 60 * 60 * 1000;
@@ -77,7 +79,9 @@ export function parseTtlMs(raw: string | undefined): number | null {
   const n = Number(match[1]);
   if (n <= 0) return null;
   const unit = match[2] === "m" ? 60_000 : match[2] === "h" ? 3_600_000 : 86_400_000;
-  return n * unit;
+  const ms = n * unit;
+  const maxMs = 10 * 365 * 86_400_000;
+  return ms > maxMs ? null : ms;
 }
 
 export interface StartOptions {
@@ -161,7 +165,14 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
   // add invite [--label <l>] [--ttl <n>{m|h|d}] [--url <base>] --db <path>
   if (args[0] === "add" && args[1] === "invite") {
     const label = flag(args, "--label");
-    const ttlMs = parseTtlMs(flag(args, "--ttl"));
+    const ttlRaw = flag(args, "--ttl");
+    // A bare --ttl with a missing/flag-like value must error, not silently
+    // fall back to the 7-day default — the lifetime is security-relevant.
+    if (hasFlag(args, "--ttl") && ttlRaw === undefined) {
+      io.print(USAGE);
+      return 1;
+    }
+    const ttlMs = parseTtlMs(ttlRaw);
     if (ttlMs === null) {
       io.print(USAGE);
       return 1;
@@ -176,7 +187,7 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       } else {
         io.print(`redeem path: /invite/${code}   (append to your hub URL)`);
       }
-      io.print(`(share it now — single-use, not shown again; expires ${expiresAt.slice(0, 16).replace("T", " ")})`);
+      io.print(`(share it now — single-use, not shown again; expires ${expiresAt.slice(0, 16).replace("T", " ")} UTC)`);
       return 0;
     } finally {
       runtime.close();
@@ -205,7 +216,7 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
         const nowMs = Date.now();
         io.print("");
         io.print("invites");
-        io.print("id        label                 expires               status");
+        io.print("id        label                 expires (UTC)         status");
         io.print("--------  --------------------  --------------------  -------");
         for (const inv of invites) {
           const shortId = inv.id.slice(0, 8);

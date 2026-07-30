@@ -291,7 +291,7 @@ export class AccountStore {
     this.db.exec("BEGIN");
     try {
       this.db.run(
-        "UPDATE invite_codes SET used_at = ?, used_account_id = ? WHERE code_hash = ?",
+        "UPDATE invite_codes SET used_at = ?, used_account_id = ? WHERE code_hash = ? AND used_at IS NULL",
         [nowIso, accountId, codeHash],
       );
       this.db.run(
