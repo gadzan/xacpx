@@ -244,6 +244,37 @@ describe("MessageList", () => {
     ).toBeTruthy();
   });
 
+  it("keeps a leading tool before narrative when only whitespace preceded it", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "text", text: " \n" },
+          {
+            type: "tool",
+            step: {
+              toolCallId: "read-1",
+              toolName: "Read",
+              kind: "read",
+              status: "success",
+              title: "index.css",
+            },
+          },
+          { type: "text", text: "after" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    const tool = bubble.find('[data-test="tool-step-header"]');
+    const narrative = bubble.find(".stream-md");
+    expect(narrative.text()).toBe("after");
+    expect(
+      tool.element.compareDocumentPosition(narrative.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("keeps the live indicator on the latest visible reasoning activity", () => {
     const wrapper = mount(MessageList, {
       props: {

@@ -69,7 +69,7 @@ export function deriveTurnPresentation(parts: TurnPartDto[]): TurnPresentationIt
 
   const anchored = new Map<number, typeof activities>();
   for (const activity of activities) {
-    const anchor = activity.offset === 0
+    const anchor = narrative.slice(0, activity.offset).trim().length === 0
       ? 0
       : (boundaries.find((boundary) => boundary >= activity.offset) ?? narrative.length);
     const group = anchored.get(anchor) ?? [];
