@@ -75,13 +75,17 @@ it("moves the plan panel to the side column on wide panes and back on narrow one
   expect(side.exists()).toBe(true);
   expect(side.classes()).toContain("pointer-events-none");
   expect(side.find('[data-test="plan-panel"]').exists()).toBe(true);
+  expect(side.find('[data-test="plan-panel"]').classes()).toContain("pointer-events-auto");
   expect(w.find('[data-test="composer-area"] [data-test="plan-panel"]').exists()).toBe(false);
   expect(w.find('[data-test="msg-scroller"]').classes()).toContain("pr-[19.25rem]");
+  // Jump-to-latest shifts by half the gutter to stay centered over the transcript.
+  expect(w.find('[data-test="jump-latest"]').classes()).toContain("left-[calc(50%-9rem)]");
   // Narrow pane → back to the composer area.
   await resize(w, 800);
   expect(w.find('[data-test="plan-side-col"]').exists()).toBe(false);
   expect(w.find('[data-test="composer-area"] [data-test="plan-panel"]').exists()).toBe(true);
   expect(w.find('[data-test="msg-scroller"]').classes()).not.toContain("pr-[19.25rem]");
+  expect(w.find('[data-test="jump-latest"]').classes()).toContain("left-1/2");
 });
 
 it("preserves the manual expand/collapse state across the placement switch", async () => {

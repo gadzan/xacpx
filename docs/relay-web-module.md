@@ -313,7 +313,8 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   宽度 ≤ 0（无 ResizeObserver 的 jsdom/嵌入式环境,或 ChatPane 被 `v-show` 藏在其他 tab 后）时**保持上次判定**——
   无 RO 时初始即 inline 故恒回落原位,宽屏下切 tab 再切回也不会销毁重建侧列面板。侧列形态用
   `PlanPanel` 的 `variant="side"`:放开 `max-h-48`,header 钉住、列表在列高内滚动。
-  常量与模板 class 是双份事实（`CHAT_CONTENT_MAX`↔`max-w-3xl`、`PLAN_SIDE_WIDTH`↔`w-72`),改一处须同步另一处。
+  常量与模板 class 是双份事实（`CHAT_CONTENT_MAX`↔`max-w-3xl`、`PLAN_SIDE_WIDTH`↔`w-72` 及其两个
+  派生字面量:MessageList 的 `pr-[19.25rem]`=lg:pr-5+w-72、`left-[calc(50%-9rem)]`=w-72/2）,改一处须同步全部。
   两插槽 `v-if` 切换会重建 PlanPanel,但 `expanded` 折叠状态由 ChatPane 用 `v-model:expanded` 持有,跨切换保留。
 
 ## 文件地图

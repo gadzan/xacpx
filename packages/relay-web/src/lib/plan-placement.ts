@@ -3,7 +3,9 @@
 // message list. These constants mirror Tailwind classes in the templates — change one,
 // change the other:
 //   CHAT_CONTENT_MAX  = max-w-3xl on MessageList's content wrapper
-//   PLAN_SIDE_WIDTH   = w-72 on ChatPane's side column
+//   PLAN_SIDE_WIDTH   = w-72 on ChatPane's side column, and two derived literals in
+//                       MessageList: the side-gutter pr-[19.25rem] (lg:pr-5 + w-72)
+//                       and the jump-latest left-[calc(50%-9rem)] (w-72 / 2)
 export const CHAT_CONTENT_MAX = 768;
 export const PLAN_SIDE_WIDTH = 288;
 // Approximate spacing budget, not a class mirror: the actual template chrome is
