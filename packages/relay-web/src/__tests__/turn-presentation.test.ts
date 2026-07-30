@@ -87,6 +87,17 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
+  it("shows a leading tool before narrative when only whitespace preceded it", () => {
+    expect(visibleShape([
+      { type: "text", text: " \n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "after" },
+    ])).toEqual([
+      { type: "tool", id: "read-1" },
+      { type: "text", text: " \nafter" },
+    ]);
+  });
+
   it("folds child tools into their parent subagent activity", () => {
     const parent: ToolStepDto = {
       ...tool("agent-1"),
