@@ -49,7 +49,7 @@ bun install && bun run build:relay
 
 ## 2. 快速上手（无需任何参数）
 
-认证完全基于令牌——**没有密码、没有管理员账户、没有邀请流程**。一个令牌就是一个用户。签发令牌后启动服务端：
+认证完全基于令牌——**没有密码、没有管理员账户**。一个令牌就是一个用户。签发令牌后启动服务端：
 
 ```bash
 # 步骤 A — 创建用户 + 令牌（DB 自动创建于 ~/.xacpx-relay/relay.db）
@@ -77,7 +77,7 @@ xacpx-relay listening: http :8787, instance gateway: merged on http :8787 (path 
 
 ## 3. 令牌管理
 
-Hub 一共有 **4 条 CLI 命令**，所有标志均为可选：
+Hub 的全部管理操作都通过少量 CLI 子命令完成（`add token` / `add invite` / `ls` / `rm token` / `rm invite` / `start` / `update`），所有标志均为可选：
 
 ### `add token` — 创建用户 + 登录令牌
 
@@ -106,6 +106,33 @@ xacpx-relay rm token <值或ID> [--db <路径>]
 ```
 
 删除该令牌对应的用户，并级联删除其实例、Web 会话和缓存消息。吊销后，该令牌的 Web 会话将在下次请求时失效；已打开的看板 `/ws` 长连接会在下次重连时才断开。若要立即强制断开所有会话：停止 Hub，执行 `sqlite3 <db> "DELETE FROM web_sessions;"`，然后重启。
+
+### `add invite` — 通过链接邀请他人
+
+不方便（或不想）在服务器上替对方铸令牌时，可以给对方一个**一次性邀请链接**：
+
+```bash
+xacpx-relay add invite [--label <备注>] [--ttl <n>{m|h|d}] [--url <站点地址>] [--db <路径>]
+```
+
+邀请码只打印**一次**；传 `--url` 时会额外打印可直接分享的兑换链接（不传则打印 `/invite/<code>` 路径，自行拼到 hub 域名后即可）：
+
+```
+invite code: mJ3…
+redeem link: https://relay.example.com/invite/mJ3…
+(share it now — single-use, not shown again; expires 2026-08-02 12:00 UTC)
+```
+
+对方打开链接后看到兑换页面，**点击按钮才会兑换**（链接预览和爬虫抓取不会烧掉邀请码）；兑换即创建一个全新账号，并且其访问令牌只显示这一次——语义与 `add token` 完全一致，只是变成了自助领取。
+
+- `--ttl` 默认 `7d`（支持 `30m`、`12h`、`3d` 等，上限 10 年）。
+- 邀请码单次有效、哈希落盘；已用/过期的码由每小时 GC 自动清理。
+- 兑换端点与登录共用同一限流桶（按 IP 统计——反代后方记得 `--trust-proxy`）。
+- `ls` 会追加 **invites** 段（短 id、标签、过期时间、状态 `unused|used|expired`）；用 `rm invite <码或ID>` 删除（不影响已兑换出的账号）。
+
+::: warning 邀请链接会出现在反代日志中
+邀请码明文位于 URL 路径中，反向代理的 access log 会记录**未兑换**的邀请链接（兑换后即作废，无风险）。在意的话可缩短 `--ttl`，或在反代对 `/invite/` 路径关闭访问日志。
+:::
 
 ### `start` — 启动服务端
 
