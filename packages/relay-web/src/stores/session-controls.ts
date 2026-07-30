@@ -31,6 +31,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   let effortRevision = 0;
   const pendingEffortSets = new Map<string, Promise<void>>();
   const authoritativeEfforts = new Map<string, { revision: number; current: string | undefined }>();
+  let accountGeneration = 0;
 
   const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
   const contextKey = (instanceId: string, alias: string): string => `${instanceId}\u0000${alias}`;
@@ -109,6 +110,15 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     clearEffortState();
   }
 
+  function resetForAccountChange(): void {
+    accountGeneration += 1;
+    reset();
+    pendingModelSets.clear();
+    authoritativeModels.clear();
+    pendingEffortSets.clear();
+    authoritativeEfforts.clear();
+  }
+
   async function loadModel(instanceId: string | null, alias: string | null): Promise<void> {
     if (!instanceId || !alias) { reset(); return; }
     const context = contextKey(instanceId, alias);
@@ -170,6 +180,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     if (activeContext !== context) clearModelState();
     activeContext = context;
     const cacheOwner = cacheUser();
+    const ownerGeneration = accountGeneration;
     const cacheToken = cacheOwner
       ? viewCache.captureGenerationToken(cacheOwner, "session-model", instanceId, alias)
       : null;
@@ -194,7 +205,9 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           const observed = r.current === null
             ? undefined
             : typeof r.current === "string" ? r.current : rollbackModel(context, prev);
-          recordAuthoritativeModel(context, revision, observed);
+          if (ownerGeneration === accountGeneration) {
+            recordAuthoritativeModel(context, revision, observed);
+          }
           cacheModel(cacheOwner, instanceId, alias, { current: observed, available: availableAtSet }, cacheToken);
           if (isCurrentRequest(context, revision)) {
             modelCurrent.value = observed;
@@ -207,7 +220,9 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         const observed = r.current === null
           ? undefined
           : typeof r.current === "string" ? r.current : id;
-        recordAuthoritativeModel(context, revision, observed);
+        if (ownerGeneration === accountGeneration) {
+          recordAuthoritativeModel(context, revision, observed);
+        }
         cacheModel(cacheOwner, instanceId, alias, { current: observed, available: availableAtSet }, cacheToken);
         if (isCurrentRequest(context, revision)) {
           modelCurrent.value = observed;
@@ -288,6 +303,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     if (effortActiveContext !== context) clearEffortState();
     effortActiveContext = context;
     const cacheOwner = cacheUser();
+    const ownerGeneration = accountGeneration;
     const cacheToken = cacheOwner
       ? viewCache.captureGenerationToken(cacheOwner, "session-effort", instanceId, alias)
       : null;
@@ -307,7 +323,9 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
             let observed = rollbackEffort(context, previous);
             if (!isErrorPayload(setResult) && (setResult.current === null || typeof setResult.current === "string")) {
               observed = setResult.current ?? undefined;
-              recordAuthoritativeEffort(context, revision, observed);
+              if (ownerGeneration === accountGeneration) {
+                recordAuthoritativeEffort(context, revision, observed);
+              }
               cacheEffort(cacheOwner, instanceId, alias, { current: observed, available: availableAtSet }, cacheToken);
             }
             effortCurrent.value = observed;
@@ -316,7 +334,9 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           return false;
         }
         const observed = typeof setResult.current === "string" ? setResult.current : effort;
-        recordAuthoritativeEffort(context, revision, observed);
+        if (ownerGeneration === accountGeneration) {
+          recordAuthoritativeEffort(context, revision, observed);
+        }
         cacheEffort(cacheOwner, instanceId, alias, { current: observed, available: availableAtSet }, cacheToken);
         if (effortActiveContext === context && effortRevision === revision) effortCurrent.value = observed;
         return true;
@@ -342,7 +362,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   }
 
   const auth = useAuthStore();
-  watch(() => auth.account?.username ?? null, () => reset(), { flush: "sync" });
+  watch(() => auth.account?.username ?? null, () => resetForAccountChange(), { flush: "sync" });
 
   return {
     modelCurrent, modelAvailable, modelLoading, reset, loadModel, setModel,
