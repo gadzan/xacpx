@@ -17,9 +17,10 @@ export interface ClaudeBackgroundFollowupTransportOptions {
   resolveDriver?: (agent: string) => string | undefined;
 }
 
-/** Transport decorator that owns Claude's native-transcript continuation.
- * Command routing remains driver-agnostic; optional transport capabilities stay
- * intact because every property except prompt is read directly from the delegate. */
+/** Transport decorator that owns the native-transcript continuation for
+ * Claude Code-compatible drivers (claude, qoder). Command routing remains
+ * driver-agnostic; optional transport capabilities stay intact because every
+ * property except prompt is read directly from the delegate. */
 export function createClaudeBackgroundFollowupTransport(
   delegate: SessionTransport,
   options: ClaudeBackgroundFollowupTransportOptions,
@@ -37,7 +38,7 @@ export function createClaudeBackgroundFollowupTransport(
           latestToolEvents.set(event.toolCallId, event);
           if (event.status === "running") pendingToolEvents.set(event.toolCallId, event);
           else pendingToolEvents.delete(event.toolCallId);
-          if (isClaudeAsyncAgentLaunch(event)) {
+          if (event.isSubagent && isClaudeAsyncAgentLaunch(event)) {
             asyncToolCallIds.add(event.toolCallId);
             const agentId = claudeAsyncAgentId(event);
             if (agentId) subagentIdsByToolCallId.set(event.toolCallId, agentId);
@@ -51,8 +52,9 @@ export function createClaudeBackgroundFollowupTransport(
       ...(forwardToolEvent ? { onToolEvent: forwardToolEvent } : {}),
     });
 
-    const isClaude = (options.resolveDriver?.(session.agent) ?? session.agent) === "claude";
-    if (!isClaude || asyncToolCallIds.size === 0 || !reply || !forwardToolEvent) return result;
+    const driver = (options.resolveDriver?.(session.agent) ?? session.agent).trim().toLowerCase();
+    const supportsFollowup = driver === "claude" || driver === "qoder";
+    if (!supportsFollowup || asyncToolCallIds.size === 0 || !reply || !forwardToolEvent) return result;
 
     let agentSessionId = session.agentSessionId;
     if (!agentSessionId) {
@@ -61,7 +63,7 @@ export function createClaudeBackgroundFollowupTransport(
       } catch (error) {
         await options.logger.error(
           "transport.claude_background_followup.session_id_failed",
-          "failed to resolve Claude session id for background follow-up",
+          "failed to resolve agent session id for background follow-up",
           { alias: session.alias, error: error instanceof Error ? error.message : String(error) },
         );
       }
@@ -70,7 +72,7 @@ export function createClaudeBackgroundFollowupTransport(
       for (const event of [...pendingToolEvents.values()]) {
         await forwardToolEvent({
           ...event,
-          rawOutput: { message: "Claude background continuation could not be tracked: session id unavailable" },
+          rawOutput: { message: "background continuation could not be tracked: session id unavailable" },
           status: "error",
         });
       }
@@ -79,12 +81,13 @@ export function createClaudeBackgroundFollowupTransport(
 
     await options.logger.info(
       "transport.claude_background_followup.started",
-      "following Claude background-agent continuation",
-      { alias: session.alias, agentSessionId, taskCount: asyncToolCallIds.size },
+      "following background-agent continuation",
+      { alias: session.alias, agentSessionId, driver, taskCount: asyncToolCallIds.size },
     );
     const followup = await followBackgroundTurn({
       cwd: session.cwd,
       sessionId: agentSessionId,
+      driver,
       launchedToolCallIds: asyncToolCallIds,
       initialToolEvents: latestToolEvents.values(),
       subagentIdsByToolCallId,
@@ -115,15 +118,16 @@ export function createClaudeBackgroundFollowupTransport(
         status: followup.status === "completed" && !failed ? "success" : "error",
         ...(followup.status === "completed" && !failed
           ? {}
-          : { rawOutput: { message: failed ? "Claude background Agent failed" : `Claude background continuation ${followup.status}` } }),
+          : { rawOutput: { message: failed ? "background Agent failed" : `background continuation ${followup.status}` } }),
       });
     }
     await options.logger.info(
       `transport.claude_background_followup.${followup.status}`,
-      `Claude background-agent follow-up ${followup.status}`,
+      `background-agent follow-up ${followup.status}`,
       {
         alias: session.alias,
         agentSessionId,
+        driver,
         completedTaskCount: followup.completedToolCallIds.length,
         failedTaskCount: followup.failedToolCallIds.length,
       },

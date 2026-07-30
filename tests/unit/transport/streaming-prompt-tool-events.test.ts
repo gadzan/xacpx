@@ -492,6 +492,63 @@ test("Qoder Agent metadata produces a subagent event across a sparse terminal up
   });
 });
 
+test("a qoder async Agent launch stays running until its background continuation ends", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "qoder",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "qoder-agent-1",
+    status: "pending",
+    kind: "think",
+    title: "Agent",
+    rawInput: { description: "research", prompt: "dig in", subagent_type: "general-purpose", run_in_background: true },
+    _meta: { qoder: { toolName: "Agent" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "qoder-agent-1",
+    status: "completed",
+    rawOutput: { status: "async_launched", agentId: "ageneral-purpose-abc", description: "research", prompt: "dig in" },
+    _meta: { qoder: { toolName: "Agent" } },
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "qoder-agent-1",
+    isSubagent: true,
+    status: "running",
+  });
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "qoder-agent-2",
+    status: "pending",
+    kind: "think",
+    title: "Agent",
+    rawInput: { description: "audit", prompt: "review", subagent_type: "general-purpose", run_in_background: true },
+    _meta: { qoder: { toolName: "Agent" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "qoder-agent-2",
+    status: "completed",
+    rawOutput: '{"status":"async_launched","agentId":"aExplore-def","description":"audit"}',
+    // Real qoder terminal frames are sparse; toolName must survive via meta merge.
+    _meta: { qoder: {} },
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "qoder-agent-2",
+    isSubagent: true,
+    status: "running",
+  });
+});
+
 test("Kimi recognizes delegated work only after its incremental Agent input is complete", () => {
   const events: ToolUseEvent[] = [];
   const state = createStreamingPromptState(false, {

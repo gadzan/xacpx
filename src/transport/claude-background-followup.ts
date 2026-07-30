@@ -14,6 +14,8 @@ const ASYNC_AGENT_LAUNCH = /Async agent launched successfully|["']?status["']?\s
 export interface ClaudeBackgroundFollowupOptions {
   cwd: string;
   sessionId: string;
+  /** ACP driver owning the transcript; qoder shares Claude Code's layout under ~/.qoder. */
+  driver?: string;
   launchedToolCallIds: Iterable<string>;
   /** Latest ACP events already observed before the native transcript follower starts. */
   initialToolEvents?: Iterable<ToolUseEvent>;
@@ -55,7 +57,18 @@ interface JsonlCursor {
  * launched asynchronously. Kept at the transport boundary so callers do not
  * need to know Claude's private task ids or output-file layout. */
 export function isClaudeAsyncAgentLaunch(event: ToolUseEvent): boolean {
-  return ASYNC_AGENT_LAUNCH.test(textOfUnknown(event.rawOutput));
+  return isAsyncAgentLaunchOutput(event.rawOutput);
+}
+
+export function isAsyncAgentLaunchOutput(rawOutput: unknown): boolean {
+  if (rawOutput && typeof rawOutput === "object" && !Array.isArray(rawOutput)) {
+    const status = (rawOutput as Record<string, unknown>).status;
+    // A structured tool result with an explicit status is authoritative; a
+    // completed sync Agent whose answer merely quotes the launch phrase must
+    // not be treated as a background launch.
+    if (status !== undefined) return status === "async_launched";
+  }
+  return ASYNC_AGENT_LAUNCH.test(textOfUnknown(rawOutput));
 }
 
 export function claudeAsyncAgentId(event: ToolUseEvent): string | undefined {
@@ -64,15 +77,18 @@ export function claudeAsyncAgentId(event: ToolUseEvent): string | undefined {
   return /\bagent(?:Id|_id)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)/i.exec(textOfUnknown(event.rawOutput))?.[1];
 }
 
-/** Find Claude Code's native JSONL transcript for an ACP session. Claude's
+/** Find the driver's native JSONL transcript for an ACP session. Claude's
  * project-folder encoding is tried first; a shallow fallback scan handles any
- * future/path-platform encoding drift. */
+ * future/path-platform encoding drift. Qoder is a Claude Code-compatible fork
+ * that keeps the identical layout under ~/.qoder. */
 export async function findClaudeTranscriptPath(input: {
   cwd: string;
   sessionId: string;
   homeDir?: string;
+  driver?: string;
 }): Promise<string | undefined> {
-  const projectsDir = join(input.homeDir ?? homedir(), ".claude", "projects");
+  const configDirName = input.driver === "qoder" ? ".qoder" : ".claude";
+  const projectsDir = join(input.homeDir ?? homedir(), configDirName, "projects");
   const direct = join(projectsDir, encodeClaudeProjectDirectory(input.cwd), `${input.sessionId}.jsonl`);
   if (await exists(direct)) return direct;
 
@@ -155,7 +171,7 @@ export async function followClaudeBackgroundTurn(
             await emitTool({
               ...previous,
               status: notification.failed ? "error" : "success",
-              ...(notification.failed ? { rawOutput: { message: "Claude background Agent failed" } } : {}),
+              ...(notification.failed ? { rawOutput: { message: "background Agent failed" } } : {}),
             });
           }
         }
@@ -569,7 +585,7 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new DOMException("Claude background follow-up aborted", "AbortError");
+  if (signal?.aborted) throw new DOMException("background follow-up aborted", "AbortError");
 }
 
 async function waitForPoll(ms: number, signal?: AbortSignal): Promise<void> {
@@ -585,7 +601,7 @@ async function waitForPoll(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new DOMException("Claude background follow-up aborted", "AbortError"));
+      reject(new DOMException("background follow-up aborted", "AbortError"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });

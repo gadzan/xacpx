@@ -196,3 +196,115 @@ test("the Claude follow-up decorator preserves optional transport capabilities a
   await transport.dispose?.();
   expect(disposed).toBe(true);
 });
+
+test("a qoder session follows its background continuation with the qoder driver", async () => {
+  const replies: string[] = [];
+  let followedDriver: string | undefined;
+  const transport = createClaudeBackgroundFollowupTransport({
+    prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
+      await options.onToolEvent({
+        toolCallId: "agent-1",
+        toolName: "Agent",
+        kind: "think",
+        isSubagent: true,
+        rawOutput: { status: "async_launched", agentId: "ageneral-purpose-abc" },
+        status: "running",
+      });
+      return { text: "" };
+    },
+    getAgentSessionId: async () => "qoder-session",
+  } as never, {
+    logger: createNoopAppLogger(),
+    resolveDriver: () => " Qoder ",
+    followBackgroundTurn: async (options) => {
+      followedDriver = options.driver;
+      await options.onText?.("后台任务完成后的最终答复");
+      return {
+        status: "completed",
+        transcriptPath: "session.jsonl",
+        completedToolCallIds: ["agent-1"],
+        failedToolCallIds: [],
+      };
+    },
+  });
+
+  await transport.prompt(
+    { alias: "relay:demo", agent: "qoder", workspace: "demo", cwd: "/tmp/demo", transportSession: "demo:relay:demo" } as never,
+    "plan it",
+    async (text: string) => { replies.push(text); },
+    undefined,
+    { onToolEvent: async () => {} } as never,
+  );
+
+  expect(followedDriver).toBe("qoder");
+  expect(replies).toEqual(["后台任务完成后的最终答复"]);
+});
+
+test("an unsupported driver never starts the background follow-up", async () => {
+  let followerCalled = false;
+  const transport = createClaudeBackgroundFollowupTransport({
+    prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
+      await options.onToolEvent({
+        toolCallId: "agent-1",
+        toolName: "Agent",
+        kind: "think",
+        isSubagent: true,
+        rawOutput: { status: "async_launched", agentId: "abc" },
+        status: "running",
+      });
+      return { text: "" };
+    },
+    getAgentSessionId: async () => "codex-session",
+  } as never, {
+    logger: createNoopAppLogger(),
+    resolveDriver: () => "codex",
+    followBackgroundTurn: async () => {
+      followerCalled = true;
+      return { status: "completed", completedToolCallIds: [], failedToolCallIds: [] };
+    },
+  });
+
+  await transport.prompt(
+    { alias: "relay:demo", agent: "codex", workspace: "demo", cwd: "/tmp/demo", transportSession: "demo:relay:demo" } as never,
+    "plan it",
+    async () => {},
+    undefined,
+    { onToolEvent: async () => {} } as never,
+  );
+
+  expect(followerCalled).toBe(false);
+});
+
+test("a non-subagent tool whose output quotes the launch payload never starts the follow-up", async () => {
+  let followerCalled = false;
+  const transport = createClaudeBackgroundFollowupTransport({
+    prompt: async (_session: unknown, _text: string, _reply: unknown, _context: unknown, options: any) => {
+      await options.onToolEvent({
+        toolCallId: "read-1",
+        toolName: "Read",
+        kind: "read",
+        rawOutput: { status: "async_launched", agentId: "abc" },
+        status: "success",
+      });
+      return { text: "" };
+    },
+    getAgentSessionId: async () => "claude-session",
+  } as never, {
+    logger: createNoopAppLogger(),
+    resolveDriver: () => "claude",
+    followBackgroundTurn: async () => {
+      followerCalled = true;
+      return { status: "completed", completedToolCallIds: [], failedToolCallIds: [] };
+    },
+  });
+
+  await transport.prompt(
+    { alias: "relay:demo", agent: "claude", workspace: "demo", cwd: "/tmp/demo", transportSession: "demo:relay:demo" } as never,
+    "plan it",
+    async () => {},
+    undefined,
+    { onToolEvent: async () => {} } as never,
+  );
+
+  expect(followerCalled).toBe(false);
+});

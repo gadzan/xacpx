@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  findClaudeTranscriptPath,
   followClaudeBackgroundTurn,
   isClaudeAsyncAgentLaunch,
 } from "../../../src/transport/claude-background-followup";
@@ -21,6 +22,56 @@ test("detects Claude's async Agent launch result", () => {
     status: "success",
   };
   expect(isClaudeAsyncAgentLaunch(event)).toBe(true);
+});
+
+test("a completed sync Agent quoting the launch phrase is not an async launch", () => {
+  const event: ToolUseEvent = {
+    toolCallId: TASK_A,
+    toolName: "Agent",
+    kind: "think",
+    rawOutput: {
+      status: "completed",
+      content: [{ type: "text", text: "Async agent launched successfully. agentId: abc" }],
+    },
+    status: "success",
+  };
+  expect(isClaudeAsyncAgentLaunch(event)).toBe(false);
+});
+
+test("resolves the default driver's transcript under ~/.claude/projects", async () => {
+  const home = await mkdtemp(join(tmpdir(), "xacpx-claude-home-"));
+  const projectDir = join(home, ".claude", "projects", "-Users-me-demo");
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(join(projectDir, "session-1.jsonl"), "", "utf8");
+
+  const found = await findClaudeTranscriptPath({
+    cwd: "/Users/me/demo",
+    sessionId: "session-1",
+    homeDir: home,
+  });
+  expect(found).toBe(join(projectDir, "session-1.jsonl"));
+});
+
+test("resolves the qoder driver's transcript under ~/.qoder/projects", async () => {
+  const home = await mkdtemp(join(tmpdir(), "xacpx-qoder-home-"));
+  const projectDir = join(home, ".qoder", "projects", "-Users-me-demo");
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(join(projectDir, "session-1.jsonl"), "", "utf8");
+
+  const found = await findClaudeTranscriptPath({
+    cwd: "/Users/me/demo",
+    sessionId: "session-1",
+    homeDir: home,
+    driver: "qoder",
+  });
+  expect(found).toBe(join(projectDir, "session-1.jsonl"));
+
+  const notFound = await findClaudeTranscriptPath({
+    cwd: "/Users/me/demo",
+    sessionId: "session-1",
+    homeDir: home,
+  });
+  expect(notFound).toBeUndefined();
 });
 
 test("recovers already-written background continuation after the ACP end_turn boundary", async () => {
