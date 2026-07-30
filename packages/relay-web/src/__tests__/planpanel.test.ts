@@ -44,6 +44,24 @@ describe("PlanPanel", () => {
     expect(classes).toContain("max-h-48");
     expect(classes).toContain("overflow-y-auto");
   });
+  it("drops the height cap and flexes in the side variant", () => {
+    const w = mount(PlanPanel, { props: { variant: "side", entries: [
+      { content: "a", status: "in_progress" },
+    ] } });
+    const classes = w.find("#plan-list").classes();
+    expect(classes).not.toContain("max-h-48");
+    expect(classes).toContain("flex-1");
+    expect(classes).toContain("overflow-y-auto");
+    expect(w.find('[data-test="plan-panel"]').classes()).toContain("max-h-full");
+  });
+  it("still toggles in the side variant", async () => {
+    const w = mount(PlanPanel, { props: { variant: "side", entries: [
+      { content: "a", status: "in_progress" },
+    ] } });
+    expect(w.find('[data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");
+    await w.find('[data-test="plan-toggle"]').trigger("click");
+    expect(w.find('[data-test="plan-toggle"]').attributes("aria-expanded")).toBe("false");
+  });
   it("scrolls the active task into view on an entries update", async () => {
     const calls: unknown[] = [];
     (window.HTMLElement.prototype as unknown as { scrollIntoView: (a?: unknown) => void })

@@ -5,6 +5,8 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
 import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
+import { useElementWidth } from "../lib/use-element-width";
+import { computePlanPlacement, type PlanPlacement } from "../lib/plan-placement";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
@@ -21,6 +23,15 @@ const composer = useComposerStore();
 // While the soft keyboard is open it already covers the iOS home indicator, so the
 // composer's safe-area bottom padding is just a gap — drop it then (see the template).
 const keyboardInset = useVirtualKeyboardInset();
+
+// Wide-pane plan placement (issue #231): the pane root spans the middle column
+// (absolute inset-0), so its width is the placement input. Observing the root —
+// not the message area — avoids a feedback loop when the side column appears.
+const paneEl = ref<HTMLElement | null>(null);
+const paneWidth = useElementWidth(paneEl);
+const planPlacement = ref<PlanPlacement>("inline");
+watch(paneWidth, (w) => { planPlacement.value = computePlanPlacement(w, planPlacement.value); });
+const planSide = computed(() => planPlacement.value === "side" && (chat.sessionPlan?.length ?? 0) > 0);
 
 function onSend(text: string, media: PromptAttachmentRef[] = []) {
   void chat.send(text, media);
@@ -109,7 +120,7 @@ const verb = computed(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-1 flex-col">
+  <div ref="paneEl" class="flex h-full flex-1 flex-col">
     <div v-if="!chat.sessionAlias" class="flex flex-1 items-center justify-center text-fg-muted">
       {{ $t("chat.selectSession") }}
     </div>
@@ -173,12 +184,25 @@ const verb = computed(() => {
         </template>
       </div>
       <template v-else>
-      <MessageList :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
+      <!-- min-h-0 keeps the column height chain intact (flex min-height:auto would let a
+           long transcript blow past the pane); the row's default align-stretch is what
+           gives MessageList (and the side column) their full height. -->
+      <div class="flex min-h-0 flex-1" data-test="chat-body">
+      <MessageList class="min-w-0" :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    :loading-history="chat.loadingHistory"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
+      <!-- Wide panes only: the plan panel moves into the message history's right-hand
+           whitespace. The column itself never scrolls — scrolling stays inside the
+           panel's list so the active-entry tracking keeps working. -->
+      <aside v-if="planSide" data-test="plan-side-col"
+             class="flex w-72 shrink-0 flex-col py-3 pr-3 lg:py-5 lg:pr-5"
+             :aria-label="$t('plan.title')">
+        <PlanPanel variant="side" :entries="chat.sessionPlan!" :active="chat.busy" />
+      </aside>
+      </div>
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
            inset is applied ONCE here (the bottommost element) and never stacks on top of the
            composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
@@ -198,7 +222,7 @@ const verb = computed(() => {
                   @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
         </div>
         <QueueStrip />
-        <PlanPanel v-if="chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
+        <PlanPanel v-if="!planSide && chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                      @send="onSend" @cancel="chat.cancel" />
