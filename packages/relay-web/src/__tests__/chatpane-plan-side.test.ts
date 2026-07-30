@@ -67,16 +67,21 @@ it("moves the plan panel to the side column on wide panes and back on narrow one
   seedPlan(chat);
   const w = mount(ChatPane);
   await w.vm.$nextTick();
-  // Wide pane → side column hosts the panel, composer copy disappears.
+  // Wide pane → side column hosts the panel, composer copy disappears. The column is a
+  // pointer-events-none overlay; the scroller reserves its area so the scrollbar stays
+  // at the pane's right edge.
   await resize(w, 1400);
   const side = w.find('[data-test="plan-side-col"]');
   expect(side.exists()).toBe(true);
+  expect(side.classes()).toContain("pointer-events-none");
   expect(side.find('[data-test="plan-panel"]').exists()).toBe(true);
   expect(w.find('[data-test="composer-area"] [data-test="plan-panel"]').exists()).toBe(false);
+  expect(w.find('[data-test="msg-scroller"]').classes()).toContain("pr-[19.25rem]");
   // Narrow pane → back to the composer area.
   await resize(w, 800);
   expect(w.find('[data-test="plan-side-col"]').exists()).toBe(false);
   expect(w.find('[data-test="composer-area"] [data-test="plan-panel"]').exists()).toBe(true);
+  expect(w.find('[data-test="msg-scroller"]').classes()).not.toContain("pr-[19.25rem]");
 });
 
 it("preserves the manual expand/collapse state across the placement switch", async () => {

@@ -303,7 +303,11 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   - 半透明 backdrop 点击关闭；选中会话自动关左抽屉直达对话；抽屉头部有 `✕` 关闭按钮（`lg:hidden`）。
 - 中栏聊天始终占据剩余宽度；登录页/设置页（`max-w-2xl mx-auto`）本身是流式宽度，移动端无需额外处理。
 - **宽屏 Plan 侧列**（issue #231）：中栏足够宽时,`PlanPanel` 从 composer 区移到消息历史右侧的
-  `w-72` 全高列（`ChatPane.vue` 的 `data-test="plan-side-col"`,右栏左边）。判定不是视口断点而是
+  `w-72` 全高列（`ChatPane.vue` 的 `data-test="plan-side-col"`,右栏左边）。侧列不是 flex 兄弟列而是
+  **绝对定位浮层**:`MessageList` 收 `side-gutter` prop 在滚动容器内侧留出 `pr-[19.25rem]` 空档
+  （消息居中几何与分栏方案一致）,滚动条因此留在中栏最右缘（面板右侧）而非卡在消息与面板之间;
+  浮层容器 `pointer-events-none`（面板本体恢复 `pointer-events-auto`）保证其 padding 盖到的滚动条仍可点击。
+  判定不是视口断点而是
   **ResizeObserver 实测 ChatPane 根宽**（左栏折叠/右栏拖拽都会改变可用宽）,阈值带迟滞
   （`src/lib/plan-placement.ts`:进入 ≥ 768+288+32+32=1120px,退出 < 1088px,防滚动条/拖窗抖动）;
   宽度 ≤ 0（无 ResizeObserver 的 jsdom/嵌入式环境,或 ChatPane 被 `v-show` 藏在其他 tab 后）时**保持上次判定**——

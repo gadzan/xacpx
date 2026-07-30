@@ -188,22 +188,26 @@ const verb = computed(() => {
       </div>
       <template v-else>
       <!-- min-h-0 keeps the column height chain intact (flex min-height:auto would let a
-           long transcript blow past the pane); the row's default align-stretch is what
-           gives MessageList (and the side column) their full height. -->
-      <div class="flex min-h-0 flex-1" :class="{ 'has-plan-side': planSide }" data-test="chat-body">
+           long transcript blow past the pane); relative anchors the absolutely positioned
+           plan side column below. -->
+      <div class="relative flex min-h-0 flex-1" data-test="chat-body">
       <MessageList class="min-w-0" :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
+                   :side-gutter="planSide"
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    :loading-history="chat.loadingHistory"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
-      <!-- Wide panes only: the plan panel moves into the message history's right-hand
-           whitespace. The column itself never scrolls — scrolling stays inside the
-           panel's list so the active-entry tracking keeps working. -->
+      <!-- Wide panes only: the plan panel floats over the right-hand gutter MessageList
+           reserves via `side-gutter`, so the transcript scrollbar stays at the pane's true
+           right edge (right of the panel) instead of landing between the two columns.
+           pointer-events-none on the container keeps the scrollbar under its padding strip
+           clickable; the panel re-enables its own pointer events. The column itself never
+           scrolls — scrolling stays inside the panel's list so active-entry tracking works. -->
       <aside v-if="planSide" data-test="plan-side-col"
-             class="flex w-72 shrink-0 flex-col py-5 pr-5"
+             class="pointer-events-none absolute inset-y-0 right-0 flex w-72 flex-col py-5 pr-5"
              :aria-label="$t('plan.title')">
-        <PlanPanel variant="side" v-model:expanded="planExpanded" :entries="chat.sessionPlan ?? []" :active="chat.busy" />
+        <PlanPanel class="pointer-events-auto" variant="side" v-model:expanded="planExpanded" :entries="chat.sessionPlan ?? []" :active="chat.busy" />
       </aside>
       </div>
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
@@ -234,12 +238,3 @@ const verb = computed(() => {
     </template>
   </div>
 </template>
-
-<style scoped>
-.has-plan-side :deep([data-test="msg-scroller"]) {
-  scrollbar-width: none;
-}
-.has-plan-side :deep([data-test="msg-scroller"])::-webkit-scrollbar {
-  display: none;
-}
-</style>
