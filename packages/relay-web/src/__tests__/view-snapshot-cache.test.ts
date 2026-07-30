@@ -16,6 +16,32 @@ beforeEach(async () => {
 });
 
 describe("view-snapshot-cache", () => {
+  function pauseNextDatabaseOpen(): {
+    opened: Promise<void>;
+    release: () => void;
+  } {
+    const factory = globalThis.indexedDB;
+    const originalOpen = factory.open.bind(factory);
+    let release!: () => void;
+    let markOpened!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const opened = new Promise<void>((resolve) => { markOpened = resolve; });
+    factory.open = ((...args: Parameters<IDBFactory["open"]>) => {
+      const request = originalOpen(...args);
+      let success: ((this: IDBRequest, ev: Event) => unknown) | null = null;
+      Object.defineProperty(request, "onsuccess", {
+        configurable: true,
+        get: () => success && ((event: Event) => {
+          markOpened();
+          void gate.then(() => success?.call(request, event));
+        }),
+        set: (handler) => { success = handler; },
+      });
+      return request;
+    }) as IDBFactory["open"];
+    return { opened, release };
+  }
+
   it("updates the hot cache synchronously and survives a memory reset", async () => {
     const pending = write("alice", "session-model", "i1", "s1", {
       current: "gpt-5",
@@ -79,6 +105,36 @@ describe("view-snapshot-cache", () => {
     await write("alice", "orchestration-tasks", "i1", "", ["stale"], staleWrite);
 
     expect(await read("alice", "orchestration-tasks", "i1", "")).toBeNull();
+  });
+
+  it("rejects an IndexedDB read that finishes after its session was dropped", async () => {
+    await write("alice", "session-model", "i1", "s1", { current: "deleted" });
+    await resetViewSnapshotCacheForTests();
+    const gate = pauseNextDatabaseOpen();
+
+    const pendingRead = read("alice", "session-model", "i1", "s1");
+    await gate.opened;
+    const pendingDrop = dropSession("alice", "i1", "s1");
+    gate.release();
+
+    await expect(pendingRead).resolves.toBeNull();
+    await pendingDrop;
+    expect(peek("alice", "session-model", "i1", "s1")).toBeNull();
+  });
+
+  it("rejects an IndexedDB read that finishes after all snapshots were dropped", async () => {
+    await write("alice", "git-summary", "i1", "ws", { changedCount: 2 });
+    await resetViewSnapshotCacheForTests();
+    const gate = pauseNextDatabaseOpen();
+
+    const pendingRead = read("alice", "git-summary", "i1", "ws");
+    await gate.opened;
+    const pendingDrop = dropAll();
+    gate.release();
+
+    await expect(pendingRead).resolves.toBeNull();
+    await pendingDrop;
+    expect(peek("alice", "git-summary", "i1", "ws")).toBeNull();
   });
 
   it("never throws when IndexedDB is unavailable", async () => {

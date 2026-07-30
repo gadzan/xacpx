@@ -21,6 +21,11 @@ function unwrap<T>(result: T | { error: { code: string; message: string } }): T 
   return result;
 }
 
+function isNotGitError(result: unknown): boolean {
+  return isErrorPayload(result)
+    && (result.error.code === "not-a-git-repo" || result.error.message === "not-a-git-repo");
+}
+
 /** Basename of a workspace-relative path, for toast messages. */
 function baseName(rel: string): string {
   return rel.split("/").pop() || rel;
@@ -165,9 +170,9 @@ export const useFilesStore = defineStore("files", () => {
     void loadStatus();
   }
 
-  /** Quietly fetch git status for badge annotation. Failures (e.g. a non-git
-   *  workspace) clear the badges without surfacing an error, so plain browsing
-   *  stays clean — the Changes tab's loadDiff() is what surfaces git errors. */
+  /** Quietly fetch git status for badge annotation. A confirmed non-git
+   *  workspace clears the badges; transient failures preserve the cached state.
+   *  Neither case surfaces an error while the user is browsing files. */
   async function loadStatus(): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
     const id = instanceId.value;
@@ -180,7 +185,7 @@ export const useFilesStore = defineStore("files", () => {
       const r = await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws });
       if (!isCurrent()) return;
       if (isErrorPayload(r)) {
-        if (r.error.code === "not-a-git-repo" || r.error.message === "not-a-git-repo") {
+        if (isNotGitError(r)) {
           changed.value = {};
           persistWorkspaceSnapshot();
         }
@@ -220,8 +225,12 @@ export const useFilesStore = defineStore("files", () => {
       const r = await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws });
       if (revision !== gitSummaryRevision || activeGitSummaryKey !== key) return;
       if (isErrorPayload(r)) {
-        gitSummary.value = null;
-        if (user && cacheUser() === user) void viewCache.write(user, "git-summary", id, ws, { summary: null });
+        if (isNotGitError(r)) {
+          gitSummary.value = null;
+          if (user && cacheUser() === user) {
+            void viewCache.write(user, "git-summary", id, ws, { summary: null });
+          }
+        }
         return;
       }
       const branch = typeof r.branch === "string" ? r.branch : undefined;

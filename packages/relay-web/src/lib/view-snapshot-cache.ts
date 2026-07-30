@@ -143,12 +143,16 @@ export async function read<T>(
 ): Promise<T | null> {
   const hot = peek<T>(user, namespace, instanceId, scope);
   if (hot !== null) return hot;
+  const token = captureWriteToken(user, namespace, instanceId, scope);
   try {
     const key = keyOf(user, namespace, instanceId, scope);
     const db = await openDb();
     const record = await asPromise<SnapshotRecord | undefined>(
       db.transaction(STORE, "readonly").objectStore(STORE).get(key) as IDBRequest<SnapshotRecord | undefined>,
     );
+    // A logout or session deletion may finish while IndexedDB is reading. Never
+    // return or reheat a snapshot captured before that invalidation boundary.
+    if (!acceptsWrite(token)) return null;
     if (!record || Date.now() - record.updatedAt > TTL_MS) {
       if (record) {
         const tx = db.transaction(STORE, "readwrite");

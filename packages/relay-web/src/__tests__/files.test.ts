@@ -280,6 +280,19 @@ describe("files store", () => {
     expect(s.gitSummary).toBeNull();
   });
 
+  it("loadGitSummary keeps a cached summary for a transient error payload", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "git-summary", "i1", "ws", {
+      summary: { workspace: "ws", changedCount: 3, branch: "cached" },
+    });
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ error: { code: "timeout", message: "connector timed out" } });
+
+    await s.loadGitSummary("i1", "ws");
+
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 3, branch: "cached" });
+  });
+
   it("refresh() re-lists the current dir and refreshes git badges on the Files tab", async () => {
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [] });
     const s = useFilesStore();
