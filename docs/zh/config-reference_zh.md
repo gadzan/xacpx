@@ -453,6 +453,7 @@ xacpx channel add <channel-type>
 | `factory-droid` | `"factory-droid"` | 无（使用 acpx 默认） |
 | `factorydroid` | `"factorydroid"` | 无（使用 acpx 默认） |
 | `grok-build` | `"grok-build"` | 无（使用 acpx 默认） |
+| `hermes` | `"hermes"` | `"hermes acp"` |
 | `iflow` | `"iflow"` | 无（使用 acpx 默认） |
 | `kilocode` | `"kilocode"` | 无（使用 acpx 默认） |
 | `kimi` | `"kimi"` | 无（使用 acpx 默认） |
@@ -462,6 +463,8 @@ xacpx channel add <channel-type>
 | `qoder` | `"qoder"` | 无（使用 acpx 默认） |
 | `qwen` | `"qwen"` | 无（使用 acpx 默认） |
 | `trae` | `"trae"` | 无（使用 acpx 默认） |
+
+`hermes` 不在 acpx 内置注册表中，模板自带显式 `command`。使用前需本机安装 [Hermes Agent](https://hermes-agent.nousresearch.com/) 及其 ACP 依赖（`uv pip install -e '.[acp]'`），并在 `~/.hermes/` 下配置好模型凭据。
 
 ### 示例
 

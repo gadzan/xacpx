@@ -98,15 +98,15 @@ xacpx agents list
 xacpx agent rm kimi
 ```
 
-The current built-in templates align with acpx's built-in agents:
+The current built-in templates align with acpx's built-in agents (plus `hermes`, which ships an explicit command):
 
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
-factory-droid, factorydroid, grok-build, iflow, kilocode, kimi,
-kiro, mux, opencode, qoder, qwen, trae
+factory-droid, factorydroid, grok-build, hermes, iflow, kilocode,
+kimi, kiro, mux, opencode, qoder, qwen, trae
 ```
 
-These templates only write `driver`. xacpx supplies exact npx pins for the managed `codex` and `claude` adapters; other launch commands follow the normal runtime/acpx resolution path. For example, `/agent add kimi` saves `{ "driver": "kimi" }`. For config fields see [config-reference.md](./config-reference.md).
+Most templates only write `driver`. xacpx supplies exact npx pins for the managed `codex` and `claude` adapters; other launch commands follow the normal runtime/acpx resolution path. For example, `/agent add kimi` saves `{ "driver": "kimi" }`. `hermes` is not in acpx's registry, so its template also saves `"command": "hermes acp"`. For config fields see [config-reference.md](./config-reference.md).
 
 ## `adapter` CLI
 

@@ -24,6 +24,19 @@ test("grok-build and mux are explicit usable templates", () => {
   expect(listAgentTemplates()).toContain("mux");
 });
 
+// hermes is not in acpx's registry; the template ships the raw ACP server command.
+test("hermes template carries the explicit acp command", () => {
+  expect(getAgentTemplate("hermes")).toEqual({ driver: "hermes", command: "hermes acp" });
+  expect(listAgentTemplates()).toContain("hermes");
+});
+
+test("hermes is 'yes' when the hermes binary is on PATH, else 'unknown'", () => {
+  const yes = catalog(cfg({}), { probe: (bin) => bin === "hermes" });
+  expect(yes.find((e) => e.driver === "hermes")!.installed).toBe("yes");
+  const no = catalog(cfg({}), { probe: () => false });
+  expect(no.find((e) => e.driver === "hermes")!.installed).toBe("unknown");
+});
+
 test("codex and claude are always builtin and configured-aware", () => {
   const cat = catalog(cfg({ codex: { driver: "codex" } }), { probe: () => false });
   const codex = cat.find((e) => e.driver === "codex")!;
@@ -77,8 +90,13 @@ test("configured is true when a config agent uses the driver under a different n
 test("every template driver is still known to the acpx registry", () => {
   const registry = createAgentRegistry();
   const known = new Set(registry.list());
+  // Templates with an explicit command (e.g. hermes) never consult the acpx
+  // registry, so they are exempt from the drift guard.
   const dropped = listAgentTemplates().filter(
-    (driver) => !known.has(driver) && registry.resolve(driver) === driver,
+    (driver) =>
+      !getAgentTemplate(driver)?.command &&
+      !known.has(driver) &&
+      registry.resolve(driver) === driver,
   );
   expect(dropped).toEqual([]);
 });
