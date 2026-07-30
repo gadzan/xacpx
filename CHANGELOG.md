@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.19.0] - 2026-07-30
+
+### Added
+
+- Control API: new `gitUntrack` and `gitDiscard` workspace-git operations. `untrack` runs `git rm --cached --force` (index-only, never touches the file on disk); `discard` restores tracked paths from HEAD and resets+cleans untracked / staged-new / rename-target paths so the operation never fails on entries that do not exist in HEAD.
+
+### Changed
+
+- Internal refactor: `claude-background-followup` transport decorator renamed to the agent-agnostic `background-followup` (`createBackgroundFollowupTransport`). No behavior change.
+
+## [relay 0.10.0] - 2026-07-30
+
+### Added
+
+- Single-use invite codes: `xacpx-relay add invite` mints a one-time invite link; the recipient redeems it at `/invite/<code>` (click-only, never on mount) to create a fresh account whose access token is shown exactly once. Codes are stored as sha256 hashes, expire after 7 days by default, share the login rate-limit bucket, and are swept by the hourly GC.
+- Dashboard Changes panel: per-file untrack and discard actions, wired to the new `control.git.untrack` / `control.git.discard` RPCs.
+- Desktop composer is taller by default and its height is drag-to-resize.
+
+### Fixed
+
+- Session rename is now applied immediately instead of waiting for the next refresh.
+- Turn presentation keeps a leading activity ahead of the narrative instead of pushing it down.
+
+## [relay-protocol 0.2.0] - 2026-07-30
+
+### Added
+
+- New control RPC messages `control.git.untrack` and `control.git.discard`, both validated as `GitPathsPayload`.
+
+### Changed
+
+- Clarify `TurnPartDto` doc comment: a presentation layer may move an activity to the end of the Markdown block in progress, but must not globally bucket narrative and activity into separate lanes.
+
+## [channel-relay 0.4.0] - 2026-07-30
+
+### Added
+
+- Control bridge dispatches the new `control.git.untrack` and `control.git.discard` messages to the host control service.
+
 ## [0.18.1] - 2026-07-30
 
 ### Fixed
