@@ -79,6 +79,27 @@ it("moves the plan panel to the side column on wide panes and back on narrow one
   expect(w.find('[data-test="composer-area"] [data-test="plan-panel"]').exists()).toBe(true);
 });
 
+it("preserves the manual expand/collapse state across the placement switch", async () => {
+  vi.stubGlobal("ResizeObserver", FakeRO);
+  seedInstance();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  seedPlan(chat);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  // Inline + not busy → starts collapsed; expand it by hand.
+  const toggle = w.find('[data-test="composer-area"] [data-test="plan-toggle"]');
+  expect(toggle.attributes("aria-expanded")).toBe("false");
+  await toggle.trigger("click");
+  expect(w.find('[data-test="composer-area"] [data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");
+  // Cross into the side column: the remounted panel keeps the expanded state.
+  await resize(w, 1400);
+  expect(w.find('[data-test="plan-side-col"] [data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");
+  // And back to inline again.
+  await resize(w, 800);
+  expect(w.find('[data-test="composer-area"] [data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");
+});
+
 it("renders no side column on a wide pane when the session has no plan", async () => {
   vi.stubGlobal("ResizeObserver", FakeRO);
   seedInstance();

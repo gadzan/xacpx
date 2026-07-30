@@ -32,6 +32,9 @@ const paneWidth = useElementWidth(paneEl);
 const planPlacement = ref<PlanPlacement>("inline");
 watch(paneWidth, (w) => { planPlacement.value = computePlanPlacement(w, planPlacement.value); });
 const planSide = computed(() => planPlacement.value === "side" && (chat.sessionPlan?.length ?? 0) > 0);
+// Owned here (not inside PlanPanel) so the manual expand/collapse survives the inline↔side
+// switch, which remounts the panel. Seeded from busy to match the panel's own default.
+const planExpanded = ref(chat.busy);
 
 function onSend(text: string, media: PromptAttachmentRef[] = []) {
   void chat.send(text, media);
@@ -200,7 +203,7 @@ const verb = computed(() => {
       <aside v-if="planSide" data-test="plan-side-col"
              class="flex w-72 shrink-0 flex-col py-5 pr-5"
              :aria-label="$t('plan.title')">
-        <PlanPanel variant="side" :entries="chat.sessionPlan ?? []" :active="chat.busy" />
+        <PlanPanel variant="side" v-model:expanded="planExpanded" :entries="chat.sessionPlan ?? []" :active="chat.busy" />
       </aside>
       </div>
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
@@ -222,7 +225,7 @@ const verb = computed(() => {
                   @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
         </div>
         <QueueStrip />
-        <PlanPanel v-if="!planSide && chat.sessionPlan?.length" :entries="chat.sessionPlan" :active="chat.busy" />
+        <PlanPanel v-if="!planSide && chat.sessionPlan?.length" v-model:expanded="planExpanded" :entries="chat.sessionPlan" :active="chat.busy" />
         <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                      :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                      @send="onSend" @cancel="chat.cancel" />

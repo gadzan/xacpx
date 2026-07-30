@@ -293,7 +293,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   无 RO 时初始即 inline 故恒回落原位,宽屏下切 tab 再切回也不会销毁重建侧列面板。侧列形态用
   `PlanPanel` 的 `variant="side"`:放开 `max-h-48`,header 钉住、列表在列高内滚动。
   常量与模板 class 是双份事实（`CHAT_CONTENT_MAX`↔`max-w-3xl`、`PLAN_SIDE_WIDTH`↔`w-72`),改一处须同步另一处。
-  两插槽 `v-if` 切换会重建组件,`expanded` 重置为 `active ?? true`——有意为之,切换低频可接受。
+  两插槽 `v-if` 切换会重建 PlanPanel,但 `expanded` 折叠状态由 ChatPane 用 `v-model:expanded` 持有,跨切换保留。
 
 ## 文件地图
 
