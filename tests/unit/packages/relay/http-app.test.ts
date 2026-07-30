@@ -430,6 +430,53 @@ test("session removal still waits for a prompt on the same session", async () =>
   await expect(removeForwarded.promise).resolves.toBeUndefined();
 });
 
+test("session rename waits for a lifecycle operation on the same session", async () => {
+  const removeStarted = deferred<void>();
+  const removeRelease = deferred<unknown>();
+  const renameForwarded = deferred<void>();
+  const { app, instances, loginToken, login } = await makeApp({
+    sendRequest: async (_instanceId, type) => {
+      if (type === MSG.sessionsRemove) {
+        removeStarted.resolve(undefined);
+        return await removeRelease.promise;
+      }
+      if (type === MSG.sessionsRename) {
+        renameForwarded.resolve(undefined);
+        return { ok: true };
+      }
+      return {};
+    },
+  });
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  const rpcPath = `/api/instances/${redeemed.instanceId}/rpc`;
+
+  const removeResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsRemove, payload: { alias: "backend" } }),
+  });
+  await removeStarted.promise;
+
+  const renameResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsRename, payload: { alias: "backend", displayName: "New label" } }),
+  });
+  const forwardedBeforeRemoveFinished = await Promise.race([
+    renameForwarded.promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+
+  expect(forwardedBeforeRemoveFinished).toBe(false);
+  removeRelease.resolve({ ok: true });
+  expect((await removeResponse).status).toBe(200);
+  expect((await renameResponse).status).toBe(200);
+  await expect(renameForwarded.promise).resolves.toBeUndefined();
+});
+
 test("session effort RPCs are chat-scoped", async () => {
   const { app, instances, loginToken, login, rpcCalls } = await makeApp();
   const { cookie } = await login(loginToken);

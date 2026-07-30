@@ -61,6 +61,44 @@ describe("instances renameSession", () => {
     expect(visibleWhilePending).toBe("New label");
   });
 
+  it("does not let a list started before a single successful rename restore the old name", async () => {
+    const store = useInstancesStore();
+    store.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+      agents: [{ name: "claude", driver: "claude" }], workspaces: [], agentCatalog: [],
+      sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: true, archived: false, displayName: "old" }],
+    }] as never;
+    const staleListResult = deferred<unknown>();
+    const confirmingListResult = deferred<unknown>();
+    const renameResult = deferred<unknown>();
+    let listCalls = 0;
+    vi.spyOn(api, "rpc").mockImplementation((_instanceId, type) => {
+      if (type === "control.sessions.rename") return renameResult.promise as never;
+      if (type === "control.sessions.list") {
+        listCalls += 1;
+        return (listCalls === 1 ? staleListResult.promise : confirmingListResult.promise) as never;
+      }
+      throw new Error(`unexpected rpc: ${type}`);
+    });
+
+    const staleReload = store.loadSessions("i1");
+    const renaming = store.renameSession("i1", "backend", "A");
+    renameResult.resolve({ ok: true });
+    await Promise.resolve();
+
+    staleListResult.resolve({
+      sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: true, archived: false, displayName: "old" }],
+    });
+    await staleReload;
+    expect(store.instances[0]!.sessions[0]!.displayName).toBe("A");
+
+    confirmingListResult.resolve({
+      sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: true, archived: false, displayName: "A" }],
+    });
+    await renaming;
+    expect(store.instances[0]!.sessions[0]!.displayName).toBe("A");
+  });
+
   it("serializes consecutive renames and rolls a failed latest rename back to the last confirmed value", async () => {
     const store = useInstancesStore();
     store.instances = [{

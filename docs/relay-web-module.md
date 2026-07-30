@@ -171,8 +171,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   按 Enter 后 store 会立即乐观更新本地行，不等待 RPC 返回。pending 展示名会覆盖期间
   `sessions-changed` 触发的旧列表快照；同一会话的连续 rename 在 Web 侧按 FIFO 提交，失败时只回滚到
   最近确认值，迟到响应不能覆盖更新的名称。**空值清除**（回退显示 `alias`），不做唯一性约束。
-- Hub 仍为 rename 盖戳可信 `chatKey`，但它不进入 prompt/create/remove/archive/unarchive 共用的
-  同会话生命周期锁：展示名不改变会话身份，因此 agent 回合运行中也能立即持久化和跨 dashboard 同步。
+- Hub 仍为 rename 盖戳可信 `chatKey`。rename 不占同会话 turn 锁，因此 agent 回合运行中也能立即
+  持久化和跨 dashboard 同步；它仍占 lifecycle/metadata 锁，与 create/remove/archive/unarchive
+  保持互斥，避免跨会话 incarnation 写入。
 - 侧边栏与 `ChatPane` 头部均渲染 `displayName || alias`。微信 `/sessions`、`/use` 不受影响。
 
 ## 会话睡眠（原「归档」）与冷会话指示器

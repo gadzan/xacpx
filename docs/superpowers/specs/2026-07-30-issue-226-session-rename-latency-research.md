@@ -25,8 +25,8 @@ Issue #226 是确定性的同会话 RPC 串行阻塞，不是 Vue 渲染或
    issue：“Enter 后看起来没成功，agent 执行结束后才显示新名称”。
    来源：[issue #226 正文](https://github.com/gadzan/xacpx/issues/226)。
 
-最小根因修复是：**保留 rename 的 chat scope 盖戳，但把
-`MSG.sessionsRename` 从 Hub 的 `rpcSessionAlias()` 串行集合中移除。**
+最小根因修复是：**保留 rename 的 chat scope 盖戳，把同会话的 turn 与 lifecycle/metadata
+串行拆开；rename 只绕过 prompt 持有的 turn 锁，并继续与 create/remove/archive/unarchive 互斥。**
 建议同时把 Web 改成真正的乐观更新，并实现带请求代次/当前值检查的失败回滚；前者解决服务端阻塞，
 后者提供即时反馈和稳健的错误体验。
 
@@ -70,9 +70,9 @@ Core 的展示名写入也已有自身的一致性边界：
   请求未完成时执行。
   来源：[bridge scheduler 并发测试](https://github.com/gadzan/xacpx/blob/6248fe2e9df5db855f28306acc3d365a0889874d/tests/unit/bridge/bridge-request-scheduler.test.ts#L46-L73)。
 
-据此推断，展示名无需 Hub 的“整回合”锁；移出该锁不会使 alias/transport 身份在 turn 中途变化，
-逻辑状态写入仍由 Core mutex 串行。这个判断不应外推到 create/remove/archive/unarchive：
-它们改变会话生命周期，仍应保留现有排序。
+据此推断，展示名无需 Hub 的“整回合”turn 锁；绕过该锁不会使 alias/transport 身份在 turn 中途变化，
+逻辑状态写入仍由 Core mutex 串行。rename 仍应通过独立 lifecycle/metadata 锁与
+create/remove/archive/unarchive 互斥，避免在会话销毁或重建期间写入错误 incarnation。
 
 ## 回归来源
 
@@ -90,23 +90,25 @@ Hub 的 keyed RPC lock 由提交
   `chatKey`；这必须保留。当前注释也说明 connector payload validator 需要该字段。
   来源：[chat-scoped 集合](https://github.com/gadzan/xacpx/blob/6248fe2e9df5db855f28306acc3d365a0889874d/packages/relay/src/http/app.ts#L52-L74)、
   [chatKey stamping 测试](https://github.com/gadzan/xacpx/blob/6248fe2e9df5db855f28306acc3d365a0889874d/tests/unit/packages/relay/http-app.test.ts#L302-L322)。
-- 不必要地把 `MSG.sessionsRename` 也加入 `rpcSessionAlias()` 的生命周期锁集合，从而引入
-  issue #226。
+- 不必要地让 `MSG.sessionsRename` 与 prompt 共用同一把覆盖整回合的锁，从而引入 issue #226；
+  它与身份生命周期操作之间的互斥仍需保留。
   来源：[提交 diff](https://github.com/gadzan/xacpx/commit/08d5204286575a693f3e40881d86e31e4834fdeb)。
 
 因此修复不能简单回退整个 #212；应只解耦“chat scope stamping”和“同会话 RPC locking”。
 
 ## 建议修复
 
-### 1. 必需：解除 Hub 对 rename 的整回合串行
+### 1. 必需：解除 Hub 对 rename 的整回合串行，同时保留生命周期互斥
 
-在 `packages/relay/src/http/app.ts` 的 `rpcSessionAlias()` 中移除
-`type === MSG.sessionsRename`；不要从 `CHAT_SCOPED_TYPES` 移除它。
+在 `packages/relay/src/http/app.ts` 中拆分 turn 与 lifecycle/metadata 两把 keyed lock：
+prompt/command-execute 取得 turn，rename 取得 lifecycle/metadata，
+create/remove/archive/unarchive 先取得 lifecycle/metadata 再取得 turn。不要从
+`CHAT_SCOPED_TYPES` 移除 rename。
 
 预期时序变为：
 
-1. prompt 继续持有同会话的 lifecycle RPC lock；
-2. rename 不申请该锁，立刻经 gateway 下发；
+1. prompt 继续持有同会话的 turn lock；
+2. rename 只申请未被 prompt 占用的 lifecycle/metadata lock，立刻经 gateway 下发；
 3. Core 在共享 state mutex 内写入 `display_name`；
 4. `sessions-changed` 上行，所有打开的 dashboard 重拉权威列表；
 5. rename RPC 返回成功。

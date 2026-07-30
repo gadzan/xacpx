@@ -122,8 +122,13 @@ export const useInstancesStore = defineStore("instances", () => {
         const key = sessionRenameKey(instanceId, session.alias);
         const pending = pendingSessionRenames.get(key);
         if (!pending) return session;
-        if (confirmedRevisionsAtRequest.get(key) === pending.confirmedRevision) {
-          pending.confirmedDisplayName = session.displayName;
+        if (
+          confirmedRevisionsAtRequest.get(key) === pending.confirmedRevision
+          && pending.latestRevision === pending.confirmedRevision
+          && session.displayName === pending.confirmedDisplayName
+        ) {
+          pendingSessionRenames.delete(key);
+          return session;
         }
         return { ...session, displayName: pending.desiredDisplayName };
       });
@@ -349,7 +354,12 @@ export const useInstancesStore = defineStore("instances", () => {
         if (!pending) return;
         pending.confirmedDisplayName = nextDisplayName;
         pending.confirmedRevision = revision;
-        if (pending.latestRevision === revision) pendingSessionRenames.delete(key);
+        if (pending.latestRevision === revision) {
+          // Keep the optimistic overlay until a list request started after this
+          // successful write confirms the same value. This prevents a list that
+          // was already in flight from repainting the old display name.
+          await loadSessions(instanceId).catch(() => {});
+        }
       } catch (error) {
         const pending = pendingSessionRenames.get(key);
         if (pending?.latestRevision === revision) {

@@ -9,9 +9,11 @@ show the new name immediately and persist it without waiting for the turn to
 finish, while preserving lifecycle ordering, trusted chat scoping, error
 visibility, and cross-dashboard convergence.
 
-**Architecture:** Split cosmetic metadata from lifecycle serialization at the
-Hub boundary: `control.sessions.rename` remains chat-scoped but no longer takes
-the same keyed lock as prompt/create/remove/archive/unarchive. In Relay Web,
+**Architecture:** Split same-session turn and lifecycle serialization at the
+Hub boundary: `control.sessions.rename` remains chat-scoped and shares a
+lifecycle/metadata lock with create/remove/archive/unarchive, but it does not
+take the turn lock held by prompt/command-execute. Identity-changing lifecycle
+operations take both locks. In Relay Web,
 apply the display name before the RPC resolves and keep a per-session pending
 overlay across `sessions-changed` reloads. Serialize only Web rename mutations
 for the same session so consecutive attempts have deterministic confirmation
@@ -26,9 +28,9 @@ for Hub code, Vitest/jsdom for Relay Web.
 
 - `MSG.sessionsRename` stays in `CHAT_SCOPED_TYPES`; the Hub must continue to
   overwrite client-supplied `chatKey`, `senderId`, and `isOwner`.
-- Only cosmetic rename bypasses the keyed RPC lock. Prompt,
-  command-execute, create, remove, archive, and unarchive retain their current
-  same-session ordering.
+- Cosmetic rename bypasses only the turn lock. It stays serialized with create,
+  remove, archive, and unarchive; identity-changing lifecycle operations also
+  retain their ordering with prompt and command-execute.
 - Wire protocol, RPC names/payloads, Core persistence, `alias`,
   `transportSession`, and `/use` semantics do not change.
 - Preserve #212 behavior: connector errors are unwrapped, the existing error
@@ -43,8 +45,8 @@ for Hub code, Vitest/jsdom for Relay Web.
 
 ## File Structure
 
-- **Modify** `packages/relay/src/http/app.ts` — remove rename from the
-  lifecycle-lock classifier while retaining chat scoping.
+- **Modify** `packages/relay/src/http/app.ts` — split turn and lifecycle lock
+  classification while retaining chat scoping.
 - **Modify** `tests/unit/packages/relay/http-app.test.ts` — prove rename
   bypasses a pending prompt and lifecycle mutations still wait.
 - **Modify** `packages/relay-web/src/stores/instances.ts` — immediate local
@@ -59,7 +61,7 @@ for Hub code, Vitest/jsdom for Relay Web.
 
 ---
 
-## Task 1: Let cosmetic rename bypass the Hub lifecycle lock
+## Task 1: Let cosmetic rename bypass the Hub turn lock
 
 **Files:**
 
@@ -73,6 +75,8 @@ for Hub code, Vitest/jsdom for Relay Web.
   `gateway.sendRequest` and returns without waiting for that prompt.
 - A later lifecycle operation such as `control.sessions.remove` still waits
   for the prompt, proving the lock was narrowed rather than disabled.
+- Rename remains mutually exclusive with create/remove/archive/unarchive for
+  the same alias.
 - Rename still receives the server-stamped `chatKey`.
 
 - [ ] **Step 1: Add a controllable gateway seam to the test helper**
@@ -146,20 +150,13 @@ Expected before the fix:
 - rename-bypasses-prompt test fails because `renameForwarded` is not reached;
 - lifecycle counterexample and existing chatKey stamping tests remain valid.
 
-- [ ] **Step 5: Narrow `rpcSessionAlias()`**
+- [ ] **Step 5: Split turn and lifecycle lock classification**
 
-In `packages/relay/src/http/app.ts`, remove only:
-
-```ts
-type === MSG.sessionsRename
-```
-
-from the alias-returning lifecycle branch. Leave
-`MSG.sessionsRename` in `CHAT_SCOPED_TYPES`.
-
-Add a short comment near `rpcSessionAlias()` explaining that the function
-classifies RPCs needing lifecycle ordering, not every RPC that carries a
-session alias; cosmetic metadata writes intentionally bypass it.
+In `packages/relay/src/http/app.ts`, classify prompt/command-execute for the
+turn lock, rename for the lifecycle/metadata lock, and
+create/remove/archive/unarchive for both. Acquire lifecycle before turn so an
+identity mutation queued behind a running turn cannot be overtaken by a later
+rename. Leave `MSG.sessionsRename` in `CHAT_SCOPED_TYPES`.
 
 - [ ] **Step 6: Verify Hub behavior**
 
@@ -177,7 +174,7 @@ the remove counterexample remains blocked until release.
 
 ```bash
 git add packages/relay/src/http/app.ts tests/unit/packages/relay/http-app.test.ts
-git commit -m "fix(relay): let session rename bypass turn lifecycle lock"
+git commit -m "fix(relay): let session rename bypass turn lock"
 ```
 
 ---
@@ -375,8 +372,8 @@ In `docs/relay-web-module.md`'s session rename section, document:
 - pending names survive `sessions-changed` list reloads;
 - same-session Web rename attempts reconcile FIFO with confirmed-value
   rollback;
-- rename remains chat-scoped but intentionally bypasses the Hub lifecycle lock
-  because it does not change session identity.
+- rename remains chat-scoped, bypasses the Hub turn lock because it does not
+  change session identity, and remains serialized with lifecycle mutations.
 
 Do not describe alias/transport rename; those remain out of scope.
 

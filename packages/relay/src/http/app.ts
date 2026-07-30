@@ -98,14 +98,26 @@ function boundField<T extends string | undefined>(v: T): T {
   return (typeof v === "string" ? v.slice(0, MAX_ATTACHMENT_FIELD_LEN) : v) as T;
 }
 
-// Classify RPCs that must preserve same-session lifecycle ordering. This is
-// intentionally narrower than "every RPC carrying an alias": cosmetic metadata
-// writes such as sessionsRename do not change session identity and must remain
-// responsive while a prompt holds the lifecycle lock.
-function rpcSessionAlias(type: string, payload: unknown): string | undefined {
+type SessionRpcLocks = {
+  alias: string;
+  lifecycle: boolean;
+  turn: boolean;
+};
+
+// Prompts serialize with other turns but not cosmetic metadata writes. Rename
+// serializes with identity-changing lifecycle operations but not turns. Lifecycle
+// operations take both locks so they cannot race either category.
+function rpcSessionLocks(type: string, payload: unknown): SessionRpcLocks | undefined {
   const value = payload as { alias?: unknown; sessionAlias?: unknown };
   if (type === MSG.prompt || type === MSG.commandExecute) {
-    return typeof value.sessionAlias === "string" && value.sessionAlias ? value.sessionAlias : undefined;
+    return typeof value.sessionAlias === "string" && value.sessionAlias
+      ? { alias: value.sessionAlias, lifecycle: false, turn: true }
+      : undefined;
+  }
+  if (type === MSG.sessionsRename) {
+    return typeof value.alias === "string" && value.alias
+      ? { alias: value.alias, lifecycle: true, turn: false }
+      : undefined;
   }
   if (
     type === MSG.sessionsCreate ||
@@ -113,7 +125,9 @@ function rpcSessionAlias(type: string, payload: unknown): string | undefined {
     type === MSG.sessionsArchive ||
     type === MSG.sessionsUnarchive
   ) {
-    return typeof value.alias === "string" && value.alias ? value.alias : undefined;
+    return typeof value.alias === "string" && value.alias
+      ? { alias: value.alias, lifecycle: true, turn: true }
+      : undefined;
   }
   return undefined;
 }
@@ -147,7 +161,8 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   const pairingTtlMs = deps.pairingTtlMs ?? 10 * 60 * 1000;
   const trustProxy = deps.trustProxy ?? false;
   const now = deps.now ?? (() => new Date());
-  const acquireSessionRpcLock = createKeyedRpcLock();
+  const acquireSessionLifecycleRpcLock = createKeyedRpcLock();
+  const acquireSessionTurnRpcLock = createKeyedRpcLock();
 
   // Per-IP failure tracking
   const loginFailures = new Map<string, { count: number; windowStart: number }>();
@@ -366,7 +381,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         isOwner: true,
       };
     }
-    let releaseSessionRpcLock: (() => void) | undefined;
+    const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;
     try {
       // Shape-validate the RPCs the hub persists BEFORE forwarding, so a malformed frame
@@ -392,9 +407,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         const approxBytes = up.content ? Math.floor((up.content.length * 3) / 4) : 0;
         if (approxBytes > 10 * 1024 * 1024) return c.json({ error: "file-too-large" }, 413);
       }
-      const sessionAlias = rpcSessionAlias(body.type, payload);
-      if (sessionAlias) {
-        releaseSessionRpcLock = await acquireSessionRpcLock(`${instance.id}\0${sessionAlias}`);
+      const sessionLocks = rpcSessionLocks(body.type, payload);
+      if (sessionLocks) {
+        const key = `${instance.id}\0${sessionLocks.alias}`;
+        // Lifecycle first: if a destructive operation is queued behind a running
+        // turn, later renames queue behind that operation instead of overtaking it.
+        if (sessionLocks.lifecycle) {
+          releaseSessionRpcLocks.push(await acquireSessionLifecycleRpcLock(key));
+        }
+        if (sessionLocks.turn) {
+          releaseSessionRpcLocks.push(await acquireSessionTurnRpcLock(key));
+        }
       }
       // Persist the inbound user message BEFORE awaiting the turn: sendRequest
       // resolves only after the agent's turn-finished event has already
@@ -450,7 +473,9 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);
     } finally {
-      releaseSessionRpcLock?.();
+      for (let i = releaseSessionRpcLocks.length - 1; i >= 0; i--) {
+        releaseSessionRpcLocks[i]?.();
+      }
     }
   });
 
