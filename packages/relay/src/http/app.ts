@@ -98,6 +98,10 @@ function boundField<T extends string | undefined>(v: T): T {
   return (typeof v === "string" ? v.slice(0, MAX_ATTACHMENT_FIELD_LEN) : v) as T;
 }
 
+// Classify RPCs that must preserve same-session lifecycle ordering. This is
+// intentionally narrower than "every RPC carrying an alias": cosmetic metadata
+// writes such as sessionsRename do not change session identity and must remain
+// responsive while a prompt holds the lifecycle lock.
 function rpcSessionAlias(type: string, payload: unknown): string | undefined {
   const value = payload as { alias?: unknown; sessionAlias?: unknown };
   if (type === MSG.prompt || type === MSG.commandExecute) {
@@ -107,8 +111,7 @@ function rpcSessionAlias(type: string, payload: unknown): string | undefined {
     type === MSG.sessionsCreate ||
     type === MSG.sessionsRemove ||
     type === MSG.sessionsArchive ||
-    type === MSG.sessionsUnarchive ||
-    type === MSG.sessionsRename
+    type === MSG.sessionsUnarchive
   ) {
     return typeof value.alias === "string" && value.alias ? value.alias : undefined;
   }

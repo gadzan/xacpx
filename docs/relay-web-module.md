@@ -168,7 +168,11 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - 设置的是一个**纯展示名 `display_name`**（核心 `LogicalSession.display_name` → `SessionDto.displayName`）；
   它**不改会话身份**：`alias`、`/use` 句柄、transport 会话名都不变，仅 relay-web 展示。
 - 走 RPC `control.sessions.rename {alias, displayName}`（连接器 → `ControlService.setSessionDisplayName`）；
-  store `renameSession` 提交后乐观更新本地行。**空值清除**（回退显示 `alias`），不做唯一性约束。
+  按 Enter 后 store 会立即乐观更新本地行，不等待 RPC 返回。pending 展示名会覆盖期间
+  `sessions-changed` 触发的旧列表快照；同一会话的连续 rename 在 Web 侧按 FIFO 提交，失败时只回滚到
+  最近确认值，迟到响应不能覆盖更新的名称。**空值清除**（回退显示 `alias`），不做唯一性约束。
+- Hub 仍为 rename 盖戳可信 `chatKey`，但它不进入 prompt/create/remove/archive/unarchive 共用的
+  同会话生命周期锁：展示名不改变会话身份，因此 agent 回合运行中也能立即持久化和跨 dashboard 同步。
 - 侧边栏与 `ChatPane` 头部均渲染 `displayName || alias`。微信 `/sessions`、`/use` 不受影响。
 
 ## 会话睡眠（原「归档」）与冷会话指示器

@@ -14,6 +14,16 @@ import type { RelayLogger } from "../../../../packages/relay/src/logging";
 
 type LogEntry = [string, string, Record<string, unknown> | undefined];
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeFakeLogger(): { logger: RelayLogger; logs: LogEntry[] } {
   const logs: LogEntry[] = [];
   const logger: RelayLogger = {
@@ -24,7 +34,11 @@ function makeFakeLogger(): { logger: RelayLogger; logs: LogEntry[] } {
   return { logger, logs };
 }
 
-async function makeApp(opts: { trustProxy?: boolean; now?: () => Date } = {}) {
+async function makeApp(opts: {
+  trustProxy?: boolean;
+  now?: () => Date;
+  sendRequest?: (instanceId: string, type: string, payload: unknown) => Promise<unknown>;
+} = {}) {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
@@ -36,7 +50,7 @@ async function makeApp(opts: { trustProxy?: boolean; now?: () => Date } = {}) {
     isOnline: (id: string) => id !== "offline-id",
     sendRequest: async (instanceId: string, type: string, payload: unknown) => {
       rpcCalls.push({ instanceId, type, payload });
-      return { sessions: [] };
+      return await (opts.sendRequest?.(instanceId, type, payload) ?? Promise.resolve({ sessions: [] }));
     },
   };
   const messages = new MessageStore(db);
@@ -319,6 +333,101 @@ test("session rename RPC is chat-scoped (chatKey stamped, client-forged chatKey 
   expect(res.status).toBe(200);
   const stamped = rpcCalls[0]?.payload as { chatKey?: string };
   expect(stamped.chatKey).toBe(`relay:${redeemed.accountId}`);
+});
+
+test("session rename is forwarded while a prompt for the same session is still running", async () => {
+  const promptStarted = deferred<void>();
+  const promptRelease = deferred<unknown>();
+  const renameForwarded = deferred<void>();
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp({
+    sendRequest: async (_instanceId, type) => {
+      if (type === MSG.prompt) {
+        promptStarted.resolve(undefined);
+        return await promptRelease.promise;
+      }
+      if (type === MSG.sessionsRename) {
+        renameForwarded.resolve(undefined);
+        return { ok: true };
+      }
+      return {};
+    },
+  });
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  const rpcPath = `/api/instances/${redeemed.instanceId}/rpc`;
+
+  const promptResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "long task" } }),
+  });
+  await promptStarted.promise;
+
+  const renameResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsRename, payload: { alias: "backend", displayName: "New label" } }),
+  });
+  const forwardedBeforePromptFinished = await Promise.race([
+    renameForwarded.promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+
+  promptRelease.resolve({ ok: true });
+  expect((await promptResponse).status).toBe(200);
+  expect((await renameResponse).status).toBe(200);
+  expect(forwardedBeforePromptFinished).toBe(true);
+  const renameCall = rpcCalls.find((call) => call.type === MSG.sessionsRename);
+  expect((renameCall?.payload as { chatKey?: string }).chatKey).toBe(`relay:${redeemed.accountId}`);
+});
+
+test("session removal still waits for a prompt on the same session", async () => {
+  const promptStarted = deferred<void>();
+  const promptRelease = deferred<unknown>();
+  const removeForwarded = deferred<void>();
+  const { app, instances, loginToken, login } = await makeApp({
+    sendRequest: async (_instanceId, type) => {
+      if (type === MSG.prompt) {
+        promptStarted.resolve(undefined);
+        return await promptRelease.promise;
+      }
+      if (type === MSG.sessionsRemove) {
+        removeForwarded.resolve(undefined);
+        return { ok: true };
+      }
+      return {};
+    },
+  });
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  const rpcPath = `/api/instances/${redeemed.instanceId}/rpc`;
+
+  const promptResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "long task" } }),
+  });
+  await promptStarted.promise;
+
+  const removeResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsRemove, payload: { alias: "backend" } }),
+  });
+  const forwardedBeforePromptFinished = await Promise.race([
+    removeForwarded.promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+
+  expect(forwardedBeforePromptFinished).toBe(false);
+  promptRelease.resolve({ ok: true });
+  expect((await promptResponse).status).toBe(200);
+  expect((await removeResponse).status).toBe(200);
+  await expect(removeForwarded.promise).resolves.toBeUndefined();
 });
 
 test("session effort RPCs are chat-scoped", async () => {
