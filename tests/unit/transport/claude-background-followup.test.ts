@@ -38,6 +38,17 @@ test("a completed sync Agent quoting the launch phrase is not an async launch", 
   expect(isClaudeAsyncAgentLaunch(event)).toBe(false);
 });
 
+test("a stringified sync result quoting the launch phrase is not an async launch", () => {
+  const event: ToolUseEvent = {
+    toolCallId: TASK_A,
+    toolName: "Agent",
+    kind: "think",
+    rawOutput: '{"status":"completed","content":"Async agent launched successfully"}',
+    status: "success",
+  };
+  expect(isClaudeAsyncAgentLaunch(event)).toBe(false);
+});
+
 test("resolves the default driver's transcript under ~/.claude/projects", async () => {
   const home = await mkdtemp(join(tmpdir(), "xacpx-claude-home-"));
   const projectDir = join(home, ".claude", "projects", "-Users-me-demo");

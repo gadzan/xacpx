@@ -61,14 +61,27 @@ export function isClaudeAsyncAgentLaunch(event: ToolUseEvent): boolean {
 }
 
 export function isAsyncAgentLaunchOutput(rawOutput: unknown): boolean {
-  if (rawOutput && typeof rawOutput === "object" && !Array.isArray(rawOutput)) {
-    const status = (rawOutput as Record<string, unknown>).status;
+  const candidate = typeof rawOutput === "string" ? tryParseJsonObject(rawOutput) ?? rawOutput : rawOutput;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    const status = (candidate as Record<string, unknown>).status;
     // A structured tool result with an explicit status is authoritative; a
     // completed sync Agent whose answer merely quotes the launch phrase must
     // not be treated as a background launch.
     if (status !== undefined) return status === "async_launched";
   }
   return ASYNC_AGENT_LAUNCH.test(textOfUnknown(rawOutput));
+}
+
+function tryParseJsonObject(text: string): Record<string, unknown> | undefined {
+  if (!text.trimStart().startsWith("{")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function claudeAsyncAgentId(event: ToolUseEvent): string | undefined {
