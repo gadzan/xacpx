@@ -99,8 +99,10 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   原样进入 Relay Web。Qoder、Kimi、Codex 当前 ACP 主流没有提供子工具父子关系，因此不虚构执行时间线；channel-relay
   在 `event.isSubagent` 步骤上把委派 prompt 放入 `detail.text`、把子代理流式/最终输出放入 `detail.output`，
   卡片据此展示实时进度与结果报告。
-- 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪 Claude
-  主 transcript，并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。后台任务真正完成、主 Agent 续写结束后才转为
+- 异步 Agent 的 `async_launched` 只代表启动成功，父步骤保持 `running`；transport 装饰器在 ACP 结束后继续跟踪
+  driver 的原生主 transcript（Claude 在 `~/.claude/projects`，Qoder 为兼容 fork，布局相同，位于 `~/.qoder/projects`；
+  仅这两个 driver 支持后台跟读），并递归增量读取 `<sessionId>/subagents/**/agent-*.jsonl`。结构化结果里显式的
+  `status` 字段是权威判定，只有缺失时才回退到 launch 短语匹配。后台任务真正完成、主 Agent 续写结束后才转为
   `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。
 - `TurnParts.vue` 保留原始有序 parts，但展示时分为两条视觉通道：推理/工具按原相对顺序组成活动区，
   所有 text part 拼回一个连续 Markdown 文档，避免工具事件切断段落、列表或代码围栏；同时按

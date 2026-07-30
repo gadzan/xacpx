@@ -1,5 +1,6 @@
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../channels/types.js";
 import type { AgentCommand, PromptUsage, UsageBreakdown, UsageCost } from "./types.js";
+import { isAsyncAgentLaunchOutput } from "./claude-background-followup.js";
 import { resolveToolEventMode } from "./tool-event-mode.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
@@ -416,9 +417,12 @@ function buildToolUseEvent(
   const claudeToolResponse = claudeMeta?.toolResponse;
   const hasClaudeToolResponse = !isEmptyToolField(claudeToolResponse);
   const isAsyncAgentLaunch =
-    update._meta?.claudeCode?.toolName === "Agent" &&
-    isRecord(claudeToolResponse) &&
-    claudeToolResponse.status === "async_launched";
+    (update._meta?.claudeCode?.toolName === "Agent" &&
+      isRecord(claudeToolResponse) &&
+      claudeToolResponse.status === "async_launched") ||
+    (driver === "qoder" &&
+      update._meta?.qoder?.toolName === "Agent" &&
+      isAsyncAgentLaunchOutput(update.rawOutput));
   const status: ToolUseStatus =
     isAsyncAgentLaunch ? "running"
     : statusRaw === "completed" || statusRaw === "success" ? "success"
