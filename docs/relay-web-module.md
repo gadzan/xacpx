@@ -290,6 +290,15 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     所以抽屉开合 `leftOpen`/`rightOpen` 仅在移动端可见、桌面无副作用——无需 JS 断点检测。
   - 半透明 backdrop 点击关闭；选中会话自动关左抽屉直达对话；抽屉头部有 `✕` 关闭按钮（`lg:hidden`）。
 - 中栏聊天始终占据剩余宽度；登录页/设置页（`max-w-2xl mx-auto`）本身是流式宽度，移动端无需额外处理。
+- **宽屏 Plan 侧列**（issue #231）：中栏足够宽时,`PlanPanel` 从 composer 区移到消息历史右侧的
+  `w-72` 全高列（`ChatPane.vue` 的 `data-test="plan-side-col"`,右栏左边）。判定不是视口断点而是
+  **ResizeObserver 实测 ChatPane 根宽**（左栏折叠/右栏拖拽都会改变可用宽）,阈值带迟滞
+  （`src/lib/plan-placement.ts`:进入 ≥ 768+288+32+32=1120px,退出 < 1088px,防滚动条/拖窗抖动）;
+  宽度 ≤ 0（无 ResizeObserver 的 jsdom/嵌入式环境,或 ChatPane 被 `v-show` 藏在其他 tab 后）时**保持上次判定**——
+  无 RO 时初始即 inline 故恒回落原位,宽屏下切 tab 再切回也不会销毁重建侧列面板。侧列形态用
+  `PlanPanel` 的 `variant="side"`:放开 `max-h-48`,header 钉住、列表在列高内滚动。
+  常量与模板 class 是双份事实（`CHAT_CONTENT_MAX`↔`max-w-3xl`、`PLAN_SIDE_WIDTH`↔`w-72`),改一处须同步另一处。
+  两插槽 `v-if` 切换会重建 PlanPanel,但 `expanded` 折叠状态由 ChatPane 用 `v-model:expanded` 持有,跨切换保留。
 
 ## 文件地图
 
