@@ -158,27 +158,37 @@ watch(
 );
 
 // Entrance choreography: switching sessions repositions the scroller several times
-// before the pane truly rests at the newest message (cache seed lands, the
-// authoritative page replaces it, content-visibility estimates settle). Painting
-// those intermediate states reads as a flash-then-yank. Instead HOLD the transcript
-// invisible (opacity only — layout and scroll math run as usual) until the first
-// content is pinned to the bottom, then PLAY a bottom-anchored staggered rise, so
-// the first frame the user perceives is already resting at the latest message.
-const enterPhase = ref<"idle" | "hold" | "play">(props.sessionKey && props.messages.length === 0 ? "hold" : "idle");
+// before the pane rests at the newest message (the cache seed or first page lands,
+// then content-visibility estimates settle). Painting those intermediate states
+// reads as a flash-then-yank. Instead HOLD the transcript invisible (opacity only —
+// layout and scroll math run as usual) until the FIRST content is pinned to the
+// bottom, then PLAY a bottom-anchored staggered rise, so the first frame the user
+// perceives is already resting at the latest message. The later authoritative
+// replace of a cache-seeded tail is NOT covered by the hold — it stays flicker-free
+// through stable row keys and the bottom pin instead (spec #205).
+const enterPhase = ref<"idle" | "hold" | "play">("idle");
 let enterRaf = 0;
 let enterTimer: ReturnType<typeof setTimeout> | null = null;
-const ENTER_HOLD_MAX_MS = 800; // safety: never keep a pane hidden if no ready signal arrives
-const ENTER_PLAY_MS = 700; // wrapper fade + longest row stagger; then drop the anim classes
+const ENTER_HOLD_MAX_MS = 800; // safety: never keep landed content hidden if the pin frames stall
+// Play window: must cover the CSS enter-rise duration (380ms, see <style>) plus the
+// newest row's stagger delay ((ENTER_STAGGER - 1) * ENTER_STEP_MS = 275ms) — keep the
+// three in step. Afterwards the anim classes drop so rows return to pristine.
+const ENTER_PLAY_MS = 700;
 
 function clearEnterWaits(): void {
   if (enterRaf) { cancelAnimationFrame(enterRaf); enterRaf = 0; }
   if (enterTimer !== null) { clearTimeout(enterTimer); enterTimer = null; }
 }
 
+function armEnterCap(): void {
+  if (enterTimer !== null) clearTimeout(enterTimer);
+  enterTimer = setTimeout(finishEnter, ENTER_HOLD_MAX_MS);
+}
+
 function beginEnter(): void {
   clearEnterWaits();
   enterPhase.value = "hold";
-  enterTimer = setTimeout(finishEnter, ENTER_HOLD_MAX_MS);
+  armEnterCap();
 }
 
 function finishEnter(): void {
@@ -194,10 +204,13 @@ function finishEnter(): void {
 
 // The component may mount with a session already selected (page refresh restores the
 // selection before ChatPane renders) — that first load needs the same hold.
-if (enterPhase.value === "hold") enterTimer = setTimeout(finishEnter, ENTER_HOLD_MAX_MS);
+if (props.sessionKey && props.messages.length === 0) beginEnter();
 
-// Ready signal 1: content landed (history rows or a live turn). Let the bottom pin and
-// the first settle frames run while still hidden, then reveal.
+// Ready signal 1: content landed (history rows or a live turn). Release only once the
+// bottom pin has settled — scrollToBottom's content-visibility settle loop re-pins for
+// up to 4 frames on long histories, so wait (bounded) for it to drain instead of a
+// fixed frame count; releasing earlier would let late settle frames move scrollTop
+// mid-PLAY.
 watch(
   () => [props.messages.length, props.liveTurn?.parts.length ?? 0] as const,
   ([msgs, liveParts]) => {
@@ -206,19 +219,37 @@ watch(
       if (enterPhase.value !== "hold") return;
       if (typeof requestAnimationFrame !== "function") { finishEnter(); return; }
       if (enterRaf) cancelAnimationFrame(enterRaf);
-      enterRaf = requestAnimationFrame(() => {
-        enterRaf = requestAnimationFrame(() => { enterRaf = 0; finishEnter(); });
-      });
+      let framesLeft = 8;
+      const waitPinned = (): void => {
+        enterRaf = 0;
+        if (enterPhase.value !== "hold") return;
+        framesLeft -= 1;
+        // At least two frames for the pin to paint, then require the settle loop idle.
+        if (framesLeft <= 0 || (framesLeft <= 6 && settleRaf === 0)) { finishEnter(); return; }
+        enterRaf = requestAnimationFrame(waitPinned);
+      };
+      enterRaf = requestAnimationFrame(waitPinned);
     });
   },
 );
 
-// Ready signal 2: the initial page loaded and the session is genuinely empty — there
-// is nothing to position, release the hold right away.
+// Ready signal 2 + slow-load guard: while the initial page is in flight the skeleton
+// owns the pane, so SUSPEND the safety cap — otherwise a >800ms load would burn the
+// hold behind the skeleton and the late-landing transcript would paint unheld (the
+// exact yank this exists to prevent). The load's completion always re-signals: an
+// empty session releases immediately (nothing to position); a page with rows is
+// released by ready signal 1's pin frames, with the cap re-armed as the fallback.
 watch(
   () => props.loadingHistory,
   (now, prev) => {
-    if (prev && !now && enterPhase.value === "hold" && props.messages.length === 0) finishEnter();
+    if (enterPhase.value !== "hold") return;
+    if (now) {
+      if (enterTimer !== null) { clearTimeout(enterTimer); enterTimer = null; }
+      return;
+    }
+    if (!prev) return;
+    if (props.messages.length === 0 && !(props.liveTurn && props.liveTurn.parts.length)) finishEnter();
+    else armEnterCap();
   },
 );
 

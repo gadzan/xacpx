@@ -702,4 +702,47 @@ describe("entrance choreography", () => {
     await wrapper.vm.$nextTick();
     expect(wrapper.find(".enter-hold").exists()).toBe(false);
   });
+
+  it("keeps the hold armed through a slow initial load and still plays on arrival", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, sessionKey: "a\0one" },
+    });
+    // The initial page goes in flight → the skeleton owns the pane and the safety
+    // cap suspends, so a >800ms load cannot burn the hold prematurely.
+    await wrapper.setProps({ loadingHistory: true });
+    vi.advanceTimersByTime(2000);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(true);
+    // The late page lands with rows → still held until the bottom pin settles.
+    await wrapper.setProps({ messages: many(5), loadingHistory: false });
+    expect(wrapper.find(".enter-hold").exists()).toBe(true);
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    expect(wrapper.findAll(".enter-row").length).toBe(5);
+  });
+
+  // Spec #205 SWR: the cached tail renders instantly (with the entrance), and the
+  // later authoritative replace must not re-hold the pane or replay the animation.
+  it("does not re-hold or replay the entrance when a cache seed is replaced by the authoritative page", async () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: null, sessionKey: "a\0one" },
+    });
+    await wrapper.setProps({ messages: many(20) }); // cached tail seed
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    vi.advanceTimersByTime(700); // entrance fully played → idle
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    // Authoritative page replaces the seed (loadHistory) — no second entrance.
+    await wrapper.setProps({ loadingHistory: true });
+    await wrapper.setProps({ messages: many(100), loadingHistory: false });
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    await flushFrames(wrapper); // progressive reveal of the prepended older rows
+    expect(wrapper.find(".enter-hold").exists()).toBe(false);
+    expect(wrapper.findAll(".enter-row").length).toBe(0);
+    expect(wrapper.findAll(".cv-row").length).toBe(100);
+  });
 });
