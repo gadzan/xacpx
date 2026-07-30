@@ -15,9 +15,11 @@ import { useInstancesStore } from "../stores/instances";
 (window.HTMLElement.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView = () => {};
 
 beforeEach(() => setActivePinia(createPinia()));
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); roCallback = null; });
 
 // Minimal ResizeObserver stand-in: captures the callback so tests drive widths by hand.
+// Unlike a real RO it does NOT auto-report the initial size on observe() — every width
+// change must come from an explicit resize() call.
 let roCallback: ((entries: { contentRect: { width: number } }[]) => void) | null = null;
 const roDisconnect = vi.fn();
 class FakeRO {

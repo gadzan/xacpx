@@ -6,6 +6,8 @@
 //   PLAN_SIDE_WIDTH   = w-72 on ChatPane's side column
 export const CHAT_CONTENT_MAX = 768;
 export const PLAN_SIDE_WIDTH = 288;
+// Approximate spacing budget, not a class mirror: the actual template chrome is
+// ~60px (scroller px-5 both sides + aside pr-5); the hysteresis margin absorbs it.
 export const PLAN_SIDE_GAP = 32;
 // Entering "side" requires more width than staying in it, so scrollbar appearance
 // (~15px) or window dragging near the boundary can't flip the layout back and forth.
@@ -15,9 +17,12 @@ export type PlanPlacement = "inline" | "side";
 
 const BASE = CHAT_CONTENT_MAX + PLAN_SIDE_WIDTH + PLAN_SIDE_GAP;
 
-// width <= 0 means "unmeasured" (no ResizeObserver, e.g. jsdom) → always inline.
+// width <= 0 means "unmeasured or hidden" (no ResizeObserver, e.g. jsdom, or the pane
+// sits display:none behind another tab) → keep the previous placement so a tab switch
+// doesn't destroy and rebuild the side panel. Without RO the width stays 0 and the
+// initial "inline" never changes, which preserves the narrow-screen fallback.
 export function computePlanPlacement(width: number, prev: PlanPlacement): PlanPlacement {
-  if (width <= 0) return "inline";
+  if (width <= 0) return prev;
   if (width >= BASE + PLAN_SIDE_HYSTERESIS) return "side";
   if (width < BASE) return "inline";
   return prev;

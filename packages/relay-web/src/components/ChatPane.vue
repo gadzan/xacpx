@@ -198,9 +198,9 @@ const verb = computed(() => {
            whitespace. The column itself never scrolls — scrolling stays inside the
            panel's list so the active-entry tracking keeps working. -->
       <aside v-if="planSide" data-test="plan-side-col"
-             class="flex w-72 shrink-0 flex-col py-3 pr-3 lg:py-5 lg:pr-5"
+             class="flex w-72 shrink-0 flex-col py-5 pr-5"
              :aria-label="$t('plan.title')">
-        <PlanPanel variant="side" :entries="chat.sessionPlan!" :active="chat.busy" />
+        <PlanPanel variant="side" :entries="chat.sessionPlan ?? []" :active="chat.busy" />
       </aside>
       </div>
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator

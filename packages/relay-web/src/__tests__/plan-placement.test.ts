@@ -30,8 +30,11 @@ describe("computePlanPlacement", () => {
     expect(computePlanPlacement(ENTER - 1, "inline")).toBe("inline");
   });
 
-  it("treats unmeasured widths as inline (no ResizeObserver fallback)", () => {
-    expect(computePlanPlacement(0, "side")).toBe("inline");
-    expect(computePlanPlacement(-5, "side")).toBe("inline");
+  it("keeps the previous placement for unmeasured or hidden panes", () => {
+    // No RO (jsdom) → width stays 0 and the initial "inline" never changes;
+    // a hidden pane (display:none tab switch) must not flip an active "side".
+    expect(computePlanPlacement(0, "inline")).toBe("inline");
+    expect(computePlanPlacement(0, "side")).toBe("side");
+    expect(computePlanPlacement(-5, "side")).toBe("side");
   });
 });
