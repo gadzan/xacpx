@@ -177,7 +177,12 @@ watch(
     selectedDiff.value = null;
     if (!id) return;
     files.instanceId = id;
-    await instances.loadWorkspaces(id).catch(() => {});
+    // Reuse the instance store's already-loaded workspace list immediately on a
+    // session switch; refresh it in the background. First load still waits because
+    // there is no cached option from which to choose a fallback workspace.
+    const hasCachedWorkspaces = (instances.byId(id)?.workspaces.length ?? 0) > 0;
+    const workspaceRefresh = instances.loadWorkspaces(id).catch(() => {});
+    if (!hasCachedWorkspaces) await workspaceRefresh;
     if (selectionId !== workspaceSelectionId || props.instanceId !== id || activeWorkspace.value !== ws) return;
     // Default to the active session's workspace; fall back to the first configured one.
     const target = ws ?? instances.byId(id)?.workspaces?.[0]?.name;

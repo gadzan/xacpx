@@ -8,6 +8,12 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useSessionControlsStore } from "../stores/session-controls";
+import { useAuthStore } from "../stores/auth";
+import {
+  dropSession as dropSessionViewSnapshots,
+  read as readViewSnapshot,
+  write as writeViewSnapshot,
+} from "../lib/view-snapshot-cache";
 import { dismissToast, useToasts } from "../lib/use-toasts";
 
 beforeEach(() => {
@@ -60,6 +66,43 @@ describe("session-controls store", () => {
     expect(s.modelCurrent).toBe("model-b");
   });
 
+  it("shows a cached model immediately while revalidating", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "session-model", "i1", "session-b", {
+      current: "cached-model",
+      available: ["cached-model"],
+    });
+    let resolveLoad!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
+    const s = useSessionControlsStore();
+    const pendingLoad = s.loadModel("i1", "session-b");
+
+    expect(s.modelCurrent).toBe("cached-model");
+    expect(s.modelAvailable).toEqual(["cached-model"]);
+    expect(s.modelLoading).toBe(true);
+
+    resolveLoad({ current: "fresh-model", available: ["fresh-model"] });
+    await pendingLoad;
+    expect(s.modelCurrent).toBe("fresh-model");
+  });
+
+  it("does not repopulate a deleted session cache from an older model refresh", async () => {
+    useAuthStore().account = { username: "delete-race-user" };
+    let resolveLoad!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
+    const s = useSessionControlsStore();
+    const pendingLoad = s.loadModel("i1", "deleted-session");
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalled());
+
+    await dropSessionViewSnapshots("delete-race-user", "i1", "deleted-session");
+    resolveLoad({ current: "stale-model", available: ["stale-model"] });
+    await pendingLoad;
+
+    expect(
+      await readViewSnapshot("delete-race-user", "session-model", "i1", "deleted-session"),
+    ).toBeNull();
+  });
+
   it("setModel updates current optimistically before the RPC resolves", async () => {
     let resolveRpc!: (v: unknown) => void;
     rpc.mockReturnValueOnce(new Promise((r) => { resolveRpc = r; }));
@@ -107,6 +150,52 @@ describe("session-controls store", () => {
       "requested claude-opus-4-8; authoritative model is provider/fallback-model",
     );
     log.mockRestore();
+  });
+
+  it("does not reuse the previous account's authoritative model for rollback", async () => {
+    useAuthStore().account = { username: "alice" };
+    rpc.mockResolvedValueOnce({ current: "alice-model", available: ["alice-model"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+
+    useAuthStore().account = { username: "bob" };
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "bob set failed" } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(s.setModel("i1", "backend", "bob-model")).resolves.toBe(false);
+
+    expect(s.modelCurrent).toBeUndefined();
+    log.mockRestore();
+  });
+
+  it("does not make a new account wait for the previous account's model mutation", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("bob", "session-model", "i1", "backend", {
+      current: "bob-cached",
+      available: ["bob-cached"],
+    });
+    let resolveAliceSet!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveAliceSet = resolve; }));
+    const s = useSessionControlsStore();
+    const aliceSet = s.setModel("i1", "backend", "alice-model");
+
+    useAuthStore().account = { username: "bob" };
+    let bobLoadStarted = false;
+    rpc.mockImplementationOnce(async () => {
+      bobLoadStarted = true;
+      return { current: "bob-model", available: ["bob-model"] };
+    });
+    const bobLoad = s.loadModel("i1", "backend");
+    await Promise.resolve();
+    await Promise.resolve();
+    const startedBeforeAliceSettled = bobLoadStarted;
+
+    resolveAliceSet({ ok: true, current: "alice-model" });
+    await aliceSet;
+    await bobLoad;
+
+    expect(startedBeforeAliceSettled).toBe(true);
+    expect(s.modelCurrent).toBe("bob-model");
   });
 
   it("ignores a model-set response that arrives after switching sessions", async () => {
@@ -282,6 +371,25 @@ describe("session-controls store", () => {
     await setting;
     await waiting;
     expect(settled).toBe(true);
+  });
+
+  it("does not let a late previous-account effort mutation seed rollback state", async () => {
+    useAuthStore().account = { username: "alice" };
+    let resolveAliceSet!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveAliceSet = resolve; }));
+    const s = useSessionControlsStore();
+    const aliceSet = s.setEffort("i1", "backend", "high");
+
+    useAuthStore().account = { username: "bob" };
+    resolveAliceSet({ ok: true, current: "high" });
+    await aliceSet;
+
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "bob set failed" } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await expect(s.setEffort("i1", "backend", "low")).resolves.toBe(false);
+
+    expect(s.effortCurrent).toBeUndefined();
+    log.mockRestore();
   });
 
   it("clears effort when a failed set reports an authoritative null current", async () => {

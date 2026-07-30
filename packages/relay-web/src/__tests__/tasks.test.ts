@@ -8,6 +8,12 @@ vi.mock("../api/client", () => ({
 
 import { api } from "../api/client";
 import { useTasksStore } from "../stores/tasks";
+import { useAuthStore } from "../stores/auth";
+import {
+  dropSession as dropSessionViewSnapshots,
+  read as readViewSnapshot,
+  write as writeViewSnapshot,
+} from "../lib/view-snapshot-cache";
 
 const rpc = api.rpc as unknown as ReturnType<typeof vi.fn>;
 
@@ -31,6 +37,96 @@ describe("tasks store", () => {
     await store.loadOrchestration("inst");
     expect(rpc).toHaveBeenCalledWith("inst", "control.orchestration.list");
     expect(store.orchestration).toHaveLength(1);
+  });
+
+  it("loadOrchestration keeps cached tasks for an error payload", async () => {
+    useAuthStore().account = { username: "orchestration-error-user" };
+    const cachedTask = {
+      taskId: "cached",
+      status: "running",
+      targetAgent: "claude",
+      workspace: "/w",
+      task: "cached",
+      summary: "",
+      createdAt: "x",
+      updatedAt: "x",
+    };
+    await writeViewSnapshot(
+      "orchestration-error-user",
+      "orchestration-tasks",
+      "inst",
+      "",
+      [cachedTask],
+    );
+    rpc.mockResolvedValueOnce({ error: { code: "timeout", message: "connector timed out" } });
+    const store = useTasksStore();
+
+    await store.loadOrchestration("inst");
+
+    expect(store.orchestration.map((task) => task.taskId)).toEqual(["cached"]);
+  });
+
+  it("loadFor paints cached tasks before both refreshes settle", async () => {
+    useAuthStore().account = { username: "alice" };
+    const scheduledTask = {
+      id: "cached",
+      sessionAlias: "backend",
+      executeAt: "2030-01-01T00:00:00Z",
+      message: "cached",
+      status: "pending",
+      createdAt: "x",
+    };
+    await writeViewSnapshot("alice", "scheduled-tasks", "inst", "backend", [scheduledTask]);
+    await writeViewSnapshot("alice", "orchestration-tasks", "inst", "", [{
+      taskId: "cached-orchestration",
+      status: "running",
+      targetAgent: "claude",
+      workspace: "/w",
+      task: "cached",
+      summary: "",
+      createdAt: "x",
+      updatedAt: "x",
+    }]);
+    let resolveScheduled!: (value: unknown) => void;
+    let resolveOrchestration!: (value: unknown) => void;
+    rpc
+      .mockReturnValueOnce(new Promise((resolve) => { resolveScheduled = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOrchestration = resolve; }));
+    const store = useTasksStore();
+    const pending = store.loadFor("inst", "backend");
+
+    expect(store.scheduled.map((task) => task.id)).toEqual(["cached"]);
+    expect(store.orchestration.map((task) => task.taskId)).toEqual(["cached-orchestration"]);
+
+    resolveScheduled({ tasks: [] });
+    resolveOrchestration({ tasks: [] });
+    await pending;
+    expect(store.scheduled).toEqual([]);
+    expect(store.orchestration).toEqual([]);
+  });
+
+  it("does not repopulate a deleted session cache from an older task refresh", async () => {
+    useAuthStore().account = { username: "task-delete-race-user" };
+    let resolveScheduled!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveScheduled = resolve; }));
+    const store = useTasksStore();
+    const pending = store.loadScheduled("inst", "deleted-session");
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalled());
+
+    await dropSessionViewSnapshots("task-delete-race-user", "inst", "deleted-session");
+    resolveScheduled({ tasks: [{
+      id: "stale-task",
+      sessionAlias: "deleted-session",
+      executeAt: "2030-01-01T00:00:00Z",
+      message: "stale",
+      status: "pending",
+      createdAt: "x",
+    }] });
+    await pending;
+
+    expect(
+      await readViewSnapshot("task-delete-race-user", "scheduled-tasks", "inst", "deleted-session"),
+    ).toBeNull();
   });
 
   it("createScheduled posts then reloads", async () => {

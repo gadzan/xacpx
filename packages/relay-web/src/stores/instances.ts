@@ -3,6 +3,8 @@ import { ref } from "vue";
 import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type SessionModelResult, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 import { useChatStore } from "./chat";
+import { useAuthStore } from "./auth";
+import { dropSession as dropSessionViewSnapshots } from "../lib/view-snapshot-cache";
 import { loadGroupMode, saveGroupMode, type SidebarGroupMode } from "../lib/sidebar-group-mode";
 
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
@@ -308,6 +310,8 @@ export const useInstancesStore = defineStore("instances", () => {
     // resurface as a ghost transcript from the cache. Routed through the chat
     // store so a pending debounced write-back targeting it is cancelled too.
     useChatStore().purgeTailCache(instanceId, alias);
+    const user = useAuthStore().account?.username;
+    if (user) await dropSessionViewSnapshots(user, instanceId, alias);
     await loadSessions(instanceId);
   }
 

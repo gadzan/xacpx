@@ -8,6 +8,8 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useFilesStore } from "../stores/files";
+import { useAuthStore } from "../stores/auth";
+import { write as writeViewSnapshot } from "../lib/view-snapshot-cache";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -78,6 +80,37 @@ describe("files store", () => {
     await s.selectWorkspace("i1", "ws");
     expect(rpc).toHaveBeenCalledWith("i1", "control.fs.list", { workspace: "ws", path: "" });
     expect(s.entries.map((e) => e.name)).toEqual(["src", "README.md"]);
+  });
+
+  it("selectWorkspace paints a cached tree before the root refresh settles", async () => {
+    useAuthStore().account = { username: "tree-cache-user" };
+    await writeViewSnapshot("tree-cache-user", "workspace-view", "i1", "ws", {
+      root: "/cached/ws",
+      sep: "/",
+      tree: { "": [{ name: "cached.ts", type: "file", size: 1 }] },
+      changed: { "cached.ts": " M" },
+    });
+    let resolveRoot!: (value: unknown) => void;
+    rpc
+      .mockReturnValueOnce(new Promise((resolve) => { resolveRoot = resolve; }))
+      .mockResolvedValueOnce({ workspace: "ws", files: [], diff: "", truncated: false });
+    const s = useFilesStore();
+    const pending = s.selectWorkspace("i1", "ws");
+
+    expect(s.root).toBe("/cached/ws");
+    expect(s.entries.map((entry) => entry.name)).toEqual(["cached.ts"]);
+    expect(s.changed).toEqual({ "cached.ts": " M" });
+
+    resolveRoot({
+      workspace: "ws",
+      root: "/fresh/ws",
+      sep: "/",
+      path: "",
+      entries: [{ name: "fresh.ts", type: "file", size: 1 }],
+    });
+    await pending;
+    expect(s.root).toBe("/fresh/ws");
+    expect(s.entries.map((entry) => entry.name)).toEqual(["fresh.ts"]);
   });
 
   it("descends into a directory and opens a file", async () => {
@@ -186,6 +219,30 @@ describe("files store", () => {
     expect(s.error).toBe(""); // browsing stays clean — no error surfaced
   });
 
+  it("loadStatus keeps cached git badges when the refresh request fails", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "ws";
+    s.changed = { "cached.ts": " M" };
+    rpc.mockRejectedValueOnce(new Error("network"));
+
+    await s.loadStatus();
+
+    expect(s.changed).toEqual({ "cached.ts": " M" });
+  });
+
+  it("loadStatus only clears cached badges for a confirmed non-git workspace", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "ws";
+    s.changed = { "cached.ts": " M" };
+    rpc.mockResolvedValueOnce({ error: { code: "timeout", message: "connector timed out" } });
+
+    await s.loadStatus();
+
+    expect(s.changed).toEqual({ "cached.ts": " M" });
+  });
+
   it("loadGitSummary stores a changed-file count for a workspace", async () => {
     const s = useFilesStore();
     rpc.mockResolvedValueOnce({ workspace: "ws", files: [{ path: "a.ts", status: " M" }, { path: "b.ts", status: "??" }], diff: "", truncated: false });
@@ -201,11 +258,39 @@ describe("files store", () => {
     expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 0, branch: "main" });
   });
 
+  it("loadGitSummary paints a workspace cache before the refresh settles", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "git-summary", "i1", "ws", {
+      summary: { workspace: "ws", changedCount: 3, branch: "cached" },
+    });
+    let resolveRpc!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveRpc = resolve; }));
+    const s = useFilesStore();
+    const pending = s.loadGitSummary("i1", "ws");
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 3, branch: "cached" });
+    resolveRpc({ workspace: "ws", files: [], diff: "", truncated: false, branch: "fresh" });
+    await pending;
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 0, branch: "fresh" });
+  });
+
   it("loadGitSummary clears the summary for a non-git workspace (error payload)", async () => {
     const s = useFilesStore();
     rpc.mockResolvedValueOnce({ error: { code: "internal", message: "not-a-git-repo" } });
     await s.loadGitSummary("i1", "ws");
     expect(s.gitSummary).toBeNull();
+  });
+
+  it("loadGitSummary keeps a cached summary for a transient error payload", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "git-summary", "i1", "ws", {
+      summary: { workspace: "ws", changedCount: 3, branch: "cached" },
+    });
+    const s = useFilesStore();
+    rpc.mockResolvedValueOnce({ error: { code: "timeout", message: "connector timed out" } });
+
+    await s.loadGitSummary("i1", "ws");
+
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 3, branch: "cached" });
   });
 
   it("refresh() re-lists the current dir and refreshes git badges on the Files tab", async () => {
