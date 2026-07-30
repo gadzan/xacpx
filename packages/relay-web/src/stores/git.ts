@@ -16,6 +16,8 @@ import { api } from "../api/client";
 export type GitOperationKind =
   | "stage"
   | "unstage"
+  | "untrack"
+  | "discard"
   | "commit"
   | "fetch"
   | "pull"
@@ -116,6 +118,14 @@ export const useGitStore = defineStore("git", () => {
     return runGitOperation("unstage", instanceId, workspace, MSG.gitUnstage, { workspace, paths });
   }
 
+  function untrack(instanceId: string, workspace: string, paths: string[]): Promise<{ ok: true }> {
+    return runGitOperation("untrack", instanceId, workspace, MSG.gitUntrack, { workspace, paths });
+  }
+
+  function discard(instanceId: string, workspace: string, paths: string[]): Promise<{ ok: true }> {
+    return runGitOperation("discard", instanceId, workspace, MSG.gitDiscard, { workspace, paths });
+  }
+
   function commit(instanceId: string, workspace: string, message: string): Promise<GitCommitResult> {
     return runGitOperation("commit", instanceId, workspace, MSG.gitCommit, { workspace, message });
   }
@@ -162,6 +172,8 @@ export const useGitStore = defineStore("git", () => {
     load,
     stage,
     unstage,
+    untrack,
+    discard,
     commit,
     fetch,
     pull,

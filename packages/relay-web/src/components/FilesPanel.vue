@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from "vue";
-import { ChevronRight, Download, File, FileText, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Upload, X } from "lucide-vue-next";
+import { ChevronRight, Download, File, FileText, FileX, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Undo2, Upload, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
@@ -92,7 +92,7 @@ const {
   commitMessage, showBranchCreate, branchName, branchStart, showWorktrees,
   showWorktreeCreate, worktreeBranch, worktreeStart, worktreeWorkspace,
   worktreeCreateBranch, changesSummary, changeSections, collapsed,
-  refreshGit, stage, unstage, commitStaged, switchBranch, createBranch,
+  refreshGit, stage, unstage, untrack, discard, commitStaged, switchBranch, createBranch,
   fetchRemote, pullRemote, pushRemote, beginWorktreeCreate, createWorktree,
   toggleGroup, statusBadge,
 } = useChangesGit(toRef(props, "instanceId"));
@@ -448,6 +448,12 @@ watch(
                       <span class="shrink-0" :class="selectedDiff === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
                     </span>
                   </button>
+                  <button v-if="f.status !== '??'" :data-test="`git-untrack-${f.path}`" :title="$t('files.git.untrack')" :disabled="gitBusy"
+                          class="shrink-0 rounded px-1 py-0.5 text-fg-muted opacity-70 hover:bg-raised hover:text-fg group-hover:opacity-100 disabled:opacity-30"
+                          @click.stop="untrack(f.path)"><FileX :size="11" /></button>
+                  <button :data-test="`git-discard-${f.path}`" :title="$t('files.git.discard')" :disabled="gitBusy"
+                          class="shrink-0 rounded px-1 py-0.5 text-fg-muted opacity-70 hover:bg-raised hover:text-danger group-hover:opacity-100 disabled:opacity-30"
+                          @click.stop="discard(f)"><Undo2 :size="11" /></button>
                   <button v-if="s.key === 'staged'" :data-test="`git-unstage-${f.path}`" :title="$t('files.git.unstage')" :disabled="gitBusy"
                           class="shrink-0 rounded px-1 py-0.5 text-[10px] text-fg-muted opacity-70 hover:bg-raised hover:text-fg group-hover:opacity-100 disabled:opacity-30"
                           @click.stop="unstage([f.path])">−</button>

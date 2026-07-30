@@ -45,6 +45,8 @@ export const MSG = {
   gitStatus: "control.git.status",
   gitStage: "control.git.stage",
   gitUnstage: "control.git.unstage",
+  gitUntrack: "control.git.untrack",
+  gitDiscard: "control.git.discard",
   gitCommit: "control.git.commit",
   gitFetch: "control.git.fetch",
   gitPull: "control.git.pull",

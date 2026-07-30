@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { WorkspaceGit, worktreePathIsWithin, worktreePathsEqual } from "../../../src/control/workspace-git";
@@ -260,6 +260,153 @@ describe("WorkspaceGit index", () => {
       { path: "README.md", status: " D" },
       { path: "RENAMED.md", status: "??" },
     ]);
+  });
+});
+
+describe("WorkspaceGit untrack", () => {
+  test("removes a committed file from the index while keeping it on disk", async () => {
+    const { repo } = initRepo();
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.untrack("project", ["README.md"]);
+
+    expect(existsSync(join(repo, "README.md"))).toBe(true);
+    expect((await service.status("project")).files).toEqual([
+      { path: "README.md", status: "D " },
+      { path: "README.md", status: "??" },
+    ]);
+  });
+
+  test("returns a staged new file to untracked", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, "notes.txt"), "new\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+    await service.stage("project", ["notes.txt"]);
+
+    await service.untrack("project", ["notes.txt"]);
+
+    expect(existsSync(join(repo, "notes.txt"))).toBe(true);
+    expect((await service.status("project")).files).toEqual([
+      { path: "notes.txt", status: "??" },
+    ]);
+  });
+
+  test("untracks a file whose staged content differs from both HEAD and worktree", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, "README.md"), "staged\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+    await service.stage("project", ["README.md"]);
+    writeFileSync(join(repo, "README.md"), "worktree\n");
+
+    await service.untrack("project", ["README.md"]);
+
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("worktree\n");
+    expect((await service.status("project")).files).toEqual([
+      { path: "README.md", status: "D " },
+      { path: "README.md", status: "??" },
+    ]);
+  });
+
+  test("rejects escaping paths", async () => {
+    const { repo } = initRepo();
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await expect(service.untrack("project", ["../outside.txt"])).rejects.toThrow("invalid-git-path");
+    await expect(service.untrack("project", [])).rejects.toThrow("git-paths-required");
+  });
+});
+
+describe("WorkspaceGit discard", () => {
+  test("restores staged and unstaged edits of a tracked file to HEAD", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, "README.md"), "staged\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+    await service.stage("project", ["README.md"]);
+    writeFileSync(join(repo, "README.md"), "worktree\n");
+
+    await service.discard("project", ["README.md"]);
+
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("initial\n");
+    expect((await service.status("project")).files).toEqual([]);
+  });
+
+  test("recovers a staged deletion from HEAD", async () => {
+    const { repo } = initRepo();
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+    git(repo, "rm", "-q", "README.md");
+
+    await service.discard("project", ["README.md"]);
+
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("initial\n");
+    expect((await service.status("project")).files).toEqual([]);
+  });
+
+  test("deletes a staged new file from index and disk", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, "notes.txt"), "new\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+    await service.stage("project", ["notes.txt"]);
+
+    await service.discard("project", ["notes.txt"]);
+
+    expect(existsSync(join(repo, "notes.txt"))).toBe(false);
+    expect((await service.status("project")).files).toEqual([]);
+  });
+
+  test("deletes an untracked file from disk", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, "scratch.txt"), "scratch\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.discard("project", ["scratch.txt"]);
+
+    expect(existsSync(join(repo, "scratch.txt"))).toBe(false);
+    expect((await service.status("project")).files).toEqual([]);
+  });
+
+  test("discarding a staged rename target restores the source and removes the target", async () => {
+    const { repo } = initRepo();
+    git(repo, "mv", "README.md", "RENAMED.md");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.discard("project", ["RENAMED.md"]);
+
+    expect(existsSync(join(repo, "RENAMED.md"))).toBe(false);
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("initial\n");
+    expect((await service.status("project")).files).toEqual([]);
+  });
+
+  test("only touches the selected paths", async () => {
+    const { repo } = initRepo();
+    writeFileSync(join(repo, "README.md"), "keep me dirty\n");
+    writeFileSync(join(repo, "scratch.txt"), "scratch\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.discard("project", ["scratch.txt"]);
+
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("keep me dirty\n");
+    expect((await service.status("project")).files).toEqual([
+      { path: "README.md", status: " M" },
+    ]);
+  });
+
+  test("handles an unborn repository by deleting instead of restoring from HEAD", async () => {
+    const repo = temp("wsgit-empty-");
+    git(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "first.txt"), "first\n");
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await service.discard("project", ["first.txt"]);
+
+    expect(existsSync(join(repo, "first.txt"))).toBe(false);
+    expect((await service.status("project")).files).toEqual([]);
+  });
+
+  test("rejects escaping paths", async () => {
+    const { repo } = initRepo();
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
+
+    await expect(service.discard("project", ["/etc/passwd"])).rejects.toThrow("invalid-git-path");
   });
 });
 

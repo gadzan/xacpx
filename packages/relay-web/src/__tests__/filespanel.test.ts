@@ -8,6 +8,13 @@ vi.mock("../api/client", () => ({
   api: { rpc: (...a: unknown[]) => rpc(...a) },
 }));
 
+const confirmResult = { value: true };
+const confirmSpy = vi.fn((_opts?: unknown) => Promise.resolve(confirmResult.value));
+vi.mock("../lib/use-confirm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/use-confirm")>();
+  return { ...actual, confirm: (opts: unknown) => confirmSpy(opts) };
+});
+
 import FilesPanel from "../components/FilesPanel.vue";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
@@ -21,6 +28,8 @@ beforeEach(() => {
   setActivePinia(pinia);
   rpc.mockClear();
   localStorage.clear();
+  confirmSpy.mockClear();
+  confirmResult.value = true;
 });
 
 describe("FilesPanel navigation rail", () => {
@@ -256,6 +265,78 @@ describe("FilesPanel navigation rail", () => {
     await w.find('[data-test="git-unstage-ready.ts"]').trigger("click");
     await flushPromises();
     expect(unstage).toHaveBeenCalledWith("i1", "ws", ["ready.ts"]);
+  });
+
+  it("discards a changed file after the danger confirm, then refreshes the diff", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const git = useGitStore();
+    files.instanceId = "i1";
+    files.workspace = "ws";
+    files.tab = "changes";
+    files.diff = { workspace: "ws", files: [{ path: "work.ts", status: " M" }], diff: "", truncated: false } as never;
+    git.status = {
+      workspace: "ws", branch: "main", detached: false, ahead: 0, behind: 0,
+      worktree: { root: "/repo", linked: false }, files: [{ path: "work.ts", status: " M" }],
+      branches: [{ name: "main", current: true }], worktrees: [],
+    } as never;
+    const discard = vi.spyOn(git, "discard").mockResolvedValue({ ok: true });
+    const reload = vi.spyOn(files, "loadDiff").mockResolvedValue();
+    await w.vm.$nextTick();
+
+    await w.find('[data-test="git-discard-work.ts"]').trigger("click");
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalledWith(expect.objectContaining({ tone: "danger" }));
+    expect(discard).toHaveBeenCalledWith("i1", "ws", ["work.ts"]);
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it("untracks a tracked file after the danger confirm, and does nothing when cancelled", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const git = useGitStore();
+    files.instanceId = "i1";
+    files.workspace = "ws";
+    files.tab = "changes";
+    files.diff = { workspace: "ws", files: [{ path: "ready.ts", status: "M " }], diff: "", truncated: false } as never;
+    git.status = {
+      workspace: "ws", branch: "main", detached: false, ahead: 0, behind: 0,
+      worktree: { root: "/repo", linked: false }, files: [{ path: "ready.ts", status: "M " }],
+      branches: [{ name: "main", current: true }], worktrees: [],
+    } as never;
+    const untrack = vi.spyOn(git, "untrack").mockResolvedValue({ ok: true });
+    vi.spyOn(files, "loadDiff").mockResolvedValue();
+    await w.vm.$nextTick();
+
+    confirmResult.value = false;
+    await w.find('[data-test="git-untrack-ready.ts"]').trigger("click");
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(untrack).not.toHaveBeenCalled();
+
+    confirmResult.value = true;
+    await w.find('[data-test="git-untrack-ready.ts"]').trigger("click");
+    await flushPromises();
+    expect(untrack).toHaveBeenCalledWith("i1", "ws", ["ready.ts"]);
+  });
+
+  it("offers discard but not untrack on an untracked row", async () => {
+    const w = mount(FilesPanel, { props: { instanceId: "i1" }, global: { plugins: [pinia] } });
+    const files = useFilesStore();
+    const git = useGitStore();
+    files.instanceId = "i1";
+    files.workspace = "ws";
+    files.tab = "changes";
+    files.diff = { workspace: "ws", files: [{ path: "fresh.ts", status: "??" }], diff: "", truncated: false } as never;
+    git.status = {
+      workspace: "ws", branch: "main", detached: false, ahead: 0, behind: 0,
+      worktree: { root: "/repo", linked: false }, files: [{ path: "fresh.ts", status: "??" }],
+      branches: [{ name: "main", current: true }], worktrees: [],
+    } as never;
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-test="git-discard-fresh.ts"]').exists()).toBe(true);
+    expect(w.find('[data-test="git-untrack-fresh.ts"]').exists()).toBe(false);
   });
 
   it("commits staged changes with the pinned composer", async () => {

@@ -59,6 +59,8 @@ describe("ControlService Git gate", () => {
     const control = service(repo(), false);
     const attempts = [
       control.gitUnstage("project", ["README.md"]),
+      control.gitUntrack("project", ["README.md"]),
+      control.gitDiscard("project", ["README.md"]),
       control.gitCommit("project", "test"),
       control.gitFetch("project"),
       control.gitPull("project"),
