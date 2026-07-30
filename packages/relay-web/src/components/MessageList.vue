@@ -11,7 +11,7 @@ import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; sideGutter?: boolean }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
@@ -231,7 +231,11 @@ watch(
 
 <template>
   <div class="relative flex-1 overflow-hidden">
-    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto px-3 py-4 lg:px-5 lg:py-5" @scroll="onScroll">
+    <!-- side-gutter reserves the plan side-column area as padding INSIDE the scroller
+         (19.25rem = the normal lg:pr-5 + the w-72 column) so the scrollbar stays at the
+         component's right edge and content centering matches the two-column geometry. -->
+    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto py-4 pl-3 lg:py-5 lg:pl-5"
+         :class="sideGutter ? 'pr-[19.25rem]' : 'pr-3 lg:pr-5'" @scroll="onScroll">
       <!-- Initial-history skeleton: top-anchored to match how the real transcript stacks
            top-to-bottom, then swap for the real content the instant rows arrive. -->
       <div v-if="showSkeleton" data-test="history-skeleton" aria-hidden="true"
@@ -343,7 +347,8 @@ watch(
       v-show="!atBottom"
       data-test="jump-latest"
       type="button"
-      class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-raised px-3 py-1 text-xs text-fg-muted shadow hover:bg-fg/5"
+      class="absolute bottom-3 -translate-x-1/2 rounded-full border border-border bg-raised px-3 py-1 text-xs text-fg-muted shadow hover:bg-fg/5"
+      :class="sideGutter ? 'left-[calc(50%-9rem)]' : 'left-1/2'"
       @click="scrollToBottom(true)"
     >
       {{ $t("chat.jumpLatest") }}
