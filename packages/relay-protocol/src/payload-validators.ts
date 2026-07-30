@@ -294,7 +294,8 @@ export type ControlRpcType =
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
-  | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage | typeof MSG.gitCommit
+  | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
+  | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
   | typeof MSG.gitFetch | typeof MSG.gitPull | typeof MSG.gitPush | typeof MSG.gitCheckout
   | typeof MSG.gitWorktreeCreate
   | typeof MSG.terminalCreate | typeof MSG.terminalAttach | typeof MSG.upload;
@@ -336,6 +337,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitStatus]: validateGitStatus,
   [MSG.gitStage]: validateGitPaths,
   [MSG.gitUnstage]: validateGitPaths,
+  [MSG.gitUntrack]: validateGitPaths,
+  [MSG.gitDiscard]: validateGitPaths,
   [MSG.gitCommit]: validateGitCommit,
   [MSG.gitFetch]: validateGitFetch,
   [MSG.gitPull]: validateGitPull,
@@ -381,3 +384,5 @@ type _fsReadBound = Expect<Equal<PayloadFor<typeof MSG.fsRead>, FsReadPayload>>;
 type _uploadBound = Expect<Equal<PayloadFor<typeof MSG.upload>, UploadPayload>>;
 type _gitCheckoutBound = Expect<Equal<PayloadFor<typeof MSG.gitCheckout>, GitCheckoutPayload>>;
 type _gitWorktreeCreateBound = Expect<Equal<PayloadFor<typeof MSG.gitWorktreeCreate>, GitWorktreeCreatePayload>>;
+type _gitUntrackBound = Expect<Equal<PayloadFor<typeof MSG.gitUntrack>, GitPathsPayload>>;
+type _gitDiscardBound = Expect<Equal<PayloadFor<typeof MSG.gitDiscard>, GitPathsPayload>>;

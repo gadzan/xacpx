@@ -93,6 +93,33 @@ export function useChangesGit(instanceId: Ref<string | null>) {
     await runGit(() => git.unstage(instanceId.value!, files.workspace!, paths));
   }
 
+  async function untrack(path: string): Promise<void> {
+    if (!instanceId.value || !files.workspace || !path) return;
+    const ok = await confirm({
+      title: t("files.git.untrackTitle"),
+      message: t("files.git.untrackBody", { path }),
+      confirmLabel: t("files.git.untrackConfirm"),
+      cancelLabel: t("files.cancel"),
+      tone: "danger",
+    });
+    if (!ok) return;
+    await runGit(() => git.untrack(instanceId.value!, files.workspace!, [path]));
+  }
+
+  async function discard(entry: { path: string; status: string }): Promise<void> {
+    if (!instanceId.value || !files.workspace || !entry.path) return;
+    const untracked = entry.status === "??";
+    const ok = await confirm({
+      title: t(untracked ? "files.git.discardUntrackedTitle" : "files.git.discardTitle"),
+      message: t(untracked ? "files.git.discardUntrackedBody" : "files.git.discardBody", { path: entry.path }),
+      confirmLabel: t(untracked ? "files.git.discardUntrackedConfirm" : "files.git.discardConfirm"),
+      cancelLabel: t("files.cancel"),
+      tone: "danger",
+    });
+    if (!ok) return;
+    await runGit(() => git.discard(instanceId.value!, files.workspace!, [entry.path]));
+  }
+
   async function commitStaged(): Promise<void> {
     const message = commitMessage.value.trim();
     if (!instanceId.value || !files.workspace || !message || !stagedPaths.value.length) return;
@@ -223,7 +250,7 @@ export function useChangesGit(instanceId: Ref<string | null>) {
     commitMessage, showBranchCreate, branchName, branchStart, showWorktrees,
     showWorktreeCreate, worktreeBranch, worktreeStart, worktreeWorkspace,
     worktreeCreateBranch, changesSummary, changeSections, collapsed,
-    refreshGit, stage, unstage, commitStaged, switchBranch, createBranch,
+    refreshGit, stage, unstage, untrack, discard, commitStaged, switchBranch, createBranch,
     fetchRemote, pullRemote, pushRemote, beginWorktreeCreate, createWorktree,
     toggleGroup, statusBadge,
   };

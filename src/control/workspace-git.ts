@@ -203,18 +203,26 @@ export class WorkspaceGit {
     return startPoint;
   }
 
-  private async includeRenameSources(root: string, paths: string[]): Promise<string[]> {
-    const selected = new Set(paths);
-    const expanded = new Set(paths);
+  private async readPorcelain(root: string): Promise<Array<{ status: string; path: string; originalPath?: string }>> {
     const fields = (await this.runRaw(root, ["-c", "core.quotePath=false", "status", "--porcelain", "-z"])).split("\0");
+    const entries: Array<{ status: string; path: string; originalPath?: string }> = [];
     for (let index = 0; index < fields.length; index += 1) {
       const field = fields[index];
       if (!field) continue;
       const status = field.slice(0, 2);
       const path = field.slice(3);
-      if (status[0] !== "R" && status[0] !== "C") continue;
-      const originalPath = fields[++index];
-      if (originalPath && selected.has(path)) expanded.add(originalPath);
+      const entry: { status: string; path: string; originalPath?: string } = { status, path };
+      if (status[0] === "R" || status[0] === "C") entry.originalPath = fields[++index];
+      entries.push(entry);
+    }
+    return entries;
+  }
+
+  private async includeRenameSources(root: string, paths: string[]): Promise<string[]> {
+    const selected = new Set(paths);
+    const expanded = new Set(paths);
+    for (const entry of await this.readPorcelain(root)) {
+      if (entry.originalPath && selected.has(entry.path)) expanded.add(entry.originalPath);
     }
     return [...expanded];
   }
@@ -252,6 +260,44 @@ export class WorkspaceGit {
         await this.run(root, ["--literal-pathspecs", "restore", "--staged", "--", ...valid]);
       } catch {
         await this.run(root, ["--literal-pathspecs", "reset", "--", ...valid]);
+      }
+    });
+  }
+
+  async untrack(workspace: string, paths: string[]): Promise<void> {
+    await this.withWrite(workspace, async () => {
+      const root = await this.rootFor(workspace);
+      // --force only skips the "staged content differs from HEAD and worktree" guard;
+      // with --cached the file on disk is never touched.
+      await this.run(root, ["--literal-pathspecs", "rm", "--cached", "--force", "--", ...this.validatePaths(paths)]);
+    });
+  }
+
+  async discard(workspace: string, paths: string[]): Promise<void> {
+    await this.withWrite(workspace, async () => {
+      const root = await this.rootFor(workspace);
+      const selected = new Set(this.validatePaths(paths));
+      const deletePaths = new Set<string>();
+      const restorePaths = new Set<string>();
+      for (const entry of await this.readPorcelain(root)) {
+        if (!selected.has(entry.path)) continue;
+        // Untracked, staged-new, and rename/copy targets do not exist in HEAD:
+        // `restore --source=HEAD` would fail on them, so unstage + delete instead.
+        if (entry.status === "??" || entry.status[0] === "A" || entry.originalPath !== undefined) {
+          deletePaths.add(entry.path);
+          if (entry.originalPath) restorePaths.add(entry.originalPath);
+        } else {
+          restorePaths.add(entry.path);
+        }
+      }
+      // Order matters: resetting a rename target turns its source into a staged
+      // deletion, which the restore below then recovers on index and disk.
+      if (deletePaths.size) {
+        await this.run(root, ["--literal-pathspecs", "reset", "-q", "--", ...deletePaths]);
+        await this.run(root, ["--literal-pathspecs", "clean", "-qf", "--", ...deletePaths]);
+      }
+      if (restorePaths.size) {
+        await this.run(root, ["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--", ...restorePaths]);
       }
     });
   }

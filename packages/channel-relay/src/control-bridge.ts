@@ -319,6 +319,18 @@ async function dispatchControlRequest(
       await control.gitUnstage(input.workspace, input.paths);
       return { ok: true };
     }
+    case MSG.gitUntrack: {
+      const input = parseControlPayload(MSG.gitUntrack, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitUntrack}: malformed payload`);
+      await control.gitUntrack(input.workspace, input.paths);
+      return { ok: true };
+    }
+    case MSG.gitDiscard: {
+      const input = parseControlPayload(MSG.gitDiscard, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.gitDiscard}: malformed payload`);
+      await control.gitDiscard(input.workspace, input.paths);
+      return { ok: true };
+    }
     case MSG.gitCommit: {
       const input = parseControlPayload(MSG.gitCommit, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.gitCommit}: malformed payload`);

@@ -41,6 +41,8 @@ export declare const MSG: {
     readonly gitStatus: "control.git.status";
     readonly gitStage: "control.git.stage";
     readonly gitUnstage: "control.git.unstage";
+    readonly gitUntrack: "control.git.untrack";
+    readonly gitDiscard: "control.git.discard";
     readonly gitCommit: "control.git.commit";
     readonly gitFetch: "control.git.fetch";
     readonly gitPull: "control.git.pull";

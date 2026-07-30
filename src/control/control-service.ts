@@ -298,6 +298,14 @@ export class ControlService {
     return this.mutateWorkspaceGit(() => this.workspaceGit.unstage(workspace, paths));
   }
 
+  gitUntrack(workspace: string, paths: string[]): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.untrack(workspace, paths));
+  }
+
+  gitDiscard(workspace: string, paths: string[]): Promise<void> {
+    return this.mutateWorkspaceGit(() => this.workspaceGit.discard(workspace, paths));
+  }
+
   gitCommit(workspace: string, message: string): Promise<GitCommitResult> {
     return this.mutateWorkspaceGit(() => this.workspaceGit.commit(workspace, message));
   }

@@ -147,9 +147,9 @@ export interface ToolStepDto {
     /** Failure message, present only when status === "error". */
     error?: string;
 }
-/** One entry in a turn's transcript, ordered as the agent produced it. Lets the web
- *  render text / reasoning / tool calls inline in arrival order instead of bucketing
- *  them into separate aggregated panels. */
+/** One entry in a turn's ordered wire transcript, retained for transport and
+ *  persistence. Presentation layers may derive separate activity and continuous
+ *  narrative lanes while preserving the relative order within each lane. */
 export type TurnPartDto = {
     type: "text";
     text: string;

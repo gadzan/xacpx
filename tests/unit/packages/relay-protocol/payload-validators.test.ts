@@ -64,6 +64,10 @@ test("Git RPC payloads accept only structured operations", () => {
   expect(parseControlPayload(MSG.gitStatus, { workspace: "project" })).not.toBeNull();
   expect(parseControlPayload(MSG.gitStage, { workspace: "project", paths: ["a.ts"] })).not.toBeNull();
   expect(parseControlPayload(MSG.gitStage, { workspace: "project", paths: [1] })).toBeNull();
+  expect(parseControlPayload(MSG.gitUntrack, { workspace: "project", paths: ["a.ts"] })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitUntrack, { workspace: "project" } as never)).toBeNull();
+  expect(parseControlPayload(MSG.gitDiscard, { workspace: "project", paths: ["a.ts"] })).not.toBeNull();
+  expect(parseControlPayload(MSG.gitDiscard, { workspace: "project", paths: [1] })).toBeNull();
   expect(parseControlPayload(MSG.gitCommit, { workspace: "project", message: "feat: x" })).not.toBeNull();
   expect(parseControlPayload(MSG.gitFetch, { workspace: "project", remote: "origin" })).not.toBeNull();
   expect(parseControlPayload(MSG.gitPull, { workspace: "project" })).not.toBeNull();

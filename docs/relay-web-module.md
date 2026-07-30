@@ -349,6 +349,11 @@ Changes tab 在原有差异列表上增加结构化 Git 工作流：
 - **改动与提交**：每个文件可暂存/取消暂存，也可按组或全部暂存；底部固定提交输入区，
   只提交 staged 文件。运行中的 Git 操作会锁住冲突控件，并在面板内显示进度、成功或错误，
   完成后重新读取 Git 状态与 diff。
+- **未推送撤销（行内）**：每个改动行提供两个破坏性操作，均走 danger ConfirmDialog 二次确认：
+  - **取消追踪（untrack）**：`git rm --cached`，从索引移除但保留磁盘文件（随后以未追踪状态出现）；
+    未追踪行（`??`）不显示此按钮，也不改动 `.gitignore`。
+  - **恢复到基线（discard）**：把文件恢复到 HEAD（同时丢弃 staged 与工作区改动）；对未追踪文件，
+    discard 语义为从磁盘删除。重命名会连带复原源路径。
 - **分支安全**：可切换或从指定起点创建本地分支；dirty worktree 拒绝切换和 pull，Web
   不自动 stash，也不会隐式丢弃用户改动。
 - **worktree 上下文（C）**：按需展开当前仓库的 worktree 列表。创建时客户端只提交分支与
@@ -360,7 +365,7 @@ Changes tab 在原有差异列表上增加结构化 Git 工作流：
 - **前端边界**：`src/lib/use-changes-git.ts` 持有 Changes 面板的分支、同步、暂存、提交与
   worktree 工作流；`FilesPanel.vue` 只负责文件导航和组合渲染。
 
-Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/commit/fetch/pull/push/checkout/worktree.create`。
+Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/untrack/discard/commit/fetch/pull/push/checkout/worktree.create`。
 所有 Git 写 RPC 与文件写操作共用 `files.writeEnabled`（默认关闭）。
 
 ### 范围说明

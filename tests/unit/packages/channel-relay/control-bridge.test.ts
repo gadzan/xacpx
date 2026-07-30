@@ -39,6 +39,8 @@ function makeFakeControl(overrides: Record<string, unknown> = {}) {
     }),
     gitStage: async (workspace: string, paths: string[]) => { record("gitStage", { workspace, paths }); },
     gitUnstage: async (workspace: string, paths: string[]) => { record("gitUnstage", { workspace, paths }); },
+    gitUntrack: async (workspace: string, paths: string[]) => { record("gitUntrack", { workspace, paths }); },
+    gitDiscard: async (workspace: string, paths: string[]) => { record("gitDiscard", { workspace, paths }); },
     gitCommit: async (workspace: string, message: string) => {
       record("gitCommit", { workspace, message });
       return { hash: "abcdef123456", shortHash: "abcdef1", summary: message };
@@ -129,6 +131,8 @@ test("structured Git mutation RPCs dispatch without accepting raw commands", asy
 
   expect(await dispatch(bridge, req(MSG.gitStage, { workspace: "project", paths: ["a.ts"] }))).toEqual({ ok: true });
   expect(await dispatch(bridge, req(MSG.gitUnstage, { workspace: "project", paths: ["a.ts"] }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitUntrack, { workspace: "project", paths: ["a.ts"] }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.gitDiscard, { workspace: "project", paths: ["a.ts"] }))).toEqual({ ok: true });
   expect(await dispatch(bridge, req(MSG.gitCommit, { workspace: "project", message: "feat: x" }))).toMatchObject({ shortHash: "abcdef1" });
   expect(await dispatch(bridge, req(MSG.gitFetch, { workspace: "project", remote: "origin" }))).toEqual({ ok: true });
   expect(await dispatch(bridge, req(MSG.gitPull, { workspace: "project" }))).toEqual({ ok: true });
@@ -139,6 +143,8 @@ test("structured Git mutation RPCs dispatch without accepting raw commands", asy
   }))).toMatchObject({ workspace: { name: "project-feature" } });
 
   expect(calls.gitStage?.[0]).toEqual({ workspace: "project", paths: ["a.ts"] });
+  expect(calls.gitUntrack?.[0]).toEqual({ workspace: "project", paths: ["a.ts"] });
+  expect(calls.gitDiscard?.[0]).toEqual({ workspace: "project", paths: ["a.ts"] });
   expect(calls.gitPush?.[0]).toEqual({ workspace: "project", options: { setUpstream: true, remote: "origin" } });
   expect(calls.gitCheckout?.[0]).toEqual({ workspace: "project", options: { branch: "feature", create: true, startPoint: "main" } });
   expect(await dispatch(bridge, req(MSG.gitWorktreeCreate, {

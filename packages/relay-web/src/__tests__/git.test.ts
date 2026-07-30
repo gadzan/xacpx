@@ -148,6 +148,42 @@ describe("Git store operation lifecycle", () => {
     expect(store.lastResult).toMatchObject({ kind: "fetch", ok: true });
   });
 
+  it("untracks the selected path, then reloads authoritative status", async () => {
+    rpc.mockImplementation((_id: string, type: string) => {
+      if (type === "control.git.untrack") return Promise.resolve({ ok: true });
+      if (type === "control.git.status") return Promise.resolve(status([{ path: "a.ts", status: "??" }]));
+      throw new Error(`unexpected ${type}`);
+    });
+    const store = useGitStore();
+
+    await store.untrack("i1", "project", ["a.ts"]);
+
+    expect(rpc.mock.calls).toEqual([
+      ["i1", "control.git.untrack", { workspace: "project", paths: ["a.ts"] }],
+      ["i1", "control.git.status", { workspace: "project" }],
+    ]);
+    expect(store.status?.files).toEqual([{ path: "a.ts", status: "??" }]);
+    expect(store.lastResult).toMatchObject({ kind: "untrack", ok: true });
+  });
+
+  it("discards the selected path, then reloads authoritative status", async () => {
+    rpc.mockImplementation((_id: string, type: string) => {
+      if (type === "control.git.discard") return Promise.resolve({ ok: true });
+      if (type === "control.git.status") return Promise.resolve(status([]));
+      throw new Error(`unexpected ${type}`);
+    });
+    const store = useGitStore();
+
+    await store.discard("i1", "project", ["a.ts"]);
+
+    expect(rpc.mock.calls).toEqual([
+      ["i1", "control.git.discard", { workspace: "project", paths: ["a.ts"] }],
+      ["i1", "control.git.status", { workspace: "project" }],
+    ]);
+    expect(store.status?.files).toEqual([]);
+    expect(store.lastResult).toMatchObject({ kind: "discard", ok: true });
+  });
+
   it("returns the registered workspace created for a managed worktree", async () => {
     rpc.mockImplementation((_id: string, type: string) => {
       if (type === "control.git.worktree.create") {
