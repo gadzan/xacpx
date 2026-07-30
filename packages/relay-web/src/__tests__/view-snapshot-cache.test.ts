@@ -1,7 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  captureWriteToken,
+  captureGenerationToken,
   dropAll,
   dropSession,
   peek,
@@ -76,7 +76,7 @@ describe("view-snapshot-cache", () => {
   });
 
   it("rejects a stale session write captured before the session was dropped", async () => {
-    const staleWrite = captureWriteToken("alice", "session-model", "i1", "s1");
+    const staleWrite = captureGenerationToken("alice", "session-model", "i1", "s1");
     await dropSession("alice", "i1", "s1");
 
     await write(
@@ -99,7 +99,7 @@ describe("view-snapshot-cache", () => {
   });
 
   it("rejects a stale write captured before all snapshots were dropped", async () => {
-    const staleWrite = captureWriteToken("alice", "orchestration-tasks", "i1", "");
+    const staleWrite = captureGenerationToken("alice", "orchestration-tasks", "i1", "");
     await dropAll();
 
     await write("alice", "orchestration-tasks", "i1", "", ["stale"], staleWrite);

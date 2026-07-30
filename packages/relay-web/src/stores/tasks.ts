@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
-import type { OrchestrationTaskDto, ScheduledTaskDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import {
+  isErrorPayload,
+  type OrchestrationTaskDto,
+  type ScheduledTaskDto,
+  type WebServerEvent,
+} from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import * as viewCache from "../lib/view-snapshot-cache";
 import { useAuthStore } from "./auth";
@@ -36,7 +41,7 @@ export const useTasksStore = defineStore("tasks", () => {
     const revision = ++scheduledRevision;
     const user = cacheUser();
     const cacheToken = user
-      ? viewCache.captureWriteToken(user, "scheduled-tasks", instanceId, sessionAlias)
+      ? viewCache.captureGenerationToken(user, "scheduled-tasks", instanceId, sessionAlias)
       : null;
     if (user) {
       const cached = viewCache.peek<ScheduledTaskDto[]>(user, "scheduled-tasks", instanceId, sessionAlias)
@@ -56,7 +61,7 @@ export const useTasksStore = defineStore("tasks", () => {
     const revision = ++orchestrationRevision;
     const user = cacheUser();
     const cacheToken = user
-      ? viewCache.captureWriteToken(user, "orchestration-tasks", instanceId, "")
+      ? viewCache.captureGenerationToken(user, "orchestration-tasks", instanceId, "")
       : null;
     if (user) {
       const cached = viewCache.peek<OrchestrationTaskDto[]>(user, "orchestration-tasks", instanceId, "")
@@ -64,7 +69,12 @@ export const useTasksStore = defineStore("tasks", () => {
       if (revision !== orchestrationRevision || !isOrchestrationScope(instanceId) || cacheUser() !== user) return;
       if (Array.isArray(cached)) orchestration.value = cached;
     }
-    const { tasks } = await api.rpc<{ tasks: OrchestrationTaskDto[] }>(instanceId, "control.orchestration.list");
+    const result = await api.rpc<{ tasks: OrchestrationTaskDto[] }>(
+      instanceId,
+      "control.orchestration.list",
+    );
+    if (isErrorPayload(result)) return;
+    const { tasks } = result;
     if (user && cacheToken && cacheUser() === user) {
       void viewCache.write(user, "orchestration-tasks", instanceId, "", tasks, cacheToken);
     }

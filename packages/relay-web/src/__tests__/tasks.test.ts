@@ -39,6 +39,33 @@ describe("tasks store", () => {
     expect(store.orchestration).toHaveLength(1);
   });
 
+  it("loadOrchestration keeps cached tasks for an error payload", async () => {
+    useAuthStore().account = { username: "orchestration-error-user" };
+    const cachedTask = {
+      taskId: "cached",
+      status: "running",
+      targetAgent: "claude",
+      workspace: "/w",
+      task: "cached",
+      summary: "",
+      createdAt: "x",
+      updatedAt: "x",
+    };
+    await writeViewSnapshot(
+      "orchestration-error-user",
+      "orchestration-tasks",
+      "inst",
+      "",
+      [cachedTask],
+    );
+    rpc.mockResolvedValueOnce({ error: { code: "timeout", message: "connector timed out" } });
+    const store = useTasksStore();
+
+    await store.loadOrchestration("inst");
+
+    expect(store.orchestration.map((task) => task.taskId)).toEqual(["cached"]);
+  });
+
   it("loadFor paints cached tasks before both refreshes settle", async () => {
     useAuthStore().account = { username: "alice" };
     const scheduledTask = {

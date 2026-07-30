@@ -40,18 +40,18 @@ const memory = new Map<string, { value: unknown; updatedAt: number }>();
 let globalGeneration = 0;
 const keyGenerations = new Map<string, number>();
 
-export type SnapshotWriteToken = {
+export type SnapshotGenerationToken = {
   cacheKey: string;
   globalGeneration: number;
   keyGeneration: number;
 };
 
-export function captureWriteToken(
+export function captureGenerationToken(
   user: string,
   namespace: SnapshotNamespace,
   instanceId: string,
   scope = "",
-): SnapshotWriteToken {
+): SnapshotGenerationToken {
   const cacheKey = memoryKey(...keyOf(user, namespace, instanceId, scope));
   return {
     cacheKey,
@@ -60,7 +60,7 @@ export function captureWriteToken(
   };
 }
 
-function acceptsWrite(token: SnapshotWriteToken): boolean {
+function isTokenCurrent(token: SnapshotGenerationToken): boolean {
   return token.globalGeneration === globalGeneration
     && token.keyGeneration === (keyGenerations.get(token.cacheKey) ?? 0);
 }
@@ -143,7 +143,7 @@ export async function read<T>(
 ): Promise<T | null> {
   const hot = peek<T>(user, namespace, instanceId, scope);
   if (hot !== null) return hot;
-  const token = captureWriteToken(user, namespace, instanceId, scope);
+  const token = captureGenerationToken(user, namespace, instanceId, scope);
   try {
     const key = keyOf(user, namespace, instanceId, scope);
     const db = await openDb();
@@ -152,7 +152,7 @@ export async function read<T>(
     );
     // A logout or session deletion may finish while IndexedDB is reading. Never
     // return or reheat a snapshot captured before that invalidation boundary.
-    if (!acceptsWrite(token)) return null;
+    if (!isTokenCurrent(token)) return null;
     if (!record || Date.now() - record.updatedAt > TTL_MS) {
       if (record) {
         const tx = db.transaction(STORE, "readwrite");
@@ -175,18 +175,18 @@ export async function write<T>(
   instanceId: string,
   scope: string,
   value: T,
-  token = captureWriteToken(user, namespace, instanceId, scope),
+  token = captureGenerationToken(user, namespace, instanceId, scope),
 ): Promise<void> {
   try {
     const key = keyOf(user, namespace, instanceId, scope);
     const cacheKey = memoryKey(...key);
-    if (token.cacheKey !== cacheKey || !acceptsWrite(token)) return;
+    if (token.cacheKey !== cacheKey || !isTokenCurrent(token)) return;
     const snapshot = cloneForCache(value);
     const updatedAt = Date.now();
     memory.set(cacheKey, { value: snapshot, updatedAt });
     if (typeof indexedDB === "undefined") return;
     const db = await openDb();
-    if (!acceptsWrite(token)) return;
+    if (!isTokenCurrent(token)) return;
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).put({ user, namespace, instanceId, scope, value: snapshot, updatedAt });
     await txDone(tx);

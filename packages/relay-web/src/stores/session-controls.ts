@@ -80,7 +80,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     instanceId: string,
     alias: string,
     snapshot: ControlSnapshot,
-    token: viewCache.SnapshotWriteToken | null,
+    token: viewCache.SnapshotGenerationToken | null,
   ): void {
     if (user && token && cacheUser() === user) {
       void viewCache.write(user, "session-model", instanceId, alias, snapshot, token);
@@ -91,7 +91,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     instanceId: string,
     alias: string,
     snapshot: ControlSnapshot,
-    token: viewCache.SnapshotWriteToken | null,
+    token: viewCache.SnapshotGenerationToken | null,
   ): void {
     if (user && token && cacheUser() === user) {
       void viewCache.write(user, "session-effort", instanceId, alias, snapshot, token);
@@ -117,7 +117,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     const revision = ++requestRevision;
     const cacheOwner = cacheUser();
     const cacheToken = cacheOwner
-      ? viewCache.captureWriteToken(cacheOwner, "session-model", instanceId, alias)
+      ? viewCache.captureGenerationToken(cacheOwner, "session-model", instanceId, alias)
       : null;
     modelLoading.value = true;
     let seeded = false;
@@ -171,7 +171,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     activeContext = context;
     const cacheOwner = cacheUser();
     const cacheToken = cacheOwner
-      ? viewCache.captureWriteToken(cacheOwner, "session-model", instanceId, alias)
+      ? viewCache.captureGenerationToken(cacheOwner, "session-model", instanceId, alias)
       : null;
     const prev = modelCurrent.value;
     const availableAtSet = [...modelAvailable.value];
@@ -246,7 +246,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     const revision = ++effortRevision;
     const cacheOwner = cacheUser();
     const cacheToken = cacheOwner
-      ? viewCache.captureWriteToken(cacheOwner, "session-effort", instanceId, alias)
+      ? viewCache.captureGenerationToken(cacheOwner, "session-effort", instanceId, alias)
       : null;
     effortLoading.value = true;
     let seeded = false;
@@ -289,7 +289,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     effortActiveContext = context;
     const cacheOwner = cacheUser();
     const cacheToken = cacheOwner
-      ? viewCache.captureWriteToken(cacheOwner, "session-effort", instanceId, alias)
+      ? viewCache.captureGenerationToken(cacheOwner, "session-effort", instanceId, alias)
       : null;
     const previous = authoritativeEfforts.get(context)?.current ?? effortCurrent.value;
     const availableAtSet = [...effortAvailable.value];
