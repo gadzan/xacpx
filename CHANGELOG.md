@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.19.1] - 2026-07-30
+
+### Fixed
+
+- Preserve ACP narrative activity order: stream callbacks now serialize through a queue so tool-call activities never overtake preceding text chunks.
+
+## [relay 0.10.1] - 2026-07-30
+
+### Added
+
+- Dashboard caches session view snapshots for faster re-navigation between sessions.
+- Plan panel moves into side whitespace on wide panes instead of overlaying the chat.
+
+### Fixed
+
+- Preserve ACP narrative activity order in relay stream forwarding.
+
 ## [0.19.0] - 2026-07-30
 
 ### Added
