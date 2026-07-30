@@ -23,6 +23,8 @@
 
 如果你需要临时远程编码或办公，`xacpx` 提供的是一个方便快捷的**远程入口**，让你在微信或飞书里就能随时随地干活。
 
+聊天不是唯一入口：xacpx 还提供可自托管的 **[relay hub](#自托管-relay-hub网页看板)**——一个多租户网页看板，在一个浏览器标签页里遥控你的所有 xacpx 实例（手机上可安装为 PWA）。
+
 > 日常使用优先记 `/ss`：它负责创建或复用 xacpx 逻辑会话。如果你想接入本地 Codex 等 Agent 已有的原生会话，再用 `/ssn`；进阶说明见 [原生会话](./native-sessions_zh.md)。
 
 ## 5 分钟快速开始
@@ -171,9 +173,17 @@ worker 会话运行，默认需要人工确认。Codex、Claude Code 等外部 M
 /ssn 1
 ```
 
-## 自托管 relay hub（可选）
+## 自托管 relay hub——网页看板
 
-如果你跑了多个 xacpx 实例，想用一个浏览器看板统一遥控，可以自托管 **relay hub**。每个实例通过 WebSocket 拨向 hub 并注册；你登录一个多租户 web 看板，在一个地方管理所有实例的会话——聊天、定时任务、编排。hub 以 npm 包（`@ganglion/xacpx-relay`）形式分发，看板**已内置打包**，单端口服务，登录和连接器配对共用一个 **access token**。
+如果你跑了一个或多个 xacpx 实例，想用浏览器（替代或补充聊天入口）统一遥控，可以自托管 **relay hub**。每个实例通过 WebSocket 拨向 hub 并注册；你登录一个多租户 web 看板，在一个地方管理所有实例的会话。
+
+你会得到：
+
+- **三栏 IM 式看板**——左栏实例/会话树，中栏实时聊天流，右栏定时任务 + 编排面板。界面支持 English + 中文。
+- **实时流式回复**以 markdown 渲染，工具调用与子 Agent 活动内联展示；可直接在浏览器里取消运行中的任务。
+- **移动端友好**——可安装为 PWA，在手机上像原生应用一样使用。
+- **一个包、一个端口**——`@ganglion/xacpx-relay` **内置打包**了看板；HTTP API、网页 WebSocket 和实例网关默认共用一个端口。存储用内置的 `node:sqlite`/`bun:sqlite`——无需编译任何原生依赖。
+- **多租户 + 令牌认证**——一个令牌就是一个用户，只能看到自己的实例；令牌与凭据均哈希落盘。给同伴开号可用**一次性邀请链接**（`xacpx-relay add invite`），无需在服务器上代发令牌。
 
 ```bash
 npm i -g @ganglion/xacpx-relay
@@ -186,7 +196,7 @@ xacpx channel add relay --url wss://relay.example.com --token <access-token> --n
 xacpx restart
 ```
 
-完整流程——配对、TLS/反向代理、systemd、备份、故障排查见：**[自托管 Relay Hub](https://gadzan.github.io/xacpx/guide/relay-self-hosting)**（或 [relay-deployment.md](../relay-deployment.md) 精简 runbook）。
+登录和连接器配对共用同一个 access token。完整流程——配对、邀请码、TLS/反向代理、systemd、备份、故障排查见：**[自托管 Relay Hub](https://gadzan.github.io/xacpx/guide/relay-self-hosting)**（或 [relay-deployment.md](../relay-deployment.md) 精简 runbook）。
 
 ## 配置与运行文件
 

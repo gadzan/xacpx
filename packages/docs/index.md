@@ -10,6 +10,9 @@ hero:
       text: Get Started
       link: /guide/getting-started
     - theme: alt
+      text: Web Dashboard
+      link: /guide/relay-self-hosting
+    - theme: alt
       text: View on GitHub
       link: https://github.com/gadzan/xacpx
 
@@ -92,9 +95,21 @@ Third-party channels follow the same plugin interface. Install a channel plugin 
 
 ## Web dashboard (relay hub)
 
-Chat is not the only way to drive xacpx. If you run several instances, self-host the **relay hub** — an npm package (`@ganglion/xacpx-relay`) with a web dashboard bundled in. Each instance dials into the hub over WebSocket and registers; you log in to a multi-tenant dashboard and manage every instance's sessions — chat, scheduled tasks, and orchestration — from one place. Agent replies render as live markdown, and the dashboard installs as a PWA on mobile. A single access token serves both web login and connector pairing.
+Chat is not the only way to drive xacpx. Self-host the **relay hub** — an npm package (`@ganglion/xacpx-relay`) with a multi-tenant web dashboard bundled in — and manage every instance from a single browser tab. Each instance dials into the hub over WebSocket and registers; the hub never owns your sessions, it just fans them out to your browser.
 
-See [Self-Hosting the Relay Hub](/guide/relay-self-hosting) for the full walkthrough.
+- **Three-pane IM layout** — instance/session tree, live chat stream, and a scheduled-tasks + orchestration panel side by side. English + 中文 UI.
+- **Live markdown streaming** — replies render as they arrive, with tool-call and subagent activity inline; cancel running turns from the browser.
+- **PWA on mobile** — install it to your home screen and it feels like an app.
+- **Trivial to deploy** — one `npm i -g`, one port by default, SQLite via the built-in `node:sqlite`/`bun:sqlite`, no native addons.
+- **Multi-tenant & token-based** — a token IS a user; tokens are stored hashed, and a single access token serves both web login and connector pairing. Onboard others with single-use **invite links** (`xacpx-relay add invite`).
+
+```bash
+npm i -g @ganglion/xacpx-relay
+xacpx-relay add token   # prints the access token once
+xacpx-relay start       # dashboard + API on :8787
+```
+
+See [Self-Hosting the Relay Hub](/guide/relay-self-hosting) for the full walkthrough — pairing, invites, TLS, systemd, and backups.
 
 ## Next steps
 

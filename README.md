@@ -23,6 +23,8 @@ English · **[中文](./docs/zh/README_zh.md)**
 
 If you need to code or work remotely on a temporary basis, `xacpx` gives you a fast, convenient **remote entry point** so you can get things done from WeChat or Feishu anytime, anywhere.
 
+Chat isn't the only entry point: xacpx also ships a self-hostable **[relay hub](#self-hosted-relay-hub--web-dashboard)** — a multi-tenant web dashboard that drives every one of your xacpx instances from a single browser tab (installable as a PWA on your phone).
+
 > For everyday use, remember `/ss` first: it creates or reuses an xacpx logical session. If you want to attach to an existing native session of a local agent such as Codex, use `/ssn`; see [native sessions](./docs/native-sessions.md).
 
 ## 5-minute quick start
@@ -173,9 +175,17 @@ take a look at today's API timeout issue
 /ssn 1
 ```
 
-## Self-hosted relay hub (optional)
+## Self-hosted relay hub — web dashboard
 
-If you run several xacpx instances and want to drive them all from one browser dashboard, you can self-host the **relay hub**. Each instance dials out to the hub over WebSocket and registers; you log in to a multi-tenant web dashboard and manage every instance's sessions — chat, scheduled tasks, and orchestration — from one place. The hub ships as an npm package (`@ganglion/xacpx-relay`) with the dashboard **bundled in**, served on a single port, with a single **access token** for both web login and connector pairing.
+If you run one or more xacpx instances and want to drive them from a browser instead of (or in addition to) chat, self-host the **relay hub**. Each instance dials out to the hub over WebSocket and registers; you log in to a multi-tenant web dashboard and manage every instance's sessions from one place.
+
+What you get:
+
+- **A three-pane IM-style dashboard** — instance/session tree on the left, live chat in the middle, scheduled tasks & orchestration panel on the right. English + 中文 UI.
+- **Live streaming replies** rendered as markdown, with tool-call and subagent activity inline; cancel running turns from the browser.
+- **Mobile-ready** — installs as a PWA, so it feels like an app on your phone.
+- **One package, one port** — `@ganglion/xacpx-relay` ships the dashboard **bundled in**; HTTP API, web socket, and instance gateway share a single port by default. SQLite storage via the built-in `node:sqlite`/`bun:sqlite` — no native addons to compile.
+- **Multi-tenant & token-based** — every token is a user who only sees their own instances; tokens and credentials are stored hashed. Onboard teammates with **single-use invite links** (`xacpx-relay add invite`) instead of handing out tokens.
 
 ```bash
 npm i -g @ganglion/xacpx-relay
@@ -188,7 +198,7 @@ xacpx channel add relay --url wss://relay.example.com --token <access-token> --n
 xacpx restart
 ```
 
-Full walkthrough — pairing, TLS/reverse-proxy, systemd, backups, troubleshooting: **[Self-Hosting the Relay Hub](https://gadzan.github.io/xacpx/guide/relay-self-hosting)** (or [relay-deployment.md](./docs/relay-deployment.md) for the terse runbook).
+The same access token works for both web login and connector pairing. Full walkthrough — pairing, invites, TLS/reverse-proxy, systemd, backups, troubleshooting: **[Self-Hosting the Relay Hub](https://gadzan.github.io/xacpx/guide/relay-self-hosting)** (or [relay-deployment.md](./docs/relay-deployment.md) for the terse runbook).
 
 ## Config and runtime files
 
