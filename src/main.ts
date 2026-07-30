@@ -39,7 +39,7 @@ import { runConsole } from "./run-console";
 import { spawnAcpxBridgeClient } from "./transport/acpx-bridge/acpx-bridge-client";
 import { AcpxBridgeTransport } from "./transport/acpx-bridge/acpx-bridge-transport";
 import { AcpxCliTransport } from "./transport/acpx-cli/acpx-cli-transport";
-import { createClaudeBackgroundFollowupTransport } from "./transport/claude-background-followup-transport";
+import { createBackgroundFollowupTransport } from "./transport/background-followup-transport";
 import type { ResolvedSession, SessionTransport } from "./transport/types";
 import { reapQueueOwners } from "./transport/queue-owner-reaper";
 import { collectReapTargets } from "./transport/collect-reap-targets";
@@ -287,7 +287,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           ))
       : (deps.createCliTransport?.(acpxCommand) ??
           new AcpxCliTransport({ ...config.transport, command: acpxCommand }));
-  const transport = createClaudeBackgroundFollowupTransport(baseTransport, {
+  const transport = createBackgroundFollowupTransport(baseTransport, {
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
   });

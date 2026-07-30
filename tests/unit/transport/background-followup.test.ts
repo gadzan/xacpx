@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
-  findClaudeTranscriptPath,
-  followClaudeBackgroundTurn,
-  isClaudeAsyncAgentLaunch,
-} from "../../../src/transport/claude-background-followup";
+  findNativeTranscriptPath,
+  followBackgroundTurn,
+  isAsyncAgentLaunch,
+} from "../../../src/transport/background-followup";
 import type { ToolUseEvent } from "../../../src/channels/types";
 
 const TASK_A = "toolu_agent_a";
@@ -21,7 +21,7 @@ test("detects Claude's async Agent launch result", () => {
     rawOutput: [{ type: "text", text: "Async agent launched successfully. agentId: abc" }],
     status: "success",
   };
-  expect(isClaudeAsyncAgentLaunch(event)).toBe(true);
+  expect(isAsyncAgentLaunch(event)).toBe(true);
 });
 
 test("a completed sync Agent quoting the launch phrase is not an async launch", () => {
@@ -35,7 +35,7 @@ test("a completed sync Agent quoting the launch phrase is not an async launch", 
     },
     status: "success",
   };
-  expect(isClaudeAsyncAgentLaunch(event)).toBe(false);
+  expect(isAsyncAgentLaunch(event)).toBe(false);
 });
 
 test("a stringified sync result quoting the launch phrase is not an async launch", () => {
@@ -46,7 +46,7 @@ test("a stringified sync result quoting the launch phrase is not an async launch
     rawOutput: '{"status":"completed","content":"Async agent launched successfully"}',
     status: "success",
   };
-  expect(isClaudeAsyncAgentLaunch(event)).toBe(false);
+  expect(isAsyncAgentLaunch(event)).toBe(false);
 });
 
 test("resolves the default driver's transcript under ~/.claude/projects", async () => {
@@ -55,7 +55,7 @@ test("resolves the default driver's transcript under ~/.claude/projects", async 
   await mkdir(projectDir, { recursive: true });
   await writeFile(join(projectDir, "session-1.jsonl"), "", "utf8");
 
-  const found = await findClaudeTranscriptPath({
+  const found = await findNativeTranscriptPath({
     cwd: "/Users/me/demo",
     sessionId: "session-1",
     homeDir: home,
@@ -69,7 +69,7 @@ test("resolves the qoder driver's transcript under ~/.qoder/projects", async () 
   await mkdir(projectDir, { recursive: true });
   await writeFile(join(projectDir, "session-1.jsonl"), "", "utf8");
 
-  const found = await findClaudeTranscriptPath({
+  const found = await findNativeTranscriptPath({
     cwd: "/Users/me/demo",
     sessionId: "session-1",
     homeDir: home,
@@ -77,7 +77,7 @@ test("resolves the qoder driver's transcript under ~/.qoder/projects", async () 
   });
   expect(found).toBe(join(projectDir, "session-1.jsonl"));
 
-  const notFound = await findClaudeTranscriptPath({
+  const notFound = await findNativeTranscriptPath({
     cwd: "/Users/me/demo",
     sessionId: "session-1",
     homeDir: home,
@@ -106,7 +106,7 @@ test("recovers already-written background continuation after the ACP end_turn bo
 
   const texts: string[] = [];
   const tools: ToolUseEvent[] = [];
-  const result = await followClaudeBackgroundTurn({
+  const result = await followBackgroundTurn({
     cwd: "E:\\projects\\demo",
     sessionId: "session",
     launchedToolCallIds: [TASK_A, TASK_B],
@@ -141,7 +141,7 @@ test("waits for a partially-written ACP end_turn boundary before forwarding cont
   ].join("\n"), "utf8");
 
   const texts: string[] = [];
-  const following = followClaudeBackgroundTurn({
+  const following = followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -176,7 +176,7 @@ test("reports a failed background Agent from its task notification", async () =>
     assistant([{ type: "text", text: "任务失败，已说明原因。" }], "end_turn"),
   ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
 
-  const result = await followClaudeBackgroundTurn({
+  const result = await followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -206,7 +206,7 @@ test("recovers tool activity from the completed background subagent transcript",
   ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
 
   const tools: ToolUseEvent[] = [];
-  await followClaudeBackgroundTurn({
+  await followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -258,7 +258,7 @@ test("subagent transcript replay preserves richer terminal ACP tool events", asy
     durationMs: 12,
   };
   const tools: ToolUseEvent[] = [];
-  await followClaudeBackgroundTurn({
+  await followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -291,7 +291,7 @@ test("streams subagent tool activity written after the ACP request closes", asyn
   ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
 
   const tools: ToolUseEvent[] = [];
-  const following = followClaudeBackgroundTurn({
+  const following = followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -336,7 +336,7 @@ test("drains a subagent transcript that appears after the main turn becomes comp
   ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
 
   const tools: ToolUseEvent[] = [];
-  const result = await followClaudeBackgroundTurn({
+  const result = await followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -384,7 +384,7 @@ test("recovers nested Agent transcripts with their immediate parent tool call", 
   ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
 
   const tools: ToolUseEvent[] = [];
-  await followClaudeBackgroundTurn({
+  await followBackgroundTurn({
     cwd: dir,
     sessionId: "session",
     launchedToolCallIds: [TASK_A],
@@ -417,7 +417,7 @@ test("an aborted turn stops the background transcript follower", async () => {
   const controller = new AbortController();
   controller.abort();
 
-  await expect(followClaudeBackgroundTurn({
+  await expect(followBackgroundTurn({
     cwd: "E:\\projects\\demo",
     sessionId: "session",
     launchedToolCallIds: [TASK_A],

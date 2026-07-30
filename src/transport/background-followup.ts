@@ -11,7 +11,7 @@ const FINAL_SUBAGENT_DRAIN_MAX_POLLS = 4;
 const FINAL_SUBAGENT_DRAIN_STABLE_POLLS = 2;
 const ASYNC_AGENT_LAUNCH = /Async agent launched successfully|["']?status["']?\s*:\s*["']async_launched["']/i;
 
-export interface ClaudeBackgroundFollowupOptions {
+export interface BackgroundFollowupOptions {
   cwd: string;
   sessionId: string;
   /** ACP driver owning the transcript; qoder shares Claude Code's layout under ~/.qoder. */
@@ -19,7 +19,7 @@ export interface ClaudeBackgroundFollowupOptions {
   launchedToolCallIds: Iterable<string>;
   /** Latest ACP events already observed before the native transcript follower starts. */
   initialToolEvents?: Iterable<ToolUseEvent>;
-  /** Claude agent transcript id keyed by the Agent/Task tool call that launched it. */
+  /** Native agent transcript id keyed by the Agent/Task tool call that launched it. */
   subagentIdsByToolCallId?: Iterable<readonly [string, string]>;
   signal?: AbortSignal;
   homeDir?: string;
@@ -31,7 +31,7 @@ export interface ClaudeBackgroundFollowupOptions {
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
 }
 
-export interface ClaudeBackgroundFollowupResult {
+export interface BackgroundFollowupResult {
   status: "completed" | "timeout" | "unavailable";
   transcriptPath?: string;
   completedToolCallIds: string[];
@@ -53,10 +53,10 @@ interface JsonlCursor {
   partial: string;
 }
 
-/** Detect the successful tool result Claude Code returns when an Agent was
- * launched asynchronously. Kept at the transport boundary so callers do not
- * need to know Claude's private task ids or output-file layout. */
-export function isClaudeAsyncAgentLaunch(event: ToolUseEvent): boolean {
+/** Detect the successful tool result a compatible driver returns when an Agent
+ * is launched asynchronously. Kept at the transport boundary so callers do not
+ * need to know provider-private task ids or output-file layouts. */
+export function isAsyncAgentLaunch(event: ToolUseEvent): boolean {
   return isAsyncAgentLaunchOutput(event.rawOutput);
 }
 
@@ -84,7 +84,7 @@ function tryParseJsonObject(text: string): Record<string, unknown> | undefined {
   }
 }
 
-export function claudeAsyncAgentId(event: ToolUseEvent): string | undefined {
+export function asyncAgentId(event: ToolUseEvent): string | undefined {
   const fromObject = findStringField(event.rawOutput, new Set(["agentId", "agent_id"]));
   if (fromObject) return fromObject;
   return /\bagent(?:Id|_id)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)/i.exec(textOfUnknown(event.rawOutput))?.[1];
@@ -94,7 +94,7 @@ export function claudeAsyncAgentId(event: ToolUseEvent): string | undefined {
  * project-folder encoding is tried first; a shallow fallback scan handles any
  * future/path-platform encoding drift. Qoder is a Claude Code-compatible fork
  * that keeps the identical layout under ~/.qoder. */
-export async function findClaudeTranscriptPath(input: {
+export async function findNativeTranscriptPath(input: {
   cwd: string;
   sessionId: string;
   homeDir?: string;
@@ -118,16 +118,16 @@ export async function findClaudeTranscriptPath(input: {
   return undefined;
 }
 
-/** Follow the out-of-band continuation Claude Code creates after an ACP prompt
- * launches async Agent tools and returns `end_turn`. Claude writes task
- * notifications and the resumed main-agent answer to its native JSONL even
- * though the ACP request is already closed. We replay only records after that
- * prompt's first end_turn and finish after every tracked task notified the main
- * agent and a subsequent main-agent end_turn was written. */
-export async function followClaudeBackgroundTurn(
-  options: ClaudeBackgroundFollowupOptions,
-): Promise<ClaudeBackgroundFollowupResult> {
-  const transcriptPath = options.transcriptPath ?? await findClaudeTranscriptPath(options);
+/** Follow the out-of-band continuation a compatible driver creates after an
+ * ACP prompt launches async Agent tools and returns `end_turn`. The driver
+ * writes task notifications and the resumed main-agent answer to its native
+ * JSONL even though the ACP request is already closed. We replay only records
+ * after that prompt's first end_turn and finish after every tracked task
+ * notified the main agent and a subsequent main-agent end_turn was written. */
+export async function followBackgroundTurn(
+  options: BackgroundFollowupOptions,
+): Promise<BackgroundFollowupResult> {
+  const transcriptPath = options.transcriptPath ?? await findNativeTranscriptPath(options);
   if (!transcriptPath) {
     return { status: "unavailable", completedToolCallIds: [], failedToolCallIds: [] };
   }
@@ -302,8 +302,8 @@ export async function followClaudeBackgroundTurn(
         ...(previous?.rawOutput !== undefined ? { rawOutput: previous.rawOutput } : output ? { rawOutput: output } : {}),
         status: readBoolean(block, "is_error") || previous?.status === "error" ? "error" : "success",
       };
-      if (event.isSubagent && isClaudeAsyncAgentLaunch(event)) {
-        const agentId = claudeAsyncAgentId(event);
+      if (event.isSubagent && isAsyncAgentLaunch(event)) {
+        const agentId = asyncAgentId(event);
         if (agentId) parentToolCallIdByAgentId.set(agentId, event.toolCallId);
       }
       await emitTool(event);
