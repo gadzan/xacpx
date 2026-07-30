@@ -190,7 +190,7 @@ const verb = computed(() => {
       <!-- min-h-0 keeps the column height chain intact (flex min-height:auto would let a
            long transcript blow past the pane); the row's default align-stretch is what
            gives MessageList (and the side column) their full height. -->
-      <div class="flex min-h-0 flex-1" data-test="chat-body">
+      <div class="flex min-h-0 flex-1" :class="{ 'has-plan-side': planSide }" data-test="chat-body">
       <MessageList class="min-w-0" :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
                    :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                    :scroll-to-scheduled="chat.scrollRequest"
@@ -234,3 +234,12 @@ const verb = computed(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.has-plan-side :deep([data-test="msg-scroller"]) {
+  scrollbar-width: none;
+}
+.has-plan-side :deep([data-test="msg-scroller"])::-webkit-scrollbar {
+  display: none;
+}
+</style>
