@@ -164,7 +164,7 @@ describe("MessageList", () => {
     expect(narrative.find(":scope > hr:last-child").exists()).toBe(true);
   });
 
-  it("keeps live narrative continuous when activity arrives between text chunks", () => {
+  it("keeps one paragraph continuous and places its activity after the paragraph", () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [],
@@ -196,7 +196,50 @@ describe("MessageList", () => {
     expect(toolHeader.exists()).toBe(true);
     expect(reasoningPanel.exists()).toBe(true);
     expect(
+      bubble.find(".stream-md").element.compareDocumentPosition(toolHeader.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
       toolHeader.element.compareDocumentPosition(reasoningPanel.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("places live activity between explicit Markdown paragraphs", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "text", text: "before\n\n" },
+          {
+            type: "tool",
+            step: {
+              toolCallId: "read-1",
+              toolName: "Read",
+              kind: "read",
+              status: "success",
+              title: "index.css",
+            },
+          },
+          { type: "text", text: "after" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    const paragraphs = bubble.findAll(".stream-md");
+    const tool = bubble.find('[data-test="tool-step-header"]');
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].text()).toBe("before");
+    expect(paragraphs[1].text()).toBe("after");
+    expect(paragraphs[0].classes()).not.toContain("caret");
+    expect(paragraphs[1].classes()).toContain("caret");
+    expect(
+      paragraphs[0].element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(paragraphs[1].element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -306,7 +349,7 @@ it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => 
   expect(wrapper.find('[data-test="tool-row"]').exists()).toBe(false);
 });
 
-it("replays persisted activity separately without breaking the narrative Markdown", () => {
+it("replays persisted activity after the Markdown block it interrupted", () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
@@ -326,12 +369,21 @@ it("replays persisted activity separately without breaking the narrative Markdow
   });
 
   const output = wrapper.find('[data-test="msg-out"]');
-  expect(output.find('[data-test="turn-activity"]').exists()).toBe(true);
   expect(output.findAll(".stream-md")).toHaveLength(1);
   expect(output.find(".stream-md").html()).toContain("<strong>continuous prose</strong>");
-  expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
+  const tool = wrapper.findComponent(ToolStepCard);
+  const reasoning = wrapper.findComponent({ name: "ReasoningPanel" });
+  expect(tool.exists()).toBe(true);
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(false);
-  expect(wrapper.findComponent({ name: "ReasoningPanel" }).exists()).toBe(true);
+  expect(reasoning.exists()).toBe(true);
+  expect(
+    output.find(".stream-md").element.compareDocumentPosition(tool.element)
+    & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    tool.element.compareDocumentPosition(reasoning.element)
+    & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
 });
 
 it("shows a failed tool's error message in red when its card is expanded", async () => {

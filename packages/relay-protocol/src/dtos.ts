@@ -158,8 +158,9 @@ export interface ToolStepDto {
 }
 
 /** One entry in a turn's ordered wire transcript, retained for transport and
- *  persistence. Presentation layers may derive separate activity and continuous
- *  narrative lanes while preserving the relative order within each lane. */
+ *  persistence. A presentation layer may move an activity to the end of the
+ *  Markdown block that was in progress when it arrived, but must not globally
+ *  bucket narrative and activity into separate lanes. */
 export type TurnPartDto =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
