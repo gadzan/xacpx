@@ -15,6 +15,7 @@ import {
   createQuotaGatedReplySink,
   createVerbatimReplySink,
 } from "../quota-gated-reply-sink";
+import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import { resolveToolEventMode } from "../tool-event-mode.js";
 import type { BridgeMethod } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
@@ -81,21 +82,13 @@ export class AcpxBridgeTransport implements SessionTransport {
             ...(replyContext ? { replyContext } : {}),
           })
       : null;
-    let transcriptError: unknown;
-    let transcriptChain = Promise.resolve();
+    const transcriptEvents = createSerializedCallbackQueue();
     let planError: unknown;
     let planChain = Promise.resolve();
     let usageError: unknown;
     let usageChain = Promise.resolve();
     let commandsError: unknown;
     let commandsChain = Promise.resolve();
-    const enqueueTranscriptEvent = (callback: () => void | Promise<void>) => {
-      transcriptChain = transcriptChain
-        .then(callback)
-        .catch((error) => {
-          transcriptError ??= error;
-        });
-    };
     let toolEventMode = resolveToolEventMode(options);
     // Safety net: structured/both without an onToolEvent handler would
     // silently drop tool calls. Demote to 'text' so verbose tool calls
@@ -116,7 +109,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (event.type === "prompt.segment") {
         const onSegment = options?.onSegment;
         const segmentText = event.text;
-        enqueueTranscriptEvent(async () => {
+        transcriptEvents.enqueue(async () => {
           const segmentResult = onSegment?.(segmentText);
           sink?.feedSegment(segmentText);
           await segmentResult;
@@ -127,7 +120,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         const onToolEvent = options?.onToolEvent;
         if (onToolEvent) {
           const toolEvent = event.event;
-          enqueueTranscriptEvent(() => onToolEvent(toolEvent));
+          transcriptEvents.enqueue(() => onToolEvent(toolEvent));
         }
         return;
       }
@@ -135,7 +128,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         const onThought = options?.onThought;
         if (onThought) {
           const thoughtText = event.text;
-          enqueueTranscriptEvent(() => onThought(thoughtText));
+          transcriptEvents.enqueue(() => onThought(thoughtText));
         }
         return;
       }
@@ -178,7 +171,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         return;
       }
     });
-    await transcriptChain;
+    await transcriptEvents.drain();
     await planChain;
     await usageChain;
     await commandsChain;
@@ -199,6 +192,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       // surface a final-tier text when overflow happened — in that case the
       // summary is new info AND result.text carries the agent's final answer
       // that may have been partially or fully dropped from the stream.
+      const transcriptError = transcriptEvents.getError();
       if (transcriptError) {
         throw transcriptError;
       }
@@ -213,6 +207,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }
+    const transcriptError = transcriptEvents.getError();
     if (transcriptError) {
       throw transcriptError;
     }

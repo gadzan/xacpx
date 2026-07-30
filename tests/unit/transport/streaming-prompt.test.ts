@@ -93,6 +93,17 @@ test("messageId change preserves a paragraph boundary split across chunks", () =
   expect(flushed + state.buffer).toBe("before\n\nafter");
 });
 
+test("messageId change preserves a CRLF paragraph boundary split inside a line ending", () => {
+  const state = createStreamingPromptState(false, { rawStream: true });
+
+  parseStreamingChunks(state, makeChunkLine("before\r\n\r", "message-1"));
+  const flushed = state.buffer;
+  state.buffer = "";
+  parseStreamingChunks(state, makeChunkLine("\nafter", "message-2"));
+
+  expect(flushed + state.buffer).toBe("before\r\n\r\nafter");
+});
+
 test("parseStreamingChunks handles multiple paragraph boundaries", () => {
   const state = createStreamingPromptState();
 

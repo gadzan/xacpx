@@ -27,6 +27,7 @@ import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { isModelNotAdvertisedError } from "../model-not-advertised";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
+import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import {
   buildOverflowSummary,
   createQuotaGatedReplySink,
@@ -789,8 +790,7 @@ export class AcpxCliTransport implements SessionTransport {
       let stdout = "";
       let stderr = "";
       let lastReplyAt = now();
-      let transcriptChain = Promise.resolve();
-      let transcriptError: unknown;
+      const transcriptEvents = createSerializedCallbackQueue();
       let planChain = Promise.resolve();
       let planError: unknown;
       let usageChain = Promise.resolve();
@@ -804,14 +804,6 @@ export class AcpxCliTransport implements SessionTransport {
       const userOnCommands = onCommands;
       let flushPendingText = () => {};
 
-      const enqueueTranscriptEvent = (callback: () => void | Promise<void>) => {
-        transcriptChain = transcriptChain
-          .then(callback)
-          .catch((error) => {
-            transcriptError ??= error;
-          });
-      };
-
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
         driver,
@@ -822,14 +814,14 @@ export class AcpxCliTransport implements SessionTransport {
         ...(userOnToolEvent
           ? {
               onToolEvent: (event) => {
-                enqueueTranscriptEvent(() => userOnToolEvent(event));
+                transcriptEvents.enqueue(() => userOnToolEvent(event));
               },
             }
           : {}),
         ...(userOnThought
           ? {
               onThought: (chunk) => {
-                enqueueTranscriptEvent(() => userOnThought(chunk));
+                transcriptEvents.enqueue(() => userOnThought(chunk));
               },
             }
           : {}),
@@ -881,7 +873,7 @@ export class AcpxCliTransport implements SessionTransport {
         : null;
 
       const feedSegment = (segment: string) => {
-        enqueueTranscriptEvent(async () => {
+        transcriptEvents.enqueue(async () => {
           const segmentResult = onSegment?.(segment);
           sink?.feedSegment(segment);
           await segmentResult;
@@ -937,7 +929,7 @@ export class AcpxCliTransport implements SessionTransport {
         }
         void (async () => {
           await Promise.all([
-            transcriptChain,
+            transcriptEvents.drain(),
             planChain,
             usageChain,
             commandsChain,
@@ -955,6 +947,7 @@ export class AcpxCliTransport implements SessionTransport {
             reject(deferred);
             return;
           }
+          const transcriptError = transcriptEvents.getError();
           if (transcriptError) {
             reject(transcriptError);
             return;

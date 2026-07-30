@@ -349,6 +349,7 @@ const PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r?\n[\t ]*$/;
 const PARAGRAPH_BOUNDARY_AT_START = /^[\t ]*\r?\n[\t ]*\r?\n/;
 const LINE_BREAK_AT_END = /\r?\n[\t ]*$/;
 const LINE_BREAK_AT_START = /^[\t ]*\r?\n/;
+const PARTIAL_CRLF_PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r$/;
 
 function endsWithSentenceTerminal(text: string): boolean {
   return SENTENCE_TERMINAL_AT_END.test(text.trimEnd());
@@ -360,7 +361,10 @@ function hasParagraphBoundaryAtJoin(left: string, right: string): boolean {
   const boundarySpansJoin =
     LINE_BREAK_AT_END.test(left) &&
     LINE_BREAK_AT_START.test(right);
-  return leftHasBoundary || rightHasBoundary || boundarySpansJoin;
+  const crlfBoundarySpansJoin =
+    PARTIAL_CRLF_PARAGRAPH_BOUNDARY_AT_END.test(left) &&
+    right.startsWith("\n");
+  return leftHasBoundary || rightHasBoundary || boundarySpansJoin || crlfBoundarySpansJoin;
 }
 
 function markActivityBoundary(state: StreamingPromptState): void {
