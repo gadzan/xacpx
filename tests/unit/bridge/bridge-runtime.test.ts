@@ -263,6 +263,83 @@ test("runStreamingPrompt emits structured tool events when toolEventMode is 'str
   ]);
 });
 
+test("runStreamingPrompt preserves text → tool → text order in raw bridge events", async () => {
+  const events: unknown[] = [];
+  let dataHandler: ((chunk: string | Buffer) => void) | undefined;
+  let closeHandler: ((code: number | null) => void) | undefined;
+
+  const resultPromise = runStreamingPrompt(
+    "acpx",
+    ["prompt"],
+    (event) => events.push(event),
+    {
+      spawnPrompt: () =>
+        ({
+          stdout: {
+            setEncoding: () => {},
+            on: (event: "data", handler: (chunk: string | Buffer) => void) => {
+              if (event === "data") dataHandler = handler;
+            },
+          },
+          stderr: { on: () => {} },
+          on: (event: "close" | "error", handler: (code: number | null) => void) => {
+            if (event === "close") closeHandler = handler;
+          },
+        }) as never,
+      setIntervalFn: () => 1,
+      clearIntervalFn: () => {},
+      rawStream: true,
+      toolEventMode: "structured",
+    },
+  );
+
+  const lines = [
+    {
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "message-1",
+          content: { type: "text", text: "before。" },
+        },
+      },
+    },
+    {
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool-1",
+          kind: "read",
+          title: "Read File",
+        },
+      },
+    },
+    {
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "message-2",
+          content: { type: "text", text: "after" },
+        },
+      },
+    },
+  ];
+  dataHandler?.(`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+  closeHandler?.(0);
+
+  await resultPromise;
+  expect(events).toEqual([
+    { type: "prompt.segment", text: "before。" },
+    expect.objectContaining({
+      type: "prompt.tool_event",
+      event: expect.objectContaining({ toolCallId: "tool-1" }),
+    }),
+    { type: "prompt.segment", text: "\n\nafter" },
+  ]);
+});
+
 test("selectLatestAcpxSessionIndexTmp ignores malformed files and picks latest timestamp", () => {
   expect(selectLatestAcpxSessionIndexTmp([
     "index.json",

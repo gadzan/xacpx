@@ -108,6 +108,12 @@
 agent 返回的最终文本（`response.text`）也以同一事件再发一次。
 turn 结束时无论成功或失败都发出 `turn-finished`（失败时含 `errorMessage`）。
 
+传输层按 ACP 帧顺序交付叙事事件：工具或推理开始前会先 flush 已到达的文本，因此
+`turn-output → tool-event/turn-thought → turn-output` 不会被重排成「活动在前、文字合并在后」。
+`agent_message_chunk.messageId` 是文本块边界的权威信号：同一 id 即使被活动插入也保持
+Markdown 连续，不同 id 之间补一个空行。没有 messageId 的 adapter 只在活动前文本以
+Unicode `Sentence_Terminal`（另含常见省略号）结束时补空行；否则按连续文本处理。
+
 ### metadata 约定
 
 `prompt` 和 `executeCommand` 的 metadata 固定为：

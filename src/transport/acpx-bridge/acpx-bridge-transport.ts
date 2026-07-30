@@ -81,18 +81,21 @@ export class AcpxBridgeTransport implements SessionTransport {
             ...(replyContext ? { replyContext } : {}),
           })
       : null;
-    let segmentError: unknown;
-    let segmentChain = Promise.resolve();
-    let toolEventError: unknown;
-    let toolEventChain = Promise.resolve();
-    let thoughtError: unknown;
-    let thoughtChain = Promise.resolve();
+    let transcriptError: unknown;
+    let transcriptChain = Promise.resolve();
     let planError: unknown;
     let planChain = Promise.resolve();
     let usageError: unknown;
     let usageChain = Promise.resolve();
     let commandsError: unknown;
     let commandsChain = Promise.resolve();
+    const enqueueTranscriptEvent = (callback: () => void | Promise<void>) => {
+      transcriptChain = transcriptChain
+        .then(callback)
+        .catch((error) => {
+          transcriptError ??= error;
+        });
+    };
     let toolEventMode = resolveToolEventMode(options);
     // Safety net: structured/both without an onToolEvent handler would
     // silently drop tool calls. Demote to 'text' so verbose tool calls
@@ -112,27 +115,19 @@ export class AcpxBridgeTransport implements SessionTransport {
     }, (event) => {
       if (event.type === "prompt.segment") {
         const onSegment = options?.onSegment;
-        if (onSegment) {
-          const segmentText = event.text;
-          segmentChain = segmentChain
-            .then(() => onSegment(segmentText))
-            .catch((error) => {
-              segmentError ??= error;
-            });
-        }
-        sink?.feedSegment(event.text);
+        const segmentText = event.text;
+        enqueueTranscriptEvent(async () => {
+          const segmentResult = onSegment?.(segmentText);
+          sink?.feedSegment(segmentText);
+          await segmentResult;
+        });
         return;
       }
       if (event.type === "prompt.tool_event") {
         const onToolEvent = options?.onToolEvent;
         if (onToolEvent) {
           const toolEvent = event.event;
-          // Serialize handler invocations; first error wins.
-          toolEventChain = toolEventChain
-            .then(() => onToolEvent(toolEvent))
-            .catch((error) => {
-              toolEventError ??= error;
-            });
+          enqueueTranscriptEvent(() => onToolEvent(toolEvent));
         }
         return;
       }
@@ -140,12 +135,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         const onThought = options?.onThought;
         if (onThought) {
           const thoughtText = event.text;
-          // Serialize handler invocations; first error wins.
-          thoughtChain = thoughtChain
-            .then(() => onThought(thoughtText))
-            .catch((error) => {
-              thoughtError ??= error;
-            });
+          enqueueTranscriptEvent(() => onThought(thoughtText));
         }
         return;
       }
@@ -188,9 +178,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         return;
       }
     });
-    await segmentChain;
-    await toolEventChain;
-    await thoughtChain;
+    await transcriptChain;
     await planChain;
     await usageChain;
     await commandsChain;
@@ -211,14 +199,8 @@ export class AcpxBridgeTransport implements SessionTransport {
       // surface a final-tier text when overflow happened — in that case the
       // summary is new info AND result.text carries the agent's final answer
       // that may have been partially or fully dropped from the stream.
-      if (segmentError) {
-        throw segmentError;
-      }
-      if (toolEventError) {
-        throw toolEventError;
-      }
-      if (thoughtError) {
-        throw thoughtError;
+      if (transcriptError) {
+        throw transcriptError;
       }
       if (planError) {
         throw planError;
@@ -231,14 +213,8 @@ export class AcpxBridgeTransport implements SessionTransport {
       }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }
-    if (segmentError) {
-      throw segmentError;
-    }
-    if (toolEventError) {
-      throw toolEventError;
-    }
-    if (thoughtError) {
-      throw thoughtError;
+    if (transcriptError) {
+      throw transcriptError;
     }
     if (planError) {
       throw planError;

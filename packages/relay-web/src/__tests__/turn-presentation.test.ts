@@ -29,7 +29,7 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
-  it("places a tool at an explicit paragraph boundary", () => {
+  it("places a tool at the semantic paragraph boundary inserted by the transport", () => {
     expect(visibleShape([
       { type: "text", text: "before\n\n" },
       { type: "tool", step: tool("read-1") },
