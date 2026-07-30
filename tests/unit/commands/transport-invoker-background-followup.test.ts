@@ -178,7 +178,7 @@ test("a failed top-level Claude Agent closes nested descendants as errors", asyn
   expect([...toolEvents].reverse().find((event) => event.toolCallId === "nested-read")?.status).toBe("error");
 });
 
-test("the Claude follow-up decorator preserves optional transport capabilities and binding", async () => {
+test("the background follow-up decorator preserves optional transport capabilities and binding", async () => {
   let disposed = false;
   const delegate = {
     marker: "delegate",
