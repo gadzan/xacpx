@@ -164,21 +164,25 @@ xacpx mcp-stdio --coordinator-session <session> --source-handle <handle> --works
 
 ## Relay hub — `xacpx-relay`
 
-[自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。共四个子命令；在 relay 各包发布到 npm 之前，从仓库 checkout 用 `node packages/relay/dist/cli.js <命令>` 调用。
+[自托管 Relay Hub](/zh/guide/relay-self-hosting) 用的**独立**命令（不属于 `xacpx` CLI）。在 relay 各包发布到 npm 之前，从仓库 checkout 用 `node packages/relay/dist/cli.js <命令>` 调用。
 
 ```bash
 xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
 xacpx-relay add token [--label <note>] [--db <path>]
+xacpx-relay add invite [--label <note>] [--ttl <30m|12h|7d>] [--url <hub-base-url>] [--db <path>]
 xacpx-relay ls [--db <path>]
 xacpx-relay rm token <value-or-id> [--db <path>]
+xacpx-relay rm invite <code-or-id> [--db <path>]
 ```
 
 | 命令 | 说明 |
 |---|---|
 | `start` | 启动 hub。`--db` 默认 `~/.xacpx-relay/relay.db`（自动创建目录）。`--web-root` 默认指向内置的 `packages/relay-web/dist`，不传也能提供看板 UI。没有 `stop`/`status`——用 `SIGTERM`。 |
 | `add token` | 创建用户并生成登录令牌，**只打印一次**。同一个令牌既用于网页看板登录（粘贴到"访问令牌"输入框），也用于连接器（`--token`）。 |
-| `ls` | 列出所有令牌：短 id、标签、创建时间、已连接实例数。 |
+| `add invite` | 生成**一次性邀请码**并打印兑换链接（`/invite/<code>`）。对方打开链接、点击兑换即可自助创建账号并获得令牌。`--ttl` 默认 `7d`。详见[邀请码](/zh/guide/relay-self-hosting#add-invite-通过链接邀请他人)。 |
+| `ls` | 列出所有令牌（短 id、标签、创建时间、已连接实例数）及未用/已用邀请码。 |
 | `rm token <value-or-id>` | 删除该令牌对应的用户（级联删除所有关联数据）。 |
+| `rm invite <code-or-id>` | 删除邀请码（不影响已兑换出的账号）。 |
 
 **示例——生成令牌：**
 

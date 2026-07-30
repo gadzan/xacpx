@@ -49,7 +49,7 @@ The entry point is then `packages/relay/dist/cli.js` — run `node packages/rela
 
 ## 2. Quickstart (zero flags needed)
 
-Auth is entirely token-based — **no passwords, no admin accounts, no invite flow**. A token IS a user. Mint one and start the server:
+Auth is entirely token-based — **no passwords, no admin accounts**. A token IS a user. Mint one and start the server:
 
 ```bash
 # Step A — create a user + token (DB auto-created at ~/.xacpx-relay/relay.db)
@@ -77,7 +77,7 @@ Open `http://<host>:8787`, paste the token into the **Access token** field, and 
 
 ## 3. Token management
 
-The hub has exactly **4 CLI commands**; all flags are optional:
+All hub administration happens through a handful of CLI subcommands (`add token` / `add invite` / `ls` / `rm token` / `rm invite` / `start` / `update`); all flags are optional:
 
 ### `add token` — create a user + login token
 
@@ -106,6 +106,33 @@ xacpx-relay rm token <value-or-id> [--db <path>]
 ```
 
 Deletes the user behind that token and cascades to its instances, web sessions, and cached messages. Revocation kills that token's web sessions on the next request; an already-open dashboard `/ws` socket lingers until reconnect. To hard-cut all sessions: stop the hub, run `sqlite3 <db> "DELETE FROM web_sessions;"`, then restart.
+
+### `add invite` — invite someone via a link
+
+When you can't (or don't want to) mint a token on the server for someone else, hand them a **single-use invite link** instead:
+
+```bash
+xacpx-relay add invite [--label <note>] [--ttl <n>{m|h|d}] [--url <base>] [--db <path>]
+```
+
+Prints the invite code **once**, plus a ready-to-share redeem link when `--url` is given (otherwise a `/invite/<code>` path to append to your hub URL):
+
+```
+invite code: mJ3…
+redeem link: https://relay.example.com/invite/mJ3…
+(share it now — single-use, not shown again; expires 2026-08-02 12:00 UTC)
+```
+
+Opening the link shows a redeem page; the recipient **clicks to redeem** (link previews and crawlers can't burn the code), which creates a fresh account and shows its access token exactly once — same semantics as `add token`, just self-service.
+
+- `--ttl` defaults to `7d` (e.g. `30m`, `12h`, `3d`; capped at 10 years).
+- Codes are single-use and hashed at rest; used/expired codes are swept hourly.
+- The redeem endpoint shares the login rate-limit bucket (per-IP — remember `--trust-proxy` behind a proxy).
+- `ls` gains an **invites** section (short id, label, expiry, status `unused|used|expired`); remove one with `rm invite <code-or-id>` (does not affect already-redeemed accounts).
+
+::: warning Invite links appear in proxy logs
+The plaintext code travels in the URL path, so your reverse proxy's access log will record **unredeemed** invite links (once redeemed they're worthless). If that matters to you, use a short `--ttl` or disable access logging for `/invite/` paths.
+:::
 
 ### `start` — start the server
 

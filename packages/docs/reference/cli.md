@@ -164,21 +164,25 @@ For identity rules, `workingDirectory` semantics, the full tool list, and troubl
 
 ## Relay hub — `xacpx-relay`
 
-A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). It has four subcommands; until the relay packages are published to npm, invoke them as `node packages/relay/dist/cli.js <command>` from a repo checkout.
+A **separate** binary for [self-hosting the relay hub](/guide/relay-self-hosting) (not part of the `xacpx` CLI). Until the relay packages are published to npm, invoke the subcommands as `node packages/relay/dist/cli.js <command>` from a repo checkout.
 
 ```bash
 xacpx-relay start [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port 8788] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]
 xacpx-relay add token [--label <note>] [--db <path>]
+xacpx-relay add invite [--label <note>] [--ttl <30m|12h|7d>] [--url <hub-base-url>] [--db <path>]
 xacpx-relay ls [--db <path>]
 xacpx-relay rm token <value-or-id> [--db <path>]
+xacpx-relay rm invite <code-or-id> [--db <path>]
 ```
 
 | Command | Description |
 |---|---|
 | `start` | Run the hub. `--db` defaults to `~/.xacpx-relay/relay.db` (auto-creates the directory). `--web-root` defaults to the bundled `packages/relay-web/dist` — the dashboard is served even if omitted. No `stop`/`status` — use `SIGTERM`. |
 | `add token` | Create a user and mint a login token; printed **once**. The same token is used for both the web dashboard login (paste into the "Access token" field) and the connector (`--token`). |
-| `ls` | List tokens: short id, label, created date, and number of connected instances. |
+| `add invite` | Mint a **single-use invite code** and print a redeem link (`/invite/<code>`). The recipient opens the link and clicks redeem to create their own account and receive a token. `--ttl` defaults to `7d`. See [invites](/guide/relay-self-hosting#add-invite-invite-someone-via-a-link). |
+| `ls` | List tokens (short id, label, created date, connected instances) and pending/used invite codes. |
 | `rm token <value-or-id>` | Remove the user behind that token (cascades all data). |
+| `rm invite <code-or-id>` | Delete an invite code (does not affect accounts already redeemed from it). |
 
 **Example — mint a token:**
 
