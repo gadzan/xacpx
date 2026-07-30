@@ -10,6 +10,9 @@ hero:
       text: 快速开始
       link: /zh/guide/getting-started
     - theme: alt
+      text: 网页看板
+      link: /zh/guide/relay-self-hosting
+    - theme: alt
       text: 在 GitHub 查看
       link: https://github.com/gadzan/xacpx
 
@@ -92,9 +95,21 @@ xacpx 内置微信作为默认频道。其他频道以官方插件包形式分�
 
 ## 网页看板（relay hub）
 
-聊天并不是驱动 xacpx 的唯一方式。如果你跑了多个实例，可以自托管 **relay hub**——一个内置网页看板的 npm 包（`@ganglion/xacpx-relay`）。每个实例通过 WebSocket 拨入 hub 并注册；你登录一个多租户看板，在一个地方管理所有实例的会话——聊天、定时任务、编排。Agent 回复以实时 markdown 渲染，看板可作为 PWA 安装到移动端。登录与连接器配对共用同一个 access token。
+聊天并不是驱动 xacpx 的唯一方式。你可以自托管 **relay hub**——一个内置多租户网页看板的 npm 包（`@ganglion/xacpx-relay`），在一个浏览器标签页里管理所有实例。每个实例通过 WebSocket 拨入 hub 并注册；hub 不持有你的会话，只负责把它们扇出到浏览器。
 
-完整流程见 [自托管 Relay Hub](/zh/guide/relay-self-hosting)。
+- **三栏 IM 布局**——实例/会话树、实时聊天流、定时任务 + 编排面板并排呈现。界面支持 English + 中文。
+- **实时 markdown 流式渲染**——回复边到边渲染，工具调用与子 Agent 活动内联展示；可直接在浏览器里取消运行中的任务。
+- **移动端 PWA**——添加到主屏幕后，用起来就像原生应用。
+- **部署极简**——一条 `npm i -g`，默认单端口，SQLite 用内置的 `node:sqlite`/`bun:sqlite`，无需编译原生依赖。
+- **多租户 + 令牌认证**——一个令牌就是一个用户；令牌哈希落盘，同一个 access token 既用于网页登录也用于连接器配对。给他人开号可用一次性**邀请链接**（`xacpx-relay add invite`）。
+
+```bash
+npm i -g @ganglion/xacpx-relay
+xacpx-relay add token   # 仅打印一次 access token
+xacpx-relay start       # 看板 + API 在 :8787
+```
+
+完整流程——配对、邀请码、TLS、systemd、备份——见[自托管 Relay Hub](/zh/guide/relay-self-hosting)。
 
 ## 下一步
 
