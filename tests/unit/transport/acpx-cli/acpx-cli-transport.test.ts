@@ -1504,7 +1504,22 @@ function makeToolCallLine(toolCallId: string, title: string, kind = "read"): str
   });
 }
 
-function makeAgentChunkLine(text: string): string {
+function makeToolCallUpdateLine(toolCallId: string, status: string): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "abc",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status,
+      },
+    },
+  });
+}
+
+function makeAgentChunkLine(text: string, messageId?: string): string {
   return JSON.stringify({
     jsonrpc: "2.0",
     method: "session/update",
@@ -1512,6 +1527,21 @@ function makeAgentChunkLine(text: string): string {
       sessionId: "abc",
       update: {
         sessionUpdate: "agent_message_chunk",
+        ...(messageId ? { messageId } : {}),
+        content: { type: "text", text },
+      },
+    },
+  });
+}
+
+function makeAgentThoughtLine(text: string): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "abc",
+      update: {
+        sessionUpdate: "agent_thought_chunk",
         content: { type: "text", text },
       },
     },
@@ -1544,6 +1574,297 @@ function makeFakeSpawn(lines: string[]) {
 
   return process as unknown as ReturnType<typeof makeFakeSpawn>;
 }
+
+test("raw stream preserves text → tool → text order and separates different messageIds", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeAgentChunkLine("先说明。", "message-1"),
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("再总结", "message-2"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.toolCallId}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "text:先说明。",
+    "tool:tool-1",
+    "text:\n\n再总结",
+  ]);
+});
+
+test("raw stream keeps the same messageId as one Markdown block across a tool call", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeAgentChunkLine("**连续", "message-1"),
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("文本**", "message-1"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.toolCallId}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "text:**连续",
+    "tool:tool-1",
+    "text:文本**",
+  ]);
+});
+
+test("raw stream uses multilingual sentence-terminal punctuation when messageId is absent", async () => {
+  const sentenceEndings = [
+    "English.",
+    "中文。",
+    "العربية؟",
+    "Հայերեն։",
+    "हिन्दी।",
+    "አማርኛ።",
+    "全角！",
+    "省略…",
+    "省略⋯",
+    "带引号！”",
+    "Markdown。**",
+  ];
+
+  for (const before of sentenceEndings) {
+    const events: string[] = [];
+    const transport = new AcpxCliTransport(
+      { command: "acpx" },
+      undefined,
+      undefined,
+      undefined,
+      {
+        spawnPrompt: () => makeFakeSpawn([
+          makeAgentChunkLine(before),
+          makeToolCallLine("tool-1", "Read file", "read"),
+          makeAgentChunkLine("after"),
+        ]),
+        setIntervalFn: () => 0,
+        clearIntervalFn: () => {},
+      },
+    );
+
+    await transport.prompt(
+      { ...session, replyMode: "stream" },
+      "hello",
+      async (text) => {
+        events.push(`text:${text}`);
+      },
+      undefined,
+      {
+        onToolEvent: async (event) => {
+          events.push(`tool:${event.toolCallId}`);
+        },
+      },
+    );
+
+    expect(events).toEqual([
+      `text:${before}`,
+      "tool:tool-1",
+      "text:\n\nafter",
+    ]);
+  }
+});
+
+test("raw stream does not invent a text block boundary without messageId or sentence punctuation", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeAgentChunkLine("continuous "),
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("text"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.toolCallId}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "text:continuous ",
+    "tool:tool-1",
+    "text:text",
+  ]);
+});
+
+test("raw stream preserves text → reasoning → text order", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeAgentChunkLine("before。", "message-1"),
+        makeAgentThoughtLine("checking"),
+        makeAgentChunkLine("after", "message-2"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onThought: async (text) => {
+        events.push(`reasoning:${text}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "text:before。",
+    "reasoning:checking",
+    "text:\n\nafter",
+  ]);
+});
+
+test("raw stream delivers text before a later update to an existing tool", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("between", "message-1"),
+        makeToolCallUpdateLine("tool-1", "completed"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.status}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "tool:running",
+    "text:between",
+    "tool:success",
+  ]);
+});
+
+test("updating an existing tool does not invent a new text-block boundary", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("between."),
+        makeToolCallUpdateLine("tool-1", "completed"),
+        makeAgentChunkLine("continued"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.status}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "tool:running",
+    "text:between.",
+    "tool:success",
+    "text:continued",
+  ]);
+});
 
 test("toolEventMode: no onToolEvent + no toolEventMode → resolves to text, tool call appears as segment", async () => {
   const segments: string[] = [];

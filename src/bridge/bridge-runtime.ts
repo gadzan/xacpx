@@ -1078,10 +1078,14 @@ export async function runStreamingPrompt(
     let stdout = "";
     let stderr = "";
     const toolEventMode: ToolEventMode = options.toolEventMode ?? "text";
+    let flushPendingText = () => {};
     const state = createStreamingPromptState(options.formatToolCalls ?? false, {
       mode: toolEventMode,
       driver: options.driver,
       rawStream,
+      onBeforeActivityEvent: () => {
+        flushPendingText();
+      },
       ...(onEvent && (toolEventMode === "structured" || toolEventMode === "both")
         ? { onToolEvent: (toolEvent) => onEvent({ type: "prompt.tool_event", event: toolEvent }) }
         : {}),
@@ -1113,6 +1117,14 @@ export async function runStreamingPrompt(
         onEvent?.({ type: "prompt.segment", text: remaining });
         lastReplyAt = now();
       }
+    };
+
+    flushPendingText = () => {
+      for (const segment of state.segments.splice(0)) {
+        onEvent?.({ type: "prompt.segment", text: segment });
+        lastReplyAt = now();
+      }
+      flushBuffer();
     };
 
     const timer = setIntervalFn(() => {

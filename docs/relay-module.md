@@ -143,6 +143,12 @@
 - `{ type: "turn-thought"; chatKey; sessionAlias; chunk: string }` — reasoning 文本分片（流式追加）。
 - `{ type: "turn-finished"; chatKey; sessionAlias; ok; errorMessage?; cancelled?: boolean }` — 终态信号；`cancelled` 为 true 表示用户手动取消。
 
+叙事相关事件保持 transport 的 ACP 到达顺序。每个工具事件或推理事件前的文本会先作为
+`turn-output` 发出；transport 还会把 agent 的 messageId 边界编码为空行。这样 Web
+可在同一 messageId 内维持完整 Markdown 块，并把活动放在不同文本块之间。缺少
+messageId 时的句末判断使用 Unicode 句子终止属性，不绑定中文或英文字符表。
+同一 toolCallId 的状态更新只更新原活动项，不新建活动位置或段落边界。
+
 ### 连接器规整（packages/channel-relay/src/tool-presentation.ts）
 
 `toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto` 将核心层的原始 `ToolUseEvent` 规整为友好的、有上限的呈现 DTO：

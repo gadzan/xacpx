@@ -27,6 +27,7 @@ import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { isModelNotAdvertisedError } from "../model-not-advertised";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
+import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import {
   buildOverflowSummary,
   createQuotaGatedReplySink,
@@ -789,12 +790,7 @@ export class AcpxCliTransport implements SessionTransport {
       let stdout = "";
       let stderr = "";
       let lastReplyAt = now();
-      let segmentChain = Promise.resolve();
-      let segmentError: unknown;
-      let toolEventChain = Promise.resolve();
-      let toolEventError: unknown;
-      let thoughtChain = Promise.resolve();
-      let thoughtError: unknown;
+      const transcriptEvents = createSerializedCallbackQueue();
       let planChain = Promise.resolve();
       let planError: unknown;
       let usageChain = Promise.resolve();
@@ -806,32 +802,26 @@ export class AcpxCliTransport implements SessionTransport {
       const userOnPlan = onPlan;
       const userOnUsage = onUsage;
       const userOnCommands = onCommands;
+      let flushPendingText = () => {};
 
       const state = createStreamingPromptState(formatToolCalls, {
         mode: toolEventMode,
         driver,
         rawStream,
+        onBeforeActivityEvent: () => {
+          flushPendingText();
+        },
         ...(userOnToolEvent
           ? {
               onToolEvent: (event) => {
-                // Serialize handler invocations; first error wins.
-                toolEventChain = toolEventChain
-                  .then(() => userOnToolEvent(event))
-                  .catch((error) => {
-                    toolEventError ??= error;
-                  });
+                transcriptEvents.enqueue(() => userOnToolEvent(event));
               },
             }
           : {}),
         ...(userOnThought
           ? {
               onThought: (chunk) => {
-                // Serialize handler invocations; first error wins.
-                thoughtChain = thoughtChain
-                  .then(() => userOnThought(chunk))
-                  .catch((error) => {
-                    thoughtError ??= error;
-                  });
+                transcriptEvents.enqueue(() => userOnThought(chunk));
               },
             }
           : {}),
@@ -883,14 +873,11 @@ export class AcpxCliTransport implements SessionTransport {
         : null;
 
       const feedSegment = (segment: string) => {
-        if (onSegment) {
-          segmentChain = segmentChain
-            .then(() => onSegment(segment))
-            .catch((error) => {
-              segmentError ??= error;
-            });
-        }
-        sink?.feedSegment(segment);
+        transcriptEvents.enqueue(async () => {
+          const segmentResult = onSegment?.(segment);
+          sink?.feedSegment(segment);
+          await segmentResult;
+        });
         lastReplyAt = now();
       };
 
@@ -901,6 +888,13 @@ export class AcpxCliTransport implements SessionTransport {
           state.buffer = "";
           feedSegment(remaining);
         }
+      };
+
+      flushPendingText = () => {
+        for (const segment of state.segments.splice(0)) {
+          feedSegment(segment);
+        }
+        flushBuffer();
       };
 
       // Periodic timer: flush accumulated text if waiting too long
@@ -933,38 +927,29 @@ export class AcpxCliTransport implements SessionTransport {
         if (remaining.length > 0) {
           feedSegment(remaining);
         }
-        const { overflowCount } = sink?.finalize() ?? { overflowCount: 0 };
-        // Note: any aggregator trailing text is folded into the overflow
-        // summary path via the final agent message (caller appends summary).
-        // Wait for all in-flight reply() rejections to settle before deciding
-        // whether to reject the prompt with a QuotaDeferredError. Without
-        // draining, the deferred error from an outbound pushReply could
-        // arrive after we already resolved, and the wake-coordinator catch
-        // would never see it — silently clearing injectionPending.
-        void Promise.all([
-          sink?.drain({ timeoutMs: 30_000 }) ?? Promise.resolve(),
-          segmentChain,
-          toolEventChain,
-          thoughtChain,
-          planChain,
-          usageChain,
-          commandsChain,
-        ]).then(() => {
+        void (async () => {
+          await Promise.all([
+            transcriptEvents.drain(),
+            planChain,
+            usageChain,
+            commandsChain,
+          ]);
+          // All queued text must reach the sink before it is finalized. This also
+          // preserves ACP's text → activity → text order across async callbacks.
+          const { overflowCount } = sink?.finalize() ?? { overflowCount: 0 };
+          // Note: any aggregator trailing text is folded into the overflow
+          // summary path via the final agent message (caller appends summary).
+          // Wait for all in-flight reply() rejections to settle before deciding
+          // whether to reject the prompt with a QuotaDeferredError.
+          await (sink?.drain({ timeoutMs: 30_000 }) ?? Promise.resolve());
           const deferred = sink?.getPendingError();
           if (deferred) {
             reject(deferred);
             return;
           }
-          if (segmentError) {
-            reject(segmentError);
-            return;
-          }
-          if (toolEventError) {
-            reject(toolEventError);
-            return;
-          }
-          if (thoughtError) {
-            reject(thoughtError);
+          const transcriptError = transcriptEvents.getError();
+          if (transcriptError) {
+            reject(transcriptError);
             return;
           }
           if (planError) {
@@ -983,7 +968,7 @@ export class AcpxCliTransport implements SessionTransport {
             result: { code: code ?? 1, stdout, stderr },
             overflowCount,
           });
-        }).catch((error) => {
+        })().catch((error) => {
           reject(error);
         });
       });

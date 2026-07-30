@@ -189,6 +189,56 @@ test("stream-mode session forwards fine-grained segments verbatim (no \\n-join)"
   expect(segments.join("")).toBe("| # | 功能 | 说明 |");
 });
 
+test("stream-mode bridge preserves text → tool → text callback order", async () => {
+  const request = mock(async (_method, _params, onEvent?: (event: {
+    type: string;
+    text?: string;
+    event?: {
+      type: "tool_use";
+      toolCallId: string;
+      toolName: string;
+      kind: "read";
+      status: "running";
+    };
+  }) => void) => {
+    onEvent?.({ type: "prompt.segment", text: "before。" });
+    onEvent?.({
+      type: "prompt.tool_event",
+      event: {
+        type: "tool_use",
+        toolCallId: "tool-1",
+        toolName: "Read File",
+        kind: "read",
+        status: "running",
+      },
+    });
+    onEvent?.({ type: "prompt.segment", text: "\n\nafter" });
+    return { text: "done" };
+  });
+  const events: string[] = [];
+  const transport = new AcpxBridgeTransport({ request });
+
+  await transport.prompt(
+    { ...session, effectiveReplyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.toolCallId}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "text:before。",
+    "tool:tool-1",
+    "text:\n\nafter",
+  ]);
+});
+
 
 test("runs prompt segment observers serially in bridge event order", async () => {
   const request = mock(async (_method, _params, onEvent?: (event: { type: string; text: string }) => void) => {

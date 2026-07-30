@@ -15,6 +15,7 @@ import {
   createQuotaGatedReplySink,
   createVerbatimReplySink,
 } from "../quota-gated-reply-sink";
+import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import { resolveToolEventMode } from "../tool-event-mode.js";
 import type { BridgeMethod } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
@@ -81,12 +82,7 @@ export class AcpxBridgeTransport implements SessionTransport {
             ...(replyContext ? { replyContext } : {}),
           })
       : null;
-    let segmentError: unknown;
-    let segmentChain = Promise.resolve();
-    let toolEventError: unknown;
-    let toolEventChain = Promise.resolve();
-    let thoughtError: unknown;
-    let thoughtChain = Promise.resolve();
+    const transcriptEvents = createSerializedCallbackQueue();
     let planError: unknown;
     let planChain = Promise.resolve();
     let usageError: unknown;
@@ -112,27 +108,19 @@ export class AcpxBridgeTransport implements SessionTransport {
     }, (event) => {
       if (event.type === "prompt.segment") {
         const onSegment = options?.onSegment;
-        if (onSegment) {
-          const segmentText = event.text;
-          segmentChain = segmentChain
-            .then(() => onSegment(segmentText))
-            .catch((error) => {
-              segmentError ??= error;
-            });
-        }
-        sink?.feedSegment(event.text);
+        const segmentText = event.text;
+        transcriptEvents.enqueue(async () => {
+          const segmentResult = onSegment?.(segmentText);
+          sink?.feedSegment(segmentText);
+          await segmentResult;
+        });
         return;
       }
       if (event.type === "prompt.tool_event") {
         const onToolEvent = options?.onToolEvent;
         if (onToolEvent) {
           const toolEvent = event.event;
-          // Serialize handler invocations; first error wins.
-          toolEventChain = toolEventChain
-            .then(() => onToolEvent(toolEvent))
-            .catch((error) => {
-              toolEventError ??= error;
-            });
+          transcriptEvents.enqueue(() => onToolEvent(toolEvent));
         }
         return;
       }
@@ -140,12 +128,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         const onThought = options?.onThought;
         if (onThought) {
           const thoughtText = event.text;
-          // Serialize handler invocations; first error wins.
-          thoughtChain = thoughtChain
-            .then(() => onThought(thoughtText))
-            .catch((error) => {
-              thoughtError ??= error;
-            });
+          transcriptEvents.enqueue(() => onThought(thoughtText));
         }
         return;
       }
@@ -188,9 +171,7 @@ export class AcpxBridgeTransport implements SessionTransport {
         return;
       }
     });
-    await segmentChain;
-    await toolEventChain;
-    await thoughtChain;
+    await transcriptEvents.drain();
     await planChain;
     await usageChain;
     await commandsChain;
@@ -211,14 +192,9 @@ export class AcpxBridgeTransport implements SessionTransport {
       // surface a final-tier text when overflow happened — in that case the
       // summary is new info AND result.text carries the agent's final answer
       // that may have been partially or fully dropped from the stream.
-      if (segmentError) {
-        throw segmentError;
-      }
-      if (toolEventError) {
-        throw toolEventError;
-      }
-      if (thoughtError) {
-        throw thoughtError;
+      const transcriptError = transcriptEvents.getError();
+      if (transcriptError) {
+        throw transcriptError;
       }
       if (planError) {
         throw planError;
@@ -231,14 +207,9 @@ export class AcpxBridgeTransport implements SessionTransport {
       }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }
-    if (segmentError) {
-      throw segmentError;
-    }
-    if (toolEventError) {
-      throw toolEventError;
-    }
-    if (thoughtError) {
-      throw thoughtError;
+    const transcriptError = transcriptEvents.getError();
+    if (transcriptError) {
+      throw transcriptError;
     }
     if (planError) {
       throw planError;

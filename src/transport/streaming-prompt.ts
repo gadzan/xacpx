@@ -12,6 +12,7 @@ export interface StreamingPromptState {
   pendingLine: string;
   formatToolCalls: boolean;
   emittedToolCallIds: Set<string>;
+  positionedToolCallIds: Set<string>;
   // ACP `tool_call_update` frames are PARTIAL: each carries only the fields that
   // changed, keyed by toolCallId. In particular the terminal (completed/failed)
   // frame typically omits kind/title/content and only sets status + rawOutput. We
@@ -27,6 +28,10 @@ export interface StreamingPromptState {
   // trades the batched paragraph model (good for discrete chat messages) for low
   // first-token latency and smooth token streaming.
   rawStream: boolean;
+  lastMessageId?: string;
+  lastTextTail: string;
+  activitySinceLastText: boolean;
+  onBeforeActivityEvent?: () => void;
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
@@ -40,6 +45,7 @@ interface StreamEvent {
   params?: {
     update?: {
       sessionUpdate?: string;
+      messageId?: string;
       content?: {
         type?: string;
         text?: string;
@@ -86,6 +92,7 @@ export type CreateStreamingPromptStateOptions =
       mode?: ToolEventMode;
       driver?: string;
       rawStream?: boolean;
+      onBeforeActivityEvent?: () => void;
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
       onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
@@ -105,6 +112,7 @@ export function createStreamingPromptState(
   let onCommands: ((commands: AgentCommand[]) => void | Promise<void>) | undefined;
   let rawStream = false;
   let driver: string | undefined;
+  let onBeforeActivityEvent: (() => void) | undefined;
 
   if (options === undefined) {
     toolEventMode = "text";
@@ -121,6 +129,7 @@ export function createStreamingPromptState(
     onCommands = options.onCommands;
     rawStream = options.rawStream ?? false;
     driver = options.driver?.trim().toLowerCase() || undefined;
+    onBeforeActivityEvent = options.onBeforeActivityEvent;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
       onToolEvent,
@@ -134,10 +143,14 @@ export function createStreamingPromptState(
     pendingLine: "",
     formatToolCalls,
     emittedToolCallIds: new Set(),
+    positionedToolCallIds: new Set(),
     toolCalls: new Map(),
     toolEventMode,
     driver,
     rawStream,
+    lastTextTail: "",
+    activitySinceLastText: false,
+    onBeforeActivityEvent,
     onToolEvent,
     onThought,
     onPlan,
@@ -185,6 +198,16 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   if (!update) return;
 
   if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+    const isInitialToolEvent = typeof update.toolCallId === "string"
+      ? !state.positionedToolCallIds.has(update.toolCallId)
+      : update.sessionUpdate === "tool_call";
+    if (isInitialToolEvent) {
+      if (update.toolCallId) state.positionedToolCallIds.add(update.toolCallId);
+      markActivityBoundary(state);
+    } else {
+      flushBeforeActivityEvent(state);
+    }
+
     // Structured consumers (e.g. the relay web dashboard) render tool calls in
     // their own UI, so they receive events through `onToolEvent` regardless of the
     // channel's text replyMode. Only the legacy inline-text rendering — which
@@ -264,6 +287,7 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   if (isThoughtChunk) {
     const chunk = update.content!.text as string;
     if (chunk.length > 0) {
+      markActivityBoundary(state);
       // Fire-and-forget at the state level — transports that need serialized
       // awaiting wrap the user callback before passing it in (mirrors onToolEvent).
       void state.onThought?.(chunk);
@@ -279,10 +303,30 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   if (!isMessageChunk) return;
 
   state.hasAgentMessage = true;
-  const chunk = update.content!.text ?? "";
+  let chunk = update.content!.text ?? "";
   if (chunk.length === 0) return;
 
+  const messageId =
+    typeof update.messageId === "string" && update.messageId.length > 0
+      ? update.messageId
+      : undefined;
+  const messageIdChanged =
+    state.lastMessageId !== undefined &&
+    messageId !== undefined &&
+    state.lastMessageId !== messageId;
+  const fallbackBoundary =
+    state.activitySinceLastText &&
+    (state.lastMessageId === undefined || messageId === undefined) &&
+    endsWithSentenceTerminal(state.lastTextTail);
+  if ((messageIdChanged || fallbackBoundary) && !hasParagraphBoundaryAtJoin(state.lastTextTail, chunk)) {
+    chunk = `\n\n${chunk}`;
+    state.lastTextTail = "";
+  }
+
   state.buffer += chunk;
+  state.lastMessageId = messageId;
+  state.activitySinceLastText = false;
+  state.lastTextTail = `${state.lastTextTail}${chunk}`.slice(-256);
 
   // Raw streaming: leave the text in `buffer` untouched — the transport's short flush
   // timer drains it verbatim, so paragraph structure is preserved without splitting.
@@ -297,6 +341,39 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
       state.segments.push(segment);
     }
   }
+}
+
+const SENTENCE_TERMINAL_AT_END =
+  /(?:\p{Sentence_Terminal}|…|⋯)[\p{Close_Punctuation}\p{Final_Punctuation}"“”‘’*_~`]*$/u;
+const PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r?\n[\t ]*$/;
+const PARAGRAPH_BOUNDARY_AT_START = /^[\t ]*\r?\n[\t ]*\r?\n/;
+const LINE_BREAK_AT_END = /\r?\n[\t ]*$/;
+const LINE_BREAK_AT_START = /^[\t ]*\r?\n/;
+const PARTIAL_CRLF_PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r$/;
+
+function endsWithSentenceTerminal(text: string): boolean {
+  return SENTENCE_TERMINAL_AT_END.test(text.trimEnd());
+}
+
+function hasParagraphBoundaryAtJoin(left: string, right: string): boolean {
+  const leftHasBoundary = PARAGRAPH_BOUNDARY_AT_END.test(left);
+  const rightHasBoundary = PARAGRAPH_BOUNDARY_AT_START.test(right);
+  const boundarySpansJoin =
+    LINE_BREAK_AT_END.test(left) &&
+    LINE_BREAK_AT_START.test(right);
+  const crlfBoundarySpansJoin =
+    PARTIAL_CRLF_PARAGRAPH_BOUNDARY_AT_END.test(left) &&
+    right.startsWith("\n");
+  return leftHasBoundary || rightHasBoundary || boundarySpansJoin || crlfBoundarySpansJoin;
+}
+
+function markActivityBoundary(state: StreamingPromptState): void {
+  flushBeforeActivityEvent(state);
+  state.activitySinceLastText = state.hasAgentMessage;
+}
+
+function flushBeforeActivityEvent(state: StreamingPromptState): void {
+  state.onBeforeActivityEvent?.();
 }
 
 function formatToolCallEvent(update: NonNullable<StreamEvent["params"]>["update"], sessionUpdate: string): string | null {
