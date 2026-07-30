@@ -54,6 +54,18 @@ export interface InstanceView {
 
 export const useInstancesStore = defineStore("instances", () => {
   const instances = ref<InstanceView[]>([]);
+  const pendingSessionRenames = new Map<string, {
+    latestRevision: number;
+    confirmedRevision: number;
+    desiredDisplayName?: string;
+    confirmedDisplayName?: string;
+  }>();
+  const sessionRenameTails = new Map<string, Promise<void>>();
+  let sessionRenameRevision = 0;
+
+  function sessionRenameKey(instanceId: string, alias: string): string {
+    return JSON.stringify([instanceId, alias]);
+  }
 
   // Per-instance sidebar grouping mode (flat / by-workspace / by-agent). Reactive
   // mirror of the localStorage preference so the sidebar re-renders the moment the
@@ -85,6 +97,12 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function loadSessions(instanceId: string): Promise<void> {
+    // A list request can start before a rename succeeds and return afterwards.
+    // Snapshot confirmation revisions so that stale response cannot downgrade a
+    // newer value confirmed while the request was in flight.
+    const confirmedRevisionsAtRequest = new Map(
+      [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
+    );
     // Pull the configured agents alongside the session list (once) so the sidebar and chat
     // can map each session's agent NAME → driver for the brand icon. Agents otherwise only
     // load when a create/manage dialog opens (loadFormOptions), so in the normal
@@ -100,7 +118,20 @@ export const useInstancesStore = defineStore("instances", () => {
     ]);
     const inst = byId(instanceId);
     if (inst) {
-      inst.sessions = sessions;
+      inst.sessions = sessions.map((session) => {
+        const key = sessionRenameKey(instanceId, session.alias);
+        const pending = pendingSessionRenames.get(key);
+        if (!pending) return session;
+        if (
+          confirmedRevisionsAtRequest.get(key) === pending.confirmedRevision
+          && pending.latestRevision === pending.confirmedRevision
+          && session.displayName === pending.confirmedDisplayName
+        ) {
+          pendingSessionRenames.delete(key);
+          return session;
+        }
+        return { ...session, displayName: pending.desiredDisplayName };
+      });
       inst.sessionsLoaded = true;
       if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
     }
@@ -292,13 +323,67 @@ export const useInstancesStore = defineStore("instances", () => {
     await loadSessions(instanceId);
   }
 
-  // The display label lives in core session state; set it via control RPC, then optimistically
-  // update the local row so the sidebar reflects the new name without a reload. Empty → cleared.
+  // The display label lives in core session state. Update the local row before the
+  // RPC settles so Enter has immediate visual feedback; a failed request restores
+  // the previous value only when this optimistic value is still current.
   async function renameSession(instanceId: string, alias: string, displayName: string): Promise<void> {
     const trimmed = displayName.trim();
-    unwrap(await api.rpc(instanceId, "control.sessions.rename", { alias, displayName: trimmed }));
     const row = byId(instanceId)?.sessions.find((s) => s.alias === alias);
-    if (row) row.displayName = trimmed || undefined;
+    const previousDisplayName = row?.displayName;
+    const nextDisplayName = trimmed || undefined;
+    const key = sessionRenameKey(instanceId, alias);
+    const revision = ++sessionRenameRevision;
+    const existingPending = pendingSessionRenames.get(key);
+    if (existingPending) {
+      existingPending.latestRevision = revision;
+      existingPending.desiredDisplayName = nextDisplayName;
+    } else {
+      pendingSessionRenames.set(key, {
+        latestRevision: revision,
+        confirmedRevision: 0,
+        desiredDisplayName: nextDisplayName,
+        confirmedDisplayName: previousDisplayName,
+      });
+    }
+    if (row) row.displayName = nextDisplayName;
+
+    const execute = async (): Promise<void> => {
+      try {
+        unwrap(await api.rpc(instanceId, "control.sessions.rename", { alias, displayName: trimmed }));
+        const pending = pendingSessionRenames.get(key);
+        if (!pending) return;
+        pending.confirmedDisplayName = nextDisplayName;
+        pending.confirmedRevision = revision;
+        if (pending.latestRevision === revision) {
+          // Keep the optimistic overlay until a list request started after this
+          // successful write confirms the same value. This prevents a list that
+          // was already in flight from repainting the old display name.
+          await loadSessions(instanceId).catch(() => {});
+        }
+      } catch (error) {
+        const pending = pendingSessionRenames.get(key);
+        if (pending?.latestRevision === revision) {
+          pendingSessionRenames.delete(key);
+          const current = byId(instanceId)?.sessions.find((s) => s.alias === alias);
+          if (current && current.displayName === nextDisplayName) current.displayName = pending.confirmedDisplayName;
+        }
+        throw error;
+      }
+    };
+
+    // Preserve request order for repeated renames of one session, while keeping
+    // different sessions independent. The first request starts synchronously so
+    // existing callers still observe the RPC in the same turn.
+    const previousTail = sessionRenameTails.get(key);
+    const operation = previousTail
+      ? previousTail.catch(() => {}).then(execute)
+      : execute();
+    sessionRenameTails.set(key, operation);
+    const cleanup = () => {
+      if (sessionRenameTails.get(key) === operation) sessionRenameTails.delete(key);
+    };
+    void operation.then(cleanup, cleanup);
+    await operation;
   }
 
   // The instance name lives solely in the relay DB (not on the connector), so this
