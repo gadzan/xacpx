@@ -1083,7 +1083,7 @@ export async function runStreamingPrompt(
       mode: toolEventMode,
       driver: options.driver,
       rawStream,
-      onActivityBoundary: () => {
+      onBeforeActivityEvent: () => {
         flushPendingText();
       },
       ...(onEvent && (toolEventMode === "structured" || toolEventMode === "both")

@@ -325,6 +325,16 @@ test("runStreamingPrompt preserves text → tool → text order in raw bridge ev
         },
       },
     },
+    {
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool-1",
+          status: "completed",
+        },
+      },
+    },
   ];
   dataHandler?.(`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
   closeHandler?.(0);
@@ -337,6 +347,10 @@ test("runStreamingPrompt preserves text → tool → text order in raw bridge ev
       event: expect.objectContaining({ toolCallId: "tool-1" }),
     }),
     { type: "prompt.segment", text: "\n\nafter" },
+    expect.objectContaining({
+      type: "prompt.tool_event",
+      event: expect.objectContaining({ toolCallId: "tool-1", status: "success" }),
+    }),
   ]);
 });
 

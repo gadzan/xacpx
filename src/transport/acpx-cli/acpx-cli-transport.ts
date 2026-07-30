@@ -816,7 +816,7 @@ export class AcpxCliTransport implements SessionTransport {
         mode: toolEventMode,
         driver,
         rawStream,
-        onActivityBoundary: () => {
+        onBeforeActivityEvent: () => {
           flushPendingText();
         },
         ...(userOnToolEvent

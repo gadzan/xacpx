@@ -31,7 +31,7 @@ export interface StreamingPromptState {
   lastMessageId?: string;
   lastTextTail: string;
   activitySinceLastText: boolean;
-  onActivityBoundary?: () => void;
+  onBeforeActivityEvent?: () => void;
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
@@ -92,7 +92,7 @@ export type CreateStreamingPromptStateOptions =
       mode?: ToolEventMode;
       driver?: string;
       rawStream?: boolean;
-      onActivityBoundary?: () => void;
+      onBeforeActivityEvent?: () => void;
       onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
       onThought?: (chunk: string) => void | Promise<void>;
       onPlan?: (entries: PlanEntry[]) => void | Promise<void>;
@@ -112,7 +112,7 @@ export function createStreamingPromptState(
   let onCommands: ((commands: AgentCommand[]) => void | Promise<void>) | undefined;
   let rawStream = false;
   let driver: string | undefined;
-  let onActivityBoundary: (() => void) | undefined;
+  let onBeforeActivityEvent: (() => void) | undefined;
 
   if (options === undefined) {
     toolEventMode = "text";
@@ -129,7 +129,7 @@ export function createStreamingPromptState(
     onCommands = options.onCommands;
     rawStream = options.rawStream ?? false;
     driver = options.driver?.trim().toLowerCase() || undefined;
-    onActivityBoundary = options.onActivityBoundary;
+    onBeforeActivityEvent = options.onBeforeActivityEvent;
     toolEventMode = resolveToolEventMode({
       toolEventMode: options.mode,
       onToolEvent,
@@ -150,7 +150,7 @@ export function createStreamingPromptState(
     rawStream,
     lastTextTail: "",
     activitySinceLastText: false,
-    onActivityBoundary,
+    onBeforeActivityEvent,
     onToolEvent,
     onThought,
     onPlan,
@@ -204,6 +204,8 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
     if (isInitialToolEvent) {
       if (update.toolCallId) state.positionedToolCallIds.add(update.toolCallId);
       markActivityBoundary(state);
+    } else {
+      flushBeforeActivityEvent(state);
     }
 
     // Structured consumers (e.g. the relay web dashboard) render tool calls in
@@ -316,7 +318,7 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
     state.activitySinceLastText &&
     (state.lastMessageId === undefined || messageId === undefined) &&
     endsWithSentenceTerminal(state.lastTextTail);
-  if ((messageIdChanged || fallbackBoundary) && !state.buffer.endsWith("\n\n") && !chunk.startsWith("\n\n")) {
+  if ((messageIdChanged || fallbackBoundary) && !hasParagraphBoundaryAtJoin(state.lastTextTail, chunk)) {
     chunk = `\n\n${chunk}`;
     state.lastTextTail = "";
   }
@@ -343,14 +345,31 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
 
 const SENTENCE_TERMINAL_AT_END =
   /(?:\p{Sentence_Terminal}|…|⋯)[\p{Close_Punctuation}\p{Final_Punctuation}"“”‘’*_~`]*$/u;
+const PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r?\n[\t ]*$/;
+const PARAGRAPH_BOUNDARY_AT_START = /^[\t ]*\r?\n[\t ]*\r?\n/;
+const LINE_BREAK_AT_END = /\r?\n[\t ]*$/;
+const LINE_BREAK_AT_START = /^[\t ]*\r?\n/;
 
 function endsWithSentenceTerminal(text: string): boolean {
   return SENTENCE_TERMINAL_AT_END.test(text.trimEnd());
 }
 
+function hasParagraphBoundaryAtJoin(left: string, right: string): boolean {
+  const leftHasBoundary = PARAGRAPH_BOUNDARY_AT_END.test(left);
+  const rightHasBoundary = PARAGRAPH_BOUNDARY_AT_START.test(right);
+  const boundarySpansJoin =
+    LINE_BREAK_AT_END.test(left) &&
+    LINE_BREAK_AT_START.test(right);
+  return leftHasBoundary || rightHasBoundary || boundarySpansJoin;
+}
+
 function markActivityBoundary(state: StreamingPromptState): void {
-  state.onActivityBoundary?.();
+  flushBeforeActivityEvent(state);
   state.activitySinceLastText = state.hasAgentMessage;
+}
+
+function flushBeforeActivityEvent(state: StreamingPromptState): void {
+  state.onBeforeActivityEvent?.();
 }
 
 function formatToolCallEvent(update: NonNullable<StreamEvent["params"]>["update"], sessionUpdate: string): string | null {

@@ -1504,6 +1504,21 @@ function makeToolCallLine(toolCallId: string, title: string, kind = "read"): str
   });
 }
 
+function makeToolCallUpdateLine(toolCallId: string, status: string): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: "abc",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status,
+      },
+    },
+  });
+}
+
 function makeAgentChunkLine(text: string, messageId?: string): string {
   return JSON.stringify({
     jsonrpc: "2.0",
@@ -1768,6 +1783,86 @@ test("raw stream preserves text → reasoning → text order", async () => {
     "text:before。",
     "reasoning:checking",
     "text:\n\nafter",
+  ]);
+});
+
+test("raw stream delivers text before a later update to an existing tool", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("between", "message-1"),
+        makeToolCallUpdateLine("tool-1", "completed"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.status}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "tool:running",
+    "text:between",
+    "tool:success",
+  ]);
+});
+
+test("updating an existing tool does not invent a new text-block boundary", async () => {
+  const events: string[] = [];
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    undefined,
+    undefined,
+    undefined,
+    {
+      spawnPrompt: () => makeFakeSpawn([
+        makeToolCallLine("tool-1", "Read file", "read"),
+        makeAgentChunkLine("between."),
+        makeToolCallUpdateLine("tool-1", "completed"),
+        makeAgentChunkLine("continued"),
+      ]),
+      setIntervalFn: () => 0,
+      clearIntervalFn: () => {},
+    },
+  );
+
+  await transport.prompt(
+    { ...session, replyMode: "stream" },
+    "hello",
+    async (text) => {
+      events.push(`text:${text}`);
+    },
+    undefined,
+    {
+      onToolEvent: async (event) => {
+        events.push(`tool:${event.status}`);
+      },
+    },
+  );
+
+  expect(events).toEqual([
+    "tool:running",
+    "text:between.",
+    "tool:success",
+    "text:continued",
   ]);
 });
 

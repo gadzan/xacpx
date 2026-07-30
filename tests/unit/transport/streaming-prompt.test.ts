@@ -5,12 +5,13 @@ import {
   parseStreamingDataChunk,
 } from "../../../src/transport/streaming-prompt";
 
-function makeChunkLine(text: string): string {
+function makeChunkLine(text: string, messageId?: string): string {
   return JSON.stringify({
     method: "session/update",
     params: {
       update: {
         sessionUpdate: "agent_message_chunk",
+        ...(messageId ? { messageId } : {}),
         content: { type: "text", text },
       },
     },
@@ -68,6 +69,28 @@ test("rawStream keeps text verbatim in the buffer (no paragraph split/trim)", ()
   // finalize() returns the buffer untrimmed in raw mode.
   parseStreamingChunks(state, makeChunkLine("  trailing  "));
   expect(state.finalize()).toBe("Hello World\n\nNew paragraph  trailing  ");
+});
+
+test("messageId change preserves a paragraph boundary that was already flushed", () => {
+  const state = createStreamingPromptState(false, { rawStream: true });
+
+  parseStreamingChunks(state, makeChunkLine("before\n\n", "message-1"));
+  const flushed = state.buffer;
+  state.buffer = "";
+  parseStreamingChunks(state, makeChunkLine("after", "message-2"));
+
+  expect(flushed + state.buffer).toBe("before\n\nafter");
+});
+
+test("messageId change preserves a paragraph boundary split across chunks", () => {
+  const state = createStreamingPromptState(false, { rawStream: true });
+
+  parseStreamingChunks(state, makeChunkLine("before\n", "message-1"));
+  const flushed = state.buffer;
+  state.buffer = "";
+  parseStreamingChunks(state, makeChunkLine("\nafter", "message-2"));
+
+  expect(flushed + state.buffer).toBe("before\n\nafter");
 });
 
 test("parseStreamingChunks handles multiple paragraph boundaries", () => {
