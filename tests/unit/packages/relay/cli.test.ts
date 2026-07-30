@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runRelayCli, parseStartOptions, defaultDbPath, resolveBundledWebRoot } from "../../../../packages/relay/src/cli";
+import { runRelayCli, parseStartOptions, parseTtlMs, defaultDbPath, resolveBundledWebRoot } from "../../../../packages/relay/src/cli";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 
 function makeIo() {
@@ -195,6 +195,143 @@ test("rm token missing value argument prints usage and exits non-zero", async ()
   const dbPath = makeTmpDb();
   const io = makeIo();
   const code = await runRelayCli(["rm", "token", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toContain("Usage");
+});
+
+// --- add invite / rm invite ---
+
+test("add invite prints code + redeem path + warning; printed code is redeemable", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["add", "invite", "--db", dbPath], io);
+  expect(code).toBe(0);
+  const output = io.lines.join("\n");
+  expect(output).toMatch(/invite code: \S{40,}/);
+  expect(output).toContain("redeem path: /invite/");
+  expect(output).toContain("single-use");
+  expect(output).toContain("expires");
+
+  const invite = io.lines.find((l) => l.startsWith("invite code:"))!.split(": ")[1].trim();
+  const rt = await createRelayRuntime(dbPath);
+  try {
+    const redeemed = rt.accounts.redeemInviteCode(invite);
+    expect(redeemed).not.toBeNull();
+    expect(rt.accounts.resolveLoginToken(redeemed!.token)?.account.id).toBe(redeemed!.accountId);
+  } finally {
+    rt.close();
+  }
+});
+
+test("add invite --url prints a full redeem link", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["add", "invite", "--url", "https://hub.example.com/", "--db", dbPath], io);
+  expect(code).toBe(0);
+  const link = io.lines.find((l) => l.startsWith("redeem link:"))!;
+  expect(link).toMatch(/^redeem link: https:\/\/hub\.example\.com\/invite\/\S+$/);
+});
+
+test("add invite --label and --ttl persist on the invite", async () => {
+  const dbPath = makeTmpDb();
+  const code = await runRelayCli(["add", "invite", "--label", "friend", "--ttl", "1h", "--db", dbPath], makeIo());
+  expect(code).toBe(0);
+  const rt = await createRelayRuntime(dbPath);
+  try {
+    const invites = rt.accounts.listInviteCodes();
+    expect(invites.length).toBe(1);
+    expect(invites[0].label).toBe("friend");
+    const ttlMs = new Date(invites[0].expiresAt).getTime() - new Date(invites[0].createdAt).getTime();
+    expect(ttlMs).toBe(60 * 60 * 1000);
+  } finally {
+    rt.close();
+  }
+});
+
+test("add invite with malformed --ttl prints usage and exits 1", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["add", "invite", "--ttl", "7x", "--db", dbPath], io);
+  expect(code).toBe(1);
+  expect(io.lines.join("\n")).toContain("Usage");
+});
+
+test("parseTtlMs: default 7d, m/h/d units, malformed → null", () => {
+  expect(parseTtlMs(undefined)).toBe(7 * 24 * 60 * 60 * 1000);
+  expect(parseTtlMs("30m")).toBe(30 * 60 * 1000);
+  expect(parseTtlMs("12h")).toBe(12 * 60 * 60 * 1000);
+  expect(parseTtlMs("3d")).toBe(3 * 24 * 60 * 60 * 1000);
+  expect(parseTtlMs("0d")).toBeNull();
+  expect(parseTtlMs("7")).toBeNull();
+  expect(parseTtlMs("d7")).toBeNull();
+  expect(parseTtlMs("7w")).toBeNull();
+});
+
+test("ls shows invite section with status transitions unused → used", async () => {
+  const dbPath = makeTmpDb();
+  const addIo = makeIo();
+  await runRelayCli(["add", "invite", "--label", "pal", "--db", dbPath], addIo);
+  const invite = addIo.lines.find((l) => l.startsWith("invite code:"))!.split(": ")[1].trim();
+
+  const before = makeIo();
+  await runRelayCli(["ls", "--db", dbPath], before);
+  expect(before.lines.join("\n")).toContain("invites");
+  expect(before.lines.join("\n")).toContain("unused");
+
+  const rt = await createRelayRuntime(dbPath);
+  rt.accounts.redeemInviteCode(invite);
+  rt.close();
+
+  const after = makeIo();
+  await runRelayCli(["ls", "--db", dbPath], after);
+  const output = after.lines.join("\n");
+  expect(output).toContain("used");
+  expect(output).not.toContain("unused");
+});
+
+test("ls without invites omits the invite section", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  await runRelayCli(["ls", "--db", dbPath], io);
+  expect(io.lines.join("\n")).not.toContain("invites");
+});
+
+test("rm invite by code and by id prefix removes the invite", async () => {
+  const dbPath = makeTmpDb();
+  const addIo = makeIo();
+  await runRelayCli(["add", "invite", "--db", dbPath], addIo);
+  const invite = addIo.lines.find((l) => l.startsWith("invite code:"))!.split(": ")[1].trim();
+
+  const io = makeIo();
+  expect(await runRelayCli(["rm", "invite", invite, "--db", dbPath], io)).toBe(0);
+  expect(io.lines.join("\n")).toContain("removed");
+
+  await runRelayCli(["add", "invite", "--db", dbPath], makeIo());
+  const rt = await createRelayRuntime(dbPath);
+  const shortId = rt.accounts.listInviteCodes()[0].id.slice(0, 8);
+  rt.close();
+  expect(await runRelayCli(["rm", "invite", shortId, "--db", dbPath], makeIo())).toBe(0);
+
+  const rt2 = await createRelayRuntime(dbPath);
+  try {
+    expect(rt2.accounts.listInviteCodes().length).toBe(0);
+  } finally {
+    rt2.close();
+  }
+});
+
+test("rm invite with unknown value exits non-zero", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "invite", "nope", "--db", dbPath], io);
+  expect(code).not.toBe(0);
+  expect(io.lines.join("\n")).toMatch(/not found/i);
+});
+
+test("rm invite missing value argument prints usage and exits non-zero", async () => {
+  const dbPath = makeTmpDb();
+  const io = makeIo();
+  const code = await runRelayCli(["rm", "invite", "--db", dbPath], io);
   expect(code).not.toBe(0);
   expect(io.lines.join("\n")).toContain("Usage");
 });

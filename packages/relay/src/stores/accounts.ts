@@ -255,4 +255,127 @@ export class AccountStore {
     this.db.run("DELETE FROM web_sessions WHERE expires_at <= ?", [iso]);
     return ws?.n ?? 0;
   }
+
+  /** CLI-only mint: the plaintext code is returned exactly once; only its hash is stored. */
+  issueInviteCode(label: string | undefined, ttlMs: number): { id: string; code: string; expiresAt: string } {
+    const id = randomUUID();
+    const code = generateToken();
+    const nowMs = this.now().getTime();
+    const expiresAt = new Date(nowMs + ttlMs).toISOString();
+    this.db.run(
+      "INSERT INTO invite_codes (id, code_hash, label, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+      [id, hashToken(code), label ?? null, new Date(nowMs).toISOString(), expiresAt],
+    );
+    return { id, code, expiresAt };
+  }
+
+  /**
+   * Single-use redeem: uniform null for unknown/used/expired (no oracle for
+   * guessing attempts, same as redeemPairingToken). Marks the code used and
+   * creates the new account + login token in one transaction.
+   */
+  redeemInviteCode(code: string): { token: string; username: string; accountId: string; loginTokenId: string } | null {
+    const codeHash = hashToken(code);
+    const row = this.db.get<{ id: string; label: string | null; expires_at: string; used_at: string | null }>(
+      "SELECT id, label, expires_at, used_at FROM invite_codes WHERE code_hash = ?",
+      [codeHash],
+    );
+    if (!row || row.used_at !== null || new Date(row.expires_at).getTime() <= this.now().getTime()) {
+      return null;
+    }
+    const nowIso = this.now().toISOString();
+    const accountId = randomUUID();
+    const username = `u-${randomUUID()}`;
+    const loginTokenId = randomUUID();
+    const token = generateToken();
+    this.db.exec("BEGIN");
+    try {
+      this.db.run(
+        "UPDATE invite_codes SET used_at = ?, used_account_id = ? WHERE code_hash = ?",
+        [nowIso, accountId, codeHash],
+      );
+      this.db.run(
+        "INSERT INTO accounts (id, username, created_at) VALUES (?, ?, ?)",
+        [accountId, username, nowIso],
+      );
+      this.db.run(
+        "INSERT INTO login_tokens (id, token_hash, account_id, label, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, NULL)",
+        [loginTokenId, hashToken(token), accountId, row.label, nowIso],
+      );
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    return { token, username, accountId, loginTokenId };
+  }
+
+  listInviteCodes(): Array<{ id: string; label: string | null; createdAt: string; expiresAt: string; usedAt: string | null }> {
+    return this.db.all<{
+      id: string;
+      label: string | null;
+      created_at: string;
+      expires_at: string;
+      used_at: string | null;
+    }>(
+      "SELECT id, label, created_at, expires_at, used_at FROM invite_codes ORDER BY created_at",
+    ).map((row) => ({
+      id: row.id,
+      label: row.label,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      usedAt: row.used_at,
+    }));
+  }
+
+  /**
+   * Resolves an invite code value or id/prefix to the invite id, mirroring
+   * accountIdForToken: raw code hash, then exact id, then unique id prefix.
+   */
+  inviteIdFor(valueOrId: string): string | null {
+    const byValue = this.db.get<{ id: string }>(
+      "SELECT id FROM invite_codes WHERE code_hash = ?",
+      [hashToken(valueOrId)],
+    );
+    if (byValue) return byValue.id;
+
+    const byId = this.db.get<{ id: string }>(
+      "SELECT id FROM invite_codes WHERE id = ?",
+      [valueOrId],
+    );
+    if (byId) return byId.id;
+
+    const byPrefix = this.db.all<{ id: string }>(
+      "SELECT id FROM invite_codes WHERE id LIKE ? || '%'",
+      [valueOrId],
+    );
+    if (byPrefix.length === 1) return byPrefix[0]!.id;
+
+    return null;
+  }
+
+  removeInviteCode(id: string): boolean {
+    const existing = this.db.get<{ id: string }>(
+      "SELECT id FROM invite_codes WHERE id = ?",
+      [id],
+    );
+    if (!existing) return false;
+    this.db.run("DELETE FROM invite_codes WHERE id = ?", [id]);
+    return true;
+  }
+
+  /**
+   * Deletes expired or already-used invite codes. Returns rows removed.
+   * Runs on the hourly maintenance pass, so a "used" row is only visible in
+   * `xacpx-relay ls` until the next pass (same lifecycle as pairing tokens).
+   */
+  pruneInviteCodes(now: Date): number {
+    const iso = now.toISOString();
+    const row = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM invite_codes WHERE expires_at <= ? OR used_at IS NOT NULL",
+      [iso],
+    );
+    this.db.run("DELETE FROM invite_codes WHERE expires_at <= ? OR used_at IS NOT NULL", [iso]);
+    return row?.n ?? 0;
+  }
 }

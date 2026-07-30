@@ -18,6 +18,7 @@ export interface MaintenanceSummary {
   messagesDeleted: number;
   sessionsDeleted: number;
   pairingTokensDeleted: number;
+  inviteCodesDeleted: number;
 }
 
 /** Runs one maintenance pass: prune old/excess messages, GC expired sessions/pairing tokens. */
@@ -29,7 +30,8 @@ export function runMaintenance(stores: MaintenanceStores, opts: MaintenanceOptio
   });
   const sessionsDeleted = stores.accounts.pruneExpired(now);
   const pairingTokensDeleted = stores.instances.prunePairingTokens(now);
-  return { messagesDeleted, sessionsDeleted, pairingTokensDeleted };
+  const inviteCodesDeleted = stores.accounts.pruneInviteCodes(now);
+  return { messagesDeleted, sessionsDeleted, pairingTokensDeleted, inviteCodesDeleted };
 }
 
 /** Starts a periodic maintenance loop. Returns a stop function. */

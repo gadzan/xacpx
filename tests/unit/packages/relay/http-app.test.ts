@@ -738,3 +738,90 @@ test("GET /api/version returns the injected update check (auth required)", async
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ current: "0.6.0", latest: "0.7.0", updateAvailable: true });
 });
+
+// ── POST /api/invites/redeem ──────────────────────────────────────────────────
+
+test("invite redeem without session → 200 {token, username}, no cookie; token then logs in", async () => {
+  const { app, accounts, login } = await makeApp();
+  const { code } = accounts.issueInviteCode("friend", 60_000);
+
+  const res = await app.request("/api/invites/redeem", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { token: string; username: string };
+  expect(body.token.length).toBeGreaterThan(20);
+  expect(body.username.startsWith("u-")).toBe(true);
+  expect(res.headers.get("set-cookie")).toBeNull();
+
+  // The minted token works against the normal login endpoint.
+  const { res: loginRes } = await login(body.token);
+  expect(loginRes.status).toBe(200);
+  expect((await loginRes.json() as { username: string }).username).toBe(body.username);
+});
+
+test("invite redeem is single-use → second attempt 401 invalid-code", async () => {
+  const { app, accounts } = await makeApp();
+  const { code } = accounts.issueInviteCode(undefined, 60_000);
+  const redeem = () => app.request("/api/invites/redeem", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }),
+  });
+  expect((await redeem()).status).toBe(200);
+  const second = await redeem();
+  expect(second.status).toBe(401);
+  expect((await second.json() as { error: string }).error).toBe("invalid-code");
+});
+
+test("invite redeem without JSON content-type → 415", async () => {
+  const { app } = await makeApp();
+  const res = await app.request("/api/invites/redeem", { method: "POST", body: "code=x" });
+  expect(res.status).toBe(415);
+});
+
+test("invite redeem shares the login rate-limit bucket", async () => {
+  const { app } = await makeApp();
+  const badRedeem = () => app.request("/api/invites/redeem", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "bad" }),
+  });
+  for (let i = 0; i < LOGIN_MAX_FAILURES; i++) expect((await badRedeem()).status).toBe(401);
+  expect((await badRedeem()).status).toBe(429);
+
+  // Same bucket throttles /api/login too.
+  const loginRes = await app.request("/api/login", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "bad" }),
+  });
+  expect(loginRes.status).toBe(429);
+});
+
+test("invite tombstone POST /api/invites still 404; redeem logs never contain the code", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const instances = new InstanceStore(db);
+  const messages = new MessageStore(db);
+  const gateway = { isOnline: () => true, sendRequest: async () => ({}) };
+  const { logger, logs } = makeFakeLogger();
+  const app = createApp({ accounts, instances, gateway, messages, logger });
+
+  expect((await app.request("/api/invites", { method: "POST" })).status).toBe(404);
+
+  const secretCode = "totally-secret-invite-code";
+  const res = await app.request("/api/invites/redeem", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: secretCode }),
+  });
+  expect(res.status).toBe(401);
+  const rejected = logs.find(([e]) => e === "relay.invite.rejected");
+  expect(rejected?.[2]).toEqual({ reason: "invalid-code", ip: "unknown" });
+  expect(JSON.stringify(logs)).not.toContain(secretCode);
+
+  const { code } = accounts.issueInviteCode(undefined, 60_000);
+  const ok = await app.request("/api/invites/redeem", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }),
+  });
+  expect(ok.status).toBe(200);
+  const { token } = await ok.json() as { token: string };
+  expect(JSON.stringify(logs)).not.toContain(code);
+  expect(JSON.stringify(logs)).not.toContain(token);
+});

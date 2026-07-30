@@ -46,8 +46,10 @@ const USAGE = [
   "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]",
   "             (--ws-port omitted = gateway merged onto the HTTP port; pass it only for a dedicated gateway port)",
   "  add token  [--label <note>] [--db <path>]",
+  "  add invite [--label <note>] [--ttl <n>{m|h|d}] [--url <base>] [--db <path>]",
   "  ls         [--db <path>]",
   "  rm token <value-or-id> [--db <path>]",
+  "  rm invite <code-or-id> [--db <path>]",
   "  update     [--check]   (self-update @ganglion/xacpx-relay; --check only reports)",
   "",
   "  Defaults: --db ~/.xacpx-relay/relay.db   --web-root auto-detects the bundled dashboard",
@@ -62,6 +64,20 @@ function flag(args: string[], name: string): string | undefined {
 /** Returns true if a presence-only boolean flag (e.g. --trust-proxy) appears in argv. */
 function hasFlag(args: string[], name: string): boolean {
   return args.includes(name);
+}
+
+/**
+ * Parses an invite TTL like "30m", "12h", "7d" into milliseconds.
+ * Returns null for malformed input; undefined input yields the 7-day default.
+ */
+export function parseTtlMs(raw: string | undefined): number | null {
+  if (raw === undefined) return 7 * 24 * 60 * 60 * 1000;
+  const match = /^(\d+)([mhd])$/.exec(raw);
+  if (!match) return null;
+  const n = Number(match[1]);
+  if (n <= 0) return null;
+  const unit = match[2] === "m" ? 60_000 : match[2] === "h" ? 3_600_000 : 86_400_000;
+  return n * unit;
 }
 
 export interface StartOptions {
@@ -142,6 +158,31 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
     }
   }
 
+  // add invite [--label <l>] [--ttl <n>{m|h|d}] [--url <base>] --db <path>
+  if (args[0] === "add" && args[1] === "invite") {
+    const label = flag(args, "--label");
+    const ttlMs = parseTtlMs(flag(args, "--ttl"));
+    if (ttlMs === null) {
+      io.print(USAGE);
+      return 1;
+    }
+    const runtime = await createRelayRuntime(dbPath);
+    try {
+      const { code, expiresAt } = runtime.accounts.issueInviteCode(label, ttlMs);
+      io.print(`invite code: ${code}`);
+      const baseUrl = flag(args, "--url");
+      if (baseUrl) {
+        io.print(`redeem link: ${baseUrl.replace(/\/+$/, "")}/invite/${code}`);
+      } else {
+        io.print(`redeem path: /invite/${code}   (append to your hub URL)`);
+      }
+      io.print(`(share it now — single-use, not shown again; expires ${expiresAt.slice(0, 16).replace("T", " ")})`);
+      return 0;
+    } finally {
+      runtime.close();
+    }
+  }
+
   // ls --db <path>
   if (args[0] === "ls") {
     const runtime = await createRelayRuntime(dbPath);
@@ -149,15 +190,30 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       const tokens = runtime.accounts.listTokens();
       if (tokens.length === 0) {
         io.print("(no tokens)");
-        return 0;
+      } else {
+        io.print("id        label                 created               #instances");
+        io.print("--------  --------------------  --------------------  ----------");
+        for (const t of tokens) {
+          const shortId = t.id.slice(0, 8);
+          const label = (t.label ?? "").slice(0, 20).padEnd(20);
+          const created = t.createdAt.slice(0, 19).replace("T", " ");
+          io.print(`${shortId}  ${label}  ${created}  ${String(t.instanceCount).padStart(10)}`);
+        }
       }
-      io.print("id        label                 created               #instances");
-      io.print("--------  --------------------  --------------------  ----------");
-      for (const t of tokens) {
-        const shortId = t.id.slice(0, 8);
-        const label = (t.label ?? "").slice(0, 20).padEnd(20);
-        const created = t.createdAt.slice(0, 19).replace("T", " ");
-        io.print(`${shortId}  ${label}  ${created}  ${String(t.instanceCount).padStart(10)}`);
+      const invites = runtime.accounts.listInviteCodes();
+      if (invites.length > 0) {
+        const nowMs = Date.now();
+        io.print("");
+        io.print("invites");
+        io.print("id        label                 expires               status");
+        io.print("--------  --------------------  --------------------  -------");
+        for (const inv of invites) {
+          const shortId = inv.id.slice(0, 8);
+          const label = (inv.label ?? "").slice(0, 20).padEnd(20);
+          const expires = inv.expiresAt.slice(0, 19).replace("T", " ");
+          const status = inv.usedAt !== null ? "used" : new Date(inv.expiresAt).getTime() <= nowMs ? "expired" : "unused";
+          io.print(`${shortId}  ${label}  ${expires}  ${status}`);
+        }
       }
       return 0;
     } finally {
@@ -180,6 +236,28 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
         return 1;
       }
       runtime.accounts.deleteAccountCascade(accountId);
+      io.print("removed");
+      return 0;
+    } finally {
+      runtime.close();
+    }
+  }
+
+  // rm invite <code-or-id> --db <path>
+  if (args[0] === "rm" && args[1] === "invite") {
+    const valueOrId = args[2];
+    if (!valueOrId || valueOrId.startsWith("--")) {
+      io.print(USAGE);
+      return 1;
+    }
+    const runtime = await createRelayRuntime(dbPath);
+    try {
+      const inviteId = runtime.accounts.inviteIdFor(valueOrId);
+      if (!inviteId) {
+        io.print(`invite not found: ${valueOrId}`);
+        return 1;
+      }
+      runtime.accounts.removeInviteCode(inviteId);
       io.print("removed");
       return 0;
     } finally {
