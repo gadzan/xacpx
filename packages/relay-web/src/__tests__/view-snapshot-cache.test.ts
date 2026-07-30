@@ -1,6 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  captureWriteToken,
   dropAll,
   dropSession,
   peek,
@@ -48,11 +49,36 @@ describe("view-snapshot-cache", () => {
     expect(await read("alice", "orchestration-tasks", "i1", "")).toEqual(["shared"]);
   });
 
+  it("rejects a stale session write captured before the session was dropped", async () => {
+    const staleWrite = captureWriteToken("alice", "session-model", "i1", "s1");
+    await dropSession("alice", "i1", "s1");
+
+    await write(
+      "alice",
+      "session-model",
+      "i1",
+      "s1",
+      { current: "deleted-session-model" },
+      staleWrite,
+    );
+
+    expect(await read("alice", "session-model", "i1", "s1")).toBeNull();
+  });
+
   it("dropAll clears memory and IndexedDB", async () => {
     await write("alice", "git-summary", "i1", "ws", { changedCount: 2 });
     await dropAll();
     expect(peek("alice", "git-summary", "i1", "ws")).toBeNull();
     expect(await read("alice", "git-summary", "i1", "ws")).toBeNull();
+  });
+
+  it("rejects a stale write captured before all snapshots were dropped", async () => {
+    const staleWrite = captureWriteToken("alice", "orchestration-tasks", "i1", "");
+    await dropAll();
+
+    await write("alice", "orchestration-tasks", "i1", "", ["stale"], staleWrite);
+
+    expect(await read("alice", "orchestration-tasks", "i1", "")).toBeNull();
   });
 
   it("never throws when IndexedDB is unavailable", async () => {

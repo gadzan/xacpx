@@ -311,7 +311,7 @@ export const useInstancesStore = defineStore("instances", () => {
     // store so a pending debounced write-back targeting it is cancelled too.
     useChatStore().purgeTailCache(instanceId, alias);
     const user = useAuthStore().account?.username;
-    if (user) void dropSessionViewSnapshots(user, instanceId, alias);
+    if (user) await dropSessionViewSnapshots(user, instanceId, alias);
     await loadSessions(instanceId);
   }
 

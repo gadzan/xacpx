@@ -9,7 +9,11 @@ vi.mock("../api/client", () => ({
 import { api } from "../api/client";
 import { useTasksStore } from "../stores/tasks";
 import { useAuthStore } from "../stores/auth";
-import { write as writeViewSnapshot } from "../lib/view-snapshot-cache";
+import {
+  dropSession as dropSessionViewSnapshots,
+  read as readViewSnapshot,
+  write as writeViewSnapshot,
+} from "../lib/view-snapshot-cache";
 
 const rpc = api.rpc as unknown as ReturnType<typeof vi.fn>;
 
@@ -72,6 +76,30 @@ describe("tasks store", () => {
     await pending;
     expect(store.scheduled).toEqual([]);
     expect(store.orchestration).toEqual([]);
+  });
+
+  it("does not repopulate a deleted session cache from an older task refresh", async () => {
+    useAuthStore().account = { username: "task-delete-race-user" };
+    let resolveScheduled!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveScheduled = resolve; }));
+    const store = useTasksStore();
+    const pending = store.loadScheduled("inst", "deleted-session");
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalled());
+
+    await dropSessionViewSnapshots("task-delete-race-user", "inst", "deleted-session");
+    resolveScheduled({ tasks: [{
+      id: "stale-task",
+      sessionAlias: "deleted-session",
+      executeAt: "2030-01-01T00:00:00Z",
+      message: "stale",
+      status: "pending",
+      createdAt: "x",
+    }] });
+    await pending;
+
+    expect(
+      await readViewSnapshot("task-delete-race-user", "scheduled-tasks", "inst", "deleted-session"),
+    ).toBeNull();
   });
 
   it("createScheduled posts then reloads", async () => {

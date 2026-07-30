@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import {
   isErrorPayload,
   type FsDiffResult,
@@ -93,8 +93,8 @@ export const useFilesStore = defineStore("files", () => {
     void viewCache.write(user, "workspace-view", instanceId.value, workspace.value, workspaceSnapshot());
   }
 
-  function reset(): void {
-    persistWorkspaceSnapshot();
+  function reset(options: { persist?: boolean } = {}): void {
+    if (options.persist !== false) persistWorkspaceSnapshot();
     diffRequestId++;
     workspaceEpoch++;
     workspace.value = null;
@@ -118,6 +118,14 @@ export const useFilesStore = defineStore("files", () => {
     // the next workspace and silently filters out all of its results. The rest
     // (mode/matchCase/wholeWord/regex/exclude) are user preferences and survive on purpose.
     searchOpts.value.include = "";
+  }
+
+  function resetForAccountChange(): void {
+    reset({ persist: false });
+    instanceId.value = null;
+    gitSummaryRevision += 1;
+    activeGitSummaryKey = "";
+    gitSummary.value = null;
   }
 
   async function selectWorkspace(id: string, ws: string): Promise<void> {
@@ -172,8 +180,10 @@ export const useFilesStore = defineStore("files", () => {
       const r = await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws });
       if (!isCurrent()) return;
       if (isErrorPayload(r)) {
-        changed.value = {};
-        persistWorkspaceSnapshot();
+        if (r.error.code === "not-a-git-repo" || r.error.message === "not-a-git-repo") {
+          changed.value = {};
+          persistWorkspaceSnapshot();
+        }
         return;
       }
       const map: Record<string, string> = {};
@@ -181,10 +191,8 @@ export const useFilesStore = defineStore("files", () => {
       changed.value = map;
       persistWorkspaceSnapshot();
     } catch {
-      if (isCurrent()) {
-        changed.value = {};
-        persistWorkspaceSnapshot();
-      }
+      // Stale-while-revalidate: a transport failure says nothing about the
+      // workspace's current git state, so keep the cached badges visible.
     }
   }
 
@@ -490,6 +498,9 @@ export const useFilesStore = defineStore("files", () => {
   ): Promise<FsWriteResult> {
     return unwrap(await api.rpc<FsWriteResult>(id, "control.fs.write", { workspace: ws, path: filePath, content, expected }));
   }
+
+  const auth = useAuthStore();
+  watch(() => auth.account?.username ?? null, () => resetForAccountChange(), { flush: "sync" });
 
   return {
     instanceId, workspace, path, entries, file, diff, diffPath, notGit, changed, gitSummary, tab, query, results, searchTruncated, searching, loading, error,

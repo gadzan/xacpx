@@ -9,7 +9,11 @@ vi.mock("../api/client", () => ({
 
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useAuthStore } from "../stores/auth";
-import { write as writeViewSnapshot } from "../lib/view-snapshot-cache";
+import {
+  dropSession as dropSessionViewSnapshots,
+  read as readViewSnapshot,
+  write as writeViewSnapshot,
+} from "../lib/view-snapshot-cache";
 import { dismissToast, useToasts } from "../lib/use-toasts";
 
 beforeEach(() => {
@@ -80,6 +84,23 @@ describe("session-controls store", () => {
     resolveLoad({ current: "fresh-model", available: ["fresh-model"] });
     await pendingLoad;
     expect(s.modelCurrent).toBe("fresh-model");
+  });
+
+  it("does not repopulate a deleted session cache from an older model refresh", async () => {
+    useAuthStore().account = { username: "delete-race-user" };
+    let resolveLoad!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
+    const s = useSessionControlsStore();
+    const pendingLoad = s.loadModel("i1", "deleted-session");
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalled());
+
+    await dropSessionViewSnapshots("delete-race-user", "i1", "deleted-session");
+    resolveLoad({ current: "stale-model", available: ["stale-model"] });
+    await pendingLoad;
+
+    expect(
+      await readViewSnapshot("delete-race-user", "session-model", "i1", "deleted-session"),
+    ).toBeNull();
   });
 
   it("setModel updates current optimistically before the RPC resolves", async () => {

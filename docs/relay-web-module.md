@@ -259,9 +259,13 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   同步恢复，IndexedDB `xacpx.view-snapshots` 让刷新后也能先恢复；model、effort、scheduled tasks、
   orchestration tasks、workspace git summary，以及文件面板的目录导航/git 状态快照都先读缓存，再由
   原有 RPC 权威结果覆盖并写回。任何缓存读写失败均静默降级为原实时请求，7 天 TTL 惰性过期；
-  删除会话清该会话的 model/effort/scheduled 快照，logout 清全部视图快照。实时 turn、plan、usage、
-  slash commands、queue 已由 WebSocket 按会话常驻内存，不重复落此缓存；文件正文、完整 diff 与终端
-  状态不缓存，避免把易陈旧、可参与写操作的数据伪装成当前权威状态。
+  每个异步刷新在发起时捕获 write generation，删除会话/登出先推进 generation 再清理，因此更早发起的
+  model/effort/task 响应不能在清理后复活旧快照；删除会话会等待该会话的 model/effort/scheduled
+  快照清理完成，logout 清全部视图快照。账号变化同时重置 controls/tasks/files 的 Pinia 可见状态，
+  防止同 instance/session key 跨账号复用。git 状态刷新遇到传输/临时 RPC 错误会保留已播种 badge，
+  仅权威 `not-a-git-repo` 清空。实时 turn、plan、usage、slash commands、queue 已由 WebSocket 按会话
+  常驻内存，不重复落此缓存；文件正文、完整 diff 与终端状态不缓存，避免把易陈旧、可参与写操作的数据
+  伪装成当前权威状态。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 

@@ -37,6 +37,33 @@ const keyOf = (
 ): SnapshotKey => [user, namespace, instanceId, scope];
 const memoryKey = (...key: SnapshotKey): string => JSON.stringify(key);
 const memory = new Map<string, { value: unknown; updatedAt: number }>();
+let globalGeneration = 0;
+const keyGenerations = new Map<string, number>();
+
+export type SnapshotWriteToken = {
+  cacheKey: string;
+  globalGeneration: number;
+  keyGeneration: number;
+};
+
+export function captureWriteToken(
+  user: string,
+  namespace: SnapshotNamespace,
+  instanceId: string,
+  scope = "",
+): SnapshotWriteToken {
+  const cacheKey = memoryKey(...keyOf(user, namespace, instanceId, scope));
+  return {
+    cacheKey,
+    globalGeneration,
+    keyGeneration: keyGenerations.get(cacheKey) ?? 0,
+  };
+}
+
+function acceptsWrite(token: SnapshotWriteToken): boolean {
+  return token.globalGeneration === globalGeneration
+    && token.keyGeneration === (keyGenerations.get(token.cacheKey) ?? 0);
+}
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 function openDb(): Promise<IDBDatabase> {
@@ -144,14 +171,18 @@ export async function write<T>(
   instanceId: string,
   scope: string,
   value: T,
+  token = captureWriteToken(user, namespace, instanceId, scope),
 ): Promise<void> {
   try {
     const key = keyOf(user, namespace, instanceId, scope);
+    const cacheKey = memoryKey(...key);
+    if (token.cacheKey !== cacheKey || !acceptsWrite(token)) return;
     const snapshot = cloneForCache(value);
     const updatedAt = Date.now();
-    memory.set(memoryKey(...key), { value: snapshot, updatedAt });
+    memory.set(cacheKey, { value: snapshot, updatedAt });
     if (typeof indexedDB === "undefined") return;
     const db = await openDb();
+    if (!acceptsWrite(token)) return;
     const tx = db.transaction(STORE, "readwrite");
     tx.objectStore(STORE).put({ user, namespace, instanceId, scope, value: snapshot, updatedAt });
     await txDone(tx);
@@ -169,7 +200,9 @@ const SESSION_NAMESPACES: SnapshotNamespace[] = [
 /** Remove snapshots whose identity belongs to a deleted session. */
 export async function dropSession(user: string, instanceId: string, alias: string): Promise<void> {
   for (const namespace of SESSION_NAMESPACES) {
-    memory.delete(memoryKey(...keyOf(user, namespace, instanceId, alias)));
+    const cacheKey = memoryKey(...keyOf(user, namespace, instanceId, alias));
+    keyGenerations.set(cacheKey, (keyGenerations.get(cacheKey) ?? 0) + 1);
+    memory.delete(cacheKey);
   }
   try {
     const db = await openDb();
@@ -184,6 +217,7 @@ export async function dropSession(user: string, instanceId: string, alias: strin
 
 /** Shared-machine logout hygiene. */
 export async function dropAll(): Promise<void> {
+  globalGeneration += 1;
   memory.clear();
   try {
     const db = await openDb();
@@ -195,6 +229,8 @@ export async function dropAll(): Promise<void> {
 
 export async function resetViewSnapshotCacheForTests(): Promise<void> {
   memory.clear();
+  globalGeneration = 0;
+  keyGenerations.clear();
   const pending = dbPromise;
   dbPromise = null;
   if (pending) {

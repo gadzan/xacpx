@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import type { OrchestrationTaskDto, ScheduledTaskDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import * as viewCache from "../lib/view-snapshot-cache";
@@ -24,9 +24,20 @@ export const useTasksStore = defineStore("tasks", () => {
   const isOrchestrationScope = (instanceId: string): boolean =>
     scope.value === null || scope.value.instanceId === instanceId;
 
+  function reset(): void {
+    scheduledRevision += 1;
+    orchestrationRevision += 1;
+    scope.value = null;
+    scheduled.value = [];
+    orchestration.value = [];
+  }
+
   async function loadScheduled(instanceId: string, sessionAlias: string): Promise<void> {
     const revision = ++scheduledRevision;
     const user = cacheUser();
+    const cacheToken = user
+      ? viewCache.captureWriteToken(user, "scheduled-tasks", instanceId, sessionAlias)
+      : null;
     if (user) {
       const cached = viewCache.peek<ScheduledTaskDto[]>(user, "scheduled-tasks", instanceId, sessionAlias)
         ?? await viewCache.read<ScheduledTaskDto[]>(user, "scheduled-tasks", instanceId, sessionAlias);
@@ -35,13 +46,18 @@ export const useTasksStore = defineStore("tasks", () => {
     }
     const { tasks } = await api.rpc<{ tasks: ScheduledTaskDto[] }>(instanceId, "control.scheduled.list");
     const filtered = tasks.filter((t) => t.sessionAlias === sessionAlias);
-    if (user && cacheUser() === user) void viewCache.write(user, "scheduled-tasks", instanceId, sessionAlias, filtered);
+    if (user && cacheToken && cacheUser() === user) {
+      void viewCache.write(user, "scheduled-tasks", instanceId, sessionAlias, filtered, cacheToken);
+    }
     if (revision === scheduledRevision && isScheduledScope(instanceId, sessionAlias)) scheduled.value = filtered;
   }
 
   async function loadOrchestration(instanceId: string): Promise<void> {
     const revision = ++orchestrationRevision;
     const user = cacheUser();
+    const cacheToken = user
+      ? viewCache.captureWriteToken(user, "orchestration-tasks", instanceId, "")
+      : null;
     if (user) {
       const cached = viewCache.peek<OrchestrationTaskDto[]>(user, "orchestration-tasks", instanceId, "")
         ?? await viewCache.read<OrchestrationTaskDto[]>(user, "orchestration-tasks", instanceId, "");
@@ -49,7 +65,9 @@ export const useTasksStore = defineStore("tasks", () => {
       if (Array.isArray(cached)) orchestration.value = cached;
     }
     const { tasks } = await api.rpc<{ tasks: OrchestrationTaskDto[] }>(instanceId, "control.orchestration.list");
-    if (user && cacheUser() === user) void viewCache.write(user, "orchestration-tasks", instanceId, "", tasks);
+    if (user && cacheToken && cacheUser() === user) {
+      void viewCache.write(user, "orchestration-tasks", instanceId, "", tasks, cacheToken);
+    }
     if (revision === orchestrationRevision && isOrchestrationScope(instanceId)) orchestration.value = tasks;
   }
 
@@ -93,5 +111,8 @@ export const useTasksStore = defineStore("tasks", () => {
     else if (event.event.type === "orchestration-changed") void loadOrchestration(s.instanceId).catch(() => {});
   }
 
-  return { scheduled, orchestration, scope, loadScheduled, loadOrchestration, loadFor, createScheduled, cancelScheduled, cancelOrchestration, applyEvent };
+  const auth = useAuthStore();
+  watch(() => auth.account?.username ?? null, () => reset(), { flush: "sync" });
+
+  return { scheduled, orchestration, scope, reset, loadScheduled, loadOrchestration, loadFor, createScheduled, cancelScheduled, cancelOrchestration, applyEvent };
 });

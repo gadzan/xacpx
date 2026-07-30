@@ -219,6 +219,30 @@ describe("files store", () => {
     expect(s.error).toBe(""); // browsing stays clean — no error surfaced
   });
 
+  it("loadStatus keeps cached git badges when the refresh request fails", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "ws";
+    s.changed = { "cached.ts": " M" };
+    rpc.mockRejectedValueOnce(new Error("network"));
+
+    await s.loadStatus();
+
+    expect(s.changed).toEqual({ "cached.ts": " M" });
+  });
+
+  it("loadStatus only clears cached badges for a confirmed non-git workspace", async () => {
+    const s = useFilesStore();
+    s.instanceId = "i1";
+    s.workspace = "ws";
+    s.changed = { "cached.ts": " M" };
+    rpc.mockResolvedValueOnce({ error: { code: "timeout", message: "connector timed out" } });
+
+    await s.loadStatus();
+
+    expect(s.changed).toEqual({ "cached.ts": " M" });
+  });
+
   it("loadGitSummary stores a changed-file count for a workspace", async () => {
     const s = useFilesStore();
     rpc.mockResolvedValueOnce({ workspace: "ws", files: [{ path: "a.ts", status: " M" }, { path: "b.ts", status: "??" }], diff: "", truncated: false });

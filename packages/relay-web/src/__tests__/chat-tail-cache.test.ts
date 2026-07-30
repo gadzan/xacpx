@@ -3,6 +3,11 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
 import { read, resetTailCacheForTests, write } from "../lib/session-tail-cache";
+import {
+  read as readViewSnapshot,
+  resetViewSnapshotCacheForTests,
+  write as writeViewSnapshot,
+} from "../lib/view-snapshot-cache";
 
 const getMock = vi.fn();
 const rpc = vi.fn();
@@ -50,6 +55,7 @@ async function goneEventually(user: string, instanceId: string, alias: string): 
 beforeEach(async () => {
   setActivePinia(createPinia());
   await resetTailCacheForTests();
+  await resetViewSnapshotCacheForTests();
   (globalThis as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
   localStorage.clear();
   getMock.mockReset();
@@ -164,6 +170,7 @@ test("loadHistory failure keeps showing the cached tail", async () => {
 test("removeSession purges the cache; archiveSession (sleep) keeps it", async () => {
   await write("alice", "i1", "s1", [row(1)]);
   await write("alice", "i1", "s2", [row(2)]);
+  await writeViewSnapshot("alice", "session-model", "i1", "s2", { current: "old-model" });
   rpc.mockImplementation(async (_id: string, type: string) => {
     if (type === "control.sessions.list") {
       return { sessions: [
@@ -179,6 +186,7 @@ test("removeSession purges the cache; archiveSession (sleep) keeps it", async ()
   expect(await read("alice", "i1", "s1")).not.toBeNull();
   await instances.removeSession("i1", "s2");
   expect(await goneEventually("alice", "i1", "s2")).toBe(true);
+  expect(await readViewSnapshot("alice", "session-model", "i1", "s2")).toBeNull();
 });
 
 test("loadSessions reconciles the cache against alive aliases, keeping sleeping sessions", async () => {
