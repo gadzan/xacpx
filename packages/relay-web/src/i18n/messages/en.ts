@@ -62,6 +62,7 @@ export default {
   palette: { placeholder: "Jump to a session…", noMatches: "no matches" },
   chat: {
     selectSession: "Select a session",
+    resizeComposer: "Drag to resize input height",
     browseFiles: "Browse files",
     viewChanges: "View changes",
     changed: "changed",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
+import { clampPanelWidth, createBottomPanelResize, createPanelResize } from "../lib/resize-panel";
 
 describe("clampPanelWidth", () => {
   it("clamps to the hard bounds and rounds", () => {
@@ -133,5 +133,86 @@ describe("createPanelResize (right panel)", () => {
     c.onPointerDown({ clientX: 300 });
     target.emit("pointermove", { clientX: 340 }); // 40px right → +40
     expect(width).toBe(288);
+  });
+});
+
+describe("createBottomPanelResize (composer)", () => {
+  it("grows when dragging the top edge upward, shrinks downward", () => {
+    let height = 120;
+    const target = makeTarget();
+    const c = createBottomPanelResize({
+      getHeight: () => height,
+      setHeight: (h) => { height = h; },
+      min: 60, max: 480,
+      isEnabled: () => true,
+      target,
+    });
+    c.onPointerDown({ clientY: 500 });
+    target.emit("pointermove", { clientY: 460 }); // moved 40px up → +40 height
+    expect(height).toBe(160);
+    target.emit("pointermove", { clientY: 520 }); // 20px below start → -20
+    expect(height).toBe(100);
+  });
+
+  it("clamps to bounds and to the viewport fraction", () => {
+    let height = 120;
+    const target = makeTarget();
+    const c = createBottomPanelResize({
+      getHeight: () => height,
+      setHeight: (h) => { height = h; },
+      min: 60, max: 480,
+      maxViewportFraction: 0.5,
+      viewportHeight: () => 600, // cap = 300 < max 480
+      isEnabled: () => true,
+      target,
+    });
+    c.onPointerDown({ clientY: 500 });
+    target.emit("pointermove", { clientY: 0 }); // +500 raw → capped at 300
+    expect(height).toBe(300);
+    target.emit("pointermove", { clientY: 900 }); // -400 raw → floor at 60
+    expect(height).toBe(60);
+  });
+
+  it("is a no-op and attaches nothing when disabled", () => {
+    let height = 120;
+    const target = makeTarget();
+    const c = createBottomPanelResize({
+      getHeight: () => height,
+      setHeight: (h) => { height = h; },
+      min: 60, max: 480,
+      isEnabled: () => false,
+      target,
+    });
+    c.onPointerDown({ clientY: 500 });
+    expect(target.count("pointermove")).toBe(0);
+    expect(height).toBe(120);
+  });
+
+  it("detaches listeners on release and on pointercancel", () => {
+    let height = 120;
+    const target = makeTarget();
+    const onDragStart = vi.fn();
+    const onDragEnd = vi.fn();
+    const c = createBottomPanelResize({
+      getHeight: () => height,
+      setHeight: (h) => { height = h; },
+      min: 60, max: 480,
+      isEnabled: () => true,
+      onDragStart, onDragEnd, target,
+    });
+    c.onPointerDown({ clientY: 500 });
+    expect(onDragStart).toHaveBeenCalledOnce();
+    target.emit("pointerup", {});
+    expect(onDragEnd).toHaveBeenCalledOnce();
+    expect(target.count("pointermove")).toBe(0);
+    expect(target.count("pointercancel")).toBe(0);
+    target.emit("pointermove", { clientY: 100 });
+    expect(height).toBe(120);
+    // Stolen pointer: pointercancel must clean up just like pointerup.
+    c.onPointerDown({ clientY: 500 });
+    target.emit("pointercancel", {});
+    expect(onDragEnd).toHaveBeenCalledTimes(2);
+    expect(target.count("pointermove")).toBe(0);
+    expect(target.count("pointerup")).toBe(0);
   });
 });

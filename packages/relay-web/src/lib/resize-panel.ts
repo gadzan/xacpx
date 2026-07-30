@@ -47,6 +47,33 @@ export interface PanelResizeController {
   onPointerDown(e: PointerLike): void;
 }
 
+export interface VerticalPointerLike {
+  clientY: number;
+}
+
+export interface BottomPanelResizeOptions {
+  getHeight: () => number;
+  setHeight: (h: number) => void;
+  /** Hard lower bound (px). */
+  min: number;
+  /** Hard upper bound (px). */
+  max: number;
+  /** Optional extra cap as a fraction of viewport height (e.g. 0.5). */
+  maxViewportFraction?: number;
+  /** Defaults to `window.innerHeight`. */
+  viewportHeight?: () => number;
+  /** Only act when the static (desktop) layout is active. */
+  isEnabled: () => boolean;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
+  /** Event target for move/up listeners; defaults to `window`. */
+  target?: EventTargetLike;
+}
+
+export interface BottomPanelResizeController {
+  onPointerDown(e: VerticalPointerLike): void;
+}
+
 /**
  * Clamp a raw desired width to [min, hi], where hi is `max` further capped to
  * `floor(viewportWidth * fraction)` when a fraction is given. Rounds to whole
@@ -113,6 +140,58 @@ export function createPanelResize(opts: PanelResizeOptions): PanelResizeControll
     dragging = true;
     startX = e.clientX;
     startWidth = opts.getWidth();
+    target.addEventListener("pointermove", onMove);
+    target.addEventListener("pointerup", onUp);
+    target.addEventListener("pointercancel", onUp);
+    opts.onDragStart?.();
+  }
+
+  return { onPointerDown };
+}
+
+/**
+ * Vertical mirror of `createPanelResize` for a bottom-anchored panel dragged by
+ * its TOP edge: moving the pointer up grows the panel, moving it down shrinks
+ * it. Same clamping, gating, and listener lifecycle as the horizontal variant.
+ */
+export function createBottomPanelResize(opts: BottomPanelResizeOptions): BottomPanelResizeController {
+  const viewportHeight = opts.viewportHeight ?? (() => window.innerHeight);
+  const target: EventTargetLike = opts.target ?? (window as unknown as EventTargetLike);
+
+  let startY = 0;
+  let startHeight = 0;
+  let dragging = false;
+
+  function applyHeight(clientY: number): void {
+    const delta = startY - clientY;
+    const next = clampPanelWidth(
+      startHeight + delta,
+      opts.min,
+      opts.max,
+      viewportHeight(),
+      opts.maxViewportFraction,
+    );
+    opts.setHeight(next);
+  }
+
+  function onMove(e: VerticalPointerLike): void {
+    if (dragging) applyHeight(e.clientY);
+  }
+
+  function onUp(): void {
+    if (!dragging) return;
+    dragging = false;
+    target.removeEventListener("pointermove", onMove);
+    target.removeEventListener("pointerup", onUp);
+    target.removeEventListener("pointercancel", onUp);
+    opts.onDragEnd?.();
+  }
+
+  function onPointerDown(e: VerticalPointerLike): void {
+    if (!opts.isEnabled()) return;
+    dragging = true;
+    startY = e.clientY;
+    startHeight = opts.getHeight();
     target.addEventListener("pointermove", onMove);
     target.addEventListener("pointerup", onUp);
     target.addEventListener("pointercancel", onUp);
