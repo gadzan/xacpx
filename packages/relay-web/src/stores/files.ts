@@ -13,6 +13,8 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { pushToast } from "../lib/use-toasts";
+import * as viewCache from "../lib/view-snapshot-cache";
+import { useAuthStore } from "./auth";
 
 function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
   if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
@@ -23,6 +25,14 @@ function unwrap<T>(result: T | { error: { code: string; message: string } }): T 
 function baseName(rel: string): string {
   return rel.split("/").pop() || rel;
 }
+
+type GitSummary = { workspace: string; changedCount: number; branch?: string; detached?: boolean };
+type WorkspaceViewSnapshot = {
+  root: string;
+  sep: "/" | "\\";
+  tree: Record<string, FsEntryDto[]>;
+  changed: Record<string, string>;
+};
 
 export const useFilesStore = defineStore("files", () => {
   const instanceId = ref<string | null>(null);
@@ -37,7 +47,7 @@ export const useFilesStore = defineStore("files", () => {
   const changed = ref<Record<string, string>>({}); // relPath -> git porcelain status, for Files-tab badges
   // Standalone read-only summary for the header chip — independent of the browsed
   // workspace above, so showing it never disturbs file-browser navigation state.
-  const gitSummary = ref<{ workspace: string; changedCount: number; branch?: string; detached?: boolean } | null>(null);
+  const gitSummary = ref<GitSummary | null>(null);
   const query = ref("");
   const results = ref<string[]>([]);
   const searchTruncated = ref(false);
@@ -54,11 +64,37 @@ export const useFilesStore = defineStore("files", () => {
   const hits = ref<FsSearchHitDto[]>([]);
   let diffRequestId = 0;
   let workspaceEpoch = 0;
+  let gitSummaryRevision = 0;
+  let activeGitSummaryKey = "";
   const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string }>({
     mode: "content", matchCase: false, wholeWord: false, regex: false, include: "", exclude: "",
   });
 
+  const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
+  function workspaceSnapshot(): WorkspaceViewSnapshot {
+    return {
+      root: root.value,
+      sep: sepChar.value,
+      tree: tree.value,
+      changed: changed.value,
+    };
+  }
+  function applyWorkspaceSnapshot(snapshot: WorkspaceViewSnapshot): void {
+    root.value = typeof snapshot.root === "string" ? snapshot.root : "";
+    sepChar.value = snapshot.sep === "\\" ? "\\" : "/";
+    tree.value = snapshot.tree && typeof snapshot.tree === "object" ? snapshot.tree : {};
+    changed.value = snapshot.changed && typeof snapshot.changed === "object" ? snapshot.changed : {};
+    path.value = "";
+    entries.value = tree.value[""] ?? [];
+  }
+  function persistWorkspaceSnapshot(): void {
+    const user = cacheUser();
+    if (!user || !instanceId.value || !workspace.value) return;
+    void viewCache.write(user, "workspace-view", instanceId.value, workspace.value, workspaceSnapshot());
+  }
+
   function reset(): void {
+    persistWorkspaceSnapshot();
     diffRequestId++;
     workspaceEpoch++;
     workspace.value = null;
@@ -85,6 +121,7 @@ export const useFilesStore = defineStore("files", () => {
   }
 
   async function selectWorkspace(id: string, ws: string): Promise<void> {
+    persistWorkspaceSnapshot();
     diffRequestId++;
     const epoch = ++workspaceEpoch;
     instanceId.value = id;
@@ -99,14 +136,24 @@ export const useFilesStore = defineStore("files", () => {
     results.value = [];
     tree.value = {}; hits.value = [];
     try { expanded.value = new Set(JSON.parse(localStorage.getItem(expandedKey()) ?? "[]") as string[]); } catch { expanded.value = new Set(); }
+    const user = cacheUser();
+    if (user) {
+      const hot = viewCache.peek<WorkspaceViewSnapshot>(user, "workspace-view", id, ws);
+      const cached = hot ?? await viewCache.read<WorkspaceViewSnapshot>(user, "workspace-view", id, ws);
+      if (epoch !== workspaceEpoch || instanceId.value !== id || workspace.value !== ws || cacheUser() !== user) return;
+      if (cached) applyWorkspaceSnapshot(cached);
+    }
     await listTree("");
     if (epoch !== workspaceEpoch || instanceId.value !== id || workspace.value !== ws) return;
     // Mirror the root layer into the flat path/entries state — the Changes tab and
     // any surviving flat-view consumers read those, not `tree`, after selectWorkspace.
     path.value = "";
     entries.value = tree.value[""] ?? [];
-    // Re-hydrate previously expanded layers (best-effort).
-    for (const dir of [...expanded.value]) { if (dir && !tree.value[dir]) await listTree(dir).catch(() => {}); }
+    // Revalidate every expanded cached layer (best-effort). Keeping a cached
+    // directory forever merely because it already exists would violate SWR.
+    await Promise.all(
+      [...expanded.value].filter(Boolean).map((dir) => listTree(dir).catch(() => {})),
+    );
     void loadStatus();
   }
 
@@ -115,17 +162,29 @@ export const useFilesStore = defineStore("files", () => {
    *  stays clean — the Changes tab's loadDiff() is what surfaces git errors. */
   async function loadStatus(): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
+    const id = instanceId.value;
+    const ws = workspace.value;
+    const epoch = workspaceEpoch;
+    const isCurrent = () => epoch === workspaceEpoch
+      && instanceId.value === id
+      && workspace.value === ws;
     try {
-      const r = await api.rpc<FsDiffResult>(instanceId.value, "control.fs.diff", { workspace: workspace.value });
+      const r = await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws });
+      if (!isCurrent()) return;
       if (isErrorPayload(r)) {
         changed.value = {};
+        persistWorkspaceSnapshot();
         return;
       }
       const map: Record<string, string> = {};
       for (const f of r.files) map[f.path] = f.status;
       changed.value = map;
+      persistWorkspaceSnapshot();
     } catch {
-      changed.value = {};
+      if (isCurrent()) {
+        changed.value = {};
+        persistWorkspaceSnapshot();
+      }
     }
   }
 
@@ -138,10 +197,23 @@ export const useFilesStore = defineStore("files", () => {
       gitSummary.value = null;
       return;
     }
+    const key = `${id}\0${ws}`;
+    const revision = ++gitSummaryRevision;
+    if (activeGitSummaryKey !== key) gitSummary.value = null;
+    activeGitSummaryKey = key;
+    const user = cacheUser();
+    if (user) {
+      const hot = viewCache.peek<{ summary: GitSummary | null }>(user, "git-summary", id, ws);
+      const cached = hot ?? await viewCache.read<{ summary: GitSummary | null }>(user, "git-summary", id, ws);
+      if (revision !== gitSummaryRevision || activeGitSummaryKey !== key || cacheUser() !== user) return;
+      if (cached) gitSummary.value = cached.summary;
+    }
     try {
       const r = await api.rpc<FsDiffResult>(id, "control.fs.diff", { workspace: ws });
+      if (revision !== gitSummaryRevision || activeGitSummaryKey !== key) return;
       if (isErrorPayload(r)) {
         gitSummary.value = null;
+        if (user && cacheUser() === user) void viewCache.write(user, "git-summary", id, ws, { summary: null });
         return;
       }
       const branch = typeof r.branch === "string" ? r.branch : undefined;
@@ -152,8 +224,10 @@ export const useFilesStore = defineStore("files", () => {
         ...(branch ? { branch } : {}),
         ...(detached ? { detached: true } : {}),
       };
+      if (user && cacheUser() === user) void viewCache.write(user, "git-summary", id, ws, { summary: gitSummary.value });
     } catch {
-      gitSummary.value = null;
+      // A transient refresh failure keeps a cache-seeded summary visible.
+      if (revision === gitSummaryRevision && activeGitSummaryKey === key && !user) gitSummary.value = null;
     }
   }
 
@@ -190,6 +264,7 @@ export const useFilesStore = defineStore("files", () => {
       if (!isCurrent()) return;
       root.value = r.root; sepChar.value = r.sep;
       tree.value = { ...tree.value, [dir]: r.entries };
+      persistWorkspaceSnapshot();
     } catch (e) {
       if (!isCurrent()) return;
       error.value = e instanceof Error ? e.message : "list-failed";
@@ -211,6 +286,7 @@ export const useFilesStore = defineStore("files", () => {
     }
     expanded.value = next;
     try { localStorage.setItem(expandedKey(), JSON.stringify([...next])); } catch { /* ignore */ }
+    persistWorkspaceSnapshot();
   }
 
   /** Resolve a workspace-relative path to an absolute path using the workspace root/sep. */

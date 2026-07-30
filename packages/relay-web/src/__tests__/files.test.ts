@@ -8,6 +8,8 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useFilesStore } from "../stores/files";
+import { useAuthStore } from "../stores/auth";
+import { write as writeViewSnapshot } from "../lib/view-snapshot-cache";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -78,6 +80,37 @@ describe("files store", () => {
     await s.selectWorkspace("i1", "ws");
     expect(rpc).toHaveBeenCalledWith("i1", "control.fs.list", { workspace: "ws", path: "" });
     expect(s.entries.map((e) => e.name)).toEqual(["src", "README.md"]);
+  });
+
+  it("selectWorkspace paints a cached tree before the root refresh settles", async () => {
+    useAuthStore().account = { username: "tree-cache-user" };
+    await writeViewSnapshot("tree-cache-user", "workspace-view", "i1", "ws", {
+      root: "/cached/ws",
+      sep: "/",
+      tree: { "": [{ name: "cached.ts", type: "file", size: 1 }] },
+      changed: { "cached.ts": " M" },
+    });
+    let resolveRoot!: (value: unknown) => void;
+    rpc
+      .mockReturnValueOnce(new Promise((resolve) => { resolveRoot = resolve; }))
+      .mockResolvedValueOnce({ workspace: "ws", files: [], diff: "", truncated: false });
+    const s = useFilesStore();
+    const pending = s.selectWorkspace("i1", "ws");
+
+    expect(s.root).toBe("/cached/ws");
+    expect(s.entries.map((entry) => entry.name)).toEqual(["cached.ts"]);
+    expect(s.changed).toEqual({ "cached.ts": " M" });
+
+    resolveRoot({
+      workspace: "ws",
+      root: "/fresh/ws",
+      sep: "/",
+      path: "",
+      entries: [{ name: "fresh.ts", type: "file", size: 1 }],
+    });
+    await pending;
+    expect(s.root).toBe("/fresh/ws");
+    expect(s.entries.map((entry) => entry.name)).toEqual(["fresh.ts"]);
   });
 
   it("descends into a directory and opens a file", async () => {
@@ -199,6 +232,21 @@ describe("files store", () => {
     rpc.mockResolvedValueOnce({ workspace: "ws", branch: "main", files: [], diff: "", truncated: false });
     await s.loadGitSummary("i1", "ws");
     expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 0, branch: "main" });
+  });
+
+  it("loadGitSummary paints a workspace cache before the refresh settles", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "git-summary", "i1", "ws", {
+      summary: { workspace: "ws", changedCount: 3, branch: "cached" },
+    });
+    let resolveRpc!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveRpc = resolve; }));
+    const s = useFilesStore();
+    const pending = s.loadGitSummary("i1", "ws");
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 3, branch: "cached" });
+    resolveRpc({ workspace: "ws", files: [], diff: "", truncated: false, branch: "fresh" });
+    await pending;
+    expect(s.gitSummary).toEqual({ workspace: "ws", changedCount: 0, branch: "fresh" });
   });
 
   it("loadGitSummary clears the summary for a non-git workspace (error payload)", async () => {

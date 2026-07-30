@@ -9,6 +9,10 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { pushToast } from "../lib/use-toasts";
+import * as viewCache from "../lib/view-snapshot-cache";
+import { useAuthStore } from "./auth";
+
+type ControlSnapshot = { current?: string; available: string[] };
 
 /** Per-session model and effort controls for the composer chips. The hub stamps chatKey for
  *  these chat-scoped RPCs, so the web only sends sessionAlias. */
@@ -62,6 +66,24 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     effortAvailable.value = [];
   }
 
+  const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
+  function applyModelSnapshot(snapshot: ControlSnapshot): void {
+    modelCurrent.value = snapshot.current;
+    modelAvailable.value = Array.isArray(snapshot.available) ? snapshot.available : [];
+  }
+  function applyEffortSnapshot(snapshot: ControlSnapshot): void {
+    effortCurrent.value = snapshot.current;
+    effortAvailable.value = Array.isArray(snapshot.available) ? snapshot.available : [];
+  }
+  function cacheModel(instanceId: string, alias: string, snapshot: ControlSnapshot): void {
+    const user = cacheUser();
+    if (user) void viewCache.write(user, "session-model", instanceId, alias, snapshot);
+  }
+  function cacheEffort(instanceId: string, alias: string, snapshot: ControlSnapshot): void {
+    const user = cacheUser();
+    if (user) void viewCache.write(user, "session-effort", instanceId, alias, snapshot);
+  }
+
   function reset(): void {
     activeContext = null;
     requestRevision += 1;
@@ -80,26 +102,43 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     activeContext = context;
     const revision = ++requestRevision;
     modelLoading.value = true;
+    let seeded = false;
     try {
-      // A remount/session round-trip can request a fresh read while an earlier
-      // selection for this same session is still being reconciled. Read only
-      // after the latest mutation settles, otherwise the load can publish the
-      // pre-mutation model and make the later set response look stale.
+      // Never paint a pre-mutation cache while a model change for this exact
+      // session is still settling. The authoritative cache is updated by setModel.
       const pendingSet = pendingModelSets.get(context);
       if (pendingSet) {
         await pendingSet;
         if (!isCurrentRequest(context, revision)) return;
       }
+      const user = cacheUser();
+      if (user) {
+        const snapshot = viewCache.peek<ControlSnapshot>(user, "session-model", instanceId, alias)
+          ?? await viewCache.read<ControlSnapshot>(user, "session-model", instanceId, alias);
+        if (!isCurrentRequest(context, revision) || cacheUser() !== user) return;
+        if (snapshot) {
+          applyModelSnapshot(snapshot);
+          seeded = true;
+        }
+      }
+      // A remount/session round-trip can request a fresh read while an earlier
+      // selection for this same session is still being reconciled. Read only
+      // after the latest mutation settles, otherwise the load can publish the
+      // pre-mutation model and make the later set response look stale.
       const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: alias });
       if (!isCurrentRequest(context, revision)) return;
-      if (isErrorPayload(r)) { clearModelState(); return; }
+      if (isErrorPayload(r)) {
+        if (!seeded) clearModelState();
+        return;
+      }
       modelCurrent.value = typeof r.current === "string" ? r.current : undefined;
       recordAuthoritativeModel(context, revision, modelCurrent.value);
       // Never trust the wire to hand back an array — a malformed/partial result must
       // not blow up the composer's `available.length` reads (white-screens the input).
       modelAvailable.value = Array.isArray(r.available) ? r.available : [];
+      cacheModel(instanceId, alias, { current: modelCurrent.value, available: modelAvailable.value });
     } catch {
-      if (isCurrentRequest(context, revision)) clearModelState();
+      if (isCurrentRequest(context, revision) && !seeded) clearModelState();
     } finally {
       if (isCurrentRequest(context, revision)) modelLoading.value = false;
     }
@@ -113,6 +152,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     if (activeContext !== context) clearModelState();
     activeContext = context;
     const prev = modelCurrent.value;
+    const availableAtSet = [...modelAvailable.value];
     const revision = ++requestRevision;
     // This mutation supersedes any in-flight model load for the same UI store.
     // Its stale finally block is intentionally ignored, so clear the spinner now.
@@ -133,6 +173,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
             ? undefined
             : typeof r.current === "string" ? r.current : rollbackModel(context, prev);
           recordAuthoritativeModel(context, revision, observed);
+          cacheModel(instanceId, alias, { current: observed, available: availableAtSet });
           if (isCurrentRequest(context, revision)) {
             modelCurrent.value = observed;
             reportModelSwitchFailure(
@@ -145,6 +186,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           ? undefined
           : typeof r.current === "string" ? r.current : id;
         recordAuthoritativeModel(context, revision, observed);
+        cacheModel(instanceId, alias, { current: observed, available: availableAtSet });
         if (isCurrentRequest(context, revision)) {
           modelCurrent.value = observed;
         }
@@ -181,20 +223,35 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     effortActiveContext = context;
     const revision = ++effortRevision;
     effortLoading.value = true;
+    let seeded = false;
     try {
       const pendingSet = pendingEffortSets.get(context);
       if (pendingSet) {
         await pendingSet;
         if (effortActiveContext !== context || effortRevision !== revision) return;
       }
+      const user = cacheUser();
+      if (user) {
+        const snapshot = viewCache.peek<ControlSnapshot>(user, "session-effort", instanceId, alias)
+          ?? await viewCache.read<ControlSnapshot>(user, "session-effort", instanceId, alias);
+        if (effortActiveContext !== context || effortRevision !== revision || cacheUser() !== user) return;
+        if (snapshot) {
+          applyEffortSnapshot(snapshot);
+          seeded = true;
+        }
+      }
       const effortResult = await api.rpc<SessionEffortResult>(instanceId, "control.session.effort.get", { sessionAlias: alias });
       if (effortActiveContext !== context || effortRevision !== revision) return;
-      if (isErrorPayload(effortResult)) { clearEffortState(); return; }
+      if (isErrorPayload(effortResult)) {
+        if (!seeded) clearEffortState();
+        return;
+      }
       effortCurrent.value = typeof effortResult.current === "string" ? effortResult.current : undefined;
       recordAuthoritativeEffort(context, revision, effortCurrent.value);
       effortAvailable.value = Array.isArray(effortResult.available) ? effortResult.available : [];
+      cacheEffort(instanceId, alias, { current: effortCurrent.value, available: effortAvailable.value });
     } catch {
-      if (effortActiveContext === context && effortRevision === revision) clearEffortState();
+      if (effortActiveContext === context && effortRevision === revision && !seeded) clearEffortState();
     } finally {
       if (effortActiveContext === context && effortRevision === revision) effortLoading.value = false;
     }
@@ -205,6 +262,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     if (effortActiveContext !== context) clearEffortState();
     effortActiveContext = context;
     const previous = authoritativeEfforts.get(context)?.current ?? effortCurrent.value;
+    const availableAtSet = [...effortAvailable.value];
     const revision = ++effortRevision;
     effortLoading.value = false;
     effortCurrent.value = effort;
@@ -220,6 +278,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
             if (!isErrorPayload(setResult) && (setResult.current === null || typeof setResult.current === "string")) {
               observed = setResult.current ?? undefined;
               recordAuthoritativeEffort(context, revision, observed);
+              cacheEffort(instanceId, alias, { current: observed, available: availableAtSet });
             }
             effortCurrent.value = observed;
             reportEffortSwitchFailure(isErrorPayload(setResult) ? setResult.error.message : `requested ${effort} was not applied`);
@@ -228,6 +287,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         }
         const observed = typeof setResult.current === "string" ? setResult.current : effort;
         recordAuthoritativeEffort(context, revision, observed);
+        cacheEffort(instanceId, alias, { current: observed, available: availableAtSet });
         if (effortActiveContext === context && effortRevision === revision) effortCurrent.value = observed;
         return true;
       } catch (error) {

@@ -8,6 +8,8 @@ vi.mock("../api/client", () => ({
 
 import { api } from "../api/client";
 import { useTasksStore } from "../stores/tasks";
+import { useAuthStore } from "../stores/auth";
+import { write as writeViewSnapshot } from "../lib/view-snapshot-cache";
 
 const rpc = api.rpc as unknown as ReturnType<typeof vi.fn>;
 
@@ -31,6 +33,45 @@ describe("tasks store", () => {
     await store.loadOrchestration("inst");
     expect(rpc).toHaveBeenCalledWith("inst", "control.orchestration.list");
     expect(store.orchestration).toHaveLength(1);
+  });
+
+  it("loadFor paints cached tasks before both refreshes settle", async () => {
+    useAuthStore().account = { username: "alice" };
+    const scheduledTask = {
+      id: "cached",
+      sessionAlias: "backend",
+      executeAt: "2030-01-01T00:00:00Z",
+      message: "cached",
+      status: "pending",
+      createdAt: "x",
+    };
+    await writeViewSnapshot("alice", "scheduled-tasks", "inst", "backend", [scheduledTask]);
+    await writeViewSnapshot("alice", "orchestration-tasks", "inst", "", [{
+      taskId: "cached-orchestration",
+      status: "running",
+      targetAgent: "claude",
+      workspace: "/w",
+      task: "cached",
+      summary: "",
+      createdAt: "x",
+      updatedAt: "x",
+    }]);
+    let resolveScheduled!: (value: unknown) => void;
+    let resolveOrchestration!: (value: unknown) => void;
+    rpc
+      .mockReturnValueOnce(new Promise((resolve) => { resolveScheduled = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOrchestration = resolve; }));
+    const store = useTasksStore();
+    const pending = store.loadFor("inst", "backend");
+
+    expect(store.scheduled.map((task) => task.id)).toEqual(["cached"]);
+    expect(store.orchestration.map((task) => task.taskId)).toEqual(["cached-orchestration"]);
+
+    resolveScheduled({ tasks: [] });
+    resolveOrchestration({ tasks: [] });
+    await pending;
+    expect(store.scheduled).toEqual([]);
+    expect(store.orchestration).toEqual([]);
   });
 
   it("createScheduled posts then reloads", async () => {

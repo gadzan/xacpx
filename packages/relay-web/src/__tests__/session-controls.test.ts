@@ -8,6 +8,8 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useSessionControlsStore } from "../stores/session-controls";
+import { useAuthStore } from "../stores/auth";
+import { write as writeViewSnapshot } from "../lib/view-snapshot-cache";
 import { dismissToast, useToasts } from "../lib/use-toasts";
 
 beforeEach(() => {
@@ -58,6 +60,26 @@ describe("session-controls store", () => {
     resolveLoad({ current: "model-b", available: ["model-b"] });
     await pendingLoad;
     expect(s.modelCurrent).toBe("model-b");
+  });
+
+  it("shows a cached model immediately while revalidating", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "session-model", "i1", "session-b", {
+      current: "cached-model",
+      available: ["cached-model"],
+    });
+    let resolveLoad!: (value: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve; }));
+    const s = useSessionControlsStore();
+    const pendingLoad = s.loadModel("i1", "session-b");
+
+    expect(s.modelCurrent).toBe("cached-model");
+    expect(s.modelAvailable).toEqual(["cached-model"]);
+    expect(s.modelLoading).toBe(true);
+
+    resolveLoad({ current: "fresh-model", available: ["fresh-model"] });
+    await pendingLoad;
+    expect(s.modelCurrent).toBe("fresh-model");
   });
 
   it("setModel updates current optimistically before the RPC resolves", async () => {

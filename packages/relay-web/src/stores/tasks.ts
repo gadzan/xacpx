@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { OrchestrationTaskDto, ScheduledTaskDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import * as viewCache from "../lib/view-snapshot-cache";
+import { useAuthStore } from "./auth";
 
 export interface TasksScope {
   instanceId: string;
@@ -12,22 +14,55 @@ export const useTasksStore = defineStore("tasks", () => {
   const scheduled = ref<ScheduledTaskDto[]>([]);
   const orchestration = ref<OrchestrationTaskDto[]>([]);
   const scope = ref<TasksScope | null>(null);
+  let scheduledRevision = 0;
+  let orchestrationRevision = 0;
+
+  const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
+  const isScheduledScope = (instanceId: string, sessionAlias: string): boolean =>
+    scope.value === null
+    || (scope.value.instanceId === instanceId && scope.value.sessionAlias === sessionAlias);
+  const isOrchestrationScope = (instanceId: string): boolean =>
+    scope.value === null || scope.value.instanceId === instanceId;
 
   async function loadScheduled(instanceId: string, sessionAlias: string): Promise<void> {
+    const revision = ++scheduledRevision;
+    const user = cacheUser();
+    if (user) {
+      const cached = viewCache.peek<ScheduledTaskDto[]>(user, "scheduled-tasks", instanceId, sessionAlias)
+        ?? await viewCache.read<ScheduledTaskDto[]>(user, "scheduled-tasks", instanceId, sessionAlias);
+      if (revision !== scheduledRevision || !isScheduledScope(instanceId, sessionAlias) || cacheUser() !== user) return;
+      if (Array.isArray(cached)) scheduled.value = cached;
+    }
     const { tasks } = await api.rpc<{ tasks: ScheduledTaskDto[] }>(instanceId, "control.scheduled.list");
-    scheduled.value = tasks.filter((t) => t.sessionAlias === sessionAlias);
+    const filtered = tasks.filter((t) => t.sessionAlias === sessionAlias);
+    if (user && cacheUser() === user) void viewCache.write(user, "scheduled-tasks", instanceId, sessionAlias, filtered);
+    if (revision === scheduledRevision && isScheduledScope(instanceId, sessionAlias)) scheduled.value = filtered;
   }
 
   async function loadOrchestration(instanceId: string): Promise<void> {
+    const revision = ++orchestrationRevision;
+    const user = cacheUser();
+    if (user) {
+      const cached = viewCache.peek<OrchestrationTaskDto[]>(user, "orchestration-tasks", instanceId, "")
+        ?? await viewCache.read<OrchestrationTaskDto[]>(user, "orchestration-tasks", instanceId, "");
+      if (revision !== orchestrationRevision || !isOrchestrationScope(instanceId) || cacheUser() !== user) return;
+      if (Array.isArray(cached)) orchestration.value = cached;
+    }
     const { tasks } = await api.rpc<{ tasks: OrchestrationTaskDto[] }>(instanceId, "control.orchestration.list");
-    orchestration.value = tasks;
+    if (user && cacheUser() === user) void viewCache.write(user, "orchestration-tasks", instanceId, "", tasks);
+    if (revision === orchestrationRevision && isOrchestrationScope(instanceId)) orchestration.value = tasks;
   }
 
   async function loadFor(instanceId: string, sessionAlias: string): Promise<void> {
+    const previous = scope.value;
+    const sameSession = previous?.instanceId === instanceId && previous.sessionAlias === sessionAlias;
+    const sameInstance = previous?.instanceId === instanceId;
     scope.value = { instanceId, sessionAlias };
+    if (!sameSession) scheduled.value = [];
+    if (!sameInstance) orchestration.value = [];
     await Promise.all([
-      loadScheduled(instanceId, sessionAlias).catch(() => { scheduled.value = []; }),
-      loadOrchestration(instanceId).catch(() => { orchestration.value = []; }),
+      loadScheduled(instanceId, sessionAlias).catch(() => {}),
+      loadOrchestration(instanceId).catch(() => {}),
     ]);
   }
 

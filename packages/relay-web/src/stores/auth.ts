@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { ApiError, api } from "../api/client";
 import { dropAll as dropAllTailCaches } from "../lib/session-tail-cache";
+import { dropAll as dropAllViewSnapshots } from "../lib/view-snapshot-cache";
 
 export interface Account {
   username: string;
@@ -37,8 +38,8 @@ export const useAuthStore = defineStore("auth", () => {
     await api.post("/api/logout").catch(() => {});
     account.value = null;
     // Shared-machine hygiene: the next login must not be able to read cached
-    // transcripts from IndexedDB (spec #205 user story 5).
-    await dropAllTailCaches();
+    // transcripts or view snapshots from IndexedDB.
+    await Promise.all([dropAllTailCaches(), dropAllViewSnapshots()]);
   }
 
   return { account, error, login, fetchMe, logout };
