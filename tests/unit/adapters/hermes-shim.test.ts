@@ -9,6 +9,7 @@ import {
   hermesAcpShimCommand,
   isDefaultHermesCommand,
   isHermesShimCommand,
+  isInitializeResponse,
   quoteAgentCommandToken,
   resolveHermesAcpShimEntry,
   stripResumeCapability,
@@ -58,7 +59,10 @@ test("isDefaultHermesCommand matches only the template default", () => {
 
 test("isHermesShimCommand recognizes shim commands from any install path", () => {
   expect(isHermesShimCommand('"/usr/bin/node" "/a/dist/adapters/hermes-acp-shim.js" hermes acp')).toBe(true);
+  expect(isHermesShimCommand('"C:\\\\node.exe" "C:\\\\x\\\\dist\\\\adapters\\\\hermes-acp-shim.js" hermes acp')).toBe(true);
   expect(isHermesShimCommand("hermes acp")).toBe(false);
+  // A user's own wrapper is a custom command, not derived state.
+  expect(isHermesShimCommand("my-hermes-acp-shim.sh")).toBe(false);
 });
 
 test("quoteAgentCommandToken survives acpx's quote-aware --agent splitter", () => {
@@ -75,6 +79,20 @@ test("resolveHermesAcpShimEntry anchors on the last /dist/ segment for bundled b
   // Unbundled dev run: the sibling .ts source next to the module.
   expect(resolveHermesAcpShimEntry("file:///repo/src/adapters/hermes-shim.ts"))
     .toBe("/repo/src/adapters/hermes-acp-shim.ts");
+  // Dev checkout whose PATH contains /dist/ must still resolve the .ts sibling.
+  expect(resolveHermesAcpShimEntry("file:///home/u/dist/xacpx/src/adapters/hermes-shim.ts"))
+    .toBe("/home/u/dist/xacpx/src/adapters/hermes-acp-shim.ts");
+});
+
+test("isInitializeResponse matches any frame with agentCapabilities, resume or not", () => {
+  expect(isInitializeResponse(JSON.stringify(INITIALIZE_RESPONSE))).toBe(true);
+  expect(isInitializeResponse(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 0,
+    result: { agentCapabilities: { loadSession: true, sessionCapabilities: { fork: {} } } },
+  }))).toBe(true);
+  expect(isInitializeResponse(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: {} }))).toBe(false);
+  expect(isInitializeResponse("not json")).toBe(false);
 });
 
 test("hermesAcpShimCommand quotes runner + entry and appends the hermes target", () => {

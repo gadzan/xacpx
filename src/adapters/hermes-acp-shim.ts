@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { stripResumeCapability } from "./hermes-shim";
+import { constants as osConstants } from "node:os";
+import { isInitializeResponse, stripResumeCapability } from "./hermes-shim";
 
 // Stdio interposer between acpx and `hermes acp`: rewrites exactly one frame — the
 // initialize response — to drop `sessionCapabilities.resume`, then degrades to raw
@@ -20,7 +21,9 @@ child.on("error", (error) => {
 });
 
 child.on("exit", (code, signal) => {
-  process.exitCode = signal ? 1 : (code ?? 0);
+  // 128+n mirrors the shell convention so acpx diagnostics see the real cause
+  // instead of a flattened exit 1.
+  process.exitCode = signal ? 128 + (osConstants.signals[signal] ?? 0) : (code ?? 0);
 });
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
@@ -35,30 +38,38 @@ let patched = false;
 let pending: Buffer = Buffer.alloc(0);
 const NEWLINE = 0x0a;
 
-child.stdout!.on("data", (chunk: Buffer) => {
-  if (patched) {
-    process.stdout.write(chunk);
-    return;
-  }
+const interceptStdout = (chunk: Buffer): void => {
   pending = pending.length > 0 ? Buffer.concat([pending, chunk]) : chunk;
   let newlineIndex: number;
   while (!patched && (newlineIndex = pending.indexOf(NEWLINE)) !== -1) {
     const line = pending.subarray(0, newlineIndex + 1);
     pending = pending.subarray(newlineIndex + 1);
-    const replaced = stripResumeCapability(line.toString("utf8"));
+    const text = line.toString("utf8");
+    const replaced = stripResumeCapability(text);
     if (replaced !== null) {
       patched = true;
       process.stdout.write(`${replaced}\n`);
     } else {
-      // Not the frame we're after: forward the original bytes untouched.
+      // Not the frame we're after: forward the original bytes untouched. Still
+      // latch on the initialize response (the only frame with agentCapabilities)
+      // so a post-fix hermes without `resume` doesn't get line-parsed forever.
       process.stdout.write(line);
+      if (isInitializeResponse(text)) patched = true;
     }
   }
-  if (patched && pending.length > 0) {
-    process.stdout.write(pending);
-    pending = Buffer.alloc(0);
+  if (patched) {
+    if (pending.length > 0) {
+      process.stdout.write(pending);
+      pending = Buffer.alloc(0);
+    }
+    // Raw passthrough from here on; pipe() provides backpressure for free.
+    // end:false — process.stdout must never be end()ed.
+    child.stdout!.off("data", interceptStdout);
+    child.stdout!.pipe(process.stdout, { end: false });
   }
-});
+};
+
+child.stdout!.on("data", interceptStdout);
 
 child.stdout!.on("end", () => {
   if (pending.length > 0) {

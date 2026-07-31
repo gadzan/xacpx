@@ -19,24 +19,30 @@ export function isDefaultHermesCommand(command: string): boolean {
 }
 
 /** A recorded shim command is derived, machine-specific state — the current
- * install's shim (whose dist path may differ after an upgrade) must replace it. */
+ * install's shim (whose dist path may differ after an upgrade) must replace it.
+ * The leading separator keeps user wrappers like `my-hermes-acp-shim.sh` custom. */
 export function isHermesShimCommand(command: string): boolean {
-  return command.includes("hermes-acp-shim.");
+  return command.includes("/hermes-acp-shim.") || command.includes("\\hermes-acp-shim.");
 }
 
 const DIST_MARKER = "/dist/";
 
 /**
- * Path to the shim entry script. Bundled builds (cli.js AND bridge/bridge-main.js
- * both sit under dist/) anchor on the last `/dist/` segment; unbundled dev runs
- * resolve the sibling .ts source, which the dev runtime (bun) executes directly.
+ * Path to the shim entry script. Unbundled dev runs (module URL still ends in .ts)
+ * resolve the sibling .ts source, which the dev runtime (bun) executes directly —
+ * checked FIRST so a checkout path that happens to contain `/dist/` cannot
+ * misresolve. Bundled builds (cli.js AND bridge/bridge-main.js both sit under
+ * dist/) anchor on the last `/dist/` segment.
  */
 export function resolveHermesAcpShimEntry(moduleUrl: string = import.meta.url): string {
+  if (moduleUrl.endsWith(".ts")) {
+    return fileURLToPath(new URL("./hermes-acp-shim.ts", moduleUrl));
+  }
   const idx = moduleUrl.lastIndexOf(DIST_MARKER);
   if (idx !== -1) {
     return fileURLToPath(new URL(`${moduleUrl.slice(0, idx + DIST_MARKER.length)}adapters/hermes-acp-shim.js`));
   }
-  return fileURLToPath(new URL("./hermes-acp-shim.ts", moduleUrl));
+  return fileURLToPath(new URL("./hermes-acp-shim.js", moduleUrl));
 }
 
 /** Quote one token for acpx's `--agent` parser (double quotes; `\` and `"` escaped —
@@ -45,7 +51,14 @@ export function quoteAgentCommandToken(token: string): string {
   return `"${token.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-/** Runtime-only agent command for the hermes driver: never persisted to config. */
+/** Runtime-only agent command for the hermes driver: never persisted to config.
+ *
+ * Tradeoff: the string embeds `process.execPath` and this install's dist path,
+ * and acpx keys its backend session records by EXACT agentCommand equality — so a
+ * node upgrade (nvm paths embed the version) or an install relocation re-keys
+ * hermes session identity: acpx starts a fresh backend record and the old queue
+ * owner ages out via TTL. Accepted because the alternative (a stable bin shim)
+ * isn't worth the packaging surface for a workaround slated for removal. */
 export function hermesAcpShimCommand(
   execPath: string = process.execPath,
   shimEntry: string = resolveHermesAcpShimEntry(),
@@ -80,4 +93,21 @@ export function stripResumeCapability(line: string): string | null {
   if (!Object.hasOwn(sessionCapabilities, "resume")) return null;
   delete (sessionCapabilities as Record<string, unknown>).resume;
   return JSON.stringify(message);
+}
+
+/** Is `line` an initialize response (the only frame carrying agentCapabilities)?
+ * Lets the shim latch to raw passthrough even when hermes stops advertising
+ * `resume` after the upstream fix, instead of parsing every line forever. */
+export function isInitializeResponse(line: string): boolean {
+  let message: unknown;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (!message || typeof message !== "object") return false;
+  const result = (message as { result?: unknown }).result;
+  if (!result || typeof result !== "object") return false;
+  const capabilities = (result as { agentCapabilities?: unknown }).agentCapabilities;
+  return Boolean(capabilities) && typeof capabilities === "object";
 }
