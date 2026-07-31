@@ -300,7 +300,7 @@ test("removeSession refuses to delete when the aborted turn outlives the drain t
 
   // The turn never unwinds within the timeout — removal must fail instead of deleting
   // under a live turn (whose later events would write ghost history).
-  await expect(service.removeSession("c", "s")).rejects.toThrow(/still has a turn winding down/);
+  await expect(service.removeSession("c", "s")).rejects.toThrow(/is still finishing a stopped turn/);
   expect(lifecycleCalls).toEqual([]); // transport removal never reached
 
   // After the turn actually unwinds, a retry deletes cleanly.
@@ -308,4 +308,65 @@ test("removeSession refuses to delete when the aborted turn outlives the drain t
   await p1;
   await service.removeSession("c", "s");
   expect(lifecycleCalls).toEqual(["remove:s"]);
+});
+
+test("a scheduled turn firing during transport teardown is rejected, not cold-started", async () => {
+  // removeSessionWithTransport blocks until we release it, so we can fire a scheduled turn
+  // squarely inside the teardown window (after clearSession, before transport removal ends).
+  let releaseTeardown!: () => void;
+  const teardownGate = new Promise<void>((resolve) => {
+    releaseTeardown = resolve;
+  });
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  events.subscribe((e) => seen.push(e));
+  const chat = async (): Promise<ChatResponse> => ({ text: "done" });
+  const service = new ControlService({
+    agent: { chat },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      useSession: async (_c: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" }),
+      resolveAliasForChat: async (_c: string, alias: string) => alias,
+      getSession: async () => null,
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    removeSessionWithTransport: async () => {
+      await teardownGate;
+      return { wasActive: false };
+    },
+    archiveSessionWithTransport: async () => {},
+    events,
+  } as never);
+
+  // No turn running: clearSession returns cleared:true and arms the teardown guard.
+  const removed = service.removeSession("c", "s");
+  await tick();
+  // Scheduled turn fires mid-teardown — must be rejected by the busy gate, not run.
+  const sched = await service.runScheduledTurn({
+    chatKey: "c",
+    sessionAlias: "s",
+    promptText: "cron",
+    taskId: "t1",
+    executeAt: new Date().toISOString(),
+  } as never);
+  expect(sched.ok).toBe(false);
+  releaseTeardown();
+  await removed;
+  // Nothing ever started a turn on the session being removed.
+  const started = seen.filter((e): e is TurnStarted => e.type === "turn-started");
+  expect(started.length).toBe(0);
+});
+
+test("finishClear releases the teardown guard so the alias is reusable after removal", async () => {
+  const { service, releaseChat } = makeService();
+  await service.removeSession("c", "s"); // no turn -> cleared, guard armed then released
+  // A prompt on the same alias afterwards must run (guard not leaked as permanent busy).
+  const p = service.prompt({ chatKey: "c", sessionAlias: "s", text: "again", senderId: "u" });
+  await tick();
+  releaseChat();
+  const r = await p;
+  expect(r.ok).toBe(true);
+  expect(r.queued).toBeUndefined();
 });

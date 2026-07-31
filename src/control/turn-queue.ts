@@ -98,6 +98,14 @@ export class TurnQueue {
   // drained turn clears it right after it re-registers inFlight.
   private readonly draining = new Set<string>();
 
+  // Held between a successful clearSession and the caller's finishClear, i.e. across the
+  // transport teardown of a session being removed/archived. The busy gate honors it so a
+  // scheduled (non-queueable) turn firing in that window is rejected instead of cold-starting
+  // a fresh turn on the session being torn down (which would write ghost history). The hub's
+  // exclusive turn-lock already serializes web/lifecycle RPCs; this closes the connector-local
+  // scheduler path that never touches that lock.
+  private readonly removing = new Set<string>();
+
   queueLength(chatKey: string, sessionAlias: string): number {
     return this.queues.get(turnKey(chatKey, sessionAlias))?.length ?? 0;
   }
@@ -125,9 +133,14 @@ export class TurnQueue {
     // in-progress drain hand-off as busy.
     if (!params.drained) {
       const existing = this.inFlight.get(key);
-      // Busy when a live un-cancelled turn holds the slot, OR a drain hand-off is mid-flight
-      // (inFlight momentarily cleared but the drained head not yet re-registered).
-      const busy = this.draining.has(key) || (existing !== undefined && !existing.controller.signal.aborted);
+      // Busy when a live un-cancelled turn holds the slot, a drain hand-off is mid-flight
+      // (inFlight momentarily cleared but the drained head not yet re-registered), OR the
+      // session is mid-teardown (clearSession succeeded, transport removal in flight) — the
+      // last guards against a scheduled turn cold-starting on a session being removed.
+      const busy =
+        this.removing.has(key) ||
+        this.draining.has(key) ||
+        (existing !== undefined && !existing.controller.signal.aborted);
       if (busy) {
         if (params.queueable) {
           const q = this.queues.get(key) ?? [];
@@ -338,7 +351,15 @@ export class TurnQueue {
    *  session still holds turn state after the bounded wait (a wedged turn that outlived the
    *  timeout, or a fresh prompt that slipped in during the unwind) — the caller MUST NOT
    *  proceed with removal/archive then, or the surviving turn's events would write history
-   *  rows for a session that no longer exists. */
+   *  rows for a session that no longer exists.
+   *
+   *  NOT side-effect-free even when it returns `cleared: false`: it has already aborted the
+   *  in-flight turn and dropped every queued prompt (emitting `queue-updated([])`). The caller
+   *  should surface a retry, not present the failure as a no-op.
+   *
+   *  On `cleared: true` it arms a teardown guard (the busy gate now rejects new turns for this
+   *  session) so a scheduled turn cannot cold-start during the caller's transport teardown. The
+   *  caller MUST call `finishClear` once teardown settles (success or failure) to release it. */
   async clearSession(chatKey: string, sessionAlias: string): Promise<{ cleared: boolean }> {
     const key = turnKey(chatKey, sessionAlias);
     // queues never holds empty arrays, so a successful delete means items were dropped.
@@ -357,7 +378,20 @@ export class TurnQueue {
     }
     // Re-check rather than trusting the race: `inFlight` still present means the turn
     // outlived the timeout (or a fresh turn started); `draining` means a hand-off is live.
-    return { cleared: !this.inFlight.has(key) && !this.draining.has(key) };
+    const cleared = !this.inFlight.has(key) && !this.draining.has(key);
+    // Hold the teardown guard across the caller's transport removal so a scheduled
+    // (non-queueable) turn firing in that window is rejected, not run on a dying session.
+    if (cleared) {
+      this.removing.add(key);
+    }
+    return { cleared };
+  }
+
+  /** Release the teardown guard armed by a successful `clearSession`. MUST be called by the
+   *  caller once transport removal/archive settles (in a finally), whether it succeeded or
+   *  threw — otherwise the session key stays wedged as busy forever. */
+  finishClear(chatKey: string, sessionAlias: string): void {
+    this.removing.delete(turnKey(chatKey, sessionAlias));
   }
 
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns

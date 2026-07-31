@@ -436,3 +436,22 @@ test("clearSession reports cleared:false when the aborted turn outlives the drai
   await p1;
   expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: true });
 });
+
+test("clearSession arms a teardown guard that rejects new turns until finishClear", async () => {
+  const { queue, started } = makeQueue();
+  // Idle session -> cleared, guard armed.
+  expect(await queue.clearSession("c", "s")).toEqual({ cleared: true });
+  expect(queue.isBusy("c", "s")).toBe(false); // guard is not surfaced via isBusy
+
+  // A non-queueable (scheduled) submit must be rejected while the guard holds — it must not
+  // cold-start a turn on the session being torn down.
+  const rejected = await queue.submit({ ...BASE, text: "scheduled" });
+  expect(rejected).toEqual({ ok: false, errorMessage: "turn-already-running" });
+  expect(started).toEqual([]); // runTurn never invoked under the guard
+
+  // Releasing the guard makes the session usable again.
+  queue.finishClear("c", "s");
+  void queue.submit({ ...BASE, text: "after", queueable: true });
+  await tick();
+  expect(started).toEqual(["after"]);
+});

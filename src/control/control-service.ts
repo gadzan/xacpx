@@ -664,30 +664,46 @@ export class ControlService {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
     // Drop queued prompts and abort a running turn BEFORE tearing down the transport:
     // a drained turn starting mid-removal (or turn events landing after it) would write
-    // history rows for a session that no longer exists.
+    // history rows for a session that no longer exists. NOTE clearSession is destructive
+    // even when it reports `cleared: false` — it has already aborted the turn and dropped
+    // the queue — so this is a retry-able failure, not a no-op.
     const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
     if (!cleared) {
-      throw new Error(`session "${alias}" still has a turn winding down; stop it and retry`);
+      throw new Error(`session "${alias}" is still finishing a stopped turn; retry in a moment`);
     }
-    const result = await this.deps.removeSessionWithTransport(internalAlias);
-    this.deps.events.emit({ type: "sessions-changed" });
-    return result;
+    // clearSession armed a teardown guard (busy gate rejects new turns); release it once
+    // transport removal settles, success or failure, so the key never wedges as busy.
+    try {
+      const result = await this.deps.removeSessionWithTransport(internalAlias);
+      this.deps.events.emit({ type: "sessions-changed" });
+      return result;
+    } finally {
+      this.turnQueue.finishClear(chatKey, alias);
+    }
   }
 
   async archiveSession(chatKey: string, alias: string): Promise<void> {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
     // Queued prompts must not drain onto the session the user just archived — a drained
     // turn would cold-start a fresh queue owner and effectively undo the archive.
+    // clearSession is destructive even on `cleared: false` (turn aborted, queue dropped),
+    // so this is a retry-able failure rather than a no-op.
     const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
     if (!cleared) {
-      throw new Error(`session "${alias}" still has a turn winding down; stop it and retry`);
+      throw new Error(`session "${alias}" is still finishing a stopped turn; retry in a moment`);
     }
-    await this.deps.archiveSessionWithTransport(internalAlias);
-    // Archive just killed the warm owner — correct the tracker now so an
-    // immediate undo-wake doesn't show a stale warm reading until the next poll.
-    const session = await this.deps.sessions.getSession(internalAlias).catch(() => undefined);
-    if (session) this.deps.sessionWarmth?.markCold(session);
-    this.deps.events.emit({ type: "sessions-changed" });
+    // Hold the teardown guard across the archive so a scheduled turn can't cold-start on the
+    // session being archived; release it in finally regardless of outcome.
+    try {
+      await this.deps.archiveSessionWithTransport(internalAlias);
+      // Archive just killed the warm owner — correct the tracker now so an
+      // immediate undo-wake doesn't show a stale warm reading until the next poll.
+      const session = await this.deps.sessions.getSession(internalAlias).catch(() => undefined);
+      if (session) this.deps.sessionWarmth?.markCold(session);
+      this.deps.events.emit({ type: "sessions-changed" });
+    } finally {
+      this.turnQueue.finishClear(chatKey, alias);
+    }
   }
 
   async unarchiveSession(chatKey: string, alias: string): Promise<void> {
