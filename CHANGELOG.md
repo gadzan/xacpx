@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.2] - 2026-07-31
+
+### Added
+
+- Built-in hermes agent template with default configuration.
+
+## [relay 0.10.3] - 2026-07-31
+
+### Added
+
+- Hermes brand icon in the dashboard.
+
 ## [relay 0.10.2] - 2026-07-30
 
 ### Added
