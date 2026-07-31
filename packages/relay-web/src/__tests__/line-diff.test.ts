@@ -43,11 +43,28 @@ describe("diffLines", () => {
     expect(add).toMatchObject({ oldNo: null, newNo: 2 });
   });
 
+  it("treats an empty old side as a pure addition (new file), no phantom del row", () => {
+    const d = diffLines("", "line1\nline2");
+    expect(d.del).toBe(0);
+    expect(d.add).toBe(2);
+    expect(d.rows.every((r) => r.type === "add")).toBe(true);
+    expect(d.rows).toHaveLength(2);
+  });
+
+  it("treats an empty new side as a pure deletion (full delete), no phantom add row", () => {
+    const d = diffLines("a\nb", "");
+    expect(d.add).toBe(0);
+    expect(d.del).toBe(2);
+    expect(d.rows.every((r) => r.type === "del")).toBe(true);
+    expect(d.rows).toHaveLength(2);
+  });
+
   it("falls back to naive block for pathologically large inputs", () => {
     const big = Array.from({ length: 1600 }, (_, i) => `line ${i}`).join("\n");
     const d = diffLines(big, "");
-    // Naive path: every old line is a deletion, no context rows.
+    // Naive path: every old line is a deletion, no context rows, no phantom addition.
     expect(d.del).toBe(1600);
+    expect(d.add).toBe(0);
     expect(d.rows.some((r) => r.type === "context")).toBe(false);
   });
 });

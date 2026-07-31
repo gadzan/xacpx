@@ -40,6 +40,24 @@ test("edit falls back to fields when neither diff block nor old/new text exist",
   expect(step.detail?.type).toBe("fields");
 });
 
+test("edit maps Write-style rawInput.content to the diff newText with empty oldText", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e4", toolName: "Write", kind: "edit", status: "success",
+    rawInput: { file_path: "src/new.ts", content: "export const x = 1\n" },
+  });
+  expect(step.title).toBe("src/new.ts");
+  expect(step.detail).toMatchObject({ type: "diff", path: "src/new.ts", oldText: "", newText: "export const x = 1\n" });
+});
+
+test("edit prefers the ACP diff block over conflicting rawInput old/new text", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e5", toolName: "Edit", kind: "edit", status: "success",
+    content: [{ type: "diff", path: "src/b.ts", oldText: "block old", newText: "block new" }],
+    rawInput: { file_path: "src/ignored.ts", old_string: "raw old", new_string: "raw new" },
+  });
+  expect(step.detail).toMatchObject({ type: "diff", path: "src/b.ts", oldText: "block old", newText: "block new" });
+});
+
 test("execute reads command + stdout + exit code", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t2", toolName: "Bash", kind: "execute", status: "success",

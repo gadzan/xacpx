@@ -27,8 +27,10 @@ function naiveDiff(oldLines: string[], newLines: string[]): ParsedDiff {
 /** Diff two independent text blobs at line granularity via classic LCS DP, then
  *  backtrack into renderable rows with old/new line numbers. */
 export function diffLines(oldText: string, newText: string): ParsedDiff {
-  const oldLines = oldText.split("\n");
-  const newLines = newText.split("\n");
+  // "".split("\n") returns [""], not []; treat an empty blob as zero lines so a
+  // new-file or full-delete edit doesn't emit a phantom empty row / miscount.
+  const oldLines = oldText ? oldText.split("\n") : [];
+  const newLines = newText ? newText.split("\n") : [];
   const n = oldLines.length;
   const m = newLines.length;
 
