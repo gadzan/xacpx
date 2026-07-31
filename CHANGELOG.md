@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.19.3] - 2026-07-31
+
+### Added
+
+- Route hermes agent through bundled ACP shim to prevent resume replay.
+
+### Fixed
+
+- Guard session teardown against scheduler races; clarify failed-remove semantics.
+- Let mid-turn web prompts reach the connector queue instead of being dropped.
+
+## [relay 0.10.4] - 2026-07-31
+
+### Added
+
+- Edit tool cards render as aligned line diffs with instruction summary and true +N/−N counts.
+
+### Fixed
+
+- Mid-turn web prompts now reach the connector queue.
+
+## [relay-protocol 0.2.1] - 2026-07-31
+
+### Added
+
+- Optional `ToolDetailDto.diff.instruction` field for edit diff context.
+
+## [channel-relay 0.4.1] - 2026-07-31
+
+### Changed
+
+- Tool presentation aligns edit diffs with LCS-based line matching.
+
 ## [0.19.2] - 2026-07-31
 
 ### Added

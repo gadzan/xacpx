@@ -105,6 +105,7 @@ export type ToolDetailDto = {
     path: string;
     oldText: string;
     newText: string;
+    instruction?: string;
 } | {
     type: "read";
     path: string;
