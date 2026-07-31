@@ -15,6 +15,8 @@ function makeService(opts?: {
   // executeTurn finally's post-turn `await getSession` window actually run (the C3 drain
   // hand-off window), so a test can act during that await.
   getSession?: (alias: string) => Promise<unknown>;
+  // Shorten clearSession's bounded wait so the wedged-turn guard path is testable.
+  cancelDrainTimeoutMs?: number;
 }) {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
@@ -53,6 +55,7 @@ function makeService(opts?: {
     archiveSessionWithTransport: async (internalAlias: string) => {
       lifecycleCalls.push(`archive:${internalAlias}`);
     },
+    ...(opts?.cancelDrainTimeoutMs !== undefined ? { cancelDrainTimeoutMs: opts.cancelDrainTimeoutMs } : {}),
     events,
   } as never);
 
@@ -288,4 +291,21 @@ test("archiveSession drops queued prompts so no drained turn un-archives the ses
   const started = events.filter((e): e is TurnStarted => e.type === "turn-started");
   expect(started.length).toBe(1);
   expect(started.some((e) => e.queueItemId !== undefined)).toBe(false);
+});
+
+test("removeSession refuses to delete when the aborted turn outlives the drain timeout", async () => {
+  const { service, lifecycleCalls, releaseChat } = makeService({ cancelDrainTimeoutMs: 20 });
+  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "wedged", senderId: "u" });
+  await tick();
+
+  // The turn never unwinds within the timeout — removal must fail instead of deleting
+  // under a live turn (whose later events would write ghost history).
+  await expect(service.removeSession("c", "s")).rejects.toThrow(/still has a turn winding down/);
+  expect(lifecycleCalls).toEqual([]); // transport removal never reached
+
+  // After the turn actually unwinds, a retry deletes cleanly.
+  releaseChat();
+  await p1;
+  await service.removeSession("c", "s");
+  expect(lifecycleCalls).toEqual(["remove:s"]);
 });

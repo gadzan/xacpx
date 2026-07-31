@@ -167,6 +167,9 @@ export interface ControlServiceDeps {
   // Observability hook fired when the inactivity watchdog reclaims a wedged turn, carrying the
   // concrete threshold. main.ts wires this to the app logger. Optional ⇒ no logging.
   onTurnIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
+  // Test override for how long clearSession waits for an aborted turn to unwind before
+  // remove/archive gives up; production uses the TurnQueue default.
+  cancelDrainTimeoutMs?: number;
 }
 
 export interface ControlPromptInput {
@@ -232,6 +235,7 @@ export class ControlService {
       runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
       ...(this.deps.turnIdleTimeoutMs ? { turnIdleTimeoutMs: this.deps.turnIdleTimeoutMs } : {}),
       ...(this.deps.onTurnIdleTimeout ? { onIdleTimeout: this.deps.onTurnIdleTimeout } : {}),
+      ...(this.deps.cancelDrainTimeoutMs !== undefined ? { cancelDrainTimeoutMs: this.deps.cancelDrainTimeoutMs } : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items }),
       detectSessionsChanged: async (detection) => {
@@ -661,7 +665,10 @@ export class ControlService {
     // Drop queued prompts and abort a running turn BEFORE tearing down the transport:
     // a drained turn starting mid-removal (or turn events landing after it) would write
     // history rows for a session that no longer exists.
-    await this.turnQueue.clearSession(chatKey, alias);
+    const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
+    if (!cleared) {
+      throw new Error(`session "${alias}" still has a turn winding down; stop it and retry`);
+    }
     const result = await this.deps.removeSessionWithTransport(internalAlias);
     this.deps.events.emit({ type: "sessions-changed" });
     return result;
@@ -671,7 +678,10 @@ export class ControlService {
     const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
     // Queued prompts must not drain onto the session the user just archived — a drained
     // turn would cold-start a fresh queue owner and effectively undo the archive.
-    await this.turnQueue.clearSession(chatKey, alias);
+    const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
+    if (!cleared) {
+      throw new Error(`session "${alias}" still has a turn winding down; stop it and retry`);
+    }
     await this.deps.archiveSessionWithTransport(internalAlias);
     // Archive just killed the warm owner — correct the tracker now so an
     // immediate undo-wake doesn't show a stale warm reading until the next poll.

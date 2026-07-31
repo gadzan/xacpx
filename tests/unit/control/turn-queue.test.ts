@@ -406,7 +406,7 @@ test("clearSession drops queued prompts, aborts the running turn, and starts no 
 
   // clearSession resolves only after the aborted turn unwinds (settled).
   h.resolveNext({ ok: false, errorMessage: "aborted" });
-  await cleared;
+  expect(await cleared).toEqual({ cleared: true });
   await p1;
   await tick();
   expect(h.started).toEqual(["running"]); // neither queued item started a drained turn
@@ -416,7 +416,23 @@ test("clearSession drops queued prompts, aborts the running turn, and starts no 
 test("clearSession on an idle session with an empty queue is a no-op", async () => {
   const emitted: unknown[] = [];
   const { queue } = makeQueue({ emitQueueUpdated: (_c, _s, items) => emitted.push(items) });
-  await queue.clearSession("c", "s");
+  expect(await queue.clearSession("c", "s")).toEqual({ cleared: true });
   expect(emitted).toEqual([]); // no spurious queue-updated for a session that had nothing
   expect(queue.isBusy("c", "s")).toBe(false);
+});
+
+test("clearSession reports cleared:false when the aborted turn outlives the drain timeout", async () => {
+  const h = makeQueue({ cancelDrainTimeoutMs: 20 });
+  const p1 = h.queue.submit({ ...BASE, text: "wedged", queueable: true });
+  await tick();
+  await h.queue.submit({ ...BASE, text: "queued", queueable: true });
+
+  // The turn never settles within the (shortened) timeout — the caller must not delete.
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: false });
+  expect(h.queue.queueLength("c", "s")).toBe(0); // queued prompts still dropped
+
+  // Once the wedged turn finally unwinds, a retry succeeds.
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  await p1;
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: true });
 });
