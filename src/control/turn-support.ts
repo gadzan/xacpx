@@ -21,6 +21,10 @@ export const CANCEL_DRAIN_TIMEOUT_MS = 5000;
 // event, so a very long queued prompt doesn't bloat the snapshot payload.
 export const QUEUE_PREVIEW_MAX = 120;
 
+// Upper bound on queued prompts per session. The queue is unbounded connector memory
+// otherwise — a client spamming prompts mid-turn would grow it without limit.
+export const QUEUE_MAX_DEPTH = 20;
+
 // Resolve when `promise` settles or `ms` elapses, whichever comes first. The timer
 // is cleared on the winning path so a fast drain doesn't keep the event loop alive.
 export async function raceWithTimeout(promise: Promise<void>, ms: number): Promise<void> {

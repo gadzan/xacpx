@@ -430,6 +430,132 @@ test("session removal still waits for a prompt on the same session", async () =>
   await expect(removeForwarded.promise).resolves.toBeUndefined();
 });
 
+test("second prompt is forwarded while a prompt on the same session is still running", async () => {
+  // Regression: the hub turn lock used to serialize prompt-vs-prompt, so a message
+  // sent mid-turn never reached the connector's TurnQueue and bypassed the queue.
+  const firstStarted = deferred<void>();
+  const firstRelease = deferred<unknown>();
+  const secondForwarded = deferred<void>();
+  let promptCount = 0;
+  const { app, instances, loginToken, login } = await makeApp({
+    sendRequest: async (_instanceId, type) => {
+      if (type === MSG.prompt) {
+        promptCount += 1;
+        if (promptCount === 1) {
+          firstStarted.resolve(undefined);
+          return await firstRelease.promise;
+        }
+        secondForwarded.resolve(undefined);
+        return { ok: true, queued: true, queueItemId: "q1" };
+      }
+      return {};
+    },
+  });
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  const rpcPath = `/api/instances/${redeemed.instanceId}/rpc`;
+
+  const firstResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "long task" } }),
+  });
+  await firstStarted.promise;
+
+  const secondResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "queue me" } }),
+  });
+  const forwardedBeforeFirstFinished = await Promise.race([
+    secondForwarded.promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  expect(forwardedBeforeFirstFinished).toBe(true);
+
+  firstRelease.resolve({ ok: true });
+  expect((await firstResponse).status).toBe(200);
+  const second = await secondResponse;
+  expect(second.status).toBe(200);
+  expect(((await second.json()) as { result: { queued?: boolean } }).result.queued).toBe(true);
+});
+
+test("prompt arriving after a queued removal waits behind it (no writer starvation)", async () => {
+  const firstPromptStarted = deferred<void>();
+  const firstPromptRelease = deferred<unknown>();
+  const removeForwarded = deferred<void>();
+  const removeRelease = deferred<unknown>();
+  const latePromptForwarded = deferred<void>();
+  let promptCount = 0;
+  const { app, instances, loginToken, login } = await makeApp({
+    sendRequest: async (_instanceId, type) => {
+      if (type === MSG.prompt) {
+        promptCount += 1;
+        if (promptCount === 1) {
+          firstPromptStarted.resolve(undefined);
+          return await firstPromptRelease.promise;
+        }
+        latePromptForwarded.resolve(undefined);
+        return { ok: true };
+      }
+      if (type === MSG.sessionsRemove) {
+        removeForwarded.resolve(undefined);
+        return await removeRelease.promise;
+      }
+      return {};
+    },
+  });
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  const rpcPath = `/api/instances/${redeemed.instanceId}/rpc`;
+
+  const firstPromptResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "long task" } }),
+  });
+  await firstPromptStarted.promise;
+
+  const removeResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsRemove, payload: { alias: "backend" } }),
+  });
+  // Let the removal reach the exclusive-lock queue before issuing the late prompt.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const latePromptResponse = app.request(rpcPath, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "late" } }),
+  });
+
+  // While the first turn runs, neither the removal nor the late prompt is forwarded.
+  const anyForwardedEarly = await Promise.race([
+    removeForwarded.promise.then(() => true),
+    latePromptForwarded.promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  expect(anyForwardedEarly).toBe(false);
+
+  // Turn ends → removal (queued first) goes; the late prompt still waits behind it.
+  firstPromptRelease.resolve({ ok: true });
+  await removeForwarded.promise;
+  const latePromptOvertook = await Promise.race([
+    latePromptForwarded.promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  expect(latePromptOvertook).toBe(false);
+
+  removeRelease.resolve({ ok: true });
+  await latePromptForwarded.promise;
+  expect((await firstPromptResponse).status).toBe(200);
+  expect((await removeResponse).status).toBe(200);
+  expect((await latePromptResponse).status).toBe(200);
+});
+
 test("session rename waits for a lifecycle operation on the same session", async () => {
   const removeStarted = deferred<void>();
   const removeRelease = deferred<unknown>();

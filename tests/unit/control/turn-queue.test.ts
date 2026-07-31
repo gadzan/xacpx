@@ -7,7 +7,7 @@
 import { expect, test } from "bun:test";
 import { TurnQueue, type TurnQueueDeps } from "../../../src/control/turn-queue";
 import type { TurnRequest, TurnResult } from "../../../src/control/session-turn-runner";
-import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
+import { QUEUE_MAX_DEPTH, TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
 
 // Wires a TurnQueue to a controllable deferred runTurn. `runTurn` records each turn's text into
 // `started` (so drain-order tests can assert it) and parks on a pending promise the test resolves
@@ -361,4 +361,78 @@ test("watchdog: a turn whose external abortSignal is already aborted arms no wat
   void q.queue.submit({ ...BASE, text: "A", queueable: true, abortSignal: pre.signal });
   expect(q.setCount()).toBe(0);      // armIdle short-circuited on the already-aborted controller
   expect(q.idleArmed()).toBe(false);
+});
+
+test("queue depth cap: the submit that would exceed QUEUE_MAX_DEPTH rejects with queue-full", async () => {
+  const { queue, resolveNext } = makeQueue();
+  const p1 = queue.submit({ ...BASE, text: "running", queueable: true });
+  await tick();
+  for (let i = 0; i < QUEUE_MAX_DEPTH; i++) {
+    const r = await queue.submit({ ...BASE, text: `q${i}`, queueable: true });
+    expect(r).toMatchObject({ ok: true, queued: true });
+  }
+  const overflow = await queue.submit({ ...BASE, text: "overflow", queueable: true });
+  expect(overflow).toEqual({ ok: false, errorMessage: "queue-full" });
+  expect(queue.queueLength("c", "s")).toBe(QUEUE_MAX_DEPTH);
+  // Drain one item — the queue is below the cap again, so the next submit enqueues.
+  resolveNext();
+  await tick();
+  const afterDrain = await queue.submit({ ...BASE, text: "fits-now", queueable: true });
+  expect(afterDrain).toMatchObject({ ok: true, queued: true });
+  for (let i = 0; i <= QUEUE_MAX_DEPTH; i++) {
+    resolveNext();
+    await tick();
+  }
+  await p1;
+});
+
+test("clearSession drops queued prompts, aborts the running turn, and starts no drained turn", async () => {
+  const emitted: Array<Array<{ id: string }>> = [];
+  const h = makeQueue({
+    emitQueueUpdated: (_chatKey, _sessionAlias, items) => emitted.push(items),
+  });
+  const p1 = h.queue.submit({ ...BASE, text: "running", queueable: true });
+  await tick();
+  await h.queue.submit({ ...BASE, text: "queued-1", queueable: true });
+  await h.queue.submit({ ...BASE, text: "queued-2", queueable: true });
+  expect(h.queue.queueLength("c", "s")).toBe(2);
+  const runningSignal = h.head()!.signal;
+
+  const cleared = h.queue.clearSession("c", "s");
+  // Synchronous part: queue emptied (badge cleared) and running turn aborted.
+  expect(h.queue.queueLength("c", "s")).toBe(0);
+  expect(emitted.at(-1)).toEqual([]);
+  expect(runningSignal.aborted).toBe(true);
+
+  // clearSession resolves only after the aborted turn unwinds (settled).
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await cleared).toEqual({ cleared: true });
+  await p1;
+  await tick();
+  expect(h.started).toEqual(["running"]); // neither queued item started a drained turn
+  expect(h.queue.isBusy("c", "s")).toBe(false);
+});
+
+test("clearSession on an idle session with an empty queue is a no-op", async () => {
+  const emitted: unknown[] = [];
+  const { queue } = makeQueue({ emitQueueUpdated: (_c, _s, items) => emitted.push(items) });
+  expect(await queue.clearSession("c", "s")).toEqual({ cleared: true });
+  expect(emitted).toEqual([]); // no spurious queue-updated for a session that had nothing
+  expect(queue.isBusy("c", "s")).toBe(false);
+});
+
+test("clearSession reports cleared:false when the aborted turn outlives the drain timeout", async () => {
+  const h = makeQueue({ cancelDrainTimeoutMs: 20 });
+  const p1 = h.queue.submit({ ...BASE, text: "wedged", queueable: true });
+  await tick();
+  await h.queue.submit({ ...BASE, text: "queued", queueable: true });
+
+  // The turn never settles within the (shortened) timeout — the caller must not delete.
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: false });
+  expect(h.queue.queueLength("c", "s")).toBe(0); // queued prompts still dropped
+
+  // Once the wedged turn finally unwinds, a retry succeeds.
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  await p1;
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: true });
 });
