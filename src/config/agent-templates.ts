@@ -34,10 +34,10 @@ const TEMPLATES: Record<string, AgentConfig> = {
   "grok-build": {
     driver: "grok-build",
   },
-  // Not in acpx's builtin registry; the explicit command makes acpx spawn it raw.
+  // Not an acpx builtin: resolveRuntimeAgentCommand supplies the ACP shim command
+  // at spawn time (see src/adapters/hermes-shim.ts), so no command is persisted.
   hermes: {
     driver: "hermes",
-    command: "hermes acp",
   },
   iflow: {
     driver: "iflow",

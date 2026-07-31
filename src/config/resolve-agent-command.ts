@@ -1,5 +1,6 @@
 import { resolveLocalAgentCommand } from "./local-agent-bin";
 import { resolveManagedAdapterCommand, type AdapterVersionOverrides } from "../adapters/adapter-catalog";
+import { hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
 import type { AgentConfig, TransportConfig } from "./types";
 
 export function resolveAgentCommand(
@@ -11,6 +12,12 @@ export function resolveAgentCommand(
   }
 
   if (driver === "codex" && isLegacyCodexCommand(command)) {
+    return undefined;
+  }
+
+  // The 0.19.2 hermes template persisted this literal command; treating it as
+  // "no explicit command" migrates those configs onto the runtime shim below.
+  if (driver === "hermes" && isDefaultHermesCommand(command)) {
     return undefined;
   }
 
@@ -40,6 +47,9 @@ export function resolveRuntimeAgentCommand(
   }
   const managed = resolveManagedAdapterCommand(driver, adapterVersions, adapterRegistry);
   if (managed) return managed;
+  // hermes is not an acpx builtin, so xacpx must always supply its command; the
+  // shim strips the buggy `resume` capability (see adapters/hermes-shim.ts).
+  if (driver === "hermes") return hermesAcpShimCommand();
   return preferLocal ? resolveLocalAgentCommand(driver) : undefined;
 }
 

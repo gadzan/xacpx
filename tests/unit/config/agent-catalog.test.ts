@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { listAgentCatalog } from "../../../src/config/agent-catalog";
 import { listAgentTemplates } from "../../../src/config/agent-templates";
 import { getAgentTemplate } from "../../../src/config/agent-templates";
+import { resolveRuntimeAgentCommand } from "../../../src/config/resolve-agent-command";
 import type { AppConfig } from "../../../src/config/types";
 
 function cfg(agents: Record<string, { driver: string }>): AppConfig {
@@ -24,9 +25,10 @@ test("grok-build and mux are explicit usable templates", () => {
   expect(listAgentTemplates()).toContain("mux");
 });
 
-// hermes is not in acpx's registry; the template ships the raw ACP server command.
-test("hermes template carries the explicit acp command", () => {
-  expect(getAgentTemplate("hermes")).toEqual({ driver: "hermes", command: "hermes acp" });
+// hermes is not in acpx's registry; resolveRuntimeAgentCommand supplies the shim
+// command at spawn time, so the template itself stays command-free (config-portable).
+test("hermes template is command-free (runtime shim supplies the command)", () => {
+  expect(getAgentTemplate("hermes")).toEqual({ driver: "hermes" });
   expect(listAgentTemplates()).toContain("hermes");
 });
 
@@ -90,11 +92,11 @@ test("configured is true when a config agent uses the driver under a different n
 test("every template driver is still known to the acpx registry", () => {
   const registry = createAgentRegistry();
   const known = new Set(registry.list());
-  // Templates with an explicit command (e.g. hermes) never consult the acpx
-  // registry, so they are exempt from the drift guard.
+  // Drivers whose command xacpx itself supplies at runtime (e.g. the hermes shim)
+  // never consult the acpx registry, so they are exempt from the drift guard.
   const dropped = listAgentTemplates().filter(
     (driver) =>
-      !getAgentTemplate(driver)?.command &&
+      !resolveRuntimeAgentCommand(driver, getAgentTemplate(driver)?.command, false) &&
       !known.has(driver) &&
       registry.resolve(driver) === driver,
   );

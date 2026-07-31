@@ -550,7 +550,7 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `factory-droid` | `"factory-droid"` | None (uses acpx default) |
 | `factorydroid` | `"factorydroid"` | None (uses acpx default) |
 | `grok-build` | `"grok-build"` | None (uses acpx default) |
-| `hermes` | `"hermes"` | `"hermes acp"` |
+| `hermes` | `"hermes"` | None (uses xacpx bundled shim) |
 | `iflow` | `"iflow"` | None (uses acpx default) |
 | `kilocode` | `"kilocode"` | None (uses acpx default) |
 | `kimi` | `"kimi"` | None (uses acpx default) |
@@ -561,7 +561,7 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `qwen` | `"qwen"` | None (uses acpx default) |
 | `trae` | `"trae"` | None (uses acpx default) |
 
-`hermes` is not in acpx's builtin registry, so its template ships an explicit `command`. It requires [Hermes Agent](https://hermes-agent.nousresearch.com/) installed locally with its ACP extra (`uv pip install -e '.[acp]'`) and provider credentials configured under `~/.hermes/`.
+`hermes` is not in acpx's builtin registry, so xacpx supplies its launch command at spawn time: a bundled stdio shim (`dist/adapters/hermes-acp-shim.js`) that runs `hermes acp` and strips the advertised `sessionCapabilities.resume` from the initialize response. This works around hermes-agent replaying the full transcript on every `session/resume` ([NousResearch/hermes-agent#32201](https://github.com/NousResearch/hermes-agent/issues/32201)) by forcing acpx onto its replay-guarded `session/load` path; the shim command is resolved at runtime and never written into `config.json`. It requires [Hermes Agent](https://hermes-agent.nousresearch.com/) installed locally with its ACP extra (`uv pip install -e '.[acp]'`) and provider credentials configured under `~/.hermes/`. Setting an explicit `agents.<name>.command` (other than the literal `hermes acp`, which is treated as the template default) bypasses the shim.
 
 ### Example
 
