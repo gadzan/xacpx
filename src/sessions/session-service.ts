@@ -912,6 +912,7 @@ export class SessionService {
         model: sameAgentExisting?.model,
         effort: sameAgentExisting?.effort,
         reply_mode: sameAgentExisting?.reply_mode,
+        display_name: sameAgentExisting?.display_name,
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
       };

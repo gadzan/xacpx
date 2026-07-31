@@ -230,6 +230,18 @@ test("rebinds an existing alias to a different transport session", async () => {
   expect(session.transportSession).toBe("existing-review");
 });
 
+test("preserves a display name when an alias is recreated on the same agent", async () => {
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, createEmptyState());
+
+  await service.createSession("api-fix", "codex", "backend");
+  await service.setDisplayName("api-fix", "API hotfix");
+
+  const session = await service.attachSession("api-fix", "codex", "backend", "fresh-session");
+
+  expect(session.displayName).toBe("API hotfix");
+});
+
 test("sets and resolves current session by chat key", async () => {
   const store = new MemoryStateStore();
   const service = new SessionService(createConfig(), store, createEmptyState());
