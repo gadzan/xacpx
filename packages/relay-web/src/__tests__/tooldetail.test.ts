@@ -14,11 +14,23 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("const a = 2");
   });
 
-  it("shows +N/−N stat badges for a diff", () => {
+  it("shows +N/−N stat badges from a real line diff", () => {
     const w = render({ type: "diff", path: "src/x.ts", oldText: "a\nb", newText: "a\nb\nc\nd" });
     const stats = w.find('[data-test="diff-stats"]').text();
-    expect(stats).toContain("+4"); // 4 non-empty added lines
-    expect(stats).toContain("−2"); // 2 non-empty removed lines
+    expect(stats).toContain("+2"); // 2 appended lines
+    expect(stats).not.toContain("−"); // nothing removed
+  });
+
+  it("renders the edit instruction at the top of a diff card", () => {
+    const w = render({ type: "diff", path: "src/x.ts", oldText: "a", newText: "b", instruction: "rename the thing" });
+    expect(w.find('[data-test="diff-instruction"]').text()).toContain("rename the thing");
+  });
+
+  it("keeps unchanged lines as context, not duplicated add/del", () => {
+    const w = render({ type: "diff", path: "src/x.ts", oldText: "keep\nold", newText: "keep\nnew" });
+    expect(w.findAll('[data-test="diff-context"]').length).toBe(1); // "keep"
+    expect(w.find('[data-test="diff-del"]').text()).toContain("old");
+    expect(w.find('[data-test="diff-add"]').text()).toContain("new");
   });
 
   it("renders a command with a terminal output block and exit code", () => {

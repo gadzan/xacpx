@@ -12,6 +12,34 @@ test("edit reads the content diff block", () => {
   });
 });
 
+test("edit builds a diff from raw old_string/new_string when no diff block", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e1", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "src/a.ts", old_string: "let a = 1", new_string: "let a = 2" },
+  });
+  expect(step.title).toBe("src/a.ts");
+  expect(step.detail).toMatchObject({ type: "diff", path: "src/a.ts", oldText: "let a = 1", newText: "let a = 2" });
+});
+
+test("edit carries a capped instruction on the diff detail", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e2", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "src/a.ts", old_string: "a", new_string: "b", instruction: "x".repeat(500) },
+  });
+  const detail = step.detail as { type: "diff"; instruction?: string };
+  expect(detail.type).toBe("diff");
+  expect(detail.instruction?.startsWith("x".repeat(300))).toBe(true);
+  expect(detail.instruction?.length).toBeLessThanOrEqual(320); // 300 + "…(truncated)"
+});
+
+test("edit falls back to fields when neither diff block nor old/new text exist", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e3", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "src/a.ts", mode: "insert" },
+  });
+  expect(step.detail?.type).toBe("fields");
+});
+
 test("execute reads command + stdout + exit code", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t2", toolName: "Bash", kind: "execute", status: "success",

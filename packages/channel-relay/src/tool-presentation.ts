@@ -3,6 +3,7 @@ import type { ToolStepDto, ToolDetailDto } from "@ganglion/xacpx-relay-protocol"
 
 const TEXT_CAP = 8000;
 const DIFF_CAP = 4000;
+const INSTRUCTION_CAP = 300;
 
 function cap(s: string, n = TEXT_CAP): string {
   return s.length > n ? s.slice(0, n) + "\n…(truncated)" : s;
@@ -133,12 +134,21 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
 
   if (event.kind === "edit") {
     const diff = diffBlock(blocks);
-    if (diff) {
-      const path = asString(diff.path) ?? locationPath(event) ?? asString(input.file_path) ?? asString(input.path) ?? fallbackTitle;
-      const detail: ToolDetailDto = { type: "diff", path, oldText: cap(asString(diff.oldText) ?? "", DIFF_CAP), newText: cap(asString(diff.newText) ?? "", DIFF_CAP) };
+    const path =
+      asString(diff?.path) ?? locationPath(event) ?? asString(input.file_path) ?? asString(input.path) ?? fallbackTitle;
+    const oldText = asString(diff?.oldText) ?? asString(input.old_string) ?? asString(input.oldText);
+    const newText = asString(diff?.newText) ?? asString(input.new_string) ?? asString(input.newText) ?? asString(input.content);
+    const instruction = asString(input.instruction) ?? asString(input.description);
+    if (diff || oldText !== undefined || newText !== undefined) {
+      const detail: ToolDetailDto = {
+        type: "diff",
+        path,
+        oldText: cap(oldText ?? "", DIFF_CAP),
+        newText: cap(newText ?? "", DIFF_CAP),
+        ...(instruction ? { instruction: cap(instruction, INSTRUCTION_CAP) } : {}),
+      };
       return { ...base, title: path, detail };
     }
-    const path = locationPath(event) ?? asString(input.file_path) ?? asString(input.path) ?? fallbackTitle;
     return { ...base, title: path, detail: { type: "fields", fields: primitiveFields(input) } };
   }
 

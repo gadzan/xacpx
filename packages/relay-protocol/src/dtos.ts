@@ -130,7 +130,9 @@ export type ToolStepKind = "read" | "search" | "execute" | "edit" | "think" | "o
 
 /** Friendly, presentation-ready detail for one tool call (no raw JSON crosses the wire). */
 export type ToolDetailDto =
-  | { type: "diff"; path: string; oldText: string; newText: string }
+  // `instruction` carries an edit's human-readable intent (Edit's instruction/description);
+  // optional so old connectors and old web builds stay wire-compatible.
+  | { type: "diff"; path: string; oldText: string; newText: string; instruction?: string }
   | { type: "read"; path: string; lines?: string; preview?: string }
   | { type: "command"; command: string; output?: string; exitCode?: number }
   | { type: "search"; query: string; output?: string }
