@@ -9,6 +9,7 @@ import claude from "@lobehub/icons-static-svg/icons/claudecode-color.svg?raw";
 import gemini from "@lobehub/icons-static-svg/icons/gemini-color.svg?raw";
 import copilot from "@lobehub/icons-static-svg/icons/copilot-color.svg?raw";
 import cursor from "@lobehub/icons-static-svg/icons/cursor.svg?raw";
+import hermes from "@lobehub/icons-static-svg/icons/hermesagent.svg?raw";
 import qwen from "@lobehub/icons-static-svg/icons/qwen-color.svg?raw";
 import kimi from "@lobehub/icons-static-svg/icons/kimi-color.svg?raw";
 import opencode from "@lobehub/icons-static-svg/icons/opencode.svg?raw";
@@ -27,6 +28,7 @@ const ICONS: Record<string, string> = {
   gemini,
   copilot,
   cursor,
+  hermes,
   qwen,
   kimi,
   opencode,

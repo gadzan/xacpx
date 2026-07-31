@@ -93,15 +93,15 @@ xacpx agents list
 xacpx agent rm kimi
 ```
 
-当前内置模板与 acpx 的 built-in agents 对齐：
+当前内置模板与 acpx 的 built-in agents 对齐（另含自带显式命令的 `hermes`）：
 
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
-factory-droid, factorydroid, grok-build, iflow, kilocode, kimi,
-kiro, mux, opencode, qoder, qwen, trae
+factory-droid, factorydroid, grok-build, hermes, iflow, kilocode,
+kimi, kiro, mux, opencode, qoder, qwen, trae
 ```
 
-这些模板只写入 `driver`，实际启动命令交给 acpx 解析；例如 `/agent add kimi` 会保存 `{ "driver": "kimi" }`。配置字段见 [config-reference_zh.md](./config-reference_zh.md)。
+多数模板只写入 `driver`，实际启动命令交给 acpx 解析；例如 `/agent add kimi` 会保存 `{ "driver": "kimi" }`。`hermes` 不在 acpx 注册表中，其模板会同时保存 `"command": "hermes acp"`。配置字段见 [config-reference_zh.md](./config-reference_zh.md)。
 
 ## `doctor`
 

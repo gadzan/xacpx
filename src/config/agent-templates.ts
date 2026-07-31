@@ -34,6 +34,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   "grok-build": {
     driver: "grok-build",
   },
+  // Not in acpx's builtin registry; the explicit command makes acpx spawn it raw.
+  hermes: {
+    driver: "hermes",
+    command: "hermes acp",
+  },
   iflow: {
     driver: "iflow",
   },

@@ -550,6 +550,7 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `factory-droid` | `"factory-droid"` | None (uses acpx default) |
 | `factorydroid` | `"factorydroid"` | None (uses acpx default) |
 | `grok-build` | `"grok-build"` | None (uses acpx default) |
+| `hermes` | `"hermes"` | `"hermes acp"` |
 | `iflow` | `"iflow"` | None (uses acpx default) |
 | `kilocode` | `"kilocode"` | None (uses acpx default) |
 | `kimi` | `"kimi"` | None (uses acpx default) |
@@ -559,6 +560,8 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `qoder` | `"qoder"` | None (uses acpx default) |
 | `qwen` | `"qwen"` | None (uses acpx default) |
 | `trae` | `"trae"` | None (uses acpx default) |
+
+`hermes` is not in acpx's builtin registry, so its template ships an explicit `command`. It requires [Hermes Agent](https://hermes-agent.nousresearch.com/) installed locally with its ACP extra (`uv pip install -e '.[acp]'`) and provider credentials configured under `~/.hermes/`.
 
 ### Example
 
