@@ -159,7 +159,7 @@ function validAgentCommand(value: unknown): boolean {
 function validToolDetail(d: Record<string, unknown>): boolean {
   switch (d.type) {
     case "diff":
-      return isStr(d.path) && isStr(d.oldText) && isStr(d.newText);
+      return isStr(d.path) && isStr(d.oldText) && isStr(d.newText) && optStr(d.instruction);
     case "read":
       return isStr(d.path) && optStr(d.lines) && optStr(d.preview);
     case "command":

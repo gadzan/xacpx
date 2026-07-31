@@ -12,6 +12,52 @@ test("edit reads the content diff block", () => {
   });
 });
 
+test("edit builds a diff from raw old_string/new_string when no diff block", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e1", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "src/a.ts", old_string: "let a = 1", new_string: "let a = 2" },
+  });
+  expect(step.title).toBe("src/a.ts");
+  expect(step.detail).toMatchObject({ type: "diff", path: "src/a.ts", oldText: "let a = 1", newText: "let a = 2" });
+});
+
+test("edit carries a capped instruction on the diff detail", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e2", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "src/a.ts", old_string: "a", new_string: "b", instruction: "x".repeat(500) },
+  });
+  const detail = step.detail as { type: "diff"; instruction?: string };
+  expect(detail.type).toBe("diff");
+  expect(detail.instruction?.startsWith("x".repeat(300))).toBe(true);
+  expect(detail.instruction?.length).toBeLessThanOrEqual(320); // 300 + "…(truncated)"
+});
+
+test("edit falls back to fields when neither diff block nor old/new text exist", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e3", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "src/a.ts", mode: "insert" },
+  });
+  expect(step.detail?.type).toBe("fields");
+});
+
+test("edit maps Write-style rawInput.content to the diff newText with empty oldText", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e4", toolName: "Write", kind: "edit", status: "success",
+    rawInput: { file_path: "src/new.ts", content: "export const x = 1\n" },
+  });
+  expect(step.title).toBe("src/new.ts");
+  expect(step.detail).toMatchObject({ type: "diff", path: "src/new.ts", oldText: "", newText: "export const x = 1\n" });
+});
+
+test("edit prefers the ACP diff block over conflicting rawInput old/new text", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e5", toolName: "Edit", kind: "edit", status: "success",
+    content: [{ type: "diff", path: "src/b.ts", oldText: "block old", newText: "block new" }],
+    rawInput: { file_path: "src/ignored.ts", old_string: "raw old", new_string: "raw new" },
+  });
+  expect(step.detail).toMatchObject({ type: "diff", path: "src/b.ts", oldText: "block old", newText: "block new" });
+});
+
 test("execute reads command + stdout + exit code", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t2", toolName: "Bash", kind: "execute", status: "success",
