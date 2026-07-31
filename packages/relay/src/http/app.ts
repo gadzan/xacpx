@@ -101,22 +101,30 @@ function boundField<T extends string | undefined>(v: T): T {
 type SessionRpcLocks = {
   alias: string;
   lifecycle: boolean;
-  turn: boolean;
+  turn: "none" | "shared" | "exclusive";
 };
 
-// Prompts serialize with other turns but not cosmetic metadata writes. Rename
-// serializes with identity-changing lifecycle operations but not turns. Lifecycle
-// operations take both locks so they cannot race either category.
+// Prompts take the turn lock in SHARED mode: concurrent prompts must reach the
+// connector while a turn is running so its TurnQueue can see the busy session and
+// enqueue them (exclusive mode would serialize prompt-vs-prompt at the hub and the
+// queue would never engage). Lifecycle operations take the turn lock exclusively so
+// they still wait for running turns, plus the lifecycle lock so they cannot race
+// each other. Rename only serializes with lifecycle operations, not turns.
 function rpcSessionLocks(type: string, payload: unknown): SessionRpcLocks | undefined {
   const value = payload as { alias?: unknown; sessionAlias?: unknown };
-  if (type === MSG.prompt || type === MSG.commandExecute) {
+  if (type === MSG.prompt) {
     return typeof value.sessionAlias === "string" && value.sessionAlias
-      ? { alias: value.sessionAlias, lifecycle: false, turn: true }
+      ? { alias: value.sessionAlias, lifecycle: false, turn: "shared" }
+      : undefined;
+  }
+  if (type === MSG.commandExecute) {
+    return typeof value.sessionAlias === "string" && value.sessionAlias
+      ? { alias: value.sessionAlias, lifecycle: false, turn: "exclusive" }
       : undefined;
   }
   if (type === MSG.sessionsRename) {
     return typeof value.alias === "string" && value.alias
-      ? { alias: value.alias, lifecycle: true, turn: false }
+      ? { alias: value.alias, lifecycle: true, turn: "none" }
       : undefined;
   }
   if (
@@ -126,7 +134,7 @@ function rpcSessionLocks(type: string, payload: unknown): SessionRpcLocks | unde
     type === MSG.sessionsUnarchive
   ) {
     return typeof value.alias === "string" && value.alias
-      ? { alias: value.alias, lifecycle: true, turn: true }
+      ? { alias: value.alias, lifecycle: true, turn: "exclusive" }
       : undefined;
   }
   return undefined;
@@ -154,6 +162,72 @@ function createKeyedRpcLock(): (key: string) => Promise<() => void> {
   };
 }
 
+// Keyed read-write lock: shared holders run concurrently; an exclusive holder waits
+// for every prior holder and blocks later acquirers. A shared acquirer arriving after
+// a queued exclusive opens a NEW group behind it (FIFO, so writers are never starved).
+function createKeyedRwLock(): {
+  acquireShared: (key: string) => Promise<() => void>;
+  acquireExclusive: (key: string) => Promise<() => void>;
+} {
+  type SharedGroup = { count: number; settle: () => void; start: Promise<void> };
+  const tails = new Map<string, Promise<void>>();
+  const openShared = new Map<string, SharedGroup>();
+
+  function setTail(key: string, tail: Promise<void>): void {
+    tails.set(key, tail);
+    void tail.then(() => {
+      if (tails.get(key) === tail) tails.delete(key);
+    });
+  }
+
+  return {
+    async acquireExclusive(key: string) {
+      // Close the joinable group: shared acquirers arriving after this writer must
+      // queue behind it instead of piggybacking on the running group.
+      openShared.delete(key);
+      const previous = tails.get(key) ?? Promise.resolve();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      setTail(key, previous.then(() => held));
+      await previous;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        release();
+      };
+    },
+    async acquireShared(key: string) {
+      let group = openShared.get(key);
+      if (!group) {
+        const previous = tails.get(key) ?? Promise.resolve();
+        let settle!: () => void;
+        const settled = new Promise<void>((resolve) => {
+          settle = resolve;
+        });
+        group = { count: 0, settle, start: previous };
+        openShared.set(key, group);
+        setTail(key, previous.then(() => settled));
+      }
+      group.count += 1;
+      const g = group;
+      await g.start;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        g.count -= 1;
+        if (g.count === 0) {
+          if (openShared.get(key) === g) openShared.delete(key);
+          g.settle();
+        }
+      };
+    },
+  };
+}
+
 type Vars = { Variables: { account: AccountRow } };
 
 export function createApp(deps: AppDeps): Hono<Vars> {
@@ -162,7 +236,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   const trustProxy = deps.trustProxy ?? false;
   const now = deps.now ?? (() => new Date());
   const acquireSessionLifecycleRpcLock = createKeyedRpcLock();
-  const acquireSessionTurnRpcLock = createKeyedRpcLock();
+  const sessionTurnRpcLock = createKeyedRwLock();
 
   // Per-IP failure tracking
   const loginFailures = new Map<string, { count: number; windowStart: number }>();
@@ -447,8 +521,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         if (sessionLocks.lifecycle) {
           releaseSessionRpcLocks.push(await acquireSessionLifecycleRpcLock(key));
         }
-        if (sessionLocks.turn) {
-          releaseSessionRpcLocks.push(await acquireSessionTurnRpcLock(key));
+        if (sessionLocks.turn === "shared") {
+          releaseSessionRpcLocks.push(await sessionTurnRpcLock.acquireShared(key));
+        } else if (sessionLocks.turn === "exclusive") {
+          releaseSessionRpcLocks.push(await sessionTurnRpcLock.acquireExclusive(key));
         }
       }
       // Persist the inbound user message BEFORE awaiting the turn: sendRequest

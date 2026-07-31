@@ -6,6 +6,7 @@ import {
   turnKey,
   raceWithTimeout,
   CANCEL_DRAIN_TIMEOUT_MS,
+  QUEUE_MAX_DEPTH,
   QUEUE_PREVIEW_MAX,
   TURN_IDLE_TIMEOUT_REASON,
   type QueuedPrompt,
@@ -124,6 +125,10 @@ export class TurnQueue {
       const busy = this.draining.has(key) || (existing !== undefined && !existing.controller.signal.aborted);
       if (busy) {
         if (params.queueable) {
+          const q = this.queues.get(key) ?? [];
+          if (q.length >= QUEUE_MAX_DEPTH) {
+            return { ok: false, errorMessage: "queue-full" };
+          }
           const id = randomUUID();
           const item: QueuedPrompt = {
             id,
@@ -134,7 +139,6 @@ export class TurnQueue {
             ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
             ...(params.media !== undefined ? { media: params.media } : {}),
           };
-          const q = this.queues.get(key) ?? [];
           q.push(item);
           this.queues.set(key, q);
           this.emitQueueUpdated(params.chatKey, params.sessionAlias);
@@ -320,6 +324,24 @@ export class TurnQueue {
     }
     entry.controller.abort();
     return true;
+  }
+
+  /** Tear down all turn state for a session that is being removed or archived: drop every
+   *  queued prompt, abort a running turn, and wait (bounded) for it to unwind. The queue is
+   *  cleared BEFORE the abort so the aborting turn's finally sees it empty and releases the
+   *  slot instead of draining a head onto the dead session. Without this, a drained turn can
+   *  start after removal and its events write history rows for a session that no longer
+   *  exists. */
+  async clearSession(chatKey: string, sessionAlias: string): Promise<void> {
+    const key = turnKey(chatKey, sessionAlias);
+    // queues never holds empty arrays, so a successful delete means items were dropped.
+    if (this.queues.delete(key)) {
+      this.emitQueueUpdated(chatKey, sessionAlias);
+    }
+    const entry = this.inFlight.get(key);
+    if (!entry) return;
+    entry.controller.abort();
+    await raceWithTimeout(entry.settled, CANCEL_DRAIN_TIMEOUT_MS);
   }
 
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
