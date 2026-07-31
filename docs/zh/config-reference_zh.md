@@ -453,7 +453,7 @@ xacpx channel add <channel-type>
 | `factory-droid` | `"factory-droid"` | 无（使用 acpx 默认） |
 | `factorydroid` | `"factorydroid"` | 无（使用 acpx 默认） |
 | `grok-build` | `"grok-build"` | 无（使用 acpx 默认） |
-| `hermes` | `"hermes"` | `"hermes acp"` |
+| `hermes` | `"hermes"` | 无（使用 xacpx 内置 shim） |
 | `iflow` | `"iflow"` | 无（使用 acpx 默认） |
 | `kilocode` | `"kilocode"` | 无（使用 acpx 默认） |
 | `kimi` | `"kimi"` | 无（使用 acpx 默认） |
@@ -464,7 +464,7 @@ xacpx channel add <channel-type>
 | `qwen` | `"qwen"` | 无（使用 acpx 默认） |
 | `trae` | `"trae"` | 无（使用 acpx 默认） |
 
-`hermes` 不在 acpx 内置注册表中，模板自带显式 `command`。使用前需本机安装 [Hermes Agent](https://hermes-agent.nousresearch.com/) 及其 ACP 依赖（`uv pip install -e '.[acp]'`），并在 `~/.hermes/` 下配置好模型凭据。
+`hermes` 不在 acpx 内置注册表中，xacpx 会在启动时注入启动命令：一个随包分发的 stdio shim（`dist/adapters/hermes-acp-shim.js`），它运行 `hermes acp` 并从 initialize 响应中剥离 `sessionCapabilities.resume` 能力。这是为了绕过 hermes-agent 在每次 `session/resume` 时重放全部历史的缺陷（[NousResearch/hermes-agent#32201](https://github.com/NousResearch/hermes-agent/issues/32201)），强制 acpx 走带重放抑制的 `session/load` 路径；shim 命令在运行时解析，不会写入 `config.json`。使用前需本机安装 [Hermes Agent](https://hermes-agent.nousresearch.com/) 及其 ACP 依赖（`uv pip install -e '.[acp]'`），并在 `~/.hermes/` 下配置好模型凭据。显式设置 `agents.<name>.command`（字面值 `hermes acp` 除外，它被视为模板默认值）会绕过 shim。注意：shim 命令内嵌了 node 可执行文件和 xacpx 安装路径，升级 node 或移动安装位置会改变 acpx 用于匹配会话记录的命令字符串——此时 acpx 会为 hermes 新建后端会话记录，而不是复用旧记录。
 
 ### 示例
 

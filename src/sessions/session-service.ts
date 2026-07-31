@@ -5,6 +5,7 @@ import {
   resolveConfiguredAgentCommand,
 } from "../config/resolve-agent-command";
 import { preferCurrentManagedAdapterCommand } from "../adapters/adapter-catalog";
+import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
 import type { AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -707,11 +708,16 @@ export class SessionService {
     const effectiveReplyMode = channelId === "relay" ? "stream" : undefined;
     const currentAgentCommand = resolveConfiguredAgentCommand(agentConfig, this.config.transport);
     const configuredAgentCommand = resolveAgentCommand(agentConfig.driver, agentConfig.command);
-    const recordedAgentCommand = agentConfig.driver === "codex" &&
-      session.transport_agent_command &&
-      isLegacyCodexCommand(session.transport_agent_command)
-      ? undefined
-      : session.transport_agent_command;
+    // Derived, machine/version-specific recorded commands must yield to the current
+    // resolution: legacy codex adapter paths and hermes's default/shim commands.
+    const recordedIsDerived = Boolean(session.transport_agent_command) && (
+      (agentConfig.driver === "codex" && isLegacyCodexCommand(session.transport_agent_command!)) ||
+      (agentConfig.driver === "hermes" && (
+        isDefaultHermesCommand(session.transport_agent_command!) ||
+        isHermesShimCommand(session.transport_agent_command!)
+      ))
+    );
+    const recordedAgentCommand = recordedIsDerived ? undefined : session.transport_agent_command;
 
     return {
       alias: session.alias,

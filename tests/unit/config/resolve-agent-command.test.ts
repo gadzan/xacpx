@@ -49,3 +49,24 @@ test("config-shaped runtime resolution keeps agent and transport policy together
     },
   )).toBe("npx -y --registry=https://npm.corp.example/repository/npm/ --@agentclientprotocol:registry=https://npm.corp.example/repository/npm/ @agentclientprotocol/claude-agent-acp@0.58.1");
 });
+
+// The 0.19.2 template persisted `command: "hermes acp"`; dropping it here migrates
+// those configs onto the runtime shim without hand-editing.
+test("drops the default hermes template command", () => {
+  expect(resolveAgentCommand("hermes", "hermes acp")).toBeUndefined();
+  expect(resolveAgentCommand("hermes", "  hermes   acp ")).toBeUndefined();
+});
+
+test("keeps a custom hermes command (shim bypass escape hatch)", () => {
+  expect(resolveAgentCommand("hermes", "/opt/hermes/bin/hermes acp")).toBe("/opt/hermes/bin/hermes acp");
+});
+
+test("runtime resolution supplies the shim command for hermes", () => {
+  const resolved = resolveRuntimeAgentCommand("hermes", undefined, false);
+  expect(resolved).toContain("hermes-acp-shim.");
+  expect(resolved!.endsWith(" hermes acp")).toBe(true);
+  // The 0.19.2 default command resolves to the shim too.
+  expect(resolveRuntimeAgentCommand("hermes", "hermes acp", false)).toBe(resolved!);
+  // A custom command still wins.
+  expect(resolveRuntimeAgentCommand("hermes", "my-hermes --acp", false)).toBe("my-hermes --acp");
+});
