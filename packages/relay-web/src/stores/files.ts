@@ -69,6 +69,7 @@ export const useFilesStore = defineStore("files", () => {
   const hits = ref<FsSearchHitDto[]>([]);
   let diffRequestId = 0;
   let workspaceEpoch = 0;
+  let lastListTreeError = "";
   let gitSummaryRevision = 0;
   let activeGitSummaryKey = "";
   const searchOpts = ref<{ mode: "name" | "content"; matchCase: boolean; wholeWord: boolean; regex: boolean; include: string; exclude: string }>({
@@ -164,8 +165,23 @@ export const useFilesStore = defineStore("files", () => {
     entries.value = tree.value[""] ?? [];
     // Revalidate every expanded cached layer (best-effort). Keeping a cached
     // directory forever merely because it already exists would violate SWR.
+    const staleExpanded = [...expanded.value].filter(Boolean);
     await Promise.all(
-      [...expanded.value].filter(Boolean).map((dir) => listTree(dir).catch(() => {})),
+      staleExpanded.map(async (dir) => {
+        try {
+          await listTree(dir, { quiet: true });
+        } catch {
+          // A cached expanded directory may have been removed since the last visit.
+          // Drop only confirmed missing paths; transient transport failures should not
+          // destroy the user's navigation state.
+          if (lastListTreeError === "not-found" || lastListTreeError === "unknown-workspace") {
+            const next = new Set(expanded.value);
+            next.delete(dir);
+            expanded.value = next;
+            try { localStorage.setItem(expandedKey(), JSON.stringify([...next])); } catch { /* ignore */ }
+          }
+        }
+      }),
     );
     void loadStatus();
   }
@@ -267,7 +283,7 @@ export const useFilesStore = defineStore("files", () => {
   function expandedKey(): string { return `xacpx.fileTree.expanded.${workspace.value ?? ""}`; }
 
   /** Fetch one directory layer into the tree cache, recording root/sep along the way. */
-  async function listTree(dir: string): Promise<void> {
+  async function listTree(dir: string, options: { quiet?: boolean } = {}): Promise<void> {
     if (!instanceId.value || !workspace.value) return;
     const id = instanceId.value;
     const ws = workspace.value;
@@ -277,6 +293,7 @@ export const useFilesStore = defineStore("files", () => {
       && workspace.value === ws;
     loadingDirs.value = new Set(loadingDirs.value).add(dir);
     try {
+      lastListTreeError = "";
       const r = unwrap(await api.rpc<FsListResult>(id, "control.fs.list", { workspace: ws, path: dir }));
       if (!isCurrent()) return;
       root.value = r.root; sepChar.value = r.sep;
@@ -284,7 +301,9 @@ export const useFilesStore = defineStore("files", () => {
       persistWorkspaceSnapshot();
     } catch (e) {
       if (!isCurrent()) return;
-      error.value = e instanceof Error ? e.message : "list-failed";
+      lastListTreeError = e instanceof Error ? e.message : "list-failed";
+      if (!options.quiet) error.value = e instanceof Error ? e.message : "list-failed";
+      else throw e;
     } finally {
       if (isCurrent()) {
         const next = new Set(loadingDirs.value); next.delete(dir); loadingDirs.value = next;
