@@ -71,6 +71,31 @@ describe("files store", () => {
     expect(s.tree[""]?.map((entry) => entry.name)).toEqual(["new.ts"]);
   });
 
+  it("ignores missing cached expanded directories during workspace refresh", async () => {
+    // Spy must be restored before the test exits — beforeEach only resets the rpc mock,
+    // and a leaked localStorage getter poisons every later test's expanded-set rehydration.
+    const lsGet = vi.spyOn(globalThis, "localStorage", "get").mockReturnValue({
+      getItem: () => JSON.stringify([".qoder/skills/release"]),
+      setItem: vi.fn(),
+    } as unknown as Storage);
+    try {
+      const s = useFilesStore();
+      rpc
+        .mockResolvedValueOnce({ workspace: "ws", path: "", root: "/ws", sep: "/", entries: [] })
+        .mockResolvedValueOnce({ error: { code: "internal", message: "not-found" } });
+      s.instanceId = "i1";
+      s.workspace = "ws";
+      s.expanded = new Set([".qoder/skills/release"]);
+      rpc.mockResolvedValueOnce({ error: { code: "internal", message: "not-found" } });
+      await s.selectWorkspace("i1", "ws");
+
+      expect(s.error).toBe("");
+      expect(s.expanded.has(".qoder/skills/release")).toBe(false);
+    } finally {
+      lsGet.mockRestore();
+    }
+  });
+
   it("selects a workspace and lists the root", async () => {
     rpc.mockResolvedValueOnce({ workspace: "ws", path: "", entries: [
       { name: "src", type: "dir" },
