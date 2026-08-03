@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledTaskDto, SessionDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 
 // Instance <-> relay message types. Convention: chatKey for relay-driven chats
 // is `relay:<accountId>`; the relay server stamps chatKey/senderId/isOwner on
@@ -7,6 +7,7 @@ export const MSG = {
   instanceRegister: "instance.register",
   instanceAuth: "instance.auth",
   instanceEvent: "instance.event",
+  instanceStateSync: "instance.state.sync",
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
@@ -105,6 +106,32 @@ export interface InstanceAuthResult {
 // --- instance push ---
 export interface InstanceEventPayload {
   event: ControlEventDto;
+}
+/** Full mirror of the instance-scoped in-memory hub state (turn buffers / usage /
+ *  commands), pushed by the connector right after every (re-)auth. The hub replaces
+ *  its in-memory state for that instance with this snapshot — additive protocol, so
+ *  old hubs (unknown message type) and old connectors (never sent) degrade to the
+ *  pre-sync behavior. */
+export interface InstanceStateSyncPayload {
+  turns: Array<{
+    sessionAlias: string;
+    prompt?: string;
+    scheduled?: ScheduledOriginDto;
+    queueItemId?: string;
+    /** ms epoch captured by the connector at the ORIGINAL turn start. */
+    startedAt: number;
+    text: string;
+    reasoning: string;
+    steps: ToolStepDto[];
+    /** true = connector capped the mirror; content after that point is lost. */
+    truncated?: boolean;
+  }>;
+  usage: Array<{ sessionAlias: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>;
+  commands: Array<{ sessionAlias: string; commands: AgentCommandDto[] }>;
+  /** Turns that finished while the hub was unreachable; hub must persist them.
+   *  `prompt` backfills the turn's `in` row when the turn STARTED during the outage
+   *  too, so the recovered answer never appears as an orphan in history. */
+  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string }>;
 }
 export interface InstanceNoticePayload {
   kind: "task-completion" | "task-progress" | "coordinator-message";

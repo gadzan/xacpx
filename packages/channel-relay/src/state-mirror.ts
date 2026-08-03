@@ -1,0 +1,238 @@
+// Connector-side mirror of the hub's per-instance runtime state (running turns,
+// last-known usage / commands, turns that finished while the hub was unreachable).
+// It sees the exact ControlEventDto stream forwarded to the hub, so on (re)connect
+// the connector can push one `instance.state.sync` snapshot and the hub can recover
+// running turns, meters and hints without any replay of business events.
+//
+// Everything here is bounded: per-turn text caps at MIRROR_TEXT_CAP (then marked
+// `truncated`), tool steps / reasoning cap at the hub's own limits, and the
+// finished-while-offline FIFO drops its oldest entries past FINISHED_OFFLINE_MAX —
+// a daemon left running against a long-dead hub must never leak memory.
+import {
+  MSG,
+  type AgentCommandDto,
+  type ControlEventDto,
+  type InstanceEventPayload,
+  type InstanceStateSyncPayload,
+  type ScheduledOriginDto,
+  type ToolStepDto,
+  type UsageBreakdownDto,
+  type UsageCostDto,
+} from "@ganglion/xacpx-relay-protocol";
+import type { AppLogger } from "xacpx/plugin-api";
+
+/** Deliberately stricter than the hub's uncapped text accumulator: the mirror keeps
+ *  these buffers for the connector's whole lifetime, so a runaway turn must be cut. */
+export const MIRROR_TEXT_CAP = 256 * 1024;
+// Same values as the hub (packages/relay/src/server.ts).
+const MAX_TOOL_STEPS = 200;
+const REASONING_CAP = 16000;
+// Max turns retained as "finished while the hub was unreachable".
+const FINISHED_OFFLINE_MAX = 32;
+
+interface MirrorTurn {
+  chatKey: string;
+  prompt?: string;
+  scheduled?: ScheduledOriginDto;
+  queueItemId?: string;
+  /** Stamped locally when the connector first saw `turn-started`, so a sync
+   *  restores the ORIGINAL start time on the hub after a restart. */
+  startedAt: number;
+  text: string;
+  reasoning: string;
+  steps: Map<string, ToolStepDto>;
+  truncated: boolean;
+}
+
+interface FinishedOfflineTurn {
+  chatKey: string;
+  sessionAlias: string;
+  ok: boolean;
+  errorMessage?: string;
+  cancelled?: boolean;
+  text?: string;
+  /** The turn's prompt, retained so the hub can backfill the `in` row for turns
+   *  that started during the outage (its answer must not be an orphan in history). */
+  prompt?: string;
+}
+
+export interface StateMirror {
+  /** Consume one envelope the forwarder is about to send; non-instanceEvent types are ignored. */
+  handleEnvelope(type: string, payload: unknown): void;
+  /** Distinct chatKeys seen on mirrored events (used to resolve the live session list). */
+  chatKeys(): string[];
+  /** All session aliases mirrored for one chatKey (fallback keep-set when the live
+   *  session list cannot be read — never prune what we cannot verify). */
+  aliasesForChatKey(chatKey: string): string[];
+  /** Snapshot for `instance.state.sync`; aliases absent from `liveAliases` are pruned
+   *  (sessions removed while offline must not ship ghost state). */
+  buildStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
+  /** Called after the sync was handed to an open socket; the hub owns those rows now. */
+  clearFinishedOffline(): void;
+}
+
+export interface StateMirrorDeps {
+  /** Whether the hub link is currently ready (post-auth, socket open). */
+  isReady: () => boolean;
+  logger?: Pick<AppLogger, "info">;
+  /** Test seam for turn start timestamps. */
+  now?: () => number;
+}
+
+export function createStateMirror(deps: StateMirrorDeps): StateMirror {
+  const now = deps.now ?? (() => Date.now());
+  const turns = new Map<string, MirrorTurn>();
+  const usage = new Map<string, { chatKey: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>();
+  const commands = new Map<string, { chatKey: string; commands: AgentCommandDto[] }>();
+  const finishedOffline: FinishedOfflineTurn[] = [];
+
+  const handle = (event: ControlEventDto): void => {
+    switch (event.type) {
+      case "turn-started":
+        turns.set(event.sessionAlias, {
+          chatKey: event.chatKey,
+          startedAt: now(),
+          text: "",
+          reasoning: "",
+          steps: new Map(),
+          truncated: false,
+          ...(event.prompt !== undefined ? { prompt: event.prompt } : {}),
+          ...(event.scheduled ? { scheduled: event.scheduled } : {}),
+          ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
+        });
+        return;
+      case "turn-output": {
+        const a = turns.get(event.sessionAlias);
+        if (!a || a.truncated) return;
+        a.text += event.chunk;
+        if (a.text.length > MIRROR_TEXT_CAP) {
+          a.text = a.text.slice(0, MIRROR_TEXT_CAP);
+          a.truncated = true;
+        }
+        return;
+      }
+      case "tool-event": {
+        const a = turns.get(event.sessionAlias);
+        if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
+          a.steps.set(event.step.toolCallId, event.step);
+        }
+        return;
+      }
+      case "turn-thought": {
+        const a = turns.get(event.sessionAlias);
+        if (a) a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP);
+        return;
+      }
+      case "turn-usage":
+        usage.set(event.sessionAlias, {
+          chatKey: event.chatKey, used: event.used, size: event.size,
+          ...(event.cost ? { cost: event.cost } : {}),
+          ...(event.breakdown ? { breakdown: event.breakdown } : {}),
+        });
+        return;
+      case "agent-commands":
+        commands.set(event.sessionAlias, { chatKey: event.chatKey, commands: event.commands });
+        return;
+      case "turn-finished": {
+        const a = turns.get(event.sessionAlias);
+        turns.delete(event.sessionAlias);
+        if (deps.isReady()) return; // hub got the live stream and will persist normally
+        finishedOffline.push({
+          chatKey: a?.chatKey ?? event.chatKey,
+          sessionAlias: event.sessionAlias,
+          ok: event.ok,
+          ...(event.errorMessage !== undefined ? { errorMessage: event.errorMessage } : {}),
+          ...(event.cancelled !== undefined ? { cancelled: event.cancelled } : {}),
+          ...(a?.text !== undefined ? { text: a.text } : event.text !== undefined ? { text: event.text } : {}),
+          ...(a?.prompt !== undefined ? { prompt: a.prompt } : {}),
+        });
+        if (finishedOffline.length > FINISHED_OFFLINE_MAX) {
+          finishedOffline.shift();
+          void deps.logger?.info(
+            "relay.state_mirror.finished_offline_evicted",
+            "evicted oldest finished-offline turn; relay mirror FIFO is full",
+            { limit: FINISHED_OFFLINE_MAX },
+          );
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
+  return {
+    handleEnvelope(type, payload) {
+      if (type !== MSG.instanceEvent) return;
+      const event = (payload as InstanceEventPayload | undefined)?.event;
+      if (event && typeof event === "object" && typeof (event as { type?: unknown }).type === "string") {
+        handle(event);
+      }
+    },
+    chatKeys() {
+      const out = new Set<string>();
+      for (const a of turns.values()) out.add(a.chatKey);
+      for (const u of usage.values()) out.add(u.chatKey);
+      for (const c of commands.values()) out.add(c.chatKey);
+      for (const f of finishedOffline) out.add(f.chatKey);
+      return [...out];
+    },
+    aliasesForChatKey(chatKey) {
+      const out = new Set<string>();
+      for (const [alias, a] of turns) if (a.chatKey === chatKey) out.add(alias);
+      for (const [alias, u] of usage) if (u.chatKey === chatKey) out.add(alias);
+      for (const [alias, c] of commands) if (c.chatKey === chatKey) out.add(alias);
+      for (const f of finishedOffline) if (f.chatKey === chatKey) out.add(f.sessionAlias);
+      return [...out];
+    },
+    buildStateSync(liveAliases) {
+      const payload: InstanceStateSyncPayload = {
+        turns: [],
+        usage: [],
+        commands: [],
+        finishedOffline: [],
+      };
+      for (const [alias, a] of turns) {
+        if (!liveAliases.has(alias)) { turns.delete(alias); continue; }
+        payload.turns.push({
+          sessionAlias: alias,
+          startedAt: a.startedAt,
+          text: a.text,
+          reasoning: a.reasoning,
+          steps: [...a.steps.values()],
+          ...(a.prompt !== undefined ? { prompt: a.prompt } : {}),
+          ...(a.scheduled ? { scheduled: a.scheduled } : {}),
+          ...(a.queueItemId ? { queueItemId: a.queueItemId } : {}),
+          ...(a.truncated ? { truncated: true } : {}),
+        });
+      }
+      for (const [alias, u] of usage) {
+        if (!liveAliases.has(alias)) { usage.delete(alias); continue; }
+        payload.usage.push({
+          sessionAlias: alias, used: u.used, size: u.size,
+          ...(u.cost ? { cost: u.cost } : {}),
+          ...(u.breakdown ? { breakdown: u.breakdown } : {}),
+        });
+      }
+      for (const [alias, c] of commands) {
+        if (!liveAliases.has(alias)) { commands.delete(alias); continue; }
+        payload.commands.push({ sessionAlias: alias, commands: c.commands });
+      }
+      for (let i = finishedOffline.length - 1; i >= 0; i--) {
+        const f = finishedOffline[i]!;
+        if (!liveAliases.has(f.sessionAlias)) { finishedOffline.splice(i, 1); continue; }
+        payload.finishedOffline.unshift({
+          sessionAlias: f.sessionAlias, ok: f.ok,
+          ...(f.errorMessage !== undefined ? { errorMessage: f.errorMessage } : {}),
+          ...(f.cancelled !== undefined ? { cancelled: f.cancelled } : {}),
+          ...(f.text !== undefined ? { text: f.text } : {}),
+          ...(f.prompt !== undefined ? { prompt: f.prompt } : {}),
+        });
+      }
+      return payload;
+    },
+    clearFinishedOffline() {
+      finishedOffline.length = 0;
+    },
+  };
+}

@@ -214,6 +214,9 @@ export class SessionTurnRunner {
         chatKey: req.chatKey,
         sessionAlias: req.sessionAlias,
         ok: true,
+        // Carry the final reply text so a relay hub that missed the streamed chunks can
+        // still persist the answer (messages.append fallback for turns without a buffer).
+        text: response.text,
       });
       return {
         ok: true,

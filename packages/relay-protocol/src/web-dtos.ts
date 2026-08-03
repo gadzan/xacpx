@@ -248,7 +248,8 @@ export function validControlEvent(e: unknown): boolean {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
+        && optStr(c.text);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
@@ -295,6 +296,49 @@ export function validControlEvent(e: unknown): boolean {
 }
 
 const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+
+/** Deep-validate an `instance.state.sync` payload with the same posture as
+ *  `validControlEvent`: discriminant-free, but every field the hub will read must
+ *  have the right shape — a malformed sync must be dropped, never reconciled into
+ *  the hub's in-memory state or history. */
+export function validInstanceStateSync(p: unknown): boolean {
+  if (typeof p !== "object" || p === null) return false;
+  const c = p as Record<string, unknown>;
+  if (!Array.isArray(c.turns) || !c.turns.every((t) => {
+    if (typeof t !== "object" || t === null) return false;
+    const turn = t as Record<string, unknown>;
+    return typeof turn.sessionAlias === "string"
+      && optStr(turn.prompt) && optStr(turn.queueItemId)
+      && (turn.scheduled === undefined || (typeof turn.scheduled === "object" && turn.scheduled !== null
+        && isStr((turn.scheduled as Record<string, unknown>).taskId) && isStr((turn.scheduled as Record<string, unknown>).executeAt)))
+      && finiteNonNegative(turn.startedAt)
+      && typeof turn.text === "string"
+      && typeof turn.reasoning === "string"
+      && Array.isArray(turn.steps) && turn.steps.every(validToolStep)
+      && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+  })) return false;
+  if (!Array.isArray(c.usage) || !c.usage.every((u) => {
+    if (typeof u !== "object" || u === null) return false;
+    const usage = u as Record<string, unknown>;
+    return typeof usage.sessionAlias === "string"
+      && finiteNonNegative(usage.used) && finiteNonNegative(usage.size)
+      && validUsageCost(usage.cost) && validUsageBreakdown(usage.breakdown);
+  })) return false;
+  if (!Array.isArray(c.commands) || !c.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const commands = entry as Record<string, unknown>;
+    return typeof commands.sessionAlias === "string"
+      && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
+  })) return false;
+  return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
+    if (typeof f !== "object" || f === null) return false;
+    const finished = f as Record<string, unknown>;
+    return typeof finished.sessionAlias === "string"
+      && typeof finished.ok === "boolean"
+      && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
+      && (finished.cancelled === undefined || typeof finished.cancelled === "boolean");
+  });
+}
 
 /** Deep-validate an inner InstanceNoticePayload: known kind + required text. */
 function validNotice(n: unknown): boolean {

@@ -215,3 +215,41 @@ test("a finish with no text but with tool steps still persists a structured turn
   expect(cached[0].structured?.toolSteps.length).toBe(1);
   runtime.close();
 });
+
+test("a finish with no buffer but text persists the reply (hub restarted mid-turn)", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  // The turn was running across a hub restart: turn-started's buffer died with the old
+  // process, so this finish arrives with no buffer. The daemon's carried reply text is
+  // the hub's last chance to close the history gap — persist it as a plain out row.
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, text: "late answer" });
+  const cached = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(cached.map((m) => [m.direction, m.text])).toEqual([["out", "late answer"]]);
+  expect(cached[0].structured).toBeUndefined(); // no chunks/steps buffered — nothing structured
+  runtime.close();
+});
+
+test("a finish with no buffer and no text persists no row and logs a warning", async () => {
+  const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const logger: RelayLogger = {
+    debug: (e, m, c) => logs.push([e, m, c]),
+    info: (e, m, c) => logs.push([e, m, c]),
+    error: (e, m, c) => logs.push([e, m, c]),
+  };
+  const runtime = await createRelayRuntime(":memory:", { logger });
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
+  runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  // Old daemon (no `text`) finishing a turn whose buffer died with the hub: never
+  // fabricate an empty transcript entry, but surface the loss in the log.
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages).toEqual([]);
+  const warned = logs.find(([e]) => e === "relay.event.turn_finished_without_content");
+  expect(warned).toBeDefined();
+  expect(warned?.[2]).toEqual({ instanceId: "i1", sessionAlias: "backend" });
+  runtime.close();
+});

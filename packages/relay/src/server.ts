@@ -4,9 +4,9 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
-  validControlEvent,
+  validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
@@ -32,6 +32,10 @@ const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // (tool-presentation.ts) — this is defence in depth against non-conforming connectors.
 // Counted in UTF-16 code units (string.length), not bytes.
 const TOOL_DETAIL_CAP = 32 * 1024;
+// Bound on restored turn text from an `instance.state.sync` snapshot. Matches the
+// connector mirror's own cap (MIRROR_TEXT_CAP); defensive for hostile/buggy connectors
+// since the hub's live text accumulator is intentionally uncapped.
+const STATE_SYNC_TEXT_CAP = 256 * 1024;
 
 const capText = (s: string): string => (s.length > TOOL_DETAIL_CAP ? `${s.slice(0, TOOL_DETAIL_CAP)}…` : s);
 
@@ -252,7 +256,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const k = key(instanceId, event.sessionAlias);
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
-            if (!a) return;
+            if (!a) {
+              // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
+              // The daemon carries the final reply text on turn-finished so the answer
+              // can still land in history instead of leaving a prompt with no reply.
+              if (event.text) {
+                messages.append(instanceId, event.sessionAlias, "out", event.text);
+              } else {
+                logger.error("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
+                  instanceId, sessionAlias: event.sessionAlias,
+                });
+              }
+              return;
+            }
             const steps = [...a.steps.values()];
             // Treat whitespace-only reasoning as absent: it would otherwise persist as an
             // empty `structured.reasoning` and render as a blank reasoning panel in history.
@@ -283,6 +299,79 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               for (const row of event.messages) {
                 messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured ? capSeededStructured(row.structured) : row.structured);
               }
+            }
+          }
+        } else if (envelope.type === MSG.instanceStateSync) {
+          if (!validInstanceStateSync(envelope.payload)) {
+            // Malformed sync from a buggy/hostile connector: drop it and leave this
+            // instance's in-memory state untouched (same posture as relay.event.invalid).
+            logger.debug("relay.event.invalid", "dropped malformed instance state sync", { instanceId });
+            return;
+          }
+          const sync = envelope.payload as InstanceStateSyncPayload;
+          // Replace, don't merge: the connector's mirror is authoritative for this
+          // instance, and a re-sent sync must reconcile without duplicating entries.
+          const prefix = `${instanceId}\0`;
+          for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
+          for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
+          for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
+          // Recency guard against duplicate persists. A sync is re-sent whenever the
+          // previous send wasn't confirmed (or the connector simply reconnects again),
+          // so blind appends would duplicate transcript rows. The last few rows are
+          // enough precision: a recovered prompt/answer is always among the newest
+          // entries in its session when the sync lands.
+          const hasRecentRow = (sessionAlias: string, direction: "in" | "out", text: string): boolean =>
+            messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 })
+              .messages.some((m) => m.direction === direction && m.text === text);
+          for (const turn of sync.turns) {
+            const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
+            const reasoning = turn.reasoning.slice(0, REASONING_CAP);
+            const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
+            // The mirror ships flat text/reasoning/steps; rebuild the ordered `parts`
+            // so snapshot and flush treat this identically to a live accumulator —
+            // subsequent turn-output/tool-event appends and turn-finished flush keep
+            // working unchanged (text last, as it postdates activity in live order).
+            const parts: TurnPartDto[] = steps.map((step) => ({ type: "tool", step }));
+            if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
+            if (text) parts.push({ type: "text", text });
+            // Backfill the prompt for a turn that STARTED while the hub was down:
+            // the live path persists it at turn-started, which this hub never saw.
+            // A prompt persisted before the restart is found by the recency check.
+            if (turn.prompt && !hasRecentRow(turn.sessionAlias, "in", turn.prompt)) {
+              messages.append(instanceId, turn.sessionAlias, "in", turn.prompt, turn.scheduled ? { scheduled: turn.scheduled } : undefined);
+            }
+            turnBuffers.set(key(instanceId, turn.sessionAlias), {
+              text,
+              steps: new Map(steps.map((s) => [s.toolCallId, s])),
+              reasoning,
+              parts,
+              // Restored original start so the elapsed-time HUD survives the restart.
+              startedAt: turn.startedAt,
+            });
+          }
+          for (const meter of sync.usage) {
+            sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
+          }
+          for (const entry of sync.commands) {
+            sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
+          }
+          // Turns that finished while the hub was unreachable: persist an out row
+          // mirroring the turn-finished flush (reply text; error text for failed
+          // turns), deduped by the recency guard so a re-sent sync can't duplicate
+          // them. A carried prompt is backfilled FIRST so the recovered answer never
+          // shows as an orphan in history. Skip an alias ALSO listed in `turns` — a
+          // contradictory payload means that turn is live again and will flush
+          // normally. No web broadcast: browsers re-reconcile from state-snapshot
+          // on their own reconnect.
+          const syncedTurnAliases = new Set(sync.turns.map((t) => t.sessionAlias));
+          for (const finished of sync.finishedOffline) {
+            if (syncedTurnAliases.has(finished.sessionAlias)) continue;
+            const text = finished.text ?? (!finished.ok ? finished.errorMessage : undefined);
+            if (finished.prompt && !hasRecentRow(finished.sessionAlias, "in", finished.prompt)) {
+              messages.append(instanceId, finished.sessionAlias, "in", finished.prompt);
+            }
+            if (text && !hasRecentRow(finished.sessionAlias, "out", text)) {
+              messages.append(instanceId, finished.sessionAlias, "out", text);
             }
           }
         } else if (envelope.type === MSG.instanceNotice) {

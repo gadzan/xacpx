@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { MSG } from "../../../../packages/relay-protocol/src/index";
 import { RelayChannel } from "../../../../packages/channel-relay/src/channel";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
@@ -67,6 +68,98 @@ test("start requires ChannelStartInput.control and wires client + event subscrip
   const noControl = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, { credentialStore: new MemoryCredentialStore() });
   const bad = makeStartInput({ control: undefined });
   await expect(noControl.start(bad.input as never)).rejects.toThrow(/control/);
+});
+
+test("onReady pushes an instance state sync with the mirrored running turn", async () => {
+  const events: Array<{ type: string; payload: unknown }> = [];
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: (type: string, payload: unknown) => events.push({ type, payload }),
+    isReady: () => true,
+  };
+  let capturedOptions: { onReady?: () => void } = {};
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: (options) => { capturedOptions = options; return fakeClient as never; },
+  });
+  const controller = new AbortController();
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).listSessions = () => [
+    { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+  ];
+  const startPromise = channel.start(input as never);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // Simulate a daemon turn the daemon emitted before the hub link (re)authed.
+  (subscribed[0] as (event: unknown) => void)({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
+  events.length = 0; // the forwarded instanceEvent itself is not what we assert here
+  capturedOptions.onReady!();
+
+  const syncs = events.filter((e) => e.type === MSG.instanceStateSync);
+  expect(syncs).toHaveLength(1);
+  const payload = syncs[0]!.payload as { turns: Array<{ sessionAlias: string; prompt?: string }>; finishedOffline: unknown[] };
+  expect(payload.turns).toHaveLength(1);
+  expect(payload.turns[0]).toMatchObject({ sessionAlias: "backend", prompt: "hi" });
+  expect(payload.finishedOffline).toEqual([]);
+
+  // Sessions removed while offline are pruned from the sync.
+  (input.control as Record<string, unknown>).listSessions = () => [];
+  events.length = 0;
+  capturedOptions.onReady!();
+  const prunedSync = (events.find((e) => e.type === MSG.instanceStateSync)!).payload as { turns: unknown[] };
+  expect(prunedSync.turns).toEqual([]);
+
+  controller.abort();
+  await startPromise;
+});
+
+test("state sync clears finishedOffline only on a confirmed send", async () => {
+  let ready = false;
+  let onFlush: ((error?: Error) => void) | undefined;
+  const events: Array<{ type: string; payload: unknown }> = [];
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: (type: string, payload: unknown, cb?: (error?: Error) => void) => { events.push({ type, payload }); onFlush = cb; },
+    isReady: () => ready,
+  };
+  let capturedOptions: { onReady?: () => void } = {};
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: (options) => { capturedOptions = options; return fakeClient as never; },
+  });
+  const controller = new AbortController();
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).listSessions = () => [
+    { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+  ];
+  const startPromise = channel.start(input as never);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
+  const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { finishedOffline: unknown[] });
+
+  // A turn finishes while the hub link is down → lands in the mirror's FIFO.
+  fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
+  fireEvent({ type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "ans" });
+  fireEvent({ type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, text: "ans" });
+
+  ready = true;
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toHaveLength(1);
+
+  // Errored flush (half-open socket): entries are retained and ride the next sync.
+  onFlush!(new Error("half-open socket"));
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toHaveLength(1);
+
+  // Confirmed flush: the hub owns those rows now — the FIFO clears.
+  onFlush!();
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toEqual([]);
+
+  controller.abort();
+  await startPromise;
 });
 
 test("sendScheduledMessage runs the fired task as a control turn (not a side notice)", async () => {

@@ -48,6 +48,7 @@ var MSG = {
   instanceRegister: "instance.register",
   instanceAuth: "instance.auth",
   instanceEvent: "instance.event",
+  instanceStateSync: "instance.state.sync",
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
@@ -262,7 +263,7 @@ function validControlEvent(e) {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
@@ -296,6 +297,38 @@ function validControlEvent(e) {
   }
 }
 var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+function validInstanceStateSync(p) {
+  if (typeof p !== "object" || p === null)
+    return false;
+  const c = p;
+  if (!Array.isArray(c.turns) || !c.turns.every((t) => {
+    if (typeof t !== "object" || t === null)
+      return false;
+    const turn = t;
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && (turn.scheduled === undefined || typeof turn.scheduled === "object" && turn.scheduled !== null && isStr(turn.scheduled.taskId) && isStr(turn.scheduled.executeAt)) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+  }))
+    return false;
+  if (!Array.isArray(c.usage) || !c.usage.every((u) => {
+    if (typeof u !== "object" || u === null)
+      return false;
+    const usage = u;
+    return typeof usage.sessionAlias === "string" && finiteNonNegative(usage.used) && finiteNonNegative(usage.size) && validUsageCost(usage.cost) && validUsageBreakdown(usage.breakdown);
+  }))
+    return false;
+  if (!Array.isArray(c.commands) || !c.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const commands = entry;
+    return typeof commands.sessionAlias === "string" && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
+  }))
+    return false;
+  return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
+    if (typeof f !== "object" || f === null)
+      return false;
+    const finished = f;
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean");
+  });
+}
 function validNotice(n) {
   if (typeof n !== "object" || n === null)
     return false;
@@ -591,6 +624,7 @@ function parseControlPayload(type, payload) {
 export {
   webEventEnvelope,
   webClientEnvelope,
+  validInstanceStateSync,
   validControlEvent,
   parseWebServerEvent,
   parseWebClientMessage,

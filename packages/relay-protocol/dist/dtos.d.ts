@@ -244,6 +244,7 @@ export type ControlEventDto = {
     ok: boolean;
     errorMessage?: string;
     cancelled?: boolean;
+    text?: string;
 } | {
     type: "sessions-changed";
 } | {

@@ -39,12 +39,14 @@ test("onActivity is invoked on each agent event", async () => {
   expect(calls).toBeGreaterThanOrEqual(6);
 });
 
-test("a clean turn with no abort emits turn-finished ok:true", async () => {
+test("a clean turn with no abort emits turn-finished ok:true carrying the reply text", async () => {
   const { runner, captured } = makeRunner(async () => ({ text: "final" }));
   const result = await runner.run(REQ as never, new AbortController().signal);
   expect(result.ok).toBe(true);
   const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
   expect(fin.ok).toBe(true);
+  // The final reply rides along so a relay hub that lost the streamed chunks can persist it.
+  expect(fin.text).toBe("final");
 });
 
 test("a TURN_IDLE_TIMEOUT_REASON abort surfaces as ok:false + timeout errorMessage, NOT cancelled", async () => {
@@ -58,6 +60,7 @@ test("a TURN_IDLE_TIMEOUT_REASON abort surfaces as ok:false + timeout errorMessa
   expect(fin.ok).toBe(false);
   expect(fin.errorMessage).toBe("Turn timed out due to inactivity");
   expect("cancelled" in fin).toBe(false); // distinct from a user Stop
+  expect("text" in fin).toBe(false); // failure paths never carry reply text
 });
 
 test("a plain user-Stop abort still surfaces as cancelled:true", async () => {
@@ -70,4 +73,5 @@ test("a plain user-Stop abort still surfaces as cancelled:true", async () => {
   const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
   expect(fin.ok).toBe(false);
   expect(fin.cancelled).toBe(true);
+  expect("text" in fin).toBe(false); // failure paths never carry reply text
 });

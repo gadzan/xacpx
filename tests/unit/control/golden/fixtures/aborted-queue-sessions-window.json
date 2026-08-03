@@ -119,7 +119,8 @@
       "type": "turn-finished",
       "chatKey": "c",
       "sessionAlias": "s",
-      "ok": true
+      "ok": true,
+      "text": "done"
     }
   },
   {
@@ -156,7 +157,8 @@
       "type": "turn-finished",
       "chatKey": "c",
       "sessionAlias": "s",
-      "ok": true
+      "ok": true,
+      "text": "done"
     }
   }
 ]

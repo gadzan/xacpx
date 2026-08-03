@@ -14,6 +14,7 @@ import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
 import { CredentialStore, defaultCredentialPath, type RelayCredential } from "./credential-store.js";
 import { createControlBridge, subscribeControlEvents, dispatchControlEvent } from "./control-bridge.js";
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
+import { createStateMirror } from "./state-mirror.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -26,7 +27,8 @@ interface CredentialStoreLike {
 interface RelayClientLike {
   start(abortSignal: AbortSignal): void;
   stop(): void;
-  sendEvent(type: string, payload: unknown): void;
+  sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void;
+  isReady(): boolean;
 }
 
 export interface RelayChannelDeps {
@@ -83,9 +85,37 @@ export class RelayChannel implements MessageChannelRuntime {
       onRequest: bridge,
       onEvent: (envelope) => dispatchControlEvent(control, envelope),
       logger: input.logger,
+      // Right after (re)auth — before any subsequent control events can arrive — push
+      // the local state mirror so a restarted hub recovers running turns, usage meters
+      // and command hints. First connect usually sends an empty sync; harmless, and it
+      // keeps one code path.
+      onReady: () => {
+        // Prune aliases of sessions removed while offline; a chatKey whose session
+        // list cannot be read keeps its aliases (don't prune what we can't verify).
+        const liveAliases = new Set<string>();
+        for (const chatKey of mirror.chatKeys()) {
+          try {
+            for (const session of control.listSessions(chatKey)) liveAliases.add(session.alias);
+          } catch {
+            for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
+          }
+        }
+        client.sendEvent(MSG.instanceStateSync, mirror.buildStateSync(liveAliases), (error) => {
+          // Clear only on a CONFIRMED send (ws flush callback). An errored or
+          // not-ready send keeps the FIFO; the next reconnect re-sends, and the
+          // hub's recency dedup covers the delivered-but-unconfirmed race.
+          if (!error) mirror.clearFinishedOffline();
+        });
+      },
     });
+    // Mirror sees the exact payloads being forwarded, so the sync snapshot equals
+    // what the hub consumed (normalized tool steps included).
+    const mirror = createStateMirror({ isReady: () => client.isReady(), logger: input.logger });
     this.client = client;
-    this.unsubscribe = subscribeControlEvents(control, (type, payload) => client.sendEvent(type, payload));
+    this.unsubscribe = subscribeControlEvents(control, (type, payload) => {
+      mirror.handleEnvelope(type, payload);
+      client.sendEvent(type, payload);
+    });
     client.start(input.abortSignal);
 
     // Channel convention: start() stays pending until shutdown (see run-console).
