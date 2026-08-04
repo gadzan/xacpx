@@ -4,7 +4,8 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_TEXT_CAP,
+  type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
@@ -22,8 +23,6 @@ import { startMaintenanceLoop } from "./maintenance.js";
 import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
 
 const MAX_MESSAGES_PER_SESSION = 2000;
-const MAX_TOOL_STEPS = 200;
-const REASONING_CAP = 16000;
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // Per-string bound on tool-step / seeded-history content entering the turn buffer. Full
 // file diffs or command output can reach megabytes; everything buffered is broadcast,
@@ -32,10 +31,10 @@ const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // (tool-presentation.ts) — this is defence in depth against non-conforming connectors.
 // Counted in UTF-16 code units (string.length), not bytes.
 const TOOL_DETAIL_CAP = 32 * 1024;
-// Bound on restored turn text from an `instance.state.sync` snapshot. Matches the
-// connector mirror's own cap (MIRROR_TEXT_CAP); defensive for hostile/buggy connectors
-// since the hub's live text accumulator is intentionally uncapped.
-const STATE_SYNC_TEXT_CAP = 256 * 1024;
+// Bound on the hub-side in-memory set of finishedOffline fingerprints persisted via
+// `instance.state.sync` (see the dedup logic in the sync handler). 32 turns is the
+// connector FIFO's max, so a few restarts' worth fits comfortably.
+const RECOVERY_FINGERPRINTS_MAX = 128;
 
 const capText = (s: string): string => (s.length > TOOL_DETAIL_CAP ? `${s.slice(0, TOOL_DETAIL_CAP)}…` : s);
 
@@ -108,6 +107,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+  // Content fingerprints (`instanceId, alias, prompt, outText`) of finishedOffline
+  // entries this runtime has already persisted from an `instance.state.sync`. A sync
+  // is re-sent whenever the previous send wasn't confirmed, and this set makes the
+  // redelivery exactly idempotent while a DIFFERENT turn that happens to produce the
+  // same reply is still persisted. Bounded FIFO (insertion order) — see
+  // RECOVERY_FINGERPRINTS_MAX.
+  const recoveredFingerprints = new Set<string>();
+  const rememberFingerprint = (fingerprint: string) => {
+    recoveredFingerprints.add(fingerprint);
+    if (recoveredFingerprints.size > RECOVERY_FINGERPRINTS_MAX) {
+      recoveredFingerprints.delete(recoveredFingerprints.values().next().value!);
+    }
+  };
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
   // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
   // client can restore the usage bar after a refresh (see GET /api/active-turns). Cleared
@@ -260,10 +272,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
               // The daemon carries the final reply text on turn-finished so the answer
               // can still land in history instead of leaving a prompt with no reply.
-              if (event.text) {
+              // Presence (not truthiness): an empty-string reply is still a reply.
+              if (event.text !== undefined) {
                 messages.append(instanceId, event.sessionAlias, "out", event.text);
               } else {
-                logger.error("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
+                logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
                   instanceId, sessionAlias: event.sessionAlias,
                 });
               }
@@ -315,14 +328,29 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
           for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
           for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
-          // Recency guard against duplicate persists. A sync is re-sent whenever the
+          // Recency guards against duplicate persists. A sync is re-sent whenever the
           // previous send wasn't confirmed (or the connector simply reconnects again),
           // so blind appends would duplicate transcript rows. The last few rows are
           // enough precision: a recovered prompt/answer is always among the newest
           // entries in its session when the sync lands.
+          const recentRows = (sessionAlias: string) =>
+            messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 }).messages;
           const hasRecentRow = (sessionAlias: string, direction: "in" | "out", text: string): boolean =>
-            messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 })
-              .messages.some((m) => m.direction === direction && m.text === text);
+            recentRows(sessionAlias).some((m) => m.direction === direction && m.text === text);
+          // Pair matching for the finishedOffline out row: a previous sync persists a
+          // recovered turn as an adjacent `in`(prompt) → `out`(reply) pair, so matching
+          // the PAIR means two different turns that happen to produce identical reply
+          // text ("ok", "/status" output, …) are NOT deduped into each other the way a
+          // bare text match would — only an actual redelivery matches.
+          const hasRecentTurnPair = (sessionAlias: string, prompt: string, outText: string): boolean => {
+            const rows = recentRows(sessionAlias);
+            for (let i = 0; i + 1 < rows.length; i++) {
+              const cur = rows[i]!;
+              const next = rows[i + 1]!;
+              if (cur.direction === "in" && cur.text === prompt && next.direction === "out" && next.text === outText) return true;
+            }
+            return false;
+          };
           for (const turn of sync.turns) {
             const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
             const reasoning = turn.reasoning.slice(0, REASONING_CAP);
@@ -357,8 +385,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           }
           // Turns that finished while the hub was unreachable: persist an out row
           // mirroring the turn-finished flush (reply text; error text for failed
-          // turns), deduped by the recency guard so a re-sent sync can't duplicate
-          // them. A carried prompt is backfilled FIRST so the recovered answer never
+          // turns), deduped so a re-sent sync can't duplicate them. Dedup order:
+          // 1. in-memory fingerprint — exact redelivery to this SAME hub process
+          //    (unconfirmed flush, extra reconnect) is dropped unconditionally,
+          //    while a genuinely different turn with identical content still lands;
+          // 2. SQLite recency fallback for a redelivery that crosses ANOTHER hub
+          //    restart (fingerprint set died with the process) — pair-matched so a
+          //    coincidence of reply text alone never suppresses a real turn.
+          // A carried prompt is backfilled FIRST so the recovered answer never
           // shows as an orphan in history. Skip an alias ALSO listed in `turns` — a
           // contradictory payload means that turn is live again and will flush
           // normally. No web broadcast: browsers re-reconcile from state-snapshot
@@ -367,12 +401,22 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           for (const finished of sync.finishedOffline) {
             if (syncedTurnAliases.has(finished.sessionAlias)) continue;
             const text = finished.text ?? (!finished.ok ? finished.errorMessage : undefined);
+            const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
+            if (recoveredFingerprints.has(fingerprint)) continue;
             if (finished.prompt && !hasRecentRow(finished.sessionAlias, "in", finished.prompt)) {
               messages.append(instanceId, finished.sessionAlias, "in", finished.prompt);
             }
-            if (text && !hasRecentRow(finished.sessionAlias, "out", text)) {
-              messages.append(instanceId, finished.sessionAlias, "out", text);
+            // Presence (not truthiness): an empty-string reply still gets its row.
+            if (text !== undefined) {
+              const alreadyPersisted = finished.prompt !== undefined
+                ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
+                // No prompt to pair with: bare recency match (see spec limitation note).
+                : hasRecentRow(finished.sessionAlias, "out", text);
+              if (!alreadyPersisted) {
+                messages.append(instanceId, finished.sessionAlias, "out", text);
+              }
             }
+            rememberFingerprint(fingerprint);
           }
         } else if (envelope.type === MSG.instanceNotice) {
           webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });

@@ -4,12 +4,16 @@
 // the connector can push one `instance.state.sync` snapshot and the hub can recover
 // running turns, meters and hints without any replay of business events.
 //
-// Everything here is bounded: per-turn text caps at MIRROR_TEXT_CAP (then marked
-// `truncated`), tool steps / reasoning cap at the hub's own limits, and the
-// finished-while-offline FIFO drops its oldest entries past FINISHED_OFFLINE_MAX —
-// a daemon left running against a long-dead hub must never leak memory.
+// Everything here is bounded: per-turn text caps at STATE_SYNC_TEXT_CAP (then marked
+// `truncated`), tool steps / reasoning cap at the hub's own limits (the caps are
+// shared constants from the relay protocol), and the finished-while-offline FIFO
+// drops its oldest entries past FINISHED_OFFLINE_MAX — a daemon left running against
+// a long-dead hub must never leak memory.
 import {
+  MAX_TOOL_STEPS,
   MSG,
+  REASONING_CAP,
+  STATE_SYNC_TEXT_CAP,
   type AgentCommandDto,
   type ControlEventDto,
   type InstanceEventPayload,
@@ -21,12 +25,6 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type { AppLogger } from "xacpx/plugin-api";
 
-/** Deliberately stricter than the hub's uncapped text accumulator: the mirror keeps
- *  these buffers for the connector's whole lifetime, so a runaway turn must be cut. */
-export const MIRROR_TEXT_CAP = 256 * 1024;
-// Same values as the hub (packages/relay/src/server.ts).
-const MAX_TOOL_STEPS = 200;
-const REASONING_CAP = 16000;
 // Max turns retained as "finished while the hub was unreachable".
 const FINISHED_OFFLINE_MAX = 32;
 
@@ -64,9 +62,11 @@ export interface StateMirror {
   /** All session aliases mirrored for one chatKey (fallback keep-set when the live
    *  session list cannot be read — never prune what we cannot verify). */
   aliasesForChatKey(chatKey: string): string[];
-  /** Snapshot for `instance.state.sync`; aliases absent from `liveAliases` are pruned
-   *  (sessions removed while offline must not ship ghost state). */
-  buildStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
+  /** Snapshot for `instance.state.sync`. SIDE EFFECT: aliases absent from
+   *  `liveAliases` are pruned from the mirror permanently (sessions removed while
+   *  offline must not ship ghost state) — building the payload mutates the mirror,
+   *  which is why the method is named `take` rather than `build`. */
+  takeStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
   /** Called after the sync was handed to an open socket; the hub owns those rows now. */
   clearFinishedOffline(): void;
 }
@@ -74,7 +74,7 @@ export interface StateMirror {
 export interface StateMirrorDeps {
   /** Whether the hub link is currently ready (post-auth, socket open). */
   isReady: () => boolean;
-  logger?: Pick<AppLogger, "info">;
+  logger?: Pick<AppLogger, "warn">;
   /** Test seam for turn start timestamps. */
   now?: () => number;
 }
@@ -105,8 +105,8 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         const a = turns.get(event.sessionAlias);
         if (!a || a.truncated) return;
         a.text += event.chunk;
-        if (a.text.length > MIRROR_TEXT_CAP) {
-          a.text = a.text.slice(0, MIRROR_TEXT_CAP);
+        if (a.text.length > STATE_SYNC_TEXT_CAP) {
+          a.text = a.text.slice(0, STATE_SYNC_TEXT_CAP);
           a.truncated = true;
         }
         return;
@@ -148,7 +148,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         });
         if (finishedOffline.length > FINISHED_OFFLINE_MAX) {
           finishedOffline.shift();
-          void deps.logger?.info(
+          void deps.logger?.warn(
             "relay.state_mirror.finished_offline_evicted",
             "evicted oldest finished-offline turn; relay mirror FIFO is full",
             { limit: FINISHED_OFFLINE_MAX },
@@ -185,7 +185,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       for (const f of finishedOffline) if (f.chatKey === chatKey) out.add(f.sessionAlias);
       return [...out];
     },
-    buildStateSync(liveAliases) {
+    takeStateSync(liveAliases) {
       const payload: InstanceStateSyncPayload = {
         turns: [],
         usage: [],

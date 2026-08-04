@@ -14,6 +14,7 @@ function recordingLogger() {
   const logger: RelayLogger = {
     debug: (event) => records.push({ level: "debug", event }),
     info: (event) => records.push({ level: "info", event }),
+    warn: (event) => records.push({ level: "warn", event }),
     error: (event) => records.push({ level: "error", event }),
   };
   return { logger, records };
@@ -213,5 +214,51 @@ test("a restored turn keeps absorbing live events and flushes exactly one comple
   // Text-only turns persist without `structured` (same as the live flush path).
   expect(cached[0].structured).toBeUndefined();
   expect(runtime.stateSnapshot("i1").turns).toEqual([]); // buffer flushed
+  runtime.close();
+});
+
+
+test("two different turns with coincidentally identical reply text are both persisted", async () => {
+  const { runtime } = await seeded();
+  // First outage: turn "first" finished offline with reply "ok" and is recovered.
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "first", text: "ok" }],
+  });
+  // Second outage: a DIFFERENT turn ("second") also replied "ok". A bare text-match
+  // dedup would find the recovered out("ok") row and silently drop this turn — the
+  // exact history hole this recovery is meant to close. Pair matching keeps it.
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "second", text: "ok" }],
+  });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "first"], ["out", "ok"], ["in", "second"], ["out", "ok"]]);
+  runtime.close();
+});
+
+test("a re-sent sync for the SAME turn is still deduped despite identical content", async () => {
+  const { runtime } = await seeded();
+  const payload = {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "first", text: "ok" }],
+  };
+  sync(runtime, payload);
+  sync(runtime, payload); // unconfirmed flush → same snapshot delivered again
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "first"], ["out", "ok"]]);
+  runtime.close();
+});
+
+test("a finishedOffline turn with empty-string text still persists its (empty) reply row", async () => {
+  const { runtime } = await seeded();
+  // Presence semantics: text: "" is a carried reply. It must not be misread as
+  // "no content" and skipped the way an absent text is.
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "q", text: "" }],
+  });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "q"], ["out", ""]]);
   runtime.close();
 });

@@ -57,7 +57,8 @@
   经 `CommandRouter.createSessionWithTransport`）：解析 agent/workspace → 预留别名 → 在后端建/确认 acpx 命名会话
   → 校验 → 绑定逻辑会话 → best-effort 刷新 agent command。看板新建的会话因此**立即可 prompt**（旧实现只建逻辑会话，
   prompt 会以 `No named session` 失败）。
-- 阶段边界：离线不排队（实例离线时 RPC 返回 503）；事件断线期间丢弃；
+- 阶段边界：离线不排队（实例离线时 RPC 返回 503）；~~事件断线期间丢弃~~ 断线期间的回合事件由
+  连接器侧镜像暂存并随 `instance.state.sync` 恢复（见阶段七）；无镜像的旧 connector 断线期间事件仍丢弃。
   Web 看板（阶段三）消费本阶段的 HTTP API 与事件。
 
 ## 阶段三服务端接缝（Web 看板扇出）
@@ -194,10 +195,47 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 - `MessageStore.append(instanceId, alias, dir, text, structured?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto.structured` 中返回。
 
+## 阶段七：Hub 重启状态恢复（instance.state.sync + turn-finished.text）
+
+设计 spec：docs/superpowers/specs/2026-08-03-relay-hub-restart-state-recovery-spec.md。
+
+协议（packages/relay-protocol）：
+
+- `turn-finished` 事件变体增加可选 `text?: string`（daemon 侧把最终回复文本随车带过来）。
+- 新消息类型 `MSG.instanceStateSync = "instance.state.sync"`，载荷为 `InstanceStateSyncPayload`
+  `{ turns, usage, commands, finishedOffline }`（见 src/messages.ts）：连接器在每次（重）连
+  完成鉴权后立即推送一份内存镜像快照给 hub。纯增量协议：旧 hub 忽略未知消息类型，
+  旧 connector 不发送则回退到原行为。
+- 三个回合内容上限（`STATE_SYNC_TEXT_CAP = 256KiB` / `MAX_TOOL_STEPS = 200` /
+  `REASONING_CAP = 16000`）集中在 `relay-protocol/src/limits.ts`，hub 与 connector 镜像共同 import。
+
+连接器（packages/channel-relay/src/state-mirror.ts）：
+
+- `createStateMirror` 订阅与转发完全相同的 ControlEvent 流，镜像每个 (sessionAlias) 的在途回合
+  累积器、最后已知的 usage/commands，以及断线期间完成的回合 FIFO（`finishedOffline`，上限 32，
+  逐出最旧并 log warning）。
+- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：取 `mirror.takeStateSync(liveAliases)`
+  （"take" 有副作用——会**永久裁剪** liveAliases 之外的别名）发送 `instance.state.sync`；
+  只在 ws flush 回调确认后才 `clearFinishedOffline()`，未确认则下次重连重发（hub 端去重兜底）。
+
+服务端（packages/relay/src/server.ts）：
+
+- `turn-finished` 兜底：无缓冲时，只要 `event.text` **存在**（空字符串也算有内容）就落一条
+  `out` 行，否则不落行但 log `warn`（`relay.event.turn_finished_without_content`）。
+- `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
+  对 `turnBuffers` / `sessionUsage` / `sessionCommands` 按实例 **replace**（回合保留原始
+  `startedAt`，后续 `turn-output`/`turn-finished` 照常 append/flush）；`finishedOffline` 逐项落库
+  （携带的 `prompt` 先行回填 `in` 行），两层幂等去重：进程内指纹集（同一 hub 进程的重发精确去重）
+  + SQLite 最近 5 行 prompt+reply **成对匹配**（跨再一次重启的重发兜底；文本恰好相同的两个
+  不同回合不会被误杀）。
+- SQLite schema 不变（不加列）；web 端无需改动，经既有 `state-snapshot` 自愈。
+
 ## 测试
 
 - 单测按文件跑（tests/unit/packages/relay、tests/unit/packages/channel-relay）；
   run-tests.mjs 会预构建 relay-protocol dist。
+- 模拟 hub 重启：`tests/unit/packages/relay/runtime-restart.test.ts` 用两个 in-process runtime
+  共享同一磁盘 SQLite 文件，验证跨重启的 history 行 + state 快照恢复与去重。
 - 全链路：`tests/unit/packages/relay/web-dashboard-e2e.test.ts` 用真实 relay-server
   （`startRelayServer`）+ 真实连接器（RelayClient/createControlBridge/subscribeControlEvents）
   验证 实例事件 → relay → web 客户端 + 历史缓存的端到端路径。

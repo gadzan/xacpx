@@ -43,6 +43,10 @@ function isEnvelopeShape(value) {
     return false;
   return true;
 }
+// packages/relay-protocol/src/limits.ts
+var STATE_SYNC_TEXT_CAP = 256 * 1024;
+var MAX_TOOL_STEPS = 200;
+var REASONING_CAP = 16000;
 // packages/relay-protocol/src/messages.ts
 var MSG = {
   instanceRegister: "instance.register",
@@ -640,8 +644,11 @@ export {
   decodeEnvelope,
   WEB_EVENT_TYPE,
   WEB_CLIENT_TYPE,
+  STATE_SYNC_TEXT_CAP,
   RELAY_PROTOCOL_VERSION,
+  REASONING_CAP,
   MSG,
   MAX_WEB_INSTANCE_ID_LENGTH,
+  MAX_TOOL_STEPS,
   CONTROL_PAYLOAD_VALIDATORS
 };

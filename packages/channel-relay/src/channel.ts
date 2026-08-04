@@ -100,10 +100,11 @@ export class RelayChannel implements MessageChannelRuntime {
             for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
           }
         }
-        client.sendEvent(MSG.instanceStateSync, mirror.buildStateSync(liveAliases), (error) => {
+        client.sendEvent(MSG.instanceStateSync, mirror.takeStateSync(liveAliases), (error) => {
           // Clear only on a CONFIRMED send (ws flush callback). An errored or
           // not-ready send keeps the FIFO; the next reconnect re-sends, and the
-          // hub's recency dedup covers the delivered-but-unconfirmed race.
+          // hub's dedup (fingerprint + pair matching) covers the
+          // delivered-but-unconfirmed race.
           if (!error) mirror.clearFinishedOffline();
         });
       },

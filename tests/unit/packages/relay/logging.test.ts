@@ -38,7 +38,17 @@ test("defaults to info level", () => {
   expect(c.out).toHaveLength(1);
 });
 
+test("warn routes to stderr and passes the default info threshold", () => {
+  const c = collector();
+  const log = createRelayLogger({ writeOut: c.writeOut, writeErr: c.writeErr, now: at });
+  log.warn("relay.event.turn_finished_without_content", "no content", { instanceId: "i1" });
+  expect(c.out).toHaveLength(0);
+  expect(c.err).toHaveLength(1);
+  expect(c.err[0]).toBe('2026-07-06T00:00:00.000Z WARN relay.event.turn_finished_without_content message="no content" instanceId="i1"\n');
+});
+
 test("noop logger writes nothing", () => {
   const log = createNoopRelayLogger();
   expect(() => log.info("relay.x", "y", { a: 1 })).not.toThrow();
+  expect(() => log.warn("relay.x", "y")).not.toThrow();
 });
