@@ -1,5 +1,6 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import { MAX_TOOL_STEPS, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP } from "./limits.js";
 import type { InstanceNoticePayload } from "./messages.js";
 import { isStr, optStr, optNum } from "./validate-primitives.js";
 
@@ -203,6 +204,22 @@ function validTurnPart(p: unknown): boolean {
   return false;
 }
 
+function validStateSyncParts(parts: unknown[]): boolean {
+  if (parts.length > STATE_SYNC_PARTS_CAP || !parts.every(validTurnPart)) return false;
+  let textLength = 0;
+  let reasoningLength = 0;
+  const toolIds = new Set<string>();
+  for (const raw of parts) {
+    const part = raw as TurnPartDto;
+    if (part.type === "text") textLength += part.text.length;
+    else if (part.type === "reasoning") reasoningLength += part.text.length;
+    else toolIds.add(part.step.toolCallId);
+  }
+  return textLength <= STATE_SYNC_TEXT_CAP
+    && reasoningLength <= REASONING_CAP
+    && toolIds.size <= MAX_TOOL_STEPS;
+}
+
 function validStateSnapshot(candidate: Record<string, unknown>): boolean {
   const instanceId = candidate.instanceId;
   if (typeof instanceId !== "string") return false;
@@ -249,7 +266,7 @@ export function validControlEvent(e: unknown): boolean {
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
-        && optStr(c.text);
+        && optStr(c.text) && optStr(c.recoveryId);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
@@ -315,6 +332,7 @@ export function validInstanceStateSync(p: unknown): boolean {
       && typeof turn.text === "string"
       && typeof turn.reasoning === "string"
       && Array.isArray(turn.steps) && turn.steps.every(validToolStep)
+      && (turn.parts === undefined || (Array.isArray(turn.parts) && validStateSyncParts(turn.parts)))
       && (turn.truncated === undefined || typeof turn.truncated === "boolean");
   })) return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
@@ -335,7 +353,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     const finished = f as Record<string, unknown>;
     return typeof finished.sessionAlias === "string"
       && typeof finished.ok === "boolean"
-      && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
+      && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.recoveryId)
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean");
   });
 }

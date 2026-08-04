@@ -4,5 +4,7 @@
 // it rebuilds turn buffers from an `instance.state.sync` snapshot — one source
 // of truth so the two sides can never drift apart.
 export const STATE_SYNC_TEXT_CAP = 256 * 1024;
+/** Ordered activity entries retained for one recovered running turn. */
+export const STATE_SYNC_PARTS_CAP = 1_000;
 export const MAX_TOOL_STEPS = 200;
 export const REASONING_CAP = 16000;

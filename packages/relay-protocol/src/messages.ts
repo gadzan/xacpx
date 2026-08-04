@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 
 // Instance <-> relay message types. Convention: chatKey for relay-driven chats
 // is `relay:<accountId>`; the relay server stamps chatKey/senderId/isOwner on
@@ -123,6 +123,8 @@ export interface InstanceStateSyncPayload {
     text: string;
     reasoning: string;
     steps: ToolStepDto[];
+    /** Ordered activity stream. Optional for connectors predating ordered recovery. */
+    parts?: TurnPartDto[];
     /** true = connector capped the mirror; content after that point is lost. */
     truncated?: boolean;
   }>;
@@ -131,7 +133,7 @@ export interface InstanceStateSyncPayload {
   /** Turns that finished while the hub was unreachable; hub must persist them.
    *  `prompt` backfills the turn's `in` row when the turn STARTED during the outage
    *  too, so the recovered answer never appears as an orphan in history. */
-  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string }>;
+  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string; recoveryId?: string }>;
 }
 export interface InstanceNoticePayload {
   kind: "task-completion" | "task-progress" | "coordinator-message";

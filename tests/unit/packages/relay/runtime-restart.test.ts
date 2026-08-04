@@ -52,7 +52,7 @@ test("simulated hub restart: turn/rows recover via state sync, flush once, dedup
       turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "hel", reasoning: "", steps: [], prompt: "hi" }],
       usage: [],
       commands: [],
-      finishedOffline: [{ sessionAlias: "done", ok: true, text: "finished reply", prompt: "q" }],
+      finishedOffline: [{ sessionAlias: "done", ok: true, text: "finished reply", prompt: "q", recoveryId: "done-1" }],
     };
     sync(b, snapshot);
 

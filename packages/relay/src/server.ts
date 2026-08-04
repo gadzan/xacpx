@@ -4,7 +4,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_TEXT_CAP,
+  MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
   type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
@@ -70,6 +70,28 @@ export function capSeededStructured<T>(structured: T): T {
   return hasOversizedString(structured) ? capDeep(structured) : structured;
 }
 
+function capSyncedParts(parts: TurnPartDto[]): TurnPartDto[] {
+  let textRemaining = STATE_SYNC_TEXT_CAP;
+  let reasoningRemaining = REASONING_CAP;
+  let toolCount = 0;
+  const out: TurnPartDto[] = [];
+  for (const part of parts.slice(0, STATE_SYNC_PARTS_CAP)) {
+    if (part.type === "text") {
+      const text = part.text.slice(0, textRemaining);
+      textRemaining -= text.length;
+      if (text) out.push({ type: "text", text });
+    } else if (part.type === "reasoning") {
+      const text = part.text.slice(0, reasoningRemaining);
+      reasoningRemaining -= text.length;
+      if (text.trim()) out.push({ type: "reasoning", text });
+    } else if (toolCount < MAX_TOOL_STEPS) {
+      out.push({ type: "tool", step: capToolStep(part.step) });
+      toolCount += 1;
+    }
+  }
+  return out;
+}
+
 export interface RelayRuntime {
   db: SqlDriver;
   accounts: AccountStore;
@@ -119,6 +141,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     if (recoveredFingerprints.size > RECOVERY_FINGERPRINTS_MAX) {
       recoveredFingerprints.delete(recoveredFingerprints.values().next().value!);
     }
+  };
+  const hasRecoveryReceipt = (instanceId: string, recoveryId: string): boolean =>
+    db.get("SELECT 1 AS found FROM recovery_receipts WHERE instance_id = ? AND recovery_id = ?", [instanceId, recoveryId]) !== undefined;
+  const rememberRecoveryReceipt = (instanceId: string, recoveryId: string): void => {
+    db.run("INSERT OR IGNORE INTO recovery_receipts (instance_id, recovery_id, created_at) VALUES (?,?,?)", [instanceId, recoveryId, new Date().toISOString()]);
   };
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
   // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
@@ -280,6 +307,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   instanceId, sessionAlias: event.sessionAlias,
                 });
               }
+              if (event.recoveryId) rememberRecoveryReceipt(instanceId, event.recoveryId);
               return;
             }
             const steps = [...a.steps.values()];
@@ -293,6 +321,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 : undefined;
               messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
             }
+            if (event.recoveryId) rememberRecoveryReceipt(instanceId, event.recoveryId);
           } else if (event.type === "turn-usage") {
             // Retain the latest usage per session (replace) so a refreshed web client can
             // restore the context-usage bar from the active-turns snapshot. Already
@@ -337,6 +366,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 }).messages;
           const hasRecentRow = (sessionAlias: string, direction: "in" | "out", text: string): boolean =>
             recentRows(sessionAlias).some((m) => m.direction === direction && m.text === text);
+          const hasTrailingPrompt = (sessionAlias: string, prompt: string): boolean => {
+            const rows = recentRows(sessionAlias);
+            const last = rows[rows.length - 1];
+            return last?.direction === "in" && last.text === prompt;
+          };
           // Pair matching for the finishedOffline out row: a previous sync persists a
           // recovered turn as an adjacent `in`(prompt) → `out`(reply) pair, so matching
           // the PAIR means two different turns that happen to produce identical reply
@@ -359,13 +393,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             // so snapshot and flush treat this identically to a live accumulator —
             // subsequent turn-output/tool-event appends and turn-finished flush keep
             // working unchanged (text last, as it postdates activity in live order).
-            const parts: TurnPartDto[] = steps.map((step) => ({ type: "tool", step }));
-            if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
-            if (text) parts.push({ type: "text", text });
+            const parts: TurnPartDto[] = turn.parts
+              ? capSyncedParts(turn.parts)
+              : steps.map((step) => ({ type: "tool", step }));
+            if (!turn.parts) {
+              if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
+              if (text) parts.push({ type: "text", text });
+            }
             // Backfill the prompt for a turn that STARTED while the hub was down:
             // the live path persists it at turn-started, which this hub never saw.
             // A prompt persisted before the restart is found by the recency check.
-            if (turn.prompt && !hasRecentRow(turn.sessionAlias, "in", turn.prompt)) {
+            if (turn.prompt && !hasTrailingPrompt(turn.sessionAlias, turn.prompt)) {
               messages.append(instanceId, turn.sessionAlias, "in", turn.prompt, turn.scheduled ? { scheduled: turn.scheduled } : undefined);
             }
             turnBuffers.set(key(instanceId, turn.sessionAlias), {
@@ -401,23 +439,30 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           for (const finished of sync.finishedOffline) {
             if (syncedTurnAliases.has(finished.sessionAlias)) continue;
             const text = finished.text ?? (!finished.ok ? finished.errorMessage : undefined);
+            if (finished.recoveryId && hasRecoveryReceipt(instanceId, finished.recoveryId)) continue;
             const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
-            if (recoveredFingerprints.has(fingerprint)) continue;
-            if (finished.prompt && !hasRecentRow(finished.sessionAlias, "in", finished.prompt)) {
+            if (!finished.recoveryId && recoveredFingerprints.has(fingerprint)) continue;
+            const alreadyPersisted = !finished.recoveryId && text !== undefined
+              ? finished.prompt !== undefined
+                ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
+                : hasRecentRow(finished.sessionAlias, "out", text)
+              : false;
+            if (!alreadyPersisted && finished.prompt && !hasTrailingPrompt(finished.sessionAlias, finished.prompt)) {
               messages.append(instanceId, finished.sessionAlias, "in", finished.prompt);
             }
             // Presence (not truthiness): an empty-string reply still gets its row.
             if (text !== undefined) {
-              const alreadyPersisted = finished.prompt !== undefined
-                ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
-                // No prompt to pair with: bare recency match (see spec limitation note).
-                : hasRecentRow(finished.sessionAlias, "out", text);
               if (!alreadyPersisted) {
                 messages.append(instanceId, finished.sessionAlias, "out", text);
               }
             }
-            rememberFingerprint(fingerprint);
+            if (finished.recoveryId) {
+              rememberRecoveryReceipt(instanceId, finished.recoveryId);
+            } else {
+              rememberFingerprint(fingerprint);
+            }
           }
+          webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
         } else if (envelope.type === MSG.instanceNotice) {
           webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });
         }

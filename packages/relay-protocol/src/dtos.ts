@@ -221,7 +221,7 @@ export type ControlEventDto =
   | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommandDto[] }
   // `text` carries the final reply text for hub-side fallback persistence: a hub that
   // restarted mid-turn has no buffer for this finish, so it persists `text` directly.
-  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string }
+  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; recoveryId?: string }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
   // re-fetches the workspace list. No payload.

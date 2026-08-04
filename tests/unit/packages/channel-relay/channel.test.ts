@@ -143,6 +143,9 @@ test("state sync clears finishedOffline only on a confirmed send", async () => {
   fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
   fireEvent({ type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "ans" });
   fireEvent({ type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, text: "ans" });
+  expect((events.findLast((entry) => entry.type === MSG.instanceEvent)!.payload as { event: { recoveryId?: string } }).event.recoveryId).toBeString();
+  const finishFlush = onFlush!;
+  finishFlush(new Error("half-open socket"));
 
   ready = true;
   capturedOptions.onReady!();

@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -106,6 +106,8 @@ export interface InstanceStateSyncPayload {
         text: string;
         reasoning: string;
         steps: ToolStepDto[];
+        /** Ordered activity stream. Optional for connectors predating ordered recovery. */
+        parts?: TurnPartDto[];
         /** true = connector capped the mirror; content after that point is lost. */
         truncated?: boolean;
     }>;
@@ -130,6 +132,7 @@ export interface InstanceStateSyncPayload {
         cancelled?: boolean;
         text?: string;
         prompt?: string;
+        recoveryId?: string;
     }>;
 }
 export interface InstanceNoticePayload {

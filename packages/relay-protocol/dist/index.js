@@ -45,6 +45,7 @@ function isEnvelopeShape(value) {
 }
 // packages/relay-protocol/src/limits.ts
 var STATE_SYNC_TEXT_CAP = 256 * 1024;
+var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
 var REASONING_CAP = 16000;
 // packages/relay-protocol/src/messages.ts
@@ -231,6 +232,23 @@ function validTurnPart(p) {
     return validToolStep(c.step);
   return false;
 }
+function validStateSyncParts(parts) {
+  if (parts.length > STATE_SYNC_PARTS_CAP || !parts.every(validTurnPart))
+    return false;
+  let textLength = 0;
+  let reasoningLength = 0;
+  const toolIds = new Set;
+  for (const raw of parts) {
+    const part = raw;
+    if (part.type === "text")
+      textLength += part.text.length;
+    else if (part.type === "reasoning")
+      reasoningLength += part.text.length;
+    else
+      toolIds.add(part.step.toolCallId);
+  }
+  return textLength <= STATE_SYNC_TEXT_CAP && reasoningLength <= REASONING_CAP && toolIds.size <= MAX_TOOL_STEPS;
+}
 function validStateSnapshot(candidate) {
   const instanceId = candidate.instanceId;
   if (typeof instanceId !== "string")
@@ -267,7 +285,7 @@ function validControlEvent(e) {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
@@ -309,7 +327,7 @@ function validInstanceStateSync(p) {
     if (typeof t !== "object" || t === null)
       return false;
     const turn = t;
-    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && (turn.scheduled === undefined || typeof turn.scheduled === "object" && turn.scheduled !== null && isStr(turn.scheduled.taskId) && isStr(turn.scheduled.executeAt)) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && (turn.scheduled === undefined || typeof turn.scheduled === "object" && turn.scheduled !== null && isStr(turn.scheduled.taskId) && isStr(turn.scheduled.executeAt)) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
   }))
     return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
@@ -330,7 +348,7 @@ function validInstanceStateSync(p) {
     if (typeof f !== "object" || f === null)
       return false;
     const finished = f;
-    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean");
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.recoveryId) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean");
   });
 }
 function validNotice(n) {
@@ -645,6 +663,7 @@ export {
   WEB_EVENT_TYPE,
   WEB_CLIENT_TYPE,
   STATE_SYNC_TEXT_CAP,
+  STATE_SYNC_PARTS_CAP,
   RELAY_PROTOCOL_VERSION,
   REASONING_CAP,
   MSG,

@@ -1,9 +1,7 @@
 // Hub-side `instance.state.sync` reconciliation: replace in-memory state from the
 // connector mirror, persist finished-offline turns, defend against malformed payloads.
 import { expect, test } from "bun:test";
-import {
-  MSG, RELAY_PROTOCOL_VERSION,
-} from "../../../../packages/relay-protocol/src/index";
+import { decodeEnvelope, MSG, RELAY_PROTOCOL_VERSION } from "../../../../packages/relay-protocol/src/index";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 import type { RelayLogger } from "../../../../packages/relay/src/logging";
 
@@ -40,6 +38,11 @@ test("state sync restores turns/usage/commands into stateSnapshot with the origi
     turns: [{
       sessionAlias: "backend", startedAt: STARTED_AT, text: "partial reply", reasoning: "hmm",
       steps: [{ toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" }],
+      parts: [
+        { type: "text", text: "before" },
+        { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } },
+        { type: "text", text: "after" },
+      ],
     }],
     usage: [{ sessionAlias: "backend", used: 11, size: 200, cost: { amount: 0.5, currency: "USD" } }],
     commands: [{ sessionAlias: "backend", commands: [{ name: "compact", hasInput: false }] }],
@@ -50,13 +53,28 @@ test("state sync restores turns/usage/commands into stateSnapshot with the origi
   expect(snapshot.turns).toEqual([{
     instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: STARTED_AT,
     parts: [
+      { type: "text", text: "before" },
       { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } },
-      { type: "reasoning", text: "hmm" },
-      { type: "text", text: "partial reply" },
+      { type: "text", text: "after" },
     ],
   }]);
   expect(snapshot.usage).toEqual([{ instanceId: "i1", sessionAlias: "backend", used: 11, size: 200, cost: { amount: 0.5, currency: "USD" } }]);
   expect(snapshot.commands).toEqual([{ instanceId: "i1", sessionAlias: "backend", commands: [{ name: "compact", hasInput: false }] }]);
+  runtime.close();
+});
+
+test("state sync broadcasts a fresh snapshot to an already-subscribed browser", async () => {
+  const { runtime } = await seeded();
+  const sent: string[] = [];
+  const socket = { readyState: 1, send: (data: string) => sent.push(data), on: () => {} };
+  runtime.webGateway.register("a1", socket);
+  runtime.webGateway.setSubscription(socket, ["i1"]);
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "x", reasoning: "", steps: [], parts: [{ type: "text", text: "x" }] }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const decoded = decodeEnvelope(sent.at(-1)!);
+  expect(decoded.ok && decoded.envelope.payload).toMatchObject({ kind: "state-snapshot", instanceId: "i1", turns: [{ sessionAlias: "backend" }] });
   runtime.close();
 });
 
@@ -247,6 +265,39 @@ test("a re-sent sync for the SAME turn is still deduped despite identical conten
   sync(runtime, payload); // unconfirmed flush → same snapshot delivered again
   expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
     .toEqual([["in", "first"], ["out", "ok"]]);
+  runtime.close();
+});
+
+test("stable recovery ids preserve two genuinely identical offline turns", async () => {
+  const { runtime } = await seeded();
+  const entry = (recoveryId: string) => ({ sessionAlias: "backend", ok: true, prompt: "retry", text: "ok", recoveryId });
+  sync(runtime, { turns: [], usage: [], commands: [], finishedOffline: [entry("r1"), entry("r2")] });
+  sync(runtime, { turns: [], usage: [], commands: [], finishedOffline: [entry("r1")] });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "retry"], ["out", "ok"], ["in", "retry"], ["out", "ok"]]);
+  runtime.close();
+});
+
+test("a live finish received before an ambiguous send failure dedupes the later recovery sync", async () => {
+  const { runtime } = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "q" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "answer" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, recoveryId: "r1" });
+  sync(runtime, { turns: [], usage: [], commands: [], finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "q", text: "answer", recoveryId: "r1" }] });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "q"], ["out", "answer"]]);
+  runtime.close();
+});
+
+test("a repeated prompt with a different reply recovers as a new in-out pair", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, { turns: [], usage: [], commands: [], finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "retry", text: "A", recoveryId: "r1" }] });
+  sync(runtime, { turns: [], usage: [], commands: [], finishedOffline: [{ sessionAlias: "backend", ok: true, prompt: "retry", text: "B", recoveryId: "r2" }] });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "retry"], ["out", "A"], ["in", "retry"], ["out", "B"]]);
   runtime.close();
 });
 

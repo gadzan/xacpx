@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { MSG, STATE_SYNC_TEXT_CAP, validInstanceStateSync } from "../../../../packages/relay-protocol/src/index";
+import { MSG, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP, validInstanceStateSync } from "../../../../packages/relay-protocol/src/index";
 import type { ControlEventDto, ToolStepDto } from "../../../../packages/relay-protocol/src/index";
 import { createStateMirror, type StateMirror } from "../../../../packages/channel-relay/src/state-mirror";
 
@@ -17,8 +17,10 @@ function fire(mirror: StateMirror, event: ControlEventDto): void {
 
 function makeMirror(ready: () => boolean, now?: () => number) {
   const warns: Array<{ event: string }> = [];
+  let nextId = 1;
   const mirror = createStateMirror({
     isReady: ready,
+    recoveryId: () => `r${nextId++}`,
     logger: { warn: async (event: string) => { warns.push({ event }); } },
     ...(now ? { now } : {}),
   });
@@ -38,7 +40,11 @@ test("accumulates a turn across event kinds and builds a valid sync payload", ()
   const payload = mirror.takeStateSync(LIVE);
   expect(payload.turns).toEqual([{
     sessionAlias: "backend", startedAt: 1_700_000_000_000, text: "hello", reasoning: "thinking",
-    steps: [step("t1")], prompt: "hi",
+    steps: [step("t1")], parts: [
+      { type: "text", text: "hello" },
+      { type: "reasoning", text: "thinking" },
+      { type: "tool", step: step("t1") },
+    ], prompt: "hi",
   }]);
   expect(payload.usage).toEqual([{ sessionAlias: "backend", used: 10, size: 100 }]);
   expect(payload.commands).toEqual([{ sessionAlias: "backend", commands: [{ name: "compact" }] }]);
@@ -75,14 +81,29 @@ test("reasoning caps at 16000 chars", () => {
   expect(mirror.takeStateSync(LIVE).turns[0]!.reasoning.length).toBe(16000);
 });
 
-test("turn-finished while online drops the accumulator without finishedOffline", () => {
+test("ordered recovery parts remain bounded", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  for (let i = 0; i < STATE_SYNC_PARTS_CAP + 20; i++) {
+    fire(mirror, i % 2 === 0
+      ? { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "x" }
+      : { type: "turn-thought", chatKey: "relay:acc", sessionAlias: "backend", chunk: "r" });
+  }
+  const turn = mirror.takeStateSync(LIVE).turns[0]!;
+  expect(turn.parts).toHaveLength(STATE_SYNC_PARTS_CAP);
+  expect(validInstanceStateSync({ turns: [{ ...turn, parts: [...turn.parts!, { type: "text", text: "overflow" }] }], usage: [], commands: [], finishedOffline: [] })).toBe(false);
+});
+
+test("turn-finished stays recoverable until its send is confirmed", () => {
   const { mirror } = makeMirror(() => true);
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "done" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
   const payload = mirror.takeStateSync(LIVE);
   expect(payload.turns).toEqual([]);
-  expect(payload.finishedOffline).toEqual([]);
+  expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "done", recoveryId: "r1" }]);
+  mirror.confirmFinished(["r1"]);
+  expect(mirror.takeStateSync(LIVE).finishedOffline).toEqual([]);
 });
 
 test("turn-finished while offline queues the turn with its accumulated text", () => {
@@ -91,8 +112,8 @@ test("turn-finished while offline queues the turn with its accumulated text", ()
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "reply text" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
   const payload = mirror.takeStateSync(LIVE);
-  expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "reply text" }]);
-  mirror.clearFinishedOffline();
+  expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "reply text", recoveryId: "r1" }]);
+  mirror.confirmFinished(["r1"]);
   expect(mirror.takeStateSync(LIVE).finishedOffline).toEqual([]);
 });
 
@@ -109,7 +130,7 @@ test("turn-finished while offline without an accumulator still carries the event
   const { mirror } = makeMirror(() => false);
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: false, errorMessage: "kaboom" });
   expect(mirror.takeStateSync(LIVE).finishedOffline).toEqual([
-    { sessionAlias: "backend", ok: false, errorMessage: "kaboom" },
+    { sessionAlias: "backend", ok: false, errorMessage: "kaboom", recoveryId: "r1" },
   ]);
 });
 

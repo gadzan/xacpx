@@ -9,10 +9,13 @@
 // shared constants from the relay protocol), and the finished-while-offline FIFO
 // drops its oldest entries past FINISHED_OFFLINE_MAX — a daemon left running against
 // a long-dead hub must never leak memory.
+import { randomUUID } from "node:crypto";
+
 import {
   MAX_TOOL_STEPS,
   MSG,
   REASONING_CAP,
+  STATE_SYNC_PARTS_CAP,
   STATE_SYNC_TEXT_CAP,
   type AgentCommandDto,
   type ControlEventDto,
@@ -20,6 +23,7 @@ import {
   type InstanceStateSyncPayload,
   type ScheduledOriginDto,
   type ToolStepDto,
+  type TurnPartDto,
   type UsageBreakdownDto,
   type UsageCostDto,
 } from "@ganglion/xacpx-relay-protocol";
@@ -39,7 +43,9 @@ interface MirrorTurn {
   text: string;
   reasoning: string;
   steps: Map<string, ToolStepDto>;
+  parts: TurnPartDto[];
   truncated: boolean;
+  recoveryId: string;
 }
 
 interface FinishedOfflineTurn {
@@ -52,11 +58,12 @@ interface FinishedOfflineTurn {
   /** The turn's prompt, retained so the hub can backfill the `in` row for turns
    *  that started during the outage (its answer must not be an orphan in history). */
   prompt?: string;
+  recoveryId: string;
 }
 
 export interface StateMirror {
   /** Consume one envelope the forwarder is about to send; non-instanceEvent types are ignored. */
-  handleEnvelope(type: string, payload: unknown): void;
+  handleEnvelope(type: string, payload: unknown): string | undefined;
   /** Distinct chatKeys seen on mirrored events (used to resolve the live session list). */
   chatKeys(): string[];
   /** All session aliases mirrored for one chatKey (fallback keep-set when the live
@@ -67,26 +74,46 @@ export interface StateMirror {
    *  offline must not ship ghost state) — building the payload mutates the mirror,
    *  which is why the method is named `take` rather than `build`. */
   takeStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
-  /** Called after the sync was handed to an open socket; the hub owns those rows now. */
-  clearFinishedOffline(): void;
+  /** Retire only the completed turns whose frames were confirmed flushed. */
+  confirmFinished(recoveryIds: Iterable<string>): void;
 }
 
 export interface StateMirrorDeps {
-  /** Whether the hub link is currently ready (post-auth, socket open). */
-  isReady: () => boolean;
+  /** @deprecated Delivery is confirmed by send callbacks, never socket readiness. */
+  isReady?: () => boolean;
   logger?: Pick<AppLogger, "warn">;
   /** Test seam for turn start timestamps. */
   now?: () => number;
+  recoveryId?: () => string;
 }
 
 export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   const now = deps.now ?? (() => Date.now());
+  const recoveryId = deps.recoveryId ?? randomUUID;
   const turns = new Map<string, MirrorTurn>();
   const usage = new Map<string, { chatKey: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>();
   const commands = new Map<string, { chatKey: string; commands: AgentCommandDto[] }>();
   const finishedOffline: FinishedOfflineTurn[] = [];
 
-  const handle = (event: ControlEventDto): void => {
+  const pushTextPart = (turn: MirrorTurn, chunk: string): void => {
+    if (!chunk) return;
+    const last = turn.parts[turn.parts.length - 1];
+    if (last?.type === "text") last.text += chunk;
+    else if (turn.parts.length < STATE_SYNC_PARTS_CAP) turn.parts.push({ type: "text", text: chunk });
+  };
+  const pushReasoningPart = (turn: MirrorTurn, chunk: string): void => {
+    if (!chunk.trim()) return;
+    const last = turn.parts[turn.parts.length - 1];
+    if (last?.type === "reasoning") last.text += chunk;
+    else if (turn.parts.length < STATE_SYNC_PARTS_CAP) turn.parts.push({ type: "reasoning", text: chunk });
+  };
+  const pushToolPart = (turn: MirrorTurn, step: ToolStepDto): void => {
+    const index = turn.parts.findIndex((part) => part.type === "tool" && part.step.toolCallId === step.toolCallId);
+    if (index >= 0) (turn.parts[index] as Extract<TurnPartDto, { type: "tool" }>).step = step;
+    else if (turn.parts.length < STATE_SYNC_PARTS_CAP) turn.parts.push({ type: "tool", step });
+  };
+
+  const handle = (event: ControlEventDto): string | undefined => {
     switch (event.type) {
       case "turn-started":
         turns.set(event.sessionAlias, {
@@ -95,7 +122,9 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           text: "",
           reasoning: "",
           steps: new Map(),
+          parts: [],
           truncated: false,
+          recoveryId: recoveryId(),
           ...(event.prompt !== undefined ? { prompt: event.prompt } : {}),
           ...(event.scheduled ? { scheduled: event.scheduled } : {}),
           ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
@@ -104,9 +133,10 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       case "turn-output": {
         const a = turns.get(event.sessionAlias);
         if (!a || a.truncated) return;
-        a.text += event.chunk;
-        if (a.text.length > STATE_SYNC_TEXT_CAP) {
-          a.text = a.text.slice(0, STATE_SYNC_TEXT_CAP);
+        const accepted = event.chunk.slice(0, STATE_SYNC_TEXT_CAP - a.text.length);
+        a.text += accepted;
+        pushTextPart(a, accepted);
+        if (accepted.length < event.chunk.length) {
           a.truncated = true;
         }
         return;
@@ -115,12 +145,17 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         const a = turns.get(event.sessionAlias);
         if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
           a.steps.set(event.step.toolCallId, event.step);
+          pushToolPart(a, event.step);
         }
         return;
       }
       case "turn-thought": {
         const a = turns.get(event.sessionAlias);
-        if (a) a.reasoning = (a.reasoning + event.chunk).slice(0, REASONING_CAP);
+        if (a) {
+          const accepted = event.chunk.slice(0, REASONING_CAP - a.reasoning.length);
+          a.reasoning += accepted;
+          pushReasoningPart(a, accepted);
+        }
         return;
       }
       case "turn-usage":
@@ -136,7 +171,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       case "turn-finished": {
         const a = turns.get(event.sessionAlias);
         turns.delete(event.sessionAlias);
-        if (deps.isReady()) return; // hub got the live stream and will persist normally
+        const id = a?.recoveryId ?? recoveryId();
         finishedOffline.push({
           chatKey: a?.chatKey ?? event.chatKey,
           sessionAlias: event.sessionAlias,
@@ -145,6 +180,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.cancelled !== undefined ? { cancelled: event.cancelled } : {}),
           ...(a?.text !== undefined ? { text: a.text } : event.text !== undefined ? { text: event.text } : {}),
           ...(a?.prompt !== undefined ? { prompt: a.prompt } : {}),
+          recoveryId: id,
         });
         if (finishedOffline.length > FINISHED_OFFLINE_MAX) {
           finishedOffline.shift();
@@ -154,7 +190,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
             { limit: FINISHED_OFFLINE_MAX },
           );
         }
-        return;
+        return id;
       }
       default:
         return;
@@ -166,7 +202,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       if (type !== MSG.instanceEvent) return;
       const event = (payload as InstanceEventPayload | undefined)?.event;
       if (event && typeof event === "object" && typeof (event as { type?: unknown }).type === "string") {
-        handle(event);
+        return handle(event);
       }
     },
     chatKeys() {
@@ -200,6 +236,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           text: a.text,
           reasoning: a.reasoning,
           steps: [...a.steps.values()],
+          parts: a.parts,
           ...(a.prompt !== undefined ? { prompt: a.prompt } : {}),
           ...(a.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a.queueItemId ? { queueItemId: a.queueItemId } : {}),
@@ -227,12 +264,16 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.cancelled !== undefined ? { cancelled: f.cancelled } : {}),
           ...(f.text !== undefined ? { text: f.text } : {}),
           ...(f.prompt !== undefined ? { prompt: f.prompt } : {}),
+          recoveryId: f.recoveryId,
         });
       }
       return payload;
     },
-    clearFinishedOffline() {
-      finishedOffline.length = 0;
+    confirmFinished(recoveryIds) {
+      const confirmed = new Set(recoveryIds);
+      for (let i = finishedOffline.length - 1; i >= 0; i--) {
+        if (confirmed.has(finishedOffline[i]!.recoveryId)) finishedOffline.splice(i, 1);
+      }
     },
   };
 }

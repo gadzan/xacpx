@@ -28,7 +28,6 @@ interface RelayClientLike {
   start(abortSignal: AbortSignal): void;
   stop(): void;
   sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void;
-  isReady(): boolean;
 }
 
 export interface RelayChannelDeps {
@@ -100,22 +99,28 @@ export class RelayChannel implements MessageChannelRuntime {
             for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
           }
         }
-        client.sendEvent(MSG.instanceStateSync, mirror.takeStateSync(liveAliases), (error) => {
+        const snapshot = mirror.takeStateSync(liveAliases);
+        client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
           // Clear only on a CONFIRMED send (ws flush callback). An errored or
           // not-ready send keeps the FIFO; the next reconnect re-sends, and the
           // hub's dedup (fingerprint + pair matching) covers the
           // delivered-but-unconfirmed race.
-          if (!error) mirror.clearFinishedOffline();
+          if (!error) mirror.confirmFinished(snapshot.finishedOffline.flatMap((turn) => turn.recoveryId ? [turn.recoveryId] : []));
         });
       },
     });
     // Mirror sees the exact payloads being forwarded, so the sync snapshot equals
     // what the hub consumed (normalized tool steps included).
-    const mirror = createStateMirror({ isReady: () => client.isReady(), logger: input.logger });
+    const mirror = createStateMirror({ logger: input.logger });
     this.client = client;
     this.unsubscribe = subscribeControlEvents(control, (type, payload) => {
-      mirror.handleEnvelope(type, payload);
-      client.sendEvent(type, payload);
+      const finishedRecoveryId = mirror.handleEnvelope(type, payload);
+      const forwardedPayload = finishedRecoveryId && typeof payload === "object" && payload !== null
+        ? { ...payload as Record<string, unknown>, event: { ...(payload as { event: Record<string, unknown> }).event, recoveryId: finishedRecoveryId } }
+        : payload;
+      client.sendEvent(type, forwardedPayload, finishedRecoveryId
+        ? (error) => { if (!error) mirror.confirmFinished([finishedRecoveryId]); }
+        : undefined);
     });
     client.start(input.abortSignal);
 

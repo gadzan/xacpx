@@ -129,6 +129,12 @@ export function initSchema(db: SqlDriver): void {
       queue_fallback INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
+    CREATE TABLE IF NOT EXISTS recovery_receipts (
+      instance_id TEXT NOT NULL,
+      recovery_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (instance_id, recovery_id)
+    );
   `);
 
   // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).
