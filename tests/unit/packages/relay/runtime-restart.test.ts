@@ -3,8 +3,9 @@
 // in for the hub's real db): runtime A streams a turn and "dies" mid-turn;
 // runtime B recovers running turn + finished-offline rows from the connector's
 // `instance.state.sync`; runtime C proves the dedup survives ANOTHER restart
-// (the hub-side in-memory fingerprint set died with B — SQLite pair matching is
-// the last line of defense against a redelivered finishedOffline entry).
+// (the hub-side in-memory fingerprint set died with B — the SQLite recovery
+// receipt, written in the same transaction as the rows, is the last line of
+// defense against a redelivered finishedOffline entry).
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,10 +75,10 @@ test("simulated hub restart: turn/rows recover via state sync, flush once, dedup
     expect(rows(b, "done")).toHaveLength(2);
     b.close();
 
-    // ── Runtime C: the hub restarts AGAIN; the connector still hasn't seen a
-    // confirmed flush and re-sends the same finishedOffline entry. The in-memory
-    // fingerprint set died with B, so the SQLite prompt+reply PAIR match must
-    // dedup it — while later genuine turns stay fully intact. ──────────────────
+    // ── Runtime C: the hub restarts AGAIN; the connector still hasn't seen an
+    // ack and re-sends the same finishedOffline entry. The in-memory fingerprint
+    // set died with B, but the recovery receipt (same transaction as the rows)
+    // survives in SQLite and dedups it — while later genuine turns stay intact. ──
     const c = await createRelayRuntime(dbPath);
     sync(c, { turns: [], usage: [], commands: [], finishedOffline: snapshot.finishedOffline });
     expect(rows(c, "done")).toEqual([["in", "q"], ["out", "finished reply"]]);

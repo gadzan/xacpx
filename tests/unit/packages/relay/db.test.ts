@@ -13,6 +13,40 @@ test("driver run/get/all/exec roundtrip on :memory:", async () => {
   db.close();
 });
 
+test("transaction commits all writes atomically", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+  db.transaction(() => {
+    db.run("INSERT INTO t (id) VALUES (?)", ["a"]);
+    db.run("INSERT INTO t (id) VALUES (?)", ["b"]);
+  });
+  expect(db.all<{ id: string }>("SELECT id FROM t ORDER BY id")).toEqual([{ id: "a" }, { id: "b" }]);
+  db.close();
+});
+
+test("transaction rolls back every write when the body throws", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+  expect(() => db.transaction(() => {
+    db.run("INSERT INTO t (id) VALUES (?)", ["a"]);
+    throw new Error("boom");
+  })).toThrow("boom");
+  expect(db.all<{ id: string }>("SELECT id FROM t")).toEqual([]);
+  db.close();
+});
+
+test("nested transaction is rejected instead of corrupting the outer one", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+  expect(() => db.transaction(() => {
+    db.run("INSERT INTO t (id) VALUES (?)", ["a"]);
+    db.transaction(() => db.run("INSERT INTO t (id) VALUES (?)", ["b"]));
+  })).toThrow(/nested SQLite transaction/);
+  // The outer transaction aborted on the throw — nothing committed.
+  expect(db.all<{ id: string }>("SELECT id FROM t")).toEqual([]);
+  db.close();
+});
+
 test("fresh DB: accounts has exactly id/username/created_at (no password_hash/role)", async () => {
   const db = await createSqlDriver(":memory:");
   initSchema(db);

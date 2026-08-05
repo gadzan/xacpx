@@ -4,6 +4,13 @@ export declare const MSG: {
     readonly instanceAuth: "instance.auth";
     readonly instanceEvent: "instance.event";
     readonly instanceStateSync: "instance.state.sync";
+    /** Hub → connector: the persisted `recoveryId`s from a just-committed
+     *  `instance.state.sync` (or a live `turn-finished`). The connector retires its
+     *  finished-offline FIFO entries ONLY on this ack — a ws flush callback only
+     *  proves the frame left the process, not that the hub committed the rows, so
+     *  confirming on flush would drop entries when the hub dies before the SQLite
+     *  commit (a permanent history hole on the next reconnect). */
+    readonly instanceRecoveryAck: "instance.recovery.ack";
     readonly instanceNotice: "instance.notice";
     readonly sessionsList: "control.sessions.list";
     readonly sessionsCreate: "control.sessions.create";
@@ -124,7 +131,12 @@ export interface InstanceStateSyncPayload {
     }>;
     /** Turns that finished while the hub was unreachable; hub must persist them.
      *  `prompt` backfills the turn's `in` row when the turn STARTED during the outage
-     *  too, so the recovered answer never appears as an orphan in history. */
+     *  too, so the recovered answer never appears as an orphan in history.
+     *  `recoveryId` is the connector's stable id for this turn: the hub writes a
+     *  receipt once the rows are committed and acks the id back so the connector can
+     *  drop the entry; a redelivery is deduped by the receipt (never re-appended).
+     *  `truncated` marks a reply the connector capped at STATE_SYNC_TEXT_CAP — the
+     *  persisted row must say so instead of masquerading as a complete reply. */
     finishedOffline: Array<{
         sessionAlias: string;
         ok: boolean;
@@ -133,6 +145,7 @@ export interface InstanceStateSyncPayload {
         text?: string;
         prompt?: string;
         recoveryId?: string;
+        truncated?: boolean;
     }>;
 }
 export interface InstanceNoticePayload {
@@ -140,6 +153,12 @@ export interface InstanceNoticePayload {
     text: string;
     taskId?: string;
     chatKey?: string;
+}
+/** Recovery ids acked by the hub AFTER their rows (messages + receipt) committed to
+ *  SQLite. The connector confirms (drops) the corresponding finished-offline entries
+ *  only on receipt of this event — see MSG.instanceRecoveryAck. */
+export interface InstanceRecoveryAckPayload {
+    recoveryIds: string[];
 }
 export interface SessionsListPayload {
     /** Server-stamped `relay:<accountId>`; scopes the listing to that channel. */

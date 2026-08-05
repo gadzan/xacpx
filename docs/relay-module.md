@@ -201,11 +201,14 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 协议（packages/relay-protocol）：
 
-- `turn-finished` 事件变体增加可选 `text?: string`（daemon 侧把最终回复文本随车带过来）。
+- `turn-finished` 事件变体增加可选 `text?: string`（daemon 侧把最终回复文本随车带过来）与 `recoveryId?: string`
+  （connector 给每个回合生成的稳定恢复 id，live 转发与离线 FIFO 共用同一 id）。
 - 新消息类型 `MSG.instanceStateSync = "instance.state.sync"`，载荷为 `InstanceStateSyncPayload`
   `{ turns, usage, commands, finishedOffline }`（见 src/messages.ts）：连接器在每次（重）连
   完成鉴权后立即推送一份内存镜像快照给 hub。纯增量协议：旧 hub 忽略未知消息类型，
-  旧 connector 不发送则回退到原行为。
+  旧 connector 不发送则回退到原行为。`finishedOffline` 每项携带 `recoveryId` 与 `truncated`。
+- 新消息类型 `MSG.instanceRecoveryAck = "instance.recovery.ack"`（hub → connector，载荷 `{ recoveryIds }`）：
+  hub 只在**数据库提交之后**（消息行 + receipt 同一事务）ack 对应的 recoveryId。
 - 三个回合内容上限（`STATE_SYNC_TEXT_CAP = 256KiB` / `MAX_TOOL_STEPS = 200` /
   `REASONING_CAP = 16000`）集中在 `relay-protocol/src/limits.ts`，hub 与 connector 镜像共同 import。
 
@@ -213,22 +216,34 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 - `createStateMirror` 订阅与转发完全相同的 ControlEvent 流，镜像每个 (sessionAlias) 的在途回合
   累积器、最后已知的 usage/commands，以及断线期间完成的回合 FIFO（`finishedOffline`，上限 32，
-  逐出最旧并 log warning）。
+  逐出最旧并 log warning）。每个回合在 `turn-started` 时生成一个稳定 `recoveryId`。
 - `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：取 `mirror.takeStateSync(liveAliases)`
-  （"take" 有副作用——会**永久裁剪** liveAliases 之外的别名）发送 `instance.state.sync`；
-  只在 ws flush 回调确认后才 `clearFinishedOffline()`，未确认则下次重连重发（hub 端去重兜底）。
+  （"take" 有副作用——会**永久裁剪** liveAliases 之外的别名）发送 `instance.state.sync`。
+  **不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；FIFO 条目
+  只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
+  live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite
+  提交之前崩溃，则下次重连重发同一快照，hub 端 receipt 去重保证幂等，不会留下历史空洞。
 
 服务端（packages/relay/src/server.ts）：
 
 - `turn-finished` 兜底：无缓冲时，只要 `event.text` **存在**（空字符串也算有内容）就落一条
   `out` 行，否则不落行但 log `warn`（`relay.event.turn_finished_without_content`）。
+- 带 `recoveryId` 的 live `turn-finished`：回复行与 receipt 在**同一个 SQLite 事务**里提交，
+  提交成功后才下发 `instance.recovery.ack`；失败则不 ack，connector 稍后重发、receipt 去重。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
   对 `turnBuffers` / `sessionUsage` / `sessionCommands` 按实例 **replace**（回合保留原始
-  `startedAt`，后续 `turn-output`/`turn-finished` 照常 append/flush）；`finishedOffline` 逐项落库
-  （携带的 `prompt` 先行回填 `in` 行），两层幂等去重：进程内指纹集（同一 hub 进程的重发精确去重）
-  + SQLite 最近 5 行 prompt+reply **成对匹配**（跨再一次重启的重发兜底；文本恰好相同的两个
-  不同回合不会被误杀）。
-- SQLite schema 不变（不加列）；web 端无需改动，经既有 `state-snapshot` 自愈。
+  `startedAt`，后续 `turn-output`/`turn-finished` 照常 append/flush）；`finishedOffline` 逐项在
+  单个事务里落库（携带的 `prompt` 先行回填 `in` 行 + `out` 行 + receipt，三者在同一事务，
+  崩溃不会留下半组行）。幂等去重：携带 `recoveryId` 的项查 `recovery_receipts` 表（跨重启存活；
+  已 receipt 的重复项**直接 re-ack 不重复落行**）；无 `recoveryId` 的旧式项退回进程内指纹集 +
+  SQLite 最近 5 行 prompt+reply **成对匹配**。
+- 失败回合（`ok: false`）落库时优先 `errorMessage`：`text` 为空/缺失时不会用空字符串覆盖错误
+  信息（connector 的累积器以 `""` 起步，旧版镜像可能把 `text: ""` 和 errorMessage 一起带过来）。
+- `finishedOffline.truncated` 为真时，`out` 行的 `structured` 里写入 `{ truncated: true }`，
+  明确标识该回复是被 256KiB 上限截断的前缀而非完整回复。
+- 新增 `recovery_receipts` 表（`instance_id + recovery_id` 主键，`created_at`）与
+  `RecoveryReceiptStore`；维护循环按 TTL（`RECOVERY_RECEIPT_TTL_MS = 7 天`，connector FIFO 最多 32
+  项、更久的 receipt 不可能再被重发）定期清理，表不会随每个回合无限增长。
 
 ## 测试
 

@@ -29,12 +29,15 @@ export interface MessageRecordDto {
     /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
      *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
      *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
-     *  `reasoning` are a flat fallback for older rows that predate `parts`. */
+     *  `reasoning` are a flat fallback for older rows that predate `parts`.
+     *  `truncated` marks a recovered offline reply the connector capped at
+     *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply. */
     structured?: {
         toolSteps?: ToolStepDto[];
         reasoning?: string;
         parts?: TurnPartDto[];
         scheduled?: ScheduledOriginDto;
+        truncated?: boolean;
     };
     attachments?: AttachmentMetadata[];
 }

@@ -1,6 +1,7 @@
 import {
   MSG,
   type InstanceNoticePayload,
+  type InstanceRecoveryAckPayload,
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
@@ -82,7 +83,21 @@ export class RelayChannel implements MessageChannelRuntime {
       instanceName: this.config.name,
       coreVersion: input.coreVersion,
       onRequest: bridge,
-      onEvent: (envelope) => dispatchControlEvent(control, envelope),
+      onEvent: (envelope) => {
+        // The hub acks a recovery id only AFTER its rows (messages + receipt)
+        // committed to SQLite. Retire the finished-offline entry here — and ONLY
+        // here: the ws flush callback proves the frame left this process, not
+        // that the hub persisted it, so confirming on flush would drop the entry
+        // if the hub died before the commit, leaving a permanent history hole.
+        if (envelope.type === MSG.instanceRecoveryAck) {
+          const ids = (envelope.payload as InstanceRecoveryAckPayload | undefined)?.recoveryIds;
+          if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) {
+            mirror.confirmFinished(ids);
+          }
+          return;
+        }
+        dispatchControlEvent(control, envelope);
+      },
       logger: input.logger,
       // Right after (re)auth — before any subsequent control events can arrive — push
       // the local state mirror so a restarted hub recovers running turns, usage meters
@@ -99,14 +114,11 @@ export class RelayChannel implements MessageChannelRuntime {
             for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
           }
         }
-        const snapshot = mirror.takeStateSync(liveAliases);
-        client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
-          // Clear only on a CONFIRMED send (ws flush callback). An errored or
-          // not-ready send keeps the FIFO; the next reconnect re-sends, and the
-          // hub's dedup (fingerprint + pair matching) covers the
-          // delivered-but-unconfirmed race.
-          if (!error) mirror.confirmFinished(snapshot.finishedOffline.flatMap((turn) => turn.recoveryId ? [turn.recoveryId] : []));
-        });
+        // No confirm-on-flush here: the finished-offline FIFO stays put until the
+        // hub acks each recovery id (see onEvent above). An errored/not-ready send
+        // or a hub that died before committing simply means the next reconnect
+        // re-sends the same snapshot; the hub's receipt dedup makes that idempotent.
+        client.sendEvent(MSG.instanceStateSync, mirror.takeStateSync(liveAliases));
       },
     });
     // Mirror sees the exact payloads being forwarded, so the sync snapshot equals
@@ -118,9 +130,10 @@ export class RelayChannel implements MessageChannelRuntime {
       const forwardedPayload = finishedRecoveryId && typeof payload === "object" && payload !== null
         ? { ...payload as Record<string, unknown>, event: { ...(payload as { event: Record<string, unknown> }).event, recoveryId: finishedRecoveryId } }
         : payload;
-      client.sendEvent(type, forwardedPayload, finishedRecoveryId
-        ? (error) => { if (!error) mirror.confirmFinished([finishedRecoveryId]); }
-        : undefined);
+      // Deliver the live frame (the hub persists it and acks the recovery id);
+      // no flush-confirm — the FIFO entry is retired by the hub's ack, and if
+      // the frame never lands the next state sync re-delivers it.
+      client.sendEvent(type, forwardedPayload);
     });
     client.start(input.abortSignal);
 

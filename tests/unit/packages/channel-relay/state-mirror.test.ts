@@ -134,6 +134,36 @@ test("turn-finished while offline without an accumulator still carries the event
   ]);
 });
 
+test("failed turn with an empty accumulator ships its errorMessage, not an empty text", () => {
+  const { mirror } = makeMirror(() => false);
+  // Accumulator exists (turn ran) but produced no output: `text` stays "". The
+  // entry must NOT carry text:"" — that would overwrite the error text on the hub
+  // and leave an empty reply where the failure story belongs.
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "deploy" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: false, errorMessage: "boom" });
+  expect(mirror.takeStateSync(LIVE).finishedOffline).toEqual([
+    { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1" },
+  ]);
+  // A successful turn with no output still ships its (empty) reply — presence semantics.
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "frontend" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "frontend", ok: true });
+  expect(mirror.takeStateSync(LIVE).finishedOffline).toEqual([
+    { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1" },
+    { sessionAlias: "frontend", ok: true, text: "", recoveryId: "r2" },
+  ]);
+});
+
+test("a truncated reply rides the finishedOffline entry so the hub can mark it", () => {
+  const { mirror } = makeMirror(() => false);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "x".repeat(STATE_SYNC_TEXT_CAP + 10) });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
+  const entry = mirror.takeStateSync(LIVE).finishedOffline[0]!;
+  expect(entry.truncated).toBe(true);
+  expect(entry.text!.length).toBe(STATE_SYNC_TEXT_CAP);
+  expect(validInstanceStateSync({ turns: [], usage: [], commands: [], finishedOffline: [entry] })).toBe(true);
+});
+
 test("finishedOffline is a FIFO capped at 32 with a logged warning on eviction", () => {
   const { mirror, warns } = makeMirror(() => false);
   for (let i = 0; i < 33; i++) {

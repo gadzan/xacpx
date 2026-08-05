@@ -58,6 +58,9 @@ interface FinishedOfflineTurn {
   /** The turn's prompt, retained so the hub can backfill the `in` row for turns
    *  that started during the outage (its answer must not be an orphan in history). */
   prompt?: string;
+  /** The connector capped this turn's text at STATE_SYNC_TEXT_CAP; the hub must
+   *  persist the flag so the recovered reply is not mistaken for a complete one. */
+  truncated?: boolean;
   recoveryId: string;
 }
 
@@ -172,14 +175,23 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         const a = turns.get(event.sessionAlias);
         turns.delete(event.sessionAlias);
         const id = a?.recoveryId ?? recoveryId();
+        // Carry the reply text only when it is real. The accumulator's `text`
+        // starts as "" — a FAILED turn with no streamed output must surface its
+        // errorMessage on the hub instead of an empty out row, so it ships no
+        // `text` at all. A successful turn keeps its (possibly empty) reply:
+        // an empty reply is still a reply on the hub.
+        const text = a?.text ?? event.text;
+        const hasText = (text !== undefined && text !== "")
+          || (event.ok && (a !== undefined || event.text !== undefined));
         finishedOffline.push({
           chatKey: a?.chatKey ?? event.chatKey,
           sessionAlias: event.sessionAlias,
           ok: event.ok,
           ...(event.errorMessage !== undefined ? { errorMessage: event.errorMessage } : {}),
           ...(event.cancelled !== undefined ? { cancelled: event.cancelled } : {}),
-          ...(a?.text !== undefined ? { text: a.text } : event.text !== undefined ? { text: event.text } : {}),
+          ...(hasText ? { text: text ?? "" } : {}),
           ...(a?.prompt !== undefined ? { prompt: a.prompt } : {}),
+          ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
         });
         if (finishedOffline.length > FINISHED_OFFLINE_MAX) {
@@ -264,6 +276,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.cancelled !== undefined ? { cancelled: f.cancelled } : {}),
           ...(f.text !== undefined ? { text: f.text } : {}),
           ...(f.prompt !== undefined ? { prompt: f.prompt } : {}),
+          ...(f.truncated ? { truncated: true } : {}),
           recoveryId: f.recoveryId,
         });
       }

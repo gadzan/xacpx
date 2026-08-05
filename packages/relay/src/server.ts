@@ -5,7 +5,7 @@ import { WebSocketServer } from "ws";
 
 import {
   MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
-  type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
@@ -14,6 +14,7 @@ import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
 import { AccountStore } from "./stores/accounts.js";
 import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
+import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { handleWebClientMessage } from "./gateway/web-inbound.js";
@@ -97,6 +98,7 @@ export interface RelayRuntime {
   accounts: AccountStore;
   instances: InstanceStore;
   messages: MessageStore;
+  recoveryReceipts: RecoveryReceiptStore;
   gateway: InstanceGateway;
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
@@ -142,11 +144,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       recoveredFingerprints.delete(recoveredFingerprints.values().next().value!);
     }
   };
-  const hasRecoveryReceipt = (instanceId: string, recoveryId: string): boolean =>
-    db.get("SELECT 1 AS found FROM recovery_receipts WHERE instance_id = ? AND recovery_id = ?", [instanceId, recoveryId]) !== undefined;
-  const rememberRecoveryReceipt = (instanceId: string, recoveryId: string): void => {
-    db.run("INSERT OR IGNORE INTO recovery_receipts (instance_id, recovery_id, created_at) VALUES (?,?,?)", [instanceId, recoveryId, new Date().toISOString()]);
-  };
+  // Cross-restart dedup for recoveryId-carrying finishedOffline entries (see the
+  // store's doc comment). Written in the SAME transaction as the message rows it
+  // vouches for, so a receipt can never outlive its rows or vice versa.
+  const recoveryReceipts = new RecoveryReceiptStore(db);
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
   // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
   // client can restore the usage bar after a refresh (see GET /api/active-turns). Cleared
@@ -295,33 +296,51 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const k = key(instanceId, event.sessionAlias);
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
-            if (!a) {
-              // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
-              // The daemon carries the final reply text on turn-finished so the answer
-              // can still land in history instead of leaving a prompt with no reply.
-              // Presence (not truthiness): an empty-string reply is still a reply.
-              if (event.text !== undefined) {
-                messages.append(instanceId, event.sessionAlias, "out", event.text);
-              } else {
-                logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
-                  instanceId, sessionAlias: event.sessionAlias,
-                });
+            // Persist the reply row(s), shared by the live path and the transactional
+            // recovery-ack path below. A turn with no content is a warning, not a row.
+            const flush = (): void => {
+              if (!a) {
+                // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
+                // The daemon carries the final reply text on turn-finished so the answer
+                // can still land in history instead of leaving a prompt with no reply.
+                // Presence (not truthiness): an empty-string reply is still a reply.
+                if (event.text !== undefined) {
+                  messages.append(instanceId, event.sessionAlias, "out", event.text);
+                } else {
+                  logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
+                    instanceId, sessionAlias: event.sessionAlias,
+                  });
+                }
+                return;
               }
-              if (event.recoveryId) rememberRecoveryReceipt(instanceId, event.recoveryId);
-              return;
+              const steps = [...a.steps.values()];
+              // Treat whitespace-only reasoning as absent: it would otherwise persist as an
+              // empty `structured.reasoning` and render as a blank reasoning panel in history.
+              const hasReasoning = a.reasoning.trim().length > 0;
+              const hasStructured = steps.length > 0 || hasReasoning;
+              if (a.text || hasStructured) {
+                const structured = hasStructured
+                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
+                  : undefined;
+                messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
+              }
+            };
+            const recoveryId = event.recoveryId;
+            if (recoveryId) {
+              // Message + receipt must commit as ONE unit: a crash between them would
+              // either lose the dedup guard (double-persist on redelivery) or leak a
+              // receipt for rows that never landed. The ack goes out ONLY after the
+              // commit — confirming on the connector's ws flush would clear its FIFO
+              // before the hub actually persisted, leaving a permanent history hole
+              // if the hub dies in between.
+              db.transaction(() => {
+                flush();
+                recoveryReceipts.remember(instanceId, recoveryId);
+              });
+              gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: [recoveryId] } satisfies InstanceRecoveryAckPayload);
+            } else {
+              flush();
             }
-            const steps = [...a.steps.values()];
-            // Treat whitespace-only reasoning as absent: it would otherwise persist as an
-            // empty `structured.reasoning` and render as a blank reasoning panel in history.
-            const hasReasoning = a.reasoning.trim().length > 0;
-            const hasStructured = steps.length > 0 || hasReasoning;
-            if (a.text || hasStructured) {
-              const structured = hasStructured
-                ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
-                : undefined;
-              messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
-            }
-            if (event.recoveryId) rememberRecoveryReceipt(instanceId, event.recoveryId);
           } else if (event.type === "turn-usage") {
             // Retain the latest usage per session (replace) so a refreshed web client can
             // restore the context-usage bar from the active-turns snapshot. Already
@@ -436,31 +455,57 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           // normally. No web broadcast: browsers re-reconcile from state-snapshot
           // on their own reconnect.
           const syncedTurnAliases = new Set(sync.turns.map((t) => t.sessionAlias));
+          // Recovery ids to ack once their (message + receipt) transactions below
+          // have all committed — one ack frame per sync, sent after the loop.
+          const ackedRecoveryIds: string[] = [];
           for (const finished of sync.finishedOffline) {
             if (syncedTurnAliases.has(finished.sessionAlias)) continue;
-            const text = finished.text ?? (!finished.ok ? finished.errorMessage : undefined);
-            if (finished.recoveryId && hasRecoveryReceipt(instanceId, finished.recoveryId)) continue;
+            // A failed turn with no (or an empty) reply must surface its error text,
+            // never an empty out row: the connector's accumulator starts text at ""
+            // and a legacy/buggy sync may ship text:"" alongside errorMessage.
+            const text = finished.ok
+              ? finished.text
+              : (finished.text ? finished.text : finished.errorMessage);
+            const recoveryId = finished.recoveryId;
+            if (recoveryId && recoveryReceipts.has(instanceId, recoveryId)) {
+              // Already committed (live flush or a previous sync) but the connector
+              // never got the ack — re-ack so its FIFO can finally drop the entry.
+              ackedRecoveryIds.push(recoveryId);
+              continue;
+            }
             const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
-            if (!finished.recoveryId && recoveredFingerprints.has(fingerprint)) continue;
-            const alreadyPersisted = !finished.recoveryId && text !== undefined
+            if (!recoveryId && recoveredFingerprints.has(fingerprint)) continue;
+            const alreadyPersisted = !recoveryId && text !== undefined
               ? finished.prompt !== undefined
                 ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
                 : hasRecentRow(finished.sessionAlias, "out", text)
               : false;
-            if (!alreadyPersisted && finished.prompt && !hasTrailingPrompt(finished.sessionAlias, finished.prompt)) {
-              messages.append(instanceId, finished.sessionAlias, "in", finished.prompt);
-            }
-            // Presence (not truthiness): an empty-string reply still gets its row.
-            if (text !== undefined) {
-              if (!alreadyPersisted) {
-                messages.append(instanceId, finished.sessionAlias, "out", text);
+            // The reply row(s) and the receipt are written in ONE transaction (the
+            // same invariant as the live turn-finished flush): a crash between them
+            // would re-append the whole group on redelivery. `truncated` rides the
+            // structured metadata so a capped reply never reads as a complete one.
+            const persist = (): void => {
+              if (!alreadyPersisted && finished.prompt && !hasTrailingPrompt(finished.sessionAlias, finished.prompt)) {
+                messages.append(instanceId, finished.sessionAlias, "in", finished.prompt);
               }
-            }
-            if (finished.recoveryId) {
-              rememberRecoveryReceipt(instanceId, finished.recoveryId);
+              // Presence (not truthiness): an empty-string reply still gets its row.
+              if (text !== undefined && !alreadyPersisted) {
+                messages.append(instanceId, finished.sessionAlias, "out", text, finished.truncated ? { truncated: true } : undefined);
+              }
+            };
+            if (recoveryId) {
+              db.transaction(() => {
+                persist();
+                recoveryReceipts.remember(instanceId, recoveryId);
+              });
+              ackedRecoveryIds.push(recoveryId);
             } else {
+              persist();
               rememberFingerprint(fingerprint);
             }
+          }
+          if (ackedRecoveryIds.length > 0) {
+            gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: ackedRecoveryIds } satisfies InstanceRecoveryAckPayload);
           }
           webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
         } else if (envelope.type === MSG.instanceNotice) {
@@ -483,7 +528,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     logger,
   });
-  return { db, accounts, instances, messages, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
+  return { db, accounts, instances, messages, recoveryReceipts, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
 }
 
 export interface StartRelayOptions {
@@ -523,7 +568,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
 
   const retention = { historyRetentionDays: options.historyRetentionDays ?? 30, maxPerSession: MAX_MESSAGES_PER_SESSION };
   const stopMaintenance = startMaintenanceLoop(
-    { accounts: runtime.accounts, instances: runtime.instances, messages: runtime.messages },
+    { accounts: runtime.accounts, instances: runtime.instances, messages: runtime.messages, recoveryReceipts: runtime.recoveryReceipts },
     retention,
     60 * 60 * 1000,
   );

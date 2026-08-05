@@ -9,6 +9,15 @@ export interface SqlDriver {
   run(sql: string, params?: ReadonlyArray<string | number | null>): void;
   get<T>(sql: string, params?: ReadonlyArray<string | number | null>): T | undefined;
   all<T>(sql: string, params?: ReadonlyArray<string | number | null>): T[];
+  /**
+   * Run `fn` inside one SQLite transaction (BEGIN/COMMIT, ROLLBACK on throw).
+   * NOT re-entrant: calling `transaction` from inside `fn` (or from a driver
+   * method invoked within it) throws, so the outer transaction is never
+   * corrupted by a nested BEGIN. All writes made by `fn` (via `run`/`exec`)
+   * commit atomically — a crash or throw between them leaves NO partial rows,
+   * which is what makes "messages + recovery receipt" a single durable unit.
+   */
+  transaction<T>(fn: () => T): T;
   close(): void;
 }
 
@@ -21,6 +30,7 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
   if (typeof Bun !== "undefined") {
     const { Database } = await import("bun:sqlite");
     const db = new Database(path);
+    let inTransaction = false;
     return {
       exec: (sql) => db.exec(sql),
       run: (sql, params: SqlParams = []) => {
@@ -30,6 +40,21 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
         (db.query(sql).get(...(params as (string | number | null)[])) ?? undefined) as T | undefined,
       all: <T>(sql: string, params: SqlParams = []) =>
         db.query(sql).all(...(params as (string | number | null)[])) as T[],
+      transaction: <T>(fn: () => T): T => {
+        if (inTransaction) throw new Error("nested SQLite transaction");
+        inTransaction = true;
+        try {
+          db.exec("BEGIN");
+          const result = fn();
+          db.exec("COMMIT");
+          return result;
+        } catch (err) {
+          db.exec("ROLLBACK");
+          throw err;
+        } finally {
+          inTransaction = false;
+        }
+      },
       close: () => db.close(),
     };
   }
@@ -38,6 +63,7 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
   // The codebase invariant is FKs OFF (integrity is enforced by app-level manual cascades;
   // declared FK constraints are decorative). Match bun:sqlite's default explicitly.
   const db = new DatabaseSync(path, { enableForeignKeyConstraints: false });
+  let inTransaction = false;
   return {
     exec: (sql) => db.exec(sql),
     run: (sql, params: SqlParams = []) => {
@@ -47,6 +73,21 @@ export async function createSqlDriver(path: string): Promise<SqlDriver> {
       (db.prepare(sql).get(...(params as (string | number | null)[])) ?? undefined) as T | undefined,
     all: <T>(sql: string, params: SqlParams = []) =>
       db.prepare(sql).all(...(params as (string | number | null)[])) as T[],
+    transaction: <T>(fn: () => T): T => {
+      if (inTransaction) throw new Error("nested SQLite transaction");
+      inTransaction = true;
+      try {
+        db.exec("BEGIN");
+        const result = fn();
+        db.exec("COMMIT");
+        return result;
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      } finally {
+        inTransaction = false;
+      }
+    },
     close: () => db.close(),
   };
 }

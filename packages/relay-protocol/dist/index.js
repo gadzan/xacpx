@@ -54,6 +54,7 @@ var MSG = {
   instanceAuth: "instance.auth",
   instanceEvent: "instance.event",
   instanceStateSync: "instance.state.sync",
+  instanceRecoveryAck: "instance.recovery.ack",
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
@@ -348,7 +349,7 @@ function validInstanceStateSync(p) {
     if (typeof f !== "object" || f === null)
       return false;
     const finished = f;
-    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.recoveryId) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean");
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.recoveryId) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean");
   });
 }
 function validNotice(n) {

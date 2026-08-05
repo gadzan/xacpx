@@ -114,17 +114,20 @@ test("onReady pushes an instance state sync with the mirrored running turn", asy
   await startPromise;
 });
 
-test("state sync clears finishedOffline only on a confirmed send", async () => {
-  let ready = false;
-  let onFlush: ((error?: Error) => void) | undefined;
+test("finishedOffline entries clear only on the hub's recovery ack, not on a flush", async () => {
   const events: Array<{ type: string; payload: unknown }> = [];
+  let capturedOptions: { onReady?: () => void; onEvent?: (envelope: unknown) => void } = {};
   const fakeClient = {
     start: () => {},
     stop: () => {},
-    sendEvent: (type: string, payload: unknown, cb?: (error?: Error) => void) => { events.push({ type, payload }); onFlush = cb; },
-    isReady: () => ready,
+    sendEvent: (type: string, payload: unknown, _onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload });
+      // The channel must NOT confirm on flush: an ack-callback-less send is a
+      // deliberate statement that delivery is confirmed by the hub's ack event.
+      expect(_onFlush).toBeUndefined();
+    },
+    isReady: () => true,
   };
-  let capturedOptions: { onReady?: () => void } = {};
   const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
     credentialStore: new MemoryCredentialStore(),
     createClient: (options) => { capturedOptions = options; return fakeClient as never; },
@@ -138,26 +141,28 @@ test("state sync clears finishedOffline only on a confirmed send", async () => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
   const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { finishedOffline: unknown[] });
+  const lastForwardedEvent = () => (events.findLast((e) => e.type === MSG.instanceEvent)!.payload as { event: { recoveryId?: string } }).event;
 
-  // A turn finishes while the hub link is down → lands in the mirror's FIFO.
+  // A turn finishes → the mirror FIFO holds it AND the live frame carries its
+  // recoveryId. The hub will persist it and ack the id.
   fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
   fireEvent({ type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "ans" });
   fireEvent({ type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, text: "ans" });
-  expect((events.findLast((entry) => entry.type === MSG.instanceEvent)!.payload as { event: { recoveryId?: string } }).event.recoveryId).toBeString();
-  const finishFlush = onFlush!;
-  finishFlush(new Error("half-open socket"));
+  const recoveryId = lastForwardedEvent().recoveryId!;
+  expect(recoveryId).toBeString();
 
-  ready = true;
+  // A sync rides the reconnect; the entry is still in the FIFO.
   capturedOptions.onReady!();
   expect(lastSync().finishedOffline).toHaveLength(1);
 
-  // Errored flush (half-open socket): entries are retained and ride the next sync.
-  onFlush!(new Error("half-open socket"));
+  // No ack yet → the FIFO keeps the entry across a (hypothetical) flush/re-sync.
   capturedOptions.onReady!();
   expect(lastSync().finishedOffline).toHaveLength(1);
 
-  // Confirmed flush: the hub owns those rows now — the FIFO clears.
-  onFlush!();
+  // The hub acks the recovery id AFTER its SQLite commit → the FIFO clears.
+  capturedOptions.onEvent!({
+    protocolVersion: 1, kind: "event", type: MSG.instanceRecoveryAck, payload: { recoveryIds: [recoveryId] },
+  });
   capturedOptions.onReady!();
   expect(lastSync().finishedOffline).toEqual([]);
 

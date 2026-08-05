@@ -313,3 +313,111 @@ test("a finishedOffline turn with empty-string text still persists its (empty) r
     .toEqual([["in", "q"], ["out", ""]]);
   runtime.close();
 });
+
+test("a failed offline turn with an empty text persists its errorMessage, not an empty row", async () => {
+  const { runtime } = await seeded();
+  // Legacy/buggy connectors may ship text:"" next to errorMessage (the mirror used
+  // to start accumulators at ""); the hub must prefer the error text on failure.
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "backend", ok: false, errorMessage: "boom", text: "", prompt: "deploy" }],
+  });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "deploy"], ["out", "boom"]]);
+  runtime.close();
+});
+
+test("a truncated offline reply is persisted with the flag in its structured metadata", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "backend", ok: true, text: "capped", prompt: "q", truncated: true }],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "q"], ["out", "capped"]]);
+  expect(rows[1]!.structured).toEqual({ truncated: true });
+  runtime.close();
+});
+
+test("sync acks committed recovery ids; a redelivery re-acks without duplicating rows", async () => {
+  const { runtime } = await seeded();
+  const acks: Array<{ type: string; payload: unknown }> = [];
+  const original = runtime.gateway.sendEvent.bind(runtime.gateway);
+  runtime.gateway.sendEvent = ((instanceId: string, type: string, payload: unknown) => {
+    acks.push({ type, payload });
+    return original(instanceId, type, payload);
+  }) as typeof runtime.gateway.sendEvent;
+  const payload = {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "done", ok: true, text: "offline reply", prompt: "q", recoveryId: "r1" }],
+  };
+  sync(runtime, payload);
+  expect(runtime.messages.listBySession("a1", "i1", "done").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "q"], ["out", "offline reply"]]);
+  expect(acks).toEqual([{ type: MSG.instanceRecoveryAck, payload: { recoveryIds: ["r1"] } }]);
+
+  // Connector never got the ack → redelivers the same entry. The receipt (written
+  // in the same transaction as the rows) dedups it; the hub re-acks so the
+  // connector's FIFO can finally drop the entry.
+  acks.length = 0;
+  sync(runtime, payload);
+  expect(runtime.messages.listBySession("a1", "i1", "done").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "q"], ["out", "offline reply"]]);
+  expect(acks).toEqual([{ type: MSG.instanceRecoveryAck, payload: { recoveryIds: ["r1"] } }]);
+  runtime.close();
+});
+
+test("a live turn-finished with a recovery id is acked after its transactional flush", async () => {
+  const { runtime } = await seeded();
+  const acks: Array<{ type: string; payload: unknown }> = [];
+  const original = runtime.gateway.sendEvent.bind(runtime.gateway);
+  runtime.gateway.sendEvent = ((instanceId: string, type: string, payload: unknown) => {
+    acks.push({ type, payload });
+    return original(instanceId, type, payload);
+  }) as typeof runtime.gateway.sendEvent;
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "q" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "answer" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, recoveryId: "r1" });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "q"], ["out", "answer"]]);
+  expect(acks).toEqual([{ type: MSG.instanceRecoveryAck, payload: { recoveryIds: ["r1"] } }]);
+  runtime.close();
+});
+
+test("hub crash between frame receipt and SQLite commit: rows roll back, no ack, redelivery persists once", async () => {
+  const { runtime, records } = await seeded();
+  const acks: Array<{ type: string; payload: unknown }> = [];
+  const originalSend = runtime.gateway.sendEvent.bind(runtime.gateway);
+  runtime.gateway.sendEvent = ((instanceId: string, type: string, payload: unknown) => {
+    acks.push({ type, payload });
+    return originalSend(instanceId, type, payload);
+  }) as typeof runtime.gateway.sendEvent;
+  const payload = {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [{ sessionAlias: "done", ok: true, text: "offline reply", prompt: "q", recoveryId: "r1" }],
+  };
+
+  // The connector flushed the sync frame; the hub dies while persisting, i.e. the
+  // append throws INSIDE the transaction. It must roll back completely — no rows,
+  // no receipt, no ack (the connector still holds the FIFO entry, so the story is
+  // not over).
+  const originalAppend = runtime.messages.append.bind(runtime.messages);
+  runtime.messages.append = (() => { throw new Error("simulated crash before commit"); }) as typeof runtime.messages.append;
+  sync(runtime, payload);
+  runtime.messages.append = originalAppend;
+  expect(runtime.messages.listBySession("a1", "i1", "done").messages).toEqual([]);
+  expect(runtime.recoveryReceipts.has("i1", "r1")).toBe(false);
+  expect(acks).toEqual([]);
+  expect(records.some((r) => r.event === "relay.event.persist_failed")).toBe(true);
+
+  // Reconnect: the connector re-sends the same snapshot; the clean persist lands
+  // EXACTLY once and the hub acks the recovery id.
+  sync(runtime, payload);
+  expect(runtime.messages.listBySession("a1", "i1", "done").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "q"], ["out", "offline reply"]]);
+  expect(acks).toEqual([{ type: MSG.instanceRecoveryAck, payload: { recoveryIds: ["r1"] } }]);
+  runtime.close();
+});
