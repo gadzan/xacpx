@@ -113,6 +113,7 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   const pendingSessionRefreshes = new Set<string>();
+  const pendingArchivedRefreshes = new Set<string>();
 
   async function loadSessions(instanceId: string): Promise<void> {
     const inst = byId(instanceId);
@@ -124,12 +125,6 @@ export const useInstancesStore = defineStore("instances", () => {
       pendingSessionRefreshes.delete(instanceId);
       await fetchSessionsPage(instanceId, 0, true);
     } while (pendingSessionRefreshes.has(instanceId));
-    // The active-only pages are not authoritative for cache deletion. Once the user
-    // explicitly loads sessions, fetch the full set separately so archived rows remain
-    // resumable and deleted/recreated aliases still converge in the tail cache. Keep this
-    // follow-up out of the active-list critical path so a stale list cannot block rename
-    // confirmation or sidebar refresh.
-    void loadArchivedSessions(instanceId).catch(() => {});
   }
 
   async function loadMoreSessions(instanceId: string): Promise<void> {
@@ -142,36 +137,45 @@ export const useInstancesStore = defineStore("instances", () => {
   /** Load the full session set only when the user asks to recover sleeping sessions. */
   async function loadArchivedSessions(instanceId: string): Promise<void> {
     const inst = byId(instanceId);
-    if (inst?.archivedSessionsLoading) return;
+    if (inst?.archivedSessionsLoading) {
+      pendingArchivedRefreshes.add(instanceId);
+      return;
+    }
     if (inst) inst.archivedSessionsLoading = true;
-    const confirmedRevisionsAtRequest = new Map(
-      [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
-    );
     try {
-      let offset = 0;
-      const all: SessionDto[] = [];
-      let hasMore = true;
-      while (hasMore) {
-        const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", { offset, limit: 20, includeArchived: true });
-        all.push(...page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
-        hasMore = page.hasMore === true;
-        const nextOffset = page.nextOffset ?? offset + page.sessions.length;
-        if (hasMore && nextOffset <= offset) break;
-        offset = nextOffset;
-      }
-      const current = byId(instanceId);
-      if (current) {
-        // The full response is authoritative. Keep only local transient rows that
-        // have not materialised server-side yet; never retain deleted sleeping rows.
-        const transient = current.sessions.filter((session) => session.creating || session.createError);
-        const byAlias = new Map(all.map((session) => [session.alias, session]));
-        for (const session of transient) {
-          if (!byAlias.has(session.alias)) byAlias.set(session.alias, session);
+      do {
+        pendingArchivedRefreshes.delete(instanceId);
+        const confirmedRevisionsAtRequest = new Map(
+          [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
+        );
+        let offset = 0;
+        const all: SessionDto[] = [];
+        let hasMore = true;
+        while (hasMore) {
+          const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", { offset, limit: 20, includeArchived: true });
+          all.push(...page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
+          hasMore = page.hasMore === true;
+          const nextOffset = page.nextOffset ?? offset + page.sessions.length;
+          if (hasMore && nextOffset <= offset) break;
+          offset = nextOffset;
         }
-        current.sessions = [...byAlias.values()];
-        current.archivedSessionsLoaded = true;
-      }
-      useChatStore().reconcileTailCache(instanceId, all.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
+        // If an event arrived while this snapshot was in flight, discard it and
+        // immediately fetch a fresh authoritative snapshot before publishing.
+        if (pendingArchivedRefreshes.has(instanceId)) continue;
+        const current = byId(instanceId);
+        if (current) {
+          // The full response is authoritative. Keep only local transient rows that
+          // have not materialised server-side yet; never retain deleted sleeping rows.
+          const transient = current.sessions.filter((session) => session.creating || session.createError);
+          const byAlias = new Map(all.map((session) => [session.alias, session]));
+          for (const session of transient) {
+            if (!byAlias.has(session.alias)) byAlias.set(session.alias, session);
+          }
+          current.sessions = [...byAlias.values()];
+          current.archivedSessionsLoaded = true;
+        }
+        useChatStore().reconcileTailCache(instanceId, all.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
+      } while (pendingArchivedRefreshes.has(instanceId));
     } finally {
       const current = byId(instanceId);
       if (current) current.archivedSessionsLoading = false;
@@ -486,7 +490,9 @@ export const useInstancesStore = defineStore("instances", () => {
         if (event.online && inst.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
       }
     } else if (event.kind === "control-event" && event.event.type === "sessions-changed") {
-      if (byId(event.instanceId)?.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
+      const inst = byId(event.instanceId);
+      if (inst?.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
+      if (inst?.archivedSessionsLoaded) void loadArchivedSessions(event.instanceId).catch(() => {});
     } else if (event.kind === "control-event" && event.event.type === "workspaces-changed") {
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.

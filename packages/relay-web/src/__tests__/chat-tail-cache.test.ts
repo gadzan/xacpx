@@ -204,7 +204,9 @@ test("full cache reconciliation keeps archived cache entries after an active-onl
     }
     return { agents: [] };
   });
-  await useInstancesStore().loadSessions("i1");
+  const store = useInstancesStore();
+  await store.loadSessions("i1");
+  await store.loadArchivedSessions("i1");
   expect(await goneEventually("alice", "i1", "gone")).toBe(true); // full query removes deleted sessions
   expect(await read("alice", "i1", "alive")).not.toBeNull();
   expect(await read("alice", "i1", "sleeping")).not.toBeNull(); // slept elsewhere → kept
@@ -242,7 +244,9 @@ test("a same-alias recreation from another client does not resurrect the old tai
     }
     return { agents: [] };
   });
-  await useInstancesStore().loadSessions("i1");
+  const store = useInstancesStore();
+  await store.loadSessions("i1");
+  await store.loadArchivedSessions("i1");
   expect(await goneEventually("alice", "i1", "s1")).toBe(true); // old incarnation dropped
   // Selecting the recreated session must not seed the deleted predecessor's rows.
   const chat = useChatStore();
@@ -258,7 +262,9 @@ const sessionsListOf = (transportSession: string) => async (_id: string, type: s
 
 test("the debounced write-back carries the session's registered incarnation", async () => {
   rpc.mockImplementation(sessionsListOf("t-A"));
-  await useInstancesStore().loadSessions("i1"); // registry: s1 → t-A
+  const store = useInstancesStore();
+  await store.loadSessions("i1"); // registry: s1 → t-A
+  await store.loadArchivedSessions("i1");
   const chat = useChatStore();
   chat.select("i1", "s1");
   getMock.mockResolvedValue({ messages: [row(1)], hasMore: false });
@@ -271,7 +277,9 @@ test("the debounced write-back carries the session's registered incarnation", as
 
 test("select() does not seed a cached tail whose incarnation predates the live session", async () => {
   rpc.mockImplementation(sessionsListOf("t-new"));
-  await useInstancesStore().loadSessions("i1"); // registry: s1 → t-new
+  const store = useInstancesStore();
+  await store.loadSessions("i1"); // registry: s1 → t-new
+  await store.loadArchivedSessions("i1");
   // Entry lands after reconcile ran (e.g. written by a tab with a stale registry).
   await write("alice", "i1", "s1", [row(1, "pre-delete")], "t-old");
   const chat = useChatStore();
@@ -284,7 +292,10 @@ test("a recreation observed while selected cancels the pending write-back (no re
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     rpc.mockImplementation(sessionsListOf("t-old"));
-    await useInstancesStore().loadSessions("i1"); // registry: s1 → t-old
+    const store = useInstancesStore();
+    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
+    await store.loadSessions("i1"); // registry: s1 → t-old
+    await store.loadArchivedSessions("i1");
     const chat = useChatStore();
     chat.select("i1", "s1");
     getMock.mockResolvedValue({ messages: [row(1, "pre-delete")], hasMore: false });
@@ -293,7 +304,8 @@ test("a recreation observed while selected cancels the pending write-back (no re
     // write that COULD land is the poisoned predecessor flush.
     getMock.mockReturnValue(new Promise(() => {}));
     rpc.mockImplementation(sessionsListOf("t-new"));
-    await useInstancesStore().loadSessions("i1"); // must cancel the pending flush
+    await store.loadSessions("i1"); // must cancel the pending flush
+    await store.loadArchivedSessions("i1");
     vi.advanceTimersByTime(500); // the cancelled timer must not fire
   } finally {
     vi.useRealTimers();
@@ -317,7 +329,9 @@ test("first loadSessions after a wildcard seed cancels a live-turn flush (predec
     chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s1", ok: true } });
     // The FIRST loadSessions reveals the session was recreated (t-new).
     rpc.mockImplementation(sessionsListOf("t-new"));
-    await useInstancesStore().loadSessions("i1"); // must cancel the suspect flush
+    const store = useInstancesStore();
+    await store.loadSessions("i1"); // must cancel the suspect flush
+    await store.loadArchivedSessions("i1");
     vi.advanceTimersByTime(500);
   } finally {
     vi.useRealTimers();

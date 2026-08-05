@@ -52,10 +52,6 @@ test("loadMoreSessions appends the next server page without re-fetching the firs
     if (type !== "control.sessions.list") return { agents: [] } as never;
     const request = payload as { offset: number; includeArchived?: boolean };
     const offset = request.offset;
-    if (request.includeArchived) return { sessions: [
-      { alias: "s1", agent: "a", workspace: "/w", transportSession: "t1", running: false, archived: false },
-      { alias: "s2", agent: "a", workspace: "/w", transportSession: "t2", running: false, archived: false },
-    ], hasMore: false, nextOffset: offset + 2 } as never;
     return offset === 0
       ? { sessions: [{ alias: "s1", agent: "a", workspace: "/w", transportSession: "t1", running: false, archived: false }, { alias: "s2", agent: "a", workspace: "/w", transportSession: "t2", running: false, archived: false }], hasMore: true, nextOffset: 20 } as never
       : { sessions: [{ alias: "s3", agent: "a", workspace: "/w", transportSession: "t3", running: false, archived: false }], hasMore: false } as never;
@@ -66,6 +62,7 @@ test("loadMoreSessions appends the next server page without re-fetching the firs
   const sessionCalls = rpc.mock.calls.filter((call) => call[1] === "control.sessions.list" && !(call[2] as { includeArchived?: boolean }).includeArchived);
   expect(sessionCalls[0]).toEqual(["i1", "control.sessions.list", { offset: 0, limit: 20 }]);
   expect(sessionCalls[1]).toEqual(["i1", "control.sessions.list", { offset: 20, limit: 20 }]);
+  expect(rpc.mock.calls.some((call) => (call[2] as { includeArchived?: boolean } | undefined)?.includeArchived)).toBe(false);
   vi.restoreAllMocks();
 });
 
@@ -101,6 +98,37 @@ test("loadArchivedSessions rebuilds the authoritative snapshot and keeps only tr
   await store.loadArchivedSessions("i1");
   expect(store.byId("i1")!.sessions.map((session) => session.alias)).toEqual(["active", "creating"]);
   expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list", { offset: 0, limit: 20, includeArchived: true });
+  vi.restoreAllMocks();
+});
+
+test("replays a sessions-changed event during the full snapshot and discards the stale result", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [
+    { alias: "old", agent: "a", workspace: "/w", transportSession: "old-t", running: false, archived: true },
+  ], sessionsLoaded: true, archivedSessionsLoaded: true, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  let resolveFirst!: (value: unknown) => void;
+  const firstFull = new Promise((resolve) => { resolveFirst = resolve; });
+  let fullCalls = 0;
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string, payload?: unknown) => {
+    if (type === "control.agents.list") return { agents: [] } as never;
+    if ((payload as { includeArchived?: boolean } | undefined)?.includeArchived) {
+      fullCalls += 1;
+      return (fullCalls === 1
+        ? firstFull
+        : Promise.resolve({ sessions: [{ alias: "fresh-sleeping", agent: "a", workspace: "/w", transportSession: "fresh-t", running: false, archived: true }], hasMore: false })) as never;
+    }
+    return { sessions: [{ alias: "active", agent: "a", workspace: "/w", transportSession: "active-t", running: false, archived: false }], hasMore: false } as never;
+  });
+
+  const initial = store.loadArchivedSessions("i1");
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+  resolveFirst({ sessions: [{ alias: "stale-sleeping", agent: "a", workspace: "/w", transportSession: "stale-t", running: false, archived: true }], hasMore: false });
+  await initial;
+
+  expect(fullCalls).toBe(2);
+  expect(store.byId("i1")!.sessions.map((session) => session.alias)).toEqual(["fresh-sleeping"]);
+  expect(rpc.mock.calls.some((call) => (call[2] as { includeArchived?: boolean } | undefined)?.includeArchived)).toBe(true);
   vi.restoreAllMocks();
 });
 
