@@ -723,7 +723,13 @@ export const useChatStore = defineStore("chat", () => {
       }
     } catch (e) {
       const isTimeout = e instanceof ApiError && (e.status === 504 || e.code === "timeout");
-      if (!isTimeout) {
+      // Fetch reports a dropped connection as a bare TypeError, even when the Hub
+      // already accepted the prompt and the turn is streaming over WebSocket. Its
+      // delivery state is therefore indeterminate, just like a 504. Do not mark the
+      // optimistic row as definitely failed (or invite an unsafe duplicate resend);
+      // live events and the next history convergence provide the authoritative state.
+      const isTransportFailure = e instanceof TypeError;
+      if (!isTimeout && !isTransportFailure) {
         error.value = e instanceof ApiError ? e.code : "send-failed";
         entry.failed = true;
         rollbackIndicators();
