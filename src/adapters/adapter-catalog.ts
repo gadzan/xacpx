@@ -134,7 +134,7 @@ export function adapterRegistryHash8(registry: string): string {
   return createHash("sha256").update(canonicalAdapterRegistry(registry)).digest("hex").slice(0, 8);
 }
 
-export function createAdapterReleaseId(version: string, registry: string, uuid = randomUUID()): string {
+export function createAdapterReleaseId(version: string, registry: string, uuid: string = randomUUID()): string {
   if (!isExactAdapterVersion(version)) throw new Error(`invalid adapter version: ${version}`);
   const uuid8 = uuid.replaceAll("-", "").slice(0, 8).toLowerCase();
   if (!/^[0-9a-f]{8}$/.test(uuid8)) throw new Error("invalid release UUID");
