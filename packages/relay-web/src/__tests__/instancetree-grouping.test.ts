@@ -90,15 +90,14 @@ describe("InstanceTree grouped rendering", () => {
     expect(w.find('[data-test="sessions-show-more"]').exists()).toBe(false);
   });
 
-  it("sinks archived sessions to the bottom of their group, dimmed", () => {
+  it("hides archived sessions from grouped lists", () => {
     const store = useInstancesStore();
     store.setGroupMode("i1", "workspace");
     store.instances = [instance([sess("web-old", "web", "claude", true), sess("web-live", "web", "claude")])] as never;
     const w = mountTree();
     const names = w.findAll('[data-test="session-name"]');
+    expect(names).toHaveLength(1);
     expect(names[0]!.text()).toBe("live");
-    expect(names[1]!.text()).toBe("old");
-    expect(names[1]!.classes()).toContain("text-fg-muted");
   });
 
   it("group ＋ opens the create dialog prefilled with the group's workspace", async () => {

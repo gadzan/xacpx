@@ -298,6 +298,8 @@ export default {
     offline: "离线",
     loading: "加载中…",
     noSessions: "暂无会话",
+    loadSessions: "加载会话",
+    loadMoreSessions: "加载更多会话",
     showMoreSessions: "再显示 {n} 个",
     collapseSessions: "收起",
     deleteSessionTitle: "删除会话？",

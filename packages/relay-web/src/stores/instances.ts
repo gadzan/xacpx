@@ -49,6 +49,8 @@ export interface InstanceView {
   // Distinguishes "sessions never fetched" from "fetched and genuinely empty" so the
   // sidebar only shows the "no sessions yet" empty row once a list has actually loaded.
   sessionsLoaded: boolean;
+  sessionsHasMore?: boolean;
+  sessionsLoading?: boolean;
   agents: AgentDto[];
   workspaces: WorkspaceDto[];
   agentCatalog: AgentCatalogEntryDto[];
@@ -88,17 +90,24 @@ export const useInstancesStore = defineStore("instances", () => {
     const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
     instances.value = rows.map((r) => {
       const prev = byId(r.id);
-      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
+      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, sessionsHasMore: prev?.sessionsHasMore ?? false, sessionsLoading: false, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
     });
-    // Eagerly populate the session list for every online instance so the sidebar shows
-    // them without the user having to click the instance first. Fire-and-forget: a slow
-    // or failing instance must not block the rest of the dashboard from rendering.
-    for (const inst of instances.value) {
-      if (inst.online && !inst.sessionsLoaded) void loadSessions(inst.id).catch(() => {});
-    }
   }
 
   async function loadSessions(instanceId: string): Promise<void> {
+    await fetchSessionsPage(instanceId, 0, true);
+  }
+
+  async function loadMoreSessions(instanceId: string): Promise<void> {
+    const inst = byId(instanceId);
+    if (!inst || !inst.sessionsHasMore || inst.sessionsLoading) return;
+    await fetchSessionsPage(instanceId, inst.sessions.length, false);
+  }
+
+  async function fetchSessionsPage(instanceId: string, offset: number, replace: boolean): Promise<void> {
+    const instBefore = byId(instanceId);
+    if (instBefore?.sessionsLoading) return;
+    if (instBefore) instBefore.sessionsLoading = true;
     // A list request can start before a rename succeeds and return afterwards.
     // Snapshot confirmation revisions so that stale response cannot downgrade a
     // newer value confirmed while the request was in flight.
@@ -112,15 +121,16 @@ export const useInstancesStore = defineStore("instances", () => {
     // the generic glyph. Tolerant + fire-alongside: an agents failure must never block the
     // session list, and it self-heals on the next loadSessions since `agents` stays empty.
     const needAgents = (byId(instanceId)?.agents.length ?? 0) === 0;
-    const [{ sessions }, agentsRes] = await Promise.all([
-      api.rpc<{ sessions: SessionDto[] }>(instanceId, "control.sessions.list"),
-      needAgents
-        ? api.rpc<{ agents: AgentDto[] }>(instanceId, "control.agents.list").catch(() => null)
-        : Promise.resolve(null),
-    ]);
-    const inst = byId(instanceId);
-    if (inst) {
-      inst.sessions = sessions.map((session) => {
+    try {
+      const [{ sessions, hasMore = false }, agentsRes] = await Promise.all([
+        api.rpc<{ sessions: SessionDto[]; hasMore?: boolean }>(instanceId, "control.sessions.list", { offset, limit: 20 }),
+        needAgents
+          ? api.rpc<{ agents: AgentDto[] }>(instanceId, "control.agents.list").catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const inst = byId(instanceId);
+      if (inst) {
+        const rows = sessions.map((session) => {
         const key = sessionRenameKey(instanceId, session.alias);
         const pending = pendingSessionRenames.get(key);
         if (!pending) return session;
@@ -133,16 +143,19 @@ export const useInstancesStore = defineStore("instances", () => {
           return session;
         }
         return { ...session, displayName: pending.desiredDisplayName };
-      });
-      inst.sessionsLoaded = true;
-      if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
+        });
+        inst.sessions = replace ? rows : [...inst.sessions, ...rows.filter((row) => !inst.sessions.some((old) => old.alias === row.alias))];
+        inst.sessionsLoaded = true;
+        inst.sessionsHasMore = hasMore;
+        if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
+      }
+      // Tail-cache reconciliation only runs for a complete first page. A partial
+      // page is not authoritative and must not make later sessions look deleted.
+      if (replace && !hasMore) useChatStore().reconcileTailCache(instanceId, sessions.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
+    } finally {
+      const inst = byId(instanceId);
+      if (inst) inst.sessionsLoading = false;
     }
-    // Tail-cache reconciliation (spec #205): as each instance's authoritative session
-    // list arrives, drop cached transcripts for sessions no longer alive or whose
-    // transport incarnation changed (same-alias recreation) — covers removals
-    // performed from other clients while the web was closed. Sleeping (archived)
-    // sessions stay resumable and keep their cache.
-    useChatStore().reconcileTailCache(instanceId, sessions.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
   }
 
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
@@ -406,10 +419,10 @@ export const useInstancesStore = defineStore("instances", () => {
         inst.online = event.online;
         // An instance that just came online may not have had its sessions fetched yet
         // (it was offline at the initial snapshot) — pull them now so the sidebar fills in.
-        if (event.online && !inst.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
+        if (event.online && inst.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
       }
     } else if (event.kind === "control-event" && event.event.type === "sessions-changed") {
-      void loadSessions(event.instanceId).catch(() => {});
+      if (byId(event.instanceId)?.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
     } else if (event.kind === "control-event" && event.event.type === "workspaces-changed") {
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.
@@ -421,5 +434,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
+  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
 });

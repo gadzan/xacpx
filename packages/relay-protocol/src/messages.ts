@@ -178,9 +178,15 @@ export interface InstanceRecoveryAckPayload {
 export interface SessionsListPayload {
   /** Server-stamped `relay:<accountId>`; scopes the listing to that channel. */
   chatKey: string;
+  /** Zero-based page offset for the relay-web sidebar. */
+  offset?: number;
+  /** Maximum number of active sessions to return. */
+  limit?: number;
 }
 export interface SessionsListResult {
   sessions: SessionDto[];
+  hasMore?: boolean;
+  nextOffset?: number;
 }
 export interface SessionsCreatePayload {
   /** Server-stamped `relay:<accountId>`; scopes the new session to that channel. */

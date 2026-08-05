@@ -44,18 +44,37 @@ test("loadSessions also loads the instance's agents so driver→icon mapping wor
   vi.restoreAllMocks();
 });
 
+test("loadMoreSessions appends the next server page without re-fetching the first page", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string, payload?: unknown) => {
+    if (type !== "control.sessions.list") return { agents: [] } as never;
+    const offset = (payload as { offset: number }).offset;
+    return offset === 0
+      ? { sessions: [{ alias: "s1", agent: "a", workspace: "/w", transportSession: "t1", running: false, archived: false }, { alias: "s2", agent: "a", workspace: "/w", transportSession: "t2", running: false, archived: false }], hasMore: true } as never
+      : { sessions: [{ alias: "s3", agent: "a", workspace: "/w", transportSession: "t3", running: false, archived: false }], hasMore: false } as never;
+  });
+  await store.loadSessions("i1");
+  await store.loadMoreSessions("i1");
+  expect(store.byId("i1")!.sessions.map((s) => s.alias)).toEqual(["s1", "s2", "s3"]);
+  expect(rpc).toHaveBeenNthCalledWith(1, "i1", "control.sessions.list", { offset: 0, limit: 20 });
+  expect(rpc).toHaveBeenNthCalledWith(2, "i1", "control.sessions.list", { offset: 2, limit: 20 });
+  vi.restoreAllMocks();
+});
+
 test("loadSessions skips the agents fetch once agents are already loaded", async () => {
   const store = useInstancesStore();
   store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
   const { api } = await import("../api/client");
   const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [] } as never);
   await store.loadSessions("i1");
-  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list");
+  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list", { offset: 0, limit: 20 });
   expect(rpc).not.toHaveBeenCalledWith("i1", "control.agents.list");
   vi.restoreAllMocks();
 });
 
-test("loadInstances eagerly loads sessions for online instances", async () => {
+test("loadInstances does not eagerly load sessions for online instances", async () => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
     const url = typeof input === "string" ? input : String(input);
     const body = url.includes("/rpc")
@@ -65,24 +84,24 @@ test("loadInstances eagerly loads sessions for online instances", async () => {
   }));
   const store = useInstancesStore();
   await store.loadInstances();
-  // Wait a microtask turn for the fire-and-forget loadSessions to settle.
+  // Session loading is an explicit sidebar action, not part of the instance snapshot.
   await new Promise((r) => setTimeout(r, 0));
-  expect(store.byId("i1")!.sessions.map((s) => s.alias)).toEqual(["backend"]);
-  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+  expect(store.byId("i1")!.sessions).toEqual([]);
+  expect(store.byId("i1")!.sessionsLoaded).toBe(false);
   // The offline instance is left untouched (no eager fetch).
   expect(store.byId("i2")!.sessionsLoaded).toBe(false);
   vi.unstubAllGlobals();
 });
 
-test("applyEvent instance-status loads sessions when an instance comes online", async () => {
+test("applyEvent instance-status does not load sessions before the user requests them", async () => {
   const store = useInstancesStore();
   store.instances = [{ id: "i1", name: "pc", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [], workspaces: [], agentCatalog: [] }];
   const { api } = await import("../api/client");
   const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [{ alias: "backend", agent: "claude", workspace: "/w", transportSession: "t", running: false }] });
   store.applyEvent({ kind: "instance-status", instanceId: "i1", online: true });
   await new Promise((r) => setTimeout(r, 0));
-  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list");
-  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+  expect(rpc).not.toHaveBeenCalled();
+  expect(store.byId("i1")!.sessionsLoaded).toBe(false);
   vi.restoreAllMocks();
 });
 

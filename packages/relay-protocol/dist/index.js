@@ -414,7 +414,7 @@ var optArr = (v) => v === undefined || Array.isArray(v);
 var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
 var validateSessionsList = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) ? o : null;
+  return o && isStr(o.chatKey) && optNum(o.offset) && optNum(o.limit) ? o : null;
 };
 var validateSessionsCreate = (p) => {
   const o = fields(p);

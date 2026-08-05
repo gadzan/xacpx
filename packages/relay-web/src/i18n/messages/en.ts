@@ -300,6 +300,8 @@ export default {
     offline: "offline",
     loading: "loading…",
     noSessions: "no sessions yet",
+    loadSessions: "Load sessions",
+    loadMoreSessions: "Load more sessions",
     showMoreSessions: "Show {n} more",
     collapseSessions: "Collapse",
     deleteSessionTitle: "Delete session?",
