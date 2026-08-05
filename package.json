@@ -85,7 +85,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "acpx": "^0.12.0",
+    "acpx": "^0.13.0",
     "node-pty": "^1.1.0",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^7.5.6",
@@ -105,7 +105,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "@types/proper-lockfile": "^4.1.4",

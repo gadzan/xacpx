@@ -31,7 +31,7 @@ Chat isn't the only entry point: xacpx also ships a self-hostable **[relay hub](
 
 ### Prerequisites
 
-- Node.js 22.12+ or Bun
+- Node.js 22.13+ or Bun
 - A working agent CLI you intend to use, such as Codex / Claude Code / Gemini / OpenCode
 - A phone with WeChat, Feishu, or Yuanbao installed
 

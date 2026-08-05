@@ -1,2 +1,5 @@
 [test]
 preload = ["./tests/setup.ts"]
+
+[install]
+registry = "https://registry.npmjs.org"
