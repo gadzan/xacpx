@@ -147,7 +147,7 @@ export function parseAdapterReleaseId(releaseId: string): { version: string; reg
   return { version: match[1]!, registryHash8: match[2]!, uuid8: match[3]! };
 }
 
-function splitCommand(command: string): string[] | null {
+export function splitAdapterCommand(command: string): string[] | null {
   const parts: string[] = [];
   let current = "";
   let quote: "'" | '"' | undefined;
@@ -192,7 +192,7 @@ export async function decodeManagedAdapterCommand(
   if (!command || !options.adaptersRoot || !options.controlledNodeExecutable) return null;
   const platform = options.platform ?? process.platform;
   const pathApi = platform === "win32" ? win32 : posix;
-  const args = splitCommand(command);
+  const args = splitAdapterCommand(command);
   if (!args || args.length !== 2 || !pathApi.isAbsolute(args[0]!) || !pathApi.isAbsolute(args[1]!)) return null;
   const fold = (value: string) => platform === "win32" ? value.toLowerCase() : value;
   const resolveRealpath = options.realpath ?? realpath;

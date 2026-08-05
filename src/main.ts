@@ -30,7 +30,7 @@ import { ScheduledTaskService } from "./scheduled/scheduled-service";
 import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
 import { createScheduledTaskFromRoute } from "./scheduled/scheduled-route-create";
 import { cancelScheduledTaskFromRoute, listScheduledTasksFromRoute } from "./scheduled/scheduled-route-manage";
-import { SessionService } from "./sessions/session-service";
+import { SessionService, type SessionLockedTransaction } from "./sessions/session-service";
 import { createActiveTurnRegistry, type ActiveTurnRegistry } from "./sessions/active-turn-registry";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
@@ -63,6 +63,11 @@ import { startConfigWatcher } from "./config/config-watcher";
 import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
+import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
+import { withAdapterOperationLock } from "./adapters/adapter-locks";
+import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
+import { splitAdapterCommand } from "./adapters/adapter-catalog";
+import { probeWindowsProcessIdentity, snapshotWindowsProcessesByToken } from "./process/windows-process-tree";
 
 export interface RuntimePaths {
   configPath: string;
@@ -84,6 +89,7 @@ export interface AppRuntime {
   transport: SessionTransport;
   daemonIdentity?: DaemonIdentity;
   orphanRegistry?: OrphanRegistry;
+  launchIntentCoordinator?: LaunchIntentCoordinator;
   orchestration: {
     service: OrchestrationService;
     server: OrchestrationServer;
@@ -257,6 +263,43 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
   });
   const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex });
+  const runtimeRoot = dirname(paths.configPath);
+  const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
+    platform: process.platform,
+    runtimeRoot,
+    configRoot: runtimeRoot,
+    generationId: deps.daemonIdentity?.generationId ?? randomUUID(),
+    ...(deps.orphanRegistry ? { registry: deps.orphanRegistry } : {}),
+    classifyAdapter: (command) => classifyPreinstalledAdapter(command),
+    resolveAdapter: async (command) => (await validateAndReResolveAdapterCommand(runtimeRoot, command)).agentCommand,
+    withSessionLock: (critical) => sessions.withSessionLock(critical),
+    withAdapterLock: (id, critical) => withAdapterOperationLock({ id, runtimeRoot }, critical),
+    persistCommand: (locked, sessionKey, command) => locked.setTransportAgentCommandDurably(sessionKey, command),
+    queryLauncherIdentity: async (pid) => {
+      const identity = await probeWindowsProcessIdentity(pid);
+      return identity.status === "found" ? { creationDate: identity.identity.creationDate } : null;
+    },
+    verifyOwner: async (pid, token) => {
+      const snapshot = await snapshotWindowsProcessesByToken(token);
+      const candidate = snapshot?.find((item) => item.pid === pid);
+      if (!candidate) return null;
+      const identity = await probeWindowsProcessIdentity(pid);
+      if (identity.status !== "found") return null;
+      const delta = BigInt(identity.identity.creationDate) - BigInt(candidate.creationDate);
+      if ((delta < 0n ? -delta : delta) > 9n) return null;
+      return {
+        creationDate: identity.identity.creationDate,
+        commandLine: candidate.commandLine,
+        executablePath: identity.identity.executablePath,
+      };
+    },
+    snapshotToken: (token) => snapshotWindowsProcessesByToken(token),
+    onWarning: (message, context) => {
+      void logger.info("transport.launch_intent.warning", message, {
+        ...(context ? { context: JSON.stringify(context) } : {}),
+      }).catch(() => {});
+    },
+  });
   // One shared, non-persisted registry of in-flight (chatKey, alias) turns. The
   // monitor marks turns active/inactive around dispatch; the command router can
   // later read it to tell the user "session X is still running".
@@ -290,6 +333,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
                     line: line.length > 500 ? `${line.slice(0, 500)}…` : line,
                   });
                 },
+                onBridgeRequest: (method, params, context) => launchIntentCoordinator.handle(method, params, context),
+                onBridgeDisconnect: () => launchIntentCoordinator.disconnect(),
               }),
             ),
           ))
@@ -1019,6 +1064,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     transport,
     ...(deps.daemonIdentity ? { daemonIdentity: deps.daemonIdentity } : {}),
     ...(deps.orphanRegistry ? { orphanRegistry: deps.orphanRegistry } : {}),
+    launchIntentCoordinator,
     orchestration: {
       service: orchestration,
       server: orchestrationServer,
@@ -1068,6 +1114,15 @@ function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
   // its identity for holders of the reference. Object.assign stays exhaustive
   // automatically, so a newly added AppConfig field cannot be silently missed.
   Object.assign(target, source);
+}
+
+function classifyPreinstalledAdapter(command: string): "codex" | "claude" | null {
+  const args = splitAdapterCommand(command);
+  if (!args || args.length !== 2) return null;
+  const entry = args[1]!.replaceAll("\\", "/").toLowerCase();
+  if (entry.includes("/adapters/codex/releases/")) return "codex";
+  if (entry.includes("/adapters/claude/releases/")) return "claude";
+  return null;
 }
 
 export async function main(): Promise<void> {

@@ -71,6 +71,7 @@ export interface AcpxBridgeClientOptions {
     context: { signal: AbortSignal; rpcId: string; launcherPid?: number },
   ) => Promise<unknown>;
   bridgeProcessPid?: number;
+  onBridgeDisconnect?: (error: Error) => void;
 }
 
 /**
@@ -341,6 +342,7 @@ export class AcpxBridgeClient {
     for (const controller of this.activeBridgeRequests.values()) controller.abort(error);
     this.activeBridgeRequests.clear();
     this.completedBridgeResponses.clear();
+    this.options.onBridgeDisconnect?.(error);
   }
 
   private handleBridgeOriginatedRequest(request: BridgeOriginatedRequest): void {
@@ -431,6 +433,7 @@ interface SpawnedBridgeClientOptions {
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
   onBridgeRequest?: AcpxBridgeClientOptions["onBridgeRequest"];
+  onBridgeDisconnect?: AcpxBridgeClientOptions["onBridgeDisconnect"];
 }
 
 export function buildBridgeSpawnEnv(
@@ -503,6 +506,7 @@ export async function spawnAcpxBridgeClient(
       : {}),
     ...(options.onMalformedLine ? { onMalformedLine: options.onMalformedLine } : {}),
     ...(options.onBridgeRequest ? { onBridgeRequest: options.onBridgeRequest } : {}),
+    ...(options.onBridgeDisconnect ? { onBridgeDisconnect: options.onBridgeDisconnect } : {}),
   });
   await client.waitUntilReady();
   return client;

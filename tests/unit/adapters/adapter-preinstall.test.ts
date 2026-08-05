@@ -7,6 +7,7 @@ import {
   preinstallAdapter,
   readActiveAdapterPointer,
   recoverAdapterInstall,
+  validateAndReResolveAdapterCommand,
   validateAdapterRelease,
 } from "../../../src/adapters/adapter-preinstall";
 
@@ -62,6 +63,33 @@ test("installs, validates, probes, renames an immutable release, then atomically
     registry: "https://registry.npmjs.org/",
     releaseId: installed.manifest.releaseId,
   }, { probe: false })).resolves.toMatchObject({ releaseId: installed.manifest.releaseId });
+});
+
+test("spawn-time re-resolution accepts only the release manifest's controlled node executable", async () => {
+  const { runtimeRoot, node, installPackage } = await fixture();
+  const installed = await preinstallAdapter({
+    runtimeRoot,
+    id: "codex",
+    version: "1.1.4",
+    registry: "https://registry.npmjs.org",
+    nodeExecutable: node,
+    uuid: (() => {
+      const values = ["55555555-0000-4000-8000-000000000000", "66666666-0000-4000-8000-000000000000"];
+      return () => values.shift()!;
+    })(),
+    installPackage,
+    verify: async () => {},
+  });
+  const entry = join(installed.releaseDir, installed.manifest.entryRelPath);
+  await expect(validateAndReResolveAdapterCommand(runtimeRoot, `${JSON.stringify(node)} ${JSON.stringify(entry)}`))
+    .resolves.toMatchObject({ id: "codex" });
+
+  const untrustedNode = join(runtimeRoot, "other", "node");
+  await mkdir(dirname(untrustedNode), { recursive: true });
+  await writeFile(untrustedNode, "#!/bin/sh\n");
+  await chmod(untrustedNode, 0o755);
+  await expect(validateAndReResolveAdapterCommand(runtimeRoot, `${JSON.stringify(untrustedNode)} ${JSON.stringify(entry)}`))
+    .rejects.toThrow("controlled node executable");
 });
 
 test("pointer publication failure preserves the old complete active pointer", async () => {

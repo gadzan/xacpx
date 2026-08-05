@@ -14,6 +14,8 @@ import {
   createAdapterReleaseId,
   parseAdapterReleaseId,
   type ManagedAdapterId,
+  decodeManagedAdapterCommand,
+  splitAdapterCommand,
 } from "./adapter-catalog";
 import { adapterRegistryNpmArgs } from "./adapter-registry";
 import { resolveNpmCommand } from "./adapter-npm";
@@ -320,4 +322,43 @@ export function resolveActiveAdapterCommandSync(
   } catch {
     return null;
   }
+}
+
+/** Validate the referenced immutable release, then re-resolve the active pointer. */
+export async function validateAndReResolveAdapterCommand(
+  runtimeRoot: string,
+  command: string,
+): Promise<{ id: ManagedAdapterId; agentCommand: string }> {
+  const args = splitAdapterCommand(command);
+  if (!args || args.length !== 2) throw new Error("adapter command is not a preinstalled release command");
+  const decoded = await decodeManagedAdapterCommand(command, {
+    adaptersRoot: join(runtimeRoot, "adapters"),
+    controlledNodeExecutable: args[0],
+  });
+  if (!decoded || decoded.kind !== "preinstalled") throw new Error("adapter command failed trust-boundary decoding");
+  const releaseDir = join(runtimeRoot, "adapters", decoded.id, "releases", decoded.releaseId);
+  const manifest = decodeManifest(await readJson(join(releaseDir, "installed.json")));
+  if (!manifest) throw new Error("adapter release manifest is invalid");
+  const trusted = await decodeManagedAdapterCommand(command, {
+    adaptersRoot: join(runtimeRoot, "adapters"),
+    controlledNodeExecutable: manifest.nodeExecutable,
+  });
+  if (!trusted || trusted.kind !== "preinstalled" || trusted.id !== decoded.id || trusted.releaseId !== decoded.releaseId) {
+    throw new Error("adapter command does not use the release's controlled node executable");
+  }
+  await validateAdapterRelease(releaseDir, {
+    id: decoded.id,
+    version: manifest.version,
+    packageName: MANAGED_ADAPTERS[decoded.id].packageName,
+    registry: manifest.registry,
+    releaseId: decoded.releaseId,
+  }, { probe: false });
+  const active = resolveActiveAdapterCommandSync(runtimeRoot, {
+    id: decoded.id,
+    version: manifest.version,
+    packageName: MANAGED_ADAPTERS[decoded.id].packageName,
+    registry: manifest.registry,
+  });
+  if (!active) throw new Error("no matching active adapter release");
+  return { id: decoded.id, agentCommand: active };
 }
