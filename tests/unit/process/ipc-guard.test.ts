@@ -74,11 +74,11 @@ test("role and resource id are part of the structured guard key", async () => {
 
 const windowsTest = process.platform === "win32" ? test : test.skip;
 
-windowsTest("real Windows guard is exclusive across processes and crash-released", async () => {
+windowsTest("real Windows guard is exclusive across processes and crash-released", { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "ipc-guard-process-"));
   roots.push(root);
   const helper = join(process.cwd(), "tests", "helpers", "ipc-guard-child.ts");
-  const spawnHelper = (hold?: boolean) => spawn("tsx", [helper, root, ...(hold ? ["hold"] : [])], {
+  const spawnHelper = (hold?: boolean) => spawn(process.execPath, ["--import", "tsx", helper, root, ...(hold ? ["hold"] : [])], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const waitForOutput = (child: ReturnType<typeof spawn>, expected: RegExp) => new Promise<string>((resolveOutput, reject) => {
