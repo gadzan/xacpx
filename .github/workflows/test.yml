@@ -74,6 +74,9 @@ jobs:
       - name: Windows IPC guard exclusivity and crash release
         run: bun test tests/unit/process/ipc-guard.test.ts
 
+      - name: Windows handle-stable process identity and tree termination
+        run: bun test tests/unit/process/windows-process-identity.test.ts tests/unit/process/windows-process-tree.test.ts
+
       # Real ConPTY under the PRODUCTION runtime (Node) — spawns a live shell with a
       # forward-slash cwd and asserts the byte stream round-trips.
       - name: Terminal ConPTY smoke (Node)

@@ -306,20 +306,19 @@ test("terminates a normal unix child by pid, not by process group", async () => 
   expect(runningChecks).toEqual([43210]);
 });
 
-test("terminates the full process tree on win32", async () => {
+test("refuses to terminate a bare PID on win32", async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
 
-  await terminateProcessTree(43210, {}, "win32", async (command, args) => {
+  const result = await terminateProcessTree(43210, {}, "win32", async (command, args) => {
     calls.push({ command, args });
     return 0;
   });
 
-  expect(calls).toEqual([
-    {
-      command: "taskkill",
-      args: ["/PID", "43210", "/T", "/F"],
-    },
-  ]);
+  expect(calls).toEqual([]);
+  expect(result).toEqual({
+    rootOutcome: "query-failed",
+    outcomes: [{ target: { pid: 43210, creationDate: null }, outcome: "query-failed" }],
+  });
 });
 
 function createPaths(runtimeDir: string): DaemonPaths {
