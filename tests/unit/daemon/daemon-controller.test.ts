@@ -524,6 +524,8 @@ function createController(
     isProcessRunning: overrides.isProcessRunning ?? (() => false),
     spawnDetached: overrides.spawnDetached ?? (async () => 99999),
     terminateProcess: overrides.terminateProcess ?? (async () => {}),
+    configRoot: runtimeDir,
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     startupPollIntervalMs: overrides.startupPollIntervalMs ?? 1,
     startupTimeoutMs: overrides.startupTimeoutMs ?? 50,
     ...(overrides.onboardingStartupTimeoutMs !== undefined
