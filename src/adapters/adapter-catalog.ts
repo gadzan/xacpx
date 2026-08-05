@@ -1,3 +1,7 @@
+import { createHash, randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { posix, win32 } from "node:path";
+
 import {
   DEFAULT_ADAPTER_REGISTRY,
   adapterRegistryNpmArgs,
@@ -19,6 +23,23 @@ export const MANAGED_ADAPTERS = {
 
 export type ManagedAdapterId = keyof typeof MANAGED_ADAPTERS;
 export type AdapterVersionOverrides = Partial<Record<ManagedAdapterId, string>>;
+
+export interface ManagedNpxCommand {
+  kind: "npx";
+  id: ManagedAdapterId;
+  version: string;
+  registry?: string;
+}
+
+export interface ManagedPreinstalledCommand {
+  kind: "preinstalled";
+  id: ManagedAdapterId;
+  releaseId: string;
+  nodeExecutable: string;
+  entryPath: string;
+}
+
+export type DecodedManagedAdapterCommand = ManagedNpxCommand | ManagedPreinstalledCommand;
 
 const EXACT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
@@ -72,7 +93,7 @@ export function managedAdapterRegistryFromCommand(command: string | undefined): 
 
 function parseManagedAdapterCommand(
   command: string | undefined,
-): { id: ManagedAdapterId; registry?: string } | undefined {
+): ManagedNpxCommand | undefined {
   if (!command) return undefined;
   const parts = command.split(" ");
   const hasLegacyShape = parts.length === 3 && parts[0] === "npx" && parts[1] === "-y";
@@ -89,7 +110,8 @@ function parseManagedAdapterCommand(
     return packageValue.startsWith(prefix) && packageValue.length > prefix.length;
   });
   if (!id) return undefined;
-  if (hasLegacyShape) return { id };
+  const version = packageValue.slice(`${MANAGED_ADAPTERS[id].packageName}@`.length);
+  if (hasLegacyShape) return { kind: "npx", id, version };
 
   const genericRegistry = parts[2]!.slice("--registry=".length);
   const scopedRegistry = parts.length === 5
@@ -98,10 +120,107 @@ function parseManagedAdapterCommand(
   try {
     const registry = normalizeAdapterRegistry(genericRegistry);
     if (normalizeAdapterRegistry(scopedRegistry) !== registry) return undefined;
-    return { id, registry };
+    return { kind: "npx", id, version, registry };
   } catch {
     return undefined;
   }
+}
+
+export function canonicalAdapterRegistry(registry: string): string {
+  return normalizeAdapterRegistry(registry);
+}
+
+export function adapterRegistryHash8(registry: string): string {
+  return createHash("sha256").update(canonicalAdapterRegistry(registry)).digest("hex").slice(0, 8);
+}
+
+export function createAdapterReleaseId(version: string, registry: string, uuid: string = randomUUID()): string {
+  if (!isExactAdapterVersion(version)) throw new Error(`invalid adapter version: ${version}`);
+  const uuid8 = uuid.replaceAll("-", "").slice(0, 8).toLowerCase();
+  if (!/^[0-9a-f]{8}$/.test(uuid8)) throw new Error("invalid release UUID");
+  return `${version}-${adapterRegistryHash8(registry)}-${uuid8}`;
+}
+
+export function parseAdapterReleaseId(releaseId: string): { version: string; registryHash8: string; uuid8: string } | null {
+  const match = /^(.+)-([0-9a-f]{8})-([0-9a-f]{8})$/.exec(releaseId);
+  if (!match || !isExactAdapterVersion(match[1]!)) return null;
+  return { version: match[1]!, registryHash8: match[2]!, uuid8: match[3]! };
+}
+
+export function splitAdapterCommand(command: string): string[] | null {
+  const parts: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  const input = command.trim();
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index]!;
+    if (escaped) { current += character; escaped = false; continue; }
+    if (character === "\\" && quote !== "'" && (input[index + 1] === quote || input[index + 1] === "\\")) {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else current += character;
+      continue;
+    }
+    if (character === "'" || character === '"') { quote = character; continue; }
+    if (/\s/.test(character)) {
+      if (current) { parts.push(current); current = ""; }
+    } else current += character;
+  }
+  if (escaped || quote) return null;
+  if (current) parts.push(current);
+  return parts;
+}
+
+/** Structural preinstall classifier used only to decide whether launch fencing is mandatory. */
+export function classifyPreinstalledAdapterCommandShape(command: string | undefined): ManagedAdapterId | null {
+  if (!command) return null;
+  const args = splitAdapterCommand(command);
+  if (!args || args.length !== 2) return null;
+  const entry = args[1]!.replaceAll("\\", "/").toLowerCase();
+  for (const id of ["codex", "claude"] as const) {
+    if (entry.includes(`/adapters/${id}/releases/`)) return id;
+  }
+  return null;
+}
+
+export interface DecodeManagedAdapterCommandOptions {
+  adaptersRoot?: string;
+  controlledNodeExecutable?: string;
+  platform?: NodeJS.Platform;
+  realpath?: (path: string) => Promise<string>;
+}
+
+/** The single trust-boundary decoder used by classification and GC. */
+export async function decodeManagedAdapterCommand(
+  command: string | undefined,
+  options: DecodeManagedAdapterCommandOptions = {},
+): Promise<DecodedManagedAdapterCommand | null> {
+  const npx = parseManagedAdapterCommand(command);
+  if (npx) return npx;
+  if (!command || !options.adaptersRoot || !options.controlledNodeExecutable) return null;
+  const platform = options.platform ?? process.platform;
+  const pathApi = platform === "win32" ? win32 : posix;
+  const args = splitAdapterCommand(command);
+  if (!args || args.length !== 2 || !pathApi.isAbsolute(args[0]!) || !pathApi.isAbsolute(args[1]!)) return null;
+  const fold = (value: string) => platform === "win32" ? value.toLowerCase() : value;
+  const resolveRealpath = options.realpath ?? realpath;
+  const expectedNode = fold(await resolveRealpath(options.controlledNodeExecutable));
+  const actualNode = fold(await resolveRealpath(args[0]!));
+  if (actualNode !== expectedNode) return null;
+  const root = fold(await resolveRealpath(options.adaptersRoot));
+  const entry = fold(await resolveRealpath(args[1]!));
+  const rel = pathApi.relative(root, entry);
+  if (!rel || rel === ".." || rel.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(rel)) return null;
+  const segments = rel.split(/[\\/]+/);
+  if (segments.length < 7) return null;
+  const [id, releases, releaseId, nodeModules, scope, packageLeaf] = segments;
+  if (!id || !isManagedAdapterId(id) || releases !== "releases" || nodeModules !== "node_modules") return null;
+  if (`${scope}/${packageLeaf}` !== MANAGED_ADAPTERS[id].packageName || !parseAdapterReleaseId(releaseId!)) return null;
+  return { kind: "preinstalled", id, releaseId: releaseId!, nodeExecutable: args[0]!, entryPath: args[1]! };
 }
 
 /** A recorded generated command is derived state, so a newer configured/default

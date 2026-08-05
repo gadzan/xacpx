@@ -42,6 +42,8 @@ interface RunCleanupSequenceInput {
   signalHandler: () => void;
   clearIntervalFn: (timer: unknown) => void;
   heartbeatTimer: unknown;
+  orphanTimer: unknown;
+  activeOrphanSweep: Promise<void>;
   daemonRuntime?: DaemonLifecycle;
   daemonRuntimeStarted: boolean;
   runtime: AppRuntime | null;
@@ -64,6 +66,9 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
   let runtime: AppRuntime | null = null;
   let consumerLock: ConsumerLock | undefined;
   let heartbeatTimer: unknown = null;
+  let orphanTimer: unknown = null;
+  let activeOrphanSweep = Promise.resolve();
+  let orphanSweepRunning = false;
   let consumerLockAcquired = false;
   let daemonRuntimeStarted = false;
   const shutdownController = new AbortController();
@@ -101,6 +106,11 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         configPath: paths.configPath,
         statePath: paths.statePath,
         hostname: hostname() || undefined,
+        ...(runtime.daemonIdentity ? {
+          schemaVersion: 2 as const,
+          lockId: runtime.daemonIdentity.generationId,
+          processCreationDate: runtime.daemonIdentity.daemonCreationDate,
+        } : {}),
       };
       await runtime.logger.info("weixin.consumer_lock.acquire_attempt", "attempting to acquire weixin consumer lock", {
         pid: lockMeta.pid,
@@ -142,7 +152,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     }
 
     // Sweep warm acpx queue owners orphaned by a previous daemon that exited without a
-    // clean shutdown (Windows `stop` force-kills the daemon via taskkill /F before
+    // clean shutdown (Windows verified stop can terminate the daemon before
     // dispose() can reap; crashes and reboots skip dispose entirely). Kicked off after
     // the consumer lock is held — so no peer instance owns these — and its target set is
     // snapshotted synchronously here, before this run launches any owner, so it can never
@@ -154,7 +164,15 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // `xacpx start`/`restart` falsely report "did not report ready". We join it before
     // channels begin serving so it still finishes before any current-run owner of a
     // stale session identity could be launched. Best-effort: never rejects.
-    const reapPromise = Promise.resolve(runtime.reapStaleQueueOwners()).catch(() => {});
+    const runOrphanSweep = (operation: () => Promise<void>): Promise<void> => {
+      if (orphanSweepRunning) return activeOrphanSweep;
+      orphanSweepRunning = true;
+      activeOrphanSweep = Promise.resolve(operation())
+        .catch(() => {})
+        .finally(() => { orphanSweepRunning = false; });
+      return activeOrphanSweep;
+    };
+    const reapPromise = runOrphanSweep(runtime.reapStaleQueueOwners);
 
     if (deps.beforeReady) {
       // First-run onboarding creates a session and its warm owner; let the sweep finish
@@ -182,6 +200,13 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // Join the orphan sweep before channels begin serving so it cannot race a current-run
     // owner that reuses a stale session identity. By now the ready signal is already out.
     await reapPromise;
+    if (runtime.reconcileOrphans && deps.daemonRuntime) {
+      orphanTimer = setIntervalFn(() => runOrphanSweep(runtime!.reconcileOrphans!), 60_000);
+      if (orphanTimer && typeof orphanTimer === "object" && "unref" in orphanTimer
+        && typeof (orphanTimer as { unref?: unknown }).unref === "function") {
+        (orphanTimer as { unref(): void }).unref();
+      }
+    }
 
     const channelStartPromise = deps.channels.startAll({
       agent: runtime.agent,
@@ -257,6 +282,8 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       signalHandler,
       clearIntervalFn,
       heartbeatTimer,
+      orphanTimer,
+      activeOrphanSweep,
       ...(deps.daemonRuntime ? { daemonRuntime: deps.daemonRuntime } : {}),
       runtime,
       consumerLock,
@@ -284,6 +311,10 @@ async function runCleanupSequence(input: RunCleanupSequenceInput): Promise<void>
   if (input.heartbeatTimer !== null) {
     input.clearIntervalFn(input.heartbeatTimer);
   }
+  if (input.orphanTimer !== null) {
+    input.clearIntervalFn(input.orphanTimer);
+  }
+  await input.activeOrphanSweep.catch(() => {});
   if (input.daemonRuntime && input.runtime) {
     try {
       await input.runtime.orchestration.server.stop();

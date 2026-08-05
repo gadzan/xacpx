@@ -35,7 +35,8 @@ import {
 } from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
+import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
 import { isProcessAlive } from "../../daemon/daemon-files";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
@@ -74,6 +75,11 @@ interface AcpxCliTransportOptions {
   queueOwnerTtlSeconds?: number;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  createAdapterContext?: (input: {
+    id: "codex" | "claude";
+    sessionKey: string;
+    agentCommand: string;
+  }) => QueueOwnerAdapterContext;
 }
 
 interface CommandResult {
@@ -224,6 +230,7 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly queueOwnerLauncher: Pick<AcpxQueueOwnerLauncher, "launch">;
   private readonly streamingHooks: StreamingPromptHooks;
   private readonly resolveSpawnEnvironment: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  private readonly createAdapterContext?: AcpxCliTransportOptions["createAdapterContext"];
 
   constructor(
     options: AcpxCliTransportOptions,
@@ -252,6 +259,7 @@ export class AcpxCliTransport implements SessionTransport {
     });
     this.streamingHooks = streamingHooks;
     this.resolveSpawnEnvironment = options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment;
+    this.createAdapterContext = options.createAdapterContext;
   }
 
   // acpx-cli transport does not stream stderr back to the caller, so "note" progress
@@ -672,15 +680,22 @@ export class AcpxCliTransport implements SessionTransport {
     }
     const record = await this.readSessionRecord(session);
     const env = this.spawnEnvironment(session);
-    await this.queueOwnerLauncher.launch({
+    const adapterId = classifyPreinstalledAdapterCommandShape(session.agentCommand);
+    const adapterContext = adapterId && session.agentCommand
+      ? this.createAdapterContext?.({ id: adapterId, sessionKey: session.alias, agentCommand: session.agentCommand })
+      : undefined;
+    const prepared = await this.queueOwnerLauncher.launch({
       acpxRecordId: record.acpxRecordId,
       coordinatorSession: session.mcpCoordinatorSession,
       ...(session.mcpSourceHandle ? { sourceHandle: session.mcpSourceHandle } : {}),
       permissionMode: this.permissionMode,
       nonInteractivePermissions: this.nonInteractivePermissions,
+      ...(adapterId && session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+      ...(adapterContext ? { adapterContext } : {}),
       ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
       ...(env ? { env } : {}),
     });
+    if (prepared?.agentCommand) session.agentCommand = prepared.agentCommand;
   }
 
   private async readSessionRecord(session: ResolvedSession): Promise<{ acpxRecordId: string; agentSessionId?: string }> {

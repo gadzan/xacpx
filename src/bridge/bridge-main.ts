@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
 
 import {
   normalizeBridgeNonInteractivePermissions,
@@ -10,6 +11,8 @@ import {
 import { BridgeServer } from "./bridge-server";
 import { BridgeRuntime } from "./bridge-runtime";
 import { coreEnv } from "../runtime/core-env";
+import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
+import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
 
 type BridgeInput = AsyncIterable<string> & {
@@ -19,7 +22,8 @@ type BridgeInput = AsyncIterable<string> & {
 type BridgeWriter = (chunk: string) => boolean | void;
 
 type BridgeLineHandler = {
-  handleLine(line: string, writeLine?: (line: string) => void): Promise<string>;
+  handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null>;
+  handleDisconnect?(error?: Error): void;
 };
 
 export async function processBridgeInput(options: {
@@ -35,7 +39,7 @@ export async function processBridgeInput(options: {
       const response = await options.server.handleLine(line, (chunk) => {
         options.write(chunk);
       });
-      options.write(response);
+      if (response !== null) options.write(response);
     })();
     const observedPendingWrite = pendingWrite.catch((error) => {
       if (firstError === undefined) {
@@ -50,6 +54,7 @@ export async function processBridgeInput(options: {
     });
   }
 
+  options.server.handleDisconnect?.();
   await Promise.allSettled(pendingWrites);
 
   if (firstError !== undefined) {
@@ -58,8 +63,8 @@ export async function processBridgeInput(options: {
 }
 
 export async function runBridgeMain(): Promise<void> {
-  const server = new BridgeServer(
-    new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
+  let server: BridgeServer;
+  const runtime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
       permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),
       nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(
         coreEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS"),
@@ -71,8 +76,21 @@ export async function runBridgeMain(): Promise<void> {
       sessionInitTimeoutMs: normalizeBridgeSessionInitTimeoutMs(
         coreEnv("BRIDGE_SESSION_INIT_TIMEOUT_MS"),
       ),
-    }),
-  );
+      createAdapterContext: ({ id, sessionKey, agentCommand }) => createQueueOwnerAdapterContext({
+        id,
+        sessionKey,
+        agentCommand,
+        launcherIdentity: async () => {
+          if (process.platform !== "win32") return { pid: process.pid, creationDate: "0" };
+          const identity = await probeWindowsProcessIdentity(process.pid);
+          if (identity.status !== "found") throw new Error("bridge launcher identity is unavailable");
+          return { pid: process.pid, creationDate: identity.identity.creationDate };
+        },
+        requestDaemon: (method, params) => server.requestDaemon(method, params as never),
+        readCurrentGeneration: readBridgeGeneration,
+      }),
+    });
+  server = new BridgeServer(runtime);
   const input = createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -85,6 +103,17 @@ export async function runBridgeMain(): Promise<void> {
       process.stdout.write(chunk);
     },
   });
+}
+
+async function readBridgeGeneration(): Promise<string | null> {
+  const path = coreEnv("BRIDGE_GENERATION_FILE");
+  if (!path) return null;
+  try {
+    const value = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    return typeof value.generationId === "string" && value.terminating !== true ? value.generationId : null;
+  } catch {
+    return null;
+  }
 }
 
 if (import.meta.main) {

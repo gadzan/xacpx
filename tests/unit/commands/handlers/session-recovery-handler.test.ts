@@ -114,7 +114,7 @@ test("runtime adapter E404 points session creation to the registry CLI", () => {
     new Error("npm ERR! code E404\nnpm ERR! 404 Not Found"),
   );
 
-  expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org/");
+  expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org");
   expect(reply.text).toContain("@agentclientprotocol");
 });
 
@@ -126,7 +126,7 @@ test("runtime adapter E404 is actionable when a prompt cold-start fails", () => 
     new Error("npm ERR! code E404"),
   );
 
-  expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org/");
+  expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org");
 });
 
 test("a non-npm backend 404 is not misreported as an adapter registry failure", () => {

@@ -23,6 +23,10 @@
 | `xacpx agent list` | 查看本机已注册的 agent |
 | `xacpx agent add <name>` | 从内置模板添加 agent；已存在且配置不同的同名 agent 不会被覆盖 |
 | `xacpx agent rm <name>` | 删除 agent |
+| `xacpx adapter preinstall <codex\|claude> [version]` | 可选地预安装一个不可变的本地 adapter release，并原子切换 active pointer |
+| `xacpx adapter list --installed` | 列出本地 adapter release 与当前 active release |
+| `xacpx adapter uninstall <codex\|claude> <release-id>` | 删除非 active、无引用的 release；引用读取不确定时拒绝删除 |
+| `xacpx orphans kill --confirm` | 人工确认后，按 fail-closed 规则尝试清理 Windows orphan 登记记录 |
 | `xacpx workspace list` | 查看本机已注册的 workspace |
 | `xacpx workspace add [name] [--raw]` | 把当前目录注册成 workspace；不传 `name` 时使用当前目录名，含特殊字符的名称会被自动规范化 |
 | `xacpx workspace rm <name>` | 删除 workspace |

@@ -24,6 +24,8 @@ The responsibility boundaries are:
 - `src/run-console.ts` is responsible for "**what actually runs inside the daemon process**".
 - Other business modules are responsible for "**what specific capabilities are provided once the process is alive**".
 
+On Windows, daemon startup also publishes a generation identity under `runtime/orphans/` and acquires a canonical named-pipe consumer guard. Managed preinstalled-adapter launches use one UUID token across argv, intent, owner, and residual records. Startup, the non-overlapping periodic sweep, shutdown, and `xacpx stop` all use the same fail-closed orphan registry and handle-stable process identity checks. Automatic cleanup never falls back to `taskkill`; the confirmed manual `xacpx orphans kill --confirm` command is the only broad operator escape hatch. Job Objects remain a deferred P3 improvement for descendants created after the final process snapshot.
+
 ## Directory structure
 
 ### `daemon-controller.ts`

@@ -1,7 +1,12 @@
+import { dirname } from "node:path";
+
 import { resolveLocalAgentCommand } from "./local-agent-bin";
-import { resolveManagedAdapterCommand, type AdapterVersionOverrides } from "../adapters/adapter-catalog";
+import { MANAGED_ADAPTERS, effectiveAdapterVersion, isManagedAdapterId, resolveManagedAdapterCommand, type AdapterVersionOverrides } from "../adapters/adapter-catalog";
+import { effectiveAdapterRegistry } from "../adapters/adapter-registry";
+import { resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
 import { hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
 import type { AgentConfig, TransportConfig } from "./types";
+import { resolveConfigPathForCurrentEnv } from "./config-path";
 
 export function resolveAgentCommand(
   driver: string,
@@ -40,10 +45,24 @@ export function resolveRuntimeAgentCommand(
   preferLocal = true,
   adapterVersions?: AdapterVersionOverrides,
   adapterRegistry?: string,
+  runtimeRoot: string = dirname(resolveConfigPathForCurrentEnv()),
 ): string | undefined {
   const explicit = resolveAgentCommand(driver, command);
   if (explicit) {
     return explicit;
+  }
+  const managedId = isManagedAdapterId(driver) ? driver : undefined;
+  const managedSpec = managedId ? MANAGED_ADAPTERS[managedId] : undefined;
+  if (managedId && managedSpec) {
+    const version = effectiveAdapterVersion(managedId, adapterVersions);
+    const registry = effectiveAdapterRegistry(adapterRegistry);
+    const preinstalled = resolveActiveAdapterCommandSync(runtimeRoot, {
+      id: managedId,
+      version,
+      registry,
+      packageName: managedSpec.packageName,
+    });
+    if (preinstalled) return preinstalled;
   }
   const managed = resolveManagedAdapterCommand(driver, adapterVersions, adapterRegistry);
   if (managed) return managed;

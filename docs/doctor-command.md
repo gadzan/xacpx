@@ -36,13 +36,14 @@ label shown in the report:
 | 2     | `runtime`               | Runtime           | The daemon runtime dir and its pid/status/log files are usable (writable or creatable). On POSIX it also checks the runtime dir is private (mode `0700`). |
 | 3     | `logs`                  | Logs              | Sums the sizes of the daemon log files (`app.log`/`stdout.log`/`stderr.log` plus rotation siblings) and `warn`s on growth (a single file over 50 MB, or all combined over 200 MB); `skip` when the runtime dir has no logs yet. Unreadable individual files are tolerated (skipped), not failed. |
 | 4     | `daemon`                | Daemon            | Daemon liveness via the daemon controller (running / stopped / indeterminate). Also scans for stale consumer-lock files when stopped. |
-| 5     | `wechat`                | WeChat            | The WeChat (Weixin) channel is logged in. |
-| 6     | `acpx`                  | acpx              | The resolved `acpx` binary reports a usable version. |
-| 7     | `bridge`                | Bridge            | The acpx bridge subprocess starts and responds. |
-| 8     | `plugins`               | Plugins           | Configured plugins are installed, loadable, and enabled. |
-| 9     | `orchestration`         | Orchestration     | Orchestration state in `state.json` is healthy (inspected read-only; never quarantined as a side effect). Heartbeat freshness is checked against `orchestration.progressHeartbeatSeconds`. |
-| 10    | `orchestration-socket`  | Orchestration IPC | `skip`s when the daemon is stopped; only when the daemon is live (running or indeterminate) does it probe whether the orchestration IPC endpoint actually accepts connections (`fail` only on a definitive no-listener, `pass`/`skip` on reachable or ambiguous). |
-| 11    | `smoke`                 | Smoke             | End-to-end probe of a real session. **Opt-in:** skipped unless `--smoke` is passed. |
+| 5     | `orphans`               | Windows orphans   | On Windows, inspects durable orphan intent/owner/residual evidence read-only; uncertainty is retained and reported rather than deleted. `skip`s on other platforms. |
+| 6     | `wechat`                | WeChat            | The WeChat (Weixin) channel is logged in. |
+| 7     | `acpx`                  | acpx              | The resolved `acpx` binary reports a usable version. |
+| 8     | `bridge`                | Bridge            | The acpx bridge subprocess starts and responds. |
+| 9     | `plugins`               | Plugins           | Configured plugins are installed, loadable, and enabled. |
+| 10    | `orchestration`         | Orchestration     | Orchestration state in `state.json` is healthy (inspected read-only; never quarantined as a side effect). Heartbeat freshness is checked against `orchestration.progressHeartbeatSeconds`. |
+| 11    | `orchestration-socket`  | Orchestration IPC | `skip`s when the daemon is stopped; only when the daemon is live (running or indeterminate) does it probe whether the orchestration IPC endpoint actually accepts connections (`fail` only on a definitive no-listener, `pass`/`skip` on reachable or ambiguous). |
+| 12    | `smoke`                 | Smoke             | End-to-end probe of a real session. **Opt-in:** skipped unless `--smoke` is passed. |
 
 ## Severities
 
@@ -58,6 +59,8 @@ Every check reports one of four severities:
 
 A summary line tallies the counts, e.g.
 `Summary: PASS 5, WARN 3, FAIL 1, SKIP 2`.
+
+Windows orphan warnings do not trigger automatic broad process termination. Review the evidence first; `xacpx orphans kill --confirm` is the explicit manual cleanup path.
 
 ## Flags
 

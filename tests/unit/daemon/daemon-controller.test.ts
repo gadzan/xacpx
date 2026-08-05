@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { DaemonController } from "../../../src/daemon/daemon-controller";
 import { type DaemonPaths } from "../../../src/daemon/daemon-files";
 import { DaemonStatusStore } from "../../../src/daemon/daemon-status";
+import { OrphanRegistry } from "../../../src/transport/orphan-registry";
 
 test("reports stopped when no pid or status files exist", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
@@ -16,6 +17,77 @@ test("reports stopped when no pid or status files exist", async () => {
   });
 
   await rm(dir, { recursive: true, force: true });
+});
+
+test("Windows stop uses four-state identity fencing and never kills a reused pid", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-"));
+  const registry = new OrphanRegistry(dir);
+  await registry.initialize();
+  await registry.writeGeneration({
+    generationId: "33333333-3333-4333-8333-333333333333",
+    daemonPid: 12345,
+    daemonCreationDate: "133801632000000000",
+    configRoot: dir,
+  });
+  await writeFile(join(dir, "daemon.pid"), "12345\n");
+  let killed = false;
+  let released = false;
+  const controller = new DaemonController(pathsFor(dir), {
+    platform: "win32",
+    configRoot: dir,
+    isProcessRunning: () => true,
+    spawnDetached: async () => 1,
+    terminateProcess: async () => {},
+    acquireLifecycleGuard: async () => ({ release: async () => { released = true; } }),
+    orphanRegistry: registry,
+    probeWindowsIdentity: async () => ({ status: "found", identity: {
+      pid: 12345,
+      creationDate: "133801632000000001",
+      executablePath: "C:\\unrelated.exe",
+    } }),
+    terminateWindowsTree: async () => { killed = true; throw new Error("must not kill reused pid"); },
+    sweepWindows: async () => emptySweep(),
+  });
+  await expect(controller.stop()).resolves.toEqual({ state: "stopped", detail: "stopped" });
+  expect(killed).toBe(false);
+  expect(released).toBe(true);
+  expect(await registry.readGeneration()).toBeNull();
+});
+
+test("Windows stop retains frozen evidence when identity or tree termination is unconfirmed", async () => {
+  for (const mode of ["identity", "termination"] as const) {
+    const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-"));
+    const registry = new OrphanRegistry(dir);
+    await registry.initialize();
+    await registry.writeGeneration({
+      generationId: "33333333-3333-4333-8333-333333333333",
+      daemonPid: 12345,
+      daemonCreationDate: "133801632000000000",
+      configRoot: dir,
+    });
+    await writeFile(join(dir, "daemon.pid"), "12345\n");
+    const controller = new DaemonController(pathsFor(dir), {
+      platform: "win32",
+      configRoot: dir,
+      isProcessRunning: () => true,
+      spawnDetached: async () => 1,
+      terminateProcess: async () => {},
+      acquireLifecycleGuard: async () => ({ release: async () => {} }),
+      orphanRegistry: registry,
+      probeWindowsIdentity: async () => mode === "identity" ? { status: "unavailable" } : {
+        status: "found",
+        identity: { pid: 12345, creationDate: "133801632000000000", executablePath: "C:\\node.exe" },
+      },
+      terminateWindowsTree: async () => ({
+        rootOutcome: "kill-requested-unconfirmed",
+        outcomes: [{ target: { pid: 12345, creationDate: "133801632000000000" }, outcome: "kill-requested-unconfirmed" }],
+      }),
+      sweepWindows: async () => emptySweep(),
+    });
+    await expect(controller.stop()).rejects.toThrow(mode === "identity" ? "identity is unavailable" : "not fully confirmed");
+    expect((await registry.readGeneration())?.terminating).toBe(true);
+    expect(await readFile(join(dir, "daemon.pid"), "utf8")).toBe("12345\n");
+  }
 });
 
 test("reports running when pid is alive and status exists", async () => {
@@ -449,9 +521,16 @@ function createController(
   };
 
   return new DaemonController(paths, {
+    // These fixtures exercise the platform-neutral pid/status lifecycle. Keep
+    // them on the non-Windows path even when the suite runs on Windows; the
+    // dedicated Windows fencing cases above construct their controller
+    // explicitly with `platform: "win32"` and durable generation metadata.
+    platform: "linux",
     isProcessRunning: overrides.isProcessRunning ?? (() => false),
     spawnDetached: overrides.spawnDetached ?? (async () => 99999),
     terminateProcess: overrides.terminateProcess ?? (async () => {}),
+    configRoot: runtimeDir,
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     startupPollIntervalMs: overrides.startupPollIntervalMs ?? 1,
     startupTimeoutMs: overrides.startupTimeoutMs ?? 50,
     ...(overrides.onboardingStartupTimeoutMs !== undefined
@@ -477,4 +556,27 @@ interface ControllerDeps {
   shutdownTimeoutMs: number;
   onShutdownPoll: () => Promise<void>;
   now: () => number;
+}
+
+function pathsFor(runtimeDir: string): DaemonPaths {
+  return {
+    runtimeDir,
+    pidFile: join(runtimeDir, "daemon.pid"),
+    statusFile: join(runtimeDir, "status.json"),
+    appLog: join(runtimeDir, "app.log"),
+    stdoutLog: join(runtimeDir, "stdout.log"),
+    stderrLog: join(runtimeDir, "stderr.log"),
+  };
+}
+
+function emptySweep() {
+  return {
+    ownersDeleted: 0,
+    ownersRetained: 0,
+    residualsDeleted: 0,
+    residualsRetained: 0,
+    intentsDeleted: 0,
+    intentsRetained: 0,
+    degraded: false,
+  };
 }

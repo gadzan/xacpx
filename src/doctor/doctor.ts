@@ -16,6 +16,7 @@ import { checkDaemon } from "./checks/daemon-check";
 import { checkLogs } from "./checks/logs-check";
 import { checkOrchestrationHealth } from "./checks/orchestration-health";
 import { checkOrchestrationSocket } from "./checks/orchestration-socket-check";
+import { checkOrphans } from "./checks/orphan-check";
 import { checkPlugins } from "./checks/plugin-check";
 import { checkRuntime } from "./checks/runtime-check";
 import { checkSmoke } from "./checks/smoke-check";
@@ -43,6 +44,7 @@ interface DoctorDeps {
   checkConfig?: typeof checkConfig;
   checkRuntime?: typeof checkRuntime;
   checkDaemon?: typeof checkDaemon;
+  checkOrphans?: typeof checkOrphans;
   checkLogs?: typeof checkLogs;
   checkWechat?: typeof checkWechat;
   checkAcpx?: typeof checkAcpx;
@@ -106,6 +108,12 @@ export async function runDoctor(options: DoctorRunOptions = {}, deps: DoctorDeps
           home,
           configPath: runtimePaths.configPath,
         }),
+    },
+    {
+      id: "orphans",
+      run: () => (deps.checkOrphans ?? checkOrphans)({
+        runtimeDir: resolveRuntimeDirFromConfigPath(runtimePaths.configPath),
+      }),
     },
     {
       id: "wechat",

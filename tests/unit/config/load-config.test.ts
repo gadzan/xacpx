@@ -226,7 +226,7 @@ test("parses and normalizes a custom adapter registry", () => {
     agents: {},
     workspaces: {},
   });
-  expect(config.transport.adapterRegistry).toBe("https://npm.corp.example/repository/npm/");
+  expect(config.transport.adapterRegistry).toBe("https://npm.corp.example/repository/npm");
 });
 
 test("rejects unsafe adapter registry URLs", () => {

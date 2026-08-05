@@ -17,7 +17,7 @@ export const cli: CliMessages = {
     "xacpx doctor - 运行诊断",
     "xacpx version - 查看版本",
     "xacpx agent|agents list|add|rm|templates - 管理本机 Agent",
-    "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name> - 管理 ACP adapter 版本",
+    "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name>|uninstall <name> <release> - 管理 ACP adapter",
     "xacpx adapter registry [set <url>|reset] - 管理 ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - 管理本机工作区（别名：ws）",
     "xacpx later|lt list|cancel <id> - 管理本机待执行定时任务",
@@ -96,6 +96,14 @@ export const cli: CliMessages = {
   adapterRegistrySaved: (registry) => `Adapter registry 已设置为 ${registry}。`,
   adapterRegistryReset: (registry) => `Adapter registry 本机覆盖已删除；当前使用 ${registry}。`,
   adapterInvalidRegistry: (detail) => `Adapter registry 无效：${detail}`,
+  adapterInstalledHeader: "已安装的受管 adapter release：",
+  adapterInstalledRow: (id, releaseId, active) => `${id}：${releaseId}${active ? "（当前）" : ""}`,
+  adapterPreinstalled: (id, version, releaseId) => `已预安装 ${id} adapter ${version}（${releaseId}）。`,
+  adapterUninstalled: (id, releaseId, alreadyMissing) => alreadyMissing
+    ? `${id} adapter release ${releaseId} 已不存在。`
+    : `已卸载 ${id} adapter release ${releaseId}。`,
+  adapterUninstallProtected: (id, releaseId, reason) =>
+    `拒绝卸载 ${id} adapter release ${releaseId}：${reason}。`,
 
   // later commands
   laterIdEmpty: "定时任务 ID 不能为空。",

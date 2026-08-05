@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
 
+import {
+  terminateWindowsProcessTree,
+  type BatchTarget,
+  type TerminateProcessTreeResult,
+  type WindowsProcessWorkerOptions,
+} from "./windows-process-tree";
+
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<number>;
 type KillProcess = (pid: number, signal: NodeJS.Signals) => void;
 type IsProcessRunning = (pid: number) => boolean;
@@ -7,10 +14,11 @@ type IsProcessRunning = (pid: number) => boolean;
 export type TerminateProcessTreeOptions = {
   /** True when the child was spawned detached so its pid is also its process-group id on Unix. */
   detachedProcessGroup?: boolean;
+  windowsWorker?: WindowsProcessWorkerOptions;
 };
 
 export async function terminateProcessTree(
-  pid: number,
+  target: number | BatchTarget,
   options: TerminateProcessTreeOptions = {},
   platform: NodeJS.Platform = process.platform,
   runCommand: ProcessCommandRunner = defaultRunProcessCommand,
@@ -18,18 +26,19 @@ export async function terminateProcessTree(
     process.kill(targetPid, signal);
   },
   isProcessRunning: IsProcessRunning = defaultIsProcessRunning,
-): Promise<void> {
+): Promise<void | TerminateProcessTreeResult> {
+  const pid = typeof target === "number" ? target : target.pid;
   if (pid <= 0) {
     return;
   }
 
   if (platform === "win32") {
-    try {
-      await runCommand("taskkill", ["/PID", String(pid), "/T", "/F"]);
-    } catch {
-      // Process tree already exited or could not be found.
-    }
-    return;
+    // A bare PID contains no independent generation identity. Preserve source
+    // compatibility for Unix callers but fail closed on Windows.
+    const root = typeof target === "number"
+      ? { pid: target, creationDate: null }
+      : target;
+    return await terminateWindowsProcessTree(root, options.windowsWorker);
   }
 
   const targetPid = options.detachedProcessGroup ? -pid : pid;

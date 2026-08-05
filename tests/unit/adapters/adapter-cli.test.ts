@@ -13,6 +13,9 @@ function deps(overrides: Partial<AdapterCliDeps> = {}) {
     getLatestVersion: async (id) => id === "codex" ? "1.1.4" : "0.59.0",
     versionExists: async () => true,
     verifyVersion: async () => {},
+    preinstall: async (_id, _version) => ({ releaseId: "release-test" }),
+    listInstalled: async () => [],
+    uninstall: async () => "removed",
     print: (line) => lines.push(line),
   };
   return {
@@ -30,13 +33,48 @@ test("registry shows the official npm default and can set or reset a local overr
   });
 
   expect(await handleAdapterCli(["registry"], ctx.deps)).toBe(0);
-  expect(ctx.lines.join("\n")).toContain("https://registry.npmjs.org/");
+  expect(ctx.lines.join("\n")).toContain("https://registry.npmjs.org");
 
   expect(await handleAdapterCli(["registry", "set", "https://npm.corp.example/repository/npm"], ctx.deps)).toBe(0);
-  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm/"]);
+  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm"]);
 
   expect(await handleAdapterCli(["registry", "reset"], ctx.deps)).toBe(0);
-  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm/", undefined]);
+  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm", undefined]);
+});
+
+test("preinstall uses the effective version/registry and installed listing is local", async () => {
+  const calls: string[] = [];
+  const ctx = deps({
+    loadVersions: async () => ({ codex: "1.1.2" }),
+    loadRegistry: async () => "https://npm.example/",
+    preinstall: async (id, version, registry) => {
+      calls.push(`${id}:${version}:${registry}`);
+      return { releaseId: "1.1.2-deadbeef-12345678" };
+    },
+    listInstalled: async () => [{ id: "codex", releaseId: "1.1.2-deadbeef-12345678", active: true }],
+  });
+  expect(await handleAdapterCli(["preinstall", "codex"], ctx.deps)).toBe(0);
+  expect(calls).toEqual(["codex:1.1.2:https://npm.example"]);
+  expect(await handleAdapterCli(["list", "--installed"], ctx.deps)).toBe(0);
+  expect(ctx.lines.join("\n")).toContain("1.1.2-deadbeef-12345678");
+});
+
+test("uninstall reports removal and refuses active, referenced, or racing releases", async () => {
+  const calls: string[] = [];
+  const ctx = deps({
+    uninstall: async (id, releaseId) => {
+      calls.push(`${id}:${releaseId}`);
+      return calls.length === 1 ? "removed" : "referenced";
+    },
+  });
+  expect(await handleAdapterCli(["uninstall", "codex", "1.1.3-aaaaaaaa-bbbbbbbb"], ctx.deps)).toBe(0);
+  expect(await handleAdapterCli(["uninstall", "codex", "1.1.4-aaaaaaaa-cccccccc"], ctx.deps)).toBe(1);
+  expect(calls).toEqual([
+    "codex:1.1.3-aaaaaaaa-bbbbbbbb",
+    "codex:1.1.4-aaaaaaaa-cccccccc",
+  ]);
+  expect(ctx.lines.join("\n")).toContain("Uninstalled");
+  expect(ctx.lines.join("\n")).toContain("Refused");
 });
 
 test("registry rejects unsafe URLs without changing config", async () => {
@@ -63,8 +101,8 @@ test("check queries npm through the configured adapter registry", async () => {
   });
   expect(await handleAdapterCli(["check"], ctx.deps)).toBe(0);
   expect(queried).toEqual([
-    "codex:https://npm.corp.example/repository/npm/",
-    "claude:https://npm.corp.example/repository/npm/",
+    "codex:https://npm.corp.example/repository/npm",
+    "claude:https://npm.corp.example/repository/npm",
   ]);
 });
 
@@ -91,8 +129,8 @@ test("set verifies a published exact version before persisting it", async () => 
   });
   expect(await handleAdapterCli(["set", "codex", "1.1.2"], ctx.deps)).toBe(0);
   expect(events).toEqual([
-    "exists:codex:1.1.2:https://npm.corp.example/",
-    "verify:codex:1.1.2:https://npm.corp.example/",
+    "exists:codex:1.1.2:https://npm.corp.example",
+    "verify:codex:1.1.2:https://npm.corp.example",
   ]);
   expect(ctx.saved()).toEqual({ claude: "0.58.1", codex: "1.1.2" });
 });

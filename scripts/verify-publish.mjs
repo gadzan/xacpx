@@ -20,7 +20,7 @@ const DEFAULT_PACKAGES = [
     id: "root",
     dir: ".",
     expectedName: "@ganglion/xacpx",
-    requiredFiles: ["dist/cli.js", "dist/plugin-api.js", "dist/plugin-api.d.ts", "README.md", "config.example.json", "package.json"],
+    requiredFiles: ["dist/cli.js", "dist/bridge/bridge-main.js", "dist/adapters/hermes-acp-shim.js", "dist/plugin-api.js", "dist/plugin-api.d.ts", "README.md", "config.example.json", "package.json"],
     forbiddenPathPatterns: [
       "^dist/channels/feishu/",
       "^dist/channels/cli/feishu-provider",
@@ -112,6 +112,12 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
   if (packageJson.name !== pkg.expectedName) {
     failures.push(`${pkg.id}: package.json name must be ${pkg.expectedName}, got ${String(packageJson.name)}`);
   }
+  if (pkg.id === "root" && pkg.expectedName === "@ganglion/xacpx") {
+    if (packageJson.optionalDependencies?.["fs-ext"] !== "2.1.1") {
+      failures.push("root: optionalDependencies must include fs-ext@2.1.1 for the Unix flock helper");
+    }
+    await verifyRootRuntimeBundle(packageRoot, failures);
+  }
 
   for (const file of pkg.requiredFiles) {
     if (!existsSync(join(packageRoot, file))) {
@@ -169,6 +175,25 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
         failures.push(`${pkg.id}: tarball contains forbidden path ${match} (matched ${pattern})`);
       }
     }
+  }
+}
+
+async function verifyRootRuntimeBundle(packageRoot, failures) {
+  const targets = ["dist/cli.js", "dist/bridge/bridge-main.js"];
+  for (const target of targets) {
+    const path = join(packageRoot, target);
+    if (!existsSync(path)) continue;
+    const source = await readFile(path, "utf8");
+    const absolutePackageRoot = packageRoot.replaceAll("\\", "/");
+    if (source.replaceAll("\\", "/").includes(absolutePackageRoot)) {
+      failures.push(`root: ${target} embeds a machine-specific user path`);
+    }
+  }
+  const cliPath = join(packageRoot, "dist/cli.js");
+  if (!existsSync(cliPath)) return;
+  const cli = await readFile(cliPath, "utf8");
+  for (const marker of ["IPC guard is already held", "XACPX_PROCESS_REQUEST", "adapter command failed trust-boundary decoding"]) {
+    if (!cli.includes(marker)) failures.push(`root: dist/cli.js is missing runtime marker ${marker}`);
   }
 }
 

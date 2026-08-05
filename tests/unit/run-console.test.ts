@@ -186,6 +186,48 @@ test("reports daemon ready before the queue-owner sweep finishes, and channels w
   expect(events.indexOf("reap:done")).toBeLessThan(events.indexOf("channel:start"));
 });
 
+test("periodic orphan sweeps never overlap and cleanup waits for the active sweep", async () => {
+  let tick: (() => void | Promise<void>) | undefined;
+  let periodicCalls = 0;
+  let releaseSweep!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseSweep = resolve; });
+  const runPromise = runConsole({ configPath: "/cfg", statePath: "/state" }, {
+    buildApp: async () => ({
+      ...createRuntime(),
+      reconcileOrphans: async () => {
+        periodicCalls += 1;
+        await gate;
+      },
+    }),
+    channels: {
+      startAll: async () => {
+        void tick?.();
+        void tick?.();
+      },
+    },
+    daemonRuntime: {
+      start: async () => {},
+      heartbeat: async () => {},
+      stop: async () => {},
+    },
+    setInterval: (callback, delay) => {
+      if (delay === 60_000) tick = callback;
+      return { unref() {} };
+    },
+    clearInterval: () => {},
+    addProcessListener: () => {},
+    removeProcessListener: () => {},
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(periodicCalls).toBe(1);
+  let settled = false;
+  void runPromise.then(() => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  releaseSweep();
+  await runPromise;
+});
+
 test("runs afterBuild before beforeReady and channel startup", async () => {
   const events: string[] = [];
   const runtime = createRuntime();

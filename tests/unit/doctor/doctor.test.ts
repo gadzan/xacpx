@@ -511,6 +511,7 @@ test("doctor orchestrator runs baseline checks in stable order and records smoke
       checkRuntime: createCheck("runtime"),
       checkLogs: createCheck("logs") as never,
       checkDaemon: createCheck("daemon"),
+      checkOrphans: createCheck("orphans") as never,
       checkWechat: createCheck("wechat"),
       checkAcpx: createCheck("acpx"),
       checkBridge: createCheck("bridge"),
@@ -525,6 +526,7 @@ test("doctor orchestrator runs baseline checks in stable order and records smoke
     "runtime",
     "logs",
     "daemon",
+    "orphans",
     "wechat",
     "acpx",
     "bridge",
@@ -537,6 +539,7 @@ test("doctor orchestrator runs baseline checks in stable order and records smoke
     "runtime",
     "logs",
     "daemon",
+    "orphans",
     "wechat",
     "acpx",
     "bridge",
@@ -698,7 +701,7 @@ test("doctor orchestrator returns exit code 1 when any check fails", async () =>
   );
 
   expect(result.exitCode).toBe(1);
-  expect(result.output).toContain("Summary: PASS 4, WARN 1, FAIL 1, SKIP 5");
+  expect(result.output).toContain("Summary: PASS 4, WARN 1, FAIL 1, SKIP 6");
 });
 
 test("doctor orchestrator returns exit code 0 when report only contains pass warn and skip", async () => {
@@ -719,7 +722,7 @@ test("doctor orchestrator returns exit code 0 when report only contains pass war
   );
 
   expect(result.exitCode).toBe(0);
-  expect(result.output).toContain("Summary: PASS 5, WARN 1, FAIL 0, SKIP 5");
+  expect(result.output).toContain("Summary: PASS 5, WARN 1, FAIL 0, SKIP 6");
 });
 
 test("runDoctor includes the orchestration-health check result", async () => {

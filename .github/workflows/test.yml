@@ -30,6 +30,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
+        # setup-node restores the npm download cache before this clean install.
         run: npm ci
 
       - name: Run tests
@@ -68,6 +69,29 @@ jobs:
       # profiles, including writes to state directories that did not exist yet.
       - name: Claude profile junction smoke (Windows)
         run: bun test tests/unit/adapters/claude-settings-policy.test.ts
+
+      # Uses production Node/libuv and two real processes. The holder is force
+      # terminated and the same canonical key must become acquirable again.
+      - name: Windows IPC guard exclusivity and crash release
+        run: bun test tests/unit/process/ipc-guard.test.ts
+
+      - name: Windows handle-stable process identity and tree termination
+        run: bun test tests/unit/process/windows-process-identity.test.ts tests/unit/process/windows-process-tree.test.ts
+
+      - name: Windows daemon stop, fencing, and orphan convergence
+        run: bun test tests/unit/daemon/daemon-controller.test.ts tests/unit/transport/orphan-registry.test.ts tests/unit/transport/windows-orphan-reaper.test.ts tests/unit/transport/launch-intent-coordinator.test.ts tests/unit/transport/acpx-queue-owner-launcher.test.ts
+
+      - name: Windows adapter pointer, junction, and GC safety
+        run: bun test tests/unit/adapters/adapter-catalog.test.ts tests/unit/adapters/adapter-preinstall.test.ts tests/unit/adapters/adapter-gc.test.ts tests/unit/integration/adapter-orphan-lifecycle.test.ts
+
+      - name: Packaged CLI smoke (Windows)
+        shell: pwsh
+        run: |
+          bun run build
+          bun pm pack --dry-run
+          node ./dist/cli.js version
+          if (-not (Select-String -Quiet -Path ./dist/cli.js -Pattern 'IPC guard is already held')) { throw 'bundled CLI is missing Windows IPC guard runtime' }
+          if (-not (Select-String -Quiet -Path ./dist/cli.js -Pattern 'XACPX_PROCESS_REQUEST')) { throw 'bundled CLI is missing Windows process worker runtime' }
 
       # Real ConPTY under the PRODUCTION runtime (Node) — spawns a live shell with a
       # forward-slash cwd and asserts the byte stream round-trips.

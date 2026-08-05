@@ -11,6 +11,7 @@ import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestration/coordinator-identity";
 import type { StateStore } from "../state/state-store";
+import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState, BackgroundResult, ChatContextState, LogicalSession } from "../state/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
 import {
@@ -73,6 +74,14 @@ interface SessionServiceOptions {
   now?: () => number;
 }
 
+export interface SessionStateWriter extends Pick<StateStore, "save"> {
+  saveNow(state: AppState): Promise<void>;
+}
+
+export interface SessionLockedTransaction {
+  setTransportAgentCommandDurably(alias: string, transportAgentCommand: string | undefined): Promise<void>;
+}
+
 export class SessionService {
   private readonly stateMutex: AsyncMutex;
   private readonly now: () => number;
@@ -80,7 +89,7 @@ export class SessionService {
 
   constructor(
     private readonly config: AppConfig,
-    private readonly stateStore: Pick<StateStore, "save">,
+    private readonly stateStore: SessionStateWriter,
     private readonly state: AppState,
     options: SessionServiceOptions = {},
   ) {
@@ -850,6 +859,28 @@ export class SessionService {
       session.last_used_at = new Date().toISOString();
       await this.persist();
     });
+  }
+
+  /**
+   * Execute one non-reentrant session transaction. Callers may acquire narrower
+   * locks (for example adapter-op) inside the callback, but must never call a
+   * SessionService mutation from it; use the supplied transaction operations.
+   */
+  async withSessionLock<T>(critical: (transaction: SessionLockedTransaction) => Promise<T>): Promise<T> {
+    return await this.stateMutex.run(async () => await critical({
+      setTransportAgentCommandDurably: (alias, command) => this.setTransportAgentCommandDurablyUnlocked(alias, command),
+    }));
+  }
+
+  private async setTransportAgentCommandDurablyUnlocked(alias: string, transportAgentCommand: string | undefined): Promise<void> {
+    if (!this.state.sessions[alias]) throw new Error(`session "${alias}" does not exist`);
+    const nextState = structuredClone(this.state);
+    const nextSession = nextState.sessions[alias]!;
+    const normalized = transportAgentCommand?.trim();
+    if (normalized) nextSession.transport_agent_command = normalized;
+    else delete nextSession.transport_agent_command;
+    await this.stateStore.saveNow(nextState);
+    replaceRuntimeState(this.state, nextState);
   }
 
   private async mutate<T>(critical: () => Promise<T>): Promise<T> {

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { terminateProcessTree } from "../process/terminate-process-tree";
+import { probeWindowsProcessIdentity, type BatchTarget } from "../process/windows-process-tree";
 import { MANAGED_ADAPTERS, type ManagedAdapterId } from "./adapter-catalog";
 import { resolveNpmCommand } from "./adapter-npm";
 import {
@@ -42,6 +43,13 @@ export async function verifyAcpInitialize(
   let stdoutBuffer = "";
   let settled = false;
   let timer: NodeJS.Timeout | undefined;
+  let windowsTarget: BatchTarget | undefined;
+  if (process.platform === "win32" && child.pid) {
+    const identity = await probeWindowsProcessIdentity(child.pid);
+    if (identity.status === "found") {
+      windowsTarget = { pid: child.pid, creationDate: identity.identity.creationDate, executablePath: identity.identity.executablePath };
+    }
+  }
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -127,7 +135,9 @@ export async function verifyAcpInitialize(
     child.stdin.destroy();
     child.stdout.destroy();
     child.stderr.destroy();
-    await terminateProcessTree(child.pid ?? 0, { detachedProcessGroup: detached });
+    if (process.platform !== "win32" || windowsTarget) {
+      await terminateProcessTree(windowsTarget ?? child.pid ?? 0, { detachedProcessGroup: detached });
+    }
   }
 }
 

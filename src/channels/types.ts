@@ -104,6 +104,9 @@ export interface ConsumerLockMetadata {
   configPath: string;
   statePath: string;
   hostname?: string;
+  schemaVersion?: 2;
+  lockId?: string;
+  processCreationDate?: string | null;
 }
 
 export interface ConsumerLock {

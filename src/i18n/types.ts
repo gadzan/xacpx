@@ -941,6 +941,11 @@ export interface CliMessages {
   adapterRegistrySaved: (registry: string) => string;
   adapterRegistryReset: (registry: string) => string;
   adapterInvalidRegistry: (detail: string) => string;
+  adapterInstalledHeader: string;
+  adapterInstalledRow: (id: string, releaseId: string, active: boolean) => string;
+  adapterPreinstalled: (id: string, version: string, releaseId: string) => string;
+  adapterUninstalled: (id: string, releaseId: string, alreadyMissing: boolean) => string;
+  adapterUninstallProtected: (id: string, releaseId: string, reason: string) => string;
 
   // later commands
   laterIdEmpty: string;

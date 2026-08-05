@@ -5,9 +5,15 @@ import { createInterface } from "node:readline";
 import {
   type BridgeMethod,
   type BridgeMessage,
+  type BridgeOriginatedCancel,
+  type BridgeOriginatedMethod,
+  type BridgeOriginatedRequest,
+  type BridgeOriginatedResponse,
   type BridgeResponse,
   type EnsureSessionProgressStage,
   encodeBridgeRequest,
+  encodeBridgeOriginatedMessage,
+  decodeBridgeOriginatedRequest,
 } from "./acpx-bridge-protocol";
 import { PromptCommandError } from "../prompt-output";
 import { MissingOptionalDepError } from "../../recovery/errors";
@@ -59,6 +65,13 @@ export interface AcpxBridgeClientOptions {
   /** Test seams for the per-request timeout timer. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (timer: unknown) => void;
+  onBridgeRequest?: (
+    method: BridgeOriginatedMethod,
+    params: Record<string, unknown>,
+    context: { signal: AbortSignal; rpcId: string; launcherPid?: number },
+  ) => Promise<unknown>;
+  bridgeProcessPid?: number;
+  onBridgeDisconnect?: (error: Error) => void;
 }
 
 /**
@@ -103,6 +116,8 @@ export class AcpxBridgeClient {
   private nextId = 1;
   private readonly pending = new Map<string, PendingRequest>();
   private terminalError: Error | null = null;
+  private readonly activeBridgeRequests = new Map<string, AbortController>();
+  private readonly completedBridgeResponses = new Map<string, string>();
 
   constructor(
     private readonly writeLine: WriteLine,
@@ -183,9 +198,9 @@ export class AcpxBridgeClient {
   }
 
   handleLine(line: string): void {
-    let message: BridgeMessage;
+    let parsed: unknown;
     try {
-      message = JSON.parse(line) as BridgeMessage;
+      parsed = JSON.parse(line) as unknown;
     } catch {
       // Dropped line: if it carried a response, the per-request timeout is the
       // safety net that eventually unblocks the caller — but log it so a
@@ -193,6 +208,30 @@ export class AcpxBridgeClient {
       this.options.onMalformedLine?.(line);
       return;
     }
+
+    if (isBridgeOriginatedRequest(parsed)) {
+      this.handleBridgeOriginatedRequest(parsed);
+      return;
+    }
+    if (isBridgeOriginatedCancel(parsed)) {
+      this.activeBridgeRequests.get(parsed.cancelRpcId)?.abort();
+      return;
+    }
+    if (isMalformedBridgeOriginatedRequest(parsed)) {
+      const item = parsed as Record<string, unknown>;
+      this.writeLine(encodeBridgeOriginatedMessage({
+        direction: "daemon-to-bridge",
+        rpcId: String(item.rpcId),
+        ok: false,
+        error: { code: "BRIDGE_RPC_INVALID", message: "invalid bridge-originated request" },
+      }));
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || typeof (parsed as { id?: unknown }).id !== "string") {
+      this.options.onMalformedLine?.(line);
+      return;
+    }
+    const message = parsed as BridgeMessage;
 
     const pending = this.pending.get(message.id);
     if (!pending) {
@@ -300,7 +339,72 @@ export class AcpxBridgeClient {
     for (const pending of pendingRequests) {
       pending.reject(error);
     }
+    for (const controller of this.activeBridgeRequests.values()) controller.abort(error);
+    this.activeBridgeRequests.clear();
+    this.completedBridgeResponses.clear();
+    this.options.onBridgeDisconnect?.(error);
   }
+
+  private handleBridgeOriginatedRequest(request: BridgeOriginatedRequest): void {
+    const completed = this.completedBridgeResponses.get(request.rpcId);
+    if (completed) {
+      this.writeLine(completed);
+      return;
+    }
+    if (this.activeBridgeRequests.has(request.rpcId)) return;
+    const controller = new AbortController();
+    this.activeBridgeRequests.set(request.rpcId, controller);
+    void (async () => {
+      let response: BridgeOriginatedResponse;
+      try {
+        if (!this.options.onBridgeRequest) throw new Error(`unsupported bridge-originated method: ${request.method}`);
+        const result = await this.options.onBridgeRequest(request.method, request.params, {
+          signal: controller.signal,
+          rpcId: request.rpcId,
+          ...(this.options.bridgeProcessPid ? { launcherPid: this.options.bridgeProcessPid } : {}),
+        });
+        if (controller.signal.aborted) throw controller.signal.reason ?? new Error("bridge RPC canceled");
+        response = { direction: "daemon-to-bridge", rpcId: request.rpcId, ok: true, result };
+      } catch (error) {
+        response = {
+          direction: "daemon-to-bridge",
+          rpcId: request.rpcId,
+          ok: false,
+          error: {
+            code: controller.signal.aborted ? "BRIDGE_RPC_CANCELED" : "BRIDGE_RPC_FAILED",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        };
+      } finally {
+        this.activeBridgeRequests.delete(request.rpcId);
+      }
+      if (this.terminalError) return;
+      const encoded = encodeBridgeOriginatedMessage(response);
+      this.completedBridgeResponses.set(request.rpcId, encoded);
+      // Bound replay memory for a long-lived bridge connection.
+      if (this.completedBridgeResponses.size > 256) {
+        this.completedBridgeResponses.delete(this.completedBridgeResponses.keys().next().value!);
+      }
+      try { this.writeLine(encoded); }
+      catch { /* child stream failure is handled by handleExit */ }
+    })();
+  }
+}
+
+function isBridgeOriginatedRequest(value: unknown): value is BridgeOriginatedRequest {
+  return decodeBridgeOriginatedRequest(value) !== null;
+}
+
+function isBridgeOriginatedCancel(value: unknown): value is BridgeOriginatedCancel {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.direction === "bridge-to-daemon" && typeof item.cancelRpcId === "string" && item.cancelRpcId.length > 0;
+}
+
+function isMalformedBridgeOriginatedRequest(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.direction === "bridge-to-daemon" && typeof item.rpcId === "string" && "method" in item;
 }
 
 export interface ManagedBridgeClient extends AcpxBridgeClient {
@@ -326,8 +430,11 @@ interface SpawnedBridgeClientOptions {
   permissionPolicy?: string;
   queueOwnerTtlSeconds?: number;
   sessionInitTimeoutMs?: number;
+  generationFilePath?: string;
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
+  onBridgeRequest?: AcpxBridgeClientOptions["onBridgeRequest"];
+  onBridgeDisconnect?: AcpxBridgeClientOptions["onBridgeDisconnect"];
 }
 
 export function buildBridgeSpawnEnv(
@@ -354,6 +461,7 @@ export function buildBridgeSpawnEnv(
       && options.sessionInitTimeoutMs > 0
       ? { XACPX_BRIDGE_SESSION_INIT_TIMEOUT_MS: String(options.sessionInitTimeoutMs) }
       : {}),
+    ...(options.generationFilePath ? { XACPX_BRIDGE_GENERATION_FILE: options.generationFilePath } : {}),
   };
 }
 
@@ -399,6 +507,8 @@ export async function spawnAcpxBridgeClient(
       ? { sessionInitTimeoutMs: options.sessionInitTimeoutMs }
       : {}),
     ...(options.onMalformedLine ? { onMalformedLine: options.onMalformedLine } : {}),
+    ...(options.onBridgeRequest ? { onBridgeRequest: options.onBridgeRequest } : {}),
+    ...(options.onBridgeDisconnect ? { onBridgeDisconnect: options.onBridgeDisconnect } : {}),
   });
   await client.waitUntilReady();
   return client;
@@ -427,7 +537,7 @@ export function manageBridgeChild(
 ): ManagedBridgeClient {
   const client = new AcpxBridgeClient(
     (line, onWriteError) => child.stdin.write(line, onWriteError),
-    options,
+    { ...options, ...(child.pid ? { bridgeProcessPid: child.pid } : {}) },
   ) as ManagedBridgeClient;
 
   // Per Node stream semantics a failed stdin write is reported through the

@@ -30,7 +30,7 @@ import { ScheduledTaskService } from "./scheduled/scheduled-service";
 import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
 import { createScheduledTaskFromRoute } from "./scheduled/scheduled-route-create";
 import { cancelScheduledTaskFromRoute, listScheduledTasksFromRoute } from "./scheduled/scheduled-route-manage";
-import { SessionService } from "./sessions/session-service";
+import { SessionService, type SessionLockedTransaction } from "./sessions/session-service";
 import { createActiveTurnRegistry, type ActiveTurnRegistry } from "./sessions/active-turn-registry";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
@@ -60,6 +60,15 @@ import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
+import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
+import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
+import { replaceRuntimeState } from "./state/replace-runtime-state";
+import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
+import { withAdapterOperationLock } from "./adapters/adapter-locks";
+import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
+import { classifyPreinstalledAdapterCommandShape } from "./adapters/adapter-catalog";
+import { probeWindowsProcessIdentity, snapshotWindowsProcessesByToken } from "./process/windows-process-tree";
+import { createQueueOwnerAdapterContext } from "./transport/queue-owner-adapter-context";
 
 export interface RuntimePaths {
   configPath: string;
@@ -79,6 +88,9 @@ export interface AppRuntime {
   perfTracer: PerfTracer;
   quota: QuotaManager;
   transport: SessionTransport;
+  daemonIdentity?: DaemonIdentity;
+  orphanRegistry?: OrphanRegistry;
+  launchIntentCoordinator?: LaunchIntentCoordinator;
   orchestration: {
     service: OrchestrationService;
     server: OrchestrationServer;
@@ -91,11 +103,12 @@ export interface AppRuntime {
   control: ControlService;
   /**
    * Terminate warm acpx queue owners orphaned by a previous daemon that exited
-   * without a clean shutdown (Windows `stop` force-kills via taskkill /F, crashes,
+   * without a clean shutdown (Windows verified stop, crashes,
    * machine reboot). Run once at startup before serving: this daemon has not launched
    * any owners yet, so every owner recorded for a known session is stale. Best-effort.
    */
   reapStaleQueueOwners: () => Promise<void>;
+  reconcileOrphans?: () => Promise<void>;
   dispose: () => Promise<void>;
 }
 
@@ -117,6 +130,8 @@ interface RuntimeDeps {
    * sync semantics.
    */
   stateSaveDebounceMs?: number;
+  daemonIdentity?: DaemonIdentity;
+  orphanRegistry?: OrphanRegistry;
 }
 
 function startProgressHeartbeat(
@@ -249,6 +264,43 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
   });
   const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex });
+  const runtimeRoot = dirname(paths.configPath);
+  const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
+    platform: process.platform,
+    runtimeRoot,
+    configRoot: runtimeRoot,
+    generationId: deps.daemonIdentity?.generationId ?? randomUUID(),
+    ...(deps.orphanRegistry ? { registry: deps.orphanRegistry } : {}),
+    classifyAdapter: (command) => classifyPreinstalledAdapterCommandShape(command),
+    resolveAdapter: async (command) => (await validateAndReResolveAdapterCommand(runtimeRoot, command)).agentCommand,
+    withSessionLock: (critical) => sessions.withSessionLock(critical),
+    withAdapterLock: (id, critical) => withAdapterOperationLock({ id, runtimeRoot }, critical),
+    persistCommand: (locked, sessionKey, command) => locked.setTransportAgentCommandDurably(sessionKey, command),
+    queryLauncherIdentity: async (pid) => {
+      const identity = await probeWindowsProcessIdentity(pid);
+      return identity.status === "found" ? { creationDate: identity.identity.creationDate } : null;
+    },
+    verifyOwner: async (pid, token) => {
+      const snapshot = await snapshotWindowsProcessesByToken(token);
+      const candidate = snapshot?.find((item) => item.pid === pid);
+      if (!candidate) return null;
+      const identity = await probeWindowsProcessIdentity(pid);
+      if (identity.status !== "found") return null;
+      const delta = BigInt(identity.identity.creationDate) - BigInt(candidate.creationDate);
+      if ((delta < 0n ? -delta : delta) > 9n) return null;
+      return {
+        creationDate: identity.identity.creationDate,
+        commandLine: candidate.commandLine,
+        executablePath: identity.identity.executablePath,
+      };
+    },
+    snapshotToken: (token) => snapshotWindowsProcessesByToken(token),
+    onWarning: (message, context) => {
+      void logger.info("transport.launch_intent.warning", message, {
+        ...(context ? { context: JSON.stringify(context) } : {}),
+      }).catch(() => {});
+    },
+  });
   // One shared, non-persisted registry of in-flight (chatKey, alias) turns. The
   // monitor marks turns active/inactive around dispatch; the command router can
   // later read it to tell the user "session X is still running".
@@ -274,6 +326,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
                 ...(typeof config.transport.sessionInitTimeoutMs === "number"
                   ? { sessionInitTimeoutMs: config.transport.sessionInitTimeoutMs }
                   : {}),
+                ...(deps.orphanRegistry
+                  ? { generationFilePath: join(deps.orphanRegistry.root, "generation.json") }
+                  : {}),
                 // A dropped (undecodable) bridge stdout line can be a lost
                 // response; the client-side request timeout unblocks the
                 // caller, but the corruption itself must be visible in logs.
@@ -282,11 +337,32 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
                     line: line.length > 500 ? `${line.slice(0, 500)}…` : line,
                   });
                 },
+                onBridgeRequest: (method, params, context) => launchIntentCoordinator.handle(method, params, context),
+                onBridgeDisconnect: () => launchIntentCoordinator.disconnect(),
               }),
             ),
           ))
       : (deps.createCliTransport?.(acpxCommand) ??
-          new AcpxCliTransport({ ...config.transport, command: acpxCommand }));
+          new AcpxCliTransport({
+            ...config.transport,
+            command: acpxCommand,
+            createAdapterContext: ({ id, sessionKey, agentCommand }) => createQueueOwnerAdapterContext({
+              id,
+              sessionKey,
+              agentCommand,
+              launcherIdentity: async () => {
+                if (process.platform !== "win32") return { pid: process.pid, creationDate: "0" };
+                const identity = await probeWindowsProcessIdentity(process.pid);
+                if (identity.status !== "found") throw new Error("CLI launcher identity is unavailable");
+                return { pid: process.pid, creationDate: identity.identity.creationDate };
+              },
+              requestDaemon: (method, params) => launchIntentCoordinator.handle(method, params, { launcherPid: process.pid }),
+              readCurrentGeneration: async () => {
+                const current = await deps.orphanRegistry?.readGeneration();
+                return current && current.terminating !== true ? current.generationId : null;
+              },
+            }),
+          }));
   const transport = createBackgroundFollowupTransport(baseTransport, {
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
@@ -951,11 +1027,28 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // Terminate warm acpx queue owners for our sessions. At shutdown this stops them
   // lingering until their --ttl expires (or forever, when ttl=0). At startup it sweeps
   // owners orphaned by a previous daemon that died without a clean shutdown (Windows
-  // `stop` force-kills via taskkill /F, crashes, reboots) — safe because this daemon has
+  // verified `stop`, crashes, reboots) — safe because this daemon has
   // not launched any owners yet, so every recorded owner is stale. Best-effort and
   // bounded: failures/timeouts just leave owners to expire on TTL.
-  const reapWarmQueueOwners = async (phase: "startup" | "shutdown"): Promise<void> => {
+  const reapWarmQueueOwners = async (phase: "startup" | "periodic" | "shutdown"): Promise<void> => {
     try {
+      if (deps.orphanRegistry && deps.daemonIdentity) {
+        const outcome = await sweepWindowsOrphans(
+          deps.orphanRegistry,
+          deps.daemonIdentity.generationId,
+          {
+            phase,
+            onWarning: (message) => {
+              void logger.info("transport.orphan_reap.degraded", message, { phase }).catch(() => {});
+            },
+          },
+        );
+        await logger.info("transport.orphan_reap.completed", "reconciled durable Windows orphan records", {
+          phase,
+          ...outcome,
+        }).catch(() => {});
+        return;
+      }
       const targets = collectReapTargets(sessions, state.orchestration, config);
       if (targets.length === 0) {
         return;
@@ -993,6 +1086,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     perfTracer,
     quota,
     transport,
+    ...(deps.daemonIdentity ? { daemonIdentity: deps.daemonIdentity } : {}),
+    ...(deps.orphanRegistry ? { orphanRegistry: deps.orphanRegistry } : {}),
+    launchIntentCoordinator,
     orchestration: {
       service: orchestration,
       server: orchestrationServer,
@@ -1004,6 +1100,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
     control,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
+    ...(deps.orphanRegistry && deps.daemonIdentity
+      ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
+      : {}),
     dispose: async () => {
       scheduledScheduler.stop();
       sessionWarmth?.stop();
@@ -1014,11 +1113,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         clearInterval(progressHeartbeatInterval);
       }
       await Promise.allSettled([...pendingWorkerDispatches]);
-      await reapWarmQueueOwners("shutdown");
       await debouncedStateStore.dispose();
       if ("dispose" in transport && typeof transport.dispose === "function") {
+        // Bridge dispose waits for its subprocess to acknowledge shutdown and
+        // terminate. Do this before the final orphan sweep and before runConsole
+        // releases the consumer guard, so no old launcher can publish afterward.
         await transport.dispose();
       }
+      await reapWarmQueueOwners("shutdown");
       try {
         await perfTracer.flush();
       } catch (err) {
@@ -1029,17 +1131,6 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       await logger.flush();
     },
   };
-}
-
-function replaceRuntimeState(target: AppState, source: AppState): void {
-  target.sessions = source.sessions;
-  target.chat_contexts = source.chat_contexts;
-  target.orchestration = source.orchestration;
-  // Must mirror every AppState runtime domain. Omitting scheduled_tasks here
-  // let an orchestration save (whose source is a clone) drop newly-created
-  // scheduled tasks from the persisted state. Safe because scheduled writes now
-  // serialize through the shared stateMutex, so `source` reflects the latest.
-  target.scheduled_tasks = source.scheduled_tasks;
 }
 
 function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
@@ -1054,6 +1145,15 @@ export async function main(): Promise<void> {
 
   try {
     const { createMessageChannels } = await import("./channels/create-channel.js");
+    let daemonIdentity: DaemonIdentity | undefined;
+    let orphanRegistry: OrphanRegistry | undefined;
+    if (process.platform === "win32") {
+      const configRoot = dirname(paths.configPath);
+      orphanRegistry = new OrphanRegistry(join(configRoot, "runtime"));
+      await orphanRegistry.initialize();
+      daemonIdentity = await createDaemonIdentity({ configRoot });
+      await orphanRegistry.writeGeneration(daemonIdentity);
+    }
     await ensureConfigExists(paths.configPath);
     const startupConfig = await loadConfig(paths.configPath);
 
@@ -1070,7 +1170,7 @@ export async function main(): Promise<void> {
     const { channelDeps } = await prepareChannelMedia(paths.configPath, startupConfig);
     const channelRegistry = new MessageChannelRegistry(createMessageChannels(startupConfig.channels, channelDeps));
     await runConsole(paths, {
-      buildApp: (paths) => buildApp(paths, { channel: channelRegistry }),
+      buildApp: (paths) => buildApp(paths, { channel: channelRegistry, daemonIdentity, orphanRegistry }),
       channels: channelRegistry,
     });
   } catch (error) {

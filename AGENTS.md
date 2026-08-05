@@ -80,6 +80,7 @@ There are two session concepts:
 - Command semantics live in `src/commands/` (parse + handlers + router).
 - Anything that touches `acpx` must go through transport implementations in `src/transport/`.
 - Daemon lifecycle lives in `src/daemon/` and should remain compatible with `xacpx start/status/stop`.
+- Windows process ownership and fail-closed orphan cleanup live in `src/transport/orphan-registry.ts` and `src/transport/windows-orphan-reaper.ts`; automatic kill paths must stay handle-bound.
 
 ## Docs to rely on (don't reverse-engineer from code first)
 

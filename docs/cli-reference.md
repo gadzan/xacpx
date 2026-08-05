@@ -28,6 +28,10 @@ commands (sent inside WeChat / Feishu / Yuanbao), see [commands.md](./commands.m
 | `xacpx adapter update <codex\|claude>` / `xacpx adapter update --all` | Verify and save the latest published adapter version locally |
 | `xacpx adapter set <codex\|claude> <version>` / `reset <codex\|claude>` | Verify an exact version override, or return to this xacpx release's tested default |
 | `xacpx adapter registry [set <url>\|reset]` | Show, change, or reset the npm registry used only for managed adapters |
+| `xacpx adapter preinstall <codex\|claude> [version]` | Opt in to an immutable local adapter release and atomically make it active |
+| `xacpx adapter list --installed` | List immutable local adapter releases and identify the active one |
+| `xacpx adapter uninstall <codex\|claude> <release-id>` | Remove one inactive, unreferenced release; refuses on uncertain state or orphan references |
+| `xacpx orphans kill --confirm` | Manually attempt fail-closed cleanup of durable Windows orphan records after operator review |
 | `xacpx workspace list` | List workspaces registered on this machine |
 | `xacpx workspace add [name] [--raw]` | Register the current directory as a workspace; without `name`, uses the current directory name, and names with special characters are normalized automatically |
 | `xacpx workspace rm <name>` | Remove a workspace |

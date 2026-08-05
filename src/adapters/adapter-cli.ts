@@ -25,12 +25,18 @@ export interface AdapterCliDeps {
   getLatestVersion: (id: ManagedAdapterId, registry: string) => Promise<string | null>;
   versionExists: (id: ManagedAdapterId, version: string, registry: string) => Promise<boolean>;
   verifyVersion: (id: ManagedAdapterId, version: string, registry: string) => Promise<void>;
+  preinstall: (id: ManagedAdapterId, version: string, registry: string) => Promise<{ releaseId: string }>;
+  listInstalled: () => Promise<Array<{ id: ManagedAdapterId; releaseId: string; active: boolean }>>;
+  uninstall: (id: ManagedAdapterId, releaseId: string) => Promise<"removed" | "active" | "referenced" | "changed" | "missing">;
   print: (line: string) => void;
 }
 
 export async function handleAdapterCli(args: string[], deps: AdapterCliDeps): Promise<number | null> {
   const command = args[0];
   if (command === "list" && args.length === 1) return await listAdapters(deps);
+  if (command === "list" && args.length === 2 && args[1] === "--installed") return await listInstalledAdapters(deps);
+  if (command === "preinstall" && (args.length === 2 || args.length === 3)) return await preinstallManagedAdapter(args[1], args[2], deps);
+  if (command === "uninstall" && args.length === 3) return await uninstallManagedAdapter(args[1], args[2], deps);
   if (command === "registry") return await handleRegistry(args.slice(1), deps);
   if (command === "check" && args.length <= 2) return await checkAdapters(args[1], deps);
   if (command === "set" && args.length === 3) return await setAdapter(args[1], args[2], deps);
@@ -40,6 +46,53 @@ export async function handleAdapterCli(args: string[], deps: AdapterCliDeps): Pr
     return await updateAdapters(target === "--all" ? listManagedAdapterIds() : [target], deps);
   }
   return null;
+}
+
+async function uninstallManagedAdapter(rawId: string | undefined, releaseId: string | undefined, deps: AdapterCliDeps): Promise<number> {
+  const ids = resolveIds(rawId ? [rawId] : [], deps);
+  if (!ids || !releaseId) return 1;
+  const id = ids[0]!;
+  try {
+    const disposition = await deps.uninstall(id, releaseId);
+    if (disposition === "removed" || disposition === "missing") {
+      deps.print(t().cli.adapterUninstalled(id, releaseId, disposition === "missing"));
+      return 0;
+    }
+    deps.print(t().cli.adapterUninstallProtected(id, releaseId, disposition));
+    return 1;
+  } catch (error) {
+    deps.print(t().cli.adapterFailed(id, error instanceof Error ? error.message : String(error)));
+    return 1;
+  }
+}
+
+async function listInstalledAdapters(deps: AdapterCliDeps): Promise<number> {
+  deps.print(t().cli.adapterInstalledHeader);
+  for (const release of await deps.listInstalled()) {
+    deps.print(t().cli.adapterInstalledRow(release.id, release.releaseId, release.active));
+  }
+  return 0;
+}
+
+async function preinstallManagedAdapter(rawId: string | undefined, rawVersion: string | undefined, deps: AdapterCliDeps): Promise<number> {
+  const ids = resolveIds(rawId ? [rawId] : [], deps);
+  if (!ids) return 1;
+  const id = ids[0]!;
+  const versions = await deps.loadVersions();
+  const version = rawVersion?.trim() || effectiveAdapterVersion(id, versions);
+  if (!isExactAdapterVersion(version)) {
+    deps.print(t().cli.adapterInvalidVersion(rawVersion ?? ""));
+    return 1;
+  }
+  const registry = effectiveAdapterRegistry(await deps.loadRegistry());
+  try {
+    const release = await deps.preinstall(id, version, registry);
+    deps.print(t().cli.adapterPreinstalled(id, version, release.releaseId));
+    return 0;
+  } catch (error) {
+    deps.print(t().cli.adapterFailed(id, describeAdapterRegistryError(error)));
+    return 1;
+  }
 }
 
 async function handleRegistry(args: string[], deps: AdapterCliDeps): Promise<number | null> {

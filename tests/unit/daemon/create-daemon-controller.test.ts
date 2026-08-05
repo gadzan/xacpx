@@ -135,6 +135,7 @@ test("uses a hidden powershell launcher when spawning the daemon on win32", asyn
     cwd: "C:\\app",
     env: {},
     platform: "win32",
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     spawnProcess: async ({ command, args, options }) => {
       spawnCalls.push({ command, args, options });
       await writeReadyStatus(paths.statusFile, 65432);
@@ -187,6 +188,7 @@ test("quotes Start-Process arguments so install paths with spaces survive on win
     cwd: "C:\\Users\\John Doe\\project",
     env: {},
     platform: "win32",
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     spawnProcess: async ({ command, args, options }) => {
       spawnCalls.push({ command, args, options });
       await writeReadyStatus(paths.statusFile, 87654);
@@ -230,6 +232,7 @@ test("returns as soon as the hidden windows launcher prints a pid", async () => 
     cwd: "C:\\app",
     env: {},
     platform: "win32",
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     spawnProcess: async ({ command }) => {
       capturedCommand = command;
       await writeReadyStatus(paths.statusFile, 76543);
@@ -306,20 +309,19 @@ test("terminates a normal unix child by pid, not by process group", async () => 
   expect(runningChecks).toEqual([43210]);
 });
 
-test("terminates the full process tree on win32", async () => {
+test("refuses to terminate a bare PID on win32", async () => {
   const calls: Array<{ command: string; args: string[] }> = [];
 
-  await terminateProcessTree(43210, {}, "win32", async (command, args) => {
+  const result = await terminateProcessTree(43210, {}, "win32", async (command, args) => {
     calls.push({ command, args });
     return 0;
   });
 
-  expect(calls).toEqual([
-    {
-      command: "taskkill",
-      args: ["/PID", "43210", "/T", "/F"],
-    },
-  ]);
+  expect(calls).toEqual([]);
+  expect(result).toEqual({
+    rootOutcome: "query-failed",
+    outcomes: [{ target: { pid: 43210, creationDate: null }, outcome: "query-failed" }],
+  });
 });
 
 function createPaths(runtimeDir: string): DaemonPaths {

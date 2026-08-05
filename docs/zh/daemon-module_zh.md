@@ -24,6 +24,8 @@
 - `src/run-console.ts` 负责“**daemon 进程里实际跑什么**”。
 - 其他业务模块负责“**进程活着之后具体提供什么能力**”。
 
+Windows 下 daemon 还会在 `runtime/orphans/` 发布 generation identity，并获取规范化 named-pipe consumer guard。预安装 adapter 的启动使用同一 UUID 贯穿 argv、intent、owner 与 residual；启动、周期 sweep、正常退出和 `xacpx stop` 都复用 fail-closed 登记表与 handle-stable 身份核验。自动路径不使用 `taskkill`；`xacpx orphans kill --confirm` 仅作为显式人工兜底。快照后新建子进程的彻底约束留作 Job Object P3。
+
 ## 目录结构
 
 ### `daemon-controller.ts`
