@@ -29,12 +29,15 @@ export interface MessageRecordDto {
     /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
      *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
      *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
-     *  `reasoning` are a flat fallback for older rows that predate `parts`. */
+     *  `reasoning` are a flat fallback for older rows that predate `parts`.
+     *  `truncated` marks a recovered offline reply the connector capped at
+     *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply. */
     structured?: {
         toolSteps?: ToolStepDto[];
         reasoning?: string;
         parts?: TurnPartDto[];
         scheduled?: ScheduledOriginDto;
+        truncated?: boolean;
     };
     attachments?: AttachmentMetadata[];
 }
@@ -102,6 +105,11 @@ export declare function webEventEnvelope(event: WebServerEvent): RelayEnvelope;
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
 export declare function validControlEvent(e: unknown): boolean;
+/** Deep-validate an `instance.state.sync` payload with the same posture as
+ *  `validControlEvent`: discriminant-free, but every field the hub will read must
+ *  have the right shape — a malformed sync must be dropped, never reconciled into
+ *  the hub's in-memory state or history. */
+export declare function validInstanceStateSync(p: unknown): boolean;
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export declare function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null;
 export declare const WEB_CLIENT_TYPE = "web.client";

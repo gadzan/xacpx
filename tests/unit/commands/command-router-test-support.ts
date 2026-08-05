@@ -947,6 +947,9 @@ export function createLogger(events: string[]): AppLogger {
     info: async (event, _message, context) => {
       events.push(`INFO ${event} ${JSON.stringify(context ?? {})}`);
     },
+    warn: async (event, _message, context) => {
+      events.push(`WARN ${event} ${JSON.stringify(context ?? {})}`);
+    },
     error: async (event, _message, context) => {
       events.push(`ERROR ${event} ${JSON.stringify(context ?? {})}`);
     },

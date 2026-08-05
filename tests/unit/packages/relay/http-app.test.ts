@@ -29,6 +29,7 @@ function makeFakeLogger(): { logger: RelayLogger; logs: LogEntry[] } {
   const logger: RelayLogger = {
     debug: (e, m, c) => logs.push([e, m, c]),
     info: (e, m, c) => logs.push([e, m, c]),
+    warn: (e, m, c) => logs.push([e, m, c]),
     error: (e, m, c) => logs.push([e, m, c]),
   };
   return { logger, logs };

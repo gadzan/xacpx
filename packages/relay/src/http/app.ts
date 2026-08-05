@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { randomUUID } from "node:crypto";
 
 import { isErrorPayload, MSG, parseControlPayload, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -548,7 +549,15 @@ export function createApp(deps: AppDeps): Hono<Vars> {
               ...(previewUrl ? { previewUrl } : {}),
             };
           });
-          persistedPromptId = deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments);
+          // The request id is generated HERE, before the RPC, and stored on the row:
+          // if the queued response is lost (restart / dropped frame), the connector's
+          // queue item still correlates back to this exact row via promptRequestId —
+          // text matching cannot distinguish a redelivery from a duplicate prompt.
+          const promptRequestId = randomUUID();
+          persistedPromptId = deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments, promptRequestId);
+          if (body.type === MSG.prompt && typeof payload === "object" && payload !== null) {
+            (payload as Record<string, unknown>).promptRequestId = promptRequestId;
+          }
         }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
@@ -577,7 +586,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       return c.json({ result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message === "instance-offline") return c.json({ error: message }, 503);
+      // 503: transient availability — the instance is offline, or the connection was
+      // superseded by a reconnect before the RPC could be answered (the caller may
+      // retry). 504: the request budget expired. Anything else is a server error.
+      if (message === "instance-offline" || message === "instance-reconnected") return c.json({ error: message }, 503);
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);
     } finally {

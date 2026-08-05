@@ -45,6 +45,11 @@ interface PendingRequest {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   instanceId: string;
+  /** The socket the request was sent over — a response must come from THAT socket,
+   *  not a different (even legitimately-authed) instance socket. */
+  socket: GatewaySocket;
+  /** The RPC type — the response envelope must echo it. */
+  type: string;
 }
 
 export class InstanceGateway {
@@ -81,20 +86,27 @@ export class InstanceGateway {
       if (!authed) return;
       // Only the socket that currently owns the map entry may take the instance
       // offline. A superseded socket's late close (see handleMessage) would
-      // otherwise evict the NEW connection and reject its in-flight requests.
+      // otherwise evict the NEW connection and reject its in-flight requests; a
+      // REVOKED socket (disconnect() already dropped the entry) likewise no-ops.
       const current = this.connections.get(authed.instanceId);
       if (current?.socket !== socket) return;
-      this.connections.delete(authed.instanceId);
-      for (const [id, p] of this.pending) {
-        if (p.instanceId === authed.instanceId) {
-          clearTimeout(p.timer);
-          this.pending.delete(id);
-          p.reject(new Error("instance-offline"));
-        }
-      }
-      this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
+      this.dropConnection(authed.instanceId, authed.accountId);
       this.logger.info("relay.instance.offline", "instance disconnected", { instanceId: authed.instanceId, accountId: authed.accountId });
     });
+  }
+
+  /** Remove the instance's connection entry, reject its in-flight requests, and
+   *  notify the offline transition. Shared by the close handler and disconnect(). */
+  private dropConnection(instanceId: string, accountId: string): void {
+    this.connections.delete(instanceId);
+    for (const [id, p] of this.pending) {
+      if (p.instanceId === instanceId) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        p.reject(new Error("instance-offline"));
+      }
+    }
+    this.deps.onStatusChange?.(instanceId, accountId, false);
   }
 
   private handleMessage(
@@ -125,6 +137,11 @@ export class InstanceGateway {
         this.connections.set(identity.instanceId, { socket, accountId: identity.accountId });
         if (existing && existing.socket !== socket) {
           this.logger.info("relay.instance.superseded", "reconnect superseded old socket", { instanceId: identity.instanceId });
+          // The old socket's pending RPCs can never be answered (their responses are
+          // fenced out) — reject them NOW instead of letting the HTTP call wait out
+          // the full request timeout. No offline transition: the new socket owns the
+          // instance.
+          this.rejectPendingForSocket(existing.socket, "instance-reconnected");
           try {
             existing.socket.close(4409, "superseded");
           } catch (err) {
@@ -137,13 +154,37 @@ export class InstanceGateway {
       return;
     }
 
+    // Socket ownership fencing: only the socket that CURRENTLY owns the instance's
+    // map entry may deliver messages. A revoked socket (disconnect() dropped the
+    // entry) or a superseded one (a reconnect replaced it) must not keep feeding
+    // events/state-syncs into onEvent — a late `turn-finished` after a persist-failed
+    // disconnect would persist + ack, bypassing the reconnect/resync retry, and a
+    // late state sync from a superseded socket could clobber the newer connection's
+    // recovered state.
+    const current = this.connections.get(authed.instanceId);
+    if (current?.socket !== socket) {
+      this.logger.debug("relay.instance.stale_socket", "dropped message from a revoked/superseded socket", { instanceId: authed.instanceId });
+      return;
+    }
+
     if (envelope.kind === "res" && envelope.id) {
       const waiting = this.pending.get(envelope.id);
-      if (waiting) {
-        clearTimeout(waiting.timer);
-        this.pending.delete(envelope.id);
-        waiting.resolve(envelope.payload);
+      // Response ownership: the id alone is not enough — request ids are sequential
+      // and guessable, so a DIFFERENT (even legitimately-authed) instance socket
+      // could spoof another instance's pending RPC and make the hub trust a forged
+      // result (markQueued, history deletion, output rows...). The response must come
+      // from the SAME instance + SAME socket the request went out on, and echo the
+      // request type.
+      if (!waiting || waiting.instanceId !== authed.instanceId || waiting.socket !== socket || waiting.type !== envelope.type) {
+        this.logger.warn("relay.instance.response_mismatch", "dropped RPC response that does not match its pending request", {
+          instanceId: authed.instanceId,
+          envelopeType: envelope.type,
+        });
+        return;
       }
+      clearTimeout(waiting.timer);
+      this.pending.delete(envelope.id);
+      waiting.resolve(envelope.payload);
       return;
     }
     if (envelope.kind === "event") {
@@ -214,6 +255,29 @@ export class InstanceGateway {
     return true;
   }
 
+  /** Force-close the instance's current socket (e.g. after a failed recovery
+   *  persistence transaction). The connector reconnects with backoff and re-sends its
+   *  `instance.state.sync` on auth, so the entry that failed to persist gets another
+   *  chance instead of sitting in the connector's FIFO until eviction.
+   *
+   *  The connection is REVOKED FIRST (map entry dropped, in-flight requests rejected,
+   *  offline transition fired) and the socket closed only afterwards — the close
+   *  handshake is async, and a socket that stayed in the map during it could keep
+   *  delivering events (e.g. a late `turn-finished` that persists + acks, bypassing
+   *  the reconnect/resync this disconnect was meant to force). The ownership check in
+   *  handleMessage drops anything that still arrives on the revoked socket. */
+  disconnect(instanceId: string): void {
+    const connection = this.connections.get(instanceId);
+    if (!connection) return;
+    this.dropConnection(instanceId, connection.accountId);
+    this.logger.info("relay.instance.disconnected", "instance connection revoked (persist-failed)", { instanceId, accountId: connection.accountId });
+    try {
+      connection.socket.close(4408, "persist-failed");
+    } catch (err) {
+      this.logger.debug("relay.instance.disconnect_failed", "closing revoked instance socket failed", { instanceId, error: String(err) });
+    }
+  }
+
   async sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown> {
     const connection = this.connections.get(instanceId);
     if (!connection) {
@@ -230,7 +294,7 @@ export class InstanceGateway {
         this.pending.delete(id);
         reject(new Error("timeout"));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, instanceId });
+      this.pending.set(id, { resolve, reject, timer, instanceId, socket: connection.socket, type });
       connection.socket.send(encodeEnvelope({
         protocolVersion: RELAY_PROTOCOL_VERSION,
         kind: "req",
@@ -241,5 +305,19 @@ export class InstanceGateway {
         requestBudgetMs,
       }));
     });
+  }
+
+  /** Reject every pending RPC that went out over `socket` (used when the socket is
+   *  superseded by a reconnect — the old connection's responses will never arrive, and
+   *  waiting out the full request timeout would hang the HTTP call). Does NOT fire the
+   *  offline transition: the new connection has already taken over the instance. */
+  private rejectPendingForSocket(socket: GatewaySocket, reason: string): void {
+    for (const [id, p] of this.pending) {
+      if (p.socket === socket) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        p.reject(new Error(reason));
+      }
+    }
   }
 }

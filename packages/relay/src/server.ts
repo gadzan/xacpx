@@ -4,15 +4,17 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
-  MSG, type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type LiveTurnSnapshotDto, type RelayEnvelope,
-  type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
-  validControlEvent,
+  MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
+  type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
+  validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
 
 import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
 import { AccountStore } from "./stores/accounts.js";
 import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
+import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { handleWebClientMessage } from "./gateway/web-inbound.js";
@@ -22,8 +24,6 @@ import { startMaintenanceLoop } from "./maintenance.js";
 import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
 
 const MAX_MESSAGES_PER_SESSION = 2000;
-const MAX_TOOL_STEPS = 200;
-const REASONING_CAP = 16000;
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // Per-string bound on tool-step / seeded-history content entering the turn buffer. Full
 // file diffs or command output can reach megabytes; everything buffered is broadcast,
@@ -32,6 +32,10 @@ const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
 // (tool-presentation.ts) — this is defence in depth against non-conforming connectors.
 // Counted in UTF-16 code units (string.length), not bytes.
 const TOOL_DETAIL_CAP = 32 * 1024;
+// Bound on the hub-side in-memory set of finishedOffline fingerprints persisted via
+// `instance.state.sync` (see the dedup logic in the sync handler). 32 turns is the
+// connector FIFO's max, so a few restarts' worth fits comfortably.
+const RECOVERY_FINGERPRINTS_MAX = 128;
 
 const capText = (s: string): string => (s.length > TOOL_DETAIL_CAP ? `${s.slice(0, TOOL_DETAIL_CAP)}…` : s);
 
@@ -67,11 +71,34 @@ export function capSeededStructured<T>(structured: T): T {
   return hasOversizedString(structured) ? capDeep(structured) : structured;
 }
 
+function capSyncedParts(parts: TurnPartDto[]): TurnPartDto[] {
+  let textRemaining = STATE_SYNC_TEXT_CAP;
+  let reasoningRemaining = REASONING_CAP;
+  let toolCount = 0;
+  const out: TurnPartDto[] = [];
+  for (const part of parts.slice(0, STATE_SYNC_PARTS_CAP)) {
+    if (part.type === "text") {
+      const text = part.text.slice(0, textRemaining);
+      textRemaining -= text.length;
+      if (text) out.push({ type: "text", text });
+    } else if (part.type === "reasoning") {
+      const text = part.text.slice(0, reasoningRemaining);
+      reasoningRemaining -= text.length;
+      if (text.trim()) out.push({ type: "reasoning", text });
+    } else if (toolCount < MAX_TOOL_STEPS) {
+      out.push({ type: "tool", step: capToolStep(part.step) });
+      toolCount += 1;
+    }
+  }
+  return out;
+}
+
 export interface RelayRuntime {
   db: SqlDriver;
   accounts: AccountStore;
   instances: InstanceStore;
   messages: MessageStore;
+  recoveryReceipts: RecoveryReceiptStore;
   gateway: InstanceGateway;
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
@@ -100,10 +127,29 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
   // `parts` records text / reasoning / tool events in arrival order so the web can
   // replay history inline (same model the live view builds). `steps`/`reasoning`/`text`
-  // remain for the flat fallback + the persisted `text` column.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
+  // remain for the flat fallback + the persisted `text` column. `truncated` rides the
+  // state sync: a connector that capped this turn at STATE_SYNC_TEXT_CAP marks it so
+  // the final flush persists structured.truncated instead of a silently-gappy reply.
+  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number; truncated?: boolean }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
+  // Content fingerprints (`instanceId, alias, prompt, outText`) of finishedOffline
+  // entries this runtime has already persisted from an `instance.state.sync`. A sync
+  // is re-sent whenever the previous send wasn't confirmed, and this set makes the
+  // redelivery exactly idempotent while a DIFFERENT turn that happens to produce the
+  // same reply is still persisted. Bounded FIFO (insertion order) — see
+  // RECOVERY_FINGERPRINTS_MAX.
+  const recoveredFingerprints = new Set<string>();
+  const rememberFingerprint = (fingerprint: string) => {
+    recoveredFingerprints.add(fingerprint);
+    if (recoveredFingerprints.size > RECOVERY_FINGERPRINTS_MAX) {
+      recoveredFingerprints.delete(recoveredFingerprints.values().next().value!);
+    }
+  };
+  // Cross-restart dedup for recoveryId-carrying finishedOffline entries (see the
+  // store's doc comment). Written in the SAME transaction as the message rows it
+  // vouches for, so a receipt can never outlive its rows or vice versa.
+  const recoveryReceipts = new RecoveryReceiptStore(db);
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
   // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
   // client can restore the usage bar after a refresh (see GET /api/active-turns). Cleared
@@ -192,6 +238,50 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
     },
     onEvent: (instanceId, accountId, envelope: RelayEnvelope) => {
+      // Shared inbound-prompt reconciliation (live turn-started AND state-sync
+      // restore/backfill) — one code path so the two cannot drift apart. See the
+      // helper body for the correlation order (queue association first, pre-write
+      // correlation only when the row is truly absent).
+      const recentRows = (sessionAlias: string) =>
+        messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 }).messages;
+      const hasTrailingPrompt = (sessionAlias: string, prompt: string): boolean => {
+        const rows = recentRows(sessionAlias);
+        const last = rows[rows.length - 1];
+        return last?.direction === "in" && last.text === prompt;
+      };
+      const reconcileInboundPrompt = (
+        sessionAlias: string,
+        opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
+        liveFallback: boolean,
+      ): void => {
+        if (opts.queueItemId) {
+          const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
+          const state = messages.queuedState(correlation);
+          if (state === "pending") { messages.promoteQueued(correlation); return; }
+          if (state === "fallback") { messages.finalizeQueuedFallback(correlation); return; }
+          if (state === "executed") return; // already promoted/finalized — the row exists
+          // absent: try the pre-write correlation before fabricating a row
+          if (opts.promptRequestId) {
+            const rowId = messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId);
+            if (rowId !== undefined && messages.promoteQueuedRow(rowId, correlation)) return;
+          }
+          if (opts.prompt) {
+            if (liveFallback) messages.appendQueuedFallback(correlation, opts.prompt);
+            else messages.appendExecutedQueuedFallback(correlation, opts.prompt);
+          }
+          return;
+        }
+        if (opts.promptRequestId) {
+          // Pre-written web prompt with no queue marker: the row already exists — do
+          // not duplicate it (the queue response may have been lost entirely).
+          if (messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined) return;
+        }
+        if (opts.prompt !== undefined) {
+          if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) return;
+          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return;
+          messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
+        }
+      };
       // Wraps the whole handler (not just messages.append): a throwing DB write must be
       // attributed to this instance's event persistence, not surface as the gateway's
       // generic relay.instance.message_failed (see instance-gateway's outer message guard).
@@ -216,20 +306,24 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           })();
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
-            turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
-            if (event.queueItemId) {
-              // A Web prompt was persisted at enqueue time; move that same row to its
-              // actual execution point. Other origins have no HTTP row, so fall back to
-              // the prompt carried by the event and reconcile if the HTTP response raced.
-              const correlation = { instanceId, sessionAlias: event.sessionAlias, queueItemId: event.queueItemId };
-              const promoted = messages.promoteQueued(correlation);
-              if (!promoted && event.prompt) {
-                messages.appendQueuedFallback(correlation, event.prompt);
-              }
-            } else if (event.prompt) {
-              // Scheduled turns have no enqueue-time HTTP request; persist their prompt
-              // directly when execution starts.
-              messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+            const k = key(instanceId, event.sessionAlias);
+            // Reconcile the inbound prompt FIRST (queued promotion / pre-write
+            // correlation / scheduled append) and only install the streaming buffer
+            // once it succeeded. A persistence failure here is NOT silent: it forces a
+            // reconnect so the connector re-sends its state sync and the prompt row can
+            // land — otherwise the turn would stream + persist its reply while the
+            // prompt row is permanently missing (an orphan answer).
+            try {
+              reconcileInboundPrompt(
+                event.sessionAlias,
+                { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
+                true,
+              );
+              turnBuffers.set(k, { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+            } catch (err) {
+              turnBuffers.delete(k);
+              gateway.disconnect(instanceId);
+              throw err;
             }
           } else if (event.type === "turn-output") {
             // Only append to an existing buffer; never lazily resurrect one. A buffer
@@ -252,17 +346,76 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const k = key(instanceId, event.sessionAlias);
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
-            if (!a) return;
-            const steps = [...a.steps.values()];
-            // Treat whitespace-only reasoning as absent: it would otherwise persist as an
-            // empty `structured.reasoning` and render as a blank reasoning panel in history.
-            const hasReasoning = a.reasoning.trim().length > 0;
-            const hasStructured = steps.length > 0 || hasReasoning;
-            if (a.text || hasStructured) {
-              const structured = hasStructured
-                ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
-                : undefined;
-              messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
+            // Persist the reply row(s), shared by the live path and the transactional
+            // recovery-ack path below. A turn with no content is a warning, not a row.
+            const flush = (): void => {
+              if (!a) {
+                // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
+                // The daemon carries the final reply text on turn-finished so the answer
+                // can still land in history instead of leaving a prompt with no reply.
+                // Presence (not truthiness): an empty-string reply is still a reply.
+                // A failed turn without a reply text falls back to its errorMessage —
+                // an error row closes the hole for failures the same way text does
+                // for successes.
+                if (event.text !== undefined) {
+                  messages.append(instanceId, event.sessionAlias, "out", event.text);
+                } else if (!event.ok && event.errorMessage !== undefined) {
+                  messages.append(instanceId, event.sessionAlias, "out", event.errorMessage);
+                } else {
+                  logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
+                    instanceId, sessionAlias: event.sessionAlias,
+                  });
+                }
+                return;
+              }
+              const steps = [...a.steps.values()];
+              // Treat whitespace-only reasoning as absent: it would otherwise persist as an
+              // empty `structured.reasoning` and render as a blank reasoning panel in history.
+              const hasReasoning = a.reasoning.trim().length > 0;
+              const hasStructured = steps.length > 0 || hasReasoning;
+              // Same resolution as the recovered-offline path: streamed text wins; a
+              // FAILED turn with no streamed output must surface its errorMessage
+              // instead of leaving a prompt with no answer (the exact hole recovery
+              // closes for successes).
+              const text = a.text || (!event.ok && event.errorMessage !== undefined ? event.errorMessage : a.text);
+              // Presence semantics, matching the no-buffer and recovered-offline paths:
+              // an empty SUCCESSFUL reply is still a reply and gets its row — a buffered
+              // turn that ran and returned nothing must not leave a prompt with no
+              // answer (and its receipt is already committed, so the entry can never be
+              // re-delivered to backfill it). A failed turn with truly nothing to say
+              // still leaves no row.
+              if (hasStructured || text !== "" || event.ok) {
+                const structured = hasStructured
+                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}) }
+                  : (a.truncated ? { truncated: true } : undefined);
+                messages.append(instanceId, event.sessionAlias, "out", text, structured);
+              }
+            };
+            const recoveryId = event.recoveryId;
+            if (recoveryId) {
+              // Message + receipt must commit as ONE unit: a crash between them would
+              // either lose the dedup guard (double-persist on redelivery) or leak a
+              // receipt for rows that never landed. The ack goes out ONLY after the
+              // commit — confirming on the connector's ws flush would clear its FIFO
+              // before the hub actually persisted, leaving a permanent history hole
+              // if the hub dies in between.
+              try {
+                db.transaction(() => {
+                  flush();
+                  recoveryReceipts.remember(instanceId, recoveryId);
+                });
+              } catch (err) {
+                // The connector only re-sends pending entries on reconnect, so a
+                // silent persistence failure would strand this turn in its FIFO until
+                // eviction. Force a reconnect: the re-auth pushes a fresh state sync
+                // and the entry gets another chance (deduped by receipt if it already
+                // landed on a partial write).
+                gateway.disconnect(instanceId);
+                throw err;
+              }
+              gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: [recoveryId] } satisfies InstanceRecoveryAckPayload);
+            } else {
+              flush();
             }
           } else if (event.type === "turn-usage") {
             // Retain the latest usage per session (replace) so a refreshed web client can
@@ -285,6 +438,166 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               }
             }
           }
+        } else if (envelope.type === MSG.instanceStateSync) {
+          if (!validInstanceStateSync(envelope.payload)) {
+            // Malformed sync from a buggy/hostile connector: drop it and leave this
+            // instance's in-memory state untouched (same posture as relay.event.invalid).
+            logger.debug("relay.event.invalid", "dropped malformed instance state sync", { instanceId });
+            return;
+          }
+          const sync = envelope.payload as InstanceStateSyncPayload;
+          // Recency guards against duplicate persists. A sync is re-sent whenever the
+          // previous send wasn't confirmed (or the connector simply reconnects again),
+          // so blind appends would duplicate transcript rows. The last few rows are
+          // enough precision: a recovered prompt/answer is always among the newest
+          // entries in its session when the sync lands.
+          const hasRecentRow = (sessionAlias: string, direction: "in" | "out", text: string): boolean =>
+            recentRows(sessionAlias).some((m) => m.direction === direction && m.text === text);
+          // Pair matching for the finishedOffline out row: a previous sync persists a
+          // recovered turn as an adjacent `in`(prompt) → `out`(reply) pair, so matching
+          // the PAIR means two different turns that happen to produce identical reply
+          // text ("ok", "/status" output, …) are NOT deduped into each other the way a
+          // bare text match would — only an actual redelivery matches.
+          const hasRecentTurnPair = (sessionAlias: string, prompt: string, outText: string): boolean => {
+            const rows = recentRows(sessionAlias);
+            for (let i = 0; i + 1 < rows.length; i++) {
+              const cur = rows[i]!;
+              const next = rows[i + 1]!;
+              if (cur.direction === "in" && cur.text === prompt && next.direction === "out" && next.text === outText) return true;
+            }
+            return false;
+          };
+          // The WHOLE reconciliation is wrapped so ANY database failure — not just the
+          // finished-entry transactions — forces a reconnect: the connector only
+          // re-sends its state sync on re-auth, so a silent failure would strand the
+          // active turn (its prompt row never lands) with no way to retry. Database
+          // work happens BEFORE the in-memory replacement, so a failure never leaves
+          // half-updated hub state behind.
+          try {
+            // 1. Finished turns are reconciled FIRST, so their rows land before any
+            //    active-turn prompt backfill (message order). A finished entry and a
+            //    running turn may share a sessionAlias legitimately (turn A finished
+            //    while the queue started turn B on the same session) — they are
+            //    distinguished by recoveryId, NOT by alias.
+            const activeRecoveryIds = new Set(sync.turns.flatMap((t) => t.recoveryId ? [t.recoveryId] : []));
+            // Recovery ids to ack once their (message + receipt) transactions below
+            // have all committed — one ack frame, sent after the loop.
+            const ackedRecoveryIds: string[] = [];
+            for (const finished of sync.finishedOffline) {
+              // Truly contradictory (the SAME turn listed as both finished and running):
+              // trust the running turn; it will flush normally. Different turns on the
+              // same alias are both persisted.
+              if (finished.recoveryId && activeRecoveryIds.has(finished.recoveryId)) continue;
+              // A failed turn with no (or an empty) reply must surface its error text,
+              // never an empty out row: the connector's accumulator starts text at ""
+              // and a legacy/buggy sync may ship text:"" alongside errorMessage.
+              const text = finished.ok
+                ? finished.text
+                : (finished.text ? finished.text : finished.errorMessage);
+              const recoveryId = finished.recoveryId;
+              if (recoveryId && recoveryReceipts.has(instanceId, recoveryId)) {
+                // Already committed (live flush or a previous sync) but the connector
+                // never got the ack — re-ack so its FIFO can finally drop the entry.
+                ackedRecoveryIds.push(recoveryId);
+                continue;
+              }
+              const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
+              if (!recoveryId && recoveredFingerprints.has(fingerprint)) continue;
+              const alreadyPersisted = !recoveryId && text !== undefined
+                ? finished.prompt !== undefined
+                  ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
+                  : hasRecentRow(finished.sessionAlias, "out", text)
+                : false;
+              // The reply row(s) and the receipt are written in ONE transaction (the
+              // same invariant as the live turn-finished flush): a crash between them
+              // would re-append the whole group on redelivery. `truncated` rides the
+              // structured metadata so a capped reply never reads as a complete one.
+              const persist = (): void => {
+                if (!alreadyPersisted) {
+                  reconcileInboundPrompt(
+                    finished.sessionAlias,
+                    {
+                      prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled, promptRequestId: finished.promptRequestId,
+                    },
+                    false,
+                  );
+                }
+                // Presence (not truthiness): an empty-string reply still gets its row.
+                if (text !== undefined && !alreadyPersisted) {
+                  messages.append(instanceId, finished.sessionAlias, "out", text, finished.truncated ? { truncated: true } : undefined);
+                }
+              };
+              if (recoveryId) {
+                db.transaction(() => {
+                  persist();
+                  recoveryReceipts.remember(instanceId, recoveryId);
+                });
+                ackedRecoveryIds.push(recoveryId);
+              } else {
+                persist();
+                rememberFingerprint(fingerprint);
+              }
+            }
+            if (ackedRecoveryIds.length > 0) {
+              gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: ackedRecoveryIds } satisfies InstanceRecoveryAckPayload);
+            }
+            // 2. Active-turn prompt reconciliation (database only) — still before any
+            //    in-memory change, so a failure here leaves the OLD hub state intact
+            //    and the connector retries the whole sync on reconnect.
+            for (const turn of sync.turns) {
+              reconcileInboundPrompt(
+                turn.sessionAlias,
+                { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled, promptRequestId: turn.promptRequestId },
+                false,
+              );
+            }
+            // 3. Replace in-memory state now that the DB work committed.
+            const prefix = `${instanceId}\0`;
+            for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
+            for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
+            for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
+            for (const turn of sync.turns) {
+              const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
+              const reasoning = turn.reasoning.slice(0, REASONING_CAP);
+              const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
+              // The mirror ships flat text/reasoning/steps; rebuild the ordered `parts`
+              // so snapshot and flush treat this identically to a live accumulator —
+              // subsequent turn-output/tool-event appends and turn-finished flush keep
+              // working unchanged (text last, as it postdates activity in live order).
+              const parts: TurnPartDto[] = turn.parts
+                ? capSyncedParts(turn.parts)
+                : steps.map((step) => ({ type: "tool", step }));
+              if (!turn.parts) {
+                if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
+                if (text) parts.push({ type: "text", text });
+              }
+              turnBuffers.set(key(instanceId, turn.sessionAlias), {
+                text,
+                steps: new Map(steps.map((s) => [s.toolCallId, s])),
+                reasoning,
+                parts,
+                // Restored original start so the elapsed-time HUD survives the restart.
+                startedAt: turn.startedAt,
+                // A mirror that capped this turn at STATE_SYNC_TEXT_CAP marks it so the
+                // final flush persists structured.truncated instead of a gappy reply
+                // that reads as complete.
+                ...(turn.truncated ? { truncated: true } : {}),
+              });
+            }
+            for (const meter of sync.usage) {
+              sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
+            }
+            for (const entry of sync.commands) {
+              sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
+            }
+            webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
+          } catch (err) {
+            // Same posture as the live flush: a persistence failure must never be
+            // silent — force a reconnect so the connector re-sends its state sync and
+            // the whole reconciliation gets a fresh attempt (old memory state intact).
+            gateway.disconnect(instanceId);
+            throw err;
+          }
         } else if (envelope.type === MSG.instanceNotice) {
           webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });
         }
@@ -305,7 +618,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     logger,
   });
-  return { db, accounts, instances, messages, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
+  return { db, accounts, instances, messages, recoveryReceipts, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
 }
 
 export interface StartRelayOptions {
@@ -345,7 +658,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
 
   const retention = { historyRetentionDays: options.historyRetentionDays ?? 30, maxPerSession: MAX_MESSAGES_PER_SESSION };
   const stopMaintenance = startMaintenanceLoop(
-    { accounts: runtime.accounts, instances: runtime.instances, messages: runtime.messages },
+    { accounts: runtime.accounts, instances: runtime.instances, messages: runtime.messages, recoveryReceipts: runtime.recoveryReceipts },
     retention,
     60 * 60 * 1000,
   );

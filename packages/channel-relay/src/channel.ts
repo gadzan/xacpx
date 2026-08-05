@@ -1,6 +1,7 @@
 import {
   MSG,
   type InstanceNoticePayload,
+  type InstanceRecoveryAckPayload,
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
@@ -14,6 +15,7 @@ import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
 import { CredentialStore, defaultCredentialPath, type RelayCredential } from "./credential-store.js";
 import { createControlBridge, subscribeControlEvents, dispatchControlEvent } from "./control-bridge.js";
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
+import { createStateMirror } from "./state-mirror.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -26,7 +28,7 @@ interface CredentialStoreLike {
 interface RelayClientLike {
   start(abortSignal: AbortSignal): void;
   stop(): void;
-  sendEvent(type: string, payload: unknown): void;
+  sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void;
 }
 
 export interface RelayChannelDeps {
@@ -81,11 +83,66 @@ export class RelayChannel implements MessageChannelRuntime {
       instanceName: this.config.name,
       coreVersion: input.coreVersion,
       onRequest: bridge,
-      onEvent: (envelope) => dispatchControlEvent(control, envelope),
+      onEvent: (envelope) => {
+        // The hub acks a recovery id only AFTER its rows (messages + receipt)
+        // committed to SQLite. Retire the finished-offline entry here — and ONLY
+        // here: the ws flush callback proves the frame left this process, not
+        // that the hub persisted it, so confirming on flush would drop the entry
+        // if the hub died before the commit, leaving a permanent history hole.
+        if (envelope.type === MSG.instanceRecoveryAck) {
+          const ids = (envelope.payload as InstanceRecoveryAckPayload | undefined)?.recoveryIds;
+          if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) {
+            mirror.confirmFinished(ids);
+          }
+          return;
+        }
+        dispatchControlEvent(control, envelope);
+      },
       logger: input.logger,
+      // Right after (re)auth — before any subsequent control events can arrive — push
+      // the local state mirror so a restarted hub recovers running turns, usage meters
+      // and command hints. First connect usually sends an empty sync; harmless, and it
+      // keeps one code path.
+      onReady: () => {
+        // Prune aliases of sessions removed while offline; a chatKey whose session
+        // list cannot be read keeps its aliases (don't prune what we can't verify).
+        const liveAliases = new Set<string>();
+        for (const chatKey of mirror.chatKeys()) {
+          try {
+            for (const session of control.listSessions(chatKey)) liveAliases.add(session.alias);
+          } catch {
+            for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
+          }
+        }
+        // Expire entries past the shared retention horizon first, so a stale entry
+        // can never ride the sync into a duplicate (the hub prunes its receipt on
+        // the same horizon). Then a pure snapshot; the destructive prune of dead
+        // aliases runs ONLY after the frame was confirmed flushed — and only against
+        // the aliases that existed when the snapshot was built, so state that arrived
+        // in between (new sessions/turns forwarded live) is never GC'd by this
+        // callback. Finished-offline entries are NOT confirmed here: only the hub's
+        // recovery ack retires those (see onEvent).
+        mirror.expirePendingFinished();
+        const { snapshot, aliases } = mirror.buildStateSync(liveAliases);
+        client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
+          if (!error) mirror.pruneStateMirror(liveAliases, aliases);
+        });
+      },
     });
+    // Mirror sees the exact payloads being forwarded, so the sync snapshot equals
+    // what the hub consumed (normalized tool steps included).
+    const mirror = createStateMirror({ logger: input.logger });
     this.client = client;
-    this.unsubscribe = subscribeControlEvents(control, (type, payload) => client.sendEvent(type, payload));
+    this.unsubscribe = subscribeControlEvents(control, (type, payload) => {
+      const finishedRecoveryId = mirror.handleEnvelope(type, payload);
+      const forwardedPayload = finishedRecoveryId && typeof payload === "object" && payload !== null
+        ? { ...payload as Record<string, unknown>, event: { ...(payload as { event: Record<string, unknown> }).event, recoveryId: finishedRecoveryId } }
+        : payload;
+      // Deliver the live frame (the hub persists it and acks the recovery id);
+      // no flush-confirm — the FIFO entry is retired by the hub's ack, and if
+      // the frame never lands the next state sync re-delivers it.
+      client.sendEvent(type, forwardedPayload);
+    });
     client.start(input.abortSignal);
 
     // Channel convention: start() stays pending until shutdown (see run-console).

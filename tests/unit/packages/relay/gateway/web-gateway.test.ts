@@ -60,7 +60,7 @@ test("a throwing socket does not prevent delivery to the remaining sockets", () 
 test("register logs relay.web.connected; the close listener logs relay.web.disconnected, both with accountId", () => {
   const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
   const gw = new WebGateway({
-    logger: { debug: (e, m, c) => logs.push([e, m, c]), info: () => {}, error: () => {} },
+    logger: { debug: (e, m, c) => logs.push([e, m, c]), info: () => {}, warn: () => {}, error: () => {} },
   });
   const a = new FakeSocket();
   gw.register("a1", a as never);

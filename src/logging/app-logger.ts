@@ -4,10 +4,16 @@ import { dirname } from "node:path";
 import type { LoggingLevel } from "../config/types";
 import { rotateIfNeeded, cleanupExpiredRotatedLogs } from "./rotating-file-writer";
 
-const LEVEL_ORDER: Record<LoggingLevel, number> = {
+// Levels a caller can write at. `warn` sits between error and info; it is not a
+// configurable threshold (LoggingLevel stays error|info|debug) — warns emit under
+// the "info"/"debug" settings and are suppressed under "error".
+type WriteLevel = LoggingLevel | "warn";
+
+const LEVEL_ORDER: Record<WriteLevel, number> = {
   error: 0,
-  info: 1,
-  debug: 2,
+  warn: 1,
+  info: 2,
+  debug: 3,
 };
 
 type LogContextValue = string | number | boolean | null | undefined | Record<string, unknown> | unknown[];
@@ -28,6 +34,7 @@ interface CreateAppLoggerOptions {
 export interface AppLogger {
   debug: (event: string, message: string, context?: LogContext) => Promise<void>;
   info: (event: string, message: string, context?: LogContext) => Promise<void>;
+  warn: (event: string, message: string, context?: LogContext) => Promise<void>;
   error: (event: string, message: string, context?: LogContext) => Promise<void>;
   cleanup: () => Promise<void>;
   flush: () => Promise<void>;
@@ -37,6 +44,7 @@ export function createNoopAppLogger(): AppLogger {
   return {
     debug: async () => {},
     info: async () => {},
+    warn: async () => {},
     error: async () => {},
     cleanup: async () => {},
     flush: async () => {},
@@ -60,6 +68,9 @@ export function createAppLogger(options: CreateAppLoggerOptions): AppLogger {
     info: async (event, message, context) => {
       await enqueueWrite("info", event, message, context);
     },
+    warn: async (event, message, context) => {
+      await enqueueWrite("warn", event, message, context);
+    },
     error: async (event, message, context) => {
       await enqueueWrite("error", event, message, context);
     },
@@ -78,7 +89,7 @@ export function createAppLogger(options: CreateAppLoggerOptions): AppLogger {
   };
 
   function enqueueWrite(
-    level: LoggingLevel,
+    level: WriteLevel,
     event: string,
     message: string,
     context: LogContext = {},
@@ -105,7 +116,7 @@ export function createAppLogger(options: CreateAppLoggerOptions): AppLogger {
   }
 
   async function writeLog(
-    level: LoggingLevel,
+    level: WriteLevel,
     event: string,
     message: string,
     context: LogContext = {},
@@ -133,7 +144,7 @@ export function createAppLogger(options: CreateAppLoggerOptions): AppLogger {
 
 function formatLogLine(
   time: Date,
-  level: LoggingLevel,
+  level: WriteLevel,
   event: string,
   message: string,
   context: LogContext,

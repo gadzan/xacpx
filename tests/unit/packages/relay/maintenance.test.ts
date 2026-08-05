@@ -3,7 +3,8 @@ import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
 import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
-import { runMaintenance } from "../../../../packages/relay/src/maintenance";
+import { RecoveryReceiptStore } from "../../../../packages/relay/src/stores/recovery-receipts";
+import { RECOVERY_RECEIPT_TTL_MS, runMaintenance } from "../../../../packages/relay/src/maintenance";
 
 async function freshDb() {
   const db = await createSqlDriver(":memory:");
@@ -65,8 +66,9 @@ test("runMaintenance runs all prunes without throwing", async () => {
   const acc = new AccountStore(db);
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
-  const summary = runMaintenance({ accounts: acc, instances, messages }, { historyRetentionDays: 30, maxPerSession: 2000, now: () => new Date() });
-  expect(summary).toMatchObject({ messagesDeleted: expect.any(Number), sessionsDeleted: expect.any(Number), pairingTokensDeleted: expect.any(Number), inviteCodesDeleted: expect.any(Number) });
+  const recoveryReceipts = new RecoveryReceiptStore(db);
+  const summary = runMaintenance({ accounts: acc, instances, messages, recoveryReceipts }, { historyRetentionDays: 30, maxPerSession: 2000, now: () => new Date() });
+  expect(summary).toMatchObject({ messagesDeleted: expect.any(Number), sessionsDeleted: expect.any(Number), pairingTokensDeleted: expect.any(Number), inviteCodesDeleted: expect.any(Number), receiptsDeleted: expect.any(Number) });
 });
 
 test("runMaintenance prunes expired invite codes and reports the count", async () => {
@@ -74,10 +76,28 @@ test("runMaintenance prunes expired invite codes and reports the count", async (
   const acc = new AccountStore(db, { now: () => new Date("2020-01-01") });
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
+  const recoveryReceipts = new RecoveryReceiptStore(db);
   acc.issueInviteCode("old", 1000);
   const summary = runMaintenance(
-    { accounts: acc, instances, messages },
+    { accounts: acc, instances, messages, recoveryReceipts },
     { historyRetentionDays: 30, maxPerSession: 2000, now: () => new Date("2020-02-01") },
   );
   expect(summary.inviteCodesDeleted).toBe(1);
+});
+
+test("recovery receipts past their TTL are pruned; fresh ones survive", async () => {
+  const db = await freshDb();
+  const acc = new AccountStore(db);
+  const instances = new InstanceStore(db);
+  const messages = new MessageStore(db);
+  const receipts = new RecoveryReceiptStore(db);
+  receipts.remember("i1", "fresh");
+  receipts.remember("i1", "stale", new Date("2019-12-20").toISOString());
+  const summary = runMaintenance(
+    { accounts: acc, instances, messages, recoveryReceipts: receipts },
+    { historyRetentionDays: 30, maxPerSession: 2000, recoveryReceiptTtlMs: RECOVERY_RECEIPT_TTL_MS, now: () => new Date("2020-01-08") },
+  );
+  expect(summary.receiptsDeleted).toBe(1);
+  expect(receipts.has("i1", "fresh")).toBe(true);
+  expect(receipts.has("i1", "stale")).toBe(false);
 });

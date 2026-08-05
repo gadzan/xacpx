@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { MSG } from "../../../../packages/relay-protocol/src/index";
 import { RelayChannel } from "../../../../packages/channel-relay/src/channel";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
@@ -67,6 +68,120 @@ test("start requires ChannelStartInput.control and wires client + event subscrip
   const noControl = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, { credentialStore: new MemoryCredentialStore() });
   const bad = makeStartInput({ control: undefined });
   await expect(noControl.start(bad.input as never)).rejects.toThrow(/control/);
+});
+
+test("onReady pushes an instance state sync; dead aliases are filtered now and pruned only on a confirmed flush", async () => {
+  const events: Array<{ type: string; payload: unknown }> = [];
+  const flushes: Array<((error?: Error) => void) | undefined> = [];
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: (type: string, payload: unknown, onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload });
+      flushes.push(onFlush);
+    },
+    isReady: () => true,
+  };
+  let capturedOptions: { onReady?: () => void } = {};
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: (options) => { capturedOptions = options; return fakeClient as never; },
+  });
+  const controller = new AbortController();
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).listSessions = () => [
+    { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+  ];
+  const startPromise = channel.start(input as never);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
+  const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { turns: Array<{ sessionAlias: string }> });
+
+  // Simulate a daemon turn the daemon emitted before the hub link (re)authed.
+  fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
+  events.length = 0;
+  flushes.length = 0; // the forward above pushed an undefined; keep only the sync's
+  capturedOptions.onReady!();
+  expect(lastSync().turns).toHaveLength(1);
+  flushes[0]!(); // confirmed flush → prune (backend is live, stays)
+
+  // A session disappears while offline; the mirror still holds its turn.
+  (input.control as Record<string, unknown>).listSessions = () => [];
+  fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "frontend" });
+  events.length = 0;
+  capturedOptions.onReady!();
+  // buildStateSync filters the dead alias out of the payload immediately…
+  expect(lastSync().turns).toEqual([]);
+  // …but the flush FAILS → pruneStateMirror must NOT run (the mirror keeps the
+  // turn, so a later sync with a corrected session list can still recover it).
+  flushes.at(-1)!(new Error("half-open socket"));
+
+  (input.control as Record<string, unknown>).listSessions = () => [
+    { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+    { alias: "frontend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+  ];
+  events.length = 0;
+  capturedOptions.onReady!();
+  expect(lastSync().turns.map((t) => t.sessionAlias).sort()).toEqual(["backend", "frontend"]);
+
+  controller.abort();
+  await startPromise;
+});
+
+test("finishedOffline entries clear only on the hub's recovery ack, not on a flush", async () => {
+  const events: Array<{ type: string; payload: unknown; onFlush?: (error?: Error) => void }> = [];
+  let capturedOptions: { onReady?: () => void; onEvent?: (envelope: unknown) => void } = {};
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: (type: string, payload: unknown, onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload, onFlush });
+    },
+    isReady: () => true,
+  };
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: (options) => { capturedOptions = options; return fakeClient as never; },
+  });
+  const controller = new AbortController();
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).listSessions = () => [
+    { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+  ];
+  const startPromise = channel.start(input as never);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
+  const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { finishedOffline: unknown[] });
+  const lastForwardedEvent = () => (events.findLast((e) => e.type === MSG.instanceEvent)!.payload as { event: { recoveryId?: string } }).event;
+
+  // A turn finishes → the mirror FIFO holds it AND the live frame carries its
+  // recoveryId. The hub will persist it and ack the id.
+  fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
+  fireEvent({ type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "ans" });
+  fireEvent({ type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, text: "ans" });
+  const recoveryId = lastForwardedEvent().recoveryId!;
+  expect(recoveryId).toBeString();
+
+  // A sync rides the reconnect; the entry is still in the FIFO.
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toHaveLength(1);
+
+  // Even a CONFIRMED sync flush must not clear the FIFO — it only prunes dead
+  // aliases; the finished entry's session is live, so it stays until the hub acks.
+  const syncFlush = events.findLast((e) => e.type === MSG.instanceStateSync)!.onFlush!;
+  syncFlush();
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toHaveLength(1);
+
+  // The hub acks the recovery id AFTER its SQLite commit → the FIFO clears.
+  capturedOptions.onEvent!({
+    protocolVersion: 1, kind: "event", type: MSG.instanceRecoveryAck, payload: { recoveryIds: [recoveryId] },
+  });
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toEqual([]);
+
+  controller.abort();
+  await startPromise;
 });
 
 test("sendScheduledMessage runs the fired task as a control turn (not a side notice)", async () => {

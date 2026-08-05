@@ -210,7 +210,9 @@ export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
   // `prompt` is set for scheduled turns and drained queued prompts. `queueItemId`
   // associates the latter with the message originally persisted at enqueue time.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string }
+  // `promptRequestId` (new connectors) correlates a drained queue item back to the
+  // hub pre-written inbound row when the queued RPC response was lost.
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string; promptRequestId?: string }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
@@ -219,7 +221,9 @@ export type ControlEventDto =
   | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }
   // Agent-advertised slash commands (e.g. /compact). Session-scoped, replace-latest.
   | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommandDto[] }
-  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean }
+  // `text` carries the final reply text for hub-side fallback persistence: a hub that
+  // restarted mid-turn has no buffer for this finish, so it persists `text` directly.
+  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; recoveryId?: string }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
   // re-fetches the workspace list. No payload.

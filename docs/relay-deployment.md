@@ -168,7 +168,7 @@ pm2 restart xacpx-relay     # 改完配置 / xacpx-relay update 之后重启
 pm2 stop xacpx-relay        # 停止
 ```
 
-hub 的结构化日志直接写 stdout/stderr（`error` 级写 stderr，`info`/`debug` 写 stdout），不落文件，交给 pm2/systemd/Docker 的日志托管即可，`pm2 logs xacpx-relay` 能看到启动、登录被拒、实例上下线等事件。日志级别通过 `RELAY_LOG_LEVEL=error|info|debug` 环境变量控制，默认 `info`（`debug` 会额外打印看板 WebSocket 连接/断开等细粒度事件）。
+hub 的结构化日志直接写 stdout/stderr（`error`/`warn` 级写 stderr，`info`/`debug` 写 stdout），不落文件，交给 pm2/systemd/Docker 的日志托管即可，`pm2 logs xacpx-relay` 能看到启动、登录被拒、实例上下线等事件。日志级别通过 `RELAY_LOG_LEVEL=error|warn|info|debug` 环境变量控制，默认 `info`（`debug` 会额外打印看板 WebSocket 连接/断开等细粒度事件）。
 
 pm2 会从 `PATH` 解析 `xacpx-relay` 并把绝对路径存进 dump，重启后也能恢复；万一 pm2 找不到（非标准安装），改传 `command -v xacpx-relay` 的绝对路径即可。
 

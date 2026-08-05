@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledTaskDto, SessionDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 
 // Instance <-> relay message types. Convention: chatKey for relay-driven chats
 // is `relay:<accountId>`; the relay server stamps chatKey/senderId/isOwner on
@@ -7,6 +7,14 @@ export const MSG = {
   instanceRegister: "instance.register",
   instanceAuth: "instance.auth",
   instanceEvent: "instance.event",
+  instanceStateSync: "instance.state.sync",
+  /** Hub → connector: the persisted `recoveryId`s from a just-committed
+   *  `instance.state.sync` (or a live `turn-finished`). The connector retires its
+   *  finished-offline FIFO entries ONLY on this ack — a ws flush callback only
+   *  proves the frame left the process, not that the hub committed the rows, so
+   *  confirming on flush would drop entries when the hub dies before the SQLite
+   *  commit (a permanent history hole on the next reconnect). */
+  instanceRecoveryAck: "instance.recovery.ack",
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
@@ -106,11 +114,64 @@ export interface InstanceAuthResult {
 export interface InstanceEventPayload {
   event: ControlEventDto;
 }
+/** Full mirror of the instance-scoped in-memory hub state (turn buffers / usage /
+ *  commands), pushed by the connector right after every (re-)auth. The hub replaces
+ *  its in-memory state for that instance with this snapshot — additive protocol, so
+ *  old hubs (unknown message type) and old connectors (never sent) degrade to the
+ *  pre-sync behavior. */
+export interface InstanceStateSyncPayload {
+  turns: Array<{
+    sessionAlias: string;
+    prompt?: string;
+    scheduled?: ScheduledOriginDto;
+    queueItemId?: string;
+    /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); lets the
+     *  hub tie this turn's prompt back to its pre-written inbound row. */
+    promptRequestId?: string;
+    /** The connector's stable id for this running turn (mirrors the recoveryId it
+     *  stamps on the eventual `turn-finished`), so the hub can tell a running turn
+     *  apart from a finished-offline entry of the same session. */
+    recoveryId?: string;
+    /** ms epoch captured by the connector at the ORIGINAL turn start. */
+    startedAt: number;
+    text: string;
+    reasoning: string;
+    steps: ToolStepDto[];
+    /** Ordered activity stream. Optional for connectors predating ordered recovery. */
+    parts?: TurnPartDto[];
+    /** true = connector capped the mirror; content after that point is lost. */
+    truncated?: boolean;
+  }>;
+  usage: Array<{ sessionAlias: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>;
+  commands: Array<{ sessionAlias: string; commands: AgentCommandDto[] }>;
+  /** Turns that finished and are still awaiting the hub's persistence ack — this
+   *  includes turns that finished while the hub was unreachable AND live turns that
+   *  finished moments ago (the connector forwards the live `turn-finished` and keeps
+   *  the entry until the hub acks it). Hub must persist them.
+   *  `prompt` backfills the turn's `in` row when the turn STARTED during the outage
+   *  too, so the recovered answer never appears as an orphan in history; `queueItemId`
+   *  (and `scheduled`) let the hub reconcile the queued `in` row the same way the live
+   *  path does, instead of appending a duplicate.
+   *  `recoveryId` is the connector's stable id for this turn: the hub writes a
+   *  receipt once the rows are committed and acks the id back so the connector can
+   *  drop the entry; a redelivery is deduped by the receipt (never re-appended).
+   *  `truncated` marks a reply the connector capped at STATE_SYNC_TEXT_CAP — the
+   *  persisted row must say so instead of masquerading as a complete reply. */
+  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string; recoveryId?: string; truncated?: boolean }>;
+}
 export interface InstanceNoticePayload {
   kind: "task-completion" | "task-progress" | "coordinator-message";
   text: string;
   taskId?: string;
   chatKey?: string;
+}
+
+// --- hub → connector delivery confirmation ---
+/** Recovery ids acked by the hub AFTER their rows (messages + receipt) committed to
+ *  SQLite. The connector confirms (drops) the corresponding finished-offline entries
+ *  only on receipt of this event — see MSG.instanceRecoveryAck. */
+export interface InstanceRecoveryAckPayload {
+  recoveryIds: string[];
 }
 
 // --- control RPCs (relay -> instance req; instance res) ---
@@ -246,6 +307,13 @@ export interface PromptPayload {
   senderId: string;
   isOwner?: boolean;
   media?: PromptAttachmentRef[];
+  /** Hub-issued stable id generated when the inbound row is PRE-WRITTEN (before the
+   *  RPC), so a queued-response loss (hub restart / dropped response) can still
+   *  correlate the connector's queue item back to that exact prompt row on recovery —
+   *  text matching cannot distinguish a redelivery from a user sending the identical
+   *  prompt twice. New connectors carry it through the queue item into turn-started
+   *  and the state sync. */
+  promptRequestId?: string;
 }
 export interface PromptResult {
   ok: boolean;

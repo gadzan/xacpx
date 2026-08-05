@@ -287,13 +287,14 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     // (orchestration-service.ts:4372-4373) and a refactor could drop, rename, or reorder an
     // observability call without any test noticing.
     logger: (() => {
-      const recordLog = (level: "debug" | "info" | "error") =>
+      const recordLog = (level: "debug" | "info" | "warn" | "error") =>
         async (event: string, message: string, context?: Record<string, unknown>) => {
           record(`logger.${level}`, { event, message, context: context ?? null });
         };
       const logger: AppLogger = {
         debug: recordLog("debug"),
         info: recordLog("info"),
+        warn: recordLog("warn"),
         error: recordLog("error"),
         cleanup: async () => {},
         flush: async () => {},

@@ -43,11 +43,19 @@ function isEnvelopeShape(value) {
     return false;
   return true;
 }
+// packages/relay-protocol/src/limits.ts
+var STATE_SYNC_TEXT_CAP = 256 * 1024;
+var STATE_SYNC_PARTS_CAP = 1000;
+var MAX_TOOL_STEPS = 200;
+var REASONING_CAP = 16000;
+var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // packages/relay-protocol/src/messages.ts
 var MSG = {
   instanceRegister: "instance.register",
   instanceAuth: "instance.auth",
   instanceEvent: "instance.event",
+  instanceStateSync: "instance.state.sync",
+  instanceRecoveryAck: "instance.recovery.ack",
   instanceNotice: "instance.notice",
   sessionsList: "control.sessions.list",
   sessionsCreate: "control.sessions.create",
@@ -174,6 +182,9 @@ function validAgentCommand(value) {
   const c = value;
   return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128 && (c.description === undefined || typeof c.description === "string" && c.description.length <= 4096) && (c.hasInput === undefined || typeof c.hasInput === "boolean");
 }
+function validScheduledOrigin(s) {
+  return s === undefined || typeof s === "object" && s !== null && isStr(s.taskId) && isStr(s.executeAt);
+}
 function validToolDetail(d) {
   switch (d.type) {
     case "diff":
@@ -226,6 +237,23 @@ function validTurnPart(p) {
     return validToolStep(c.step);
   return false;
 }
+function validStateSyncParts(parts) {
+  if (parts.length > STATE_SYNC_PARTS_CAP || !parts.every(validTurnPart))
+    return false;
+  let textLength = 0;
+  let reasoningLength = 0;
+  const toolIds = new Set;
+  for (const raw of parts) {
+    const part = raw;
+    if (part.type === "text")
+      textLength += part.text.length;
+    else if (part.type === "reasoning")
+      reasoningLength += part.text.length;
+    else
+      toolIds.add(part.step.toolCallId);
+  }
+  return textLength <= STATE_SYNC_TEXT_CAP && reasoningLength <= REASONING_CAP && toolIds.size <= MAX_TOOL_STEPS;
+}
 function validStateSnapshot(candidate) {
   const instanceId = candidate.instanceId;
   if (typeof instanceId !== "string")
@@ -262,11 +290,11 @@ function validControlEvent(e) {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -296,6 +324,38 @@ function validControlEvent(e) {
   }
 }
 var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+function validInstanceStateSync(p) {
+  if (typeof p !== "object" || p === null)
+    return false;
+  const c = p;
+  if (!Array.isArray(c.turns) || !c.turns.every((t) => {
+    if (typeof t !== "object" || t === null)
+      return false;
+    const turn = t;
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+  }))
+    return false;
+  if (!Array.isArray(c.usage) || !c.usage.every((u) => {
+    if (typeof u !== "object" || u === null)
+      return false;
+    const usage = u;
+    return typeof usage.sessionAlias === "string" && finiteNonNegative(usage.used) && finiteNonNegative(usage.size) && validUsageCost(usage.cost) && validUsageBreakdown(usage.breakdown);
+  }))
+    return false;
+  if (!Array.isArray(c.commands) || !c.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const commands = entry;
+    return typeof commands.sessionAlias === "string" && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
+  }))
+    return false;
+  return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
+    if (typeof f !== "object" || f === null)
+      return false;
+    const finished = f;
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean");
+  });
+}
 function validNotice(n) {
   if (typeof n !== "object" || n === null)
     return false;
@@ -398,7 +458,7 @@ var validateWorkspacesRemove = (p) => {
 };
 var validatePrompt = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner) && optArr(o.media) ? o : null;
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner) && optArr(o.media) && optStr(o.promptRequestId) ? o : null;
 };
 var validatePromptCancel = (p) => {
   const o = fields(p);
@@ -591,6 +651,7 @@ function parseControlPayload(type, payload) {
 export {
   webEventEnvelope,
   webClientEnvelope,
+  validInstanceStateSync,
   validControlEvent,
   parseWebServerEvent,
   parseWebClientMessage,
@@ -606,8 +667,13 @@ export {
   decodeEnvelope,
   WEB_EVENT_TYPE,
   WEB_CLIENT_TYPE,
+  STATE_SYNC_TEXT_CAP,
+  STATE_SYNC_PARTS_CAP,
   RELAY_PROTOCOL_VERSION,
+  RECOVERY_RETENTION_MS,
+  REASONING_CAP,
   MSG,
   MAX_WEB_INSTANCE_ID_LENGTH,
+  MAX_TOOL_STEPS,
   CONTROL_PAYLOAD_VALIDATORS
 };

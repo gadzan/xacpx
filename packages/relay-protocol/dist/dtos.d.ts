@@ -209,6 +209,7 @@ export type ControlEventDto = {
     prompt?: string;
     scheduled?: ScheduledOriginDto;
     queueItemId?: string;
+    promptRequestId?: string;
 } | {
     type: "tool-event";
     chatKey: string;
@@ -244,6 +245,8 @@ export type ControlEventDto = {
     ok: boolean;
     errorMessage?: string;
     cancelled?: boolean;
+    text?: string;
+    recoveryId?: string;
 } | {
     type: "sessions-changed";
 } | {

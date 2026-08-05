@@ -91,7 +91,7 @@ export class WebGateway {
     // control-events are scoped to the socket's instance subscription; a socket with no
     // subscription (absent from the map) receives all. instance-status / notice are
     // account-wide (the global instance list needs them regardless of the active instance).
-    const scoped = event.kind === "control-event";
+    const scoped = event.kind === "control-event" || event.kind === "state-snapshot";
     for (const socket of set) {
       if (scoped) {
         const sub = this.subscriptions.get(socket);

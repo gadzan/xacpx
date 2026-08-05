@@ -73,6 +73,7 @@ export default {
     failedToSend: "Failed to send",
     stopped: "Stopped",
     failed: "failed",
+    truncated: "reply truncated",
     scheduledFor: "Scheduled for",
     scheduled: "Scheduled",
     stop: "Stop",

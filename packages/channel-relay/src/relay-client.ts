@@ -65,13 +65,27 @@ export class RelayClient {
     this.socket = null;
   }
 
-  sendEvent(type: string, payload: unknown): void {
-    if (!this.ready || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+  sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void {
+    if (!this.isReady()) {
+      // Report the drop to senders that asked: an unconfirmed send must not be
+      // treated as delivered (e.g. state sync keeps its finished-offline FIFO).
+      onFlush?.(new Error("not-ready"));
       return; // phase 2: drop while disconnected (no offline queue)
     }
-    this.socket.send(
+    // isReady() already established socket !== null && OPEN; TS just can't narrow
+    // the mutable field through the method call. The optional ws completion
+    // callback fires on flush OR error after the frame left the process — a send
+    // into a half-open socket surfaces there, not silently.
+    this.socket!.send(
       encodeEnvelope({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload }),
+      onFlush,
     );
+  }
+
+  /** True only while authenticated with an open socket — the window in which
+   *  sendEvent actually delivers (used by the state mirror's offline routing). */
+  isReady(): boolean {
+    return this.ready && this.socket !== null && this.socket.readyState === WebSocket.OPEN;
   }
 
   private connect(): void {

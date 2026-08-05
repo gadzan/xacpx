@@ -103,6 +103,28 @@ test("accepts the new turn-status control events", () => {
   })).not.toBeNull();
 });
 
+test("rejects turn-finished fields the hub persists when they are not strings/booleans", () => {
+  // errorMessage / cancelled / text / recoveryId are read straight into SQLite by the
+  // hub — a buggy connector sending numbers or objects must be rejected, not trigger
+  // a disconnect loop on binding failures.
+  const fin = (extra: Record<string, unknown>) => ({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: false, ...extra } });
+  expect(roundtrip(fin({ errorMessage: "boom" }))).not.toBeNull();
+  expect(roundtrip(fin({ errorMessage: "boom", cancelled: true }))).not.toBeNull();
+  expect(roundtrip(fin({ errorMessage: 42 }))).toBeNull();
+  expect(roundtrip(fin({ errorMessage: { boom: true } }))).toBeNull();
+  expect(roundtrip(fin({ cancelled: "yes" }))).toBeNull();
+  expect(roundtrip(fin({ text: 1 }))).toBeNull();
+  expect(roundtrip(fin({ recoveryId: 7 }))).toBeNull();
+});
+
+test("validates turn-started.scheduled with the same shape as the state-sync validator", () => {
+  const start = (extra: Record<string, unknown>) => ({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", ...extra } });
+  expect(roundtrip(start({ scheduled: { taskId: "t1", executeAt: "2026-06-16T09:00:00.000Z" } }))).not.toBeNull();
+  expect(roundtrip(start({ scheduled: { taskId: "t1" } }))).toBeNull(); // missing executeAt
+  expect(roundtrip(start({ scheduled: { executeAt: "2026-06-16T09:00:00.000Z" } }))).toBeNull(); // missing taskId
+  expect(roundtrip(start({ scheduled: "oops" }))).toBeNull();
+});
+
 test("parseWebServerEvent accepts a plan control event", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

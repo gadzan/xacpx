@@ -521,6 +521,28 @@ it("renders a cancelled marker on a stopped message", () => {
   expect(wrapper.find('[data-test="msg-cancelled"]').exists()).toBe(true);
 });
 
+it("marks a recovered reply whose connector-side buffer was truncated", () => {
+  const wrapper = mount(MessageList, {
+    props: {
+      messages: [msg({
+        direction: "out",
+        text: "capped…",
+        structured: { truncated: true },
+      })],
+      liveTurn: null,
+    },
+  });
+  expect(wrapper.find('[data-test="msg-truncated"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="msg-truncated"]').text()).toContain("truncated");
+});
+
+it("does not mark an ordinary reply as truncated", () => {
+  const wrapper = mount(MessageList, {
+    props: { messages: [msg({ direction: "out", text: "complete reply" })], liveTurn: null },
+  });
+  expect(wrapper.find('[data-test="msg-truncated"]').exists()).toBe(false);
+});
+
 it("renders live tool steps inline in the streaming bubble", () => {
   const wrapper = mount(MessageList, {
     props: {

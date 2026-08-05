@@ -1,7 +1,8 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import { MAX_TOOL_STEPS, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP } from "./limits.js";
 import type { InstanceNoticePayload } from "./messages.js";
-import { isStr, optStr, optNum } from "./validate-primitives.js";
+import { isStr, optStr, optNum, optBool } from "./validate-primitives.js";
 
 /** Envelope `type` for every relay→web push. */
 export const WEB_EVENT_TYPE = "web.event";
@@ -34,8 +35,10 @@ export interface MessageRecordDto {
   /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
    *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
    *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
-   *  `reasoning` are a flat fallback for older rows that predate `parts`. */
-  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto };
+   *  `reasoning` are a flat fallback for older rows that predate `parts`.
+   *  `truncated` marks a recovered offline reply the connector capped at
+   *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply. */
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean };
   attachments?: AttachmentMetadata[];
 }
 
@@ -153,6 +156,15 @@ function validAgentCommand(value: unknown): boolean {
     && (c.hasInput === undefined || typeof c.hasInput === "boolean");
 }
 
+/** Shared shape check for `scheduled` origins (turn-started events, state-sync turns
+ *  and finished-offline entries) — the hub persists these fields, so a junk shape must
+ *  be rejected before it reaches the DB. */
+function validScheduledOrigin(s: unknown): boolean {
+  return s === undefined || (typeof s === "object" && s !== null
+    && isStr((s as Record<string, unknown>).taskId)
+    && isStr((s as Record<string, unknown>).executeAt));
+}
+
 /** Validate the inner fields of a ToolDetailDto per its discriminant — a known
  *  tag is not enough; junk/missing fields must be rejected so a buggy connector
  *  cannot push e.g. a `diff` with no `path` or a `command` that is a number. */
@@ -203,6 +215,22 @@ function validTurnPart(p: unknown): boolean {
   return false;
 }
 
+function validStateSyncParts(parts: unknown[]): boolean {
+  if (parts.length > STATE_SYNC_PARTS_CAP || !parts.every(validTurnPart)) return false;
+  let textLength = 0;
+  let reasoningLength = 0;
+  const toolIds = new Set<string>();
+  for (const raw of parts) {
+    const part = raw as TurnPartDto;
+    if (part.type === "text") textLength += part.text.length;
+    else if (part.type === "reasoning") reasoningLength += part.text.length;
+    else toolIds.add(part.step.toolCallId);
+  }
+  return textLength <= STATE_SYNC_TEXT_CAP
+    && reasoningLength <= REASONING_CAP
+    && toolIds.size <= MAX_TOOL_STEPS;
+}
+
 function validStateSnapshot(candidate: Record<string, unknown>): boolean {
   const instanceId = candidate.instanceId;
   if (typeof instanceId !== "string") return false;
@@ -248,12 +276,16 @@ export function validControlEvent(e: unknown): boolean {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean";
+      // All fields the hub persists (text fallback, errorMessage row, cancelled flag,
+      // recovery receipt) are validated so a buggy connector cannot slip a non-string
+      // into SQLite and trigger a disconnect loop.
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
+        && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && optStr(c.prompt) && optStr(c.queueItemId);
+        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -295,6 +327,52 @@ export function validControlEvent(e: unknown): boolean {
 }
 
 const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+
+/** Deep-validate an `instance.state.sync` payload with the same posture as
+ *  `validControlEvent`: discriminant-free, but every field the hub will read must
+ *  have the right shape — a malformed sync must be dropped, never reconciled into
+ *  the hub's in-memory state or history. */
+export function validInstanceStateSync(p: unknown): boolean {
+  if (typeof p !== "object" || p === null) return false;
+  const c = p as Record<string, unknown>;
+  if (!Array.isArray(c.turns) || !c.turns.every((t) => {
+    if (typeof t !== "object" || t === null) return false;
+    const turn = t as Record<string, unknown>;
+    return typeof turn.sessionAlias === "string"
+      && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId)
+      && validScheduledOrigin(turn.scheduled)
+      && finiteNonNegative(turn.startedAt)
+      && typeof turn.text === "string"
+      && typeof turn.reasoning === "string"
+      && Array.isArray(turn.steps) && turn.steps.every(validToolStep)
+      && (turn.parts === undefined || (Array.isArray(turn.parts) && validStateSyncParts(turn.parts)))
+      && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+  })) return false;
+  if (!Array.isArray(c.usage) || !c.usage.every((u) => {
+    if (typeof u !== "object" || u === null) return false;
+    const usage = u as Record<string, unknown>;
+    return typeof usage.sessionAlias === "string"
+      && finiteNonNegative(usage.used) && finiteNonNegative(usage.size)
+      && validUsageCost(usage.cost) && validUsageBreakdown(usage.breakdown);
+  })) return false;
+  if (!Array.isArray(c.commands) || !c.commands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const commands = entry as Record<string, unknown>;
+    return typeof commands.sessionAlias === "string"
+      && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
+  })) return false;
+  return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
+    if (typeof f !== "object" || f === null) return false;
+    const finished = f as Record<string, unknown>;
+    return typeof finished.sessionAlias === "string"
+      && typeof finished.ok === "boolean"
+      && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
+      && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId)
+      && validScheduledOrigin(finished.scheduled)
+      && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
+      && (finished.truncated === undefined || typeof finished.truncated === "boolean");
+  });
+}
 
 /** Deep-validate an inner InstanceNoticePayload: known kind + required text. */
 function validNotice(n: unknown): boolean {

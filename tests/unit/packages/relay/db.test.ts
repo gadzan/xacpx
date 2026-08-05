@@ -13,6 +13,40 @@ test("driver run/get/all/exec roundtrip on :memory:", async () => {
   db.close();
 });
 
+test("transaction commits all writes atomically", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+  db.transaction(() => {
+    db.run("INSERT INTO t (id) VALUES (?)", ["a"]);
+    db.run("INSERT INTO t (id) VALUES (?)", ["b"]);
+  });
+  expect(db.all<{ id: string }>("SELECT id FROM t ORDER BY id")).toEqual([{ id: "a" }, { id: "b" }]);
+  db.close();
+});
+
+test("transaction rolls back every write when the body throws", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+  expect(() => db.transaction(() => {
+    db.run("INSERT INTO t (id) VALUES (?)", ["a"]);
+    throw new Error("boom");
+  })).toThrow("boom");
+  expect(db.all<{ id: string }>("SELECT id FROM t")).toEqual([]);
+  db.close();
+});
+
+test("nested transaction is rejected instead of corrupting the outer one", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec("CREATE TABLE t (id TEXT PRIMARY KEY)");
+  expect(() => db.transaction(() => {
+    db.run("INSERT INTO t (id) VALUES (?)", ["a"]);
+    db.transaction(() => db.run("INSERT INTO t (id) VALUES (?)", ["b"]));
+  })).toThrow(/nested SQLite transaction/);
+  // The outer transaction aborted on the throw — nothing committed.
+  expect(db.all<{ id: string }>("SELECT id FROM t")).toEqual([]);
+  db.close();
+});
+
 test("fresh DB: accounts has exactly id/username/created_at (no password_hash/role)", async () => {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
@@ -87,6 +121,35 @@ test("idempotency: running initSchema 2× on a fresh DB is stable", async () => 
   expect(tables).not.toContain("invites");
   const idx = db.get<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_web_sessions_login_token'"
+  );
+  expect(idx).toBeDefined();
+  db.close();
+});
+
+test("initSchema migrates a pre-origin_queue_item_id messages table without failing", async () => {
+  const db = await createSqlDriver(":memory:");
+  // Simulate a DB created by an earlier relay version: messages lacks
+  // origin_queue_item_id (the index for it must be created AFTER the ALTER, or
+  // initSchema fails with "no such column" before the migration ever runs).
+  db.exec(`
+    CREATE TABLE messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      instance_id TEXT NOT NULL,
+      session_alias TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('in','out')),
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      structured TEXT,
+      attachments TEXT,
+      queue_item_id TEXT,
+      queue_fallback INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  initSchema(db); // must not throw
+  const cols = db.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
+  expect(cols).toContain("origin_queue_item_id");
+  const idx = db.get<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_origin_queue'"
   );
   expect(idx).toBeDefined();
   db.close();

@@ -1,11 +1,12 @@
 export interface RelayLogger {
   debug(event: string, message: string, context?: Record<string, unknown>): void;
   info(event: string, message: string, context?: Record<string, unknown>): void;
+  warn(event: string, message: string, context?: Record<string, unknown>): void;
   error(event: string, message: string, context?: Record<string, unknown>): void;
 }
 
-type Level = "error" | "info" | "debug";
-const ORDER: Record<Level, number> = { error: 0, info: 1, debug: 2 };
+type Level = "error" | "warn" | "info" | "debug";
+const ORDER: Record<Level, number> = { error: 0, warn: 1, info: 2, debug: 3 };
 
 export interface RelayLoggerOptions {
   level?: Level;
@@ -15,7 +16,7 @@ export interface RelayLoggerOptions {
 }
 
 export function createNoopRelayLogger(): RelayLogger {
-  return { debug: () => {}, info: () => {}, error: () => {} };
+  return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 }
 
 export function createRelayLogger(options: RelayLoggerOptions = {}): RelayLogger {
@@ -27,19 +28,20 @@ export function createRelayLogger(options: RelayLoggerOptions = {}): RelayLogger
   function emit(lvl: Level, event: string, message: string, context?: Record<string, unknown>): void {
     if (ORDER[lvl] > ORDER[level]) return;
     const line = formatLine(now(), lvl, event, message, context ?? {});
-    if (lvl === "error") writeErr(line);
+    if (lvl === "error" || lvl === "warn") writeErr(line);
     else writeOut(line);
   }
   return {
     debug: (e, m, c) => emit("debug", e, m, c),
     info: (e, m, c) => emit("info", e, m, c),
+    warn: (e, m, c) => emit("warn", e, m, c),
     error: (e, m, c) => emit("error", e, m, c),
   };
 }
 
 function resolveEnvLevel(): Level | undefined {
   const raw = process.env.RELAY_LOG_LEVEL?.toLowerCase();
-  return raw === "error" || raw === "info" || raw === "debug" ? raw : undefined;
+  return raw === "error" || raw === "warn" || raw === "info" || raw === "debug" ? raw : undefined;
 }
 
 // Mirrors the core app-logger line format (src/logging/app-logger.ts formatLogLine)
