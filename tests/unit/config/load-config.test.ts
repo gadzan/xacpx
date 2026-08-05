@@ -1437,3 +1437,54 @@ test("throws on invalid ownerIds shapes", async () => {
     }),
   ).toThrow("channels[0].ownerIds must be an array of non-empty strings");
 });
+
+// ── agent argv ───────────────────────────────────────────────────────────────
+
+test("parses a structured agent argv preserving exact boundaries", () => {
+  const config = parseConfig({
+    transport: {},
+    agents: {
+      custom: {
+        driver: "custom",
+        argv: ["C:\\Program Files\\agent.exe", "--acp", "", "--flag=two words"],
+      },
+    },
+    workspaces: {},
+  });
+
+  expect(config.agents.custom.argv).toEqual([
+    "C:\\Program Files\\agent.exe",
+    "--acp",
+    "",
+    "--flag=two words",
+  ]);
+  expect(config.agents.custom.command).toBeUndefined();
+});
+
+test("rejects argv that is not a non-empty string array with a non-empty executable", () => {
+  expect(() => parseConfig({
+    transport: {},
+    agents: { a: { driver: "a", argv: [] } },
+    workspaces: {},
+  })).toThrow('agent "a" argv must be a non-empty array of strings with a non-empty executable');
+
+  expect(() => parseConfig({
+    transport: {},
+    agents: { a: { driver: "a", argv: [""] } },
+    workspaces: {},
+  })).toThrow('agent "a" argv must be a non-empty array of strings with a non-empty executable');
+
+  expect(() => parseConfig({
+    transport: {},
+    agents: { a: { driver: "a", argv: ["node", 42] } },
+    workspaces: {},
+  })).toThrow('agent "a" argv must be a non-empty array of strings with a non-empty executable');
+});
+
+test("rejects an agent with both command and argv", () => {
+  expect(() => parseConfig({
+    transport: {},
+    agents: { a: { driver: "a", command: "node x", argv: ["node", "x"] } },
+    workspaces: {},
+  })).toThrow('agent "a" command and argv are mutually exclusive');
+});

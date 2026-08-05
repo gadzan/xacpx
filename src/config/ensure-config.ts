@@ -103,6 +103,7 @@ export function normalizeDefaultConfigTemplate(raw: unknown): Record<string, unk
           ...(resolveAgentCommand(agent.driver, agent.command)
             ? { command: resolveAgentCommand(agent.driver, agent.command) }
             : {}),
+          ...(agent.argv ? { argv: [...agent.argv] } : {}),
         },
       ]),
     ),

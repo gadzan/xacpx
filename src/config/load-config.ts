@@ -9,6 +9,7 @@ import { isClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 
 import { normalizeWorkspacePath } from "../commands/workspace-path";
 import { isLegacyPluginPackageName, normalizePluginPackageName } from "../plugins/plugin-renames";
+import { isValidAgentArgv } from "./agent-launch";
 import { resolveAgentCommand } from "./resolve-agent-command";
 import { isLocale, type Locale } from "../i18n/resolve-locale";
 import type {
@@ -290,6 +291,14 @@ export function parseConfig(
     if ("command" in agent && (typeof agent.command !== "string" || agent.command.length === 0)) {
       throw new Error(`agent "${name}" command must be a non-empty string`);
     }
+    if ("argv" in agent) {
+      if (!isValidAgentArgv(agent.argv)) {
+        throw new Error(`agent "${name}" argv must be a non-empty array of strings with a non-empty executable`);
+      }
+      if ("command" in agent) {
+        throw new Error(`agent "${name}" command and argv are mutually exclusive`);
+      }
+    }
   }
 
   for (const [name, workspace] of Object.entries(raw.workspaces)) {
@@ -312,10 +321,12 @@ export function parseConfig(
       throw new Error(`agent "${name}" settingsPolicy must be provider-only, isolated, or full-user`);
     }
     const command = typeof agent.command === "string" ? resolveAgentCommand(driver, agent.command) : undefined;
+    const argv = isValidAgentArgv(agent.argv) ? [...agent.argv] : undefined;
     const model = typeof agent.model === "string" && agent.model.trim().length > 0 ? agent.model.trim() : undefined;
     agents[name] = {
       driver,
       ...(command ? { command } : {}),
+      ...(argv ? { argv } : {}),
       ...(model ? { model } : {}),
       ...(isClaudeSettingsPolicy(agent.settingsPolicy) ? { settingsPolicy: agent.settingsPolicy } : {}),
     };

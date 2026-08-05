@@ -8,6 +8,7 @@ import { createAdapterReleaseId } from "../../../src/adapters/adapter-catalog";
 import {
   resolveAgentCommand,
   resolveConfiguredAgentCommand,
+  resolveConfiguredAgentLaunch,
   resolveRuntimeAgentCommand,
 } from "../../../src/config/resolve-agent-command";
 
@@ -102,3 +103,109 @@ test("runtime resolution uses a statically valid active release and falls back o
     await rm(runtimeRoot, { recursive: true, force: true });
   }
 });
+
+// ── structured launch spec ───────────────────────────────────────────────────
+
+import { renderAgentArgvIdentity, deriveAgentAlias } from "../../../src/config/agent-launch";
+
+test("canonical renderer matches acpx renderArgvIdentity semantics", () => {
+  expect(renderAgentArgvIdentity(["node", "/path/with space/app.js", "--flag=two words", "back\\slash", ""]))
+    .toBe('node "/path/with space/app.js" "--flag=two words" "back\\\\slash" ""');
+  expect(renderAgentArgvIdentity(["node", "/home/ci/app.js"])).toBe("node /home/ci/app.js");
+});
+
+test("bare built-in drivers resolve to the positional driver without overlay", () => {
+  expect(resolveConfiguredAgentLaunch({ driver: "pool" })).toEqual({ acpxAgent: "pool" });
+  expect(resolveConfiguredAgentLaunch({ driver: "zeroclaw" })).toEqual({ acpxAgent: "zeroclaw" });
+  expect(resolveConfiguredAgentLaunch({ driver: "gemini" })).toEqual({ acpxAgent: "gemini" });
+});
+
+test("user argv resolves to a content-addressed overlay alias", () => {
+  const spec = resolveConfiguredAgentLaunch({
+    driver: "custom",
+    argv: ["C:\\Program Files\\agent.exe", "--acp", ""],
+  });
+  expect(spec.agentArgv).toEqual(["C:\\Program Files\\agent.exe", "--acp", ""]);
+  expect(spec.agentCommand).toBe(renderAgentArgvIdentity(spec.agentArgv!));
+  expect(spec.acpxAgent).toBe(deriveAgentAlias("custom", spec.agentArgv!));
+  expect(spec.rawCommand).toBeUndefined();
+  // stable across processes/platforms
+  expect(resolveConfiguredAgentLaunch({
+    driver: "custom",
+    argv: ["C:\\Program Files\\agent.exe", "--acp", ""],
+  })).toEqual(spec);
+});
+
+test("managed adapters resolve to pinned structured npx argv", () => {
+  const spec = resolveConfiguredAgentLaunch({ driver: "codex" });
+  expect(spec.agentArgv).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://registry.npmjs.org/",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+    "@agentclientprotocol/codex-acp@1.1.4",
+  ]);
+  expect(spec.acpxAgent).toBe(deriveAgentAlias("codex", spec.agentArgv!));
+
+  const override = resolveConfiguredAgentLaunch(
+    { driver: "claude" },
+    { adapterVersions: { claude: "0.58.1" }, adapterRegistry: "https://npm.corp.example/repository/npm/" },
+  );
+  expect(override.agentArgv).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://npm.corp.example/repository/npm/",
+    "--@agentclientprotocol:registry=https://npm.corp.example/repository/npm/",
+    "@agentclientprotocol/claude-agent-acp@0.58.1",
+  ]);
+});
+
+test("hermes resolves to the structured shim argv", () => {
+  const spec = resolveConfiguredAgentLaunch(
+    { driver: "hermes" },
+    undefined,
+    { platform: "darwin" },
+  );
+  expect(spec.agentArgv![0]).toBe(process.execPath);
+  expect(spec.agentArgv!.slice(2)).toEqual(["hermes", "acp"]);
+  expect(spec.agentArgv![1]).toContain("hermes-acp-shim.");
+});
+
+test("local fallback resolves to structured argv when the bin is on PATH", () => {
+  const spec = resolveConfiguredAgentLaunch({ driver: "opencode" }, { preferLocalAgents: true });
+  // Machine-dependent (PATH); assert both legal outcomes deterministically.
+  if (spec.agentArgv) {
+    expect(spec.agentArgv).toEqual(["opencode", "acp"]);
+    expect(spec.acpxAgent).toBe(deriveAgentAlias("opencode", ["opencode", "acp"]));
+  } else {
+    expect(spec).toEqual({ acpxAgent: "opencode" });
+  }
+});
+
+test("unix explicit raw command stays a raw --agent override", () => {
+  const spec = resolveConfiguredAgentLaunch(
+    { driver: "claude", command: "my-claude --acp" },
+    undefined,
+    { platform: "darwin" },
+  );
+  expect(spec).toEqual({ acpxAgent: "claude", rawCommand: "my-claude --acp" });
+});
+
+test("windows converts a single-token raw command to argv", () => {
+  const spec = resolveConfiguredAgentLaunch(
+    { driver: "claude", command: "claude.exe" },
+    undefined,
+    { platform: "win32" },
+  );
+  expect(spec.agentArgv).toEqual(["claude.exe"]);
+  expect(spec.agentCommand).toBe("claude.exe");
+});
+
+test("windows rejects a multi-token raw command with migration guidance", () => {
+  expect(() => resolveConfiguredAgentLaunch(
+    { driver: "claude", command: "node C:/my agent/server.js" },
+    undefined,
+    { platform: "win32" },
+  )).toThrow(/Migrate it to an argv array in config/);
+});
+>>>>>>> 39ec9c86 (feat(config): model structured ACP agent launches)

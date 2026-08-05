@@ -51,24 +51,30 @@ export function quoteAgentCommandToken(token: string): string {
   return `"${token.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
-/** Runtime-only agent command for the hermes driver: never persisted to config.
+/** Runtime-only agent argv for the hermes driver: never persisted to config.
  *
- * Tradeoff: the string embeds `process.execPath` and this install's dist path,
+ * Tradeoff: the argv embeds `process.execPath` and this install's dist path,
  * and acpx keys its backend session records by EXACT agentCommand equality — so a
  * node upgrade (nvm paths embed the version) or an install relocation re-keys
  * hermes session identity: acpx starts a fresh backend record and the old queue
  * owner ages out via TTL. Accepted because the alternative (a stable bin shim)
  * isn't worth the packaging surface for a workaround slated for removal. */
+export function hermesAcpShimArgv(
+  execPath: string = process.execPath,
+  shimEntry: string = resolveHermesAcpShimEntry(),
+): string[] {
+  return [execPath, shimEntry, "hermes", "acp"];
+}
+
+/** Runtime-only agent command for the hermes driver: the quoted-string form of
+ * `hermesAcpShimArgv` for acpx `--agent` (Unix paths only). Only path-bearing
+ * tokens are quoted; `hermes acp` stay bare. */
 export function hermesAcpShimCommand(
   execPath: string = process.execPath,
   shimEntry: string = resolveHermesAcpShimEntry(),
 ): string {
-  return [
-    quoteAgentCommandToken(execPath),
-    quoteAgentCommandToken(shimEntry),
-    "hermes",
-    "acp",
-  ].join(" ");
+  const [runner, entry, ...rest] = hermesAcpShimArgv(execPath, shimEntry);
+  return [quoteAgentCommandToken(runner!), quoteAgentCommandToken(entry!), ...rest].join(" ");
 }
 
 /**

@@ -96,7 +96,11 @@ export interface LoggingConfig {
 
 export interface AgentConfig {
   driver: string;
+  /** Unix-only legacy raw command override; mutually exclusive with `argv`. */
   command?: string;
+  /** Exact executable + argument boundaries for the agent launch. Mutually
+   * exclusive with `command`; on Windows this is the only lossless form. */
+  argv?: string[];
   /** Default LLM model id for sessions of this agent (e.g. `gpt-5.2[high]`); a session-level model overrides it. */
   model?: string;
   /** Claude user-settings exposure. Defaults to filtered third-party provider/model settings. */

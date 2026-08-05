@@ -64,14 +64,36 @@ export function effectiveAdapterVersion(
   return overrides?.[id] ?? MANAGED_ADAPTERS[id].defaultVersion;
 }
 
+export function buildManagedAdapterArgv(
+  id: ManagedAdapterId,
+  version: string,
+  registry: string = DEFAULT_ADAPTER_REGISTRY,
+): string[] {
+  if (!isExactAdapterVersion(version)) throw new Error(`invalid adapter version: ${version}`);
+  const spec = MANAGED_ADAPTERS[id];
+  return [
+    "npx",
+    "-y",
+    ...adapterRegistryNpmArgs(registry),
+    `${spec.packageName}@${version}`,
+  ];
+}
+
 export function buildManagedAdapterCommand(
   id: ManagedAdapterId,
   version: string,
   registry: string = DEFAULT_ADAPTER_REGISTRY,
 ): string {
-  if (!isExactAdapterVersion(version)) throw new Error(`invalid adapter version: ${version}`);
-  const spec = MANAGED_ADAPTERS[id];
-  return `npx -y ${adapterRegistryNpmArgs(registry).join(" ")} ${spec.packageName}@${version}`;
+  return buildManagedAdapterArgv(id, version, registry).join(" ");
+}
+
+export function resolveManagedAdapterArgv(
+  driver: string,
+  overrides?: AdapterVersionOverrides,
+  registry?: string,
+): string[] | undefined {
+  if (!isManagedAdapterId(driver)) return undefined;
+  return buildManagedAdapterArgv(driver, effectiveAdapterVersion(driver, overrides), registry);
 }
 
 export function resolveManagedAdapterCommand(
