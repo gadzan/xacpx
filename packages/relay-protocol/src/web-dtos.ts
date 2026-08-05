@@ -285,7 +285,7 @@ export function validControlEvent(e: unknown): boolean {
       return typeof c.chatKey === "string";
     case "turn-started":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && optStr(c.prompt) && optStr(c.queueItemId) && validScheduledOrigin(c.scheduled);
+        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -339,7 +339,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     if (typeof t !== "object" || t === null) return false;
     const turn = t as Record<string, unknown>;
     return typeof turn.sessionAlias === "string"
-      && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId)
+      && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId)
       && validScheduledOrigin(turn.scheduled)
       && finiteNonNegative(turn.startedAt)
       && typeof turn.text === "string"
@@ -367,7 +367,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     return typeof finished.sessionAlias === "string"
       && typeof finished.ok === "boolean"
       && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
-      && optStr(finished.queueItemId) && optStr(finished.recoveryId)
+      && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId)
       && validScheduledOrigin(finished.scheduled)
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
       && (finished.truncated === undefined || typeof finished.truncated === "boolean");

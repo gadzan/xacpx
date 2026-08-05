@@ -254,6 +254,44 @@ test("an absent queueItemId is persisted as an EXECUTED row, not a pending fallb
   runtime.close();
 });
 
+test("a pre-written inbound row correlates via promptRequestId when the queued response was lost", async () => {
+  const { runtime } = await seeded();
+  // Web prompt B was PRE-WRITTEN (hub-issued promptRequestId, no queue marker yet);
+  // the queued RPC response was lost (hub restart). The connector drained B with its
+  // own queueItemId. Recovery must correlate back to the pre-written row via
+  // promptRequestId — NOT append a duplicate (text matching cannot distinguish it
+  // from a user sending the identical prompt twice).
+  runtime.messages.append("i1", "backend", "in", "deploy it", undefined, undefined, "req-1");
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "deploy it", text: "done", queueItemId: "q1", promptRequestId: "req-1", recoveryId: "rA" },
+    ],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "deploy it"], ["out", "done"]]);
+  // The pre-written row was promoted: queue marker cleared, executed association kept.
+  expect(rows.filter((m) => m.queueItemId).length).toBe(0);
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("executed");
+  runtime.close();
+});
+
+test("a live drained turn-started correlates via promptRequestId when promoteQueued fails", async () => {
+  const { runtime } = await seeded();
+  // Same pre-write-loss window, but the turn drains LIVE (hub already back up) after
+  // the restart: the turn-started carries the promptRequestId, and the hub promotes
+  // the pre-written row instead of appending a duplicate.
+  runtime.messages.append("i1", "backend", "in", "deploy it", undefined, undefined, "req-1");
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "deploy it", queueItemId: "q1", promptRequestId: "req-1" });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "deploy it"]]);
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("executed");
+  runtime.close();
+});
+
 test("a scheduled turn's prompt is not re-inserted when its row is no longer trailing", async () => {
   const { runtime } = await seeded();
   const scheduled = { taskId: "t1", executeAt: "2026-06-16T09:00:00.000Z" };

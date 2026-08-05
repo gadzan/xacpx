@@ -56,6 +56,10 @@ export interface SubmitParams {
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: TurnRequest["turnStarted"];
   media?: PromptAttachmentRef[];
+  /** Hub-issued pre-write correlation; stored on the queue item and carried onto the
+   *  drained turn-started so the hub can correlate a queue item back to its
+   *  pre-written inbound row (see PromptPayload.promptRequestId). */
+  promptRequestId?: string;
   // Only interactive prompt() sets this. When true and a turn is already running, the
   // submission is appended to the per-session queue instead of being rejected. Scheduled
   // turns omit it, so they keep the immediate-or-reject behavior.
@@ -156,6 +160,7 @@ export class TurnQueue {
             ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
             ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
             ...(params.media !== undefined ? { media: params.media } : {}),
+            ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
           };
           q.push(item);
           this.queues.set(key, q);
@@ -322,7 +327,7 @@ export class TurnQueue {
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),
-        turnStarted: { prompt: next.text, queueItemId: next.id },
+        turnStarted: { prompt: next.text, queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) },
       });
     } else {
       // The queue emptied during the drain hand-off (e.g. a cancel removed the only queued

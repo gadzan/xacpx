@@ -135,6 +135,18 @@ test("a queued turn carries its queueItemId so the hub reconciles the queued row
   expect(validInstanceStateSync(payload)).toBe(true);
 });
 
+test("promptRequestId rides the mirror into the sync payload", () => {
+  const { mirror } = makeMirror(() => false);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi", promptRequestId: "req-1" });
+  const { snapshot: running } = mirror.buildStateSync(LIVE);
+  expect(running.turns[0]).toMatchObject({ promptRequestId: "req-1" });
+  expect(validInstanceStateSync(running)).toBe(true);
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
+  const { snapshot: finished } = mirror.buildStateSync(LIVE);
+  expect(finished.finishedOffline[0]).toMatchObject({ promptRequestId: "req-1" });
+  expect(validInstanceStateSync(finished)).toBe(true);
+});
+
 test("turn-finished while offline without an accumulator still carries the event text", () => {
   const { mirror } = makeMirror(() => false);
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: false, errorMessage: "kaboom" });

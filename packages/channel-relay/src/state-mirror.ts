@@ -41,6 +41,9 @@ interface MirrorTurn {
   prompt?: string;
   scheduled?: ScheduledOriginDto;
   queueItemId?: string;
+  /** Hub-issued pre-write correlation (PromptPayload.promptRequestId); carried into
+   *  the sync so the hub can tie the turn back to its pre-written inbound row. */
+  promptRequestId?: string;
   /** Stamped locally when the connector first saw `turn-started`, so a sync
    *  restores the ORIGINAL start time on the hub after a restart. */
   startedAt: number;
@@ -66,6 +69,8 @@ interface PendingFinishedTurn {
    *  not duplicate) exactly like the live path. */
   queueItemId?: string;
   scheduled?: ScheduledOriginDto;
+  /** Hub-issued pre-write correlation (see MirrorTurn.promptRequestId). */
+  promptRequestId?: string;
   /** The connector capped this turn's text at STATE_SYNC_TEXT_CAP; the hub must
    *  persist the flag so the recovered reply is not mistaken for a complete one. */
   truncated?: boolean;
@@ -193,6 +198,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.prompt !== undefined ? { prompt: event.prompt } : {}),
           ...(event.scheduled ? { scheduled: event.scheduled } : {}),
           ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
+          ...(event.promptRequestId !== undefined ? { promptRequestId: event.promptRequestId } : {}),
         });
         bump(event.sessionAlias);
         return;
@@ -266,6 +272,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.prompt !== undefined ? { prompt: a.prompt } : {}),
           ...(a?.queueItemId !== undefined ? { queueItemId: a.queueItemId } : {}),
           ...(a?.scheduled ? { scheduled: a.scheduled } : {}),
+          ...(a?.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
           createdAt: now(),
@@ -332,6 +339,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a.prompt !== undefined ? { prompt: a.prompt } : {}),
           ...(a.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a.queueItemId ? { queueItemId: a.queueItemId } : {}),
+          ...(a.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
           ...(a.truncated ? { truncated: true } : {}),
           recoveryId: a.recoveryId,
         });
@@ -362,6 +370,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.prompt !== undefined ? { prompt: f.prompt } : {}),
           ...(f.queueItemId !== undefined ? { queueItemId: f.queueItemId } : {}),
           ...(f.scheduled ? { scheduled: f.scheduled } : {}),
+          ...(f.promptRequestId !== undefined ? { promptRequestId: f.promptRequestId } : {}),
           ...(f.truncated ? { truncated: true } : {}),
           recoveryId: f.recoveryId,
         });

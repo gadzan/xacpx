@@ -180,6 +180,10 @@ export interface ControlPromptInput {
   senderId: string;
   isOwner?: boolean;
   media?: PromptAttachmentRef[];
+  /** Hub-issued pre-write correlation; threaded onto the queue item and the drained
+   *  turn-started so the hub can tie a queued prompt back to its pre-written inbound
+   *  row (see PromptPayload.promptRequestId). */
+  promptRequestId?: string;
 }
 
 export interface ControlPromptResult {
@@ -795,6 +799,7 @@ export class ControlService {
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.media !== undefined ? { media: input.media } : {}),
+      ...(input.promptRequestId !== undefined ? { promptRequestId: input.promptRequestId } : {}),
     });
   }
 

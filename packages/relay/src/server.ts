@@ -269,7 +269,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // the prompt carried by the event and reconcile if the HTTP response raced.
               const correlation = { instanceId, sessionAlias: event.sessionAlias, queueItemId: event.queueItemId };
               const promoted = messages.promoteQueued(correlation);
-              if (!promoted && event.prompt) {
+              if (!promoted && event.promptRequestId) {
+                // The queued RPC response was lost: correlate the pre-written inbound
+                // row by the hub-issued request id instead of appending a duplicate.
+                const rowId = messages.findByPromptRequest(instanceId, event.promptRequestId);
+                if (rowId !== undefined) messages.promoteQueuedRow(rowId, correlation);
+                else if (event.prompt) messages.appendQueuedFallback(correlation, event.prompt);
+              } else if (!promoted && event.prompt) {
                 messages.appendQueuedFallback(correlation, event.prompt);
               }
             } else if (event.prompt) {
@@ -441,8 +447,21 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           // trailing-row check.
           const backfillInboundPrompt = (
             sessionAlias: string,
-            opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto },
+            opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
           ): void => {
+            // A hub-issued request id (new connectors) correlates the turn back to its
+            // PRE-WRITTEN inbound row even when the queued RPC response was lost — the
+            // row exists with no queue marker, so the queueItemId flow below would call
+            // it "absent" and append a duplicate.
+            if (opts.promptRequestId) {
+              const rowId = messages.findByPromptRequest(instanceId, opts.promptRequestId);
+              if (rowId !== undefined) {
+                if (opts.queueItemId) {
+                  messages.promoteQueuedRow(rowId, { instanceId, sessionAlias, queueItemId: opts.queueItemId });
+                }
+                return; // prompt already in history (pre-written row)
+              }
+            }
             if (opts.queueItemId) {
               const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
               const state = messages.queuedState(correlation);
@@ -522,7 +541,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               const persist = (): void => {
                 if (!alreadyPersisted) {
                   backfillInboundPrompt(finished.sessionAlias, {
-                    prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled,
+                    prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled, promptRequestId: finished.promptRequestId,
                   });
                 }
                 // Presence (not truthiness): an empty-string reply still gets its row.
@@ -548,7 +567,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             //    in-memory change, so a failure here leaves the OLD hub state intact
             //    and the connector retries the whole sync on reconnect.
             for (const turn of sync.turns) {
-              backfillInboundPrompt(turn.sessionAlias, { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled });
+              backfillInboundPrompt(turn.sessionAlias, { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled, promptRequestId: turn.promptRequestId });
             }
             // 3. Replace in-memory state now that the DB work committed.
             const prefix = `${instanceId}\0`;

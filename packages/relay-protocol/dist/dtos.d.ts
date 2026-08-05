@@ -209,6 +209,7 @@ export type ControlEventDto = {
     prompt?: string;
     scheduled?: ScheduledOriginDto;
     queueItemId?: string;
+    promptRequestId?: string;
 } | {
     type: "tool-event";
     chatKey: string;

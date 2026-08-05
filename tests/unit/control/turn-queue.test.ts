@@ -75,6 +75,22 @@ test("a busy second submit enqueues and reports queued:true with an id", async (
   await p1;
 });
 
+test("a queued prompt carries promptRequestId onto the drained turn-started", async () => {
+  const { queue, pendingReqs, resolveNext } = makeQueue();
+  const p1 = queue.submit({ ...BASE, text: "first", queueable: true });
+  await tick();
+  await queue.submit({ ...BASE, text: "second", queueable: true, promptRequestId: "req-1" });
+  expect(queue.queueLength("c", "s")).toBe(1);
+  resolveNext(); // first turn finishes → drains the queue head
+  await p1; // p1 settles only after the drain hand-off (drained submit registered)
+  await tick();
+  const drained = pendingReqs()[0]?.turnStarted;
+  expect(drained).toMatchObject({ prompt: "second", promptRequestId: "req-1" });
+  expect(drained?.queueItemId).toBeString();
+  resolveNext();
+  await p1;
+});
+
 test("a non-queueable submit while busy rejects immediately with turn-already-running", async () => {
   const { queue, resolveNext } = makeQueue();
   const p1 = queue.submit({ ...BASE, text: "first", queueable: true });

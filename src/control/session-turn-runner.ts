@@ -13,7 +13,7 @@ export interface TurnRequest {
   accountId?: string;
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
   // is set only for a drained queue head so the web can reconcile the badge.
-  turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string };
+  turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string };
   media?: PromptAttachmentRef[];
 }
 
@@ -90,6 +90,7 @@ export class SessionTurnRunner {
       ...(req.turnStarted?.prompt ? { prompt: req.turnStarted.prompt } : {}),
       ...(req.turnStarted?.scheduled ? { scheduled: req.turnStarted.scheduled } : {}),
       ...(req.turnStarted?.queueItemId ? { queueItemId: req.turnStarted.queueItemId } : {}),
+      ...(req.turnStarted?.promptRequestId ? { promptRequestId: req.turnStarted.promptRequestId } : {}),
     });
     // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
     // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.

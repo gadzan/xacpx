@@ -108,6 +108,9 @@ export interface InstanceStateSyncPayload {
         prompt?: string;
         scheduled?: ScheduledOriginDto;
         queueItemId?: string;
+        /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); lets the
+         *  hub tie this turn's prompt back to its pre-written inbound row. */
+        promptRequestId?: string;
         /** The connector's stable id for this running turn (mirrors the recoveryId it
          *  stamps on the eventual `turn-finished`), so the hub can tell a running turn
          *  apart from a finished-offline entry of the same session. */
@@ -155,6 +158,7 @@ export interface InstanceStateSyncPayload {
         prompt?: string;
         queueItemId?: string;
         scheduled?: ScheduledOriginDto;
+        promptRequestId?: string;
         recoveryId?: string;
         truncated?: boolean;
     }>;
@@ -299,6 +303,13 @@ export interface PromptPayload {
     senderId: string;
     isOwner?: boolean;
     media?: PromptAttachmentRef[];
+    /** Hub-issued stable id generated when the inbound row is PRE-WRITTEN (before the
+     *  RPC), so a queued-response loss (hub restart / dropped response) can still
+     *  correlate the connector's queue item back to that exact prompt row on recovery —
+     *  text matching cannot distinguish a redelivery from a user sending the identical
+     *  prompt twice. New connectors carry it through the queue item into turn-started
+     *  and the state sync. */
+    promptRequestId?: string;
 }
 export interface PromptResult {
     ok: boolean;

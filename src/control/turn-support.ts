@@ -11,6 +11,10 @@ export interface QueuedPrompt {
   isOwner?: boolean;
   accountId?: string;
   media?: PromptAttachmentRef[];
+  /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); carried
+   *  onto the drained turn-started so the hub can tie the queue item back to the
+   *  pre-written inbound row even if the queued RPC response was lost. */
+  promptRequestId?: string;
 }
 
 // Upper bound on how long a follow-up prompt waits for a just-cancelled turn to

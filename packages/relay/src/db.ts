@@ -168,7 +168,8 @@ export function initSchema(db: SqlDriver): void {
       attachments TEXT,
       queue_item_id TEXT,
       queue_fallback INTEGER NOT NULL DEFAULT 0,
-      origin_queue_item_id TEXT
+      origin_queue_item_id TEXT,
+      prompt_request_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
     CREATE TABLE IF NOT EXISTS recovery_receipts (
@@ -196,7 +197,11 @@ export function initSchema(db: SqlDriver): void {
   if (!messageCols.some((c) => c.name === "origin_queue_item_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN origin_queue_item_id TEXT");
   }
+  if (!messageCols.some((c) => c.name === "prompt_request_id")) {
+    db.exec("ALTER TABLE messages ADD COLUMN prompt_request_id TEXT");
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_origin_queue ON messages (instance_id, session_alias, origin_queue_item_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_prompt_request ON messages (prompt_request_id);
   `);
 }

@@ -38,9 +38,10 @@ export class MessageStore {
     text: string,
     structured?: StructuredTurn,
     attachments?: AttachmentMetadata[],
+    promptRequestId?: string,
   ): number {
     this.db.run(
-      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments) VALUES (?,?,?,?,?,?,?)",
+      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments, prompt_request_id) VALUES (?,?,?,?,?,?,?,?)",
       [
         instanceId,
         sessionAlias,
@@ -49,28 +50,33 @@ export class MessageStore {
         this.now().toISOString(),
         structured ? JSON.stringify(structured) : null,
         attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
+        promptRequestId ?? null,
       ],
     );
     return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
   }
 
-  /** Associate an already-persisted Web prompt with the connector's queue id. */
+  /** Associate an already-persisted Web prompt with the connector's queue id. The
+   *  whole reconcile (set the id, absorb a racing fallback row) runs in ONE
+   *  transaction — a crash between the statements would leave a double row. */
   markQueued(rowId: number, correlation: QueueCorrelation): void {
-    this.db.run(
-      "UPDATE messages SET queue_item_id = ? WHERE id = ? AND instance_id = ? AND session_alias = ?",
-      [correlation.queueItemId, rowId, correlation.instanceId, correlation.sessionAlias],
-    );
-    const fallback = this.db.get<{ id: number }>(
-      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 1",
-      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
-    );
-    if (!fallback) return;
-    // The drain event arrived before the RPC response. Replace its lightweight row
-    // at the SAME sequence id, preserving execution order even if the turn already
-    // emitted and persisted its reply before this response arrived. Retain the
-    // queue association for recovery dedup (see promoteQueued).
-    this.db.run("DELETE FROM messages WHERE id = ?", [fallback.id]);
-    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ? WHERE id = ?", [fallback.id, correlation.queueItemId, rowId]);
+    this.db.transaction(() => {
+      this.db.run(
+        "UPDATE messages SET queue_item_id = ? WHERE id = ? AND instance_id = ? AND session_alias = ?",
+        [correlation.queueItemId, rowId, correlation.instanceId, correlation.sessionAlias],
+      );
+      const fallback = this.db.get<{ id: number }>(
+        "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 1",
+        [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+      );
+      if (!fallback) return;
+      // The drain event arrived before the RPC response. Replace its lightweight row
+      // at the SAME sequence id, preserving execution order even if the turn already
+      // emitted and persisted its reply before this response arrived. Retain the
+      // queue association for recovery dedup (see promoteQueued).
+      this.db.run("DELETE FROM messages WHERE id = ?", [fallback.id]);
+      this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ? WHERE id = ?", [fallback.id, correlation.queueItemId, rowId]);
+    });
   }
 
   /** Move a queued inbound row to the current end of the transcript when execution
@@ -118,14 +124,14 @@ export class MessageStore {
    *  path when a queueItemId has no persisted row at all — the original HTTP request
    *  died with the pre-restart hub, so a TEMPORARY fallback row (queue_fallback = 1,
    *  waiting for markQueued) would never be finalized and the UI would show a run
-   *  prompt as queued forever. */
+   *  prompt as queued forever. ONE statement: an append + UPDATE split would leave a
+   *  bare prompt row if the process died between them, and the retry would duplicate. */
   appendExecutedQueuedFallback(correlation: QueueCorrelation, text: string): number {
-    const rowId = this.append(correlation.instanceId, correlation.sessionAlias, "in", text);
     this.db.run(
-      "UPDATE messages SET origin_queue_item_id = ? WHERE id = ?",
-      [correlation.queueItemId, rowId],
+      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, origin_queue_item_id) VALUES (?,?,?,?,?,?)",
+      [correlation.instanceId, correlation.sessionAlias, "in", text, this.now().toISOString(), correlation.queueItemId],
     );
-    return rowId;
+    return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
   }
 
   /** Finalize a recovery-created fallback row (queue_fallback = 1) as executed: clear
@@ -154,12 +160,34 @@ export class MessageStore {
   }
 
   appendQueuedFallback(correlation: QueueCorrelation, text: string): number {
-    const rowId = this.append(correlation.instanceId, correlation.sessionAlias, "in", text);
+    // ONE statement (append + queued marker together) — a split write would leave a
+    // bare row if the process died in between, and the retry would duplicate.
     this.db.run(
-      "UPDATE messages SET queue_item_id = ?, queue_fallback = 1 WHERE id = ?",
-      [correlation.queueItemId, rowId],
+      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, queue_item_id, queue_fallback) VALUES (?,?,?,?,?,?,1)",
+      [correlation.instanceId, correlation.sessionAlias, "in", text, this.now().toISOString(), correlation.queueItemId],
     );
-    return rowId;
+    return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
+  }
+
+  /** The pre-written inbound row for a hub-issued prompt request (correlates a drained
+   *  queue item back to the row even when the queued RPC response was lost). */
+  findByPromptRequest(instanceId: string, promptRequestId: string): number | undefined {
+    const row = this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND prompt_request_id = ? AND direction = 'in'",
+      [instanceId, promptRequestId],
+    );
+    return row?.id;
+  }
+
+  /** Promote a KNOWN inbound row (found via promptRequestId) to its execution position
+   *  and record the executed queue association — the row was pre-written without a
+   *  queue marker, so promoteQueued() could not find it. */
+  promoteQueuedRow(rowId: number, correlation: QueueCorrelation): void {
+    const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
+    this.db.run(
+      "UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ?, prompt_request_id = NULL WHERE id = ?",
+      [nextId, correlation.queueItemId, rowId],
+    );
   }
 
   /**

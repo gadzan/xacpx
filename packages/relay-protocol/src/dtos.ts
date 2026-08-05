@@ -210,7 +210,9 @@ export type ControlEventDto =
   | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
   // `prompt` is set for scheduled turns and drained queued prompts. `queueItemId`
   // associates the latter with the message originally persisted at enqueue time.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string }
+  // `promptRequestId` (new connectors) correlates a drained queue item back to the
+  // hub pre-written inbound row when the queued RPC response was lost.
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string; promptRequestId?: string }
   | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
   | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
   | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
