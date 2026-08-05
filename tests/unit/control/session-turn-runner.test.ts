@@ -49,6 +49,21 @@ test("a clean turn with no abort emits turn-finished ok:true carrying the reply 
   expect(fin.text).toBe("final");
 });
 
+test("turn-finished.text accumulates ALL emitted chunks when response.text is missing", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("part 1");
+    await opts.reply("part 2");
+    return { text: undefined }; // streaming adapter: the final text is never set
+  });
+  const result = await runner.run(REQ as never, new AbortController().signal);
+  expect(result.ok).toBe(true);
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
+  // stream mode concatenates verbatim — the relay hub's no-buffer fallback must get
+  // the FULL reply, not an empty or last-segment-only text.
+  expect(fin.text).toBe("part 1part 2");
+  expect(captured.filter((e) => e.type === "turn-output")).toHaveLength(2);
+});
+
 test("a TURN_IDLE_TIMEOUT_REASON abort surfaces as ok:false + timeout errorMessage, NOT cancelled", async () => {
   const controller = new AbortController();
   const { runner, captured } = makeRunner(async () => {

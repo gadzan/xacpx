@@ -398,12 +398,6 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             return;
           }
           const sync = envelope.payload as InstanceStateSyncPayload;
-          // Replace, don't merge: the connector's mirror is authoritative for this
-          // instance, and a re-sent sync must reconcile without duplicating entries.
-          const prefix = `${instanceId}\0`;
-          for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
-          for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
-          for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
           // Recency guards against duplicate persists. A sync is re-sent whenever the
           // previous send wasn't confirmed (or the connector simply reconnects again),
           // so blind appends would duplicate transcript rows. The last few rows are
@@ -433,10 +427,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             return false;
           };
           // One reconciliation for the inbound `in` row, shared by the sync paths
-          // (active-turn restore + finished-offline backfill): a prompt enqueued while
+          // (active-turn restore + finished-offline backfill). A prompt enqueued while
           // the hub was up has a persisted queued row (`queue_item_id` set) — promote
-          // it to its execution position instead of appending a duplicate (the live
-          // turn-started path does the same via promoteQueued/appendQueuedFallback).
+          // it to its execution position instead of appending a duplicate. The row's
+          // queue association is RETAINED as `origin_queue_item_id` when promoted, so
+          // a queueItemId that already executed (promoted before a restart) is
+          // recognized as "already in history" rather than re-appended — text matching
+          // cannot tell a redelivery from a user sending the identical prompt twice.
           // Without a queueItemId, backfill the plain `in` row only when it is not
           // already the trailing row (a redelivered sync / already-persisted prompt).
           const backfillInboundPrompt = (
@@ -445,128 +442,146 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           ): void => {
             if (opts.queueItemId) {
               const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
-              if (!messages.promoteQueued(correlation) && opts.prompt) {
+              const state = messages.queuedState(correlation);
+              if (state === "pending") {
+                // A queued row still carries the id → move it to its execution position.
+                messages.promoteQueued(correlation);
+              } else if (state === "absent" && opts.prompt) {
+                // Never existed (queued row pruned, or the turn started from a path
+                // without one) → the fallback row is the only way the prompt lands.
                 messages.appendQueuedFallback(correlation, opts.prompt);
               }
+              // "executed" → already promoted before a restart; the prompt row exists,
+              // appending a duplicate would corrupt history.
               return;
             }
             if (opts.prompt !== undefined && !hasTrailingPrompt(sessionAlias, opts.prompt)) {
               messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
             }
           };
-          // Finished turns are reconciled FIRST, so their rows land before any
-          // active-turn prompt backfill (message order). A finished entry and a running
-          // turn may share a sessionAlias legitimately (turn A finished while the queue
-          // started turn B on the same session) — they are distinguished by recoveryId,
-          // NOT by alias.
-          const activeRecoveryIds = new Set(sync.turns.flatMap((t) => t.recoveryId ? [t.recoveryId] : []));
-          // Recovery ids to ack once their (message + receipt) transactions below
-          // have all committed — one ack frame per sync, sent after the loop.
-          const ackedRecoveryIds: string[] = [];
-          for (const finished of sync.finishedOffline) {
-            // Truly contradictory (the SAME turn listed as both finished and running):
-            // trust the running turn; it will flush normally. Different turns on the
-            // same alias are both persisted.
-            if (finished.recoveryId && activeRecoveryIds.has(finished.recoveryId)) continue;
-            // A failed turn with no (or an empty) reply must surface its error text,
-            // never an empty out row: the connector's accumulator starts text at ""
-            // and a legacy/buggy sync may ship text:"" alongside errorMessage.
-            const text = finished.ok
-              ? finished.text
-              : (finished.text ? finished.text : finished.errorMessage);
-            const recoveryId = finished.recoveryId;
-            if (recoveryId && recoveryReceipts.has(instanceId, recoveryId)) {
-              // Already committed (live flush or a previous sync) but the connector
-              // never got the ack — re-ack so its FIFO can finally drop the entry.
-              ackedRecoveryIds.push(recoveryId);
-              continue;
-            }
-            const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
-            if (!recoveryId && recoveredFingerprints.has(fingerprint)) continue;
-            const alreadyPersisted = !recoveryId && text !== undefined
-              ? finished.prompt !== undefined
-                ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
-                : hasRecentRow(finished.sessionAlias, "out", text)
-              : false;
-            // The reply row(s) and the receipt are written in ONE transaction (the
-            // same invariant as the live turn-finished flush): a crash between them
-            // would re-append the whole group on redelivery. `truncated` rides the
-            // structured metadata so a capped reply never reads as a complete one.
-            const persist = (): void => {
-              if (!alreadyPersisted) {
-                backfillInboundPrompt(finished.sessionAlias, {
-                  prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled,
-                });
+          // The WHOLE reconciliation is wrapped so ANY database failure — not just the
+          // finished-entry transactions — forces a reconnect: the connector only
+          // re-sends its state sync on re-auth, so a silent failure would strand the
+          // active turn (its prompt row never lands) with no way to retry. Database
+          // work happens BEFORE the in-memory replacement, so a failure never leaves
+          // half-updated hub state behind.
+          try {
+            // 1. Finished turns are reconciled FIRST, so their rows land before any
+            //    active-turn prompt backfill (message order). A finished entry and a
+            //    running turn may share a sessionAlias legitimately (turn A finished
+            //    while the queue started turn B on the same session) — they are
+            //    distinguished by recoveryId, NOT by alias.
+            const activeRecoveryIds = new Set(sync.turns.flatMap((t) => t.recoveryId ? [t.recoveryId] : []));
+            // Recovery ids to ack once their (message + receipt) transactions below
+            // have all committed — one ack frame, sent after the loop.
+            const ackedRecoveryIds: string[] = [];
+            for (const finished of sync.finishedOffline) {
+              // Truly contradictory (the SAME turn listed as both finished and running):
+              // trust the running turn; it will flush normally. Different turns on the
+              // same alias are both persisted.
+              if (finished.recoveryId && activeRecoveryIds.has(finished.recoveryId)) continue;
+              // A failed turn with no (or an empty) reply must surface its error text,
+              // never an empty out row: the connector's accumulator starts text at ""
+              // and a legacy/buggy sync may ship text:"" alongside errorMessage.
+              const text = finished.ok
+                ? finished.text
+                : (finished.text ? finished.text : finished.errorMessage);
+              const recoveryId = finished.recoveryId;
+              if (recoveryId && recoveryReceipts.has(instanceId, recoveryId)) {
+                // Already committed (live flush or a previous sync) but the connector
+                // never got the ack — re-ack so its FIFO can finally drop the entry.
+                ackedRecoveryIds.push(recoveryId);
+                continue;
               }
-              // Presence (not truthiness): an empty-string reply still gets its row.
-              if (text !== undefined && !alreadyPersisted) {
-                messages.append(instanceId, finished.sessionAlias, "out", text, finished.truncated ? { truncated: true } : undefined);
-              }
-            };
-            if (recoveryId) {
-              try {
+              const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
+              if (!recoveryId && recoveredFingerprints.has(fingerprint)) continue;
+              const alreadyPersisted = !recoveryId && text !== undefined
+                ? finished.prompt !== undefined
+                  ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
+                  : hasRecentRow(finished.sessionAlias, "out", text)
+                : false;
+              // The reply row(s) and the receipt are written in ONE transaction (the
+              // same invariant as the live turn-finished flush): a crash between them
+              // would re-append the whole group on redelivery. `truncated` rides the
+              // structured metadata so a capped reply never reads as a complete one.
+              const persist = (): void => {
+                if (!alreadyPersisted) {
+                  backfillInboundPrompt(finished.sessionAlias, {
+                    prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled,
+                  });
+                }
+                // Presence (not truthiness): an empty-string reply still gets its row.
+                if (text !== undefined && !alreadyPersisted) {
+                  messages.append(instanceId, finished.sessionAlias, "out", text, finished.truncated ? { truncated: true } : undefined);
+                }
+              };
+              if (recoveryId) {
                 db.transaction(() => {
                   persist();
                   recoveryReceipts.remember(instanceId, recoveryId);
                 });
-              } catch (err) {
-                // Same posture as the live flush: a persistence failure must not be
-                // silent — force a reconnect so the connector re-sends its state sync
-                // and this entry gets another chance.
-                gateway.disconnect(instanceId);
-                throw err;
+                ackedRecoveryIds.push(recoveryId);
+              } else {
+                persist();
+                rememberFingerprint(fingerprint);
               }
-              ackedRecoveryIds.push(recoveryId);
-            } else {
-              persist();
-              rememberFingerprint(fingerprint);
             }
-          }
-          if (ackedRecoveryIds.length > 0) {
-            gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: ackedRecoveryIds } satisfies InstanceRecoveryAckPayload);
-          }
-          // Running turns are restored AFTER the finished rows so the prompt backfill
-          // lands at the correct transcript position.
-          for (const turn of sync.turns) {
-            const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
-            const reasoning = turn.reasoning.slice(0, REASONING_CAP);
-            const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
-            // The mirror ships flat text/reasoning/steps; rebuild the ordered `parts`
-            // so snapshot and flush treat this identically to a live accumulator —
-            // subsequent turn-output/tool-event appends and turn-finished flush keep
-            // working unchanged (text last, as it postdates activity in live order).
-            const parts: TurnPartDto[] = turn.parts
-              ? capSyncedParts(turn.parts)
-              : steps.map((step) => ({ type: "tool", step }));
-            if (!turn.parts) {
-              if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
-              if (text) parts.push({ type: "text", text });
+            if (ackedRecoveryIds.length > 0) {
+              gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: ackedRecoveryIds } satisfies InstanceRecoveryAckPayload);
             }
-            // Backfill/reconcile the prompt for a turn that STARTED while the hub was
-            // down: the live path persists it at turn-started, which this hub never
-            // saw. A queued prompt is promoted (not duplicated); a plain prompt is
-            // appended only when it is not already the trailing row.
-            backfillInboundPrompt(turn.sessionAlias, { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled });
-            turnBuffers.set(key(instanceId, turn.sessionAlias), {
-              text,
-              steps: new Map(steps.map((s) => [s.toolCallId, s])),
-              reasoning,
-              parts,
-              // Restored original start so the elapsed-time HUD survives the restart.
-              startedAt: turn.startedAt,
-              // A mirror that capped this turn at STATE_SYNC_TEXT_CAP marks it so the
-              // final flush persists structured.truncated instead of a gappy reply
-              // that reads as complete.
-              ...(turn.truncated ? { truncated: true } : {}),
-            });
+            // 2. Active-turn prompt reconciliation (database only) — still before any
+            //    in-memory change, so a failure here leaves the OLD hub state intact
+            //    and the connector retries the whole sync on reconnect.
+            for (const turn of sync.turns) {
+              backfillInboundPrompt(turn.sessionAlias, { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled });
+            }
+            // 3. Replace in-memory state now that the DB work committed.
+            const prefix = `${instanceId}\0`;
+            for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
+            for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
+            for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
+            for (const turn of sync.turns) {
+              const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
+              const reasoning = turn.reasoning.slice(0, REASONING_CAP);
+              const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
+              // The mirror ships flat text/reasoning/steps; rebuild the ordered `parts`
+              // so snapshot and flush treat this identically to a live accumulator —
+              // subsequent turn-output/tool-event appends and turn-finished flush keep
+              // working unchanged (text last, as it postdates activity in live order).
+              const parts: TurnPartDto[] = turn.parts
+                ? capSyncedParts(turn.parts)
+                : steps.map((step) => ({ type: "tool", step }));
+              if (!turn.parts) {
+                if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
+                if (text) parts.push({ type: "text", text });
+              }
+              turnBuffers.set(key(instanceId, turn.sessionAlias), {
+                text,
+                steps: new Map(steps.map((s) => [s.toolCallId, s])),
+                reasoning,
+                parts,
+                // Restored original start so the elapsed-time HUD survives the restart.
+                startedAt: turn.startedAt,
+                // A mirror that capped this turn at STATE_SYNC_TEXT_CAP marks it so the
+                // final flush persists structured.truncated instead of a gappy reply
+                // that reads as complete.
+                ...(turn.truncated ? { truncated: true } : {}),
+              });
+            }
+            for (const meter of sync.usage) {
+              sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
+            }
+            for (const entry of sync.commands) {
+              sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
+            }
+            webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
+          } catch (err) {
+            // Same posture as the live flush: a persistence failure must never be
+            // silent — force a reconnect so the connector re-sends its state sync and
+            // the whole reconciliation gets a fresh attempt (old memory state intact).
+            gateway.disconnect(instanceId);
+            throw err;
           }
-          for (const meter of sync.usage) {
-            sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
-          }
-          for (const entry of sync.commands) {
-            sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
-          }
-          webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
         } else if (envelope.type === MSG.instanceNotice) {
           webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });
         }

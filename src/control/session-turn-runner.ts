@@ -99,13 +99,20 @@ export class SessionTurnRunner {
     // those we re-insert the break between segments so live and history stay identical.
     const streamMode = await this.resolveStreamMode(req.chatKey, req.sessionAlias);
     let emittedChunk = false;
+    // Accumulate the ACTUAL normalized chunks sent on the wire. A streaming adapter
+    // often leaves `response.text` undefined (or partial), so the relay hub's
+    // no-buffer fallback must not depend on it — turn-finished.text is this full
+    // concatenation, exactly what a live-view consumer accumulated from turn-output.
+    let finalText = "";
     const emitChunk = (chunk: string) => {
       if (!chunk) return;
+      const output = !streamMode && emittedChunk ? `\n\n${chunk}` : chunk;
+      finalText += output;
       this.deps.events.emit({
         type: "turn-output",
         chatKey: req.chatKey,
         sessionAlias: req.sessionAlias,
-        chunk: !streamMode && emittedChunk ? `\n\n${chunk}` : chunk,
+        chunk: output,
       });
       emittedChunk = true;
     };
@@ -214,9 +221,11 @@ export class SessionTurnRunner {
         chatKey: req.chatKey,
         sessionAlias: req.sessionAlias,
         ok: true,
-        // Carry the final reply text so a relay hub that missed the streamed chunks can
-        // still persist the answer (messages.append fallback for turns without a buffer).
-        text: response.text,
+        // Carry the accumulated reply text (all emitted chunks + the trailing
+        // response.text) so a relay hub that missed the streamed chunks can still
+        // persist the FULL answer — response.text alone is unreliable for streaming
+        // adapters (often undefined or the last segment only).
+        text: finalText,
       });
       return {
         ok: true,

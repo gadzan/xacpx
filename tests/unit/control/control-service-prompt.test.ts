@@ -61,8 +61,10 @@ test("prompt binds session, streams chunks as events, and reports completion", a
     { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "chunk-1" },
     // Subsequent chunks carry the restored paragraph break (segments arrive trimmed).
     { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "\n\nfinal" },
-    // turn-finished carries the final reply text for hub-side fallback persistence.
-    { type: "turn-finished", chatKey: "relay:acct-1", sessionAlias: "backend", ok: true, text: "final" },
+    // turn-finished carries the FULL accumulated reply (emitted chunks + response.text)
+    // for hub-side fallback persistence — not just response.text, which streaming
+    // adapters may leave undefined.
+    { type: "turn-finished", chatKey: "relay:acct-1", sessionAlias: "backend", ok: true, text: "chunk-1\n\nfinal" },
   ]);
 });
 

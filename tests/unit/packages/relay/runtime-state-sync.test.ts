@@ -186,6 +186,53 @@ test("a queued finished turn promotes its queued row instead of appending a dupl
   runtime.close();
 });
 
+test("a queueItemId that already executed before a restart is not re-inserted on recovery", async () => {
+  const { runtime } = await seeded();
+  // The prompt was queued AND already promoted (execution started) while the hub was
+  // up; the hub then restarted mid-turn. promoteQueued retained the association as
+  // origin_queue_item_id, so the sync must recognize "already executed" and NOT append
+  // a duplicate prompt — text matching cannot distinguish it from a user sending the
+  // identical prompt twice.
+  const rowId = runtime.messages.append("i1", "backend", "in", "deploy it");
+  runtime.messages.markQueued(rowId, { instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" });
+  expect(runtime.messages.promoteQueued({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe(true);
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("executed");
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "deploy it", text: "done", queueItemId: "q1", recoveryId: "rA" },
+    ],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "deploy it"], ["out", "done"]]);
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("executed");
+  runtime.close();
+});
+
+test("an active-turn prompt backfill failure disconnects the instance for a resync", async () => {
+  const { runtime, records } = await seeded();
+  const disconnects: string[] = [];
+  const original = runtime.gateway.disconnect.bind(runtime.gateway);
+  runtime.gateway.disconnect = ((instanceId: string) => {
+    disconnects.push(instanceId);
+    return original(instanceId);
+  }) as typeof runtime.gateway.disconnect;
+  // A running turn whose prompt backfill (a DB write OUTSIDE the finished-entry
+  // transactions) throws: the whole sync must fail with a disconnect — a silent
+  // failure would strand the active turn (buffer never replaced, no resync).
+  const originalAppend = runtime.messages.append.bind(runtime.messages);
+  runtime.messages.append = (() => { throw new Error("simulated sqlite failure"); }) as typeof runtime.messages.append;
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "work", reasoning: "", steps: [], prompt: "hi" }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  runtime.messages.append = originalAppend;
+  expect(disconnects).toEqual(["i1"]);
+  expect(runtime.stateSnapshot("i1").turns).toEqual([]); // no half-replaced buffer
+  expect(records.some((r) => r.event === "relay.event.persist_failed")).toBe(true);
+  runtime.close();
+});
+
 test("a re-sent sync does not duplicate finishedOffline rows", async () => {
   const { runtime } = await seeded();
   const payload = {

@@ -221,10 +221,11 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   回合**——live 转发照常发生，条目只是等 ack 才删除。
 - `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`mirror.buildStateSync(liveAliases)` 返回
   `{ snapshot, aliases }`（snapshot 是**纯拷贝**，只过滤不在 liveAliases 里的别名，不改动 mirror；
-  aliases 是构建时 mirror 里存在的全部别名）。破坏性 GC 是单独的
+  aliases 是构建时各 alias 的**代际 generation**）。破坏性 GC 是单独的
   `pruneStateMirror(liveAliases, aliasesAtBuild)`，只在**确认 flush 成功之后**调用，且只对
-  `aliasesAtBuild` 里的别名做 compare-and-delete——snapshot 之后新到达的 session/turn（正被 live
-  转发）绝不会被这个旧回调误删；send 失败/not-ready 时也绝不 prune。
+  generation **未变化** 且不在 liveAliases 里的 alias 做 compare-and-delete——snapshot 之后新到达的
+  session/turn（正被 live 转发）或**同 alias 换代**（新 turn / 新 pending 条目）都会被代际保护，
+  绝不会被这个旧回调误删；send 失败/not-ready 时也绝不 prune。
 - FIFO 条目**不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；条目
   只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
   live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite
@@ -247,8 +248,9 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   connector 重连（重连后 onReady 重新推送 state sync，pending 条目获得重试机会），再抛错记日志
   ——持久化失败绝不静默，否则条目会一直躺在 connector FIFO 里直到被逐出。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
-  对 `turnBuffers` / `sessionUsage` / `sessionCommands` 按实例 **replace**（回合保留原始
-  `startedAt`，后续 `turn-output`/`turn-finished` 照常 append/flush）。**先处理 `finishedOffline`
+  **整个 reconciliation 包在专用 try/catch 里**——任何数据库失败（不只是 finished 事务，也包括
+  active turn 的 prompt backfill、recency 读取等）都会 `gateway.disconnect(instanceId)` 强制重连重发，
+  且**先完成数据库对账、再替换内存状态**，失败不会留下半更新状态。**先处理 `finishedOffline`
   再恢复运行中回合**，保证历史顺序。`finishedOffline` 逐项在单个事务里落库（`in` 行对账 + `out`
   行 + receipt，同一事务，崩溃不会留下半组行）。幂等去重：携带 `recoveryId` 的项查
   `recovery_receipts` 表（跨重启存活；已 receipt 的重复项**直接 re-ack 不重复落行**）；无
@@ -256,9 +258,14 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - **同 alias 的已完成回合与运行中回合是不同 turn**（turn A 完成后队列又启动同 session 的 turn B）：
   用 `recoveryId` 区分，不再按 `sessionAlias` 跳过；只有 recoveryId 完全相同（真矛盾）才跳过。
 - **`in` 行统一对账 `backfillInboundPrompt`**（sync 的 finished 回填与运行中回合共用）：带
-  `queueItemId` 时 `promoteQueued()`（找不到再 `appendQueuedFallback()`），把 enqueue 时已落库的
-  queued 行移到执行位置并清 `queue_item_id`，绝不重复 append；无 `queueItemId` 时才做普通回填
-  （仅当该 prompt 不是最后一行）。`finishedOffline` / `turns` 都携带 `queueItemId`/`scheduled`。
+  `queueItemId` 时先查 `MessageStore.queuedState()` 三态——
+  `pending`（queued 行还在，`promoteQueued()` 移到执行位置）/ `executed`（已 promote，`messages`
+  的 `origin_queue_item_id` 保留关联，**不再重复插入**——文本匹配无法区分重发与用户重复发相同
+  prompt）/ `absent`（才 `appendQueuedFallback()`）；无 `queueItemId` 时才做普通回填（仅当该
+  prompt 不是最后一行）。`finishedOffline` / `turns` 都携带 `queueItemId`/`scheduled`。
+- **daemon 侧 `turn-finished.text` 为完整累计回复**：`SessionTurnRunner` 累计实际发送的规范化
+  chunk（streaming adapter 常让 `response.text` 缺失或只有末段），hub 无缓冲 fallback 不再依赖
+  不可靠的 `response.text`。
 - 失败回合（`ok: false`）落库时优先 `errorMessage`：`text` 为空/缺失时不会用空字符串覆盖错误
   信息（connector 的累积器以 `""` 起步，旧版镜像可能把 `text: ""` 和 errorMessage 一起带过来）。
 - `truncated` 闭环：`finishedOffline.truncated` 为真时，`out` 行的 `structured` 里写入

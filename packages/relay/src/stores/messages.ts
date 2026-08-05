@@ -67,13 +67,17 @@ export class MessageStore {
     if (!fallback) return;
     // The drain event arrived before the RPC response. Replace its lightweight row
     // at the SAME sequence id, preserving execution order even if the turn already
-    // emitted and persisted its reply before this response arrived.
+    // emitted and persisted its reply before this response arrived. Retain the
+    // queue association for recovery dedup (see promoteQueued).
     this.db.run("DELETE FROM messages WHERE id = ?", [fallback.id]);
-    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [fallback.id, rowId]);
+    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ? WHERE id = ?", [fallback.id, correlation.queueItemId, rowId]);
   }
 
   /** Move a queued inbound row to the current end of the transcript when execution
-   *  starts. Updating the integer key preserves the existing cursor contract. */
+   *  starts. Updating the integer key preserves the existing cursor contract. The
+   *  queue association is RETAINED in `origin_queue_item_id` so a recovery sync that
+   *  re-sees the same queueItemId can tell "already executed" from "never existed" —
+   *  a text-based dedup cannot (the user may have sent the identical prompt twice). */
   promoteQueued(correlation: QueueCorrelation): boolean {
     const row = this.db.get<{ id: number }>(
       "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 0",
@@ -81,8 +85,28 @@ export class MessageStore {
     );
     if (!row) return false;
     const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
-    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL WHERE id = ?", [nextId, row.id]);
+    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ? WHERE id = ?", [nextId, correlation.queueItemId, row.id]);
     return true;
+  }
+
+  /** How a queueItemId maps to persisted rows, for recovery reconciliation:
+   *  - "pending": a queued row still carries the id → promote it (moves the already
+   *    persisted prompt to its execution position);
+   *  - "executed": a row was promoted for this id earlier (`origin_queue_item_id`) →
+   *    the prompt is already in history, do NOT append a duplicate;
+   *  - "absent": no row at all → appendQueuedFallback is the only way to get the
+   *    prompt into history. */
+  queuedState(correlation: QueueCorrelation): "pending" | "executed" | "absent" {
+    const pending = this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ?",
+      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+    );
+    if (pending) return "pending";
+    const executed = this.db.get<{ found: number }>(
+      "SELECT 1 AS found FROM messages WHERE instance_id = ? AND session_alias = ? AND origin_queue_item_id = ?",
+      [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+    );
+    return executed ? "executed" : "absent";
   }
 
   appendQueuedFallback(correlation: QueueCorrelation, text: string): number {

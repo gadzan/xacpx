@@ -2,7 +2,7 @@ import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import { MAX_TOOL_STEPS, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP } from "./limits.js";
 import type { InstanceNoticePayload } from "./messages.js";
-import { isStr, optStr, optNum } from "./validate-primitives.js";
+import { isStr, optStr, optNum, optBool } from "./validate-primitives.js";
 
 /** Envelope `type` for every relay→web push. */
 export const WEB_EVENT_TYPE = "web.event";
@@ -156,6 +156,15 @@ function validAgentCommand(value: unknown): boolean {
     && (c.hasInput === undefined || typeof c.hasInput === "boolean");
 }
 
+/** Shared shape check for `scheduled` origins (turn-started events, state-sync turns
+ *  and finished-offline entries) — the hub persists these fields, so a junk shape must
+ *  be rejected before it reaches the DB. */
+function validScheduledOrigin(s: unknown): boolean {
+  return s === undefined || (typeof s === "object" && s !== null
+    && isStr((s as Record<string, unknown>).taskId)
+    && isStr((s as Record<string, unknown>).executeAt));
+}
+
 /** Validate the inner fields of a ToolDetailDto per its discriminant — a known
  *  tag is not enough; junk/missing fields must be rejected so a buggy connector
  *  cannot push e.g. a `diff` with no `path` or a `command` that is a number. */
@@ -267,13 +276,16 @@ export function validControlEvent(e: unknown): boolean {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
+      // All fields the hub persists (text fallback, errorMessage row, cancelled flag,
+      // recovery receipt) are validated so a buggy connector cannot slip a non-string
+      // into SQLite and trigger a disconnect loop.
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
-        && optStr(c.text) && optStr(c.recoveryId);
+        && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && optStr(c.prompt) && optStr(c.queueItemId);
+        && optStr(c.prompt) && optStr(c.queueItemId) && validScheduledOrigin(c.scheduled);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -328,8 +340,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     const turn = t as Record<string, unknown>;
     return typeof turn.sessionAlias === "string"
       && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId)
-      && (turn.scheduled === undefined || (typeof turn.scheduled === "object" && turn.scheduled !== null
-        && isStr((turn.scheduled as Record<string, unknown>).taskId) && isStr((turn.scheduled as Record<string, unknown>).executeAt)))
+      && validScheduledOrigin(turn.scheduled)
       && finiteNonNegative(turn.startedAt)
       && typeof turn.text === "string"
       && typeof turn.reasoning === "string"
@@ -357,8 +368,7 @@ export function validInstanceStateSync(p: unknown): boolean {
       && typeof finished.ok === "boolean"
       && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
       && optStr(finished.queueItemId) && optStr(finished.recoveryId)
-      && (finished.scheduled === undefined || (typeof finished.scheduled === "object" && finished.scheduled !== null
-        && isStr((finished.scheduled as Record<string, unknown>).taskId) && isStr((finished.scheduled as Record<string, unknown>).executeAt)))
+      && validScheduledOrigin(finished.scheduled)
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
       && (finished.truncated === undefined || typeof finished.truncated === "boolean");
   });

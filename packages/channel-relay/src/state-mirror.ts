@@ -86,18 +86,22 @@ export interface StateMirror {
   aliasesForChatKey(chatKey: string): string[];
   /** Snapshot for `instance.state.sync` — a PURE copy: builds the payload with only
    *  aliases present in `liveAliases`, mutates nothing. Returns the payload plus the
-   *  set of aliases that existed at build time, so a later `pruneStateMirror` can
-   *  compare-and-delete ONLY those (never state that arrived after the snapshot).
-   *  Pruning itself is a separate, explicit step so a failed/aborted send can never
-   *  destroy mirror state that a later sync might still need. */
-  buildStateSync(liveAliases: ReadonlySet<string>): { snapshot: InstanceStateSyncPayload; aliases: ReadonlySet<string> };
-  /** Remove mirror state for aliases present at the LAST build (`aliasesAtBuild`)
-   *  that are absent from `liveAliases` (sessions removed while offline must not ship
-   *  ghost state on the next sync). Call only after the sync frame was CONFIRMED
-   *  flushed — never on a failed/not-ready send, so a transiently-stale session list
-   *  cannot discard state for a session that still exists. Aliases that arrived after
-   *  the snapshot was built are untouched: this callback must never GC newer state. */
-  pruneStateMirror(liveAliases: ReadonlySet<string>, aliasesAtBuild: ReadonlySet<string>): void;
+   *  per-alias generation that existed at build time, so a later `pruneStateMirror`
+   *  can compare-and-delete ONLY entries whose generation is unchanged — state that
+   *  arrived (or a SAME alias that was re-created / produced new entries) after the
+   *  snapshot is never GC'd by an older callback. Pruning itself is a separate,
+   *  explicit step so a failed/aborted send can never destroy mirror state that a
+   *  later sync might still need. */
+  buildStateSync(liveAliases: ReadonlySet<string>): { snapshot: InstanceStateSyncPayload; aliases: ReadonlyMap<string, number> };
+  /** Remove mirror state for aliases present at the LAST build (`aliasesAtBuild`,
+   *  alias → generation) that are absent from `liveAliases` — BUT only when the
+   *  alias's generation is unchanged since the build: a same-alias turn that was
+   *  re-created or produced a new pending entry after the snapshot belongs to a newer
+   *  generation and must not be GC'd by this older callback. Call only after the sync
+   *  frame was CONFIRMED flushed — never on a failed/not-ready send, so a
+   *  transiently-stale session list cannot discard state for a session that still
+   *  exists. */
+  pruneStateMirror(liveAliases: ReadonlySet<string>, aliasesAtBuild: ReadonlyMap<string, number>): void;
   /** Drop pendingFinished entries older than RECOVERY_RETENTION_MS. Call before
    *  building a sync so a stale entry can never ride it: the hub prunes its receipt
    *  on the same horizon, so an expired entry re-delivered after a long idle would
@@ -126,6 +130,14 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   const usage = new Map<string, { chatKey: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>();
   const commands = new Map<string, { chatKey: string; commands: AgentCommandDto[] }>();
   const pendingFinished: PendingFinishedTurn[] = [];
+  // Per-alias mutation generation. `buildStateSync` records each alias's generation
+  // with the snapshot; `pruneStateMirror` only deletes an alias when its generation is
+  // UNCHANGED since the build — a same-alias turn re-created or finished after the
+  // snapshot belongs to a newer generation and must never be GC'd by an older prune.
+  const gen = new Map<string, number>();
+  const bump = (alias: string): void => {
+    gen.set(alias, (gen.get(alias) ?? 0) + 1);
+  };
 
   const pushTextPart = (turn: MirrorTurn, chunk: string): void => {
     if (!chunk) return;
@@ -152,6 +164,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
     let expired = 0;
     for (let i = pendingFinished.length - 1; i >= 0; i--) {
       if (pendingFinished[i]!.createdAt < cutoff) {
+        bump(pendingFinished[i]!.sessionAlias);
         pendingFinished.splice(i, 1);
         expired += 1;
       }
@@ -181,6 +194,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.scheduled ? { scheduled: event.scheduled } : {}),
           ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
         });
+        bump(event.sessionAlias);
         return;
       case "turn-output": {
         const a = turns.get(event.sessionAlias);
@@ -191,6 +205,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         if (accepted.length < event.chunk.length) {
           a.truncated = true;
         }
+        if (accepted) bump(event.sessionAlias);
         return;
       }
       case "tool-event": {
@@ -198,6 +213,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         if (a && (a.steps.has(event.step.toolCallId) || a.steps.size < MAX_TOOL_STEPS)) {
           a.steps.set(event.step.toolCallId, event.step);
           pushToolPart(a, event.step);
+          bump(event.sessionAlias);
         }
         return;
       }
@@ -207,6 +223,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           const accepted = event.chunk.slice(0, REASONING_CAP - a.reasoning.length);
           a.reasoning += accepted;
           pushReasoningPart(a, accepted);
+          if (accepted) bump(event.sessionAlias);
         }
         return;
       }
@@ -216,9 +233,11 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.cost ? { cost: event.cost } : {}),
           ...(event.breakdown ? { breakdown: event.breakdown } : {}),
         });
+        bump(event.sessionAlias);
         return;
       case "agent-commands":
         commands.set(event.sessionAlias, { chatKey: event.chatKey, commands: event.commands });
+        bump(event.sessionAlias);
         return;
       case "turn-finished": {
         const a = turns.get(event.sessionAlias);
@@ -247,6 +266,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           createdAt: now(),
         });
         expirePendingFinished();
+        bump(event.sessionAlias);
         if (pendingFinished.length > PENDING_FINISHED_MAX) {
           pendingFinished.shift();
           void deps.logger?.warn(
@@ -293,9 +313,9 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         commands: [],
         finishedOffline: [],
       };
-      const aliases = new Set<string>();
+      const aliases = new Map<string, number>();
       for (const [alias, a] of turns) {
-        aliases.add(alias);
+        aliases.set(alias, gen.get(alias) ?? 0);
         if (!liveAliases.has(alias)) continue;
         payload.turns.push({
           sessionAlias: alias,
@@ -312,7 +332,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         });
       }
       for (const [alias, u] of usage) {
-        aliases.add(alias);
+        aliases.set(alias, gen.get(alias) ?? 0);
         if (!liveAliases.has(alias)) continue;
         payload.usage.push({
           sessionAlias: alias, used: u.used, size: u.size,
@@ -321,13 +341,13 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         });
       }
       for (const [alias, c] of commands) {
-        aliases.add(alias);
+        aliases.set(alias, gen.get(alias) ?? 0);
         if (!liveAliases.has(alias)) continue;
         payload.commands.push({ sessionAlias: alias, commands: c.commands });
       }
       for (let i = pendingFinished.length - 1; i >= 0; i--) {
         const f = pendingFinished[i]!;
-        aliases.add(f.sessionAlias);
+        aliases.set(f.sessionAlias, gen.get(f.sessionAlias) ?? 0);
         if (!liveAliases.has(f.sessionAlias)) continue;
         payload.finishedOffline.unshift({
           sessionAlias: f.sessionAlias, ok: f.ok,
@@ -344,12 +364,15 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       return { snapshot: payload, aliases };
     },
     pruneStateMirror(liveAliases, aliasesAtBuild) {
-      // Compare-and-delete against the aliases that existed when the snapshot was
-      // built: state that arrived AFTER the build (a new session/turn forwarded live
-      // while this sync frame was in flight) belongs to a later snapshot and must
-      // never be GC'd by this (older) callback.
-      for (const alias of aliasesAtBuild) {
+      // Compare-and-delete against the per-alias generations recorded when the
+      // snapshot was built: state that arrived AFTER the build (a new session/turn
+      // forwarded live, OR a SAME alias re-created / producing a new pending entry
+      // while this sync frame was in flight) has bumped the alias's generation and is
+      // left untouched — only an alias whose generation is unchanged since the build
+      // and is absent from the live list is GC'd.
+      for (const [alias, genAtBuild] of aliasesAtBuild) {
         if (liveAliases.has(alias)) continue;
+        if ((gen.get(alias) ?? 0) !== genAtBuild) continue;
         turns.delete(alias);
         usage.delete(alias);
         commands.delete(alias);
@@ -362,7 +385,10 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
     confirmFinished(recoveryIds) {
       const confirmed = new Set(recoveryIds);
       for (let i = pendingFinished.length - 1; i >= 0; i--) {
-        if (confirmed.has(pendingFinished[i]!.recoveryId)) pendingFinished.splice(i, 1);
+        if (confirmed.has(pendingFinished[i]!.recoveryId)) {
+          bump(pendingFinished[i]!.sessionAlias);
+          pendingFinished.splice(i, 1);
+        }
       }
     },
   };

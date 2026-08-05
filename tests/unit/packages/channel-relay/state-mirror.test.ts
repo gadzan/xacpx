@@ -221,7 +221,7 @@ test("buildStateSync filters dead aliases without mutating; pruneStateMirror rem
   expect(filtered.snapshot.usage).toEqual([]);
   expect(filtered.snapshot.commands).toEqual([]);
   expect(filtered.snapshot.finishedOffline).toEqual([]);
-  expect(filtered.aliases).toEqual(new Set(["backend", "frontend"]));
+  expect([...filtered.aliases.keys()].sort()).toEqual(["backend", "frontend"]);
   const widened = mirror.buildStateSync(LIVE);
   expect(widened.snapshot.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
   expect(widened.snapshot.usage).toHaveLength(1);
@@ -250,6 +250,26 @@ test("pruneStateMirror never removes state that arrived after the snapshot was b
   mirror.pruneStateMirror(new Set(["backend"]), aliases);
   const after = mirror.buildStateSync(new Set(["backend", "latecomer"]));
   expect(after.snapshot.turns.map((t) => t.sessionAlias)).toEqual(["backend", "latecomer"]);
+});
+
+test("pruneStateMirror never removes a SAME alias that was re-created after the snapshot", () => {
+  const { mirror } = makeMirror(() => false);
+  // The snapshot is built with `backend` absent from the live list (it "died"
+  // offline) — the old prune would GC it…
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  const { aliases } = mirror.buildStateSync(new Set([]));
+  // …but before the flush callback runs, `backend` is re-created and starts a NEW
+  // turn (same alias, newer generation). The older prune must not delete it.
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "new gen" });
+  mirror.pruneStateMirror(new Set([]), aliases);
+  const after = mirror.buildStateSync(new Set(["backend"]));
+  expect(after.snapshot.turns).toHaveLength(1);
+  expect(after.snapshot.turns[0]!.text).toBe("new gen");
+  // And a later prune with the NEW generation (unchanged since) does GC a dead alias.
+  const { aliases: aliases2 } = mirror.buildStateSync(new Set([]));
+  mirror.pruneStateMirror(new Set([]), aliases2);
+  expect(mirror.buildStateSync(new Set(["backend"])).snapshot.turns).toEqual([]);
 });
 
 test("chatKeys and aliasesForChatKey group mirrored state by chatKey", () => {
