@@ -1,4 +1,4 @@
-export const DEFAULT_ADAPTER_REGISTRY = "https://registry.npmjs.org/";
+export const DEFAULT_ADAPTER_REGISTRY = "https://registry.npmjs.org";
 
 export class AdapterRegistryPackageNotFoundError extends Error {
   readonly code = "E404";
@@ -12,7 +12,7 @@ export class AdapterRegistryPackageNotFoundError extends Error {
 /** Validates and canonicalizes a registry URL before it reaches config or argv. */
 export function normalizeAdapterRegistry(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed || trimmed !== value || /\s/.test(value)) {
+  if (!trimmed || /\s/.test(trimmed)) {
     throw new Error("adapter registry must be an http(s) URL without whitespace");
   }
   let url: URL;
@@ -30,8 +30,7 @@ export function normalizeAdapterRegistry(value: string): string {
   if (url.search || url.hash) {
     throw new Error("adapter registry must not contain a query string or fragment");
   }
-  if (!url.pathname.endsWith("/")) url.pathname += "/";
-  const normalized = url.toString();
+  const normalized = url.toString().replace(/\/+$/, "");
   // The runtime value is embedded in acpx's agent-command string. Restrict it
   // to URL characters that cannot become shell/control syntax in downstream
   // command parsing; npm credentials belong in the user's scoped npm config.

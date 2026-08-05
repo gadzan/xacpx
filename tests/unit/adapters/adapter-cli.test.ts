@@ -30,13 +30,13 @@ test("registry shows the official npm default and can set or reset a local overr
   });
 
   expect(await handleAdapterCli(["registry"], ctx.deps)).toBe(0);
-  expect(ctx.lines.join("\n")).toContain("https://registry.npmjs.org/");
+  expect(ctx.lines.join("\n")).toContain("https://registry.npmjs.org");
 
   expect(await handleAdapterCli(["registry", "set", "https://npm.corp.example/repository/npm"], ctx.deps)).toBe(0);
-  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm/"]);
+  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm"]);
 
   expect(await handleAdapterCli(["registry", "reset"], ctx.deps)).toBe(0);
-  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm/", undefined]);
+  expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm", undefined]);
 });
 
 test("registry rejects unsafe URLs without changing config", async () => {
@@ -63,8 +63,8 @@ test("check queries npm through the configured adapter registry", async () => {
   });
   expect(await handleAdapterCli(["check"], ctx.deps)).toBe(0);
   expect(queried).toEqual([
-    "codex:https://npm.corp.example/repository/npm/",
-    "claude:https://npm.corp.example/repository/npm/",
+    "codex:https://npm.corp.example/repository/npm",
+    "claude:https://npm.corp.example/repository/npm",
   ]);
 });
 
@@ -91,8 +91,8 @@ test("set verifies a published exact version before persisting it", async () => 
   });
   expect(await handleAdapterCli(["set", "codex", "1.1.2"], ctx.deps)).toBe(0);
   expect(events).toEqual([
-    "exists:codex:1.1.2:https://npm.corp.example/",
-    "verify:codex:1.1.2:https://npm.corp.example/",
+    "exists:codex:1.1.2:https://npm.corp.example",
+    "verify:codex:1.1.2:https://npm.corp.example",
   ]);
   expect(ctx.saved()).toEqual({ claude: "0.58.1", codex: "1.1.2" });
 });

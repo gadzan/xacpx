@@ -29,10 +29,10 @@ test("keeps unrelated commands unchanged", () => {
 
 test("runtime resolution pins managed adapters while preserving explicit commands", () => {
   expect(resolveRuntimeAgentCommand("codex", undefined, true)).toBe(
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
   );
   expect(resolveRuntimeAgentCommand("claude", undefined, true, { claude: "0.58.1" })).toBe(
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/claude-agent-acp@0.58.1",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.58.1",
   );
   expect(resolveRuntimeAgentCommand("codex", "my-codex-adapter", true, { codex: "1.0.0" })).toBe(
     "my-codex-adapter",
@@ -47,7 +47,7 @@ test("config-shaped runtime resolution keeps agent and transport policy together
       adapterVersions: { claude: "0.58.1" },
       adapterRegistry: "https://npm.corp.example/repository/npm/",
     },
-  )).toBe("npx -y --registry=https://npm.corp.example/repository/npm/ --@agentclientprotocol:registry=https://npm.corp.example/repository/npm/ @agentclientprotocol/claude-agent-acp@0.58.1");
+  )).toBe("npx -y --registry=https://npm.corp.example/repository/npm --@agentclientprotocol:registry=https://npm.corp.example/repository/npm @agentclientprotocol/claude-agent-acp@0.58.1");
 });
 
 // The 0.19.2 template persisted `command: "hermes acp"`; dropping it here migrates

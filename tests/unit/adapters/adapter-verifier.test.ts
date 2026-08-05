@@ -46,5 +46,5 @@ test("npm E404 failures point users to the adapter registry setting", async () =
     process.execPath,
     ["-e", "console.error('npm ERR! code E404'); process.exit(1)"],
     { adapterRegistry: "https://npm.corp.example/" },
-  )).rejects.toThrow("xacpx adapter registry set https://registry.npmjs.org/");
+  )).rejects.toThrow("xacpx adapter registry set https://registry.npmjs.org");
 });
