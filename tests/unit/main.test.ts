@@ -206,11 +206,11 @@ test("external coordinator delegation sees agents added after daemon startup", a
   });
   expect(ensureSession.mock.calls.at(0)?.[0]).toMatchObject({
     agent: "opencode",
-    agentCommand: undefined,
+    acpxAgent: "opencode",
   });
   expect(prompt.mock.calls.at(0)?.[0]).toMatchObject({
     agent: "opencode",
-    agentCommand: undefined,
+    acpxAgent: "opencode",
   });
   expect(sameWorkspacePath(ensureSession.mock.calls.at(0)?.[0]?.cwd, "/tmp/backend")).toBe(true);
   expect(sameWorkspacePath(prompt.mock.calls.at(0)?.[0]?.cwd, "/tmp/backend")).toBe(true);

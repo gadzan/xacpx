@@ -289,6 +289,11 @@ export class AcpxCliTransport implements SessionTransport {
 
   private async runEnsureSession(session: ResolvedSession): Promise<void> {
     const runEnsure = session.agentCommand ? this.run : this.runWithPty;
+    // One shared deadline for every subprocess step (ensure, show probe, new):
+    // each step only gets the remaining budget so the whole ensure path is
+    // bounded by sessionInitTimeoutMs end-to-end, like the bridge.
+    const deadline = Date.now() + this.sessionInitTimeoutMs;
+    const remainingTimeoutMs = () => Math.max(deadline - Date.now(), 1);
     const ensureArgs = this.buildArgs(session, [
       "sessions",
       "ensure",
@@ -299,7 +304,7 @@ export class AcpxCliTransport implements SessionTransport {
       // `sessions ensure` reuses an identity-matching legacy record (which the
       // argv migration backfilled just above); `sessions new` would orphan it.
       await runEnsure.call(this, ensureArgs, {
-        timeoutMs: this.sessionInitTimeoutMs,
+        timeoutMs: remainingTimeoutMs(),
         env: this.spawnEnvironment(session),
       });
       return;
@@ -312,7 +317,7 @@ export class AcpxCliTransport implements SessionTransport {
           "show",
           session.transportSession,
         ], "quiet"), {
-          timeoutMs: this.managementCommandTimeoutMs,
+          timeoutMs: Math.min(this.managementCommandTimeoutMs, remainingTimeoutMs()),
           env: this.spawnEnvironment(session),
         });
         return;
@@ -326,7 +331,7 @@ export class AcpxCliTransport implements SessionTransport {
         session.transportSession,
       ]);
       await runEnsure.call(this, newArgs, {
-        timeoutMs: this.sessionInitTimeoutMs,
+        timeoutMs: remainingTimeoutMs(),
         env: this.spawnEnvironment(session),
       });
     }
