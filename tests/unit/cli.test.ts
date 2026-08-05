@@ -371,6 +371,20 @@ test("dispatches doctor", async () => {
   expect(events).toEqual([{}]);
 });
 
+test("manual orphan kill requires the literal confirmation flag", async () => {
+  const lines: string[] = [];
+  let calls = 0;
+  expect(await runCli(["orphans", "kill"], { print: (line) => lines.push(line) })).toBe(1);
+  expect(lines).toContain("Usage: xacpx orphans kill --confirm");
+  const code = await runCli(["orphans", "kill", "--confirm"], {
+    print: (line) => lines.push(line),
+    orphansKill: async () => { calls += 1; return { attempted: 2, killed: 1, retained: 1 }; },
+  });
+  expect(code).toBe(1);
+  expect(calls).toBe(1);
+  expect(lines).toContain("orphan processes: 1/2 killed; 1 retained");
+});
+
 test("uses the default doctor entrypoint when no dependency is provided", async () => {
   const home = await mkdtemp(join(tmpdir(), "xacpx-cli-doctor-"));
   const lines: string[] = [];

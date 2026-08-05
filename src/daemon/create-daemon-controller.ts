@@ -5,6 +5,8 @@ import { DaemonController } from "./daemon-controller";
 import type { DaemonPaths } from "./daemon-files";
 import { ensurePrivateRuntimeDir } from "./private-runtime-dir";
 import { terminateProcessTree } from "../process/terminate-process-tree";
+import { dirname } from "node:path";
+import type { IpcGuard } from "../process/ipc-guard";
 
 interface SpawnRequest {
   mode: "direct" | "windows-hidden";
@@ -28,6 +30,7 @@ interface CreateDaemonControllerOptions {
   spawnProcess?: (request: SpawnRequest) => Promise<number>;
   isProcessRunning?: (pid: number) => boolean;
   terminateProcess?: (pid: number) => Promise<void>;
+  acquireLifecycleGuard?: () => Promise<IpcGuard>;
 }
 
 export function createDaemonController(
@@ -35,6 +38,9 @@ export function createDaemonController(
   options: CreateDaemonControllerOptions,
 ): DaemonController {
   return new DaemonController(paths, {
+    platform: options.platform ?? process.platform,
+    configRoot: dirname(paths.runtimeDir),
+    ...(options.acquireLifecycleGuard ? { acquireLifecycleGuard: options.acquireLifecycleGuard } : {}),
     isProcessRunning: options.isProcessRunning ?? defaultIsProcessRunning,
     spawnDetached: async (spawnOptions) => {
       // User-private (0700): the runtime dir holds the orchestration socket,

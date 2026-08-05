@@ -13,6 +13,7 @@ export interface DaemonIdentity {
   daemonPid: number;
   daemonCreationDate: string | null;
   configRoot: string;
+  terminating?: boolean;
 }
 
 export interface LaunchIntentRecord {
@@ -192,6 +193,10 @@ export class OrphanRegistry {
         || !nonempty(item.configRoot)) return null;
       return item as unknown as DaemonIdentity;
     } catch { return null; }
+  }
+
+  async deleteGeneration(): Promise<void> {
+    await rm(join(this.root, "generation.json"), { force: true });
   }
 
   async writeIntent(record: LaunchIntentRecord): Promise<void> {

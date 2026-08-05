@@ -56,22 +56,29 @@ export async function sweepWindowsOrphans(
     intentsRetained: 0,
     degraded: false,
   };
+  const generation = await registry.readGeneration();
+  if (generation?.generationId === currentGenerationId && generation.terminating) {
+    return result;
+  }
   const intents = await registry.readCategory("intents");
   if (!intents) return unreadable(result, deps, "intent registry is unreadable");
   for (const { record } of intents) {
-    await reconcileIntent(registry, record as LaunchIntentRecord, currentGenerationId, result, deps);
+    try { await reconcileIntent(registry, record as LaunchIntentRecord, currentGenerationId, result, deps); }
+    catch (error) { retainDegraded(result, deps, "intent reconciliation failed", error); }
   }
 
   const owners = await registry.readCategory("owners");
   if (!owners) return unreadable(result, deps, "owner registry is unreadable");
   for (const { filename, record } of owners) {
-    await reconcileOwner(registry, filename, record as OwnerRecord, result, deps);
+    try { await reconcileOwner(registry, filename, record as OwnerRecord, result, deps); }
+    catch (error) { retainDegraded(result, deps, "owner reconciliation failed", error); }
   }
 
   const residuals = await registry.readCategory("residuals");
   if (!residuals) return unreadable(result, deps, "residual registry is unreadable");
   for (const { filename, record } of residuals) {
-    await reconcileResidual(registry, filename, record as ResidualRecord, result, deps);
+    try { await reconcileResidual(registry, filename, record as ResidualRecord, result, deps); }
+    catch (error) { retainDegraded(result, deps, "residual reconciliation failed", error); }
   }
   return result;
 }
@@ -264,9 +271,9 @@ async function probeIdentity(pid: number, deps: WindowsOrphanReaperDeps) {
   return await (deps.probeIdentity ?? probeWindowsProcessIdentity)(pid, workerOptions(deps));
 }
 
-function retainDegraded(result: WindowsOrphanSweepResult, deps: WindowsOrphanReaperDeps, message: string): void {
+function retainDegraded(result: WindowsOrphanSweepResult, deps: WindowsOrphanReaperDeps, message: string, error?: unknown): void {
   result.degraded = true;
-  deps.onWarning?.(message);
+  deps.onWarning?.(message, error);
 }
 
 function unreadable(result: WindowsOrphanSweepResult, deps: WindowsOrphanReaperDeps, message: string): WindowsOrphanSweepResult {

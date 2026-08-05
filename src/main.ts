@@ -61,6 +61,7 @@ import { listAgentCatalog } from "./config/agent-catalog";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
+import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 
 export interface RuntimePaths {
   configPath: string;
@@ -94,11 +95,12 @@ export interface AppRuntime {
   control: ControlService;
   /**
    * Terminate warm acpx queue owners orphaned by a previous daemon that exited
-   * without a clean shutdown (Windows `stop` force-kills via taskkill /F, crashes,
+   * without a clean shutdown (Windows verified stop, crashes,
    * machine reboot). Run once at startup before serving: this daemon has not launched
    * any owners yet, so every owner recorded for a known session is stale. Best-effort.
    */
   reapStaleQueueOwners: () => Promise<void>;
+  reconcileOrphans?: () => Promise<void>;
   dispose: () => Promise<void>;
 }
 
@@ -956,11 +958,27 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // Terminate warm acpx queue owners for our sessions. At shutdown this stops them
   // lingering until their --ttl expires (or forever, when ttl=0). At startup it sweeps
   // owners orphaned by a previous daemon that died without a clean shutdown (Windows
-  // `stop` force-kills via taskkill /F, crashes, reboots) — safe because this daemon has
+  // verified `stop`, crashes, reboots) — safe because this daemon has
   // not launched any owners yet, so every recorded owner is stale. Best-effort and
   // bounded: failures/timeouts just leave owners to expire on TTL.
   const reapWarmQueueOwners = async (phase: "startup" | "shutdown"): Promise<void> => {
     try {
+      if (deps.orphanRegistry && deps.daemonIdentity) {
+        const outcome = await sweepWindowsOrphans(
+          deps.orphanRegistry,
+          deps.daemonIdentity.generationId,
+          {
+            onWarning: (message) => {
+              void logger.info("transport.orphan_reap.degraded", message, { phase }).catch(() => {});
+            },
+          },
+        );
+        await logger.info("transport.orphan_reap.completed", "reconciled durable Windows orphan records", {
+          phase,
+          ...outcome,
+        }).catch(() => {});
+        return;
+      }
       const targets = collectReapTargets(sessions, state.orchestration, config);
       if (targets.length === 0) {
         return;
@@ -1011,6 +1029,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
     control,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
+    ...(deps.orphanRegistry && deps.daemonIdentity
+      ? { reconcileOrphans: () => reapWarmQueueOwners("startup") }
+      : {}),
     dispose: async () => {
       scheduledScheduler.stop();
       sessionWarmth?.stop();
@@ -1021,11 +1042,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         clearInterval(progressHeartbeatInterval);
       }
       await Promise.allSettled([...pendingWorkerDispatches]);
-      await reapWarmQueueOwners("shutdown");
       await debouncedStateStore.dispose();
       if ("dispose" in transport && typeof transport.dispose === "function") {
+        // Bridge dispose waits for its subprocess to acknowledge shutdown and
+        // terminate. Do this before the final orphan sweep and before runConsole
+        // releases the consumer guard, so no old launcher can publish afterward.
         await transport.dispose();
       }
+      await reapWarmQueueOwners("shutdown");
       try {
         await perfTracer.flush();
       } catch (err) {

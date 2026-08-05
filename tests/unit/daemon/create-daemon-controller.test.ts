@@ -135,6 +135,7 @@ test("uses a hidden powershell launcher when spawning the daemon on win32", asyn
     cwd: "C:\\app",
     env: {},
     platform: "win32",
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     spawnProcess: async ({ command, args, options }) => {
       spawnCalls.push({ command, args, options });
       await writeReadyStatus(paths.statusFile, 65432);
@@ -187,6 +188,7 @@ test("quotes Start-Process arguments so install paths with spaces survive on win
     cwd: "C:\\Users\\John Doe\\project",
     env: {},
     platform: "win32",
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     spawnProcess: async ({ command, args, options }) => {
       spawnCalls.push({ command, args, options });
       await writeReadyStatus(paths.statusFile, 87654);
@@ -230,6 +232,7 @@ test("returns as soon as the hidden windows launcher prints a pid", async () => 
     cwd: "C:\\app",
     env: {},
     platform: "win32",
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
     spawnProcess: async ({ command }) => {
       capturedCommand = command;
       await writeReadyStatus(paths.statusFile, 76543);

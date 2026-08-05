@@ -142,7 +142,8 @@ describe("sweepWindowsOrphans owners", () => {
         { target: { pid: 43, creationDate: "133801632000000020" }, outcome: "query-failed", commandLine: "child-2", executablePath: "C:\\child-2.exe" },
       ],
     };
-    await expect(sweepWindowsOrphans(store, CURRENT_GENERATION, verifiedDeps(batch))).rejects.toThrow("injected residual failure");
+    const result = await sweepWindowsOrphans(store, CURRENT_GENERATION, verifiedDeps(batch));
+    expect(result.degraded).toBe(true);
     expect(await store.readCategory("owners")).toHaveLength(1);
     expect(await store.readCategory("residuals")).toHaveLength(1);
   });

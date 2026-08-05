@@ -4,6 +4,10 @@ import type { FileHandle } from "node:fs/promises";
 import type { DaemonPaths } from "./daemon-files";
 import { DaemonStatusStore, type DaemonStatus } from "./daemon-status";
 import { ensurePrivateRuntimeDir } from "./private-runtime-dir";
+import { acquireIpcGuard, type IpcGuard } from "../process/ipc-guard";
+import { probeWindowsProcessIdentity, terminateWindowsProcessTree } from "../process/windows-process-tree";
+import { OrphanRegistry } from "../transport/orphan-registry";
+import { sweepWindowsOrphans } from "../transport/windows-orphan-reaper";
 
 export interface DaemonStartupWaitPoll {
   elapsedMs: number;
@@ -28,6 +32,13 @@ interface DaemonControllerDeps {
   shutdownTimeoutMs?: number;
   onShutdownPoll?: () => Promise<void>;
   now?: () => number;
+  platform?: NodeJS.Platform;
+  configRoot?: string;
+  acquireLifecycleGuard?: () => Promise<IpcGuard>;
+  orphanRegistry?: OrphanRegistry;
+  probeWindowsIdentity?: typeof probeWindowsProcessIdentity;
+  terminateWindowsTree?: typeof terminateWindowsProcessTree;
+  sweepWindows?: typeof sweepWindowsOrphans;
 }
 
 type DaemonState =
@@ -96,6 +107,13 @@ export class DaemonController {
   }
 
   async start(options: { firstRunOnboarding?: string; startupWait?: DaemonStartupWait } = {}): Promise<{ state: "already-running"; pid: number } | { state: "started"; pid: number }> {
+    if ((this.deps.platform ?? process.platform) === "win32") {
+      return await this.withWindowsLifecycleGuard(() => this.startUnlocked(options));
+    }
+    return await this.startUnlocked(options);
+  }
+
+  private async startUnlocked(options: { firstRunOnboarding?: string; startupWait?: DaemonStartupWait } = {}): Promise<{ state: "already-running"; pid: number } | { state: "started"; pid: number }> {
     const current = await this.getStatus();
     if (current.state === "running") {
       return { state: "already-running", pid: current.pid };
@@ -138,6 +156,9 @@ export class DaemonController {
   }
 
   async stop(): Promise<{ state: "stopped"; detail: "not-running" | "stopped" }> {
+    if ((this.deps.platform ?? process.platform) === "win32") {
+      return await this.withWindowsLifecycleGuard(() => this.stopWindows());
+    }
     const pid = await this.loadPid();
     if (!pid) {
       return { state: "stopped", detail: "not-running" };
@@ -150,6 +171,53 @@ export class DaemonController {
 
     await this.clearRuntimeFiles();
     return { state: "stopped", detail: "stopped" };
+  }
+
+  private async stopWindows(): Promise<{ state: "stopped"; detail: "not-running" | "stopped" }> {
+    const registry = this.deps.orphanRegistry ?? new OrphanRegistry(this.paths.runtimeDir);
+    await registry.initialize();
+    const generation = await registry.readGeneration();
+    const pid = await this.loadPid();
+    if (!pid && !generation) return { state: "stopped", detail: "not-running" };
+    if (!generation || generation.daemonCreationDate === null || (pid !== null && pid !== generation.daemonPid)) {
+      throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
+    }
+    await registry.writeGeneration({ ...generation, terminating: true });
+    const probe = await (this.deps.probeWindowsIdentity ?? probeWindowsProcessIdentity)(generation.daemonPid);
+    if (probe.status === "unavailable") {
+      throw new Error("cannot safely stop Windows daemon: process identity is unavailable");
+    }
+    if (probe.status === "found" && probe.identity.creationDate === generation.daemonCreationDate) {
+      const outcome = await (this.deps.terminateWindowsTree ?? terminateWindowsProcessTree)({
+        pid: generation.daemonPid,
+        creationDate: generation.daemonCreationDate,
+        executablePath: probe.identity.executablePath,
+      });
+      const terminal = new Set(["killed", "already-exited", "skipped-replaced"]);
+      if (!terminal.has(outcome.rootOutcome) || outcome.outcomes.some((item) => !terminal.has(item.outcome))) {
+        throw new Error("Windows daemon tree termination was not fully confirmed");
+      }
+    }
+    // missing or exact fingerprint mismatch proves the recorded daemon generation
+    // is gone. Reconcile its durable evidence before clearing frozen metadata.
+    const stoppedGenerationSentinel = "00000000-0000-4000-8000-000000000000";
+    const sweep = await (this.deps.sweepWindows ?? sweepWindowsOrphans)(registry, stoppedGenerationSentinel);
+    if (sweep.degraded) throw new Error("Windows daemon stopped but orphan reconciliation is degraded; evidence retained");
+    await this.clearRuntimeFiles();
+    await registry.deleteGeneration();
+    return { state: "stopped", detail: "stopped" };
+  }
+
+  private async withWindowsLifecycleGuard<T>(operation: () => Promise<T>): Promise<T> {
+    const configRoot = this.deps.configRoot;
+    if (!configRoot && !this.deps.acquireLifecycleGuard) {
+      throw new Error("Windows lifecycle guard requires configRoot");
+    }
+    const guard = await (this.deps.acquireLifecycleGuard
+      ? this.deps.acquireLifecycleGuard()
+      : acquireIpcGuard({ role: "lifecycle", configRoot: configRoot! }, { platform: "win32" }));
+    try { return await operation(); }
+    finally { await guard.release(); }
   }
 
   private async loadPid(): Promise<number | null> {

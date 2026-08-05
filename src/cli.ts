@@ -48,6 +48,7 @@ import { getAdapterNpmVersion } from "./adapters/adapter-npm";
 import { verifyAdapterVersion } from "./adapters/adapter-verifier";
 import { listInstalledAdapterReleases, preinstallAdapter } from "./adapters/adapter-preinstall";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
+import { killWindowsOrphansWithConfirmation } from "./transport/manual-orphan-kill";
 import type { AppConfig } from "./config/types";
 import type { AppState } from "./state/types";
 import { readVersion } from "./version.js";
@@ -263,6 +264,7 @@ interface CliDeps {
   pluginCliDeps?: Partial<PluginCliDeps>;
   updateCliDeps?: Partial<UpdateCliDeps>;
   adapterCliDeps?: Partial<AdapterCliDeps>;
+  orphansKill?: () => Promise<{ attempted: number; killed: number; retained: number }>;
   loadConfiguredPluginsForChannelCli?: () => Promise<void>;
   isInteractive?: () => boolean;
   promptText?: (message: string) => Promise<string>;
@@ -351,6 +353,15 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
       }
 
       return await (deps.doctor ?? defaultDoctor)(parsed.options);
+    }
+    case "orphans": {
+      if (args.length !== 3 || args[1] !== "kill" || args[2] !== "--confirm") {
+        print("Usage: xacpx orphans kill --confirm");
+        return 1;
+      }
+      const result = await (deps.orphansKill ?? defaultManualOrphanKill)();
+      print(`orphan processes: ${result.killed}/${result.attempted} killed; ${result.retained} retained`);
+      return result.retained === 0 ? 0 : 1;
     }
     case "workspace":
     case "ws": {
@@ -1062,6 +1073,14 @@ async function rollbackFirstRunConfig(
 async function defaultDoctor(options: DoctorRunOptions): Promise<number> {
   const { main } = await import("./doctor/index");
   return await main(options);
+}
+
+async function defaultManualOrphanKill() {
+  const configPath = resolveConfigPathForCurrentEnv();
+  return await killWindowsOrphansWithConfirmation({
+    runtimeDir: resolveRuntimeDirFromConfigPath(configPath),
+    confirmed: true,
+  });
 }
 
 async function defaultMcpStdio(

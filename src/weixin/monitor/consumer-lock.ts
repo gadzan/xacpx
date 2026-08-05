@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 import { coreHomeDir } from "../../runtime/core-home";
+import { acquireIpcGuard, IpcGuardBusyError } from "../../process/ipc-guard";
 
 export interface WeixinConsumerLockMetadata {
   pid: number;
@@ -11,6 +13,9 @@ export interface WeixinConsumerLockMetadata {
   configPath: string;
   statePath: string;
   hostname?: string;
+  schemaVersion?: 2;
+  lockId?: string;
+  processCreationDate?: string | null;
 }
 
 export interface WeixinConsumerLock {
@@ -42,6 +47,8 @@ export class ActiveWeixinConsumerLockError extends Error {
 interface CreateWeixinConsumerLockOptions {
   lockFilePath?: string;
   isProcessRunning?: (pid: number) => boolean;
+  platform?: NodeJS.Platform;
+  acquireGuard?: typeof acquireIpcGuard;
   onDiagnostic?: (
     event:
       | "lock_exists"
@@ -60,10 +67,43 @@ export function createWeixinConsumerLock(
   const lockFilePath = options.lockFilePath ?? join(coreHomeDir(homedir()), "runtime", "weixin-consumer.lock.json");
   const isProcessRunning = options.isProcessRunning ?? defaultIsProcessRunning;
   const onDiagnostic = options.onDiagnostic;
+  const platform = options.platform ?? process.platform;
+  let windowsGuard: Awaited<ReturnType<typeof acquireIpcGuard>> | undefined;
+  let windowsLockId: string | undefined;
 
   return {
     async acquire(meta) {
       await mkdir(dirname(lockFilePath), { recursive: true, mode: 0o700 });
+
+      if (platform === "win32") {
+        try {
+          windowsGuard = await (options.acquireGuard ?? acquireIpcGuard)(
+            { role: "consumer", configRoot: dirname(meta.configPath) },
+            { platform },
+          );
+        } catch (error) {
+          if (!(error instanceof IpcGuardBusyError)) throw error;
+          const existing = await loadLockMetadata(lockFilePath) ?? meta;
+          throw new ActiveWeixinConsumerLockError(lockFilePath, existing);
+        }
+        windowsLockId = meta.lockId ?? randomUUID();
+        const metadata: WeixinConsumerLockMetadata = {
+          ...meta,
+          schemaVersion: 2,
+          lockId: windowsLockId,
+          processCreationDate: meta.processCreationDate ?? null,
+        };
+        try {
+          await writeFile(lockFilePath, `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        } catch (error) {
+          await windowsGuard.release().catch(() => {});
+          windowsGuard = undefined;
+          windowsLockId = undefined;
+          throw error;
+        }
+        await onDiagnostic?.("lock_acquired", { lockFilePath, pid: meta.pid, mode: meta.mode });
+        return;
+      }
 
       while (true) {
         try {
@@ -131,6 +171,15 @@ export function createWeixinConsumerLock(
       }
     },
     async release() {
+      if (platform === "win32") {
+        const metadata = await loadLockMetadata(lockFilePath);
+        if (metadata?.lockId === windowsLockId) await rm(lockFilePath, { force: true });
+        await windowsGuard?.release();
+        windowsGuard = undefined;
+        windowsLockId = undefined;
+        await onDiagnostic?.("lock_released", { lockFilePath });
+        return;
+      }
       await rm(lockFilePath, { force: true });
       await onDiagnostic?.("lock_released", {
         lockFilePath,
