@@ -69,6 +69,11 @@ jobs:
       - name: Claude profile junction smoke (Windows)
         run: bun test tests/unit/adapters/claude-settings-policy.test.ts
 
+      # Uses production Node/libuv and two real processes. The holder is force
+      # terminated and the same canonical key must become acquirable again.
+      - name: Windows IPC guard exclusivity and crash release
+        run: bun test tests/unit/process/ipc-guard.test.ts
+
       # Real ConPTY under the PRODUCTION runtime (Node) — spawns a live shell with a
       # forward-slash cwd and asserts the byte stream round-trips.
       - name: Terminal ConPTY smoke (Node)
