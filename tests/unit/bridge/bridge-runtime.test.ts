@@ -365,6 +365,24 @@ test("selectLatestAcpxSessionIndexTmp ignores malformed files and picks latest t
   ])).toBe("index.json.3.250.tmp");
 });
 
+test("selectLatestAcpxSessionIndexTmp accepts UUID temp files and mixes legacy/current formats", () => {
+  expect(selectLatestAcpxSessionIndexTmp([
+    "index.json.1.100.550e8400-e29b-41d4-a716-446655440000.tmp",
+    "index.json.2.250.tmp",
+    "index.json.3.249.550e8400-e29b-41d4-a716-446655440001.tmp",
+    "index.json.4.250.9d2d9c9a-1f2e-4a3b-8c5d-0f6e7a8b9c0d.tmp",
+  ])).toBe("index.json.2.250.tmp");
+});
+
+test("selectLatestAcpxSessionIndexTmp ignores extra hierarchy levels and wrong suffixes", () => {
+  expect(selectLatestAcpxSessionIndexTmp([
+    "index.json.1.100.abc.def.tmp",
+    "index.json.2.200.tmp.bak",
+    "index.json.3.300.550e8400-e29b-41d4-a716-446655440000.json",
+    "index.json.4.400.tmp",
+  ])).toBe("index.json.4.400.tmp");
+});
+
 test("tryRepairAcpxSessionIndex copies latest tmp over index on windows", async () => {
   const calls: Array<{ from: string; to: string }> = [];
   await expect(tryRepairAcpxSessionIndex({
@@ -372,8 +390,8 @@ test("tryRepairAcpxSessionIndex copies latest tmp over index on windows", async 
     home: "C:\\Users\\alice",
     readdirFn: async () => [
       "index.json",
-      "index.json.10.111.tmp",
-      "index.json.11.222.tmp",
+      "index.json.10.111.550e8400-e29b-41d4-a716-446655440000.tmp",
+      "index.json.11.222.550e8400-e29b-41d4-a716-446655440001.tmp",
       "random.txt",
     ],
     copyFileFn: async (from, to) => {
@@ -383,7 +401,7 @@ test("tryRepairAcpxSessionIndex copies latest tmp over index on windows", async 
 
   expect(calls).toEqual([
     {
-      from: "C:\\Users\\alice\\.acpx\\sessions\\index.json.11.222.tmp",
+      from: "C:\\Users\\alice\\.acpx\\sessions\\index.json.11.222.550e8400-e29b-41d4-a716-446655440001.tmp",
       to: "C:\\Users\\alice\\.acpx\\sessions\\index.json",
     },
   ]);

@@ -1202,12 +1202,14 @@ export function selectLatestAcpxSessionIndexTmp(files: string[]): string | null 
   let latestTime = 0;
 
   for (const file of files) {
-    const match = file.match(/^index\.json\.\d+\.(\d+)\.tmp$/);
+    // legacy: index.json.<pid>.<timestamp>.tmp
+    // current: index.json.<pid>.<timestamp>.<unique-id>.tmp (unique-id may contain dashes)
+    const match = file.match(/^index\.json\.(\d+)\.(\d+)(\.[^.]+)?\.tmp$/);
     if (!match) {
       continue;
     }
 
-    const timestamp = Number(match[1]);
+    const timestamp = Number(match[2]);
     if (timestamp > latestTime) {
       latestTime = timestamp;
       latestTmp = file;
