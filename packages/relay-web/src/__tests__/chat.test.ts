@@ -540,6 +540,41 @@ test("a prompt RPC timeout does not surface an error (results stream via events)
   expect(chat.sending).toBe(false);
 });
 
+test("network jitter after a turn starts does not mark the accepted prompt as send-failed", async () => {
+  let rejectPrompt!: (error: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPrompt = reject; }));
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  const sending = chat.send("keep working");
+
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-started", chatKey: "relay:a1", sessionAlias: "s1",
+  } });
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "turn-output", chatKey: "relay:a1", sessionAlias: "s1", chunk: "still running",
+  } });
+  rejectPrompt(new TypeError("Failed to fetch"));
+  await sending;
+
+  expect(chat.error).toBe("");
+  expect(chat.messages.at(-1)?.failed).toBeUndefined();
+  expect(chat.streaming).toBe("still running");
+});
+
+test("network jitter without turn events converges the optimistic prompt from history", async () => {
+  rpc.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await chat.send("never arrived");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(fetchMock).toHaveBeenCalledWith("/api/instances/i1/sessions/s1/messages?limit=100", { credentials: "include" });
+  expect(chat.messages).toEqual([]);
+  expect(chat.error).toBe("");
+});
+
 test("a non-timeout prompt error still surfaces", async () => {
   rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
   const chat = useChatStore();

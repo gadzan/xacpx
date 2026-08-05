@@ -693,6 +693,7 @@ export const useChatStore = defineStore("chat", () => {
     // only surface on the next list change (the next message). Mark failure through the proxy so
     // the bubble turns red — and shows Failed/Resend — the instant the send errors.
     const entry = messages.value[messages.value.length - 1]!;
+    let transportFailure = false;
     try {
       // The web dashboard is GUI-first: every message — including `/`-prefixed text —
       // is sent as a prompt so it streams as a normal turn. xacpx slash commands are
@@ -723,7 +724,14 @@ export const useChatStore = defineStore("chat", () => {
       }
     } catch (e) {
       const isTimeout = e instanceof ApiError && (e.status === 504 || e.code === "timeout");
-      if (!isTimeout) {
+      // Fetch reports a dropped connection as a bare TypeError, even when the Hub
+      // already accepted the prompt and the turn is streaming over WebSocket. Its
+      // delivery state is therefore indeterminate, just like a 504. Do not mark the
+      // optimistic row as definitely failed (or invite an unsafe duplicate resend);
+      // live events and the next history convergence provide the authoritative state.
+      const isTransportFailure = e instanceof TypeError;
+      transportFailure = isTransportFailure;
+      if (!isTimeout && !isTransportFailure) {
         error.value = e instanceof ApiError ? e.code : "send-failed";
         entry.failed = true;
         rollbackIndicators();
@@ -734,9 +742,15 @@ export const useChatStore = defineStore("chat", () => {
       if (remaining > 0) pendingPromptRequests.set(pendingKey, remaining);
       else {
         pendingPromptRequests.delete(pendingKey);
-        const shouldReload = deferredHistoryLoads.delete(pendingKey);
-        if (shouldReload && selectedKey.value === pendingKey) void loadHistory().catch(() => {});
       }
+      // A transport failure is ambiguous: the prompt may have reached the Hub, or
+      // it may never have left the browser. Once all overlapping prompt RPCs settle,
+      // replace the optimistic transcript with the authoritative history page so a
+      // never-delivered bubble cannot remain forever. If another prompt is pending,
+      // defer the same convergence until that last request settles.
+      if (transportFailure) deferredHistoryLoads.add(pendingKey);
+      const shouldReload = remaining === 0 && deferredHistoryLoads.delete(pendingKey);
+      if (shouldReload && selectedKey.value === pendingKey) void loadHistory().catch(() => {});
       sending.value = false;
     }
   }
