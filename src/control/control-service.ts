@@ -605,6 +605,15 @@ export class ControlService {
       });
   }
 
+  listSessionsPage(chatKey: string, offset = 0, limit = 20, includeArchived = false): { sessions: ControlSessionInfo[]; hasMore: boolean; nextOffset: number } {
+    const all = this.listSessions(chatKey).filter((session) => includeArchived || !session.archived);
+    const safeOffset = Math.max(0, Math.floor(offset));
+    const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
+    const sessions = all.slice(safeOffset, safeOffset + safeLimit);
+    const nextOffset = safeOffset + sessions.length;
+    return { sessions, hasMore: nextOffset < all.length, nextOffset };
+  }
+
   /**
    * List the agent-native (acpx-owned) sessions for an agent + workspace, so the web
    * add-session dialog can offer "attach an existing native session". These are the

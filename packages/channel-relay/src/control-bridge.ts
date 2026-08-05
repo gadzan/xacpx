@@ -154,6 +154,9 @@ async function dispatchControlRequest(
     case MSG.sessionsList: {
       const input = parseControlPayload(MSG.sessionsList, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.sessionsList}: malformed payload`);
+      if (input.offset !== undefined || input.limit !== undefined) {
+        return control.listSessionsPage(input.chatKey, input.offset, input.limit, input.includeArchived);
+      }
       return { sessions: control.listSessions(input.chatKey) }; // ControlSessionInfo is field-identical to SessionDto
     }
     case MSG.sessionsCreate: {

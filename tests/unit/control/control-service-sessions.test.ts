@@ -75,6 +75,25 @@ test("listSessions maps resolved sessions with running flag", () => {
   ]);
 });
 
+test("listSessionsPage filters sleeping sessions and returns a server cursor", () => {
+  const { deps } = makeDeps();
+  deps.sessions.listAllResolvedSessions = () => Array.from({ length: 5 }, (_, index) => ({
+    alias: `s${index}`,
+    agent: "claude",
+    workspace: "/ws",
+    transportSession: `t${index}`,
+    ...(index === 1 ? { archived: true } : {}),
+  }));
+  const control = new ControlService(deps as never);
+
+  expect(control.listSessionsPage("relay:acct", 0, 2)).toMatchObject({
+    sessions: [expect.objectContaining({ alias: "s0" }), expect.objectContaining({ alias: "s2" })],
+    hasMore: true,
+    nextOffset: 2,
+  });
+  expect(control.listSessionsPage("relay:acct", 0, 2, true).sessions.map((session) => session.alias)).toEqual(["s0", "s1"]);
+});
+
 test("listSessions marks an agent-side (native) session with native: true", () => {
   const { deps } = makeDeps();
   // A native-attached session carries source "agent-side"; a fresh xacpx session does not.

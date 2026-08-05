@@ -69,7 +69,7 @@ const isStrArr = (v: unknown): boolean => Array.isArray(v) && v.every(isStr);
 // --- session / agent / workspace ---
 const validateSessionsList: Validator<SessionsListPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) ? (o as unknown as SessionsListPayload) : null;
+  return o && isStr(o.chatKey) && optNum(o.offset) && optNum(o.limit) && optBool(o.includeArchived) ? (o as unknown as SessionsListPayload) : null;
 };
 const validateSessionsCreate: Validator<SessionsCreatePayload> = (p) => {
   const o = fields(p);

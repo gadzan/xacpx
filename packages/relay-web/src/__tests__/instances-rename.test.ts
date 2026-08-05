@@ -89,12 +89,13 @@ describe("instances renameSession", () => {
     staleListResult.resolve({
       sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: true, archived: false, displayName: "old" }],
     });
-    await staleReload;
-    expect(store.instances[0]!.sessions[0]!.displayName).toBe("A");
-
+    // The successful rename requested a replay while the stale list was in flight;
+    // resolve that replay page before awaiting the coalesced loadSessions promise.
     confirmingListResult.resolve({
       sessions: [{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: true, archived: false, displayName: "A" }],
     });
+    await staleReload;
+    expect(store.instances[0]!.sessions[0]!.displayName).toBe("A");
     await renaming;
     expect(store.instances[0]!.sessions[0]!.displayName).toBe("A");
   });

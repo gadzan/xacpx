@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, Trash2, Unplug } from "lucide-vue-next";
+import { ArchiveRestore, ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, Trash2, Unplug } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -56,8 +56,8 @@ function isSelected(instanceId: string, alias: string): boolean {
   return chat.instanceId === instanceId && chat.sessionAlias === alias;
 }
 
-// Per-instance collapse state (expanded by default). The store already eager-loads
-// sessions for online instances, so this just shows/hides the already-loaded rows.
+// Per-instance collapse state (expanded by default). Sessions are loaded by an explicit
+// sidebar action, so this just shows/hides the rows once data is available.
 const collapsed = ref<Set<string>>(new Set());
 function isExpanded(id: string): boolean {
   return !collapsed.value.has(id);
@@ -68,8 +68,10 @@ function toggle(id: string) {
   else next.add(id);
   collapsed.value = next;
   openSwipeFor.value = null;
-  // Refresh on (re)expand in case the list drifted while collapsed.
-  if (isExpanded(id)) void store.loadSessions(id).catch(() => {});
+}
+
+function activeSessions(inst: InstanceView): InstanceView["sessions"] {
+  return inst.sessions.filter((session) => !session.archived);
 }
 
 // Long session lists get noisy fast — cap the rendered rows per instance and let the
@@ -77,15 +79,38 @@ function toggle(id: string) {
 // pattern above, but keyed independently since either can toggle without the other).
 const SESSION_CAP = 10;
 const sessionsExpanded = ref<Set<string>>(new Set());
+const archivedExpanded = ref<Set<string>>(new Set());
 function toggleSessions(id: string) {
   const next = new Set(sessionsExpanded.value);
   if (next.has(id)) next.delete(id);
   else next.add(id);
   sessionsExpanded.value = next;
 }
+function archivedIsExpanded(id: string): boolean {
+  return archivedExpanded.value.has(id);
+}
+async function toggleArchived(id: string): Promise<void> {
+  const next = new Set(archivedExpanded.value);
+  if (next.has(id)) {
+    next.delete(id);
+    archivedExpanded.value = next;
+    return;
+  }
+  const inst = store.byId(id);
+  if (inst && !inst.archivedSessionsLoaded) await store.loadArchivedSessions(id).catch(() => {});
+  next.add(id);
+  archivedExpanded.value = next;
+}
+function displaySessions(inst: InstanceView): InstanceView["sessions"] {
+  if (!archivedIsExpanded(inst.id)) return activeSessions(inst);
+  return inst.sessions;
+}
 function visibleSessions(inst: InstanceView): InstanceView["sessions"] {
-  const all = archivedLast(inst.sessions);
-  return sessionsExpanded.value.has(inst.id) ? all : all.slice(0, SESSION_CAP);
+  const active = activeSessions(inst);
+  const activeVisible = sessionsExpanded.value.has(inst.id) ? active : active.slice(0, SESSION_CAP);
+  if (!archivedIsExpanded(inst.id)) return activeVisible;
+  const archived = archivedLast(inst.sessions.filter((session) => session.archived));
+  return [...activeVisible, ...archived];
 }
 
 // ── Second-level grouping (workspace / agent) ───────────────────────────────
@@ -104,7 +129,7 @@ interface SidebarSection {
 function sectionsFor(inst: InstanceView): SidebarSection[] {
   const mode = groupModeOf(inst);
   if (mode === "instance") return [{ key: null, sessions: visibleSessions(inst) }];
-  return groupSessions(inst.sessions, mode);
+  return groupSessions(displaySessions(inst), mode);
 }
 
 // Group collapse is in-session view state only (not persisted), keyed by mode so
@@ -217,6 +242,11 @@ async function onArchive(id: string, alias: string) {
   await store.archiveSession(id, alias).catch(() => {});
   showUndoToast(id, alias);
 }
+async function onUnarchive(id: string, alias: string) {
+  openMenuFor.value = null;
+  openSwipeFor.value = null;
+  await store.unarchiveSession(id, alias).catch(() => {});
+}
 function showUndoToast(id: string, alias: string) {
   showActionToast({
     message: t("instance.sessionArchivedToast", { alias }),
@@ -264,7 +294,7 @@ const rowSwipes = computed(() => {
   const map: Record<string, ReturnType<typeof useSwipeActions>["handlers"]> = {};
   for (const inst of store.instances) {
     if (!inst.online) continue;
-    for (const s of inst.sessions) {
+    for (const s of displaySessions(inst)) {
       const key = `${inst.id}:${s.alias}`;
       const reveal = revealPx(s);
       map[key] = useSwipeActions({
@@ -303,7 +333,7 @@ const rowSwipes = computed(() => {
         <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
         <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
               :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
-        <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ inst.sessions.length }}</span>
+        <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
         <span v-else class="text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
       </button>
 
@@ -311,6 +341,13 @@ const rowSwipes = computed(() => {
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
+        <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
+                class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent/10"
+                @click.stop="store.loadSessions(inst.id).catch(() => {})">
+          <ChevronDown :size="11" class="rotate-[-90deg]" />{{ $t("instance.loadSessions") }}
+        </button>
+        <div v-if="inst.online && inst.sessionsLoading" data-test="sessions-loading"
+             class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
         <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
              :class="grp.key !== null ? 'rounded-md bg-fg/[0.035] p-0.5' : 'space-y-px'"
              :data-test="grp.key !== null ? 'session-group' : undefined">
@@ -425,6 +462,7 @@ const rowSwipes = computed(() => {
                  class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md border border-border bg-surface py-1 shadow-lg">
               <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
               <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
+              <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
               <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
             </div>
             </div>
@@ -433,26 +471,34 @@ const rowSwipes = computed(() => {
 
         <!-- The row cap only applies in flat mode — grouped modes render everything
              and rely on per-group collapse to keep the list short. -->
-        <button v-if="groupModeOf(inst) === 'instance' && inst.sessions.length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
+        <button v-if="groupModeOf(inst) === 'instance' && activeSessions(inst).length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
                 data-test="sessions-show-more"
                 class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
                 @click.stop="toggleSessions(inst.id)">
-          {{ $t("instance.showMoreSessions", { n: inst.sessions.length - SESSION_CAP }) }}
+          {{ $t("instance.showMoreSessions", { n: activeSessions(inst).length - SESSION_CAP }) }}
         </button>
-        <button v-else-if="groupModeOf(inst) === 'instance' && inst.sessions.length > SESSION_CAP"
+        <button v-else-if="groupModeOf(inst) === 'instance' && activeSessions(inst).length > SESSION_CAP"
                 data-test="sessions-collapse"
                 class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
                 @click.stop="toggleSessions(inst.id)">
           {{ $t("instance.collapseSessions") }}
         </button>
 
-        <div v-if="inst.online && !inst.sessionsLoaded && !inst.sessions.length" data-test="sessions-loading"
-             class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
-        <div v-else-if="inst.sessionsLoaded && !inst.sessions.length" data-test="no-sessions"
+              <button v-if="inst.sessionsHasMore && !inst.sessionsLoading" data-test="sessions-load-more"
+                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-accent hover:text-fg"
+                @click.stop="store.loadMoreSessions(inst.id).catch(() => {})">
+          {{ $t("instance.loadMoreSessions") }}
+        </button>
+        <div v-if="inst.sessionsLoaded && !activeSessions(inst).length && !archivedIsExpanded(inst.id)" data-test="no-sessions"
              class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
         <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria. -->
         <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
+          <button v-if="inst.online && inst.sessionsLoaded" data-test="toggle-archived-sessions"
+                  :title="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
+                  :aria-label="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
+                  class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  @click="void toggleArchived(inst.id)"><ArchiveRestore :size="13" /></button>
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
                   class="grid h-6 w-6 place-items-center rounded text-accent transition-colors hover:bg-accent/10"
                   @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>

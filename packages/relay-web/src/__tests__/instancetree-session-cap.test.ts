@@ -56,6 +56,19 @@ describe("InstanceTree session-list cap", () => {
     expect(w.find('[data-test="sessions-collapse"]').exists()).toBe(false);
   });
 
+  it("does not let the active-session cap hide sleeping sessions after recovery is opened", async () => {
+    const store = useInstancesStore();
+    store.instances = [{ ...instance([
+      ...makeSessions(10),
+      { alias: "sleeping", agent: "claude", workspace: "home", transportSession: "ts", running: false, archived: true },
+    ]), archivedSessionsLoaded: true }] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="toggle-archived-sessions"]').trigger("click");
+    expect(w.findAll('[data-test="session-row"]')).toHaveLength(11);
+    expect(w.find('[data-test="session-name"]').text()).toContain("s0");
+    expect(w.findAll('[data-test="session-name"]')[10]!.text()).toContain("sleeping");
+  });
+
   it("isolates expand state per instance", async () => {
     const store = useInstancesStore();
     store.instances = [
@@ -76,7 +89,7 @@ describe("InstanceTree session-list cap", () => {
     expect(w.findAll('[data-test="sessions-collapse"]')).toHaveLength(1);
   });
 
-  it("preserves session ordering (active first, archived last) under the cap", () => {
+  it("hides sleeping sessions before applying the cap", () => {
     const store = useInstancesStore();
     const sessions = [
       ...makeSessions(9).map((s) => ({ ...s, archived: true })),
@@ -86,8 +99,8 @@ describe("InstanceTree session-list cap", () => {
     store.instances = [instance(sessions)] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     const rows = w.findAll('[data-test="session-row"]');
-    expect(rows).toHaveLength(10);
-    // Active sessions sink to the top even though they were appended last in source order.
+    expect(rows).toHaveLength(2);
+    // Sleeping sessions are not rendered in the sidebar at all.
     const names = rows.map((r) => r.find('[data-test="session-name"]').text());
     expect(names[0]).toBe("z-active");
     expect(names[1]).toBe("y-active");

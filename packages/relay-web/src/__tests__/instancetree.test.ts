@@ -274,11 +274,11 @@ describe("InstanceTree session management", () => {
     expect(w.find('[data-test="no-sessions"]').exists()).toBe(true);
   });
 
-  it("shows a loading row (not the empty state) before sessions have loaded", () => {
+  it("shows an explicit load action before sessions have loaded", () => {
     const store = useInstancesStore();
     store.instances = [instance([], false)] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    expect(w.find('[data-test="sessions-loading"]').exists()).toBe(true);
+    expect(w.find('[data-test="load-sessions"]').exists()).toBe(true);
     expect(w.find('[data-test="no-sessions"]').exists()).toBe(false);
   });
 
@@ -300,7 +300,7 @@ describe("InstanceTree session management", () => {
     expect(w.find('[data-test="session-elapsed"]').exists()).toBe(false);
   });
 
-  it("greys archived sessions and sinks them to the bottom of the group", () => {
+  it("hides archived sessions from the sidebar", () => {
     const store = useInstancesStore();
     store.instances = [instance([
       { alias: "active", agent: "claude", workspace: "home", transportSession: "t1", running: false, archived: false },
@@ -308,14 +308,25 @@ describe("InstanceTree session management", () => {
     ])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     const rows = w.findAll('[data-test="session-row"]');
-    const archivedRow = rows[rows.length - 1];
-    expect(archivedRow.text()).toContain("arch"); // archived sunk to bottom
-    // Archived state reads from the greyed name; its dedicated text badge was removed to keep
-    // the row uncluttered once the native marker landed.
-    expect(archivedRow.find('[data-test="session-name"]').classes()).toContain("text-fg-muted");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.text()).toContain("active");
+    expect(w.find('[data-test="session-name"]').text()).not.toContain("arch");
     expect(w.find('[data-test="archived-badge"]').exists()).toBe(false);
-    // …but a visually-hidden label keeps the archived state announced to screen readers.
-    expect(archivedRow.find('[data-test="archived-label"]').classes()).toContain("sr-only");
+  });
+
+  it("offers an explicit recovery entry for sleeping sessions", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "active", agent: "claude", workspace: "home", transportSession: "t1", running: false, archived: false }])] as never;
+    vi.spyOn(store, "loadArchivedSessions").mockImplementation(async () => {
+      store.instances[0]!.sessions.push({ alias: "sleeping", agent: "claude", workspace: "home", transportSession: "t2", running: false, archived: true });
+      store.instances[0]!.archivedSessionsLoaded = true;
+    });
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="toggle-archived-sessions"]').trigger("click");
+    await w.vm.$nextTick();
+    expect(w.findAll('[data-test="session-row"]')).toHaveLength(2);
+    expect(w.find('[data-test="session-name"]').text()).toContain("active");
+    expect(w.findAll('[data-test="session-name"]')[1]!.text()).toContain("sleeping");
   });
 
   it("hides row actions when the instance is offline", () => {
