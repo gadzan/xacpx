@@ -30,6 +30,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
+        # setup-node restores the npm download cache before this clean install.
         run: npm ci
 
       - name: Run tests
