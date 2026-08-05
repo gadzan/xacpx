@@ -45,6 +45,11 @@ interface PendingRequest {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   instanceId: string;
+  /** The socket the request was sent over — a response must come from THAT socket,
+   *  not a different (even legitimately-authed) instance socket. */
+  socket: GatewaySocket;
+  /** The RPC type — the response envelope must echo it. */
+  type: string;
 }
 
 export class InstanceGateway {
@@ -132,6 +137,11 @@ export class InstanceGateway {
         this.connections.set(identity.instanceId, { socket, accountId: identity.accountId });
         if (existing && existing.socket !== socket) {
           this.logger.info("relay.instance.superseded", "reconnect superseded old socket", { instanceId: identity.instanceId });
+          // The old socket's pending RPCs can never be answered (their responses are
+          // fenced out) — reject them NOW instead of letting the HTTP call wait out
+          // the full request timeout. No offline transition: the new socket owns the
+          // instance.
+          this.rejectPendingForSocket(existing.socket, "instance-reconnected");
           try {
             existing.socket.close(4409, "superseded");
           } catch (err) {
@@ -159,11 +169,22 @@ export class InstanceGateway {
 
     if (envelope.kind === "res" && envelope.id) {
       const waiting = this.pending.get(envelope.id);
-      if (waiting) {
-        clearTimeout(waiting.timer);
-        this.pending.delete(envelope.id);
-        waiting.resolve(envelope.payload);
+      // Response ownership: the id alone is not enough — request ids are sequential
+      // and guessable, so a DIFFERENT (even legitimately-authed) instance socket
+      // could spoof another instance's pending RPC and make the hub trust a forged
+      // result (markQueued, history deletion, output rows...). The response must come
+      // from the SAME instance + SAME socket the request went out on, and echo the
+      // request type.
+      if (!waiting || waiting.instanceId !== authed.instanceId || waiting.socket !== socket || waiting.type !== envelope.type) {
+        this.logger.warn("relay.instance.response_mismatch", "dropped RPC response that does not match its pending request", {
+          instanceId: authed.instanceId,
+          envelopeType: envelope.type,
+        });
+        return;
       }
+      clearTimeout(waiting.timer);
+      this.pending.delete(envelope.id);
+      waiting.resolve(envelope.payload);
       return;
     }
     if (envelope.kind === "event") {
@@ -273,7 +294,7 @@ export class InstanceGateway {
         this.pending.delete(id);
         reject(new Error("timeout"));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, instanceId });
+      this.pending.set(id, { resolve, reject, timer, instanceId, socket: connection.socket, type });
       connection.socket.send(encodeEnvelope({
         protocolVersion: RELAY_PROTOCOL_VERSION,
         kind: "req",
@@ -284,5 +305,19 @@ export class InstanceGateway {
         requestBudgetMs,
       }));
     });
+  }
+
+  /** Reject every pending RPC that went out over `socket` (used when the socket is
+   *  superseded by a reconnect — the old connection's responses will never arrive, and
+   *  waiting out the full request timeout would hang the HTTP call). Does NOT fire the
+   *  offline transition: the new connection has already taken over the instance. */
+  private rejectPendingForSocket(socket: GatewaySocket, reason: string): void {
+    for (const [id, p] of this.pending) {
+      if (p.socket === socket) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        p.reject(new Error(reason));
+      }
+    }
   }
 }

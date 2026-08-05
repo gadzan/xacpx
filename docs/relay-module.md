@@ -251,6 +251,11 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   关闭握手完成前该 socket 上迟到的 event/sync 一律被 ownership fencing 丢弃——不会出现
   "failed 后旧 socket 仍提交 out row 并 ACK、绕过重试" 的窗口；superseded 旧 socket 的迟到
   sync 同样被拒，不会覆盖新连接的恢复状态。
+- **gateway 认证边界**：RPC response 必须来自**发出该请求的同一实例 + 同一 socket** 且回显
+  请求 type（`PendingRequest` 绑定 socket/type）——请求 id 是顺序可猜的，跨实例伪造 response
+  会污染别的实例的 queue correlation / 删除历史 / 写入伪造行，多账号 Hub 上是跨租户边界。
+  socket 被 supersede 时，旧 socket 的 pending RPC **立即拒绝**（`instance-reconnected`），
+  HTTP 调用不必等满 120s 超时。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
   **整个 reconciliation 包在专用 try/catch 里**——任何数据库失败（不只是 finished 事务，也包括
   active turn 的 prompt backfill、recency 读取等）都会 `gateway.disconnect(instanceId)` 强制重连重发，

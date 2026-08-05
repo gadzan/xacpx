@@ -176,3 +176,81 @@ test("a superseded socket's late state sync never reaches onEvent", async () => 
   }));
   expect(syncs).toHaveLength(1);
 });
+
+const multiInstanceStubs = {
+  ...stubInstances,
+  verifyCredential: (instanceId: string) => ({ id: instanceId, accountId: instanceId === "i1" ? "a1" : "a2" }),
+  touch: () => {},
+} as never;
+
+const authAs = (socket: FakeSocket, instanceId: string) => socket.emit("message", encodeEnvelope({
+  protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "h1", type: MSG.instanceAuth,
+  payload: { instanceId, credential: "c" },
+}));
+
+test("a response forged by ANOTHER instance's socket does not resolve the pending RPC", async () => {
+  const gateway = new InstanceGateway({
+    instances: multiInstanceStubs,
+    accounts: stubAccounts,
+    requestTimeoutMs: 60_000,
+  });
+  const socketA = new FakeSocket();
+  gateway.handleConnection(socketA as never);
+  authAs(socketA, "i1");
+  const socketB = new FakeSocket();
+  gateway.handleConnection(socketB as never);
+  authAs(socketB, "i2");
+
+  // A request to B goes out over B's socket; A guesses B's sequential request id and
+  // spoofs a response — it must NOT resolve B's pending RPC (the hub would otherwise
+  // trust a forged result: markQueued, history deletion, forged transcript rows...).
+  const pending = gateway.sendRequest("i2", MSG.sessionsList, {});
+  const req = decodeEnvelope(socketB.sent[socketB.sent.length - 1]!);
+  expect(req.ok && req.envelope.kind === "req").toBe(true);
+  const reqId = req.ok ? req.envelope.id : undefined;
+  socketA.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res", id: reqId, type: MSG.sessionsList, payload: { sessions: [{ forged: true }] },
+  }));
+
+  let settled = false;
+  pending.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise((r) => setTimeout(r, 5));
+  expect(settled).toBe(false); // still pending — the forged response was dropped
+
+  // B's own response resolves it with the REAL result.
+  socketB.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res", id: reqId, type: MSG.sessionsList, payload: { sessions: [] },
+  }));
+  await expect(pending).resolves.toEqual({ sessions: [] });
+});
+
+test("a reconnect rejects the old socket's pending RPCs immediately (no full timeout wait)", async () => {
+  const gateway = new InstanceGateway({
+    instances: multiInstanceStubs,
+    accounts: stubAccounts,
+    requestTimeoutMs: 60_000,
+  });
+  const socketA = new FakeSocket();
+  gateway.handleConnection(socketA as never);
+  authAs(socketA, "i1");
+  const pending = gateway.sendRequest("i1", MSG.sessionsList, {});
+
+  // Socket B reconnects for the same instance and supersedes A. A's pending RPC can
+  // never be answered (its responses are fenced out) — it must reject NOW rather than
+  // hang until the 120s request timeout, and the instance stays online under B.
+  const socketB = new FakeSocket();
+  gateway.handleConnection(socketB as never);
+  authAs(socketB, "i1");
+  await expect(pending).rejects.toThrow("instance-reconnected");
+  expect(gateway.isOnline("i1")).toBe(true);
+
+  // Requests through the new socket still complete normally.
+  const p2 = gateway.sendRequest("i1", MSG.sessionsList, {});
+  const req2 = decodeEnvelope(socketB.sent[socketB.sent.length - 1]!);
+  expect(req2.ok && req2.envelope.kind === "req").toBe(true);
+  const reqId2 = req2.ok ? req2.envelope.id : undefined;
+  socketB.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res", id: reqId2, type: MSG.sessionsList, payload: { sessions: [] },
+  }));
+  await expect(p2).resolves.toEqual({ sessions: [] });
+});
