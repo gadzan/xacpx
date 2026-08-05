@@ -1,8 +1,9 @@
 import { chmod, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+
 import { join } from "node:path";
 
 import { isRecord } from "../config/load-config";
+import { resolveAcpxHomeDir } from "./acpx-session-files";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
@@ -145,7 +146,7 @@ export async function ensureAgentOverlays(
     return { outcomes: {}, raced: false };
   }
 
-  const path = acpxConfigPath(deps.home ?? homedir());
+  const path = acpxConfigPath(deps.home ?? resolveAcpxHomeDir());
   const readFileFn = deps.readFileFn ?? readFile;
   const statFn = deps.statFn ?? stat;
   const chmodFn = deps.chmodFn ?? chmod;

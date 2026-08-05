@@ -288,17 +288,48 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async runEnsureSession(session: ResolvedSession): Promise<void> {
-    const args = this.buildArgs(session, [
+    const runEnsure = session.agentCommand ? this.run : this.runWithPty;
+    const ensureArgs = this.buildArgs(session, [
       "sessions",
-      "new",
+      "ensure",
       "--name",
       session.transportSession,
     ]);
-    const runEnsure = session.agentCommand ? this.run : this.runWithPty;
-    await runEnsure.call(this, args, {
-      timeoutMs: this.sessionInitTimeoutMs,
-      env: this.spawnEnvironment(session),
-    });
+    try {
+      // `sessions ensure` reuses an identity-matching legacy record (which the
+      // argv migration backfilled just above); `sessions new` would orphan it.
+      await runEnsure.call(this, ensureArgs, {
+        timeoutMs: this.sessionInitTimeoutMs,
+        env: this.spawnEnvironment(session),
+      });
+      return;
+    } catch (error) {
+      // Mirrors the bridge: a failed ensure may mean the session already exists
+      // (show succeeds) or that it must be created fresh (show fails → new).
+      try {
+        await this.run(this.buildArgs(session, [
+          "sessions",
+          "show",
+          session.transportSession,
+        ], "quiet"), {
+          timeoutMs: this.managementCommandTimeoutMs,
+          env: this.spawnEnvironment(session),
+        });
+        return;
+      } catch {
+        // fall through to sessions new
+      }
+      const newArgs = this.buildArgs(session, [
+        "sessions",
+        "new",
+        "--name",
+        session.transportSession,
+      ]);
+      await runEnsure.call(this, newArgs, {
+        timeoutMs: this.sessionInitTimeoutMs,
+        env: this.spawnEnvironment(session),
+      });
+    }
   }
 
   async listAgentSessions(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined> {

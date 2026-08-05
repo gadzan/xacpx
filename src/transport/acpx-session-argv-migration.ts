@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+
 import { join } from "node:path";
 
 import { renderAgentArgvIdentity } from "../config/agent-launch";
+import { resolveAcpxHomeDir } from "./acpx-session-files";
 import { isRecord } from "../config/load-config";
 import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
 
@@ -101,7 +102,7 @@ export async function migrateSessionArgvFile(
   target: SessionArgvMigrationTarget,
   deps: MigrateSessionArgvFileDeps = {},
 ): Promise<MigrateSessionArgvFileResult> {
-  const sessionsDir = deps.sessionsDir ?? join(homedir(), ".acpx", "sessions");
+  const sessionsDir = deps.sessionsDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
   const filePath = join(sessionsDir, `${encodeURIComponent(acpxRecordId)}.json`);
   const readFileFn = deps.readFileFn ?? readFile;
   const lockFn = deps.lockFn ?? withPrivateFileLock;

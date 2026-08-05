@@ -81,6 +81,7 @@
     "test": "node ./scripts/run-tests.mjs",
     "test:unit": "node ./scripts/run-tests.mjs tests/unit",
     "test:smoke": "node ./scripts/run-tests.mjs tests/smoke",
+    "test:compat:acpx": "node ./scripts/run-tests.mjs tests/compat",
     "smoke:local-install": "node ./scripts/smoke-local-install.mjs"
   },
   "dependencies": {

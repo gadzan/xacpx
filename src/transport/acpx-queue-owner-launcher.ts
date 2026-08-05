@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile, unlink } from "node:fs/promises";
-import { homedir } from "node:os";
+
 import { join } from "node:path";
 
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
@@ -9,6 +9,8 @@ import { resolveSpawnCommand } from "../process/spawn-command";
 import { terminateProcessTree } from "../process/terminate-process-tree";
 import { quoteIfNeeded } from "../util/text.js";
 import { getLocale } from "../i18n";
+import { resolveAcpxHomeDir } from "./acpx-session-files";
+import { isProcessAlive } from "../daemon/daemon-files";
 import { coreEnv } from "../runtime/core-env";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
@@ -51,6 +53,13 @@ export interface AcpxQueueOwnerLauncherOptions {
   xacpxCommand?: string;
   spawnOwner?: QueueOwnerSpawner;
   terminateOwner?: QueueOwnerTerminator;
+  /**
+   * Liveness check for an existing warm owner. When it reports alive, launch()
+   * REUSES the running owner instead of kill+respawn — consecutive turns of a
+   * coordinator session share one warm agent instead of cold-starting each turn.
+   * Defaults to reading the acpx queue lock pid.
+   */
+  isOwnerAlive?: (sessionId: string) => Promise<boolean>;
   baseEnv?: NodeJS.ProcessEnv;
   ttlMs?: number;
   maxQueueDepth?: number;
@@ -145,6 +154,7 @@ export class AcpxQueueOwnerLauncher {
   private readonly xacpxCommand: string;
   private readonly spawnOwner: QueueOwnerSpawner;
   private readonly terminateOwner: QueueOwnerTerminator;
+  private readonly isOwnerAlive: (sessionId: string) => Promise<boolean>;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly ttlMs?: number;
   private readonly maxQueueDepth?: number;
@@ -162,6 +172,7 @@ export class AcpxQueueOwnerLauncher {
     this.xacpxCommand = options.xacpxCommand ?? resolveDefaultXacpxCommand(options.baseEnv ?? process.env);
     this.spawnOwner = options.spawnOwner ?? defaultQueueOwnerSpawner;
     this.terminateOwner = options.terminateOwner ?? createDefaultQueueOwnerTerminator(options.acpxCommand);
+    this.isOwnerAlive = options.isOwnerAlive ?? defaultOwnerAliveCheck;
     this.baseEnv = options.baseEnv ?? process.env;
     this.ttlMs = options.ttlMs;
     this.maxQueueDepth = options.maxQueueDepth;
@@ -192,6 +203,11 @@ export class AcpxQueueOwnerLauncher {
   }
 
   private async doLaunch(input: LaunchQueueOwnerInput): Promise<{ agentCommand?: string }> {
+    // A live warm owner already holds the session's ACP agent: reuse it, so a
+    // follow-up turn skips the cold start instead of kill+respawn churn.
+    if (await this.isOwnerAlive(input.acpxRecordId)) {
+      return { agentCommand: input.agentCommand };
+    }
     await this.terminateOwner(input.acpxRecordId);
 
     const managedShape = classifyPreinstalledAdapterCommandShape(input.agentCommand);
@@ -396,6 +412,12 @@ function createDefaultQueueOwnerTerminator(_acpxCommand: string): QueueOwnerTerm
   };
 }
 
+/** A warm owner is alive when acpx's queue lock records a live pid. */
+async function defaultOwnerAliveCheck(sessionId: string): Promise<boolean> {
+  const pid = await readQueueOwnerPid(sessionId);
+  return pid !== undefined && isProcessAlive(pid);
+}
+
 export async function readQueueOwnerPid(sessionId: string): Promise<number | undefined> {
   let owner: { pid?: unknown } | undefined;
   try {
@@ -442,7 +464,7 @@ export async function terminateAcpxQueueOwnerWithDeps(
 }
 
 function queueLockFilePath(sessionId: string): string {
-  return join(homedir(), ".acpx", "queues", `${shortHash(sessionId, 24)}.lock`);
+  return join(resolveAcpxHomeDir(), ".acpx", "queues", `${shortHash(sessionId, 24)}.lock`);
 }
 
 function shortHash(value: string, length: number): string {
