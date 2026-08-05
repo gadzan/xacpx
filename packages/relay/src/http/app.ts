@@ -586,7 +586,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       return c.json({ result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message === "instance-offline") return c.json({ error: message }, 503);
+      // 503: transient availability — the instance is offline, or the connection was
+      // superseded by a reconnect before the RPC could be answered (the caller may
+      // retry). 504: the request budget expired. Anything else is a server error.
+      if (message === "instance-offline" || message === "instance-reconnected") return c.json({ error: message }, 503);
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);
     } finally {
