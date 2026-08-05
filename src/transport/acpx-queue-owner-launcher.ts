@@ -11,7 +11,7 @@ import { quoteIfNeeded } from "../util/text.js";
 import { getLocale } from "../i18n";
 import { coreEnv } from "../runtime/core-env";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
-import { probeWindowsProcessIdentity, type BatchTarget } from "../process/windows-process-tree";
+import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 
 export interface AcpxMcpServerSpec {
   name: string;
@@ -415,6 +415,7 @@ export async function terminateAcpxQueueOwner(sessionId: string): Promise<void> 
 
 export interface QueueOwnerTerminationDeps {
   platform?: NodeJS.Platform;
+  lockPath?: string;
   probeIdentity?: typeof probeWindowsProcessIdentity;
   terminate?: typeof terminateProcessTree;
 }
@@ -423,51 +424,25 @@ export async function terminateAcpxQueueOwnerWithDeps(
   sessionId: string,
   deps: QueueOwnerTerminationDeps,
 ): Promise<void> {
-  const lockPath = queueLockFilePath(sessionId);
-  const identityPath = queueOwnerIdentityFilePath(sessionId);
+  const lockPath = deps.lockPath ?? queueLockFilePath(sessionId);
   let owner: { pid?: unknown } | undefined;
   try {
     owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown };
   } catch {
     return;
   }
+  // A queue lock written by the current acpx lease store has no provenance
+  // that xacpx can verify yet. Never consume legacy or sidecar identity data;
+  // retain the lock until acpx publishes an atomic, versioned identity record.
+  if ((deps.platform ?? process.platform) === "win32") return;
   if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
-    if ((deps.platform ?? process.platform) === "win32") {
-      // The lock is written by acpx, not by this parent. Until acpx publishes
-      // its own creation identity atomically with that lock, a parent-side PID
-      // probe is unsafe; retain the lock as evidence and fail closed.
-      let historical: { pid?: unknown; creationDate?: unknown; executablePath?: unknown };
-      try {
-        historical = JSON.parse(await readFile(identityPath, "utf8")) as typeof historical;
-      } catch {
-        return;
-      }
-      if (historical.pid !== owner.pid || typeof historical.creationDate !== "string" || typeof historical.executablePath !== "string") return;
-      const identity = await (deps.probeIdentity ?? probeWindowsProcessIdentity)(owner.pid);
-      if (identity.status !== "found") return;
-      if (identity.identity.creationDate !== historical.creationDate
-        || identity.identity.executablePath.toLocaleLowerCase("en-US") !== historical.executablePath.toLocaleLowerCase("en-US")) return;
-      const target: BatchTarget = {
-        pid: owner.pid,
-        creationDate: identity.identity.creationDate,
-        executablePath: identity.identity.executablePath,
-      };
-      const result = await (deps.terminate ?? terminateProcessTree)(target, { detachedProcessGroup: true });
-      if (!result || !["killed", "already-exited", "skipped-replaced"].includes(result.rootOutcome)) return;
-    } else {
-      await terminateProcessTree(owner.pid, { detachedProcessGroup: true });
-    }
+    await terminateProcessTree(owner.pid, { detachedProcessGroup: true });
   }
   await unlink(lockPath).catch(() => {});
-  await unlink(identityPath).catch(() => {});
 }
 
 function queueLockFilePath(sessionId: string): string {
   return join(homedir(), ".acpx", "queues", `${shortHash(sessionId, 24)}.lock`);
-}
-
-function queueOwnerIdentityFilePath(sessionId: string): string {
-  return `${queueLockFilePath(sessionId)}.identity`;
 }
 
 function shortHash(value: string, length: number): string {

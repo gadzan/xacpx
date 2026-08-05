@@ -1,4 +1,7 @@
 import { expect, mock, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   buildXacpxMcpServerSpec,
@@ -7,6 +10,7 @@ import {
   type QueueOwnerSpawner,
   type QueueOwnerTerminator,
   type QueueOwnerAdapterContext,
+  terminateAcpxQueueOwnerWithDeps,
 } from "../../../src/transport/acpx-queue-owner-launcher";
 
 const TOKEN = "11111111-1111-4111-8111-111111111111";
@@ -37,6 +41,27 @@ test("builds coordinator MCP server spec from a session identity", () => {
     command: "node",
     args: ["./dist/cli.js", "mcp-stdio", "--coordinator-session", "backend:main", "--internal-session-tools"],
   });
+});
+
+test("Windows cleanup ignores legacy sidecars and preserves lock evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xacpx-queue-owner-"));
+  const lockPath = join(root, "owner.lock");
+  const identityPath = `${lockPath}.identity`;
+  try {
+    await writeFile(lockPath, JSON.stringify({ pid: 41 }), "utf8");
+    await writeFile(identityPath, JSON.stringify({ pid: 41, creationDate: "1", executablePath: "C:\\node.exe" }), "utf8");
+    let terminated = false;
+    await terminateAcpxQueueOwnerWithDeps("record", {
+      platform: "win32",
+      lockPath,
+      terminate: async () => { terminated = true; },
+    });
+    expect(terminated).toBe(false);
+    expect(await readFile(lockPath, "utf8")).toContain('"pid":41');
+    expect(await readFile(identityPath, "utf8")).toContain('"pid":41');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("builds worker MCP server spec with source handle", () => {
