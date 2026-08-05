@@ -944,6 +944,8 @@ export interface CliMessages {
   adapterInstalledHeader: string;
   adapterInstalledRow: (id: string, releaseId: string, active: boolean) => string;
   adapterPreinstalled: (id: string, version: string, releaseId: string) => string;
+  adapterUninstalled: (id: string, releaseId: string, alreadyMissing: boolean) => string;
+  adapterUninstallProtected: (id: string, releaseId: string, reason: string) => string;
 
   // later commands
   laterIdEmpty: string;

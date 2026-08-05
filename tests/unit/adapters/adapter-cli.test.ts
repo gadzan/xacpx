@@ -15,6 +15,7 @@ function deps(overrides: Partial<AdapterCliDeps> = {}) {
     verifyVersion: async () => {},
     preinstall: async (_id, _version) => ({ releaseId: "release-test" }),
     listInstalled: async () => [],
+    uninstall: async () => "removed",
     print: (line) => lines.push(line),
   };
   return {
@@ -56,6 +57,24 @@ test("preinstall uses the effective version/registry and installed listing is lo
   expect(calls).toEqual(["codex:1.1.2:https://npm.example"]);
   expect(await handleAdapterCli(["list", "--installed"], ctx.deps)).toBe(0);
   expect(ctx.lines.join("\n")).toContain("1.1.2-deadbeef-12345678");
+});
+
+test("uninstall reports removal and refuses active, referenced, or racing releases", async () => {
+  const calls: string[] = [];
+  const ctx = deps({
+    uninstall: async (id, releaseId) => {
+      calls.push(`${id}:${releaseId}`);
+      return calls.length === 1 ? "removed" : "referenced";
+    },
+  });
+  expect(await handleAdapterCli(["uninstall", "codex", "1.1.3-aaaaaaaa-bbbbbbbb"], ctx.deps)).toBe(0);
+  expect(await handleAdapterCli(["uninstall", "codex", "1.1.4-aaaaaaaa-cccccccc"], ctx.deps)).toBe(1);
+  expect(calls).toEqual([
+    "codex:1.1.3-aaaaaaaa-bbbbbbbb",
+    "codex:1.1.4-aaaaaaaa-cccccccc",
+  ]);
+  expect(ctx.lines.join("\n")).toContain("Uninstalled");
+  expect(ctx.lines.join("\n")).toContain("Refused");
 });
 
 test("registry rejects unsafe URLs without changing config", async () => {

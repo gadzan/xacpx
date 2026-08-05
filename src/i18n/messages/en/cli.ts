@@ -17,7 +17,7 @@ export const cli: CliMessages = {
     "xacpx doctor - Run diagnostics",
     "xacpx version - Show version",
     "xacpx agent|agents list|add|rm|templates - Manage local agents",
-    "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name> - Manage ACP adapter versions",
+    "xacpx adapter list|check [name]|update (<name>|--all)|set <name> <version>|reset <name>|uninstall <name> <release> - Manage ACP adapters",
     "xacpx adapter registry [set <url>|reset] - Manage the ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - Manage local workspaces (alias: ws)",
     "xacpx later|lt list|cancel <id> - Manage local scheduled tasks",
@@ -99,6 +99,11 @@ export const cli: CliMessages = {
   adapterInstalledHeader: "Installed managed adapter releases:",
   adapterInstalledRow: (id, releaseId, active) => `${id}: ${releaseId}${active ? " (active)" : ""}`,
   adapterPreinstalled: (id, version, releaseId) => `Preinstalled ${id} adapter ${version} as ${releaseId}.`,
+  adapterUninstalled: (id, releaseId, alreadyMissing) => alreadyMissing
+    ? `${id} adapter release ${releaseId} is already absent.`
+    : `Uninstalled ${id} adapter release ${releaseId}.`,
+  adapterUninstallProtected: (id, releaseId, reason) =>
+    `Refused to uninstall ${id} adapter release ${releaseId}: ${reason}.`,
 
   // later commands
   laterIdEmpty: "Scheduled task ID cannot be empty.",

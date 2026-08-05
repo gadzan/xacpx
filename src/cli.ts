@@ -48,6 +48,8 @@ import { getAdapterNpmVersion } from "./adapters/adapter-npm";
 import { verifyAdapterVersion } from "./adapters/adapter-verifier";
 import { listInstalledAdapterReleases, preinstallAdapter } from "./adapters/adapter-preinstall";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
+import { garbageCollectAdapterReleases } from "./adapters/adapter-gc";
+import { OrphanRegistry } from "./transport/orphan-registry";
 import { killWindowsOrphansWithConfirmation } from "./transport/manual-orphan-kill";
 import type { AppConfig } from "./config/types";
 import type { AppState } from "./state/types";
@@ -944,6 +946,22 @@ function createAdapterCliDeps(input: {
       });
     },
     listInstalled: async () => await listInstalledAdapterReleases(dirname(resolveConfigPathForCurrentEnv())),
+    uninstall: async (id, releaseId) => {
+      const runtimeRoot = dirname(resolveConfigPathForCurrentEnv());
+      let orphanRegistry: OrphanRegistry | undefined;
+      if (process.platform === "win32") {
+        orphanRegistry = new OrphanRegistry(join(runtimeRoot, "runtime"));
+        await orphanRegistry.initialize();
+      }
+      const [result] = await garbageCollectAdapterReleases({
+        runtimeRoot,
+        id,
+        releaseId,
+        statePath: coreEnv("STATE") ?? join(runtimeRoot, "state.json"),
+        ...(orphanRegistry ? { orphanRegistry } : {}),
+      });
+      return result!.disposition;
+    },
     print: input.print,
   };
   return { ...defaults, ...input.overrides, print: input.overrides?.print ?? input.print };
