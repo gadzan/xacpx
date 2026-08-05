@@ -428,13 +428,35 @@ xacpx channel add <channel-type>
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `driver` | `string` | 是 | agent 驱动类型，传递给 acpx 的第一位置参数 |
-| `command` | `string` | 否 | 显式指定自定义 agent 的原始命令。不填则使用 acpx 默认行为 |
+| `command` | `string` | 否 | 显式指定自定义 agent 的原始命令。与 `argv` 互斥；Windows 上 raw command 无法无损启动（acpx 拒绝），请改用 `argv`（见下） |
+| `argv` | `string[]` | 否 | 精确的可执行文件 + 参数边界（如 `["C:\\Program Files\\agent.exe", "--acp", ...]`）。首元素必须是非空可执行文件；每个元素原样传给 acpx（空格、反斜杠、空字符串均保留）。与 `command` 互斥；这是 Windows 上唯一无损的启动形式。修改 `argv` 会产生新的 acpx session identity（内容寻址 alias）；旧 session 保留其记录的 identity |
 
 说明：
 
 - 内置模板建议只写 `driver`，让 `acpx` 自己解析对应 alias
 - `agent.command` 主要用于自定义 agent，不建议给内置 driver 手写原始命令
 - 旧版 `codex` raw command 配置在加载时会被自动忽略，回退为 `acpx codex ...`
+
+#### Windows raw command 迁移
+
+含空格的旧 Unix `command` 在 Windows 上无法启动（acpx 拒绝 raw `--agent`，猜测引号切分会破坏边界）。xacpx 会 fail closed 并给出迁移错误，而不是猜测。请改为结构化 argv：
+
+```json
+{
+  "agents": {
+    "my-agent": {
+      "driver": "custom",
+      "argv": ["C:\\Program Files\\agent\\agent.exe", "--acp", "--flag", "two words"]
+    }
+  }
+}
+```
+
+单 token 命令（无空格，如 `"myagent.exe"`）会自动转换为 `["myagent.exe"]`。
+
+#### xacpx 托管的 acpx agent alias
+
+结构化启动（托管 Codex/Claude pin、hermes shim、本地 fallback、用户 `argv`）通过内容寻址位置参数 alias（`xacpx-managed-<driver>-<sha256-prefix>`）暴露给 acpx。启动时 xacpx 在 proper-lockfile 保护下把 `{ "argv": [...] }` 安全合并进 `~/.acpx/config.json` 的 `agents` 节点，保留其它所有 key 与用户 agent 条目。绝不写 `.acpxrc.json`；已存在但 argv 不同的 alias 拒绝覆盖（fail closed）；不自动清理旧 alias（旧 session/旧 pin 可能仍引用）。升级不会删除或 close 任何已有 session；旧 session record 缺少 `agent_argv` 时，仅当 record 的 `agent_command` 与目标 argv 的 canonical identity 完全一致才回填，并复用同一 record id 恢复。
 
 ### 内置模板
 

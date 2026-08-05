@@ -470,9 +470,45 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `driver` | `string` | Yes | Agent driver type, passed as the first positional argument to acpx |
-| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins |
+| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins. **Mutually exclusive with `argv`**. On Windows a raw command cannot be launched losslessly (acpx rejects it); migrate to `argv` instead (see below) |
+| `argv` | `string[]` | No | Exact executable + argument boundaries (`["C:\\Program Files\\agent.exe", "--acp", ...]`). First element must be a non-empty executable; every element is passed to acpx verbatim (spaces, backslashes, empty strings preserved). **Mutually exclusive with `command`**. This is the only lossless launch form on Windows. Mutating `argv` creates a NEW acpx session identity (content-addressed alias); old sessions keep their recorded identity |
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
 | `settingsPolicy` | `"provider-only"` \| `"isolated"` \| `"full-user"` | No | Claude user-settings policy. The implicit default is `"provider-only"`; other drivers ignore this field. See below |
+
+#### Windows raw command migration
+
+An old Unix-style `command` that contains whitespace cannot be launched on Windows
+(acpx rejects raw `--agent` strings there, and guessing a quote split would corrupt
+boundaries). xacpx fails closed with a migration error instead of guessing. Convert
+the agent to structured argv:
+
+```json
+{
+  "agents": {
+    "my-agent": {
+      "driver": "custom",
+      "argv": ["C:\\Program Files\\agent\\agent.exe", "--acp", "--flag", "two words"]
+    }
+  }
+}
+```
+
+A single-token command (no whitespace, e.g. `"myagent.exe"`) is converted to
+`["myagent.exe"]` automatically.
+
+#### xacpx-managed acpx agent aliases
+
+Structured launches (managed Codex/Claude pins, the hermes shim, local fallbacks,
+and user `argv`) are exposed to acpx as content-addressed positional aliases
+(`xacpx-managed-<driver>-<sha256-prefix>`). At startup xacpx safely merges
+`{ "argv": [...] }` for those aliases into `~/.acpx/config.json`'s `agents` node
+under a proper-lockfile, preserving every other key and user agent entry. It never
+writes `.acpxrc.json`, never overwrites an existing alias with a different argv
+(conflicts fail closed), and never prunes stale aliases automatically (old sessions
+or pins may still reference them). Existing sessions are never deleted or closed by
+an upgrade; when a legacy session record lacks `agent_argv`, xacpx backfills it only
+when the record's `agent_command` matches the target argv's canonical identity
+exactly, then resumes the same record id.
 
 ### Claude third-party provider settings
 
