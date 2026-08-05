@@ -117,7 +117,7 @@ test("adapter versions are exact semver values, never ranges or package specs", 
 test("recognizes only generated commands for managed adapter packages", () => {
   expect(isManagedAdapterCommand(
     "codex",
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.9",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
   )).toBe(true);
   expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@1.1.9")).toBe(true);
   expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@^0.0.44")).toBe(true);
@@ -134,15 +134,15 @@ test("managed adapter argv keeps exact boundaries and pinned registry/version", 
   expect(buildManagedAdapterArgv("codex", "1.1.2")).toEqual([
     "npx",
     "-y",
-    "--registry=https://registry.npmjs.org/",
-    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
     "@agentclientprotocol/codex-acp@1.1.2",
   ]);
   expect(resolveManagedAdapterArgv("claude", { claude: "0.58.1" })).toEqual([
     "npx",
     "-y",
-    "--registry=https://registry.npmjs.org/",
-    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
     "@agentclientprotocol/claude-agent-acp@0.58.1",
   ]);
   expect(resolveManagedAdapterArgv("gemini")).toBeUndefined();

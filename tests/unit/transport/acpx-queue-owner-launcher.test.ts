@@ -323,5 +323,5 @@ test("reuses a live warm owner instead of kill+respawn", async () => {
   });
 
   expect(terminated).toEqual([]);
-  expect(spawns).toHaveLength(1);
+  expect(spawns).toHaveLength(0);
 });

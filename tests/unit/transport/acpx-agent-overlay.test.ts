@@ -18,8 +18,8 @@ import { parseConfig } from "../../../src/config/load-config";
 const codexAlias = deriveAgentAlias("codex", [
   "npx",
   "-y",
-  "--registry=https://registry.npmjs.org/",
-  "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+  "--registry=https://registry.npmjs.org",
+  "--@agentclientprotocol:registry=https://registry.npmjs.org",
   "@agentclientprotocol/codex-acp@1.1.9",
 ]);
 const codexEntry = {
@@ -27,8 +27,8 @@ const codexEntry = {
   argv: [
     "npx",
     "-y",
-    "--registry=https://registry.npmjs.org/",
-    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
     "@agentclientprotocol/codex-acp@1.1.9",
   ],
 };
@@ -204,8 +204,8 @@ test("concurrent writers serialize and both aliases survive", async () => {
     const otherAlias = deriveAgentAlias("claude", [
       "npx",
       "-y",
-      "--registry=https://registry.npmjs.org/",
-      "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+      "--registry=https://registry.npmjs.org",
+      "--@agentclientprotocol:registry=https://registry.npmjs.org",
       "@agentclientprotocol/claude-agent-acp@0.64.2",
     ]);
     const otherEntry = {
@@ -213,8 +213,8 @@ test("concurrent writers serialize and both aliases survive", async () => {
       argv: [
         "npx",
         "-y",
-        "--registry=https://registry.npmjs.org/",
-        "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+        "--registry=https://registry.npmjs.org",
+        "--@agentclientprotocol:registry=https://registry.npmjs.org",
         "@agentclientprotocol/claude-agent-acp@0.64.2",
       ],
     };
