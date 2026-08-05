@@ -114,7 +114,11 @@ windowsTest("real worker rejects a replaced identity and kills a verified tree t
     });
     rootProcess.once("error", reject);
   });
-  const identity = await queryWindowsProcessIdentity(rootProcess.pid!);
+  let identity = await queryWindowsProcessIdentity(rootProcess.pid!);
+  for (let attempt = 0; !identity && attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    identity = await queryWindowsProcessIdentity(rootProcess.pid!);
+  }
   expect(identity).not.toBeNull();
   const mismatch = (BigInt(identity!.creationDate) + 1n).toString();
   const refused = await terminateWindowsProcessTree({ pid: rootProcess.pid!, creationDate: mismatch });
