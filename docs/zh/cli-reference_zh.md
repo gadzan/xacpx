@@ -85,7 +85,7 @@ xacpx ws rm frontend
 |------|------|
 | `xacpx agent list` | 列出已注册的 agent |
 | `xacpx agent templates` | 列出可添加的内置模板 |
-| `xacpx agent add <name>` | 从内置模板添加 agent，例如 `kimi`、`opencode` |
+| `xacpx agent add <name>` | 从内置模板添加 agent，例如 `kimi`、`opencode`、`pool` |
 | `xacpx agent rm <name>` | 删除指定 agent |
 
 常见用法：
@@ -102,7 +102,7 @@ xacpx agent rm kimi
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
 factory-droid, factorydroid, grok-build, hermes, iflow, kilocode,
-kimi, kiro, mux, opencode, qoder, qwen, trae
+kimi, kiro, mux, opencode, pool, qoder, qwen, trae, zeroclaw
 ```
 
 多数模板只写入 `driver`，实际启动命令交给 acpx 解析；例如 `/agent add kimi` 会保存 `{ "driver": "kimi" }`。`hermes` 不在 acpx 注册表中，xacpx 会在启动时注入内置 ACP shim 命令（不会向配置写入额外字段，详见 [config-reference_zh.md](./config-reference_zh.md)）。配置字段见 [config-reference_zh.md](./config-reference_zh.md)。

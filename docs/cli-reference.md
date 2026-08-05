@@ -90,7 +90,7 @@ Note: `workspace add` always registers the **directory the terminal is currently
 |------|------|
 | `xacpx agent list` | List registered agents |
 | `xacpx agent templates` | List the built-in templates you can add |
-| `xacpx agent add <name>` | Add an agent from a built-in template, e.g. `kimi`, `opencode` |
+| `xacpx agent add <name>` | Add an agent from a built-in template, e.g. `kimi`, `opencode`, `pool` |
 | `xacpx agent rm <name>` | Remove a specific agent |
 
 Common usage:
@@ -107,7 +107,7 @@ The current built-in templates align with acpx's built-in agents (plus `hermes`,
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
 factory-droid, factorydroid, grok-build, hermes, iflow, kilocode,
-kimi, kiro, mux, opencode, qoder, qwen, trae
+kimi, kiro, mux, opencode, pool, qoder, qwen, trae, zeroclaw
 ```
 
 Most templates only write `driver`. xacpx supplies exact npx pins for the managed `codex` and `claude` adapters; other launch commands follow the normal runtime/acpx resolution path. For example, `/agent add kimi` saves `{ "driver": "kimi" }`. `hermes` is not in acpx's registry, so xacpx injects a bundled ACP shim command at spawn time (nothing extra is written to config; see [config-reference.md](./config-reference.md) for details). For config fields see [config-reference.md](./config-reference.md).
