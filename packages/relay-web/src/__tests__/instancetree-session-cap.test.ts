@@ -56,6 +56,19 @@ describe("InstanceTree session-list cap", () => {
     expect(w.find('[data-test="sessions-collapse"]').exists()).toBe(false);
   });
 
+  it("does not let the active-session cap hide sleeping sessions after recovery is opened", async () => {
+    const store = useInstancesStore();
+    store.instances = [{ ...instance([
+      ...makeSessions(10),
+      { alias: "sleeping", agent: "claude", workspace: "home", transportSession: "ts", running: false, archived: true },
+    ]), archivedSessionsLoaded: true }] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="toggle-archived-sessions"]').trigger("click");
+    expect(w.findAll('[data-test="session-row"]')).toHaveLength(11);
+    expect(w.find('[data-test="session-name"]').text()).toContain("s0");
+    expect(w.findAll('[data-test="session-name"]')[10]!.text()).toContain("sleeping");
+  });
+
   it("isolates expand state per instance", async () => {
     const store = useInstancesStore();
     store.instances = [

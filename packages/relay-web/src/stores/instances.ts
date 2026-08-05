@@ -74,6 +74,21 @@ export const useInstancesStore = defineStore("instances", () => {
     return JSON.stringify([instanceId, alias]);
   }
 
+  function overlaySessionRename(instanceId: string, session: SessionDto, confirmedRevisionsAtRequest: Map<string, number>): SessionRow {
+    const key = sessionRenameKey(instanceId, session.alias);
+    const pending = pendingSessionRenames.get(key);
+    if (!pending) return session;
+    if (
+      confirmedRevisionsAtRequest.get(key) === pending.confirmedRevision
+      && pending.latestRevision === pending.confirmedRevision
+      && session.displayName === pending.confirmedDisplayName
+    ) {
+      pendingSessionRenames.delete(key);
+      return session;
+    }
+    return { ...session, displayName: pending.desiredDisplayName };
+  }
+
   // Per-instance sidebar grouping mode (flat / by-workspace / by-agent). Reactive
   // mirror of the localStorage preference so the sidebar re-renders the moment the
   // manage dialog changes it. Reads are pure (no render-phase writes): until the
@@ -111,8 +126,10 @@ export const useInstancesStore = defineStore("instances", () => {
     } while (pendingSessionRefreshes.has(instanceId));
     // The active-only pages are not authoritative for cache deletion. Once the user
     // explicitly loads sessions, fetch the full set separately so archived rows remain
-    // resumable and deleted/recreated aliases still converge in the tail cache.
-    await loadArchivedSessions(instanceId);
+    // resumable and deleted/recreated aliases still converge in the tail cache. Keep this
+    // follow-up out of the active-list critical path so a stale list cannot block rename
+    // confirmation or sidebar refresh.
+    void loadArchivedSessions(instanceId).catch(() => {});
   }
 
   async function loadMoreSessions(instanceId: string): Promise<void> {
@@ -127,13 +144,16 @@ export const useInstancesStore = defineStore("instances", () => {
     const inst = byId(instanceId);
     if (inst?.archivedSessionsLoading) return;
     if (inst) inst.archivedSessionsLoading = true;
+    const confirmedRevisionsAtRequest = new Map(
+      [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
+    );
     try {
       let offset = 0;
       const all: SessionDto[] = [];
       let hasMore = true;
       while (hasMore) {
         const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", { offset, limit: 20, includeArchived: true });
-        all.push(...page.sessions);
+        all.push(...page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
         hasMore = page.hasMore === true;
         const nextOffset = page.nextOffset ?? offset + page.sessions.length;
         if (hasMore && nextOffset <= offset) break;
@@ -141,8 +161,13 @@ export const useInstancesStore = defineStore("instances", () => {
       }
       const current = byId(instanceId);
       if (current) {
-        const byAlias = new Map(current.sessions.map((session) => [session.alias, session]));
-        for (const session of all) byAlias.set(session.alias, session);
+        // The full response is authoritative. Keep only local transient rows that
+        // have not materialised server-side yet; never retain deleted sleeping rows.
+        const transient = current.sessions.filter((session) => session.creating || session.createError);
+        const byAlias = new Map(all.map((session) => [session.alias, session]));
+        for (const session of transient) {
+          if (!byAlias.has(session.alias)) byAlias.set(session.alias, session);
+        }
         current.sessions = [...byAlias.values()];
         current.archivedSessionsLoaded = true;
       }
@@ -179,20 +204,7 @@ export const useInstancesStore = defineStore("instances", () => {
       ]);
       const inst = byId(instanceId);
       if (inst) {
-        const rows = sessions.map((session) => {
-        const key = sessionRenameKey(instanceId, session.alias);
-        const pending = pendingSessionRenames.get(key);
-        if (!pending) return session;
-        if (
-          confirmedRevisionsAtRequest.get(key) === pending.confirmedRevision
-          && pending.latestRevision === pending.confirmedRevision
-          && session.displayName === pending.confirmedDisplayName
-        ) {
-          pendingSessionRenames.delete(key);
-          return session;
-        }
-        return { ...session, displayName: pending.desiredDisplayName };
-        });
+        const rows = sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
         const archived = replace && inst.archivedSessionsLoaded ? inst.sessions.filter((session) => session.archived) : [];
         inst.sessions = replace
           ? [...rows, ...archived.filter((old) => !rows.some((row) => row.alias === old.alias))]

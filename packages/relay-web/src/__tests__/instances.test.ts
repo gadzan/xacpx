@@ -52,7 +52,10 @@ test("loadMoreSessions appends the next server page without re-fetching the firs
     if (type !== "control.sessions.list") return { agents: [] } as never;
     const request = payload as { offset: number; includeArchived?: boolean };
     const offset = request.offset;
-    if (request.includeArchived) return { sessions: [], hasMore: false, nextOffset: offset } as never;
+    if (request.includeArchived) return { sessions: [
+      { alias: "s1", agent: "a", workspace: "/w", transportSession: "t1", running: false, archived: false },
+      { alias: "s2", agent: "a", workspace: "/w", transportSession: "t2", running: false, archived: false },
+    ], hasMore: false, nextOffset: offset + 2 } as never;
     return offset === 0
       ? { sessions: [{ alias: "s1", agent: "a", workspace: "/w", transportSession: "t1", running: false, archived: false }, { alias: "s2", agent: "a", workspace: "/w", transportSession: "t2", running: false, archived: false }], hasMore: true, nextOffset: 20 } as never
       : { sessions: [{ alias: "s3", agent: "a", workspace: "/w", transportSession: "t3", running: false, archived: false }], hasMore: false } as never;
@@ -84,6 +87,20 @@ test("replays sessions-changed received while a session page is in flight", asyn
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(rpc.mock.calls.filter((call) => call[1] === "control.sessions.list" && !(call[2] as { includeArchived?: boolean }).includeArchived)).toHaveLength(2);
   expect(store.byId("i1")!.sessions.map((session) => session.alias)).toEqual(["fresh"]);
+  vi.restoreAllMocks();
+});
+
+test("loadArchivedSessions rebuilds the authoritative snapshot and keeps only transient local rows", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [
+    { alias: "deleted-sleeping", agent: "a", workspace: "/w", transportSession: "old", running: false, archived: true },
+    { alias: "creating", agent: "a", workspace: "/w", transportSession: "", running: false, archived: false, creating: true },
+  ], sessionsLoaded: true, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [{ alias: "active", agent: "a", workspace: "/w", transportSession: "new", running: false, archived: false }], hasMore: false });
+  await store.loadArchivedSessions("i1");
+  expect(store.byId("i1")!.sessions.map((session) => session.alias)).toEqual(["active", "creating"]);
+  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list", { offset: 0, limit: 20, includeArchived: true });
   vi.restoreAllMocks();
 });
 

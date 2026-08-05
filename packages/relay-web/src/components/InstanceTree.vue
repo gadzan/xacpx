@@ -56,8 +56,8 @@ function isSelected(instanceId: string, alias: string): boolean {
   return chat.instanceId === instanceId && chat.sessionAlias === alias;
 }
 
-// Per-instance collapse state (expanded by default). The store already eager-loads
-// sessions for online instances, so this just shows/hides the already-loaded rows.
+// Per-instance collapse state (expanded by default). Sessions are loaded by an explicit
+// sidebar action, so this just shows/hides the rows once data is available.
 const collapsed = ref<Set<string>>(new Set());
 function isExpanded(id: string): boolean {
   return !collapsed.value.has(id);
@@ -106,8 +106,11 @@ function displaySessions(inst: InstanceView): InstanceView["sessions"] {
   return inst.sessions;
 }
 function visibleSessions(inst: InstanceView): InstanceView["sessions"] {
-  const all = archivedLast(displaySessions(inst));
-  return sessionsExpanded.value.has(inst.id) ? all : all.slice(0, SESSION_CAP);
+  const active = activeSessions(inst);
+  const activeVisible = sessionsExpanded.value.has(inst.id) ? active : active.slice(0, SESSION_CAP);
+  if (!archivedIsExpanded(inst.id)) return activeVisible;
+  const archived = archivedLast(inst.sessions.filter((session) => session.archived));
+  return [...activeVisible, ...archived];
 }
 
 // ── Second-level grouping (workspace / agent) ───────────────────────────────
