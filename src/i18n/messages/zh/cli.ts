@@ -96,6 +96,9 @@ export const cli: CliMessages = {
   adapterRegistrySaved: (registry) => `Adapter registry 已设置为 ${registry}。`,
   adapterRegistryReset: (registry) => `Adapter registry 本机覆盖已删除；当前使用 ${registry}。`,
   adapterInvalidRegistry: (detail) => `Adapter registry 无效：${detail}`,
+  adapterInstalledHeader: "已安装的受管 adapter release：",
+  adapterInstalledRow: (id, releaseId, active) => `${id}：${releaseId}${active ? "（当前）" : ""}`,
+  adapterPreinstalled: (id, version, releaseId) => `已预安装 ${id} adapter ${version}（${releaseId}）。`,
 
   // later commands
   laterIdEmpty: "定时任务 ID 不能为空。",

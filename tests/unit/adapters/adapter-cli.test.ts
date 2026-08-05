@@ -13,6 +13,8 @@ function deps(overrides: Partial<AdapterCliDeps> = {}) {
     getLatestVersion: async (id) => id === "codex" ? "1.1.4" : "0.59.0",
     versionExists: async () => true,
     verifyVersion: async () => {},
+    preinstall: async (_id, _version) => ({ releaseId: "release-test" }),
+    listInstalled: async () => [],
     print: (line) => lines.push(line),
   };
   return {
@@ -37,6 +39,23 @@ test("registry shows the official npm default and can set or reset a local overr
 
   expect(await handleAdapterCli(["registry", "reset"], ctx.deps)).toBe(0);
   expect(savedRegistries).toEqual(["https://npm.corp.example/repository/npm", undefined]);
+});
+
+test("preinstall uses the effective version/registry and installed listing is local", async () => {
+  const calls: string[] = [];
+  const ctx = deps({
+    loadVersions: async () => ({ codex: "1.1.2" }),
+    loadRegistry: async () => "https://npm.example/",
+    preinstall: async (id, version, registry) => {
+      calls.push(`${id}:${version}:${registry}`);
+      return { releaseId: "1.1.2-deadbeef-12345678" };
+    },
+    listInstalled: async () => [{ id: "codex", releaseId: "1.1.2-deadbeef-12345678", active: true }],
+  });
+  expect(await handleAdapterCli(["preinstall", "codex"], ctx.deps)).toBe(0);
+  expect(calls).toEqual(["codex:1.1.2:https://npm.example"]);
+  expect(await handleAdapterCli(["list", "--installed"], ctx.deps)).toBe(0);
+  expect(ctx.lines.join("\n")).toContain("1.1.2-deadbeef-12345678");
 });
 
 test("registry rejects unsafe URLs without changing config", async () => {

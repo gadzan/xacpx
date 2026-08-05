@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import { accessSync, readFileSync, realpathSync, statSync } from "node:fs";
 import {
   access, mkdir, open, readFile, readdir, realpath, rename, rm, stat,
 } from "node:fs/promises";
@@ -264,6 +265,58 @@ export async function readActiveAdapterPointer(runtimeRoot: string, id: ManagedA
     const item = value as Record<string, unknown>;
     if (typeof item.version !== "string" || typeof item.releaseId !== "string" || typeof item.activatedAt !== "string") return null;
     return { version: item.version, releaseId: item.releaseId, activatedAt: item.activatedAt };
+  } catch {
+    return null;
+  }
+}
+
+export async function listInstalledAdapterReleases(runtimeRoot: string): Promise<Array<{ id: ManagedAdapterId; releaseId: string; active: boolean }>> {
+  const result: Array<{ id: ManagedAdapterId; releaseId: string; active: boolean }> = [];
+  for (const id of ["codex", "claude"] as const) {
+    const pointer = await readActiveAdapterPointer(runtimeRoot, id);
+    let entries: string[];
+    try { entries = await readdir(releaseRoot(runtimeRoot, id)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    for (const releaseId of entries.sort()) {
+      try {
+        if (!(await stat(join(releaseRoot(runtimeRoot, id), releaseId))).isDirectory()) continue;
+      } catch { continue; }
+      result.push({ id, releaseId, active: pointer?.releaseId === releaseId });
+    }
+  }
+  return result;
+}
+
+/** Spawn-time static validation. The initialize probe is intentionally skipped. */
+export function resolveActiveAdapterCommandSync(
+  runtimeRoot: string,
+  expected: Omit<ValidateReleaseExpected, "releaseId">,
+): string | null {
+  try {
+    const idRoot = join(runtimeRoot, "adapters", expected.id);
+    const pointer = JSON.parse(readFileSync(join(idRoot, "active.json"), "utf8")) as ActiveAdapterPointer;
+    if (typeof pointer.releaseId !== "string" || pointer.version !== expected.version) return null;
+    const releaseDir = realpathSync(join(idRoot, "releases", pointer.releaseId));
+    const releases = realpathSync(join(idRoot, "releases"));
+    if (!isContained(releases, releaseDir) || basename(releaseDir) !== pointer.releaseId) return null;
+    const releaseIdentity = parseAdapterReleaseId(pointer.releaseId);
+    const registry = canonicalAdapterRegistry(expected.registry);
+    if (!releaseIdentity || releaseIdentity.version !== expected.version || releaseIdentity.registryHash8 !== adapterRegistryHash8(registry)) return null;
+    const manifestPath = join(releaseDir, "installed.json");
+    if (!statSync(manifestPath).isFile()) return null;
+    const manifest = decodeManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
+    if (!manifest
+      || manifest.id !== expected.id
+      || manifest.version !== expected.version
+      || manifest.packageName !== expected.packageName
+      || manifest.releaseId !== pointer.releaseId
+      || canonicalAdapterRegistry(manifest.registry) !== registry) return null;
+    const node = realpathSync(manifest.nodeExecutable);
+    if (!isAbsolute(node) || !/^(?:node|node\.exe)$/i.test(basename(node)) || !statSync(node).isFile()) return null;
+    if (process.platform !== "win32") accessSync(node, constants.X_OK);
+    const entry = realpathSync(resolve(releaseDir, manifest.entryRelPath));
+    if (!isContained(releaseDir, entry) || !statSync(entry).isFile()) return null;
+    return `${JSON.stringify(node)} ${JSON.stringify(entry)}`;
   } catch {
     return null;
   }

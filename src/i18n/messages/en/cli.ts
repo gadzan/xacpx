@@ -96,6 +96,9 @@ export const cli: CliMessages = {
   adapterRegistrySaved: (registry) => `Adapter registry set to ${registry}.`,
   adapterRegistryReset: (registry) => `Adapter registry override removed; using ${registry}.`,
   adapterInvalidRegistry: (detail) => `Invalid adapter registry: ${detail}`,
+  adapterInstalledHeader: "Installed managed adapter releases:",
+  adapterInstalledRow: (id, releaseId, active) => `${id}: ${releaseId}${active ? " (active)" : ""}`,
+  adapterPreinstalled: (id, version, releaseId) => `Preinstalled ${id} adapter ${version} as ${releaseId}.`,
 
   // later commands
   laterIdEmpty: "Scheduled task ID cannot be empty.",

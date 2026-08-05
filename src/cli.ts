@@ -4,11 +4,11 @@ import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { coreHomeDir } from "./runtime/core-home";
 import { coreEnv } from "./runtime/core-env";
 import { migrateCoreHome } from "./runtime/migrate-core-home";
 
 import { ConfigStore } from "./config/config-store";
+import { resolveConfigPathForCurrentEnv } from "./config/config-path";
 import { loadConfig } from "./config/load-config";
 import { ensureConfigExists } from "./config/ensure-config";
 import { getAgentTemplate, listAgentTemplates, sameAgentConfig } from "./config/agent-templates";
@@ -46,6 +46,8 @@ import { handleUpdateCli, type UpdateCliDeps } from "./cli-update.js";
 import { handleAdapterCli, type AdapterCliDeps } from "./adapters/adapter-cli";
 import { getAdapterNpmVersion } from "./adapters/adapter-npm";
 import { verifyAdapterVersion } from "./adapters/adapter-verifier";
+import { listInstalledAdapterReleases, preinstallAdapter } from "./adapters/adapter-preinstall";
+import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import type { AppConfig } from "./config/types";
 import type { AppState } from "./state/types";
 import { readVersion } from "./version.js";
@@ -894,10 +896,6 @@ async function createCliScheduledTaskService(): Promise<ScheduledTaskService> {
   return new ScheduledTaskService(state, stateStore);
 }
 
-function resolveConfigPathForCurrentEnv(): string {
-  return coreEnv("CONFIG") ?? join(coreHomeDir(requireHome()), "config.json");
-}
-
 function resolveDaemonPathsForCurrentConfig() {
   const configPath = resolveConfigPathForCurrentEnv();
   return resolveDaemonPaths({
@@ -927,6 +925,14 @@ function createAdapterCliDeps(input: {
     versionExists: async (id, version, registry) =>
       await getAdapterNpmVersion(id, version, registry) === version,
     verifyVersion: verifyAdapterVersion,
+    preinstall: async (id, version, registry) => {
+      const runtimeRoot = dirname(resolveConfigPathForCurrentEnv());
+      return await withAdapterOperationLock({ id, runtimeRoot }, async () => {
+        const result = await preinstallAdapter({ runtimeRoot, id, version, registry });
+        return { releaseId: result.manifest.releaseId };
+      });
+    },
+    listInstalled: async () => await listInstalledAdapterReleases(dirname(resolveConfigPathForCurrentEnv())),
     print: input.print,
   };
   return { ...defaults, ...input.overrides, print: input.overrides?.print ?? input.print };
