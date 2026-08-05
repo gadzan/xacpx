@@ -44,7 +44,59 @@ class MemoryStateStore implements Pick<StateStore, "save"> {
   async save(state: AppState): Promise<void> {
     this.savedStates.push(structuredClone(state));
   }
+
+  async saveNow(state: AppState): Promise<void> {
+    this.savedStates.push(structuredClone(state));
+  }
 }
+
+test("durability-gated adapter transaction publishes only after saveNow settles", async () => {
+  const state = createEmptyState();
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+  const events: string[] = [];
+  const store = {
+    save: async () => {},
+    saveNow: async () => { events.push("save:start"); await saveGate; events.push("save:done"); },
+  };
+  const service = new SessionService(createConfig(), store, state);
+  await service.createSession("api-fix", "codex", "backend");
+  const transaction = service.withSessionLock(async (locked) => {
+    events.push("session:locked");
+    events.push("adapter:locked");
+    await locked.setTransportAgentCommandDurably("api-fix", "new-adapter");
+    events.push("transaction:done");
+  });
+  await Promise.resolve();
+  expect(state.sessions["api-fix"]?.transport_agent_command).toBeUndefined();
+  const followingMutation = service.setDisplayName("api-fix", "after").then(() => events.push("following:done"));
+  await Promise.resolve();
+  expect(events).not.toContain("following:done");
+  releaseSave();
+  await transaction;
+  await followingMutation;
+  expect(state.sessions["api-fix"]?.transport_agent_command).toBe("new-adapter");
+  expect(events).toEqual([
+    "session:locked", "adapter:locked", "save:start", "save:done", "transaction:done", "following:done",
+  ]);
+});
+
+test("failed saveNow leaves live state unchanged and later debounced saves cannot persist the failed command", async () => {
+  const state = createEmptyState();
+  const saved: AppState[] = [];
+  const store = {
+    save: async (snapshot: AppState) => { saved.push(structuredClone(snapshot)); },
+    saveNow: async () => { throw new Error("disk full"); },
+  };
+  const service = new SessionService(createConfig(), store, state);
+  await service.createSession("api-fix", "codex", "backend");
+  await expect(service.withSessionLock((locked) =>
+    locked.setTransportAgentCommandDurably("api-fix", "failed-adapter"),
+  )).rejects.toThrow("disk full");
+  expect(state.sessions["api-fix"]?.transport_agent_command).toBeUndefined();
+  await service.setDisplayName("api-fix", "still-good");
+  expect(saved.at(-1)?.sessions["api-fix"]?.transport_agent_command).toBeUndefined();
+});
 
 test("creates a session with xacpx's pinned managed adapter", async () => {
   const store = new MemoryStateStore();
@@ -54,7 +106,7 @@ test("creates a session with xacpx's pinned managed adapter", async () => {
 
   expect(session.transportSession).toBe("backend:api-fix");
   expect(session.cwd).toBe("/tmp/backend");
-  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4");
 });
 
 test("carries Claude execution policy from config to a resolved session", async () => {
@@ -83,7 +135,7 @@ test("ignores a legacy raw codex command and falls back to xacpx's pinned adapte
 
   const session = await service.createSession("api-fix", "codex", "backend");
 
-  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4");
 });
 
 test("refreshes recorded generated adapter commands but preserves custom recorded commands", async () => {
@@ -99,7 +151,7 @@ test("refreshes recorded generated adapter commands but preserves custom recorde
   };
   const generated = new SessionService(config, new MemoryStateStore(), generatedState);
   expect((await generated.getSession("review"))?.agentCommand).toBe(
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.2",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.2",
   );
 
   generatedState.sessions.review!.transport_agent_command = "my-codex-wrapper --safe";
@@ -120,7 +172,7 @@ test("refreshes a recorded legacy codex shim to the current managed pin", async 
 
   const service = new SessionService(config, new MemoryStateStore(), state);
   expect((await service.getSession("review"))?.agentCommand).toBe(
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
   );
 });
 
@@ -834,7 +886,7 @@ test("recreating an alias with a different agent does not inherit transport agen
 
   const recreated = await service.createSession("foo", "claude", "backend");
 
-  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.59.0");
   expect(recreated.modeId).toBeUndefined();
   expect(recreated.replyMode).toBeUndefined();
   expect(state.sessions.foo?.transport_agent_command).toBeUndefined();
@@ -869,7 +921,7 @@ test("resolveSession does not reuse a cached transport agent command from a diff
   await service.setSessionTransportAgentCommand("foo", "npx @zed-industries/codex-acp@^0.9.5");
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
-  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.59.0");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");

@@ -62,6 +62,7 @@ import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
+import { replaceRuntimeState } from "./state/replace-runtime-state";
 
 export interface RuntimePaths {
   configPath: string;
@@ -1060,17 +1061,6 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       await logger.flush();
     },
   };
-}
-
-function replaceRuntimeState(target: AppState, source: AppState): void {
-  target.sessions = source.sessions;
-  target.chat_contexts = source.chat_contexts;
-  target.orchestration = source.orchestration;
-  // Must mirror every AppState runtime domain. Omitting scheduled_tasks here
-  // let an orchestration save (whose source is a clone) drop newly-created
-  // scheduled tasks from the persisted state. Safe because scheduled writes now
-  // serialize through the shared stateMutex, so `source` reflects the latest.
-  target.scheduled_tasks = source.scheduled_tasks;
 }
 
 function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
