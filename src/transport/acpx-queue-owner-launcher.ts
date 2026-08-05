@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -259,33 +259,11 @@ export class AcpxQueueOwnerLauncher {
       if (adapter && intentToken && adapter.platform === "win32") await adapter.cancel(intentToken);
       throw error;
     }
-    if (!adapter || !intentToken || adapter.platform !== "win32") {
-      if (process.platform === "win32") {
-        const ownerPid = await this.readOwnerPid(input.acpxRecordId) ?? spawnedPid;
-        const identity = await probeWindowsProcessIdentity(ownerPid);
-        if (identity.status === "found") {
-          await writeFile(queueOwnerIdentityFilePath(input.acpxRecordId), JSON.stringify({
-            pid: ownerPid,
-            creationDate: identity.identity.creationDate,
-            executablePath: identity.identity.executablePath,
-          }) + "\n", { encoding: "utf8", mode: 0o600 });
-        }
-      }
-      return { agentCommand: launchAgentCommand };
-    }
+    if (!adapter || !intentToken || adapter.platform !== "win32") return { agentCommand: launchAgentCommand };
 
     await adapter.spawned(intentToken);
     const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
     if (ownerPid !== undefined) {
-      if (process.platform === "win32") {
-        const identity = await probeWindowsProcessIdentity(ownerPid);
-        if (identity.status !== "found") throw new Error("queue owner identity could not be captured");
-        await writeFile(queueOwnerIdentityFilePath(input.acpxRecordId), JSON.stringify({
-          pid: ownerPid,
-          creationDate: identity.identity.creationDate,
-          executablePath: identity.identity.executablePath,
-        }) + "\n", { encoding: "utf8", mode: 0o600 });
-      }
       await adapter.settle({
         intentToken,
         outcome: "owner-committed",
@@ -455,6 +433,9 @@ export async function terminateAcpxQueueOwnerWithDeps(
   }
   if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
     if ((deps.platform ?? process.platform) === "win32") {
+      // The lock is written by acpx, not by this parent. Until acpx publishes
+      // its own creation identity atomically with that lock, a parent-side PID
+      // probe is unsafe; retain the lock as evidence and fail closed.
       let historical: { pid?: unknown; creationDate?: unknown; executablePath?: unknown };
       try {
         historical = JSON.parse(await readFile(identityPath, "utf8")) as typeof historical;
