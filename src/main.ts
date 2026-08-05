@@ -60,6 +60,7 @@ import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
+import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
 
 export interface RuntimePaths {
   configPath: string;
@@ -79,6 +80,8 @@ export interface AppRuntime {
   perfTracer: PerfTracer;
   quota: QuotaManager;
   transport: SessionTransport;
+  daemonIdentity?: DaemonIdentity;
+  orphanRegistry?: OrphanRegistry;
   orchestration: {
     service: OrchestrationService;
     server: OrchestrationServer;
@@ -117,6 +120,8 @@ interface RuntimeDeps {
    * sync semantics.
    */
   stateSaveDebounceMs?: number;
+  daemonIdentity?: DaemonIdentity;
+  orphanRegistry?: OrphanRegistry;
 }
 
 function startProgressHeartbeat(
@@ -993,6 +998,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     perfTracer,
     quota,
     transport,
+    ...(deps.daemonIdentity ? { daemonIdentity: deps.daemonIdentity } : {}),
+    ...(deps.orphanRegistry ? { orphanRegistry: deps.orphanRegistry } : {}),
     orchestration: {
       service: orchestration,
       server: orchestrationServer,
@@ -1054,6 +1061,15 @@ export async function main(): Promise<void> {
 
   try {
     const { createMessageChannels } = await import("./channels/create-channel.js");
+    let daemonIdentity: DaemonIdentity | undefined;
+    let orphanRegistry: OrphanRegistry | undefined;
+    if (process.platform === "win32") {
+      const configRoot = dirname(paths.configPath);
+      orphanRegistry = new OrphanRegistry(join(configRoot, "runtime"));
+      await orphanRegistry.initialize();
+      daemonIdentity = await createDaemonIdentity({ configRoot });
+      await orphanRegistry.writeGeneration(daemonIdentity);
+    }
     await ensureConfigExists(paths.configPath);
     const startupConfig = await loadConfig(paths.configPath);
 
@@ -1070,7 +1086,7 @@ export async function main(): Promise<void> {
     const { channelDeps } = await prepareChannelMedia(paths.configPath, startupConfig);
     const channelRegistry = new MessageChannelRegistry(createMessageChannels(startupConfig.channels, channelDeps));
     await runConsole(paths, {
-      buildApp: (paths) => buildApp(paths, { channel: channelRegistry }),
+      buildApp: (paths) => buildApp(paths, { channel: channelRegistry, daemonIdentity, orphanRegistry }),
       channels: channelRegistry,
     });
   } catch (error) {
