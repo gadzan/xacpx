@@ -58,11 +58,14 @@ export class MessageStore {
 
   /** Associate an already-persisted Web prompt with the connector's queue id. The
    *  whole reconcile (set the id, absorb a racing fallback row) runs in ONE
-   *  transaction — a crash between the statements would leave a double row. */
+   *  transaction — a crash between the statements would leave a double row. The
+   *  initial UPDATE also CONSUMES the pre-write correlation (`prompt_request_id`):
+   *  once the queue association is established the correlation's job is done, and
+   *  keeping it would let a stale/buggy event re-assign the row by promptRequestId. */
   markQueued(rowId: number, correlation: QueueCorrelation): void {
     this.db.transaction(() => {
       this.db.run(
-        "UPDATE messages SET queue_item_id = ? WHERE id = ? AND instance_id = ? AND session_alias = ?",
+        "UPDATE messages SET queue_item_id = ?, prompt_request_id = NULL WHERE id = ? AND instance_id = ? AND session_alias = ?",
         [correlation.queueItemId, rowId, correlation.instanceId, correlation.sessionAlias],
       );
       const fallback = this.db.get<{ id: number }>(
@@ -182,11 +185,12 @@ export class MessageStore {
 
   /** The pre-written inbound row for a hub-issued prompt request (correlates a drained
    *  queue item back to the row even when the queued RPC response was lost). Scoped to
-   *  the session so a buggy connector cross-wiring one session's promptRequestId onto
-   *  another cannot steal or re-move the wrong session's row. */
+   *  the session AND to rows with no queue/origin association yet — an already-queued
+   *  row belongs to a DIFFERENT queue item and must not be re-assigned by a stale
+   *  promptRequestId. */
   findByPromptRequest(instanceId: string, sessionAlias: string, promptRequestId: string): number | undefined {
     const row = this.db.get<{ id: number }>(
-      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND prompt_request_id = ? AND direction = 'in'",
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND prompt_request_id = ? AND direction = 'in' AND queue_item_id IS NULL AND origin_queue_item_id IS NULL",
       [instanceId, sessionAlias, promptRequestId],
     );
     return row?.id;

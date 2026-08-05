@@ -81,20 +81,27 @@ export class InstanceGateway {
       if (!authed) return;
       // Only the socket that currently owns the map entry may take the instance
       // offline. A superseded socket's late close (see handleMessage) would
-      // otherwise evict the NEW connection and reject its in-flight requests.
+      // otherwise evict the NEW connection and reject its in-flight requests; a
+      // REVOKED socket (disconnect() already dropped the entry) likewise no-ops.
       const current = this.connections.get(authed.instanceId);
       if (current?.socket !== socket) return;
-      this.connections.delete(authed.instanceId);
-      for (const [id, p] of this.pending) {
-        if (p.instanceId === authed.instanceId) {
-          clearTimeout(p.timer);
-          this.pending.delete(id);
-          p.reject(new Error("instance-offline"));
-        }
-      }
-      this.deps.onStatusChange?.(authed.instanceId, authed.accountId, false);
+      this.dropConnection(authed.instanceId, authed.accountId);
       this.logger.info("relay.instance.offline", "instance disconnected", { instanceId: authed.instanceId, accountId: authed.accountId });
     });
+  }
+
+  /** Remove the instance's connection entry, reject its in-flight requests, and
+   *  notify the offline transition. Shared by the close handler and disconnect(). */
+  private dropConnection(instanceId: string, accountId: string): void {
+    this.connections.delete(instanceId);
+    for (const [id, p] of this.pending) {
+      if (p.instanceId === instanceId) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        p.reject(new Error("instance-offline"));
+      }
+    }
+    this.deps.onStatusChange?.(instanceId, accountId, false);
   }
 
   private handleMessage(
@@ -134,6 +141,19 @@ export class InstanceGateway {
         this.deps.onStatusChange?.(identity.instanceId, identity.accountId, true);
         this.logger.info("relay.instance.online", "instance connected", { instanceId: identity.instanceId, accountId: identity.accountId });
       }
+      return;
+    }
+
+    // Socket ownership fencing: only the socket that CURRENTLY owns the instance's
+    // map entry may deliver messages. A revoked socket (disconnect() dropped the
+    // entry) or a superseded one (a reconnect replaced it) must not keep feeding
+    // events/state-syncs into onEvent — a late `turn-finished` after a persist-failed
+    // disconnect would persist + ack, bypassing the reconnect/resync retry, and a
+    // late state sync from a superseded socket could clobber the newer connection's
+    // recovered state.
+    const current = this.connections.get(authed.instanceId);
+    if (current?.socket !== socket) {
+      this.logger.debug("relay.instance.stale_socket", "dropped message from a revoked/superseded socket", { instanceId: authed.instanceId });
       return;
     }
 
@@ -217,14 +237,23 @@ export class InstanceGateway {
   /** Force-close the instance's current socket (e.g. after a failed recovery
    *  persistence transaction). The connector reconnects with backoff and re-sends its
    *  `instance.state.sync` on auth, so the entry that failed to persist gets another
-   *  chance instead of sitting in the connector's FIFO until eviction. */
+   *  chance instead of sitting in the connector's FIFO until eviction.
+   *
+   *  The connection is REVOKED FIRST (map entry dropped, in-flight requests rejected,
+   *  offline transition fired) and the socket closed only afterwards — the close
+   *  handshake is async, and a socket that stayed in the map during it could keep
+   *  delivering events (e.g. a late `turn-finished` that persists + acks, bypassing
+   *  the reconnect/resync this disconnect was meant to force). The ownership check in
+   *  handleMessage drops anything that still arrives on the revoked socket. */
   disconnect(instanceId: string): void {
     const connection = this.connections.get(instanceId);
     if (!connection) return;
+    this.dropConnection(instanceId, connection.accountId);
+    this.logger.info("relay.instance.disconnected", "instance connection revoked (persist-failed)", { instanceId, accountId: connection.accountId });
     try {
       connection.socket.close(4408, "persist-failed");
     } catch (err) {
-      this.logger.debug("relay.instance.disconnect_failed", "closing instance socket failed", { instanceId, error: String(err) });
+      this.logger.debug("relay.instance.disconnect_failed", "closing revoked instance socket failed", { instanceId, error: String(err) });
     }
   }
 

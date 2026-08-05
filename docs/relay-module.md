@@ -246,7 +246,11 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - 带 `recoveryId` 的 live `turn-finished`：回复行与 receipt 在**同一个 SQLite 事务**里提交，
   提交成功后才下发 `instance.recovery.ack`；事务失败则 `gateway.disconnect(instanceId)` 强制
   connector 重连（重连后 onReady 重新推送 state sync，pending 条目获得重试机会），再抛错记日志
-  ——持久化失败绝不静默，否则条目会一直躺在 connector FIFO 里直到被逐出。
+  ——持久化失败绝不静默，否则条目会一直躺在 connector FIFO 里直到被逐出。`disconnect()` 会
+  **原子撤销**连接（先移出 connections、拒绝在途请求、触发 offline 切换，再请求关闭 socket），
+  关闭握手完成前该 socket 上迟到的 event/sync 一律被 ownership fencing 丢弃——不会出现
+  "failed 后旧 socket 仍提交 out row 并 ACK、绕过重试" 的窗口；superseded 旧 socket 的迟到
+  sync 同样被拒，不会覆盖新连接的恢复状态。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
   **整个 reconciliation 包在专用 try/catch 里**——任何数据库失败（不只是 finished 事务，也包括
   active turn 的 prompt backfill、recency 读取等）都会 `gateway.disconnect(instanceId)` 强制重连重发，
