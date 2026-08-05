@@ -50,7 +50,10 @@ export interface InstanceView {
   // sidebar only shows the "no sessions yet" empty row once a list has actually loaded.
   sessionsLoaded: boolean;
   sessionsHasMore?: boolean;
+  sessionsNextOffset?: number;
   sessionsLoading?: boolean;
+  archivedSessionsLoaded?: boolean;
+  archivedSessionsLoading?: boolean;
   agents: AgentDto[];
   workspaces: WorkspaceDto[];
   agentCatalog: AgentCatalogEntryDto[];
@@ -90,18 +93,64 @@ export const useInstancesStore = defineStore("instances", () => {
     const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
     instances.value = rows.map((r) => {
       const prev = byId(r.id);
-      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, sessionsHasMore: prev?.sessionsHasMore ?? false, sessionsLoading: false, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
+      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, sessionsHasMore: prev?.sessionsHasMore ?? false, sessionsNextOffset: prev?.sessionsNextOffset ?? 0, sessionsLoading: false, archivedSessionsLoaded: prev?.archivedSessionsLoaded ?? false, archivedSessionsLoading: false, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
     });
   }
 
+  const pendingSessionRefreshes = new Set<string>();
+
   async function loadSessions(instanceId: string): Promise<void> {
-    await fetchSessionsPage(instanceId, 0, true);
+    const inst = byId(instanceId);
+    if (inst?.sessionsLoading) {
+      pendingSessionRefreshes.add(instanceId);
+      return;
+    }
+    do {
+      pendingSessionRefreshes.delete(instanceId);
+      await fetchSessionsPage(instanceId, 0, true);
+    } while (pendingSessionRefreshes.has(instanceId));
+    // The active-only pages are not authoritative for cache deletion. Once the user
+    // explicitly loads sessions, fetch the full set separately so archived rows remain
+    // resumable and deleted/recreated aliases still converge in the tail cache.
+    await loadArchivedSessions(instanceId);
   }
 
   async function loadMoreSessions(instanceId: string): Promise<void> {
     const inst = byId(instanceId);
     if (!inst || !inst.sessionsHasMore || inst.sessionsLoading) return;
-    await fetchSessionsPage(instanceId, inst.sessions.length, false);
+    await fetchSessionsPage(instanceId, inst.sessionsNextOffset ?? inst.sessions.length, false);
+    if (pendingSessionRefreshes.has(instanceId)) await loadSessions(instanceId);
+  }
+
+  /** Load the full session set only when the user asks to recover sleeping sessions. */
+  async function loadArchivedSessions(instanceId: string): Promise<void> {
+    const inst = byId(instanceId);
+    if (inst?.archivedSessionsLoading) return;
+    if (inst) inst.archivedSessionsLoading = true;
+    try {
+      let offset = 0;
+      const all: SessionDto[] = [];
+      let hasMore = true;
+      while (hasMore) {
+        const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", { offset, limit: 20, includeArchived: true });
+        all.push(...page.sessions);
+        hasMore = page.hasMore === true;
+        const nextOffset = page.nextOffset ?? offset + page.sessions.length;
+        if (hasMore && nextOffset <= offset) break;
+        offset = nextOffset;
+      }
+      const current = byId(instanceId);
+      if (current) {
+        const byAlias = new Map(current.sessions.map((session) => [session.alias, session]));
+        for (const session of all) byAlias.set(session.alias, session);
+        current.sessions = [...byAlias.values()];
+        current.archivedSessionsLoaded = true;
+      }
+      useChatStore().reconcileTailCache(instanceId, all.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
+    } finally {
+      const current = byId(instanceId);
+      if (current) current.archivedSessionsLoading = false;
+    }
   }
 
   async function fetchSessionsPage(instanceId: string, offset: number, replace: boolean): Promise<void> {
@@ -122,8 +171,8 @@ export const useInstancesStore = defineStore("instances", () => {
     // session list, and it self-heals on the next loadSessions since `agents` stays empty.
     const needAgents = (byId(instanceId)?.agents.length ?? 0) === 0;
     try {
-      const [{ sessions, hasMore = false }, agentsRes] = await Promise.all([
-        api.rpc<{ sessions: SessionDto[]; hasMore?: boolean }>(instanceId, "control.sessions.list", { offset, limit: 20 }),
+      const [{ sessions, hasMore = false, nextOffset }, agentsRes] = await Promise.all([
+        api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", { offset, limit: 20 }),
         needAgents
           ? api.rpc<{ agents: AgentDto[] }>(instanceId, "control.agents.list").catch(() => null)
           : Promise.resolve(null),
@@ -144,14 +193,15 @@ export const useInstancesStore = defineStore("instances", () => {
         }
         return { ...session, displayName: pending.desiredDisplayName };
         });
-        inst.sessions = replace ? rows : [...inst.sessions, ...rows.filter((row) => !inst.sessions.some((old) => old.alias === row.alias))];
+        const archived = replace && inst.archivedSessionsLoaded ? inst.sessions.filter((session) => session.archived) : [];
+        inst.sessions = replace
+          ? [...rows, ...archived.filter((old) => !rows.some((row) => row.alias === old.alias))]
+          : [...inst.sessions, ...rows.filter((row) => !inst.sessions.some((old) => old.alias === row.alias))];
         inst.sessionsLoaded = true;
         inst.sessionsHasMore = hasMore;
+        inst.sessionsNextOffset = nextOffset ?? offset + sessions.length;
         if (agentsRes && !isErrorPayload(agentsRes) && Array.isArray(agentsRes.agents)) inst.agents = agentsRes.agents;
       }
-      // Tail-cache reconciliation only runs for a complete first page. A partial
-      // page is not authoritative and must not make later sessions look deleted.
-      if (replace && !hasMore) useChatStore().reconcileTailCache(instanceId, sessions.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
     } finally {
       const inst = byId(instanceId);
       if (inst) inst.sessionsLoading = false;
@@ -333,11 +383,13 @@ export const useInstancesStore = defineStore("instances", () => {
     // No cache purge: a sleeping session stays resumable, and its cached tail
     // lets waking it paint instantly.
     await loadSessions(instanceId);
+    if (byId(instanceId)?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
   }
 
   async function unarchiveSession(instanceId: string, alias: string): Promise<void> {
     await api.rpc(instanceId, "control.sessions.unarchive", { alias });
-    await loadSessions(instanceId);
+    if (byId(instanceId)?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
+    else await loadSessions(instanceId);
   }
 
   // The display label lives in core session state. Update the local row before the
@@ -434,5 +486,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
+  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
 });

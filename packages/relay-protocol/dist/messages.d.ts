@@ -182,6 +182,8 @@ export interface SessionsListPayload {
     offset?: number;
     /** Maximum number of active sessions to return. */
     limit?: number;
+    /** Include sleeping sessions for explicit recovery/cache reconciliation queries. */
+    includeArchived?: boolean;
 }
 export interface SessionsListResult {
     sessions: SessionDto[];

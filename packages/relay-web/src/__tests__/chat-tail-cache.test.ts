@@ -189,23 +189,45 @@ test("removeSession purges the cache; archiveSession (sleep) keeps it", async ()
   expect(await readViewSnapshot("alice", "session-model", "i1", "s2")).toBeNull();
 });
 
-test("loadSessions reconciles the cache against alive aliases, keeping sleeping sessions", async () => {
+test("full cache reconciliation keeps archived cache entries after an active-only load", async () => {
   await write("alice", "i1", "alive", [row(1)]);
   await write("alice", "i1", "sleeping", [row(2)]);
   await write("alice", "i1", "gone", [row(3)]);
-  rpc.mockImplementation(async (_id: string, type: string) => {
+  rpc.mockImplementation(async (_id: string, type: string, payload?: { includeArchived?: boolean }) => {
     if (type === "control.sessions.list") {
-      return { sessions: [
-        { alias: "alive", agent: "a", workspace: "w", transportSession: "t", running: false, archived: false },
-        { alias: "sleeping", agent: "a", workspace: "w", transportSession: "t", running: false, archived: true },
-      ] };
+      return payload?.includeArchived
+        ? { sessions: [
+          { alias: "alive", agent: "a", workspace: "w", transportSession: "t", running: false, archived: false },
+          { alias: "sleeping", agent: "a", workspace: "w", transportSession: "t", running: false, archived: true },
+        ], hasMore: false }
+        : { sessions: [{ alias: "alive", agent: "a", workspace: "w", transportSession: "t", running: false, archived: false }] };
     }
     return { agents: [] };
   });
   await useInstancesStore().loadSessions("i1");
-  expect(await goneEventually("alice", "i1", "gone")).toBe(true); // removed elsewhere → dropped
+  expect(await goneEventually("alice", "i1", "gone")).toBe(true); // full query removes deleted sessions
   expect(await read("alice", "i1", "alive")).not.toBeNull();
   expect(await read("alice", "i1", "sleeping")).not.toBeNull(); // slept elsewhere → kept
+});
+
+test("full archived-session load is the authoritative tail-cache reconciliation", async () => {
+  await write("alice", "i1", "alive", [row(1)]);
+  await write("alice", "i1", "sleeping", [row(2)]);
+  await write("alice", "i1", "gone", [row(3)]);
+  rpc.mockImplementation(async (_id: string, type: string, payload?: { includeArchived?: boolean }) => {
+    if (type === "control.sessions.list" && payload?.includeArchived) {
+      return { sessions: [
+        { alias: "alive", agent: "a", workspace: "w", transportSession: "t", running: false, archived: false },
+        { alias: "sleeping", agent: "a", workspace: "w", transportSession: "t", running: false, archived: true },
+      ], hasMore: false, nextOffset: 2 };
+    }
+    return { agents: [] };
+  });
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
+  await store.loadArchivedSessions("i1");
+  expect(await goneEventually("alice", "i1", "gone")).toBe(true);
+  expect(await read("alice", "i1", "sleeping")).not.toBeNull();
 });
 
 test("a same-alias recreation from another client does not resurrect the old tail", async () => {

@@ -605,8 +605,8 @@ export class ControlService {
       });
   }
 
-  listSessionsPage(chatKey: string, offset = 0, limit = 20): { sessions: ControlSessionInfo[]; hasMore: boolean; nextOffset: number } {
-    const all = this.listSessions(chatKey).filter((session) => !session.archived);
+  listSessionsPage(chatKey: string, offset = 0, limit = 20, includeArchived = false): { sessions: ControlSessionInfo[]; hasMore: boolean; nextOffset: number } {
+    const all = this.listSessions(chatKey).filter((session) => includeArchived || !session.archived);
     const safeOffset = Math.max(0, Math.floor(offset));
     const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
     const sessions = all.slice(safeOffset, safeOffset + safeLimit);

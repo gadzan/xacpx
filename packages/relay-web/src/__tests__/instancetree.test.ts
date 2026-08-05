@@ -314,6 +314,21 @@ describe("InstanceTree session management", () => {
     expect(w.find('[data-test="archived-badge"]').exists()).toBe(false);
   });
 
+  it("offers an explicit recovery entry for sleeping sessions", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "active", agent: "claude", workspace: "home", transportSession: "t1", running: false, archived: false }])] as never;
+    vi.spyOn(store, "loadArchivedSessions").mockImplementation(async () => {
+      store.instances[0]!.sessions.push({ alias: "sleeping", agent: "claude", workspace: "home", transportSession: "t2", running: false, archived: true });
+      store.instances[0]!.archivedSessionsLoaded = true;
+    });
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="toggle-archived-sessions"]').trigger("click");
+    await w.vm.$nextTick();
+    expect(w.findAll('[data-test="session-row"]')).toHaveLength(2);
+    expect(w.find('[data-test="session-name"]').text()).toContain("active");
+    expect(w.findAll('[data-test="session-name"]')[1]!.text()).toContain("sleeping");
+  });
+
   it("hides row actions when the instance is offline", () => {
     const store = useInstancesStore();
     store.instances = [{ ...instance([{ alias: "a", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }]), online: false }] as never;
