@@ -114,13 +114,18 @@ export class RelayChannel implements MessageChannelRuntime {
             for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
           }
         }
-        // The snapshot is a pure copy; the destructive prune of dead aliases runs
-        // ONLY after the frame was confirmed flushed — a failed/not-ready send or
-        // a transiently-stale session list must never destroy mirror state that a
-        // later sync could still need. Finished-offline entries are NOT confirmed
-        // here: only the hub's recovery ack retires those (see onEvent above).
-        client.sendEvent(MSG.instanceStateSync, mirror.buildStateSync(liveAliases), (error) => {
-          if (!error) mirror.pruneStateMirror(liveAliases);
+        // Expire entries past the shared retention horizon first, so a stale entry
+        // can never ride the sync into a duplicate (the hub prunes its receipt on
+        // the same horizon). Then a pure snapshot; the destructive prune of dead
+        // aliases runs ONLY after the frame was confirmed flushed — and only against
+        // the aliases that existed when the snapshot was built, so state that arrived
+        // in between (new sessions/turns forwarded live) is never GC'd by this
+        // callback. Finished-offline entries are NOT confirmed here: only the hub's
+        // recovery ack retires those (see onEvent).
+        mirror.expirePendingFinished();
+        const { snapshot, aliases } = mirror.buildStateSync(liveAliases);
+        client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
+          if (!error) mirror.pruneStateMirror(liveAliases, aliases);
         });
       },
     });

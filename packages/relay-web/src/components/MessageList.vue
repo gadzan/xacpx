@@ -6,7 +6,7 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw } from "lucide-vue-next";
+import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
@@ -439,6 +439,7 @@ watch(
               <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
                 <CopyButton v-if="m.text" :text="m.text" />
                 <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+                <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-[11px] text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
                 <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
               </div>

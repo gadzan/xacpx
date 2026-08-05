@@ -117,17 +117,20 @@ test("a re-sent sync replaces the instance's state without duplicating entries",
   runtime.close();
 });
 
-test("finishedOffline rows are persisted; aliases present in turns are skipped", async () => {
+test("finishedOffline rows are persisted; a genuinely-contradictory same-turn entry is skipped", async () => {
   const { runtime } = await seeded();
   sync(runtime, {
-    turns: [{ sessionAlias: "live", startedAt: STARTED_AT, text: "still running", reasoning: "", steps: [] }],
+    turns: [{ sessionAlias: "live", startedAt: STARTED_AT, text: "still running", reasoning: "", steps: [], recoveryId: "r-live" }],
     usage: [],
     commands: [],
     finishedOffline: [
       { sessionAlias: "done", ok: true, text: "offline reply" },
       { sessionAlias: "failed", ok: false, errorMessage: "agent exploded" },
       { sessionAlias: "quiet-ok", ok: true }, // no text → no row (never fabricate empty entries)
-      { sessionAlias: "live", ok: true, text: "contradictory" }, // also in turns → skipped
+      // Same recoveryId as the running turn = truly contradictory → skipped (the
+      // running turn flushes normally). A DIFFERENT finished turn on the same alias
+      // is NOT skipped (see the A-then-B test).
+      { sessionAlias: "live", ok: true, text: "contradictory", recoveryId: "r-live" },
     ],
   });
   const rows = (alias: string) => runtime.messages.listBySession("a1", "i1", alias).messages;
@@ -135,6 +138,51 @@ test("finishedOffline rows are persisted; aliases present in turns are skipped",
   expect(rows("failed").map((m) => [m.direction, m.text])).toEqual([["out", "agent exploded"]]);
   expect(rows("quiet-ok")).toEqual([]);
   expect(rows("live")).toEqual([]);
+  runtime.close();
+});
+
+test("a finished turn and a NEWER running turn on the SAME alias are both recovered, in order", async () => {
+  const { runtime } = await seeded();
+  // Hub offline: turn A ("backend") finished → pendingFinished; the queue auto-started
+  // turn B on the same session → turns. The snapshot carries both legitimately.
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "B output", reasoning: "", steps: [], prompt: "second", recoveryId: "rB" }],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "first", text: "A reply", recoveryId: "rA" },
+    ],
+  });
+  // Finished rows land FIRST, then the running turn's prompt: A-in, A-out, B-in.
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "first"], ["out", "A reply"], ["in", "second"]]);
+  // Turn B is live again and flushes normally.
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, recoveryId: "rB" });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "first"], ["out", "A reply"], ["in", "second"], ["out", "B output"]]);
+  runtime.close();
+});
+
+test("a queued finished turn promotes its queued row instead of appending a duplicate", async () => {
+  const { runtime } = await seeded();
+  // The prompt was enqueued while the hub was up: a real queued row exists (the
+  // web prompt path persisted it and marked its queue_item_id). The hub then went
+  // down, the daemon drained the queue, the turn finished offline. Recovery must
+  // PROMOTE the queued row (not re-append it).
+  const rowId = runtime.messages.append("i1", "backend", "in", "deploy it");
+  runtime.messages.markQueued(rowId, { instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" });
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "deploy it", text: "done", queueItemId: "q1", recoveryId: "rA" },
+    ],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "deploy it"], ["out", "done"]]);
+  expect(rows.filter((m) => m.queueItemId).length).toBe(0); // queued row was promoted, id cleared
   runtime.close();
 });
 
@@ -179,22 +227,28 @@ test("a turn that started AND finished during the outage recovers as an in+out p
   runtime.close();
 });
 
-test("a prompt persisted before the outage is not duplicated by the backfill", async () => {
+test("a prompt persisted before the outage is not re-appended for the same turn", async () => {
   const { runtime } = await seeded();
   const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
     protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
   });
   // Pre-restart: the live turn-started already persisted the prompt.
   fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "hi" });
-  // The hub "restarts" (fresh sync carries the still-running turn with its prompt).
+  // The hub "restarts": turn A (prompt "hi") finished offline, while turn B (also
+  // "hi", same session) is still running. Both are different turns — recoveryId
+  // tells them apart, the alias does not.
   sync(runtime, {
-    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "work", reasoning: "", steps: [], prompt: "hi" }],
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "work", reasoning: "", steps: [], prompt: "hi", recoveryId: "rB" }],
     usage: [],
     commands: [],
-    finishedOffline: [{ sessionAlias: "backend", ok: true, text: "r", prompt: "hi" }], // contradictory: also in turns → skipped
+    finishedOffline: [{ sessionAlias: "backend", ok: true, text: "r", prompt: "hi", recoveryId: "rA" }],
   });
-  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text])).toEqual([["in", "hi"]]);
-  // And the contradictory finishedOffline entry was skipped in favour of the live turn.
+  // A's prompt row already exists (persisted pre-restart) → not re-appended for A;
+  // A's out lands, then B's own prompt (never persisted — B started during the
+  // outage) gets its row. A-in/A-out/B-in keeps message order.
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "hi"], ["out", "r"], ["in", "hi"]]);
+  // B is live again and flushes normally.
   expect(runtime.stateSnapshot("i1").turns).toHaveLength(1);
   runtime.close();
 });
@@ -422,6 +476,33 @@ test("hub crash between frame receipt and SQLite commit: rows roll back, no ack,
   runtime.close();
 });
 
+test("a failed recovery-id transaction disconnects the instance so the connector retries", async () => {
+  const { runtime, records } = await seeded();
+  const disconnects: string[] = [];
+  const original = runtime.gateway.disconnect.bind(runtime.gateway);
+  runtime.gateway.disconnect = ((instanceId: string) => {
+    disconnects.push(instanceId);
+    return original(instanceId);
+  }) as typeof runtime.gateway.disconnect;
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "q" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "x" });
+  // The DB write fails (simulating SQLite trouble). The connector only re-sends
+  // pending entries on reconnect, so the hub must force one — otherwise the entry
+  // sits in the FIFO until eviction and the reply is lost.
+  const originalAppend = runtime.messages.append.bind(runtime.messages);
+  runtime.messages.append = (() => { throw new Error("simulated disk full"); }) as typeof runtime.messages.append;
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, recoveryId: "r1" });
+  runtime.messages.append = originalAppend;
+  expect(disconnects).toEqual(["i1"]);
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text])).toEqual([["in", "q"]]);
+  expect(runtime.recoveryReceipts.has("i1", "r1")).toBe(false);
+  expect(records.some((r) => r.event === "relay.event.persist_failed")).toBe(true);
+  runtime.close();
+});
+
 test("a restored running turn that fails persists its errorMessage, not an empty answer", async () => {
   const { runtime } = await seeded();
   // The hub restarted; the sync restores the still-running turn as a buffer. The
@@ -438,6 +519,49 @@ test("a restored running turn that fails persists its errorMessage, not an empty
   expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
     .toEqual([["out", "agent exploded"]]);
   expect(runtime.stateSnapshot("i1").turns).toEqual([]); // buffer flushed
+  runtime.close();
+});
+
+test("a restored turn that was truncated by the connector persists structured.truncated on finish", async () => {
+  const { runtime } = await seeded();
+  // The connector capped this running turn at STATE_SYNC_TEXT_CAP and marked it
+  // truncated; the hub must keep the flag so the flush does not persist a
+  // silently-gappy reply as complete.
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "capped prefix", reasoning: "", steps: [], truncated: true }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["out", "capped prefix"]]);
+  expect(rows[0]!.structured).toEqual({ truncated: true });
+  runtime.close();
+});
+
+test("a buffered turn finishing with an empty SUCCESSFUL reply persists an empty out row", async () => {
+  const { runtime } = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  // Live path: turn-started creates the buffer; the turn returns nothing. Presence
+  // semantics (matching the no-buffer and recovered-offline paths): "" is a reply,
+  // and the receipt is already committed — a skipped row could never be backfilled.
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["out", ""]]);
+
+  // Restored path: same presence semantics after a hub restart.
+  sync(runtime, {
+    turns: [{ sessionAlias: "other", startedAt: STARTED_AT, text: "", reasoning: "", steps: [] }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "other", ok: true });
+  expect(runtime.messages.listBySession("a1", "i1", "other").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["out", ""]]);
   runtime.close();
 });
 

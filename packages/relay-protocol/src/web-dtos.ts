@@ -327,7 +327,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     if (typeof t !== "object" || t === null) return false;
     const turn = t as Record<string, unknown>;
     return typeof turn.sessionAlias === "string"
-      && optStr(turn.prompt) && optStr(turn.queueItemId)
+      && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId)
       && (turn.scheduled === undefined || (typeof turn.scheduled === "object" && turn.scheduled !== null
         && isStr((turn.scheduled as Record<string, unknown>).taskId) && isStr((turn.scheduled as Record<string, unknown>).executeAt)))
       && finiteNonNegative(turn.startedAt)
@@ -355,7 +355,10 @@ export function validInstanceStateSync(p: unknown): boolean {
     const finished = f as Record<string, unknown>;
     return typeof finished.sessionAlias === "string"
       && typeof finished.ok === "boolean"
-      && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.recoveryId)
+      && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
+      && optStr(finished.queueItemId) && optStr(finished.recoveryId)
+      && (finished.scheduled === undefined || (typeof finished.scheduled === "object" && finished.scheduled !== null
+        && isStr((finished.scheduled as Record<string, unknown>).taskId) && isStr((finished.scheduled as Record<string, unknown>).executeAt)))
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
       && (finished.truncated === undefined || typeof finished.truncated === "boolean");
   });

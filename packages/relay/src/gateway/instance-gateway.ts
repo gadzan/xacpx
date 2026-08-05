@@ -214,6 +214,20 @@ export class InstanceGateway {
     return true;
   }
 
+  /** Force-close the instance's current socket (e.g. after a failed recovery
+   *  persistence transaction). The connector reconnects with backoff and re-sends its
+   *  `instance.state.sync` on auth, so the entry that failed to persist gets another
+   *  chance instead of sitting in the connector's FIFO until eviction. */
+  disconnect(instanceId: string): void {
+    const connection = this.connections.get(instanceId);
+    if (!connection) return;
+    try {
+      connection.socket.close(4408, "persist-failed");
+    } catch (err) {
+      this.logger.debug("relay.instance.disconnect_failed", "closing instance socket failed", { instanceId, error: String(err) });
+    }
+  }
+
   async sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown> {
     const connection = this.connections.get(instanceId);
     if (!connection) {

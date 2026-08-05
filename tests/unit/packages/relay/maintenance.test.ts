@@ -92,7 +92,7 @@ test("recovery receipts past their TTL are pruned; fresh ones survive", async ()
   const messages = new MessageStore(db);
   const receipts = new RecoveryReceiptStore(db);
   receipts.remember("i1", "fresh");
-  receipts.remember("i1", "stale", new Date("2019-12-31").toISOString());
+  receipts.remember("i1", "stale", new Date("2019-12-20").toISOString());
   const summary = runMaintenance(
     { accounts: acc, instances, messages, recoveryReceipts: receipts },
     { historyRetentionDays: 30, maxPerSession: 2000, recoveryReceiptTtlMs: RECOVERY_RECEIPT_TTL_MS, now: () => new Date("2020-01-08") },

@@ -16,6 +16,7 @@ import {
   MAX_TOOL_STEPS,
   MSG,
   REASONING_CAP,
+  RECOVERY_RETENTION_MS,
   STATE_SYNC_PARTS_CAP,
   STATE_SYNC_TEXT_CAP,
   type AgentCommandDto,
@@ -61,10 +62,18 @@ interface PendingFinishedTurn {
   /** The turn's prompt, retained so the hub can backfill the `in` row for turns
    *  that started during the outage (its answer must not be an orphan in history). */
   prompt?: string;
+  /** Queue/schedule origin, so the hub reconciles the queued `in` row (promote,
+   *  not duplicate) exactly like the live path. */
+  queueItemId?: string;
+  scheduled?: ScheduledOriginDto;
   /** The connector capped this turn's text at STATE_SYNC_TEXT_CAP; the hub must
    *  persist the flag so the recovered reply is not mistaken for a complete one. */
   truncated?: boolean;
   recoveryId: string;
+  /** Local timestamp when the turn finished. Drives expiry (expirePendingFinished):
+   *  past RECOVERY_RETENTION_MS the entry is dropped — the hub prunes its receipt on
+   *  the same horizon, so an expired entry can never be re-delivered into a duplicate. */
+  createdAt: number;
 }
 
 export interface StateMirror {
@@ -76,16 +85,25 @@ export interface StateMirror {
    *  session list cannot be read — never prune what we cannot verify). */
   aliasesForChatKey(chatKey: string): string[];
   /** Snapshot for `instance.state.sync` — a PURE copy: builds the payload with only
-   *  aliases present in `liveAliases`, mutates nothing. Pruning is a separate,
-   *  explicit step (`pruneStateMirror`) so a failed/aborted send can never destroy
-   *  mirror state that a later sync might still need. */
-  buildStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
-  /** Remove mirror state for aliases absent from `liveAliases` (sessions removed
-   *  while offline must not ship ghost state on the next sync). Call only after the
-   *  sync frame was CONFIRMED flushed — never on a failed/not-ready send, so a
-   *  transiently-stale session list cannot discard state for a session that still
-   *  exists. */
-  pruneStateMirror(liveAliases: ReadonlySet<string>): void;
+   *  aliases present in `liveAliases`, mutates nothing. Returns the payload plus the
+   *  set of aliases that existed at build time, so a later `pruneStateMirror` can
+   *  compare-and-delete ONLY those (never state that arrived after the snapshot).
+   *  Pruning itself is a separate, explicit step so a failed/aborted send can never
+   *  destroy mirror state that a later sync might still need. */
+  buildStateSync(liveAliases: ReadonlySet<string>): { snapshot: InstanceStateSyncPayload; aliases: ReadonlySet<string> };
+  /** Remove mirror state for aliases present at the LAST build (`aliasesAtBuild`)
+   *  that are absent from `liveAliases` (sessions removed while offline must not ship
+   *  ghost state on the next sync). Call only after the sync frame was CONFIRMED
+   *  flushed — never on a failed/not-ready send, so a transiently-stale session list
+   *  cannot discard state for a session that still exists. Aliases that arrived after
+   *  the snapshot was built are untouched: this callback must never GC newer state. */
+  pruneStateMirror(liveAliases: ReadonlySet<string>, aliasesAtBuild: ReadonlySet<string>): void;
+  /** Drop pendingFinished entries older than RECOVERY_RETENTION_MS. Call before
+   *  building a sync so a stale entry can never ride it: the hub prunes its receipt
+   *  on the same horizon, so an expired entry re-delivered after a long idle would
+   *  re-append a duplicate reply. (Entries the hub never persisted are lost here by
+   *  design — same accepted-loss posture as FIFO eviction.) */
+  expirePendingFinished(): void;
   /** Retire pending-finished entries whose recovery ids the hub has ACKED (after its
    *  SQLite commit). No ack → the entry rides the next sync and is deduped by the
    *  hub's receipt. */
@@ -125,6 +143,26 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
     const index = turn.parts.findIndex((part) => part.type === "tool" && part.step.toolCallId === step.toolCallId);
     if (index >= 0) (turn.parts[index] as Extract<TurnPartDto, { type: "tool" }>).step = step;
     else if (turn.parts.length < STATE_SYNC_PARTS_CAP) turn.parts.push({ type: "tool", step });
+  };
+  // Drop pendingFinished entries past the shared retention horizon (see
+  // RECOVERY_RETENTION_MS). Called on every push AND by the channel before each sync,
+  // so a stale entry can never ride a sync into a duplicate.
+  const expirePendingFinished = (): void => {
+    const cutoff = now() - RECOVERY_RETENTION_MS;
+    let expired = 0;
+    for (let i = pendingFinished.length - 1; i >= 0; i--) {
+      if (pendingFinished[i]!.createdAt < cutoff) {
+        pendingFinished.splice(i, 1);
+        expired += 1;
+      }
+    }
+    if (expired > 0) {
+      void deps.logger?.warn(
+        "relay.state_mirror.pending_finished_expired",
+        "dropped finished turns past the recovery retention window; the hub's receipts for them have expired too",
+        { count: expired, retentionMs: RECOVERY_RETENTION_MS },
+      );
+    }
   };
 
   const handle = (event: ControlEventDto): string | undefined => {
@@ -202,9 +240,13 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.cancelled !== undefined ? { cancelled: event.cancelled } : {}),
           ...(hasText ? { text: text ?? "" } : {}),
           ...(a?.prompt !== undefined ? { prompt: a.prompt } : {}),
+          ...(a?.queueItemId !== undefined ? { queueItemId: a.queueItemId } : {}),
+          ...(a?.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
+          createdAt: now(),
         });
+        expirePendingFinished();
         if (pendingFinished.length > PENDING_FINISHED_MAX) {
           pendingFinished.shift();
           void deps.logger?.warn(
@@ -251,7 +293,9 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         commands: [],
         finishedOffline: [],
       };
+      const aliases = new Set<string>();
       for (const [alias, a] of turns) {
+        aliases.add(alias);
         if (!liveAliases.has(alias)) continue;
         payload.turns.push({
           sessionAlias: alias,
@@ -264,9 +308,11 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a.queueItemId ? { queueItemId: a.queueItemId } : {}),
           ...(a.truncated ? { truncated: true } : {}),
+          recoveryId: a.recoveryId,
         });
       }
       for (const [alias, u] of usage) {
+        aliases.add(alias);
         if (!liveAliases.has(alias)) continue;
         payload.usage.push({
           sessionAlias: alias, used: u.used, size: u.size,
@@ -275,11 +321,13 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         });
       }
       for (const [alias, c] of commands) {
+        aliases.add(alias);
         if (!liveAliases.has(alias)) continue;
         payload.commands.push({ sessionAlias: alias, commands: c.commands });
       }
       for (let i = pendingFinished.length - 1; i >= 0; i--) {
         const f = pendingFinished[i]!;
+        aliases.add(f.sessionAlias);
         if (!liveAliases.has(f.sessionAlias)) continue;
         payload.finishedOffline.unshift({
           sessionAlias: f.sessionAlias, ok: f.ok,
@@ -287,20 +335,30 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.cancelled !== undefined ? { cancelled: f.cancelled } : {}),
           ...(f.text !== undefined ? { text: f.text } : {}),
           ...(f.prompt !== undefined ? { prompt: f.prompt } : {}),
+          ...(f.queueItemId !== undefined ? { queueItemId: f.queueItemId } : {}),
+          ...(f.scheduled ? { scheduled: f.scheduled } : {}),
           ...(f.truncated ? { truncated: true } : {}),
           recoveryId: f.recoveryId,
         });
       }
-      return payload;
+      return { snapshot: payload, aliases };
     },
-    pruneStateMirror(liveAliases) {
-      for (const alias of [...turns.keys()]) if (!liveAliases.has(alias)) turns.delete(alias);
-      for (const alias of [...usage.keys()]) if (!liveAliases.has(alias)) usage.delete(alias);
-      for (const alias of [...commands.keys()]) if (!liveAliases.has(alias)) commands.delete(alias);
-      for (let i = pendingFinished.length - 1; i >= 0; i--) {
-        if (!liveAliases.has(pendingFinished[i]!.sessionAlias)) pendingFinished.splice(i, 1);
+    pruneStateMirror(liveAliases, aliasesAtBuild) {
+      // Compare-and-delete against the aliases that existed when the snapshot was
+      // built: state that arrived AFTER the build (a new session/turn forwarded live
+      // while this sync frame was in flight) belongs to a later snapshot and must
+      // never be GC'd by this (older) callback.
+      for (const alias of aliasesAtBuild) {
+        if (liveAliases.has(alias)) continue;
+        turns.delete(alias);
+        usage.delete(alias);
+        commands.delete(alias);
+        for (let i = pendingFinished.length - 1; i >= 0; i--) {
+          if (pendingFinished[i]!.sessionAlias === alias) pendingFinished.splice(i, 1);
+        }
       }
     },
+    expirePendingFinished,
     confirmFinished(recoveryIds) {
       const confirmed = new Set(recoveryIds);
       for (let i = pendingFinished.length - 1; i >= 0; i--) {

@@ -71,6 +71,7 @@ export default {
     failedToSend: "发送失败",
     stopped: "已停止",
     failed: "失败",
+    truncated: "回复已截断",
     scheduledFor: "计划于",
     scheduled: "已计划",
     stop: "停止",

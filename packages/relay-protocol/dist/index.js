@@ -48,6 +48,7 @@ var STATE_SYNC_TEXT_CAP = 256 * 1024;
 var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
 var REASONING_CAP = 16000;
+var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // packages/relay-protocol/src/messages.ts
 var MSG = {
   instanceRegister: "instance.register",
@@ -328,7 +329,7 @@ function validInstanceStateSync(p) {
     if (typeof t !== "object" || t === null)
       return false;
     const turn = t;
-    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && (turn.scheduled === undefined || typeof turn.scheduled === "object" && turn.scheduled !== null && isStr(turn.scheduled.taskId) && isStr(turn.scheduled.executeAt)) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && (turn.scheduled === undefined || typeof turn.scheduled === "object" && turn.scheduled !== null && isStr(turn.scheduled.taskId) && isStr(turn.scheduled.executeAt)) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
   }))
     return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
@@ -349,7 +350,7 @@ function validInstanceStateSync(p) {
     if (typeof f !== "object" || f === null)
       return false;
     const finished = f;
-    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.recoveryId) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean");
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && (finished.scheduled === undefined || typeof finished.scheduled === "object" && finished.scheduled !== null && isStr(finished.scheduled.taskId) && isStr(finished.scheduled.executeAt)) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean");
   });
 }
 function validNotice(n) {
@@ -666,6 +667,7 @@ export {
   STATE_SYNC_TEXT_CAP,
   STATE_SYNC_PARTS_CAP,
   RELAY_PROTOCOL_VERSION,
+  RECOVERY_RETENTION_MS,
   REASONING_CAP,
   MSG,
   MAX_WEB_INSTANCE_ID_LENGTH,

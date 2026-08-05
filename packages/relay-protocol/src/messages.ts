@@ -125,6 +125,10 @@ export interface InstanceStateSyncPayload {
     prompt?: string;
     scheduled?: ScheduledOriginDto;
     queueItemId?: string;
+    /** The connector's stable id for this running turn (mirrors the recoveryId it
+     *  stamps on the eventual `turn-finished`), so the hub can tell a running turn
+     *  apart from a finished-offline entry of the same session. */
+    recoveryId?: string;
     /** ms epoch captured by the connector at the ORIGINAL turn start. */
     startedAt: number;
     text: string;
@@ -142,13 +146,15 @@ export interface InstanceStateSyncPayload {
    *  finished moments ago (the connector forwards the live `turn-finished` and keeps
    *  the entry until the hub acks it). Hub must persist them.
    *  `prompt` backfills the turn's `in` row when the turn STARTED during the outage
-   *  too, so the recovered answer never appears as an orphan in history.
+   *  too, so the recovered answer never appears as an orphan in history; `queueItemId`
+   *  (and `scheduled`) let the hub reconcile the queued `in` row the same way the live
+   *  path does, instead of appending a duplicate.
    *  `recoveryId` is the connector's stable id for this turn: the hub writes a
    *  receipt once the rows are committed and acks the id back so the connector can
    *  drop the entry; a redelivery is deduped by the receipt (never re-appended).
    *  `truncated` marks a reply the connector capped at STATE_SYNC_TEXT_CAP — the
    *  persisted row must say so instead of masquerading as a complete reply. */
-  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string; recoveryId?: string; truncated?: boolean }>;
+  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; recoveryId?: string; truncated?: boolean }>;
 }
 export interface InstanceNoticePayload {
   kind: "task-completion" | "task-progress" | "coordinator-message";

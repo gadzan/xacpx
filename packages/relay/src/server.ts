@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 import {
   MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
   type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
-  type InstanceStateSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
+  type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
 
@@ -127,8 +127,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
   // `parts` records text / reasoning / tool events in arrival order so the web can
   // replay history inline (same model the live view builds). `steps`/`reasoning`/`text`
-  // remain for the flat fallback + the persisted `text` column.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number }
+  // remain for the flat fallback + the persisted `text` column. `truncated` rides the
+  // state sync: a connector that capped this turn at STATE_SYNC_TEXT_CAP marks it so
+  // the final flush persists structured.truncated instead of a silently-gappy reply.
+  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number; truncated?: boolean }
   const turnBuffers = new Map<string, TurnAccumulator>();
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
   // Content fingerprints (`instanceId, alias, prompt, outText`) of finishedOffline
@@ -326,12 +328,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // Same resolution as the recovered-offline path: streamed text wins; a
               // FAILED turn with no streamed output must surface its errorMessage
               // instead of leaving a prompt with no answer (the exact hole recovery
-              // closes for successes). A successful empty reply keeps presence.
+              // closes for successes).
               const text = a.text || (!event.ok && event.errorMessage !== undefined ? event.errorMessage : a.text);
-              if (text || hasStructured) {
+              // Presence semantics, matching the no-buffer and recovered-offline paths:
+              // an empty SUCCESSFUL reply is still a reply and gets its row — a buffered
+              // turn that ran and returned nothing must not leave a prompt with no
+              // answer (and its receipt is already committed, so the entry can never be
+              // re-delivered to backfill it). A failed turn with truly nothing to say
+              // still leaves no row.
+              if (hasStructured || text !== "" || event.ok) {
                 const structured = hasStructured
-                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
-                  : undefined;
+                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}) }
+                  : (a.truncated ? { truncated: true } : undefined);
                 messages.append(instanceId, event.sessionAlias, "out", text, structured);
               }
             };
@@ -343,10 +351,20 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // commit — confirming on the connector's ws flush would clear its FIFO
               // before the hub actually persisted, leaving a permanent history hole
               // if the hub dies in between.
-              db.transaction(() => {
-                flush();
-                recoveryReceipts.remember(instanceId, recoveryId);
-              });
+              try {
+                db.transaction(() => {
+                  flush();
+                  recoveryReceipts.remember(instanceId, recoveryId);
+                });
+              } catch (err) {
+                // The connector only re-sends pending entries on reconnect, so a
+                // silent persistence failure would strand this turn in its FIFO until
+                // eviction. Force a reconnect: the re-auth pushes a fresh state sync
+                // and the entry gets another chance (deduped by receipt if it already
+                // landed on a partial write).
+                gateway.disconnect(instanceId);
+                throw err;
+              }
               gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: [recoveryId] } satisfies InstanceRecoveryAckPayload);
             } else {
               flush();
@@ -414,62 +432,42 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             }
             return false;
           };
-          for (const turn of sync.turns) {
-            const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
-            const reasoning = turn.reasoning.slice(0, REASONING_CAP);
-            const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
-            // The mirror ships flat text/reasoning/steps; rebuild the ordered `parts`
-            // so snapshot and flush treat this identically to a live accumulator —
-            // subsequent turn-output/tool-event appends and turn-finished flush keep
-            // working unchanged (text last, as it postdates activity in live order).
-            const parts: TurnPartDto[] = turn.parts
-              ? capSyncedParts(turn.parts)
-              : steps.map((step) => ({ type: "tool", step }));
-            if (!turn.parts) {
-              if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
-              if (text) parts.push({ type: "text", text });
+          // One reconciliation for the inbound `in` row, shared by the sync paths
+          // (active-turn restore + finished-offline backfill): a prompt enqueued while
+          // the hub was up has a persisted queued row (`queue_item_id` set) — promote
+          // it to its execution position instead of appending a duplicate (the live
+          // turn-started path does the same via promoteQueued/appendQueuedFallback).
+          // Without a queueItemId, backfill the plain `in` row only when it is not
+          // already the trailing row (a redelivered sync / already-persisted prompt).
+          const backfillInboundPrompt = (
+            sessionAlias: string,
+            opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto },
+          ): void => {
+            if (opts.queueItemId) {
+              const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
+              if (!messages.promoteQueued(correlation) && opts.prompt) {
+                messages.appendQueuedFallback(correlation, opts.prompt);
+              }
+              return;
             }
-            // Backfill the prompt for a turn that STARTED while the hub was down:
-            // the live path persists it at turn-started, which this hub never saw.
-            // A prompt persisted before the restart is found by the recency check.
-            if (turn.prompt && !hasTrailingPrompt(turn.sessionAlias, turn.prompt)) {
-              messages.append(instanceId, turn.sessionAlias, "in", turn.prompt, turn.scheduled ? { scheduled: turn.scheduled } : undefined);
+            if (opts.prompt !== undefined && !hasTrailingPrompt(sessionAlias, opts.prompt)) {
+              messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
             }
-            turnBuffers.set(key(instanceId, turn.sessionAlias), {
-              text,
-              steps: new Map(steps.map((s) => [s.toolCallId, s])),
-              reasoning,
-              parts,
-              // Restored original start so the elapsed-time HUD survives the restart.
-              startedAt: turn.startedAt,
-            });
-          }
-          for (const meter of sync.usage) {
-            sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
-          }
-          for (const entry of sync.commands) {
-            sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
-          }
-          // Turns that finished while the hub was unreachable: persist an out row
-          // mirroring the turn-finished flush (reply text; error text for failed
-          // turns), deduped so a re-sent sync can't duplicate them. Dedup order:
-          // 1. in-memory fingerprint — exact redelivery to this SAME hub process
-          //    (unconfirmed flush, extra reconnect) is dropped unconditionally,
-          //    while a genuinely different turn with identical content still lands;
-          // 2. SQLite recency fallback for a redelivery that crosses ANOTHER hub
-          //    restart (fingerprint set died with the process) — pair-matched so a
-          //    coincidence of reply text alone never suppresses a real turn.
-          // A carried prompt is backfilled FIRST so the recovered answer never
-          // shows as an orphan in history. Skip an alias ALSO listed in `turns` — a
-          // contradictory payload means that turn is live again and will flush
-          // normally. No web broadcast: browsers re-reconcile from state-snapshot
-          // on their own reconnect.
-          const syncedTurnAliases = new Set(sync.turns.map((t) => t.sessionAlias));
+          };
+          // Finished turns are reconciled FIRST, so their rows land before any
+          // active-turn prompt backfill (message order). A finished entry and a running
+          // turn may share a sessionAlias legitimately (turn A finished while the queue
+          // started turn B on the same session) — they are distinguished by recoveryId,
+          // NOT by alias.
+          const activeRecoveryIds = new Set(sync.turns.flatMap((t) => t.recoveryId ? [t.recoveryId] : []));
           // Recovery ids to ack once their (message + receipt) transactions below
           // have all committed — one ack frame per sync, sent after the loop.
           const ackedRecoveryIds: string[] = [];
           for (const finished of sync.finishedOffline) {
-            if (syncedTurnAliases.has(finished.sessionAlias)) continue;
+            // Truly contradictory (the SAME turn listed as both finished and running):
+            // trust the running turn; it will flush normally. Different turns on the
+            // same alias are both persisted.
+            if (finished.recoveryId && activeRecoveryIds.has(finished.recoveryId)) continue;
             // A failed turn with no (or an empty) reply must surface its error text,
             // never an empty out row: the connector's accumulator starts text at ""
             // and a legacy/buggy sync may ship text:"" alongside errorMessage.
@@ -495,8 +493,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             // would re-append the whole group on redelivery. `truncated` rides the
             // structured metadata so a capped reply never reads as a complete one.
             const persist = (): void => {
-              if (!alreadyPersisted && finished.prompt && !hasTrailingPrompt(finished.sessionAlias, finished.prompt)) {
-                messages.append(instanceId, finished.sessionAlias, "in", finished.prompt);
+              if (!alreadyPersisted) {
+                backfillInboundPrompt(finished.sessionAlias, {
+                  prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled,
+                });
               }
               // Presence (not truthiness): an empty-string reply still gets its row.
               if (text !== undefined && !alreadyPersisted) {
@@ -504,10 +504,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               }
             };
             if (recoveryId) {
-              db.transaction(() => {
-                persist();
-                recoveryReceipts.remember(instanceId, recoveryId);
-              });
+              try {
+                db.transaction(() => {
+                  persist();
+                  recoveryReceipts.remember(instanceId, recoveryId);
+                });
+              } catch (err) {
+                // Same posture as the live flush: a persistence failure must not be
+                // silent — force a reconnect so the connector re-sends its state sync
+                // and this entry gets another chance.
+                gateway.disconnect(instanceId);
+                throw err;
+              }
               ackedRecoveryIds.push(recoveryId);
             } else {
               persist();
@@ -516,6 +524,47 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           }
           if (ackedRecoveryIds.length > 0) {
             gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: ackedRecoveryIds } satisfies InstanceRecoveryAckPayload);
+          }
+          // Running turns are restored AFTER the finished rows so the prompt backfill
+          // lands at the correct transcript position.
+          for (const turn of sync.turns) {
+            const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
+            const reasoning = turn.reasoning.slice(0, REASONING_CAP);
+            const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
+            // The mirror ships flat text/reasoning/steps; rebuild the ordered `parts`
+            // so snapshot and flush treat this identically to a live accumulator —
+            // subsequent turn-output/tool-event appends and turn-finished flush keep
+            // working unchanged (text last, as it postdates activity in live order).
+            const parts: TurnPartDto[] = turn.parts
+              ? capSyncedParts(turn.parts)
+              : steps.map((step) => ({ type: "tool", step }));
+            if (!turn.parts) {
+              if (reasoning.trim()) parts.push({ type: "reasoning", text: reasoning });
+              if (text) parts.push({ type: "text", text });
+            }
+            // Backfill/reconcile the prompt for a turn that STARTED while the hub was
+            // down: the live path persists it at turn-started, which this hub never
+            // saw. A queued prompt is promoted (not duplicated); a plain prompt is
+            // appended only when it is not already the trailing row.
+            backfillInboundPrompt(turn.sessionAlias, { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled });
+            turnBuffers.set(key(instanceId, turn.sessionAlias), {
+              text,
+              steps: new Map(steps.map((s) => [s.toolCallId, s])),
+              reasoning,
+              parts,
+              // Restored original start so the elapsed-time HUD survives the restart.
+              startedAt: turn.startedAt,
+              // A mirror that capped this turn at STATE_SYNC_TEXT_CAP marks it so the
+              // final flush persists structured.truncated instead of a gappy reply
+              // that reads as complete.
+              ...(turn.truncated ? { truncated: true } : {}),
+            });
+          }
+          for (const meter of sync.usage) {
+            sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
+          }
+          for (const entry of sync.commands) {
+            sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
           }
           webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
         } else if (envelope.type === MSG.instanceNotice) {

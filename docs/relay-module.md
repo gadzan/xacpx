@@ -219,38 +219,58 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   `pendingFinished`，上限 32，逐出最旧并 log warning）。每个回合在 `turn-started` 时生成一个
   稳定 `recoveryId`。注意 FIFO 里同时有断线期间完成的回合和**刚结束、正在等持久化 ack 的 live
   回合**——live 转发照常发生，条目只是等 ack 才删除。
-- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`mirror.buildStateSync(liveAliases)`
-  取快照发送 `instance.state.sync`。**buildStateSync 是纯拷贝**（只过滤不在 liveAliases 里的
-  别名，不改动 mirror）；破坏性 GC 是单独的 `pruneStateMirror(liveAliases)`，只在**确认 flush
-  成功之后**调用——send 失败/not-ready 时绝不 prune，避免临时性的 session 列表错误把仍在
-  运行的回合状态销毁。
+- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`mirror.buildStateSync(liveAliases)` 返回
+  `{ snapshot, aliases }`（snapshot 是**纯拷贝**，只过滤不在 liveAliases 里的别名，不改动 mirror；
+  aliases 是构建时 mirror 里存在的全部别名）。破坏性 GC 是单独的
+  `pruneStateMirror(liveAliases, aliasesAtBuild)`，只在**确认 flush 成功之后**调用，且只对
+  `aliasesAtBuild` 里的别名做 compare-and-delete——snapshot 之后新到达的 session/turn（正被 live
+  转发）绝不会被这个旧回调误删；send 失败/not-ready 时也绝不 prune。
 - FIFO 条目**不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；条目
   只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
   live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite
   提交之前崩溃，则下次重连重发同一快照，hub 端 receipt 去重保证幂等，不会留下历史空洞。
+- **过期语义与 hub 一致**：`mirror.expirePendingFinished()` 在每次 onReady 构建快照前（以及每次
+  推入新条目时）丢弃超过 `RECOVERY_RETENTION_MS`（7 天，relay-protocol/limits.ts 共享常量）的
+  条目。hub 的 receipt 按同一保留期 + 时钟偏移宽限清理，所以过期条目永远不会被重发成重复历史；
+  反过来，connector 不再保留超过该窗口的条目，receipt 也不存在"重发时已过期"的窗口。
 
 服务端（packages/relay/src/server.ts）：
 
 - `turn-finished` 兜底：无缓冲时，只要 `event.text` **存在**（空字符串也算有内容）就落一条
   `out` 行；失败回合（`ok: false`）且无 `event.text` 时改落 `errorMessage` 行；两者都缺才
   log `warn`（`relay.event.turn_finished_without_content`）。有缓冲时同样：失败回合若无流式
-  输出，落 `errorMessage` 而非留一个"有问无答"的空洞。
+  输出，落 `errorMessage` 而非留一个"有问无答"的空洞；**成功但回复为空**（`ok: true` 且
+  `text: ""`）也落一条空 `out` 行（presence 语义，与无缓冲/离线路径一致——此时 receipt 已提交、
+  connector 已删除条目，跳过的行永远无法补录）。
 - 带 `recoveryId` 的 live `turn-finished`：回复行与 receipt 在**同一个 SQLite 事务**里提交，
-  提交成功后才下发 `instance.recovery.ack`；失败则不 ack，connector 稍后重发、receipt 去重。
+  提交成功后才下发 `instance.recovery.ack`；事务失败则 `gateway.disconnect(instanceId)` 强制
+  connector 重连（重连后 onReady 重新推送 state sync，pending 条目获得重试机会），再抛错记日志
+  ——持久化失败绝不静默，否则条目会一直躺在 connector FIFO 里直到被逐出。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
   对 `turnBuffers` / `sessionUsage` / `sessionCommands` 按实例 **replace**（回合保留原始
-  `startedAt`，后续 `turn-output`/`turn-finished` 照常 append/flush）；`finishedOffline` 逐项在
-  单个事务里落库（携带的 `prompt` 先行回填 `in` 行 + `out` 行 + receipt，三者在同一事务，
-  崩溃不会留下半组行）。幂等去重：携带 `recoveryId` 的项查 `recovery_receipts` 表（跨重启存活；
-  已 receipt 的重复项**直接 re-ack 不重复落行**）；无 `recoveryId` 的旧式项退回进程内指纹集 +
-  SQLite 最近 5 行 prompt+reply **成对匹配**。
+  `startedAt`，后续 `turn-output`/`turn-finished` 照常 append/flush）。**先处理 `finishedOffline`
+  再恢复运行中回合**，保证历史顺序。`finishedOffline` 逐项在单个事务里落库（`in` 行对账 + `out`
+  行 + receipt，同一事务，崩溃不会留下半组行）。幂等去重：携带 `recoveryId` 的项查
+  `recovery_receipts` 表（跨重启存活；已 receipt 的重复项**直接 re-ack 不重复落行**）；无
+  `recoveryId` 的旧式项退回进程内指纹集 + SQLite 最近 5 行 prompt+reply **成对匹配**。
+- **同 alias 的已完成回合与运行中回合是不同 turn**（turn A 完成后队列又启动同 session 的 turn B）：
+  用 `recoveryId` 区分，不再按 `sessionAlias` 跳过；只有 recoveryId 完全相同（真矛盾）才跳过。
+- **`in` 行统一对账 `backfillInboundPrompt`**（sync 的 finished 回填与运行中回合共用）：带
+  `queueItemId` 时 `promoteQueued()`（找不到再 `appendQueuedFallback()`），把 enqueue 时已落库的
+  queued 行移到执行位置并清 `queue_item_id`，绝不重复 append；无 `queueItemId` 时才做普通回填
+  （仅当该 prompt 不是最后一行）。`finishedOffline` / `turns` 都携带 `queueItemId`/`scheduled`。
 - 失败回合（`ok: false`）落库时优先 `errorMessage`：`text` 为空/缺失时不会用空字符串覆盖错误
   信息（connector 的累积器以 `""` 起步，旧版镜像可能把 `text: ""` 和 errorMessage 一起带过来）。
-- `finishedOffline.truncated` 为真时，`out` 行的 `structured` 里写入 `{ truncated: true }`，
-  明确标识该回复是被 256KiB 上限截断的前缀而非完整回复。
+- `truncated` 闭环：`finishedOffline.truncated` 为真时，`out` 行的 `structured` 里写入
+  `{ truncated: true }`；**运行中回合**恢复时也会把 `turn.truncated` 带到 TurnAccumulator，
+  该回合结束时 live flush 同样写入 `structured.truncated`——被 256KiB 上限截断的前缀不会
+  被当作完整回复落库。Web 端 `MessageList.vue` 对有 `structured.truncated` 的回复显示
+  "回复已截断" 徽标。
 - 新增 `recovery_receipts` 表（`instance_id + recovery_id` 主键，`created_at`）与
-  `RecoveryReceiptStore`；维护循环按 TTL（`RECOVERY_RECEIPT_TTL_MS = 7 天`，connector FIFO 最多 32
-  项、更久的 receipt 不可能再被重发）定期清理，表不会随每个回合无限增长。
+  `RecoveryReceiptStore`；维护循环按 `RECOVERY_RECEIPT_TTL_MS`（= 共享保留期
+  `RECOVERY_RETENTION_MS` 7 天 + 24h 时钟偏移宽限）定期清理。安全性依赖两侧一致：
+  connector 在同一保留期后丢弃 `pendingFinished` 条目（不再重发），所以 receipt 到期时
+  必然不会再被查询——清理不会重新引入重复历史，表也不会随每个回合无限增长。
 
 ## 测试
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { MSG, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP, validInstanceStateSync } from "../../../../packages/relay-protocol/src/index";
+import { MSG, RECOVERY_RETENTION_MS, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP, validInstanceStateSync } from "../../../../packages/relay-protocol/src/index";
 import type { ControlEventDto, ToolStepDto } from "../../../../packages/relay-protocol/src/index";
 import { createStateMirror, type StateMirror } from "../../../../packages/channel-relay/src/state-mirror";
 
@@ -37,14 +37,14 @@ test("accumulates a turn across event kinds and builds a valid sync payload", ()
   fire(mirror, { type: "turn-usage", chatKey: "relay:acc", sessionAlias: "backend", used: 10, size: 100 });
   fire(mirror, { type: "agent-commands", chatKey: "relay:acc", sessionAlias: "backend", commands: [{ name: "compact" }] });
 
-  const payload = mirror.buildStateSync(LIVE);
+  const { snapshot: payload } = mirror.buildStateSync(LIVE);
   expect(payload.turns).toEqual([{
     sessionAlias: "backend", startedAt: 1_700_000_000_000, text: "hello", reasoning: "thinking",
     steps: [step("t1")], parts: [
       { type: "text", text: "hello" },
       { type: "reasoning", text: "thinking" },
       { type: "tool", step: step("t1") },
-    ], prompt: "hi",
+    ], prompt: "hi", recoveryId: "r1",
   }]);
   expect(payload.usage).toEqual([{ sessionAlias: "backend", used: 10, size: 100 }]);
   expect(payload.commands).toEqual([{ sessionAlias: "backend", commands: [{ name: "compact" }] }]);
@@ -57,7 +57,7 @@ test("text cap truncates and stops appending", () => {
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "x".repeat(STATE_SYNC_TEXT_CAP + 10) });
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "more" });
-  const turn = mirror.buildStateSync(LIVE).turns[0]!;
+  const turn = mirror.buildStateSync(LIVE).snapshot.turns[0]!;
   expect(turn.text.length).toBe(STATE_SYNC_TEXT_CAP);
   expect(turn.truncated).toBe(true);
 });
@@ -69,7 +69,7 @@ test("tool steps cap at 200; updates to known toolCallIds always merge", () => {
     fire(mirror, { type: "tool-event", chatKey: "relay:acc", sessionAlias: "backend", step: step(`t${i}`) });
   }
   fire(mirror, { type: "tool-event", chatKey: "relay:acc", sessionAlias: "backend", step: { ...step("t0"), status: "error", error: "boom" } });
-  const turn = mirror.buildStateSync(LIVE).turns[0]!;
+  const turn = mirror.buildStateSync(LIVE).snapshot.turns[0]!;
   expect(turn.steps).toHaveLength(200);
   expect(turn.steps.find((s) => s.toolCallId === "t0")).toMatchObject({ status: "error" });
 });
@@ -78,7 +78,7 @@ test("reasoning caps at 16000 chars", () => {
   const { mirror } = makeMirror(() => true);
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-thought", chatKey: "relay:acc", sessionAlias: "backend", chunk: "r".repeat(20000) });
-  expect(mirror.buildStateSync(LIVE).turns[0]!.reasoning.length).toBe(16000);
+  expect(mirror.buildStateSync(LIVE).snapshot.turns[0]!.reasoning.length).toBe(16000);
 });
 
 test("ordered recovery parts remain bounded", () => {
@@ -89,7 +89,7 @@ test("ordered recovery parts remain bounded", () => {
       ? { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "x" }
       : { type: "turn-thought", chatKey: "relay:acc", sessionAlias: "backend", chunk: "r" });
   }
-  const turn = mirror.buildStateSync(LIVE).turns[0]!;
+  const turn = mirror.buildStateSync(LIVE).snapshot.turns[0]!;
   expect(turn.parts).toHaveLength(STATE_SYNC_PARTS_CAP);
   expect(validInstanceStateSync({ turns: [{ ...turn, parts: [...turn.parts!, { type: "text", text: "overflow" }] }], usage: [], commands: [], finishedOffline: [] })).toBe(false);
 });
@@ -99,11 +99,11 @@ test("turn-finished stays recoverable until its send is confirmed", () => {
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "done" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
-  const payload = mirror.buildStateSync(LIVE);
+  const { snapshot: payload } = mirror.buildStateSync(LIVE);
   expect(payload.turns).toEqual([]);
   expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "done", recoveryId: "r1" }]);
   mirror.confirmFinished(["r1"]);
-  expect(mirror.buildStateSync(LIVE).finishedOffline).toEqual([]);
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([]);
 });
 
 test("turn-finished while offline queues the turn with its accumulated text", () => {
@@ -111,25 +111,34 @@ test("turn-finished while offline queues the turn with its accumulated text", ()
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "reply text" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
-  const payload = mirror.buildStateSync(LIVE);
+  const { snapshot: payload } = mirror.buildStateSync(LIVE);
   expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "reply text", recoveryId: "r1" }]);
   mirror.confirmFinished(["r1"]);
-  expect(mirror.buildStateSync(LIVE).finishedOffline).toEqual([]);
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([]);
 });
 
 test("turn-finished while offline carries the turn's prompt for hub-side backfill", () => {
   const { mirror } = makeMirror(() => false);
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "deploy it" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
-  const payload = mirror.buildStateSync(LIVE);
+  const { snapshot: payload } = mirror.buildStateSync(LIVE);
   expect(payload.finishedOffline[0]).toMatchObject({ sessionAlias: "backend", prompt: "deploy it" });
+  expect(validInstanceStateSync(payload)).toBe(true);
+});
+
+test("a queued turn carries its queueItemId so the hub reconciles the queued row", () => {
+  const { mirror } = makeMirror(() => false);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "deploy it", queueItemId: "q1" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
+  const { snapshot: payload } = mirror.buildStateSync(LIVE);
+  expect(payload.finishedOffline[0]).toMatchObject({ sessionAlias: "backend", queueItemId: "q1", prompt: "deploy it" });
   expect(validInstanceStateSync(payload)).toBe(true);
 });
 
 test("turn-finished while offline without an accumulator still carries the event text", () => {
   const { mirror } = makeMirror(() => false);
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: false, errorMessage: "kaboom" });
-  expect(mirror.buildStateSync(LIVE).finishedOffline).toEqual([
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([
     { sessionAlias: "backend", ok: false, errorMessage: "kaboom", recoveryId: "r1" },
   ]);
 });
@@ -141,13 +150,13 @@ test("failed turn with an empty accumulator ships its errorMessage, not an empty
   // and leave an empty reply where the failure story belongs.
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "deploy" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: false, errorMessage: "boom" });
-  expect(mirror.buildStateSync(LIVE).finishedOffline).toEqual([
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([
     { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1" },
   ]);
   // A successful turn with no output still ships its (empty) reply — presence semantics.
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "frontend" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "frontend", ok: true });
-  expect(mirror.buildStateSync(LIVE).finishedOffline).toEqual([
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([
     { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1" },
     { sessionAlias: "frontend", ok: true, text: "", recoveryId: "r2" },
   ]);
@@ -158,7 +167,7 @@ test("a truncated reply rides the finishedOffline entry so the hub can mark it",
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "x".repeat(STATE_SYNC_TEXT_CAP + 10) });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
-  const entry = mirror.buildStateSync(LIVE).finishedOffline[0]!;
+  const entry = mirror.buildStateSync(LIVE).snapshot.finishedOffline[0]!;
   expect(entry.truncated).toBe(true);
   expect(entry.text!.length).toBe(STATE_SYNC_TEXT_CAP);
   expect(validInstanceStateSync({ turns: [], usage: [], commands: [], finishedOffline: [entry] })).toBe(true);
@@ -172,14 +181,30 @@ test("finishedOffline is a FIFO capped at 32 with a logged warning on eviction",
     fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: alias, chunk: `out${i}` });
     fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: alias, ok: true });
   }
-  const payload = mirror.buildStateSync(new Set(Array.from({ length: 33 }, (_, i) => `s${i}`)));
+  const { snapshot: payload } = mirror.buildStateSync(new Set(Array.from({ length: 33 }, (_, i) => `s${i}`)));
   expect(payload.finishedOffline).toHaveLength(32);
   expect(payload.finishedOffline[0]!.sessionAlias).toBe("s1"); // oldest evicted
   expect(payload.finishedOffline[31]!.sessionAlias).toBe("s32");
   expect(warns.some((l) => l.event === "relay.state_mirror.pending_finished_evicted")).toBe(true);
 });
 
-test("buildStateSync filters dead aliases without mutating; pruneStateMirror removes them permanently", () => {
+test("pendingFinished entries expire past the shared retention horizon", () => {
+  let t = 1_700_000_000_000;
+  const { mirror, warns } = makeMirror(() => false, () => t);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toHaveLength(1);
+
+  // Past RECOVERY_RETENTION_MS the entry is dropped: the hub prunes its receipt on
+  // the same horizon, so re-delivering this entry after a long idle would re-append
+  // a duplicate reply.
+  t += RECOVERY_RETENTION_MS + 1;
+  mirror.expirePendingFinished();
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([]);
+  expect(warns.some((l) => l.event === "relay.state_mirror.pending_finished_expired")).toBe(true);
+});
+
+test("buildStateSync filters dead aliases without mutating; pruneStateMirror removes only build-time aliases", () => {
   const { mirror } = makeMirror(() => false);
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "frontend" });
@@ -192,22 +217,39 @@ test("buildStateSync filters dead aliases without mutating; pruneStateMirror rem
   // mirror keeps them — a failed/not-ready send must not destroy state that a
   // later sync (with a corrected session list) could still need.
   const filtered = mirror.buildStateSync(new Set(["backend"]));
-  expect(filtered.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
-  expect(filtered.usage).toEqual([]);
-  expect(filtered.commands).toEqual([]);
-  expect(filtered.finishedOffline).toEqual([]);
+  expect(filtered.snapshot.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
+  expect(filtered.snapshot.usage).toEqual([]);
+  expect(filtered.snapshot.commands).toEqual([]);
+  expect(filtered.snapshot.finishedOffline).toEqual([]);
+  expect(filtered.aliases).toEqual(new Set(["backend", "frontend"]));
   const widened = mirror.buildStateSync(LIVE);
-  expect(widened.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
-  expect(widened.usage).toHaveLength(1);
-  expect(widened.finishedOffline.map((f) => f.sessionAlias)).toEqual(["frontend"]); // finished → pending, still in LIVE
+  expect(widened.snapshot.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
+  expect(widened.snapshot.usage).toHaveLength(1);
+  expect(widened.snapshot.finishedOffline.map((f) => f.sessionAlias)).toEqual(["frontend"]); // finished → pending, still in LIVE
 
-  // The explicit GC (called after a CONFIRMED flush) removes dead aliases for good.
-  mirror.pruneStateMirror(new Set(["backend"]));
+  // The explicit GC (called after a CONFIRMED flush) removes dead aliases — but only
+  // the ones that existed when the snapshot was built.
+  const { snapshot, aliases } = mirror.buildStateSync(LIVE);
+  expect(snapshot.turns).toHaveLength(1);
+  mirror.pruneStateMirror(new Set(["backend"]), aliases);
   const again = mirror.buildStateSync(LIVE);
-  expect(again.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
-  expect(again.usage).toEqual([]);
-  expect(again.commands).toEqual([]);
-  expect(again.finishedOffline).toEqual([]);
+  expect(again.snapshot.turns.map((t) => t.sessionAlias)).toEqual(["backend"]);
+  expect(again.snapshot.usage).toEqual([]);
+  expect(again.snapshot.commands).toEqual([]);
+  expect(again.snapshot.finishedOffline).toEqual([]);
+});
+
+test("pruneStateMirror never removes state that arrived after the snapshot was built", () => {
+  const { mirror } = makeMirror(() => false);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  // The snapshot is built while only `backend` exists…
+  const { aliases } = mirror.buildStateSync(new Set(["backend"]));
+  // …then a NEW session's turn arrives (forwarded live) before the flush callback
+  // runs. The (older) prune must not GC it.
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "latecomer" });
+  mirror.pruneStateMirror(new Set(["backend"]), aliases);
+  const after = mirror.buildStateSync(new Set(["backend", "latecomer"]));
+  expect(after.snapshot.turns.map((t) => t.sessionAlias)).toEqual(["backend", "latecomer"]);
 });
 
 test("chatKeys and aliasesForChatKey group mirrored state by chatKey", () => {
@@ -224,5 +266,5 @@ test("ignores non-instanceEvent envelopes and malformed payloads", () => {
   mirror.handleEnvelope(MSG.instanceNotice, { kind: "task-progress", text: "x" });
   mirror.handleEnvelope(MSG.instanceEvent, null);
   mirror.handleEnvelope(MSG.instanceEvent, {});
-  expect(mirror.buildStateSync(LIVE)).toEqual({ turns: [], usage: [], commands: [], finishedOffline: [] });
+  expect(mirror.buildStateSync(LIVE).snapshot).toEqual({ turns: [], usage: [], commands: [], finishedOffline: [] });
 });

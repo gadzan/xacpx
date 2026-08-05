@@ -1,12 +1,16 @@
+import { RECOVERY_RETENTION_MS } from "@ganglion/xacpx-relay-protocol";
+
 import type { AccountStore } from "./stores/accounts.js";
 import type { InstanceStore } from "./stores/instances.js";
 import type { MessageStore } from "./stores/messages.js";
 import type { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 
-/** How long a recovery receipt stays useful. The connector's finished-offline FIFO
- *  caps at 32 turns and evicts on overflow, so a receipt older than this can never
- *  be re-delivered — keeping it only grows the table forever (one row per turn). */
-export const RECOVERY_RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Clock-skew grace on top of the shared retention horizon: the connector evicts a
+ *  pendingFinished entry at RECOVERY_RETENTION_MS, so the hub only needs its receipt
+ *  to survive until the moment of the (latest possible) redelivery — the grace
+ *  absorbs delivery delay and wall-clock drift between the two hosts so a redelivery
+ *  made just under the connector's expiry always still finds its receipt. */
+export const RECOVERY_RECEIPT_TTL_MS = RECOVERY_RETENTION_MS + 24 * 60 * 60 * 1000;
 
 export interface MaintenanceStores {
   accounts: AccountStore;
