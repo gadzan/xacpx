@@ -42,7 +42,7 @@
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "clean:channel-yuanbao": "node -e \"require('node:fs').rmSync('packages/channel-yuanbao/dist',{recursive:true,force:true})\"",
     "clean:channel-feishu": "node -e \"require('node:fs').rmSync('packages/channel-feishu/dist',{recursive:true,force:true})\"",
-    "build": "bun run clean:dist && bun build ./src/cli.ts ./src/bridge/bridge-main.ts ./src/adapters/hermes-acp-shim.ts ./src/plugin-api.ts --outdir ./dist --target node --external node-pty && bun run build:plugin-api",
+    "build": "bun run clean:dist && bun build ./src/cli.ts ./src/bridge/bridge-main.ts ./src/adapters/hermes-acp-shim.ts ./src/plugin-api.ts --outdir ./dist --target node --external node-pty --external fs-ext && bun run build:plugin-api",
     "build:plugin-api": "tsc -p tsconfig.plugin-api.json",
     "build:channel-yuanbao": "bun run build:plugin-api && bun run clean:channel-yuanbao && bun build ./packages/channel-yuanbao/src/index.ts --outdir ./packages/channel-yuanbao/dist --target node --external xacpx && tsc -p packages/channel-yuanbao/tsconfig.json",
     "build:channel-feishu": "bun run build:plugin-api && bun run clean:channel-feishu && bun build ./packages/channel-feishu/src/index.ts --outdir ./packages/channel-feishu/dist --target node --external xacpx && tsc -p packages/channel-feishu/tsconfig.json",
@@ -95,6 +95,12 @@
     "zod": "^3",
     "zod-to-json-schema": "^3"
   },
+  "optionalDependencies": {
+    "fs-ext": "2.1.1"
+  },
+  "trustedDependencies": [
+    "fs-ext"
+  ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },

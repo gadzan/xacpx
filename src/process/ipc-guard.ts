@@ -64,7 +64,7 @@ async function realpathThroughNearestAncestor(
 
 export async function canonicalizeIpcGuardConfigRoot(
   configRoot: string,
-  options: Pick<AcquireIpcGuardOptions, "createConfigRoot" | "platform"> = {},
+  options: Pick<AcquireIpcGuardOptions, "createConfigRoot" | "platform" | "fileSystem"> = {},
 ): Promise<string> {
   const platform = options.platform ?? process.platform;
   const fileSystem = options.fileSystem ?? { mkdir, realpath };
