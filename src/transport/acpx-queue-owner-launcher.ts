@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, unlink } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -118,6 +118,7 @@ export function buildXacpxMcpServerSpec(input: {
 
 export function buildQueueOwnerPayload(input: {
   sessionId: string;
+  agentCommand?: string;
   permissionMode: PermissionMode;
   nonInteractivePermissions: NonInteractivePermissions;
   mcpServers: AcpxMcpServerSpec[];
@@ -128,6 +129,7 @@ export function buildQueueOwnerPayload(input: {
 }): QueueOwnerPayload {
   return {
     sessionId: input.sessionId,
+    ...(input.agentCommand === undefined ? {} : { agentCommand: input.agentCommand }),
     permissionMode: input.permissionMode,
     nonInteractivePermissions: input.nonInteractivePermissions,
     ttlMs: input.ttlMs ?? 300_000,
@@ -257,11 +259,33 @@ export class AcpxQueueOwnerLauncher {
       if (adapter && intentToken && adapter.platform === "win32") await adapter.cancel(intentToken);
       throw error;
     }
-    if (!adapter || !intentToken || adapter.platform !== "win32") return { agentCommand: launchAgentCommand };
+    if (!adapter || !intentToken || adapter.platform !== "win32") {
+      if (process.platform === "win32") {
+        const ownerPid = await this.readOwnerPid(input.acpxRecordId) ?? spawnedPid;
+        const identity = await probeWindowsProcessIdentity(ownerPid);
+        if (identity.status === "found") {
+          await writeFile(queueOwnerIdentityFilePath(input.acpxRecordId), JSON.stringify({
+            pid: ownerPid,
+            creationDate: identity.identity.creationDate,
+            executablePath: identity.identity.executablePath,
+          }) + "\n", { encoding: "utf8", mode: 0o600 });
+        }
+      }
+      return { agentCommand: launchAgentCommand };
+    }
 
     await adapter.spawned(intentToken);
     const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
     if (ownerPid !== undefined) {
+      if (process.platform === "win32") {
+        const identity = await probeWindowsProcessIdentity(ownerPid);
+        if (identity.status !== "found") throw new Error("queue owner identity could not be captured");
+        await writeFile(queueOwnerIdentityFilePath(input.acpxRecordId), JSON.stringify({
+          pid: ownerPid,
+          creationDate: identity.identity.creationDate,
+          executablePath: identity.identity.executablePath,
+        }) + "\n", { encoding: "utf8", mode: 0o600 });
+      }
       await adapter.settle({
         intentToken,
         outcome: "owner-committed",
@@ -408,7 +432,21 @@ export async function readQueueOwnerPid(sessionId: string): Promise<number | und
 }
 
 export async function terminateAcpxQueueOwner(sessionId: string): Promise<void> {
+  return await terminateAcpxQueueOwnerWithDeps(sessionId, {});
+}
+
+export interface QueueOwnerTerminationDeps {
+  platform?: NodeJS.Platform;
+  probeIdentity?: typeof probeWindowsProcessIdentity;
+  terminate?: typeof terminateProcessTree;
+}
+
+export async function terminateAcpxQueueOwnerWithDeps(
+  sessionId: string,
+  deps: QueueOwnerTerminationDeps,
+): Promise<void> {
   const lockPath = queueLockFilePath(sessionId);
+  const identityPath = queueOwnerIdentityFilePath(sessionId);
   let owner: { pid?: unknown } | undefined;
   try {
     owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown };
@@ -416,25 +454,39 @@ export async function terminateAcpxQueueOwner(sessionId: string): Promise<void> 
     return;
   }
   if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
-    if (process.platform === "win32") {
-      const identity = await probeWindowsProcessIdentity(owner.pid);
+    if ((deps.platform ?? process.platform) === "win32") {
+      let historical: { pid?: unknown; creationDate?: unknown; executablePath?: unknown };
+      try {
+        historical = JSON.parse(await readFile(identityPath, "utf8")) as typeof historical;
+      } catch {
+        return;
+      }
+      if (historical.pid !== owner.pid || typeof historical.creationDate !== "string" || typeof historical.executablePath !== "string") return;
+      const identity = await (deps.probeIdentity ?? probeWindowsProcessIdentity)(owner.pid);
       if (identity.status !== "found") return;
+      if (identity.identity.creationDate !== historical.creationDate
+        || identity.identity.executablePath.toLocaleLowerCase("en-US") !== historical.executablePath.toLocaleLowerCase("en-US")) return;
       const target: BatchTarget = {
         pid: owner.pid,
         creationDate: identity.identity.creationDate,
         executablePath: identity.identity.executablePath,
       };
-      const result = await terminateProcessTree(target, { detachedProcessGroup: true });
+      const result = await (deps.terminate ?? terminateProcessTree)(target, { detachedProcessGroup: true });
       if (!result || !["killed", "already-exited", "skipped-replaced"].includes(result.rootOutcome)) return;
     } else {
       await terminateProcessTree(owner.pid, { detachedProcessGroup: true });
     }
   }
   await unlink(lockPath).catch(() => {});
+  await unlink(identityPath).catch(() => {});
 }
 
 function queueLockFilePath(sessionId: string): string {
   return join(homedir(), ".acpx", "queues", `${shortHash(sessionId, 24)}.lock`);
+}
+
+function queueOwnerIdentityFilePath(sessionId: string): string {
+  return `${queueLockFilePath(sessionId)}.identity`;
 }
 
 function shortHash(value: string, length: number): string {

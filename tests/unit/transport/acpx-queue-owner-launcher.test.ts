@@ -309,10 +309,14 @@ test("uses one launch token for registration, argv, spawned ack, and owner settl
 
 test("returns the durable adapter command selected during prepare for this launch", async () => {
   const preparedCommand = '"C:/node.exe" "C:/runtime/adapters/codex/releases/2/node_modules/@agentclientprotocol/codex-acp/bin.js"';
+  let payload: { agentCommand?: string } | undefined;
   const launcher = new AcpxQueueOwnerLauncher({
     acpxCommand: "acpx",
     uuid: () => TOKEN,
-    spawnOwner: async () => 700,
+    spawnOwner: async (_command, _args, options) => {
+      payload = JSON.parse(options.env.ACPX_QUEUE_OWNER_PAYLOAD) as { agentCommand?: string };
+      return 700;
+    },
     terminateOwner: async () => {},
     readOwnerPid: async () => 701,
   });
@@ -327,6 +331,7 @@ test("returns the durable adapter command selected during prepare for this launc
     }),
   });
   expect(result.agentCommand).toBe(preparedCommand);
+  expect(payload?.agentCommand).toBe(preparedCommand);
 });
 
 test("generation fencing cancels the registered intent and never spawns", async () => {
