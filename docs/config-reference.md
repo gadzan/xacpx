@@ -100,13 +100,15 @@ How xacpx communicates with the acpx backend.
 
 ### Managed ACP adapter versions
 
-xacpx does not install the Codex or Claude adapter as a package dependency. For these two drivers it passes an exact `npx -y --registry=<registry> <package>@<version>` command to acpx. Resolution priority is:
+xacpx does not install the Codex or Claude adapter as a package dependency by default. For these two drivers it normally passes an exact `npx -y --registry=<registry> <package>@<version>` command to acpx. Users may opt in to an immutable local release with `xacpx adapter preinstall <codex|claude> [version]`; a validated active local release then replaces the generated npx command. Resolution priority is:
 
 1. Explicit `agents.<name>.command` (fully user-managed)
 2. `transport.adapterVersions.<driver>`
 3. The exact version tested and shipped by this xacpx release
 
 Use `xacpx adapter list` to inspect local effective versions, `xacpx adapter check` to compare with npm, and `xacpx adapter update <name>` (or `--all`) to opt in to a newer version. `set` and `update` first confirm the exact package version is published and complete a real ACP `initialize` probe; the config is changed only if that probe succeeds. Adapter version changes require `xacpx restart`. xacpx never updates these pins automatically during daemon startup.
+
+Preinstalled releases live below `~/.xacpx/adapters/<driver>/releases/`; `active.json` is atomically published only after install, containment checks, static validation, and the ACP initialize probe succeed. `xacpx adapter list --installed` shows them. `xacpx adapter uninstall <driver> <release-id>` refuses to remove the active release or any release referenced by state or, on Windows, durable intent/owner/residual records. Reference reads are fail-closed and are repeated immediately before deletion.
 
 All adapter version lookups, publication checks, verification downloads, and runtime `npx` launches use the effective `adapterRegistry`. The default is always the public npm registry; xacpx explicitly overrides both npm's generic registry and any `.npmrc` mapping for the `@agentclientprotocol` scope. A company registry can be selected explicitly when it proxies that scope:
 

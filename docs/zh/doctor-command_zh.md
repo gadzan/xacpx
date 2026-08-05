@@ -33,13 +33,14 @@ xacpx doctor --fix                 # 执行安全的本地修复，然后重新�
 | 2    | `runtime`               | Runtime           | daemon 运行时目录及其 pid/status/log 文件可用（可写或可创建）。POSIX 上还会检查运行时目录是否为私有权限（mode `0700`）。 |
 | 3    | `logs`                  | Logs              | 汇总 daemon 日志文件（`app.log`/`stdout.log`/`stderr.log` 及轮转分片）的体积，增长过大时 `warn`（单文件超 50 MB，或总量超 200 MB）；运行时目录还没有日志时 `skip`。个别文件不可读会被容忍（跳过），不会 `fail`。 |
 | 4    | `daemon`                | Daemon            | 通过 daemon controller 检查存活状态（running / stopped / indeterminate）。stopped 时还会扫描残留的 consumer-lock 文件。 |
-| 5    | `wechat`                | WeChat            | 微信（Weixin）频道处于登录状态。 |
-| 6    | `acpx`                  | acpx              | 解析到的 `acpx` 可执行文件能报告可用版本。 |
-| 7    | `bridge`                | Bridge            | acpx bridge 子进程能启动并响应。 |
-| 8    | `plugins`               | Plugins           | 已配置的插件均已安装、可加载且已启用。 |
-| 9    | `orchestration`         | Orchestration     | `state.json` 中的 orchestration 状态健康（只读 inspect，绝不会作为副作用执行隔离）。心跳新鲜度按 `orchestration.progressHeartbeatSeconds` 校验。 |
-| 10   | `orchestration-socket`  | Orchestration IPC | daemon 停止时 `skip`；只有 daemon 存活（running 或 indeterminate）时才探测 orchestration IPC 端点是否真正接受连接（只有确定性的无监听才 `fail`，可达或结果不确定时为 `pass`/`skip`）。 |
-| 11   | `smoke`                 | Smoke             | 对真实会话做端到端探测。**可选项：**不传 `--smoke` 时跳过。 |
+| 5    | `orphans`               | Windows orphans   | Windows 下只读检查 orphan intent/owner/residual；不确定证据会保留并报告。其他平台为 `skip`。 |
+| 6    | `wechat`                | WeChat            | 微信（Weixin）频道处于登录状态。 |
+| 7    | `acpx`                  | acpx              | 解析到的 `acpx` 可执行文件能报告可用版本。 |
+| 8    | `bridge`                | Bridge            | acpx bridge 子进程能启动并响应。 |
+| 9    | `plugins`               | Plugins           | 已配置的插件均已安装、可加载且已启用。 |
+| 10   | `orchestration`         | Orchestration     | `state.json` 中的 orchestration 状态健康（只读 inspect，绝不会作为副作用执行隔离）。心跳新鲜度按 `orchestration.progressHeartbeatSeconds` 校验。 |
+| 11   | `orchestration-socket`  | Orchestration IPC | daemon 停止时 `skip`；只有 daemon 存活（running 或 indeterminate）时才探测 orchestration IPC 端点是否真正接受连接（只有确定性的无监听才 `fail`，可达或结果不确定时为 `pass`/`skip`）。 |
+| 12   | `smoke`                 | Smoke             | 对真实会话做端到端探测。**可选项：**不传 `--smoke` 时跳过。 |
 
 ## 严重级别
 

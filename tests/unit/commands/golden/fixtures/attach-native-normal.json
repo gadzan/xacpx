@@ -14,7 +14,7 @@
       "alias": "relay:demo",
       "agent": "codex",
       "driver": "codex",
-      "agentCommand": "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+      "agentCommand": "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
       "workspace": "backend",
       "transportSession": "backend:relay:demo",
       "cwd": "/tmp/backend",

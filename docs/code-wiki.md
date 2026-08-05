@@ -144,7 +144,7 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
   - foreground `run`
   - `login/logout` (a wrapper around the channel)
   - `workspace`/`channel`, these "local config management" commands
-  - `adapter` management: exact built-in defaults and runtime command generation live in [src/adapters/adapter-catalog.ts](../src/adapters/adapter-catalog.ts); registry policy/validation lives in [src/adapters/adapter-registry.ts](../src/adapters/adapter-registry.ts); npm queries and ACP initialize probing live in [src/adapters/adapter-npm.ts](../src/adapters/adapter-npm.ts) and [src/adapters/adapter-verifier.ts](../src/adapters/adapter-verifier.ts); CLI persistence is coordinated by [src/adapters/adapter-cli.ts](../src/adapters/adapter-cli.ts)
+  - `adapter` management: exact defaults, command classification, and the shared trust-boundary decoder live in [src/adapters/adapter-catalog.ts](../src/adapters/adapter-catalog.ts); immutable staging/validation/pointer publication lives in [src/adapters/adapter-preinstall.ts](../src/adapters/adapter-preinstall.ts); cross-process locking lives in [src/adapters/adapter-locks.ts](../src/adapters/adapter-locks.ts); reference-safe double-scan deletion lives in [src/adapters/adapter-gc.ts](../src/adapters/adapter-gc.ts); registry policy/probing and CLI composition remain in the adjacent adapter modules
   - `mcp-stdio` (MCP server startup and identity rules)
 
 ### 5.2 App Assembly (src/main.ts)
