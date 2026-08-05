@@ -73,9 +73,13 @@ export class MessageStore {
       // The drain event arrived before the RPC response. Replace its lightweight row
       // at the SAME sequence id, preserving execution order even if the turn already
       // emitted and persisted its reply before this response arrived. Retain the
-      // queue association for recovery dedup (see promoteQueued).
+      // queue association for recovery dedup (see promoteQueued) and consume the
+      // pre-write correlation (the queue association now owns the row).
       this.db.run("DELETE FROM messages WHERE id = ?", [fallback.id]);
-      this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ? WHERE id = ?", [fallback.id, correlation.queueItemId, rowId]);
+      this.db.run(
+        "UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ?, prompt_request_id = NULL WHERE id = ?",
+        [fallback.id, correlation.queueItemId, rowId],
+      );
     });
   }
 
@@ -83,7 +87,11 @@ export class MessageStore {
    *  starts. Updating the integer key preserves the existing cursor contract. The
    *  queue association is RETAINED in `origin_queue_item_id` so a recovery sync that
    *  re-sees the same queueItemId can tell "already executed" from "never existed" —
-   *  a text-based dedup cannot (the user may have sent the identical prompt twice). */
+   *  a text-based dedup cannot (the user may have sent the identical prompt twice).
+   *  `prompt_request_id` is CONSUMED here (cleared): the pre-write correlation only
+   *  matters until the queue association is established — leaving it would make every
+   *  later sync re-find the row by promptRequestId and re-move it to the transcript
+   *  tail, breaking message ids and history order. */
   promoteQueued(correlation: QueueCorrelation): boolean {
     const row = this.db.get<{ id: number }>(
       "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 0",
@@ -91,7 +99,10 @@ export class MessageStore {
     );
     if (!row) return false;
     const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
-    this.db.run("UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ? WHERE id = ?", [nextId, correlation.queueItemId, row.id]);
+    this.db.run(
+      "UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ?, prompt_request_id = NULL WHERE id = ?",
+      [nextId, correlation.queueItemId, row.id],
+    );
     return true;
   }
 
@@ -170,24 +181,30 @@ export class MessageStore {
   }
 
   /** The pre-written inbound row for a hub-issued prompt request (correlates a drained
-   *  queue item back to the row even when the queued RPC response was lost). */
-  findByPromptRequest(instanceId: string, promptRequestId: string): number | undefined {
+   *  queue item back to the row even when the queued RPC response was lost). Scoped to
+   *  the session so a buggy connector cross-wiring one session's promptRequestId onto
+   *  another cannot steal or re-move the wrong session's row. */
+  findByPromptRequest(instanceId: string, sessionAlias: string, promptRequestId: string): number | undefined {
     const row = this.db.get<{ id: number }>(
-      "SELECT id FROM messages WHERE instance_id = ? AND prompt_request_id = ? AND direction = 'in'",
-      [instanceId, promptRequestId],
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND prompt_request_id = ? AND direction = 'in'",
+      [instanceId, sessionAlias, promptRequestId],
     );
     return row?.id;
   }
 
   /** Promote a KNOWN inbound row (found via promptRequestId) to its execution position
    *  and record the executed queue association — the row was pre-written without a
-   *  queue marker, so promoteQueued() could not find it. */
-  promoteQueuedRow(rowId: number, correlation: QueueCorrelation): void {
+   *  queue marker, so promoteQueued() could not find it. Session-scoped; returns
+   *  whether the row was actually updated (the UPDATE moves the row to a new id, so
+   *  the match is checked via changes(), not a re-query by the old id). */
+  promoteQueuedRow(rowId: number, correlation: QueueCorrelation): boolean {
     const nextId = this.db.get<{ id: number }>("SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages")!.id;
     this.db.run(
-      "UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ?, prompt_request_id = NULL WHERE id = ?",
-      [nextId, correlation.queueItemId, rowId],
+      "UPDATE messages SET id = ?, queue_item_id = NULL, origin_queue_item_id = ?, prompt_request_id = NULL WHERE id = ? AND instance_id = ? AND session_alias = ?",
+      [nextId, correlation.queueItemId, rowId, correlation.instanceId, correlation.sessionAlias],
     );
+    const changed = this.db.get<{ n: number }>("SELECT changes() AS n");
+    return (changed?.n ?? 0) > 0;
   }
 
   /**

@@ -238,6 +238,50 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
     },
     onEvent: (instanceId, accountId, envelope: RelayEnvelope) => {
+      // Shared inbound-prompt reconciliation (live turn-started AND state-sync
+      // restore/backfill) — one code path so the two cannot drift apart. See the
+      // helper body for the correlation order (queue association first, pre-write
+      // correlation only when the row is truly absent).
+      const recentRows = (sessionAlias: string) =>
+        messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 }).messages;
+      const hasTrailingPrompt = (sessionAlias: string, prompt: string): boolean => {
+        const rows = recentRows(sessionAlias);
+        const last = rows[rows.length - 1];
+        return last?.direction === "in" && last.text === prompt;
+      };
+      const reconcileInboundPrompt = (
+        sessionAlias: string,
+        opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
+        liveFallback: boolean,
+      ): void => {
+        if (opts.queueItemId) {
+          const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
+          const state = messages.queuedState(correlation);
+          if (state === "pending") { messages.promoteQueued(correlation); return; }
+          if (state === "fallback") { messages.finalizeQueuedFallback(correlation); return; }
+          if (state === "executed") return; // already promoted/finalized — the row exists
+          // absent: try the pre-write correlation before fabricating a row
+          if (opts.promptRequestId) {
+            const rowId = messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId);
+            if (rowId !== undefined && messages.promoteQueuedRow(rowId, correlation)) return;
+          }
+          if (opts.prompt) {
+            if (liveFallback) messages.appendQueuedFallback(correlation, opts.prompt);
+            else messages.appendExecutedQueuedFallback(correlation, opts.prompt);
+          }
+          return;
+        }
+        if (opts.promptRequestId) {
+          // Pre-written web prompt with no queue marker: the row already exists — do
+          // not duplicate it (the queue response may have been lost entirely).
+          if (messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined) return;
+        }
+        if (opts.prompt !== undefined) {
+          if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) return;
+          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return;
+          messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
+        }
+      };
       // Wraps the whole handler (not just messages.append): a throwing DB write must be
       // attributed to this instance's event persistence, not surface as the gateway's
       // generic relay.instance.message_failed (see instance-gateway's outer message guard).
@@ -262,26 +306,24 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           })();
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
-            turnBuffers.set(key(instanceId, event.sessionAlias), { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
-            if (event.queueItemId) {
-              // A Web prompt was persisted at enqueue time; move that same row to its
-              // actual execution point. Other origins have no HTTP row, so fall back to
-              // the prompt carried by the event and reconcile if the HTTP response raced.
-              const correlation = { instanceId, sessionAlias: event.sessionAlias, queueItemId: event.queueItemId };
-              const promoted = messages.promoteQueued(correlation);
-              if (!promoted && event.promptRequestId) {
-                // The queued RPC response was lost: correlate the pre-written inbound
-                // row by the hub-issued request id instead of appending a duplicate.
-                const rowId = messages.findByPromptRequest(instanceId, event.promptRequestId);
-                if (rowId !== undefined) messages.promoteQueuedRow(rowId, correlation);
-                else if (event.prompt) messages.appendQueuedFallback(correlation, event.prompt);
-              } else if (!promoted && event.prompt) {
-                messages.appendQueuedFallback(correlation, event.prompt);
-              }
-            } else if (event.prompt) {
-              // Scheduled turns have no enqueue-time HTTP request; persist their prompt
-              // directly when execution starts.
-              messages.append(instanceId, event.sessionAlias, "in", event.prompt, event.scheduled ? { scheduled: event.scheduled } : undefined);
+            const k = key(instanceId, event.sessionAlias);
+            // Reconcile the inbound prompt FIRST (queued promotion / pre-write
+            // correlation / scheduled append) and only install the streaming buffer
+            // once it succeeded. A persistence failure here is NOT silent: it forces a
+            // reconnect so the connector re-sends its state sync and the prompt row can
+            // land — otherwise the turn would stream + persist its reply while the
+            // prompt row is permanently missing (an orphan answer).
+            try {
+              reconcileInboundPrompt(
+                event.sessionAlias,
+                { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
+                true,
+              );
+              turnBuffers.set(k, { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+            } catch (err) {
+              turnBuffers.delete(k);
+              gateway.disconnect(instanceId);
+              throw err;
             }
           } else if (event.type === "turn-output") {
             // Only append to an existing buffer; never lazily resurrect one. A buffer
@@ -409,15 +451,8 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           // so blind appends would duplicate transcript rows. The last few rows are
           // enough precision: a recovered prompt/answer is always among the newest
           // entries in its session when the sync lands.
-          const recentRows = (sessionAlias: string) =>
-            messages.listBySession(accountId, instanceId, sessionAlias, { limit: 5 }).messages;
           const hasRecentRow = (sessionAlias: string, direction: "in" | "out", text: string): boolean =>
             recentRows(sessionAlias).some((m) => m.direction === direction && m.text === text);
-          const hasTrailingPrompt = (sessionAlias: string, prompt: string): boolean => {
-            const rows = recentRows(sessionAlias);
-            const last = rows[rows.length - 1];
-            return last?.direction === "in" && last.text === prompt;
-          };
           // Pair matching for the finishedOffline out row: a previous sync persists a
           // recovered turn as an adjacent `in`(prompt) → `out`(reply) pair, so matching
           // the PAIR means two different turns that happen to produce identical reply
@@ -431,67 +466,6 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               if (cur.direction === "in" && cur.text === prompt && next.direction === "out" && next.text === outText) return true;
             }
             return false;
-          };
-          // One reconciliation for the inbound `in` row, shared by the sync paths
-          // (active-turn restore + finished-offline backfill). A prompt enqueued while
-          // the hub was up has a persisted queued row (`queue_item_id` set) — promote
-          // it to its execution position instead of appending a duplicate. The row's
-          // queue association is RETAINED as `origin_queue_item_id` when promoted, so
-          // a queueItemId that already executed (promoted before a restart) is
-          // recognized as "already in history" rather than re-appended — text matching
-          // cannot tell a redelivery from a user sending the identical prompt twice.
-          // A surviving fallback row (queue_fallback = 1) is finalized as executed —
-          // the HTTP RPC that would have merged it died with the pre-restart hub.
-          // Scheduled turns dedup by structured.scheduled.taskId (a later queued row
-          // can push their prompt out of the trailing position). Plain prompts use the
-          // trailing-row check.
-          const backfillInboundPrompt = (
-            sessionAlias: string,
-            opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
-          ): void => {
-            // A hub-issued request id (new connectors) correlates the turn back to its
-            // PRE-WRITTEN inbound row even when the queued RPC response was lost — the
-            // row exists with no queue marker, so the queueItemId flow below would call
-            // it "absent" and append a duplicate.
-            if (opts.promptRequestId) {
-              const rowId = messages.findByPromptRequest(instanceId, opts.promptRequestId);
-              if (rowId !== undefined) {
-                if (opts.queueItemId) {
-                  messages.promoteQueuedRow(rowId, { instanceId, sessionAlias, queueItemId: opts.queueItemId });
-                }
-                return; // prompt already in history (pre-written row)
-              }
-            }
-            if (opts.queueItemId) {
-              const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
-              const state = messages.queuedState(correlation);
-              if (state === "pending") {
-                // A real queued row still carries the id → move it to its execution
-                // position.
-                messages.promoteQueued(correlation);
-              } else if (state === "fallback") {
-                // A recovery/race fallback row — finalize it as executed (promoteQueued
-                // only matches queue_fallback = 0, so it would silently no-op).
-                messages.finalizeQueuedFallback(correlation);
-              } else if (state === "absent" && opts.prompt) {
-                // Never existed → persist it as ALREADY-EXECUTED (queue_item_id NULL,
-                // origin association recorded). A temporary fallback row would never be
-                // merged (no HTTP response is coming) and would read as "queued" forever.
-                messages.appendExecutedQueuedFallback(correlation, opts.prompt);
-              }
-              // "executed" → already promoted/finalized; the prompt row exists, appending
-              // a duplicate would corrupt history.
-              return;
-            }
-            if (opts.prompt !== undefined) {
-              if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) {
-                return; // scheduled origin already has its inbound row (by taskId)
-              }
-              if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) {
-                return; // plain prompt already the trailing row
-              }
-              messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
-            }
           };
           // The WHOLE reconciliation is wrapped so ANY database failure — not just the
           // finished-entry transactions — forces a reconnect: the connector only
@@ -540,9 +514,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // structured metadata so a capped reply never reads as a complete one.
               const persist = (): void => {
                 if (!alreadyPersisted) {
-                  backfillInboundPrompt(finished.sessionAlias, {
-                    prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled, promptRequestId: finished.promptRequestId,
-                  });
+                  reconcileInboundPrompt(
+                    finished.sessionAlias,
+                    {
+                      prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled, promptRequestId: finished.promptRequestId,
+                    },
+                    false,
+                  );
                 }
                 // Presence (not truthiness): an empty-string reply still gets its row.
                 if (text !== undefined && !alreadyPersisted) {
@@ -567,7 +545,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             //    in-memory change, so a failure here leaves the OLD hub state intact
             //    and the connector retries the whole sync on reconnect.
             for (const turn of sync.turns) {
-              backfillInboundPrompt(turn.sessionAlias, { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled, promptRequestId: turn.promptRequestId });
+              reconcileInboundPrompt(
+                turn.sessionAlias,
+                { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled, promptRequestId: turn.promptRequestId },
+                false,
+              );
             }
             // 3. Replace in-memory state now that the DB work committed.
             const prefix = `${instanceId}\0`;

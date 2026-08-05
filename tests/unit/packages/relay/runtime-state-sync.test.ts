@@ -292,6 +292,81 @@ test("a live drained turn-started correlates via promptRequestId when promoteQue
   runtime.close();
 });
 
+test("a normally-executed queued prompt is not re-promoted by a later sync", async () => {
+  const { runtime } = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  // Normal path: B pre-written → markQueued(qB) → live turn-started promotes it
+  // (which CONSUMES prompt_request_id). A later C is pre-written meanwhile.
+  runtime.messages.append("i1", "backend", "in", "deploy it", undefined, undefined, "req-B");
+  const bId = runtime.messages.listBySession("a1", "i1", "backend").messages[0]!.id!;
+  runtime.messages.markQueued(bId, { instanceId: "i1", sessionAlias: "backend", queueItemId: "qB" });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "deploy it", queueItemId: "qB", promptRequestId: "req-B" });
+  runtime.messages.append("i1", "backend", "in", "queued later");
+  const before = runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.id, m.direction, m.text]);
+  expect(runtime.messages.findByPromptRequest("i1", "backend", "req-B")).toBeUndefined(); // consumed by promote
+
+  // Reconnect: the sync restores active B STILL carrying promptRequestId + queueItemId.
+  // The established queue association (executed) must win — B's row id and the B/C
+  // order must NOT change (re-motion would break cursor pagination + cached ids).
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "work", reasoning: "", steps: [], prompt: "deploy it", queueItemId: "qB", promptRequestId: "req-B", recoveryId: "rB" }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const after = runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.id, m.direction, m.text]);
+  expect(after).toEqual(before);
+  runtime.close();
+});
+
+test("a live turn-started persistence failure disconnects the instance and installs no buffer", async () => {
+  const { runtime, records } = await seeded();
+  const disconnects: string[] = [];
+  const original = runtime.gateway.disconnect.bind(runtime.gateway);
+  runtime.gateway.disconnect = ((instanceId: string) => {
+    disconnects.push(instanceId);
+    return original(instanceId);
+  }) as typeof runtime.gateway.disconnect;
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  // Scheduled turn-started: its inbound append (DB write) throws — the failure must
+  // force a reconnect (so the state sync retries the prompt) and must NOT leave a
+  // streaming buffer behind for a turn whose prompt row never landed.
+  const originalAppend = runtime.messages.append.bind(runtime.messages);
+  runtime.messages.append = (() => { throw new Error("simulated sqlite failure"); }) as typeof runtime.messages.append;
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "nightly", scheduled: { taskId: "t1", executeAt: "2026-06-16T09:00:00.000Z" } });
+  runtime.messages.append = originalAppend;
+  expect(disconnects).toEqual(["i1"]);
+  expect(runtime.stateSnapshot("i1").turns).toEqual([]); // buffer not installed
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages).toEqual([]);
+  expect(records.some((r) => r.event === "relay.event.persist_failed")).toBe(true);
+  runtime.close();
+});
+
+test("a live queued-promotion failure disconnects the instance for a resync", async () => {
+  const { runtime, records } = await seeded();
+  const disconnects: string[] = [];
+  const original = runtime.gateway.disconnect.bind(runtime.gateway);
+  runtime.gateway.disconnect = ((instanceId: string) => {
+    disconnects.push(instanceId);
+    return original(instanceId);
+  }) as typeof runtime.gateway.disconnect;
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  const rowId = runtime.messages.append("i1", "backend", "in", "deploy it", undefined, undefined, "req-1");
+  runtime.messages.markQueued(rowId, { instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" });
+  const originalPromote = runtime.messages.promoteQueued.bind(runtime.messages);
+  runtime.messages.promoteQueued = (() => { throw new Error("simulated sqlite failure"); }) as typeof runtime.messages.promoteQueued;
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "deploy it", queueItemId: "q1", promptRequestId: "req-1" });
+  runtime.messages.promoteQueued = originalPromote;
+  expect(disconnects).toEqual(["i1"]);
+  expect(runtime.stateSnapshot("i1").turns).toEqual([]);
+  expect(records.some((r) => r.event === "relay.event.persist_failed")).toBe(true);
+  runtime.close();
+});
+
 test("a scheduled turn's prompt is not re-inserted when its row is no longer trailing", async () => {
   const { runtime } = await seeded();
   const scheduled = { taskId: "t1", executeAt: "2026-06-16T09:00:00.000Z" };
