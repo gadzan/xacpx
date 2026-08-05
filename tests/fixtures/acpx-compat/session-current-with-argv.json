@@ -1,0 +1,63 @@
+{
+  "schema": "acpx.session.v1",
+  "acpx_record_id": "841dc054-1846-460c-941c-2bf357a75f25",
+  "acp_session_id": "10441568-8b7e-4aed-83a3-aa4d5889f3b0",
+  "agent_command": "node /home/ci/Projects/acpx/dist-test/test/mock-agent.js",
+  "agent_argv": [
+    "node",
+    "/home/ci/Projects/acpx/dist-test/test/mock-agent.js"
+  ],
+  "cwd": "/home/ci/projects/demo-app",
+  "name": "demo",
+  "created_at": "2026-08-05T08:40:58.059Z",
+  "last_used_at": "2026-08-05T08:41:31.263Z",
+  "last_seq": 7,
+  "last_request_id": "2",
+  "event_log": {
+    "active_path": "/tmp/acpx-fixture-home-current/.acpx/sessions/841dc054-1846-460c-941c-2bf357a75f25.stream.ndjson",
+    "segment_count": 5,
+    "max_segment_bytes": 67108864,
+    "max_segments": 5,
+    "last_write_at": "2026-08-05T08:41:30.762Z",
+    "last_write_error": null
+  },
+  "closed": false,
+  "pid": 1338,
+  "agent_started_at": "2026-08-05T08:41:29.982Z",
+  "last_prompt_at": "2026-08-05T08:41:30.237Z",
+  "protocol_version": 1,
+  "agent_capabilities": {
+    "promptCapabilities": {
+      "image": true,
+      "audio": true,
+      "embeddedContext": true
+    }
+  },
+  "title": null,
+  "messages": [
+    {
+      "User": {
+        "id": "66c67c14-79eb-49fe-b45d-4c7a970d195e",
+        "content": [
+          {
+            "Text": "hello fixture"
+          }
+        ]
+      }
+    },
+    {
+      "Agent": {
+        "content": [
+          {
+            "Text": "unrecognized prompt: hello fixture"
+          }
+        ],
+        "tool_results": {}
+      }
+    }
+  ],
+  "updated_at": "2026-08-05T08:41:30.257Z",
+  "cumulative_token_usage": {},
+  "request_token_usage": {},
+  "acpx": {}
+}
