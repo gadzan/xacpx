@@ -1,6 +1,7 @@
 import { loadConfig } from "../../config/load-config";
 import { resolveAcpxCommandMetadata, type AcpxCommandMetadata } from "../../config/resolve-acpx-command";
-import { resolveConfiguredAgentCommand } from "../../config/resolve-agent-command";
+import { resolveConfiguredAgentLaunch } from "../../config/resolve-agent-command";
+import type { AgentLaunchSpec } from "../../config/agent-launch";
 import type { AppConfig } from "../../config/types";
 import { resolveBridgeEntryPath, resolveRuntimePaths, type RuntimePaths } from "../../main";
 import { spawnAcpxBridgeClient, type ManagedBridgeClient } from "../../transport/acpx-bridge/acpx-bridge-client";
@@ -263,11 +264,9 @@ function buildSession(options: {
     driver: agentConfig.driver,
     settingsPolicy: agentConfig.settingsPolicy,
     // Resolve the SAME way the runtime spawn paths do, so the smoke test validates the
-    // real agent command (incl. a locally-preferred native CLI), not acpx's npx fallback.
-    ...((): { agentCommand?: string } => {
-      const agentCommand = resolveConfiguredAgentCommand(agentConfig, options.config.transport);
-      return agentCommand ? { agentCommand } : {};
-    })(),
+    // real launch spec (structured alias argv incl. pinned adapters and locally-preferred
+    // native CLIs), not acpx's npx fallback.
+    ...launchSpecFields(resolveConfiguredAgentLaunch(agentConfig, options.config.transport)),
     workspace: options.workspace,
     transportSession: `xacpx-doctor-${timestamp}`,
     // Match SessionService.resolve(): a configured agent model is the default for
@@ -276,6 +275,20 @@ function buildSession(options: {
     ...(agentConfig.model ? { model: agentConfig.model } : {}),
     replyMode: options.config.channel.replyMode,
     cwd: workspaceConfig.cwd,
+  };
+}
+
+function launchSpecFields(launch: AgentLaunchSpec): {
+  agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+  agentArgv?: string[];
+} {
+  return {
+    ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+    ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+    ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+    ...(launch.agentArgv ? { agentArgv: launch.agentArgv } : {}),
   };
 }
 

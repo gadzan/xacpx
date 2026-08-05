@@ -105,3 +105,53 @@ describe("parseAcpxSessionRecordId", () => {
   test("6-char id below the 8-char floor → undefined", () => expect(parseAcpxSessionRecordId('{"id":"abc123"}')).toBeUndefined());
   test("malformed non-json → undefined", () => expect(parseAcpxSessionRecordId("!!")).toBeUndefined());
 });
+
+// ── structured launch selection ──────────────────────────────────────────────
+
+import { buildSessionArgs } from "../../../src/transport/acpx-command-builder";
+
+const launchPermission = { permissionMode: "approve-all" as const, nonInteractivePermissions: "deny" as const };
+
+test("selection: rawCommand wins as --agent", () => {
+  expect(buildSessionArgs(
+    { agent: "claude", acpxAgent: "claude", rawCommand: "my-claude --acp", cwd: "/repo", permission: launchPermission },
+    ["sessions", "new", "--name", "demo"],
+  )).toContain("--agent");
+  const args = buildSessionArgs(
+    { agent: "claude", acpxAgent: "claude", rawCommand: "my-claude --acp", cwd: "/repo", permission: launchPermission },
+    ["sessions", "new", "--name", "demo"],
+  );
+  expect(args).toEqual(expect.arrayContaining(["--agent", "my-claude --acp"]));
+});
+
+test("selection: acpxAgent wins as the positional agent for structured launches", () => {
+  const args = buildSessionArgs(
+    {
+      agent: "codex",
+      acpxAgent: "xacpx-managed-codex-abc123def456",
+      agentCommand: "npx -y @agentclientprotocol/codex-acp@1.1.4",
+      cwd: "/repo",
+      permission,
+    },
+    ["prompt", "-s", "demo", "hi"],
+  );
+  expect(args).toEqual(expect.arrayContaining(["xacpx-managed-codex-abc123def456", "prompt", "-s", "demo", "hi"]));
+  expect(args).not.toContain("--agent");
+});
+
+test("selection: legacy agentCommand falls back to --agent when no acpxAgent is sent (old bridge clients)", () => {
+  const args = buildSessionArgs(
+    { agent: "codex", agentCommand: "npx -y @agentclientprotocol/codex-acp@1.1.4", cwd: "/repo", permission: launchPermission },
+    ["sessions", "list"],
+  );
+  expect(args).toEqual(expect.arrayContaining(["--agent", "npx -y @agentclientprotocol/codex-acp@1.1.4"]));
+});
+
+test("selection: bare driver stays positional", () => {
+  const args = buildSessionArgs(
+    { agent: "pool", cwd: "/repo", permission: launchPermission },
+    ["sessions", "new", "--name", "demo"],
+  );
+  expect(args).toEqual(expect.arrayContaining(["pool", "sessions", "new", "--name", "demo"]));
+  expect(args).not.toContain("--agent");
+});

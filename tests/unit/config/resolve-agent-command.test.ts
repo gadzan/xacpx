@@ -208,4 +208,3 @@ test("windows rejects a multi-token raw command with migration guidance", () => 
     { platform: "win32" },
   )).toThrow(/Migrate it to an argv array in config/);
 });
->>>>>>> 39ec9c86 (feat(config): model structured ACP agent launches)

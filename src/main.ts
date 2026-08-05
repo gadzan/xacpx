@@ -11,7 +11,7 @@ import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
-import { resolveConfiguredAgentCommand } from "./config/resolve-agent-command";
+import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
@@ -607,12 +607,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       throw new Error(`agent "${input.targetAgent}" is not configured`);
     }
 
+    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
       driver: agentConfig.driver,
       settingsPolicy: agentConfig.settingsPolicy,
-      agentCommand: resolveConfiguredAgentCommand(agentConfig, config.transport),
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
       model: agentConfig.model,
       workspace: input.workspace,
       transportSession: input.workerSession,

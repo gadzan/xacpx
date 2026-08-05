@@ -455,11 +455,11 @@ export class AcpxCliTransport implements SessionTransport {
   // `<agent> status --format json`. Returns an empty list when status output is
   // not parseable, so callers can still show the current model.
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
-    const prefix = ["--format", "json", "--cwd", session.cwd, ...this.buildPermissionArgs()];
-    const tail = ["status", "-s", session.transportSession];
-    const args = session.agentCommand
-      ? [...prefix, "--agent", session.agentCommand, ...tail]
-      : [...prefix, session.agent, ...tail];
+    const args = this.buildAgentQueryArgs(
+      this.sessionInput(session),
+      "json",
+      ["status", "-s", session.transportSession],
+    );
     const result = await this.runCommandWithTimeout(this.runCommand, args, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "get-session-model",
@@ -1014,6 +1014,8 @@ export class AcpxCliTransport implements SessionTransport {
     return {
       agent: session.agent,
       agentCommand: session.agentCommand,
+      acpxAgent: session.acpxAgent,
+      rawCommand: session.rawCommand,
       cwd: session.cwd,
       model: session.model,
       permission: this.permissionInput(),
@@ -1026,7 +1028,13 @@ export class AcpxCliTransport implements SessionTransport {
 
   private buildAgentQueryArgs(query: AgentSessionListQuery, format: "json" | "quiet", tail: string[]): string[] {
     return sharedBuildAgentQueryArgs(
-      { agent: query.agent, agentCommand: query.agentCommand, cwd: query.cwd, permission: this.permissionInput() },
+      {
+        agent: query.agent,
+        agentCommand: query.agentCommand,
+        acpxAgent: query.acpxAgent,
+        cwd: query.cwd,
+        permission: this.permissionInput(),
+      },
       format,
       tail,
     );

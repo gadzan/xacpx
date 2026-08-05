@@ -12,6 +12,10 @@ import { terminateAcpxQueueOwner } from "./acpx-queue-owner-launcher";
 export interface ReapTarget {
   agent: string;
   agentCommand?: string;
+  /** Positional acpx agent (overlay alias or bare driver) for structured launches. */
+  acpxAgent?: string;
+  /** Unix-only legacy raw override passed as acpx `--agent`. */
+  rawCommand?: string;
   cwd: string;
   transportSession: string;
 }
@@ -102,7 +106,16 @@ async function defaultResolveRecordId(acpxCommand: string, target: ReapTarget): 
     "quiet",
     "--cwd",
     target.cwd,
-    ...(target.agentCommand ? ["--agent", target.agentCommand] : [target.agent]),
+    // Same launch selector as the transports: raw Unix override → `--agent`;
+    // overlay alias → positional; legacy `agentCommand`-only targets keep the
+    // old `--agent` form; otherwise the bare agent name.
+    ...(target.rawCommand
+      ? ["--agent", target.rawCommand]
+      : target.acpxAgent
+        ? [target.acpxAgent]
+        : target.agentCommand
+          ? ["--agent", target.agentCommand]
+          : [target.agent]),
     "sessions",
     "show",
     target.transportSession,

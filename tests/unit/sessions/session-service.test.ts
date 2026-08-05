@@ -1075,3 +1075,75 @@ test("fresh transport incarnations do not collide across service instances with 
   expect(secondName).toMatch(/^backend:review:reset-\d+$/);
   expect(secondName).not.toBe(firstName);
 });
+
+// ── structured launch metadata ───────────────────────────────────────────────
+
+test("resolves managed launches to an overlay alias with canonical identity", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const session = await service.createSession("alias-run", "codex", "backend");
+
+  expect(session.acpxAgent).toMatch(/^xacpx-managed-codex-[0-9a-f]{12}$/);
+  expect(session.agentCommand).toBe(
+    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+  );
+  expect(session.agentArgv).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://registry.npmjs.org/",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
+    "@agentclientprotocol/codex-acp@1.1.4",
+  ]);
+  expect(session.rawCommand).toBeUndefined();
+});
+
+test("resolves bare built-in drivers positionally", async () => {
+  const config = createConfig();
+  config.agents.pool = { driver: "pool" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const session = await service.createSession("pool-run", "pool", "backend");
+
+  expect(session.acpxAgent).toBe("pool");
+  expect(session.agentCommand).toBeUndefined();
+  expect(session.agentArgv).toBeUndefined();
+});
+
+test("explicit unix command resolves to a raw override with identity", async () => {
+  const config = createConfig();
+  config.agents.codex = { driver: "codex", command: "custom-codex --acp" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const session = await service.createSession("raw-run", "codex", "backend");
+
+  expect(session.rawCommand).toBe("custom-codex --acp");
+  expect(session.agentCommand).toBe("custom-codex --acp");
+  expect(session.acpxAgent).toBe("codex");
+});
+
+test("recorded custom argv stays sticky across restart while managed argv recomputes", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-codex-customhash1234",
+    transport_agent_command: "custom agent",
+    transport_agent_argv: ["/opt/agent", "--acp", ""],
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+  expect(session?.acpxAgent).toBe("xacpx-managed-codex-customhash1234");
+  expect(session?.agentArgv).toEqual(["/opt/agent", "--acp", ""]);
+  expect(session?.agentCommand).toBe("custom agent");
+
+  // Managed-shaped recorded argv is derived: recomputed to the current pin.
+  delete state.sessions.review!.transport_agent_command;
+  state.sessions.review!.transport_acpx_agent = "xacpx-managed-codex-oldhash9999";
+  state.sessions.review!.transport_agent_argv = [
+    "npx", "-y", "@agentclientprotocol/codex-acp@1.0.0",
+  ];
+  const refreshed = new SessionService(config, new MemoryStateStore(), state);
+  const session2 = await refreshed.getSession("review");
+  expect(session2?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.4");
+  expect(session2?.acpxAgent).not.toBe("xacpx-managed-codex-oldhash9999");
+});

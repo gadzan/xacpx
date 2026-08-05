@@ -1,12 +1,9 @@
 import { randomBytes } from "node:crypto";
-import {
-  isLegacyCodexCommand,
-  resolveAgentCommand,
-  resolveConfiguredAgentCommand,
-} from "../config/resolve-agent-command";
-import { preferCurrentManagedAdapterCommand } from "../adapters/adapter-catalog";
+import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import { isManagedAdapterCommand, isManagedAdapterId, MANAGED_ADAPTERS } from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
-import type { AppConfig, WechatReplyMode } from "../config/types";
+import { renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
+import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestration/coordinator-identity";
@@ -48,6 +45,9 @@ interface NativeSessionAttachmentInput {
   workspace: string;
   transportSession: string;
   transportAgentCommand?: string;
+  /** Positional acpx agent for structured launches (overlay alias or driver). */
+  transportAcpxAgent?: string;
+  transportAgentArgv?: string[];
   agentSessionId: string;
   title?: string | null;
   updatedAt?: string;
@@ -151,6 +151,8 @@ export class SessionService {
       workspace,
       transport_session: transportSession,
       transport_agent_command: sameAgentExisting?.transport_agent_command,
+      transport_acpx_agent: sameAgentExisting?.transport_acpx_agent,
+      transport_agent_argv: sameAgentExisting?.transport_agent_argv,
       // Carry the same-agent model so a recreated session is ensured under the
       // same model that gets persisted (keeps acpx and state in agreement).
       model: sameAgentExisting?.model,
@@ -166,8 +168,19 @@ export class SessionService {
     workspace: string,
     transportSession: string,
     transportAgentCommand?: string,
+    transportAcpxAgent?: string,
+    transportAgentArgv?: string[],
   ): Promise<ResolvedSession> {
-    return await this.createLogicalSession(alias, agent, workspace, transportSession, transportAgentCommand);
+    return await this.createLogicalSession(
+      alias,
+      agent,
+      workspace,
+      transportSession,
+      transportAgentCommand,
+      undefined,
+      transportAcpxAgent,
+      transportAgentArgv,
+    );
   }
 
   async attachNativeSession(input: NativeSessionAttachmentInput): Promise<ResolvedSession> {
@@ -183,6 +196,8 @@ export class SessionService {
         title: input.title,
         updatedAt: input.updatedAt,
       },
+      input.transportAcpxAgent,
+      input.transportAgentArgv,
     );
   }
 
@@ -715,29 +730,17 @@ export class SessionService {
     // resolution (including per-session overrides via `session.reply_mode`) is unchanged.
     const channelId = getChannelIdFromChatKey(session.alias);
     const effectiveReplyMode = channelId === "relay" ? "stream" : undefined;
-    const currentAgentCommand = resolveConfiguredAgentCommand(agentConfig, this.config.transport);
-    const configuredAgentCommand = resolveAgentCommand(agentConfig.driver, agentConfig.command);
-    // Derived, machine/version-specific recorded commands must yield to the current
-    // resolution: legacy codex adapter paths and hermes's default/shim commands.
-    const recordedIsDerived = Boolean(session.transport_agent_command) && (
-      (agentConfig.driver === "codex" && isLegacyCodexCommand(session.transport_agent_command!)) ||
-      (agentConfig.driver === "hermes" && (
-        isDefaultHermesCommand(session.transport_agent_command!) ||
-        isHermesShimCommand(session.transport_agent_command!)
-      ))
-    );
-    const recordedAgentCommand = recordedIsDerived ? undefined : session.transport_agent_command;
+    const launch = this.resolveLaunchSpec(session, agentConfig);
 
     return {
       alias: session.alias,
       agent: session.agent,
       driver: agentConfig.driver,
       settingsPolicy: agentConfig.settingsPolicy,
-      agentCommand: configuredAgentCommand ?? preferCurrentManagedAdapterCommand(
-        agentConfig.driver,
-        recordedAgentCommand,
-        currentAgentCommand,
-      ),
+      agentCommand: launch.agentCommand,
+      acpxAgent: launch.acpxAgent,
+      rawCommand: launch.rawCommand,
+      agentArgv: launch.agentArgv,
       // Session-level model wins; otherwise fall back to the agent config default.
       model: session.model ?? agentConfig.model,
       effort: session.effort,
@@ -755,6 +758,54 @@ export class SessionService {
       cwd: workspaceConfig.cwd,
       archived: session.archived === true,
     };
+  }
+
+  /**
+   * The launch spec for a session. Precedence mirrors the historical command
+   * resolution: explicit config overrides win over recorded launches; recorded
+   * launches stay sticky only when genuinely custom. Derived launches (managed
+   * adapter pins, hermes shim, local fallback) are recomputed on restart from the
+   * current pin, so the acpx session identity follows the current pin.
+   */
+  private resolveLaunchSpec(session: LogicalSession, agentConfig: AgentConfig): AgentLaunchSpec {
+    const current = resolveConfiguredAgentLaunch(agentConfig, this.config.transport);
+    // 1. Explicit config `command` (Unix raw override) wins over any recording.
+    if (current.rawCommand) {
+      return current;
+    }
+    // 2. Explicit config `argv` wins over any recording.
+    if (agentConfig.argv) {
+      return current;
+    }
+    // 3. Recorded custom argv (attach-native or config history) stays sticky.
+    const recordedArgv = isDerivedAgentArgv(agentConfig.driver, session.transport_agent_argv)
+      ? undefined
+      : session.transport_agent_argv;
+    if (recordedArgv && session.transport_acpx_agent) {
+      return {
+        acpxAgent: session.transport_acpx_agent,
+        agentCommand: session.transport_agent_command ?? renderAgentArgvIdentity(recordedArgv),
+        agentArgv: recordedArgv,
+      };
+    }
+    // 4. Recorded legacy custom raw command stays sticky so a session launched
+    // with a custom command keeps its identity even if config changed later.
+    // Derived recorded commands (legacy codex paths, hermes shim, managed npx
+    // pins) yield to the current resolution instead.
+    const recordedIsDerived = Boolean(session.transport_agent_command) && (
+      (agentConfig.driver === "codex" && isLegacyCodexCommand(session.transport_agent_command!)) ||
+      (agentConfig.driver === "hermes" && (
+        isDefaultHermesCommand(session.transport_agent_command!) ||
+        isHermesShimCommand(session.transport_agent_command!)
+      )) ||
+      isManagedAdapterCommand(agentConfig.driver, session.transport_agent_command)
+    );
+    const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
+    if (recordedCommand) {
+      return { acpxAgent: agentConfig.driver, rawCommand: recordedCommand, agentCommand: recordedCommand };
+    }
+    // 5. Derived current resolution (managed pin, hermes shim, local fallback, bare driver).
+    return current;
   }
 
   /** Persist (or clear) a session's model override by internal alias. */
@@ -842,7 +893,12 @@ export class SessionService {
     });
   }
 
-  async setSessionTransportAgentCommand(alias: string, transportAgentCommand: string | undefined): Promise<void> {
+  async setSessionTransportAgentCommand(
+    alias: string,
+    transportAgentCommand: string | undefined,
+    transportAcpxAgent?: string,
+    transportAgentArgv?: string[],
+  ): Promise<void> {
     await this.mutate(async () => {
       const session = this.state.sessions[alias];
       if (!session) {
@@ -854,6 +910,16 @@ export class SessionService {
         session.transport_agent_command = normalized;
       } else {
         delete session.transport_agent_command;
+      }
+      if (transportAcpxAgent) {
+        session.transport_acpx_agent = transportAcpxAgent;
+      } else {
+        delete session.transport_acpx_agent;
+      }
+      if (transportAgentArgv && transportAgentArgv.length > 0) {
+        session.transport_agent_argv = [...transportAgentArgv];
+      } else {
+        delete session.transport_agent_argv;
       }
 
       session.last_used_at = new Date().toISOString();
@@ -906,6 +972,8 @@ export class SessionService {
       title?: string | null;
       updatedAt?: string;
     },
+    transportAcpxAgent?: string,
+    transportAgentArgv?: string[],
   ): Promise<ResolvedSession> {
     return await this.mutate(async () => {
       this.validateSession(alias, agent, workspace);
@@ -938,6 +1006,16 @@ export class SessionService {
           ? { transport_agent_command: normalizedTransportAgentCommand }
           : sameAgentExisting?.transport_agent_command
             ? { transport_agent_command: sameAgentExisting.transport_agent_command }
+            : {}),
+        ...(transportAcpxAgent
+          ? { transport_acpx_agent: transportAcpxAgent }
+          : sameAgentExisting?.transport_acpx_agent
+            ? { transport_acpx_agent: sameAgentExisting.transport_acpx_agent }
+            : {}),
+        ...(transportAgentArgv && transportAgentArgv.length > 0
+          ? { transport_agent_argv: [...transportAgentArgv] }
+          : sameAgentExisting?.transport_agent_argv
+            ? { transport_agent_argv: [...sameAgentExisting.transport_agent_argv] }
             : {}),
         mode_id: sameAgentExisting?.mode_id,
         model: sameAgentExisting?.model,
@@ -975,4 +1053,27 @@ export class SessionService {
       throw new Error(t().misc.agentNotRegistered(agent));
     }
   }
+}
+
+/** Derived argv (managed adapter pin, hermes shim, local fallback) is recomputed
+ * from the current config on restart; only custom argv survives in state. */
+function isDerivedAgentArgv(driver: string, argv: string[] | undefined): boolean {
+  if (!argv || argv.length === 0) {
+    return false;
+  }
+  if (isManagedAdapterId(driver)) {
+    const spec = MANAGED_ADAPTERS[driver];
+    return (
+      argv[0] === "npx" &&
+      argv[1] === "-y" &&
+      argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
+    );
+  }
+  if (driver === "hermes") {
+    return argv[1]?.includes("hermes-acp-shim.") === true;
+  }
+  if (driver === "opencode" || driver === "kilocode") {
+    return argv.length === 2 && argv[0] === driver && argv[1] === "acp";
+  }
+  return false;
 }

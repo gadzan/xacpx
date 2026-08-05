@@ -83,6 +83,10 @@ function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
 function isOptionalBoolean(value: unknown): value is boolean | undefined {
   return value === undefined || typeof value === "boolean";
 }
@@ -530,6 +534,8 @@ function isSessionRecord(value: unknown): value is AppState["sessions"][string] 
     isOptionalString(value.agent_session_updated_at) &&
     isOptionalString(value.attached_at) &&
     isOptionalString(value.transport_agent_command) &&
+    isOptionalString(value.transport_acpx_agent) &&
+    (value.transport_agent_argv === undefined || isStringArray(value.transport_agent_argv)) &&
     isOptionalString(value.mode_id) &&
     isOptionalString(value.effort) &&
     (value.reply_mode === undefined || isReplyMode(value.reply_mode)) &&

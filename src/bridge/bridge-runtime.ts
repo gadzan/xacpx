@@ -97,6 +97,9 @@ interface BridgeSessionInput {
   driver?: string;
   settingsPolicy?: ClaudeSettingsPolicy;
   agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+  agentArgv?: string[];
   cwd: string;
   name: string;
   sessionKey?: string;
@@ -202,6 +205,9 @@ export class BridgeRuntime {
   async listAgentSessions(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -232,6 +238,9 @@ export class BridgeRuntime {
   async resumeAgentSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -285,6 +294,9 @@ export class BridgeRuntime {
   async hasSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -306,6 +318,9 @@ export class BridgeRuntime {
   async tailSessionHistory(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -622,6 +637,9 @@ export class BridgeRuntime {
   async getAgentSessionId(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -634,6 +652,9 @@ export class BridgeRuntime {
   async setMode(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -661,6 +682,9 @@ export class BridgeRuntime {
   async setModel(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -690,6 +714,9 @@ export class BridgeRuntime {
   async getSessionModel(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -723,6 +750,9 @@ export class BridgeRuntime {
   async getSessionEffort(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -738,6 +768,9 @@ export class BridgeRuntime {
   async setSessionEffort(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -783,6 +816,9 @@ export class BridgeRuntime {
   async cancel(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -811,6 +847,9 @@ export class BridgeRuntime {
   async removeSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -839,6 +878,9 @@ export class BridgeRuntime {
   async deleteSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -862,6 +904,9 @@ export class BridgeRuntime {
   async freeWarmProcess(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -899,6 +944,9 @@ export class BridgeRuntime {
   async isSessionWarm(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -926,6 +974,9 @@ export class BridgeRuntime {
     input: {
       agent: string;
       agentCommand?: string;
+      acpxAgent?: string;
+      rawCommand?: string;
+      agentArgv?: string[];
       cwd: string;
       name?: string;
       model?: string;
@@ -937,6 +988,8 @@ export class BridgeRuntime {
       {
         agent: input.agent,
         agentCommand: input.agentCommand,
+        acpxAgent: input.acpxAgent,
+        rawCommand: input.rawCommand,
         cwd: input.cwd,
         model: input.model,
         permission: this.permissionInput(),
@@ -950,6 +1003,9 @@ export class BridgeRuntime {
     input: {
       agent: string;
       agentCommand?: string;
+      acpxAgent?: string;
+      rawCommand?: string;
+      agentArgv?: string[];
       cwd: string;
       name: string;
       model?: string;
@@ -960,6 +1016,8 @@ export class BridgeRuntime {
       {
         agent: input.agent,
         agentCommand: input.agentCommand,
+        acpxAgent: input.acpxAgent,
+        rawCommand: input.rawCommand,
         cwd: input.cwd,
         model: input.model,
         permission: this.permissionInput(),

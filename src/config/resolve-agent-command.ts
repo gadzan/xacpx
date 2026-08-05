@@ -134,7 +134,9 @@ export function resolveConfiguredAgentLaunch(
         agentArgv: argv,
       };
     }
-    return { acpxAgent: agent.driver, rawCommand: explicit };
+    // agentCommand is the canonical session identity: for a raw command the raw
+    // string itself (acpx persists it verbatim via splitCommandLine).
+    return { acpxAgent: agent.driver, rawCommand: explicit, agentCommand: explicit };
   }
 
   const argv = structuredAgentArgv(agent, transport);

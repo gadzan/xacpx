@@ -1,4 +1,5 @@
-import { resolveConfiguredAgentCommand } from "../../config/resolve-agent-command";
+import { resolveConfiguredAgentLaunch } from "../../config/resolve-agent-command";
+import type { AppConfig } from "../../config/types";
 import { getChannelIdFromChatKey, scopeDisplayAliasToInternal, toDisplaySessionAlias } from "../../channels/channel-scope";
 import type { AgentSession, AgentSessionListQuery, AgentSessionListResult, ResolvedSession } from "../../transport/types";
 import type { ClaudeSettingsPolicy } from "../../adapters/claude-settings-policy";
@@ -19,6 +20,10 @@ interface NativeTarget {
   agent: string;
   agentDisplayName: string;
   agentCommand?: string;
+  /** Positional acpx agent (overlay alias or bare driver) for structured launches. */
+  acpxAgent?: string;
+  /** Unix-only legacy raw override passed as acpx `--agent`. */
+  rawCommand?: string;
   /** Resolved acpx driver for `agent` (e.g. a `my-codex` agent has driver `codex`). */
   driver?: string;
   settingsPolicy?: ClaudeSettingsPolicy;
@@ -90,6 +95,7 @@ export async function handleNativeSessionList(
   const query: AgentSessionListQuery = {
     agent: target.agent,
     agentCommand: target.agentCommand,
+    ...(target.acpxAgent ? { acpxAgent: target.acpxAgent } : {}),
     ...(target.driver ? { driver: target.driver } : {}),
     ...(target.settingsPolicy ? { settingsPolicy: target.settingsPolicy } : {}),
     cwd: target.cwd,
@@ -222,6 +228,7 @@ async function attachNativeSession(
       workspace: nativeTarget.workspace,
       transportSession,
       ...(target.agentCommand ? { transportAgentCommand: target.agentCommand } : {}),
+      ...(target.acpxAgent ? { transportAcpxAgent: target.acpxAgent } : {}),
       agentSessionId: session.sessionId,
       title: session.title,
       updatedAt: session.updatedAt,
@@ -261,13 +268,25 @@ async function resolveNativeTarget(
   return {
     agent,
     agentDisplayName: displayAgentName(agent),
-    agentCommand: resolveConfiguredAgentCommand(agentConfig, context.config?.transport),
+    ...nativeTargetLaunchFields(agentConfig, context.config?.transport),
     driver: agentConfig.driver,
     settingsPolicy: agentConfig.settingsPolicy,
     workspace: workspaceResolution.workspace,
     workspaceLabel: workspaceResolution.workspaceLabel,
     cwd: workspaceResolution.cwd,
     source: workspaceResolution.source,
+  };
+}
+
+function nativeTargetLaunchFields(
+  agentConfig: { driver: string; command?: string; argv?: string[] },
+  transport?: AppConfig["transport"],
+): Pick<NativeTarget, "agentCommand" | "acpxAgent" | "rawCommand"> {
+  const launch = resolveConfiguredAgentLaunch(agentConfig, transport);
+  return {
+    ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+    ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+    ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
   };
 }
 

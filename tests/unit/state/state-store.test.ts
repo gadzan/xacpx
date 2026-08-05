@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { StateStore } from "../../../src/state/state-store";
+import { createEmptyState } from "../../../src/state/types";
 
 test("loads native session metadata and native session list cache records", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
@@ -1548,5 +1549,47 @@ test("load keeps sessions with legacy source 'weacpx' and new source 'xacpx'", a
   expect(state.sessions["w:legacy"]?.source).toBe("weacpx");
   expect(state.sessions["w:fresh"]?.source).toBe("xacpx");
 
+  await rm(dir, { recursive: true, force: true });
+});
+
+// ── structured launch metadata ───────────────────────────────────────────────
+
+test("round-trips transport_acpx_agent and transport_agent_argv", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const store = new StateStore(join(dir, "state.json"));
+  const state = createEmptyState();
+  state.sessions.demo = {
+    alias: "demo",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:demo",
+    transport_acpx_agent: "xacpx-managed-custom-abc123def456",
+    transport_agent_argv: ["C:\\Program Files\\agent.exe", "--acp", ""],
+    created_at: "2026-08-05T00:00:00.000Z",
+    last_used_at: "2026-08-05T00:00:00.000Z",
+  };
+  await store.save(state);
+  const loaded = await store.load();
+  expect(loaded.sessions.demo.transport_acpx_agent).toBe("xacpx-managed-custom-abc123def456");
+  expect(loaded.sessions.demo.transport_agent_argv).toEqual(["C:\\Program Files\\agent.exe", "--acp", ""]);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("rejects a malformed transport_agent_argv and keeps the record loadable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const store = new StateStore(join(dir, "state.json"));
+  const state = createEmptyState();
+  state.sessions.demo = {
+    alias: "demo",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:demo",
+    transport_agent_argv: ["ok", 42],
+    created_at: "2026-08-05T00:00:00.000Z",
+    last_used_at: "2026-08-05T00:00:00.000Z",
+  };
+  await store.save(state);
+  const loaded = await store.load();
+  expect(loaded.sessions.demo).toBeUndefined();
   await rm(dir, { recursive: true, force: true });
 });
