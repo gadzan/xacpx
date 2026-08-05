@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  decodeBridgeOriginatedRequest,
   encodeBridgePromptThoughtEvent,
   encodeBridgeSessionProgressEvent,
   type BridgeErrorResponse,
@@ -43,5 +44,42 @@ describe("bridge protocol progress + structured error", () => {
     expect(encodeBridgePromptThoughtEvent(event)).toBe(
       `${JSON.stringify(event)}\n`,
     );
+  });
+
+  test("strictly separates Windows launch schemas from Unix command resolution", () => {
+    const base = { direction: "bridge-to-daemon", rpcId: "bridge:1" };
+    expect(decodeBridgeOriginatedRequest({
+      ...base,
+      method: "registerAdapterIntent",
+      params: {
+        id: "launch-1",
+        sessionKey: "session",
+        agentCommand: "adapter",
+        intentToken: "11111111-1111-4111-8111-111111111111",
+        launcherPid: 42,
+        launcherCreationDate: "133801632000000000",
+      },
+    })?.method).toBe("registerAdapterIntent");
+    expect(decodeBridgeOriginatedRequest({
+      ...base,
+      method: "resolveAdapterCommand",
+      params: { id: "launch-2", sessionKey: "session", agentCommand: "adapter" },
+    })?.method).toBe("resolveAdapterCommand");
+    expect(decodeBridgeOriginatedRequest({
+      ...base,
+      method: "resolveAdapterCommand",
+      params: {
+        id: "launch-2",
+        sessionKey: "session",
+        agentCommand: "adapter",
+        intentToken: "11111111-1111-4111-8111-111111111111",
+      },
+    })).toBeNull();
+    expect(decodeBridgeOriginatedRequest({ ...base, method: "launchSettled", params: {
+      id: "launch-1",
+      sessionKey: "session",
+      intentToken: "11111111-1111-4111-8111-111111111111",
+      outcome: "owner-committed",
+    } })).toBeNull();
   });
 });

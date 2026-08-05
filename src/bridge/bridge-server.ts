@@ -8,7 +8,11 @@ import {
   encodeBridgeSessionNoteEvent,
   encodeBridgeSessionProgressEvent,
   type BridgeMethod,
+  type BridgeOriginatedMethod,
+  type BridgeOriginatedParams,
+  type BridgeOriginatedResponse,
   type BridgeResponse,
+  encodeBridgeOriginatedMessage,
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
 import { isClaudeSettingsPolicy, type ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import { PromptCommandError } from "../transport/prompt-output";
@@ -68,10 +72,24 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
 
 export class BridgeServer {
   private readonly scheduler = new BridgeRequestScheduler();
+  private nextDaemonRpcId = 1;
+  private daemonWriter?: (line: string) => void;
+  private readonly pendingDaemonRequests = new Map<string, {
+    resolve(value: unknown): void;
+    reject(error: unknown): void;
+    timer: ReturnType<typeof setTimeout>;
+    cleanup(): void;
+  }>();
 
-  constructor(private readonly runtime: BridgeRuntime) {}
+  constructor(private readonly runtime: BridgeRuntime, private readonly daemonRequestTimeoutMs = 10_000) {}
 
-  async handleLine(line: string, writeLine?: (line: string) => void): Promise<string> {
+  async handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null> {
+    if (writeLine) this.daemonWriter = writeLine;
+    const daemonResponse = parseDaemonOriginatedResponse(line);
+    if (daemonResponse) {
+      this.settleDaemonResponse(daemonResponse);
+      return null;
+    }
     let requestId = extractRequestId(line);
 
     try {
@@ -115,6 +133,72 @@ export class BridgeServer {
         },
       } satisfies BridgeResponse)}\n`;
     }
+  }
+
+  requestDaemon<TResult, TMethod extends BridgeOriginatedMethod = BridgeOriginatedMethod>(
+    method: TMethod,
+    params: BridgeOriginatedParams[TMethod],
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<TResult> {
+    if (!this.daemonWriter) return Promise.reject(new Error("daemon bridge RPC channel is not connected"));
+    if (options.signal?.aborted) return Promise.reject(options.signal.reason ?? new Error("bridge RPC canceled"));
+    const rpcId = `bridge:${this.nextDaemonRpcId++}`;
+    return new Promise<TResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const pending = this.pendingDaemonRequests.get(rpcId);
+        if (!pending) return;
+        this.pendingDaemonRequests.delete(rpcId);
+        pending.cleanup();
+        this.daemonWriter?.(encodeBridgeOriginatedMessage({ direction: "bridge-to-daemon", cancelRpcId: rpcId }));
+        reject(new Error(`bridge-originated request "${method}" timed out`));
+      }, options.timeoutMs ?? this.daemonRequestTimeoutMs);
+      timer.unref?.();
+      const abort = () => {
+        const pending = this.pendingDaemonRequests.get(rpcId);
+        if (!pending) return;
+        this.pendingDaemonRequests.delete(rpcId);
+        pending.cleanup();
+        this.daemonWriter?.(encodeBridgeOriginatedMessage({ direction: "bridge-to-daemon", cancelRpcId: rpcId }));
+        reject(options.signal?.reason ?? new Error("bridge RPC canceled"));
+      };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      const cleanup = () => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", abort);
+      };
+      this.pendingDaemonRequests.set(rpcId, { resolve, reject, timer, cleanup });
+      try {
+        this.daemonWriter!(encodeBridgeOriginatedMessage({
+          direction: "bridge-to-daemon",
+          rpcId,
+          method,
+          params: params as unknown as Record<string, unknown>,
+        }));
+      } catch (error) {
+        this.pendingDaemonRequests.delete(rpcId);
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  handleDisconnect(error: Error = new Error("daemon bridge RPC channel disconnected")): void {
+    const pending = [...this.pendingDaemonRequests.values()];
+    this.pendingDaemonRequests.clear();
+    this.daemonWriter = undefined;
+    for (const item of pending) {
+      item.cleanup();
+      item.reject(error);
+    }
+  }
+
+  private settleDaemonResponse(response: BridgeOriginatedResponse): void {
+    const pending = this.pendingDaemonRequests.get(response.rpcId);
+    if (!pending) return;
+    this.pendingDaemonRequests.delete(response.rpcId);
+    pending.cleanup();
+    if (response.ok) pending.resolve(response.result);
+    else pending.reject(new Error(response.error.message));
   }
 
   private async dispatchRequest(
@@ -375,6 +459,19 @@ export class BridgeServer {
         throw new Error(`unsupported bridge method: ${method}`);
     }
   }
+}
+
+function parseDaemonOriginatedResponse(line: string): BridgeOriginatedResponse | null {
+  let value: unknown;
+  try { value = JSON.parse(line); }
+  catch { return null; }
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  if (item.direction !== "daemon-to-bridge" || typeof item.rpcId !== "string" || typeof item.ok !== "boolean") return null;
+  if (item.ok === true && "result" in item) return item as unknown as BridgeOriginatedResponse;
+  if (item.ok === false && item.error && typeof item.error === "object"
+    && typeof (item.error as Record<string, unknown>).message === "string") return item as unknown as BridgeOriginatedResponse;
+  return null;
 }
 
 function extractRequestId(line: string): string {

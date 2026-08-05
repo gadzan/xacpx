@@ -1,6 +1,7 @@
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
 import type { AcpxCommandStage } from "../command-timeouts";
+import { parseCanonicalFileTime } from "../../process/windows-process-identity";
 
 export type BridgeMethod =
   | "ping"
@@ -28,6 +29,97 @@ export interface BridgeRequest {
   id: string;
   method: BridgeMethod;
   params: Record<string, unknown>;
+}
+
+export type BridgeOriginatedMethod =
+  | "registerAdapterIntent"
+  | "launcherSpawned"
+  | "cancelAdapterIntent"
+  | "launchSettled"
+  | "resolveAdapterCommand";
+
+export interface BridgeOriginatedRequest {
+  direction: "bridge-to-daemon";
+  rpcId: string;
+  method: BridgeOriginatedMethod;
+  params: Record<string, unknown>;
+}
+
+export type BridgeOriginatedResponse =
+  | { direction: "daemon-to-bridge"; rpcId: string; ok: true; result: unknown }
+  | { direction: "daemon-to-bridge"; rpcId: string; ok: false; error: { code: string; message: string } };
+
+export interface BridgeOriginatedCancel {
+  direction: "bridge-to-daemon";
+  cancelRpcId: string;
+}
+
+export interface RegisterAdapterIntentParams {
+  id: string;
+  sessionKey: string;
+  agentCommand: string;
+  intentToken: string;
+  launcherPid: number;
+  launcherCreationDate: string;
+}
+export interface AdapterTokenParams { id: string; sessionKey: string; intentToken: string }
+export interface LaunchSettledParams extends AdapterTokenParams {
+  outcome: "owner-committed" | "launch-failed";
+  ownerPid?: number;
+  ownerAcpxRecordId?: string;
+}
+export interface ResolveAdapterCommandParams { id: string; sessionKey: string; agentCommand: string }
+
+export interface BridgeOriginatedParams {
+  registerAdapterIntent: RegisterAdapterIntentParams;
+  launcherSpawned: AdapterTokenParams;
+  cancelAdapterIntent: AdapterTokenParams;
+  launchSettled: LaunchSettledParams;
+  resolveAdapterCommand: ResolveAdapterCommandParams;
+}
+
+const LAUNCH_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function decodeBridgeOriginatedRequest(value: unknown): BridgeOriginatedRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  if (item.direction !== "bridge-to-daemon" || typeof item.rpcId !== "string" || !item.rpcId
+    || typeof item.method !== "string" || !item.params || typeof item.params !== "object" || Array.isArray(item.params)) return null;
+  const params = item.params as Record<string, unknown>;
+  if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
+  switch (item.method as BridgeOriginatedMethod) {
+    case "registerAdapterIntent":
+      if (typeof params.agentCommand !== "string" || !params.agentCommand || !validTokenParams(params)
+        || !Number.isSafeInteger(params.launcherPid) || Number(params.launcherPid) <= 0
+        || parseCanonicalFileTime(params.launcherCreationDate) === null) return null;
+      break;
+    case "launcherSpawned":
+    case "cancelAdapterIntent":
+      if (!validTokenParams(params)) return null;
+      break;
+    case "launchSettled":
+      if (!validTokenParams(params) || (params.outcome !== "owner-committed" && params.outcome !== "launch-failed")) return null;
+      if (params.outcome === "owner-committed"
+        && (!Number.isSafeInteger(params.ownerPid) || Number(params.ownerPid) <= 0
+          || typeof params.ownerAcpxRecordId !== "string" || !params.ownerAcpxRecordId)) return null;
+      break;
+    case "resolveAdapterCommand":
+      if (typeof params.agentCommand !== "string" || !params.agentCommand || "intentToken" in params) return null;
+      break;
+    default:
+      return null;
+  }
+  return item as unknown as BridgeOriginatedRequest;
+}
+
+function validTokenParams(params: Record<string, unknown>): boolean {
+  return typeof params.intentToken === "string" && LAUNCH_TOKEN.test(params.intentToken);
+}
+
+export function encodeBridgeOriginatedMessage(
+  message: BridgeOriginatedRequest | BridgeOriginatedResponse | BridgeOriginatedCancel,
+): string {
+  return `${JSON.stringify(message)}\n`;
 }
 
 export type EnsureSessionProgressStage = "spawn" | "initializing" | "ready";

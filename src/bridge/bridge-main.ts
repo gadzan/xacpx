@@ -19,7 +19,8 @@ type BridgeInput = AsyncIterable<string> & {
 type BridgeWriter = (chunk: string) => boolean | void;
 
 type BridgeLineHandler = {
-  handleLine(line: string, writeLine?: (line: string) => void): Promise<string>;
+  handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null>;
+  handleDisconnect?(error?: Error): void;
 };
 
 export async function processBridgeInput(options: {
@@ -35,7 +36,7 @@ export async function processBridgeInput(options: {
       const response = await options.server.handleLine(line, (chunk) => {
         options.write(chunk);
       });
-      options.write(response);
+      if (response !== null) options.write(response);
     })();
     const observedPendingWrite = pendingWrite.catch((error) => {
       if (firstError === undefined) {
@@ -50,6 +51,7 @@ export async function processBridgeInput(options: {
     });
   }
 
+  options.server.handleDisconnect?.();
   await Promise.allSettled(pendingWrites);
 
   if (firstError !== undefined) {
