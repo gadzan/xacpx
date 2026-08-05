@@ -37,6 +37,8 @@ import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-
 import { terminateProcessTree } from "../../process/terminate-process-tree";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
+import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
+import { renderAgentArgvIdentity } from "../../config/agent-launch";
 import { isProcessAlive } from "../../daemon/daemon-files";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
@@ -267,6 +269,7 @@ export class AcpxCliTransport implements SessionTransport {
   // CommandRouter (emitted before the call) but will not receive mid-flight updates.
   async ensureSession(session: ResolvedSession, _onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
     this.invalidateRecordIdCache(session);
+    await this.migrateLegacySessionArgvIfNeeded(session);
     try {
       await this.runEnsureSession(session);
     } catch (error) {
@@ -714,6 +717,37 @@ export class AcpxCliTransport implements SessionTransport {
     const record = parseAcpxSessionRecordId(result.stdout);
     if (record) return record;
     throw new Error("failed to resolve acpx session record id");
+  }
+
+  /**
+   * Backfill `agent_argv` into a legacy acpx session record before the session is
+   * ensured/launched, so Windows can resume it with exact boundaries. Runs only
+   * for structured launches (agentArgv present); fails closed on identity or argv
+   * mismatches rather than reusing a session that would launch a different agent.
+   */
+  private async migrateLegacySessionArgvIfNeeded(session: ResolvedSession): Promise<void> {
+    if (!session.agentArgv || session.agentArgv.length === 0) {
+      return;
+    }
+    let recordId: string | null = null;
+    try {
+      ({ acpxRecordId: recordId } = await this.readSessionRecord(session));
+    } catch {
+      return; // no record yet → the ensure below creates one from the overlay argv
+    }
+    const result = await migrateSessionArgvFile(recordId, {
+      agentCommand: renderAgentArgvIdentity(session.agentArgv),
+      agentArgv: session.agentArgv,
+    }, {
+      beforeWrite: (id) => terminateAcpxQueueOwner(id),
+    });
+    if (result.status === "rejected" || result.status === "invalid") {
+      const detail = result.detail ? `: ${result.detail}` : "";
+      throw new Error(
+        `session record ${recordId} cannot be migrated to a structured launch${detail}. ` +
+          "Recreate the session (sessions close + new) or fix the agent config.",
+      );
+    }
   }
 
   async getAgentSessionId(session: ResolvedSession): Promise<string | undefined> {

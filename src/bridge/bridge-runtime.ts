@@ -20,6 +20,8 @@ import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
+import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
+import { renderAgentArgvIdentity } from "../config/agent-launch";
 import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
@@ -390,6 +392,10 @@ export class BridgeRuntime {
     onProgress?: (progress: EnsureSessionProgress) => void,
   ): Promise<Record<string, never>> {
     onProgress?.("spawn");
+    // Structured launches first migrate a legacy record (agent_command present,
+    // agent_argv missing) so acpx can resume it on Windows with exact argv
+    // boundaries. No record → the ensure below creates one from the overlay argv.
+    await this.migrateLegacySessionArgvIfNeeded(input);
     const timeoutMs = this.sessionInitTimeoutMs();
     // One shared deadline for every subprocess step (ensure, show probe, new,
     // verbose-fallback retry): each step only gets the remaining budget so the
@@ -626,6 +632,42 @@ export class BridgeRuntime {
       throw new Error(result.stderr || result.stdout || "sessions show failed");
     }
     return result.stdout;
+  }
+
+  /**
+   * Backfill `agent_argv` into a legacy acpx session record before the session is
+   * ensured/launched, so Windows can resume it with exact boundaries. Runs only
+   * for structured launches (agentArgv present); fails closed on identity or argv
+   * mismatches rather than reusing a session that would launch a different agent.
+   */
+  private async migrateLegacySessionArgvIfNeeded(input: BridgeSessionInput): Promise<void> {
+    if (!input.agentArgv || input.agentArgv.length === 0) {
+      return;
+    }
+    let recordId: string | null = null;
+    try {
+      recordId = parseAcpxSessionRecordId(
+        await this.readRawSessionRecord(input, "read-session-record", "quiet"),
+      )?.acpxRecordId ?? null;
+    } catch {
+      return; // no record yet → ensure creates one from the overlay argv
+    }
+    if (!recordId) {
+      return;
+    }
+    const result = await migrateSessionArgvFile(recordId, {
+      agentCommand: renderAgentArgvIdentity(input.agentArgv),
+      agentArgv: input.agentArgv,
+    }, {
+      beforeWrite: (id) => terminateAcpxQueueOwner(id),
+    });
+    if (result.status === "rejected" || result.status === "invalid") {
+      const detail = result.detail ? `: ${result.detail}` : "";
+      throw new Error(
+        `session record ${recordId} cannot be migrated to a structured launch${detail}. ` +
+          "Recreate the session (sessions close + new) or fix the agent config.",
+      );
+    }
   }
 
   private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
