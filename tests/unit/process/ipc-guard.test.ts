@@ -25,7 +25,7 @@ test("creates an owned config root before canonicalizing it", async () => {
   const parent = await mkdtemp(join(tmpdir(), "ipc-guard-create-"));
   roots.push(parent);
   const configRoot = join(parent, "missing", "config");
-  expect(await canonicalizeIpcGuardConfigRoot(configRoot)).toBe(await realpath(configRoot));
+  expect(await canonicalizeIpcGuardConfigRoot(configRoot)).toBe(normalizeCanonicalIpcPath(await realpath(configRoot)));
 });
 
 test("read-only canonicalization resolves a missing leaf through the nearest existing real ancestor", async () => {
@@ -78,7 +78,7 @@ windowsTest("real Windows guard is exclusive across processes and crash-released
   const root = await mkdtemp(join(tmpdir(), "ipc-guard-process-"));
   roots.push(root);
   const helper = join(process.cwd(), "tests", "helpers", "ipc-guard-child.ts");
-  const spawnHelper = (hold?: boolean) => spawn("node", [helper, root, ...(hold ? ["hold"] : [])], {
+  const spawnHelper = (hold?: boolean) => spawn(process.execPath, ["--experimental-strip-types", helper, root, ...(hold ? ["hold"] : [])], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const waitForOutput = (child: ReturnType<typeof spawn>, expected: RegExp) => new Promise<string>((resolveOutput, reject) => {
