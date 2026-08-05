@@ -580,7 +580,7 @@ export class BridgeRuntime {
           agentCommand: input.agentCommand,
         })
       : undefined;
-    await this.queueOwnerLauncher.launch({
+    const prepared = await this.queueOwnerLauncher.launch({
       acpxRecordId: record.acpxRecordId,
       coordinatorSession: input.mcpCoordinatorSession,
       ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
@@ -590,6 +590,7 @@ export class BridgeRuntime {
       ...(adapterContext ? { adapterContext } : {}),
       ...(env ? { env } : {}),
     });
+    if (prepared?.agentCommand) input.agentCommand = prepared.agentCommand;
   }
 
   private async readRawSessionRecord(

@@ -1030,13 +1030,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // verified `stop`, crashes, reboots) — safe because this daemon has
   // not launched any owners yet, so every recorded owner is stale. Best-effort and
   // bounded: failures/timeouts just leave owners to expire on TTL.
-  const reapWarmQueueOwners = async (phase: "startup" | "shutdown"): Promise<void> => {
+  const reapWarmQueueOwners = async (phase: "startup" | "periodic" | "shutdown"): Promise<void> => {
     try {
       if (deps.orphanRegistry && deps.daemonIdentity) {
         const outcome = await sweepWindowsOrphans(
           deps.orphanRegistry,
           deps.daemonIdentity.generationId,
           {
+            phase,
             onWarning: (message) => {
               void logger.info("transport.orphan_reap.degraded", message, { phase }).catch(() => {});
             },
@@ -1100,7 +1101,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     control,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     ...(deps.orphanRegistry && deps.daemonIdentity
-      ? { reconcileOrphans: () => reapWarmQueueOwners("startup") }
+      ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
       : {}),
     dispose: async () => {
       scheduledScheduler.stop();

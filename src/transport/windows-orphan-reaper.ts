@@ -30,6 +30,8 @@ export interface WindowsOrphanSweepResult {
 }
 
 export interface WindowsOrphanReaperDeps extends WindowsProcessWorkerOptions {
+  /** Periodic/startup sweeps preserve owners created by this generation. */
+  phase?: "startup" | "periodic" | "shutdown";
   now?: () => number;
   snapshotToken?: typeof snapshotWindowsProcessesByToken;
   probeIdentity?: typeof probeWindowsProcessIdentity;
@@ -70,7 +72,7 @@ export async function sweepWindowsOrphans(
   const owners = await registry.readCategory("owners");
   if (!owners) return unreadable(result, deps, "owner registry is unreadable");
   for (const { filename, record } of owners) {
-    try { await reconcileOwner(registry, filename, record as OwnerRecord, result, deps); }
+    try { await reconcileOwner(registry, filename, record as OwnerRecord, currentGenerationId, result, deps); }
     catch (error) { retainDegraded(result, deps, "owner reconciliation failed", error); }
   }
 
@@ -123,9 +125,14 @@ async function reconcileOwner(
   registry: OrphanRegistry,
   filename: string,
   owner: OwnerRecord,
+  currentGenerationId: string,
   result: WindowsOrphanSweepResult,
   deps: WindowsOrphanReaperDeps,
 ): Promise<void> {
+  if ((deps.phase ?? "startup") !== "shutdown" && owner.generationId === currentGenerationId) {
+    result.ownersRetained += 1;
+    return;
+  }
   if (!owner.fingerprint) {
     result.ownersRetained += 1;
     retainDegraded(result, deps, "owner has no killable fingerprint");

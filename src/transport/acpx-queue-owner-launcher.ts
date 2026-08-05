@@ -11,7 +11,7 @@ import { quoteIfNeeded } from "../util/text.js";
 import { getLocale } from "../i18n";
 import { coreEnv } from "../runtime/core-env";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
-import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
+import { probeWindowsProcessIdentity, type BatchTarget } from "../process/windows-process-tree";
 
 export interface AcpxMcpServerSpec {
   name: string;
@@ -22,6 +22,8 @@ export interface AcpxMcpServerSpec {
 
 export interface QueueOwnerPayload {
   sessionId: string;
+  /** Command selected by the durable adapter transaction for this owner. */
+  agentCommand?: string;
   permissionMode: PermissionMode;
   nonInteractivePermissions: NonInteractivePermissions;
   ttlMs: number;
@@ -151,7 +153,7 @@ export class AcpxQueueOwnerLauncher {
   private readonly uuid: () => string;
   private readonly sleep: (ms: number) => Promise<void>;
   /** Per-session mutex: serializes terminate+spawn to prevent concurrent clobbering. */
-  private readonly launchLocks = new Map<string, Promise<void>>();
+  private readonly launchLocks = new Map<string, Promise<{ agentCommand?: string }>>();
 
   constructor(options: AcpxQueueOwnerLauncherOptions) {
     this.acpxCommand = options.acpxCommand;
@@ -169,7 +171,7 @@ export class AcpxQueueOwnerLauncher {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  async launch(input: LaunchQueueOwnerInput): Promise<void> {
+  async launch(input: LaunchQueueOwnerInput): Promise<{ agentCommand?: string }> {
     const key = input.acpxRecordId;
     const previous = this.launchLocks.get(key) ?? Promise.resolve();
     const next = previous.then(
@@ -177,7 +179,7 @@ export class AcpxQueueOwnerLauncher {
       () => this.doLaunch(input),
     );
     // Store a swallowed version so the chain never rejects for the next waiter.
-    const tracked = next.catch(() => {});
+    const tracked = next.catch(() => ({ agentCommand: undefined }));
     this.launchLocks.set(key, tracked);
     void tracked.finally(() => {
       if (this.launchLocks.get(key) === tracked) {
@@ -187,7 +189,7 @@ export class AcpxQueueOwnerLauncher {
     return next;
   }
 
-  private async doLaunch(input: LaunchQueueOwnerInput): Promise<void> {
+  private async doLaunch(input: LaunchQueueOwnerInput): Promise<{ agentCommand?: string }> {
     await this.terminateOwner(input.acpxRecordId);
 
     const managedShape = classifyPreinstalledAdapterCommandShape(input.agentCommand);
@@ -200,6 +202,7 @@ export class AcpxQueueOwnerLauncher {
     const adapter = input.adapterContext;
     const intentToken = adapter ? this.uuid() : undefined;
     let preparedGeneration: string | undefined;
+    let launchAgentCommand = input.agentCommand;
     if (adapter && intentToken) {
       let prepared: { agentCommand: string; generationId?: string };
       try {
@@ -208,6 +211,11 @@ export class AcpxQueueOwnerLauncher {
         if (adapter.platform === "win32") await adapter.cancel(intentToken).catch(() => {});
         throw error;
       }
+      launchAgentCommand = prepared.agentCommand;
+      // Keep the adapter context aligned with the durable command selected for
+      // this transaction. Callers use the returned value to build the current
+      // prompt/launch, rather than only updating state for a future request.
+      adapter.agentCommand = prepared.agentCommand;
       preparedGeneration = prepared.generationId;
       if (adapter.platform === "win32") {
         if (!preparedGeneration || !(await adapter.isGenerationCurrent(preparedGeneration))) {
@@ -219,6 +227,7 @@ export class AcpxQueueOwnerLauncher {
 
     const payload = buildQueueOwnerPayload({
       sessionId: input.acpxRecordId,
+      ...(launchAgentCommand ? { agentCommand: launchAgentCommand } : {}),
       permissionMode: input.permissionMode,
       nonInteractivePermissions: input.nonInteractivePermissions,
       ttlMs: this.ttlMs,
@@ -248,7 +257,7 @@ export class AcpxQueueOwnerLauncher {
       if (adapter && intentToken && adapter.platform === "win32") await adapter.cancel(intentToken);
       throw error;
     }
-    if (!adapter || !intentToken || adapter.platform !== "win32") return;
+    if (!adapter || !intentToken || adapter.platform !== "win32") return { agentCommand: launchAgentCommand };
 
     await adapter.spawned(intentToken);
     const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
@@ -259,7 +268,7 @@ export class AcpxQueueOwnerLauncher {
         ownerPid,
         ownerAcpxRecordId: input.acpxRecordId,
       });
-      return;
+      return { agentCommand: launchAgentCommand };
     }
     const status = await this.probeSpawnedProcess(spawnedPid);
     if (status === "exited") {
@@ -407,7 +416,19 @@ export async function terminateAcpxQueueOwner(sessionId: string): Promise<void> 
     return;
   }
   if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
-    await terminateProcessTree(owner.pid, { detachedProcessGroup: true });
+    if (process.platform === "win32") {
+      const identity = await probeWindowsProcessIdentity(owner.pid);
+      if (identity.status !== "found") return;
+      const target: BatchTarget = {
+        pid: owner.pid,
+        creationDate: identity.identity.creationDate,
+        executablePath: identity.identity.executablePath,
+      };
+      const result = await terminateProcessTree(target, { detachedProcessGroup: true });
+      if (!result || !["killed", "already-exited", "skipped-replaced"].includes(result.rootOutcome)) return;
+    } else {
+      await terminateProcessTree(owner.pid, { detachedProcessGroup: true });
+    }
   }
   await unlink(lockPath).catch(() => {});
 }

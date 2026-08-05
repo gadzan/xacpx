@@ -684,7 +684,7 @@ export class AcpxCliTransport implements SessionTransport {
     const adapterContext = adapterId && session.agentCommand
       ? this.createAdapterContext?.({ id: adapterId, sessionKey: session.alias, agentCommand: session.agentCommand })
       : undefined;
-    await this.queueOwnerLauncher.launch({
+    const prepared = await this.queueOwnerLauncher.launch({
       acpxRecordId: record.acpxRecordId,
       coordinatorSession: session.mcpCoordinatorSession,
       ...(session.mcpSourceHandle ? { sourceHandle: session.mcpSourceHandle } : {}),
@@ -695,6 +695,7 @@ export class AcpxCliTransport implements SessionTransport {
       ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
       ...(env ? { env } : {}),
     });
+    if (prepared?.agentCommand) session.agentCommand = prepared.agentCommand;
   }
 
   private async readSessionRecord(session: ResolvedSession): Promise<{ acpxRecordId: string; agentSessionId?: string }> {

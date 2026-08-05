@@ -66,6 +66,18 @@ function verifiedDeps(batch: TerminateProcessTreeResult) {
 }
 
 describe("sweepWindowsOrphans owners", () => {
+  test("periodic/startup sweep preserves owners from the current generation", async () => {
+    const store = await registry();
+    await store.writeOwner(owner({ generationId: CURRENT_GENERATION }));
+    const terminate = async () => { throw new Error("must not terminate current owner"); };
+    const result = await sweepWindowsOrphans(store, CURRENT_GENERATION, {
+      ...verifiedDeps({ rootOutcome: "killed", outcomes: [] }),
+      terminateTree: terminate,
+    });
+    expect(result.ownersRetained).toBe(1);
+    expect(await store.readCategory("owners")).toHaveLength(1);
+  });
+
   test("all explicit root terminal and retry outcomes converge by their declared groups", async () => {
     for (const rootOutcome of ["killed", "already-exited", "skipped-replaced"] as const) {
       const store = await registry();

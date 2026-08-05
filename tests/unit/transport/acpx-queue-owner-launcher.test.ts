@@ -307,6 +307,28 @@ test("uses one launch token for registration, argv, spawned ack, and owner settl
   ]);
 });
 
+test("returns the durable adapter command selected during prepare for this launch", async () => {
+  const preparedCommand = '"C:/node.exe" "C:/runtime/adapters/codex/releases/2/node_modules/@agentclientprotocol/codex-acp/bin.js"';
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    uuid: () => TOKEN,
+    spawnOwner: async () => 700,
+    terminateOwner: async () => {},
+    readOwnerPid: async () => 701,
+  });
+  const result = await launcher.launch({
+    acpxRecordId: "record-1",
+    coordinatorSession: "main",
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentCommand: MANAGED_COMMAND,
+    adapterContext: adapterContext({
+      prepare: async () => ({ agentCommand: preparedCommand, generationId: "g" }),
+    }),
+  });
+  expect(result.agentCommand).toBe(preparedCommand);
+});
+
 test("generation fencing cancels the registered intent and never spawns", async () => {
   const events: string[] = [];
   const launcher = new AcpxQueueOwnerLauncher({
