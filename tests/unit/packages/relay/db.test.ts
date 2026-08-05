@@ -125,3 +125,32 @@ test("idempotency: running initSchema 2× on a fresh DB is stable", async () => 
   expect(idx).toBeDefined();
   db.close();
 });
+
+test("initSchema migrates a pre-origin_queue_item_id messages table without failing", async () => {
+  const db = await createSqlDriver(":memory:");
+  // Simulate a DB created by an earlier relay version: messages lacks
+  // origin_queue_item_id (the index for it must be created AFTER the ALTER, or
+  // initSchema fails with "no such column" before the migration ever runs).
+  db.exec(`
+    CREATE TABLE messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      instance_id TEXT NOT NULL,
+      session_alias TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('in','out')),
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      structured TEXT,
+      attachments TEXT,
+      queue_item_id TEXT,
+      queue_fallback INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  initSchema(db); // must not throw
+  const cols = db.all<{ name: string }>("PRAGMA table_info(messages)").map((c) => c.name);
+  expect(cols).toContain("origin_queue_item_id");
+  const idx = db.get<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_origin_queue'"
+  );
+  expect(idx).toBeDefined();
+  db.close();
+});

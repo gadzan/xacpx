@@ -209,6 +209,71 @@ test("a queueItemId that already executed before a restart is not re-inserted on
   runtime.close();
 });
 
+test("a recovery fallback row is finalized as executed, never stuck queued", async () => {
+  const { runtime } = await seeded();
+  // A fallback row (queue_fallback = 1, queue_item_id set) survives from an earlier
+  // recovery/race. No live HTTP RPC will ever come to merge it (markQueued), so the
+  // next sync must FINALIZE it as executed instead of leaving it queued forever (and
+  // promoteQueued() only matches queue_fallback = 0, so it cannot do the job).
+  runtime.messages.appendQueuedFallback({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" }, "deploy it");
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("fallback");
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "deploy it", text: "done", queueItemId: "q1", recoveryId: "rA" },
+    ],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "deploy it"], ["out", "done"]]);
+  expect(rows.filter((m) => m.queueItemId).length).toBe(0); // queued marker cleared
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("executed");
+  runtime.close();
+});
+
+test("an absent queueItemId is persisted as an EXECUTED row, not a pending fallback", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "deploy it", text: "done", queueItemId: "q1", recoveryId: "rA" },
+    ],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "deploy it"], ["out", "done"]]);
+  expect(rows[0]!.queueItemId).toBeUndefined(); // not queued — the original HTTP request is gone
+  expect(runtime.messages.queuedState({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q1" })).toBe("executed");
+  // A re-sent sync dedups it via the executed association.
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "backend", ok: true, prompt: "deploy it", text: "done", queueItemId: "q1", recoveryId: "rA" },
+    ],
+  });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["in", "deploy it"], ["out", "done"]]);
+  runtime.close();
+});
+
+test("a scheduled turn's prompt is not re-inserted when its row is no longer trailing", async () => {
+  const { runtime } = await seeded();
+  const scheduled = { taskId: "t1", executeAt: "2026-06-16T09:00:00.000Z" };
+  // Scheduled turn A's prompt was persisted (with its schedule origin) while the hub
+  // was up; a LATER queued row (B) pushed it out of the trailing position.
+  runtime.messages.append("i1", "backend", "in", "nightly deploy", { scheduled });
+  runtime.messages.append("i1", "backend", "in", "queued later");
+  expect(runtime.messages.hasScheduledInbound("i1", "backend", "t1")).toBe(true);
+  // Restart: the sync restores A (running) with its scheduled origin. Text/trailing
+  // matching would re-insert the prompt (the trailing row is B) — taskId matching must
+  // not.
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "work", reasoning: "", steps: [], prompt: "nightly deploy", scheduled }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "nightly deploy"], ["in", "queued later"]]);
+  runtime.close();
+});
+
 test("an active-turn prompt backfill failure disconnects the instance for a resync", async () => {
   const { runtime, records } = await seeded();
   const disconnects: string[] = [];

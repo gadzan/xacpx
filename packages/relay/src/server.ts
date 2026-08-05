@@ -434,8 +434,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           // a queueItemId that already executed (promoted before a restart) is
           // recognized as "already in history" rather than re-appended — text matching
           // cannot tell a redelivery from a user sending the identical prompt twice.
-          // Without a queueItemId, backfill the plain `in` row only when it is not
-          // already the trailing row (a redelivered sync / already-persisted prompt).
+          // A surviving fallback row (queue_fallback = 1) is finalized as executed —
+          // the HTTP RPC that would have merged it died with the pre-restart hub.
+          // Scheduled turns dedup by structured.scheduled.taskId (a later queued row
+          // can push their prompt out of the trailing position). Plain prompts use the
+          // trailing-row check.
           const backfillInboundPrompt = (
             sessionAlias: string,
             opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto },
@@ -444,18 +447,30 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
               const state = messages.queuedState(correlation);
               if (state === "pending") {
-                // A queued row still carries the id → move it to its execution position.
+                // A real queued row still carries the id → move it to its execution
+                // position.
                 messages.promoteQueued(correlation);
+              } else if (state === "fallback") {
+                // A recovery/race fallback row — finalize it as executed (promoteQueued
+                // only matches queue_fallback = 0, so it would silently no-op).
+                messages.finalizeQueuedFallback(correlation);
               } else if (state === "absent" && opts.prompt) {
-                // Never existed (queued row pruned, or the turn started from a path
-                // without one) → the fallback row is the only way the prompt lands.
-                messages.appendQueuedFallback(correlation, opts.prompt);
+                // Never existed → persist it as ALREADY-EXECUTED (queue_item_id NULL,
+                // origin association recorded). A temporary fallback row would never be
+                // merged (no HTTP response is coming) and would read as "queued" forever.
+                messages.appendExecutedQueuedFallback(correlation, opts.prompt);
               }
-              // "executed" → already promoted before a restart; the prompt row exists,
-              // appending a duplicate would corrupt history.
+              // "executed" → already promoted/finalized; the prompt row exists, appending
+              // a duplicate would corrupt history.
               return;
             }
-            if (opts.prompt !== undefined && !hasTrailingPrompt(sessionAlias, opts.prompt)) {
+            if (opts.prompt !== undefined) {
+              if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) {
+                return; // scheduled origin already has its inbound row (by taskId)
+              }
+              if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) {
+                return; // plain prompt already the trailing row
+              }
               messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
             }
           };

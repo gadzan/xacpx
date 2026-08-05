@@ -171,7 +171,6 @@ export function initSchema(db: SqlDriver): void {
       origin_queue_item_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
-    CREATE INDEX IF NOT EXISTS idx_messages_origin_queue ON messages (instance_id, session_alias, origin_queue_item_id);
     CREATE TABLE IF NOT EXISTS recovery_receipts (
       instance_id TEXT NOT NULL,
       recovery_id TEXT NOT NULL,
@@ -181,6 +180,9 @@ export function initSchema(db: SqlDriver): void {
   `);
 
   // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).
+  // NOTE: the origin_queue_item_id INDEX must be created AFTER the ALTER below — a
+  // pre-existing DB lacks the column, so creating the index up front would fail with
+  // "no such column" before the migration ever runs.
   const messageCols = db.all<{ name: string }>("PRAGMA table_info(messages)");
   if (!messageCols.some((c) => c.name === "attachments")) {
     db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
@@ -193,6 +195,8 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "origin_queue_item_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN origin_queue_item_id TEXT");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_messages_origin_queue ON messages (instance_id, session_alias, origin_queue_item_id)");
   }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_origin_queue ON messages (instance_id, session_alias, origin_queue_item_id);
+  `);
 }

@@ -202,10 +202,15 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         const accepted = event.chunk.slice(0, STATE_SYNC_TEXT_CAP - a.text.length);
         a.text += accepted;
         pushTextPart(a, accepted);
+        // Bump on the state change even when no text was accepted: a chunk arriving
+        // exactly at the cap flips `truncated` false → true with accepted === "" —
+        // the generation must reflect that change or an older prune callback could
+        // still consider the alias unchanged and delete it.
+        const wasTruncated = a.truncated;
         if (accepted.length < event.chunk.length) {
           a.truncated = true;
         }
-        if (accepted) bump(event.sessionAlias);
+        if (accepted || a.truncated !== wasTruncated) bump(event.sessionAlias);
         return;
       }
       case "tool-event": {

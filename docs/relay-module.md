@@ -258,11 +258,14 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - **同 alias 的已完成回合与运行中回合是不同 turn**（turn A 完成后队列又启动同 session 的 turn B）：
   用 `recoveryId` 区分，不再按 `sessionAlias` 跳过；只有 recoveryId 完全相同（真矛盾）才跳过。
 - **`in` 行统一对账 `backfillInboundPrompt`**（sync 的 finished 回填与运行中回合共用）：带
-  `queueItemId` 时先查 `MessageStore.queuedState()` 三态——
-  `pending`（queued 行还在，`promoteQueued()` 移到执行位置）/ `executed`（已 promote，`messages`
-  的 `origin_queue_item_id` 保留关联，**不再重复插入**——文本匹配无法区分重发与用户重复发相同
-  prompt）/ `absent`（才 `appendQueuedFallback()`）；无 `queueItemId` 时才做普通回填（仅当该
-  prompt 不是最后一行）。`finishedOffline` / `turns` 都携带 `queueItemId`/`scheduled`。
+  `queueItemId` 时先查 `MessageStore.queuedState()` 四态——`pending`（真实 queued 行还在，
+  `promoteQueued()` 移到执行位置）/ `fallback`（恢复/竞态遗留的临时行，`finalizeQueuedFallback()`
+  落定为 executed，不再永久显示为 queued）/ `executed`（已 promote/finalize，`messages` 的
+  `origin_queue_item_id` 保留关联，**不再重复插入**——文本匹配无法区分重发与用户重复发相同
+  prompt）/ `absent`（`appendExecutedQueuedFallback()` 直接以 executed 形态落库，不再创建等待
+  HTTP 合并的临时行——原请求已随重启消亡）；无 `queueItemId` 时，**scheduled turn 按
+  `structured.scheduled.taskId` 去重**（后续 queued 行可能把其 prompt 挤出 trailing 位置），
+  普通 prompt 才用最后一行检查。`finishedOffline` / `turns` 都携带 `queueItemId`/`scheduled`。
 - **daemon 侧 `turn-finished.text` 为完整累计回复**：`SessionTurnRunner` 累计实际发送的规范化
   chunk（streaming adapter 常让 `response.text` 缺失或只有末段），hub 无缓冲 fallback 不再依赖
   不可靠的 `response.text`。

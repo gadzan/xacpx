@@ -188,6 +188,24 @@ test("finishedOffline is a FIFO capped at 32 with a logged warning on eviction",
   expect(warns.some((l) => l.event === "relay.state_mirror.pending_finished_evicted")).toBe(true);
 });
 
+test("a truncated flip exactly at the cap still bumps the alias generation", () => {
+  const { mirror } = makeMirror(() => false);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend" });
+  // The accumulator reaches the cap EXACTLY — not yet truncated.
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "x".repeat(STATE_SYNC_TEXT_CAP) });
+  expect(mirror.buildStateSync(LIVE).snapshot.turns[0]!.truncated).toBeUndefined();
+  // Snapshot while the turn is still untruncated.
+  const { aliases } = mirror.buildStateSync(new Set([]));
+  // A chunk arriving exactly at the cap flips truncated false → true with accepted ===
+  // "" — the generation must reflect the change, or the older prune callback would
+  // consider the alias unchanged and delete it.
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "more" });
+  mirror.pruneStateMirror(new Set([]), aliases);
+  const after = mirror.buildStateSync(new Set(["backend"]));
+  expect(after.snapshot.turns).toHaveLength(1);
+  expect(after.snapshot.turns[0]!.truncated).toBe(true);
+});
+
 test("pendingFinished entries expire past the shared retention horizon", () => {
   let t = 1_700_000_000_000;
   const { mirror, warns } = makeMirror(() => false, () => t);

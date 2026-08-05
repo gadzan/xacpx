@@ -90,23 +90,67 @@ export class MessageStore {
   }
 
   /** How a queueItemId maps to persisted rows, for recovery reconciliation:
-   *  - "pending": a queued row still carries the id → promote it (moves the already
-   *    persisted prompt to its execution position);
-   *  - "executed": a row was promoted for this id earlier (`origin_queue_item_id`) →
-   *    the prompt is already in history, do NOT append a duplicate;
-   *  - "absent": no row at all → appendQueuedFallback is the only way to get the
-   *    prompt into history. */
-  queuedState(correlation: QueueCorrelation): "pending" | "executed" | "absent" {
-    const pending = this.db.get<{ id: number }>(
-      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ?",
+   *  - "pending": a REAL queued row (queue_fallback = 0) still carries the id →
+   *    promoteQueued() moves the already-persisted prompt to its execution position;
+   *  - "fallback": a recovery/race fallback row (queue_fallback = 1) carries the id →
+   *    no live HTTP RPC will ever come to merge it, so finalize it as executed;
+   *  - "executed": a row was promoted/finalized for this id earlier
+   *    (`origin_queue_item_id`) → the prompt is already in history, do NOT append a
+   *    duplicate (text matching cannot distinguish a redelivery from a user sending
+   *    the identical prompt twice);
+   *  - "absent": no row at all → appendExecutedQueuedFallback() is the only way to
+   *    get the prompt into history. */
+  queuedState(correlation: QueueCorrelation): "pending" | "fallback" | "executed" | "absent" {
+    const pending = this.db.get<{ id: number; queue_fallback: number }>(
+      "SELECT id, queue_fallback FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ?",
       [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
     );
-    if (pending) return "pending";
+    if (pending) return pending.queue_fallback === 0 ? "pending" : "fallback";
     const executed = this.db.get<{ found: number }>(
       "SELECT 1 AS found FROM messages WHERE instance_id = ? AND session_alias = ? AND origin_queue_item_id = ?",
       [correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
     );
     return executed ? "executed" : "absent";
+  }
+
+  /** Persist the prompt as an ALREADY-EXECUTED queued row: `queue_item_id` stays NULL
+   *  and the association is recorded in `origin_queue_item_id`. Used by the recovery
+   *  path when a queueItemId has no persisted row at all — the original HTTP request
+   *  died with the pre-restart hub, so a TEMPORARY fallback row (queue_fallback = 1,
+   *  waiting for markQueued) would never be finalized and the UI would show a run
+   *  prompt as queued forever. */
+  appendExecutedQueuedFallback(correlation: QueueCorrelation, text: string): number {
+    const rowId = this.append(correlation.instanceId, correlation.sessionAlias, "in", text);
+    this.db.run(
+      "UPDATE messages SET origin_queue_item_id = ? WHERE id = ?",
+      [correlation.queueItemId, rowId],
+    );
+    return rowId;
+  }
+
+  /** Finalize a recovery-created fallback row (queue_fallback = 1) as executed: clear
+   *  the queued marker and record the association. promoteQueued() deliberately only
+   *  matches queue_fallback = 0, so a fallback row must take this path instead. */
+  finalizeQueuedFallback(correlation: QueueCorrelation): void {
+    this.db.run(
+      "UPDATE messages SET queue_item_id = NULL, origin_queue_item_id = ? WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ? AND queue_fallback = 1",
+      [correlation.queueItemId, correlation.instanceId, correlation.sessionAlias, correlation.queueItemId],
+    );
+  }
+
+  /** Whether an inbound row for a scheduled origin (matched by `structured.scheduled.taskId`,
+   *  not by prompt text or trailing position) already exists — a later queued row can
+   *  push a scheduled turn's prompt out of the trailing position, so text/trailing
+   *  matching would wrongly re-insert it on recovery. */
+  hasScheduledInbound(instanceId: string, sessionAlias: string, taskId: string): boolean {
+    const rows = this.db.all<{ structured: string | null }>(
+      "SELECT structured FROM messages WHERE instance_id = ? AND session_alias = ? AND direction = 'in' AND structured IS NOT NULL",
+      [instanceId, sessionAlias],
+    );
+    return rows.some((r) => {
+      const structured = JSON.parse(r.structured!) as { scheduled?: { taskId?: string } };
+      return structured.scheduled?.taskId === taskId;
+    });
   }
 
   appendQueuedFallback(correlation: QueueCorrelation, text: string): number {
