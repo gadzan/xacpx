@@ -1,14 +1,15 @@
 // Connector-side mirror of the hub's per-instance runtime state (running turns,
-// last-known usage / commands, turns that finished while the hub was unreachable).
-// It sees the exact ControlEventDto stream forwarded to the hub, so on (re)connect
-// the connector can push one `instance.state.sync` snapshot and the hub can recover
-// running turns, meters and hints without any replay of business events.
+// last-known usage / commands, and turns that finished but are still awaiting the
+// hub's persistence ack). It sees the exact ControlEventDto stream forwarded to the
+// hub, so on (re)connect the connector can push one `instance.state.sync` snapshot
+// and the hub can recover running turns, meters and hints without any replay of
+// business events.
 //
 // Everything here is bounded: per-turn text caps at STATE_SYNC_TEXT_CAP (then marked
 // `truncated`), tool steps / reasoning cap at the hub's own limits (the caps are
-// shared constants from the relay protocol), and the finished-while-offline FIFO
-// drops its oldest entries past FINISHED_OFFLINE_MAX — a daemon left running against
-// a long-dead hub must never leak memory.
+// shared constants from the relay protocol), and the pending-finish FIFO drops its
+// oldest entries past PENDING_FINISHED_MAX — a daemon left running against a
+// long-dead hub must never leak memory.
 import { randomUUID } from "node:crypto";
 
 import {
@@ -29,8 +30,10 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type { AppLogger } from "xacpx/plugin-api";
 
-// Max turns retained as "finished while the hub was unreachable".
-const FINISHED_OFFLINE_MAX = 32;
+// Max turns retained as "finished but not yet acked by the hub" (whether the turn
+// finished during an outage or live — a live finish also waits for its persistence
+// ack before it can be dropped).
+const PENDING_FINISHED_MAX = 32;
 
 interface MirrorTurn {
   chatKey: string;
@@ -48,7 +51,7 @@ interface MirrorTurn {
   recoveryId: string;
 }
 
-interface FinishedOfflineTurn {
+interface PendingFinishedTurn {
   chatKey: string;
   sessionAlias: string;
   ok: boolean;
@@ -72,12 +75,20 @@ export interface StateMirror {
   /** All session aliases mirrored for one chatKey (fallback keep-set when the live
    *  session list cannot be read — never prune what we cannot verify). */
   aliasesForChatKey(chatKey: string): string[];
-  /** Snapshot for `instance.state.sync`. SIDE EFFECT: aliases absent from
-   *  `liveAliases` are pruned from the mirror permanently (sessions removed while
-   *  offline must not ship ghost state) — building the payload mutates the mirror,
-   *  which is why the method is named `take` rather than `build`. */
-  takeStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
-  /** Retire only the completed turns whose frames were confirmed flushed. */
+  /** Snapshot for `instance.state.sync` — a PURE copy: builds the payload with only
+   *  aliases present in `liveAliases`, mutates nothing. Pruning is a separate,
+   *  explicit step (`pruneStateMirror`) so a failed/aborted send can never destroy
+   *  mirror state that a later sync might still need. */
+  buildStateSync(liveAliases: ReadonlySet<string>): InstanceStateSyncPayload;
+  /** Remove mirror state for aliases absent from `liveAliases` (sessions removed
+   *  while offline must not ship ghost state on the next sync). Call only after the
+   *  sync frame was CONFIRMED flushed — never on a failed/not-ready send, so a
+   *  transiently-stale session list cannot discard state for a session that still
+   *  exists. */
+  pruneStateMirror(liveAliases: ReadonlySet<string>): void;
+  /** Retire pending-finished entries whose recovery ids the hub has ACKED (after its
+   *  SQLite commit). No ack → the entry rides the next sync and is deduped by the
+   *  hub's receipt. */
   confirmFinished(recoveryIds: Iterable<string>): void;
 }
 
@@ -96,7 +107,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   const turns = new Map<string, MirrorTurn>();
   const usage = new Map<string, { chatKey: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>();
   const commands = new Map<string, { chatKey: string; commands: AgentCommandDto[] }>();
-  const finishedOffline: FinishedOfflineTurn[] = [];
+  const pendingFinished: PendingFinishedTurn[] = [];
 
   const pushTextPart = (turn: MirrorTurn, chunk: string): void => {
     if (!chunk) return;
@@ -183,7 +194,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         const text = a?.text ?? event.text;
         const hasText = (text !== undefined && text !== "")
           || (event.ok && (a !== undefined || event.text !== undefined));
-        finishedOffline.push({
+        pendingFinished.push({
           chatKey: a?.chatKey ?? event.chatKey,
           sessionAlias: event.sessionAlias,
           ok: event.ok,
@@ -194,12 +205,12 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
         });
-        if (finishedOffline.length > FINISHED_OFFLINE_MAX) {
-          finishedOffline.shift();
+        if (pendingFinished.length > PENDING_FINISHED_MAX) {
+          pendingFinished.shift();
           void deps.logger?.warn(
-            "relay.state_mirror.finished_offline_evicted",
-            "evicted oldest finished-offline turn; relay mirror FIFO is full",
-            { limit: FINISHED_OFFLINE_MAX },
+            "relay.state_mirror.pending_finished_evicted",
+            "evicted oldest pending-finished turn; relay mirror FIFO is full",
+            { limit: PENDING_FINISHED_MAX },
           );
         }
         return id;
@@ -222,7 +233,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       for (const a of turns.values()) out.add(a.chatKey);
       for (const u of usage.values()) out.add(u.chatKey);
       for (const c of commands.values()) out.add(c.chatKey);
-      for (const f of finishedOffline) out.add(f.chatKey);
+      for (const f of pendingFinished) out.add(f.chatKey);
       return [...out];
     },
     aliasesForChatKey(chatKey) {
@@ -230,10 +241,10 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       for (const [alias, a] of turns) if (a.chatKey === chatKey) out.add(alias);
       for (const [alias, u] of usage) if (u.chatKey === chatKey) out.add(alias);
       for (const [alias, c] of commands) if (c.chatKey === chatKey) out.add(alias);
-      for (const f of finishedOffline) if (f.chatKey === chatKey) out.add(f.sessionAlias);
+      for (const f of pendingFinished) if (f.chatKey === chatKey) out.add(f.sessionAlias);
       return [...out];
     },
-    takeStateSync(liveAliases) {
+    buildStateSync(liveAliases) {
       const payload: InstanceStateSyncPayload = {
         turns: [],
         usage: [],
@@ -241,7 +252,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         finishedOffline: [],
       };
       for (const [alias, a] of turns) {
-        if (!liveAliases.has(alias)) { turns.delete(alias); continue; }
+        if (!liveAliases.has(alias)) continue;
         payload.turns.push({
           sessionAlias: alias,
           startedAt: a.startedAt,
@@ -256,7 +267,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         });
       }
       for (const [alias, u] of usage) {
-        if (!liveAliases.has(alias)) { usage.delete(alias); continue; }
+        if (!liveAliases.has(alias)) continue;
         payload.usage.push({
           sessionAlias: alias, used: u.used, size: u.size,
           ...(u.cost ? { cost: u.cost } : {}),
@@ -264,12 +275,12 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         });
       }
       for (const [alias, c] of commands) {
-        if (!liveAliases.has(alias)) { commands.delete(alias); continue; }
+        if (!liveAliases.has(alias)) continue;
         payload.commands.push({ sessionAlias: alias, commands: c.commands });
       }
-      for (let i = finishedOffline.length - 1; i >= 0; i--) {
-        const f = finishedOffline[i]!;
-        if (!liveAliases.has(f.sessionAlias)) { finishedOffline.splice(i, 1); continue; }
+      for (let i = pendingFinished.length - 1; i >= 0; i--) {
+        const f = pendingFinished[i]!;
+        if (!liveAliases.has(f.sessionAlias)) continue;
         payload.finishedOffline.unshift({
           sessionAlias: f.sessionAlias, ok: f.ok,
           ...(f.errorMessage !== undefined ? { errorMessage: f.errorMessage } : {}),
@@ -282,10 +293,18 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       }
       return payload;
     },
+    pruneStateMirror(liveAliases) {
+      for (const alias of [...turns.keys()]) if (!liveAliases.has(alias)) turns.delete(alias);
+      for (const alias of [...usage.keys()]) if (!liveAliases.has(alias)) usage.delete(alias);
+      for (const alias of [...commands.keys()]) if (!liveAliases.has(alias)) commands.delete(alias);
+      for (let i = pendingFinished.length - 1; i >= 0; i--) {
+        if (!liveAliases.has(pendingFinished[i]!.sessionAlias)) pendingFinished.splice(i, 1);
+      }
+    },
     confirmFinished(recoveryIds) {
       const confirmed = new Set(recoveryIds);
-      for (let i = finishedOffline.length - 1; i >= 0; i--) {
-        if (confirmed.has(finishedOffline[i]!.recoveryId)) finishedOffline.splice(i, 1);
+      for (let i = pendingFinished.length - 1; i >= 0; i--) {
+        if (confirmed.has(pendingFinished[i]!.recoveryId)) pendingFinished.splice(i, 1);
       }
     },
   };

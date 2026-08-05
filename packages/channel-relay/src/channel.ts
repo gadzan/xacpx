@@ -114,11 +114,14 @@ export class RelayChannel implements MessageChannelRuntime {
             for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
           }
         }
-        // No confirm-on-flush here: the finished-offline FIFO stays put until the
-        // hub acks each recovery id (see onEvent above). An errored/not-ready send
-        // or a hub that died before committing simply means the next reconnect
-        // re-sends the same snapshot; the hub's receipt dedup makes that idempotent.
-        client.sendEvent(MSG.instanceStateSync, mirror.takeStateSync(liveAliases));
+        // The snapshot is a pure copy; the destructive prune of dead aliases runs
+        // ONLY after the frame was confirmed flushed — a failed/not-ready send or
+        // a transiently-stale session list must never destroy mirror state that a
+        // later sync could still need. Finished-offline entries are NOT confirmed
+        // here: only the hub's recovery ack retires those (see onEvent above).
+        client.sendEvent(MSG.instanceStateSync, mirror.buildStateSync(liveAliases), (error) => {
+          if (!error) mirror.pruneStateMirror(liveAliases);
+        });
       },
     });
     // Mirror sees the exact payloads being forwarded, so the sync snapshot equals

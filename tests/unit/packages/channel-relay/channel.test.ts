@@ -70,12 +70,16 @@ test("start requires ChannelStartInput.control and wires client + event subscrip
   await expect(noControl.start(bad.input as never)).rejects.toThrow(/control/);
 });
 
-test("onReady pushes an instance state sync with the mirrored running turn", async () => {
+test("onReady pushes an instance state sync; dead aliases are filtered now and pruned only on a confirmed flush", async () => {
   const events: Array<{ type: string; payload: unknown }> = [];
+  const flushes: Array<((error?: Error) => void) | undefined> = [];
   const fakeClient = {
     start: () => {},
     stop: () => {},
-    sendEvent: (type: string, payload: unknown) => events.push({ type, payload }),
+    sendEvent: (type: string, payload: unknown, onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload });
+      flushes.push(onFlush);
+    },
     isReady: () => true,
   };
   let capturedOptions: { onReady?: () => void } = {};
@@ -90,41 +94,48 @@ test("onReady pushes an instance state sync with the mirrored running turn", asy
   ];
   const startPromise = channel.start(input as never);
   await new Promise((resolve) => setTimeout(resolve, 10));
+  const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
+  const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { turns: Array<{ sessionAlias: string }> });
 
   // Simulate a daemon turn the daemon emitted before the hub link (re)authed.
-  (subscribed[0] as (event: unknown) => void)({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
-  events.length = 0; // the forwarded instanceEvent itself is not what we assert here
+  fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
+  events.length = 0;
+  flushes.length = 0; // the forward above pushed an undefined; keep only the sync's
   capturedOptions.onReady!();
+  expect(lastSync().turns).toHaveLength(1);
+  flushes[0]!(); // confirmed flush → prune (backend is live, stays)
 
-  const syncs = events.filter((e) => e.type === MSG.instanceStateSync);
-  expect(syncs).toHaveLength(1);
-  const payload = syncs[0]!.payload as { turns: Array<{ sessionAlias: string; prompt?: string }>; finishedOffline: unknown[] };
-  expect(payload.turns).toHaveLength(1);
-  expect(payload.turns[0]).toMatchObject({ sessionAlias: "backend", prompt: "hi" });
-  expect(payload.finishedOffline).toEqual([]);
-
-  // Sessions removed while offline are pruned from the sync.
+  // A session disappears while offline; the mirror still holds its turn.
   (input.control as Record<string, unknown>).listSessions = () => [];
+  fireEvent({ type: "turn-started", chatKey: "relay:acc", sessionAlias: "frontend" });
   events.length = 0;
   capturedOptions.onReady!();
-  const prunedSync = (events.find((e) => e.type === MSG.instanceStateSync)!).payload as { turns: unknown[] };
-  expect(prunedSync.turns).toEqual([]);
+  // buildStateSync filters the dead alias out of the payload immediately…
+  expect(lastSync().turns).toEqual([]);
+  // …but the flush FAILS → pruneStateMirror must NOT run (the mirror keeps the
+  // turn, so a later sync with a corrected session list can still recover it).
+  flushes.at(-1)!(new Error("half-open socket"));
+
+  (input.control as Record<string, unknown>).listSessions = () => [
+    { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+    { alias: "frontend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
+  ];
+  events.length = 0;
+  capturedOptions.onReady!();
+  expect(lastSync().turns.map((t) => t.sessionAlias).sort()).toEqual(["backend", "frontend"]);
 
   controller.abort();
   await startPromise;
 });
 
 test("finishedOffline entries clear only on the hub's recovery ack, not on a flush", async () => {
-  const events: Array<{ type: string; payload: unknown }> = [];
+  const events: Array<{ type: string; payload: unknown; onFlush?: (error?: Error) => void }> = [];
   let capturedOptions: { onReady?: () => void; onEvent?: (envelope: unknown) => void } = {};
   const fakeClient = {
     start: () => {},
     stop: () => {},
-    sendEvent: (type: string, payload: unknown, _onFlush?: (error?: Error) => void) => {
-      events.push({ type, payload });
-      // The channel must NOT confirm on flush: an ack-callback-less send is a
-      // deliberate statement that delivery is confirmed by the hub's ack event.
-      expect(_onFlush).toBeUndefined();
+    sendEvent: (type: string, payload: unknown, onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload, onFlush });
     },
     isReady: () => true,
   };
@@ -155,7 +166,10 @@ test("finishedOffline entries clear only on the hub's recovery ack, not on a flu
   capturedOptions.onReady!();
   expect(lastSync().finishedOffline).toHaveLength(1);
 
-  // No ack yet → the FIFO keeps the entry across a (hypothetical) flush/re-sync.
+  // Even a CONFIRMED sync flush must not clear the FIFO — it only prunes dead
+  // aliases; the finished entry's session is live, so it stays until the hub acks.
+  const syncFlush = events.findLast((e) => e.type === MSG.instanceStateSync)!.onFlush!;
+  syncFlush();
   capturedOptions.onReady!();
   expect(lastSync().finishedOffline).toHaveLength(1);
 

@@ -421,3 +421,36 @@ test("hub crash between frame receipt and SQLite commit: rows roll back, no ack,
   expect(acks).toEqual([{ type: MSG.instanceRecoveryAck, payload: { recoveryIds: ["r1"] } }]);
   runtime.close();
 });
+
+test("a restored running turn that fails persists its errorMessage, not an empty answer", async () => {
+  const { runtime } = await seeded();
+  // The hub restarted; the sync restores the still-running turn as a buffer. The
+  // turn then fails with no streamed output: the live turn-finished flush must
+  // surface the errorMessage instead of leaving the prompt with no answer.
+  sync(runtime, {
+    turns: [{ sessionAlias: "backend", startedAt: STARTED_AT, text: "", reasoning: "", steps: [] }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: false, errorMessage: "agent exploded" });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["out", "agent exploded"]]);
+  expect(runtime.stateSnapshot("i1").turns).toEqual([]); // buffer flushed
+  runtime.close();
+});
+
+test("a live turn-finished with no buffer and an errorMessage persists the error row", async () => {
+  const { runtime } = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  // No turn-started ever arrived (hub restarted mid-turn and the sweep dropped the
+  // buffer); the failed finish carries only its errorMessage. The no-buffer fallback
+  // must still land an error row so history shows the failure, not a hole.
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: false, errorMessage: "boom" });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["out", "boom"]]);
+  runtime.close();
+});

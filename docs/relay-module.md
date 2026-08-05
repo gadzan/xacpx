@@ -215,11 +215,16 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 连接器（packages/channel-relay/src/state-mirror.ts）：
 
 - `createStateMirror` 订阅与转发完全相同的 ControlEvent 流，镜像每个 (sessionAlias) 的在途回合
-  累积器、最后已知的 usage/commands，以及断线期间完成的回合 FIFO（`finishedOffline`，上限 32，
-  逐出最旧并 log warning）。每个回合在 `turn-started` 时生成一个稳定 `recoveryId`。
-- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：取 `mirror.takeStateSync(liveAliases)`
-  （"take" 有副作用——会**永久裁剪** liveAliases 之外的别名）发送 `instance.state.sync`。
-  **不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；FIFO 条目
+  累积器、最后已知的 usage/commands，以及**已完成但尚未被 hub ack** 的回合 FIFO（内部名
+  `pendingFinished`，上限 32，逐出最旧并 log warning）。每个回合在 `turn-started` 时生成一个
+  稳定 `recoveryId`。注意 FIFO 里同时有断线期间完成的回合和**刚结束、正在等持久化 ack 的 live
+  回合**——live 转发照常发生，条目只是等 ack 才删除。
+- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`mirror.buildStateSync(liveAliases)`
+  取快照发送 `instance.state.sync`。**buildStateSync 是纯拷贝**（只过滤不在 liveAliases 里的
+  别名，不改动 mirror）；破坏性 GC 是单独的 `pruneStateMirror(liveAliases)`，只在**确认 flush
+  成功之后**调用——send 失败/not-ready 时绝不 prune，避免临时性的 session 列表错误把仍在
+  运行的回合状态销毁。
+- FIFO 条目**不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；条目
   只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
   live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite
   提交之前崩溃，则下次重连重发同一快照，hub 端 receipt 去重保证幂等，不会留下历史空洞。
@@ -227,7 +232,9 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 服务端（packages/relay/src/server.ts）：
 
 - `turn-finished` 兜底：无缓冲时，只要 `event.text` **存在**（空字符串也算有内容）就落一条
-  `out` 行，否则不落行但 log `warn`（`relay.event.turn_finished_without_content`）。
+  `out` 行；失败回合（`ok: false`）且无 `event.text` 时改落 `errorMessage` 行；两者都缺才
+  log `warn`（`relay.event.turn_finished_without_content`）。有缓冲时同样：失败回合若无流式
+  输出，落 `errorMessage` 而非留一个"有问无答"的空洞。
 - 带 `recoveryId` 的 live `turn-finished`：回复行与 receipt 在**同一个 SQLite 事务**里提交，
   提交成功后才下发 `instance.recovery.ack`；失败则不 ack，connector 稍后重发、receipt 去重。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；

@@ -129,7 +129,10 @@ export interface InstanceStateSyncPayload {
         sessionAlias: string;
         commands: AgentCommandDto[];
     }>;
-    /** Turns that finished while the hub was unreachable; hub must persist them.
+    /** Turns that finished and are still awaiting the hub's persistence ack — this
+     *  includes turns that finished while the hub was unreachable AND live turns that
+     *  finished moments ago (the connector forwards the live `turn-finished` and keeps
+     *  the entry until the hub acks it). Hub must persist them.
      *  `prompt` backfills the turn's `in` row when the turn STARTED during the outage
      *  too, so the recovered answer never appears as an orphan in history.
      *  `recoveryId` is the connector's stable id for this turn: the hub writes a

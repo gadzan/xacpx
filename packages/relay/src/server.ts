@@ -304,8 +304,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // The daemon carries the final reply text on turn-finished so the answer
                 // can still land in history instead of leaving a prompt with no reply.
                 // Presence (not truthiness): an empty-string reply is still a reply.
+                // A failed turn without a reply text falls back to its errorMessage —
+                // an error row closes the hole for failures the same way text does
+                // for successes.
                 if (event.text !== undefined) {
                   messages.append(instanceId, event.sessionAlias, "out", event.text);
+                } else if (!event.ok && event.errorMessage !== undefined) {
+                  messages.append(instanceId, event.sessionAlias, "out", event.errorMessage);
                 } else {
                   logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
                     instanceId, sessionAlias: event.sessionAlias,
@@ -318,11 +323,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // empty `structured.reasoning` and render as a blank reasoning panel in history.
               const hasReasoning = a.reasoning.trim().length > 0;
               const hasStructured = steps.length > 0 || hasReasoning;
-              if (a.text || hasStructured) {
+              // Same resolution as the recovered-offline path: streamed text wins; a
+              // FAILED turn with no streamed output must surface its errorMessage
+              // instead of leaving a prompt with no answer (the exact hole recovery
+              // closes for successes). A successful empty reply keeps presence.
+              const text = a.text || (!event.ok && event.errorMessage !== undefined ? event.errorMessage : a.text);
+              if (text || hasStructured) {
                 const structured = hasStructured
                   ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}) }
                   : undefined;
-                messages.append(instanceId, event.sessionAlias, "out", a.text, structured);
+                messages.append(instanceId, event.sessionAlias, "out", text, structured);
               }
             };
             const recoveryId = event.recoveryId;
