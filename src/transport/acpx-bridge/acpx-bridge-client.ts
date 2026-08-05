@@ -430,6 +430,7 @@ interface SpawnedBridgeClientOptions {
   permissionPolicy?: string;
   queueOwnerTtlSeconds?: number;
   sessionInitTimeoutMs?: number;
+  generationFilePath?: string;
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
   onBridgeRequest?: AcpxBridgeClientOptions["onBridgeRequest"];
@@ -460,6 +461,7 @@ export function buildBridgeSpawnEnv(
       && options.sessionInitTimeoutMs > 0
       ? { XACPX_BRIDGE_SESSION_INIT_TIMEOUT_MS: String(options.sessionInitTimeoutMs) }
       : {}),
+    ...(options.generationFilePath ? { XACPX_BRIDGE_GENERATION_FILE: options.generationFilePath } : {}),
   };
 }
 

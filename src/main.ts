@@ -66,8 +66,9 @@ import { replaceRuntimeState } from "./state/replace-runtime-state";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
-import { splitAdapterCommand } from "./adapters/adapter-catalog";
+import { classifyPreinstalledAdapterCommandShape } from "./adapters/adapter-catalog";
 import { probeWindowsProcessIdentity, snapshotWindowsProcessesByToken } from "./process/windows-process-tree";
+import { createQueueOwnerAdapterContext } from "./transport/queue-owner-adapter-context";
 
 export interface RuntimePaths {
   configPath: string;
@@ -270,7 +271,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     configRoot: runtimeRoot,
     generationId: deps.daemonIdentity?.generationId ?? randomUUID(),
     ...(deps.orphanRegistry ? { registry: deps.orphanRegistry } : {}),
-    classifyAdapter: (command) => classifyPreinstalledAdapter(command),
+    classifyAdapter: (command) => classifyPreinstalledAdapterCommandShape(command),
     resolveAdapter: async (command) => (await validateAndReResolveAdapterCommand(runtimeRoot, command)).agentCommand,
     withSessionLock: (critical) => sessions.withSessionLock(critical),
     withAdapterLock: (id, critical) => withAdapterOperationLock({ id, runtimeRoot }, critical),
@@ -325,6 +326,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
                 ...(typeof config.transport.sessionInitTimeoutMs === "number"
                   ? { sessionInitTimeoutMs: config.transport.sessionInitTimeoutMs }
                   : {}),
+                ...(deps.orphanRegistry
+                  ? { generationFilePath: join(deps.orphanRegistry.root, "generation.json") }
+                  : {}),
                 // A dropped (undecodable) bridge stdout line can be a lost
                 // response; the client-side request timeout unblocks the
                 // caller, but the corruption itself must be visible in logs.
@@ -339,7 +343,26 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
             ),
           ))
       : (deps.createCliTransport?.(acpxCommand) ??
-          new AcpxCliTransport({ ...config.transport, command: acpxCommand }));
+          new AcpxCliTransport({
+            ...config.transport,
+            command: acpxCommand,
+            createAdapterContext: ({ id, sessionKey, agentCommand }) => createQueueOwnerAdapterContext({
+              id,
+              sessionKey,
+              agentCommand,
+              launcherIdentity: async () => {
+                if (process.platform !== "win32") return { pid: process.pid, creationDate: "0" };
+                const identity = await probeWindowsProcessIdentity(process.pid);
+                if (identity.status !== "found") throw new Error("CLI launcher identity is unavailable");
+                return { pid: process.pid, creationDate: identity.identity.creationDate };
+              },
+              requestDaemon: (method, params) => launchIntentCoordinator.handle(method, params, { launcherPid: process.pid }),
+              readCurrentGeneration: async () => {
+                const current = await deps.orphanRegistry?.readGeneration();
+                return current && current.terminating !== true ? current.generationId : null;
+              },
+            }),
+          }));
   const transport = createBackgroundFollowupTransport(baseTransport, {
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
@@ -1114,15 +1137,6 @@ function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
   // its identity for holders of the reference. Object.assign stays exhaustive
   // automatically, so a newly added AppConfig field cannot be silently missed.
   Object.assign(target, source);
-}
-
-function classifyPreinstalledAdapter(command: string): "codex" | "claude" | null {
-  const args = splitAdapterCommand(command);
-  if (!args || args.length !== 2) return null;
-  const entry = args[1]!.replaceAll("\\", "/").toLowerCase();
-  if (entry.includes("/adapters/codex/releases/")) return "codex";
-  if (entry.includes("/adapters/claude/releases/")) return "claude";
-  return null;
 }
 
 export async function main(): Promise<void> {

@@ -18,7 +18,8 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
@@ -98,6 +99,7 @@ interface BridgeSessionInput {
   agentCommand?: string;
   cwd: string;
   name: string;
+  sessionKey?: string;
   model?: string;
   effort?: string;
   mcpCoordinatorSession?: string;
@@ -154,6 +156,11 @@ interface BridgeRuntimeOptions {
   now?: () => number;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  createAdapterContext?: (input: {
+    id: "codex" | "claude";
+    sessionKey: string;
+    agentCommand: string;
+  }) => QueueOwnerAdapterContext;
 }
 
 export class BridgeRuntime {
@@ -565,12 +572,22 @@ export class BridgeRuntime {
     }
     const record = await this.readSessionRecord(input);
     const env = this.spawnEnvironment(input);
+    const adapterId = classifyPreinstalledAdapterCommandShape(input.agentCommand);
+    const adapterContext = adapterId && input.agentCommand
+      ? this.options.createAdapterContext?.({
+          id: adapterId,
+          sessionKey: input.sessionKey ?? input.name,
+          agentCommand: input.agentCommand,
+        })
+      : undefined;
     await this.queueOwnerLauncher.launch({
       acpxRecordId: record.acpxRecordId,
       coordinatorSession: input.mcpCoordinatorSession,
       ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
       permissionMode: this.options.permissionMode ?? "approve-all",
       nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
+      ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+      ...(adapterContext ? { adapterContext } : {}),
       ...(env ? { env } : {}),
     });
   }

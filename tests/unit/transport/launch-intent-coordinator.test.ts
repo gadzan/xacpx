@@ -67,7 +67,7 @@ function token() { return { id: "launch-1", sessionKey: "session-key", intentTok
 test("register holds session then adapter lock through durable state and intent publication", async () => {
   const { coordinator, registry, events } = await setup();
   const ack = await coordinator.handle("registerAdapterIntent", register(), { launcherPid: 500 });
-  expect(ack).toEqual({ agentCommand: "resolved-adapter", intentToken: TOKEN });
+  expect(ack).toEqual({ agentCommand: "resolved-adapter", intentToken: TOKEN, generationId: GENERATION });
   expect(events).toEqual([
     "session:lock", "adapter:lock", "resolve", "persist:resolved-adapter", "adapter:release", "session:release",
   ]);
@@ -101,8 +101,8 @@ test("duplicate registering calls share one in-flight durable operation", async 
   const duplicate = value.coordinator.handle("registerAdapterIntent", register(), { launcherPid: 500 });
   release();
   await expect(Promise.all([first, duplicate])).resolves.toEqual([
-    { agentCommand: "resolved-adapter", intentToken: TOKEN },
-    { agentCommand: "resolved-adapter", intentToken: TOKEN },
+    { agentCommand: "resolved-adapter", intentToken: TOKEN, generationId: GENERATION },
+    { agentCommand: "resolved-adapter", intentToken: TOKEN, generationId: GENERATION },
   ]);
   expect(resolves).toBe(1);
 });

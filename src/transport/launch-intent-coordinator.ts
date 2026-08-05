@@ -20,7 +20,7 @@ interface TokenEntry {
   terminalOutcome?: "owner-committed" | "launch-failed";
 }
 
-interface RegisterAck { agentCommand: string; intentToken: string }
+interface RegisterAck { agentCommand: string; intentToken: string; generationId: string }
 
 export interface LaunchIntentCoordinatorDeps<TLocked = unknown> {
   platform?: NodeJS.Platform;
@@ -146,12 +146,12 @@ export class LaunchIntentCoordinator<TLocked = unknown> {
           entry.state = entry.cancelRequested ? "canceled" : "aborted";
           throw new Error("adapter registration aborted after intent write");
         }
-        entry.ack = { agentCommand: resolved, intentToken: params.intentToken };
+        entry.ack = { agentCommand: resolved, intentToken: params.intentToken, generationId: this.deps.generationId };
         entry.state = "registered";
         return resolved;
       });
     });
-    return entry.ack ?? { agentCommand: finalCommand, intentToken: params.intentToken };
+    return entry.ack ?? { agentCommand: finalCommand, intentToken: params.intentToken, generationId: this.deps.generationId };
   }
 
   private async spawned(params: AdapterTokenParams): Promise<Record<string, never>> {

@@ -175,6 +175,18 @@ export function splitAdapterCommand(command: string): string[] | null {
   return parts;
 }
 
+/** Structural preinstall classifier used only to decide whether launch fencing is mandatory. */
+export function classifyPreinstalledAdapterCommandShape(command: string | undefined): ManagedAdapterId | null {
+  if (!command) return null;
+  const args = splitAdapterCommand(command);
+  if (!args || args.length !== 2) return null;
+  const entry = args[1]!.replaceAll("\\", "/").toLowerCase();
+  for (const id of ["codex", "claude"] as const) {
+    if (entry.includes(`/adapters/${id}/releases/`)) return id;
+  }
+  return null;
+}
+
 export interface DecodeManagedAdapterCommandOptions {
   adaptersRoot?: string;
   controlledNodeExecutable?: string;

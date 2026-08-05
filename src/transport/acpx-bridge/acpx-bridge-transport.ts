@@ -98,6 +98,7 @@ export class AcpxBridgeTransport implements SessionTransport {
     }
     const result = await this.client.request<{ text: string }>("prompt", {
       ...this.toParams(session),
+      sessionKey: session.alias,
       text,
       ...(options?.media ? { media: options.media } : {}),
       // Back-compat: older bridge subprocesses key on `toolEvents: true` rather

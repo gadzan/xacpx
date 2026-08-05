@@ -6,7 +6,26 @@ import {
   AcpxQueueOwnerLauncher,
   type QueueOwnerSpawner,
   type QueueOwnerTerminator,
+  type QueueOwnerAdapterContext,
 } from "../../../src/transport/acpx-queue-owner-launcher";
+
+const TOKEN = "11111111-1111-4111-8111-111111111111";
+const MANAGED_COMMAND = '"C:/node.exe" "C:/runtime/adapters/codex/releases/1/node_modules/@agentclientprotocol/codex-acp/bin.js"';
+
+function adapterContext(overrides: Partial<QueueOwnerAdapterContext> = {}): QueueOwnerAdapterContext {
+  return {
+    id: "codex",
+    sessionKey: "logical",
+    agentCommand: MANAGED_COMMAND,
+    platform: "win32",
+    prepare: async () => ({ agentCommand: MANAGED_COMMAND, generationId: "generation-1" }),
+    isGenerationCurrent: async () => true,
+    spawned: async () => {},
+    cancel: async () => {},
+    settle: async () => {},
+    ...overrides,
+  };
+}
 
 test("builds coordinator MCP server spec from a session identity", () => {
   expect(buildXacpxMcpServerSpec({
@@ -252,4 +271,141 @@ test("uses WEACPX_DAEMON_ARG0 as the default weacpx CLI command", async () => {
     "E:/Program Files/weacpx/dist/cli.js",
     "mcp-stdio",
   ]);
+});
+
+test("uses one launch token for registration, argv, spawned ack, and owner settlement", async () => {
+  const events: string[] = [];
+  let spawnArgs: string[] = [];
+  const context = adapterContext({
+    prepare: async (token) => { events.push(`prepare:${token}`); return { agentCommand: MANAGED_COMMAND, generationId: "g" }; },
+    isGenerationCurrent: async (generation) => { events.push(`fence:${generation}`); return true; },
+    spawned: async (token) => { events.push(`spawned:${token}`); },
+    settle: async (item) => { events.push(`settle:${item.intentToken}:${item.outcome}:${item.ownerPid}`); },
+  });
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    uuid: () => TOKEN,
+    spawnOwner: async (_command, args) => { events.push("spawn"); spawnArgs = args; return 700; },
+    terminateOwner: async () => {},
+    readOwnerPid: async () => 701,
+  });
+  await launcher.launch({
+    acpxRecordId: "record-1",
+    coordinatorSession: "main",
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentCommand: MANAGED_COMMAND,
+    adapterContext: context,
+  });
+  expect(spawnArgs.slice(-2)).toEqual(["--xacpx-owner-token", TOKEN]);
+  expect(events).toEqual([
+    `prepare:${TOKEN}`,
+    "fence:g",
+    "spawn",
+    `spawned:${TOKEN}`,
+    `settle:${TOKEN}:owner-committed:701`,
+  ]);
+});
+
+test("generation fencing cancels the registered intent and never spawns", async () => {
+  const events: string[] = [];
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    uuid: () => TOKEN,
+    spawnOwner: async () => { events.push("spawn"); return 700; },
+    terminateOwner: async () => {},
+  });
+  await expect(launcher.launch({
+    acpxRecordId: "record-1",
+    coordinatorSession: "main",
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentCommand: MANAGED_COMMAND,
+    adapterContext: adapterContext({
+      isGenerationCurrent: async () => false,
+      cancel: async (token) => { events.push(`cancel:${token}`); },
+    }),
+  })).rejects.toThrow("generation changed");
+  expect(events).toEqual([`cancel:${TOKEN}`]);
+});
+
+test("managed shape without context fails closed, and registration failure sends best-effort cancel", async () => {
+  let spawns = 0;
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    uuid: () => TOKEN,
+    spawnOwner: async () => { spawns += 1; return 700; },
+    terminateOwner: async () => {},
+  });
+  const input = {
+    acpxRecordId: "record-1",
+    coordinatorSession: "main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+    agentCommand: MANAGED_COMMAND,
+  };
+  await expect(launcher.launch(input)).rejects.toThrow("missing adapterContext");
+
+  const canceled: string[] = [];
+  await expect(launcher.launch({
+    ...input,
+    adapterContext: adapterContext({
+      prepare: async () => { throw new Error("ack lost"); },
+      cancel: async (token) => { canceled.push(token); },
+    }),
+  })).rejects.toThrow("ack lost");
+  expect(canceled).toEqual([TOKEN]);
+  expect(spawns).toBe(0);
+});
+
+test("readiness timeout preserves an alive or unknown launch but settles a confirmed exit", async () => {
+  for (const status of ["alive", "unknown", "exited"] as const) {
+    const settlements: string[] = [];
+    const launcher = new AcpxQueueOwnerLauncher({
+      acpxCommand: "acpx",
+      uuid: () => TOKEN,
+      spawnOwner: async () => 700,
+      terminateOwner: async () => {},
+      readOwnerPid: async () => undefined,
+      handshakeTimeoutMs: 0,
+      probeSpawnedProcess: async () => status,
+    });
+    await expect(launcher.launch({
+      acpxRecordId: "record-1",
+      coordinatorSession: "main",
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+      agentCommand: MANAGED_COMMAND,
+      adapterContext: adapterContext({
+        settle: async (item) => { settlements.push(item.outcome); },
+      }),
+    })).rejects.toThrow();
+    expect(settlements).toEqual(status === "exited" ? ["launch-failed"] : []);
+  }
+});
+
+test("Unix managed launch resolves before spawn without token state or token argv", async () => {
+  const events: string[] = [];
+  let args: string[] = [];
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    uuid: () => TOKEN,
+    spawnOwner: async (_command, value) => { events.push("spawn"); args = value; return 700; },
+    terminateOwner: async () => {},
+  });
+  await launcher.launch({
+    acpxRecordId: "record-1",
+    coordinatorSession: "main",
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentCommand: MANAGED_COMMAND,
+    adapterContext: adapterContext({
+      platform: "linux",
+      prepare: async () => { events.push("resolve"); return { agentCommand: MANAGED_COMMAND }; },
+      spawned: async () => { events.push("spawned"); },
+      settle: async () => { events.push("settle"); },
+    }),
+  });
+  expect(events).toEqual(["resolve", "spawn"]);
+  expect(args).not.toContain("--xacpx-owner-token");
 });
