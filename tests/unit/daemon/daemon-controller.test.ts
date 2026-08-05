@@ -521,6 +521,11 @@ function createController(
   };
 
   return new DaemonController(paths, {
+    // These fixtures exercise the platform-neutral pid/status lifecycle. Keep
+    // them on the non-Windows path even when the suite runs on Windows; the
+    // dedicated Windows fencing cases above construct their controller
+    // explicitly with `platform: "win32"` and durable generation metadata.
+    platform: "linux",
     isProcessRunning: overrides.isProcessRunning ?? (() => false),
     spawnDetached: overrides.spawnDetached ?? (async () => 99999),
     terminateProcess: overrides.terminateProcess ?? (async () => {}),
