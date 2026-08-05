@@ -35,7 +35,7 @@ test("keeps unrelated commands unchanged", () => {
 
 test("runtime resolution pins managed adapters while preserving explicit commands", () => {
   expect(resolveRuntimeAgentCommand("codex", undefined, true)).toBe(
-    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
   );
   expect(resolveRuntimeAgentCommand("claude", undefined, true, { claude: "0.58.1" })).toBe(
     "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.58.1",
@@ -141,9 +141,9 @@ test("managed adapters resolve to pinned structured npx argv", () => {
   expect(spec.agentArgv).toEqual([
     "npx",
     "-y",
-    "--registry=https://registry.npmjs.org/",
-    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
-    "@agentclientprotocol/codex-acp@1.1.4",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
+    "@agentclientprotocol/codex-acp@1.1.9",
   ]);
   expect(spec.acpxAgent).toBe(deriveAgentAlias("codex", spec.agentArgv!));
 
@@ -188,7 +188,7 @@ test("unix explicit raw command stays a raw --agent override", () => {
     undefined,
     { platform: "darwin" },
   );
-  expect(spec).toEqual({ acpxAgent: "claude", rawCommand: "my-claude --acp" });
+  expect(spec).toEqual({ acpxAgent: "claude", rawCommand: "my-claude --acp", agentCommand: "my-claude --acp" });
 });
 
 test("windows converts a single-token raw command to argv", () => {

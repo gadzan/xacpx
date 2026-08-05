@@ -106,7 +106,7 @@ test("creates a session with xacpx's pinned managed adapter", async () => {
 
   expect(session.transportSession).toBe("backend:api-fix");
   expect(session.cwd).toBe("/tmp/backend");
-  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9");
 });
 
 test("carries Claude execution policy from config to a resolved session", async () => {
@@ -135,7 +135,7 @@ test("ignores a legacy raw codex command and falls back to xacpx's pinned adapte
 
   const session = await service.createSession("api-fix", "codex", "backend");
 
-  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9");
 });
 
 test("refreshes recorded generated adapter commands but preserves custom recorded commands", async () => {
@@ -172,7 +172,7 @@ test("refreshes a recorded legacy codex shim to the current managed pin", async 
 
   const service = new SessionService(config, new MemoryStateStore(), state);
   expect((await service.getSession("review"))?.agentCommand).toBe(
-    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
   );
 });
 
@@ -886,7 +886,7 @@ test("recreating an alias with a different agent does not inherit transport agen
 
   const recreated = await service.createSession("foo", "claude", "backend");
 
-  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.64.2");
   expect(recreated.modeId).toBeUndefined();
   expect(recreated.replyMode).toBeUndefined();
   expect(state.sessions.foo?.transport_agent_command).toBeUndefined();
@@ -921,7 +921,7 @@ test("resolveSession does not reuse a cached transport agent command from a diff
   await service.setSessionTransportAgentCommand("foo", "npx @zed-industries/codex-acp@^0.9.5");
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
-  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.64.2");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");
@@ -1084,14 +1084,14 @@ test("resolves managed launches to an overlay alias with canonical identity", as
 
   expect(session.acpxAgent).toMatch(/^xacpx-managed-codex-[0-9a-f]{12}$/);
   expect(session.agentCommand).toBe(
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
   );
   expect(session.agentArgv).toEqual([
     "npx",
     "-y",
-    "--registry=https://registry.npmjs.org/",
-    "--@agentclientprotocol:registry=https://registry.npmjs.org/",
-    "@agentclientprotocol/codex-acp@1.1.4",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
+    "@agentclientprotocol/codex-acp@1.1.9",
   ]);
   expect(session.rawCommand).toBeUndefined();
 });
@@ -1144,6 +1144,6 @@ test("recorded custom argv stays sticky across restart while managed argv recomp
   ];
   const refreshed = new SessionService(config, new MemoryStateStore(), state);
   const session2 = await refreshed.getSession("review");
-  expect(session2?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.4");
+  expect(session2?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
   expect(session2?.acpxAgent).not.toBe("xacpx-managed-codex-oldhash9999");
 });
