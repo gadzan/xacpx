@@ -57,7 +57,9 @@ test("shared decoder trusts npx and controlled preinstalled entry commands only"
       kind: "preinstalled", id: "codex", releaseId,
     });
     expect(await decodeManagedAdapterCommand(command, { adaptersRoot, controlledNodeExecutable: otherNode })).toBeNull();
-    const collision = entry.replace(`${releaseId}/`, `${releaseId}-extra/`);
+    // Replace only the release-id component so this remains portable across
+    // POSIX and Windows path separators.
+    const collision = entry.replace(releaseId, `${releaseId}-extra`);
     expect(await decodeManagedAdapterCommand(`"${node}" "${collision}"`, {
       adaptersRoot,
       controlledNodeExecutable: node,
