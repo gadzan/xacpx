@@ -12,8 +12,14 @@ beforeEach(() => { setLocale("zh"); });
 afterAll(() => { setLocale("en"); });
 
 type BuildAppArgs = Parameters<typeof buildAppRaw>;
+// Never touch the real ~/.acpx/config.json from unit tests: the overlay
+// provisioner runs against the real home dir by design.
 const buildApp = (paths: BuildAppArgs[0], deps: BuildAppArgs[1] = {}): ReturnType<typeof buildAppRaw> =>
-  buildAppRaw(paths, { stateSaveDebounceMs: 0, ...deps });
+  buildAppRaw(paths, {
+    stateSaveDebounceMs: 0,
+    provisionAgentOverlays: async () => ({ outcomes: {}, raced: false }),
+    ...deps,
+  });
 
 async function readJsonWithRetry<T>(path: string, attempts = 5): Promise<T> {
   let lastError: unknown;
@@ -2698,4 +2704,43 @@ test("buildApp wires weixinLog to the app logger", async () => {
   resetWeixinLogForTest();
   await runtime.dispose();
   await rm(dir, { recursive: true, force: true });
+});
+
+test("buildApp provisions acpx agent overlays before transport creation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-main-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { codex: { driver: "codex" }, pool: { driver: "pool" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+
+    let provisionedConfig: unknown;
+    const runtime = await buildApp({ configPath, statePath }, {
+      createCliTransport: () => ({
+        ensureSession: async () => ({}),
+        prompt: async () => ({ text: "ok" }),
+        setMode: async () => ({}),
+        cancel: async () => ({}),
+        hasSession: () => false,
+        dispose: async () => {},
+      }),
+      provisionAgentOverlays: async (config) => {
+        provisionedConfig = config;
+        return { outcomes: {}, raced: false };
+      },
+    });
+
+    expect(provisionedConfig).toMatchObject({
+      agents: { codex: { driver: "codex" }, pool: { driver: "pool" } },
+    });
+    await runtime.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -22,6 +22,7 @@ import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
 import { getLocale } from "../../i18n";
 import { resolveDefaultXacpxCommand } from "../acpx-queue-owner-launcher";
+import type { AcpxAgentOverlayEntry } from "../acpx-agent-overlay";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
   CommandTimeoutError,
@@ -431,6 +432,8 @@ interface SpawnedBridgeClientOptions {
   queueOwnerTtlSeconds?: number;
   sessionInitTimeoutMs?: number;
   generationFilePath?: string;
+  /** Overlay entries the bridge re-provisions into ~/.acpx/config.json at startup. */
+  agentOverlays?: AcpxAgentOverlayEntry[];
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
   onBridgeRequest?: AcpxBridgeClientOptions["onBridgeRequest"];
@@ -462,6 +465,9 @@ export function buildBridgeSpawnEnv(
       ? { XACPX_BRIDGE_SESSION_INIT_TIMEOUT_MS: String(options.sessionInitTimeoutMs) }
       : {}),
     ...(options.generationFilePath ? { XACPX_BRIDGE_GENERATION_FILE: options.generationFilePath } : {}),
+    ...(options.agentOverlays && options.agentOverlays.length > 0
+      ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
+      : {}),
   };
 }
 

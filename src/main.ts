@@ -69,6 +69,23 @@ import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstal
 import { classifyPreinstalledAdapterCommandShape } from "./adapters/adapter-catalog";
 import { probeWindowsProcessIdentity, snapshotWindowsProcessesByToken } from "./process/windows-process-tree";
 import { createQueueOwnerAdapterContext } from "./transport/queue-owner-adapter-context";
+import {
+  computeAgentOverlayEntries,
+  ensureAgentOverlays,
+  type EnsureAgentOverlaysResult,
+} from "./transport/acpx-agent-overlay";
+
+async function defaultProvisionAgentOverlays(
+  config: AppConfig,
+  logger: AppLogger,
+): Promise<EnsureAgentOverlaysResult> {
+  const entries = computeAgentOverlayEntries(config);
+  const result = await ensureAgentOverlays(entries);
+  for (const [alias, outcome] of Object.entries(result.outcomes)) {
+    await logger.info("acpx.overlay", `acpx agent overlay ${outcome}`, { alias });
+  }
+  return result;
+}
 
 export interface RuntimePaths {
   configPath: string;
@@ -132,6 +149,14 @@ interface RuntimeDeps {
   stateSaveDebounceMs?: number;
   daemonIdentity?: DaemonIdentity;
   orphanRegistry?: OrphanRegistry;
+  /**
+   * Provision xacpx-managed acpx agent overlays before transport creation.
+   * Injectable for tests; defaults to provisioning from the loaded config.
+   */
+  provisionAgentOverlays?: (
+    config: AppConfig,
+    logger: AppLogger,
+  ) => Promise<EnsureAgentOverlaysResult>;
 }
 
 function startProgressHeartbeat(
@@ -219,6 +244,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       })
     : createNoopPerfTracer();
   await perfTracer.cleanup();
+  // Provision xacpx-managed acpx agent overlays (`~/.acpx/config.json` agents
+  // entries) before any transport exists, so every acpx launch resolves its
+  // positional alias to the exact structured argv.
+  await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
   const acpxCommand = resolveAcpxCommand({ configuredCommand: config.transport.command });
   const stateStore = new StateStore(paths.statePath);
   const state = await stateStore.load();
@@ -315,6 +344,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
               await spawnAcpxBridgeClient({
                 acpxCommand,
                 bridgeEntryPath: resolveBridgeEntryPath(),
+                agentOverlays: computeAgentOverlayEntries(config),
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions: config.transport.nonInteractivePermissions,
                 ...(typeof config.transport.permissionPolicy === "string"
