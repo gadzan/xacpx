@@ -142,7 +142,7 @@ export async function ensureAgentOverlays(
   deps: EnsureAgentOverlaysDeps = {},
 ): Promise<EnsureAgentOverlaysResult> {
   if (entries.length === 0) {
-    return { outcomes: {} };
+    return { outcomes: {}, raced: false };
   }
 
   const path = acpxConfigPath(deps.home ?? homedir());
@@ -167,21 +167,23 @@ export async function ensureAgentOverlays(
     const base = current.content !== snapshot.content ? current : snapshot;
     result.raced = current.content !== snapshot.content;
 
-    let raw: unknown;
+    let parsed: Record<string, unknown>;
     if (base.content === null) {
-      raw = {};
+      parsed = {};
     } else {
+      let value: unknown;
       try {
-        raw = JSON.parse(base.content) as unknown;
+        value = JSON.parse(base.content) as unknown;
       } catch {
         throw new Error(`acpx config is not valid JSON: ${path}`);
       }
-      if (!isRecord(raw) || Array.isArray(raw)) {
+      if (!isRecord(value) || Array.isArray(value)) {
         throw new Error(`acpx config must be a JSON object: ${path}`);
       }
+      parsed = value;
     }
 
-    let next = raw;
+    let next: Record<string, unknown> = parsed;
     let changed = false;
     for (const entry of entries) {
       const merged = mergeAcpxAgentOverlayEntry(next, entry);
