@@ -35,6 +35,13 @@ export interface WindowsProcessIdentity {
   executablePath: string;
 }
 
+export interface WindowsTokenProcess {
+  pid: number;
+  creationDate: string;
+  commandLine: string;
+  executablePath: string;
+}
+
 interface WorkerResponse {
   rootOutcome: unknown;
   outcomes: unknown;
@@ -45,7 +52,14 @@ export interface WindowsProcessWorkerOptions {
   runWorker?: (request: WindowsWorkerRequest, deadlineMs: number) => Promise<unknown>;
 }
 
-type WindowsWorkerRequest = { action: "terminate-tree"; root: BatchTarget } | { action: "identity"; pid: number };
+export type WindowsWorkerRequest =
+  | { action: "terminate-tree"; root: BatchTarget }
+  | { action: "identity"; pid: number }
+  | { action: "token-snapshot"; token: string }
+  | { action: "terminate-one-cim"; target: BatchTarget };
+export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable" };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const OUTCOMES = new Set<KillOutcome>([
   "killed", "already-exited", "kill-requested-unconfirmed",
@@ -130,7 +144,10 @@ export async function queryWindowsProcessIdentity(
       options.workerDeadlineMs ?? 5_000,
     );
     if (!value || typeof value !== "object") return null;
-    const item = value as Record<string, unknown>;
+    const envelope = value as Record<string, unknown>;
+    const item = envelope.status === "found" && envelope.identity && typeof envelope.identity === "object"
+      ? envelope.identity as Record<string, unknown>
+      : envelope;
     if (item.pid !== pid || parseCanonicalFileTime(item.creationDate) === null || typeof item.executablePath !== "string" || !item.executablePath) {
       return null;
     }
@@ -138,6 +155,56 @@ export async function queryWindowsProcessIdentity(
   } catch {
     return null;
   }
+}
+
+export async function probeWindowsProcessIdentity(
+  pid: number,
+  options: WindowsProcessWorkerOptions = {},
+): Promise<WindowsProbeStatus> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: "unavailable" };
+  try {
+    const value = await (options.runWorker ?? runPowerShellWorker)({ action: "identity", pid }, options.workerDeadlineMs ?? 5_000);
+    if (!value || typeof value !== "object") return { status: "unavailable" };
+    const item = value as Record<string, unknown>;
+    if (item.status === "missing") return { status: "missing" };
+    const identity = await queryWindowsProcessIdentity(pid, { ...options, runWorker: async () => value });
+    return identity ? { status: "found", identity } : { status: "unavailable" };
+  } catch { return { status: "unavailable" }; }
+}
+
+export async function snapshotWindowsProcessesByToken(
+  token: string,
+  options: WindowsProcessWorkerOptions = {},
+): Promise<WindowsTokenProcess[] | null> {
+  if (!UUID.test(token)) return null;
+  try {
+    const value = await (options.runWorker ?? runPowerShellWorker)({ action: "token-snapshot", token }, options.workerDeadlineMs ?? 5_000);
+    const items = value && typeof value === "object" && Array.isArray((value as Record<string, unknown>).items)
+      ? (value as Record<string, unknown>).items
+      : value;
+    if (!Array.isArray(items)) return null;
+    const result: WindowsTokenProcess[] = [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Record<string, unknown>;
+      if (!Number.isSafeInteger(item.pid) || Number(item.pid) <= 0 || parseCanonicalFileTime(item.creationDate) === null
+        || typeof item.commandLine !== "string" || !item.commandLine || typeof item.executablePath !== "string" || !item.executablePath) return null;
+      result.push({ pid: Number(item.pid), creationDate: String(item.creationDate), commandLine: item.commandLine, executablePath: item.executablePath });
+    }
+    return result;
+  } catch { return null; }
+}
+
+export async function terminateWindowsResidual(
+  target: BatchTarget,
+  options: WindowsProcessWorkerOptions = {},
+): Promise<KillOutcome> {
+  if (!Number.isSafeInteger(target.pid) || target.pid <= 0 || parseCanonicalFileTime(target.creationDate) === null) return "query-failed";
+  try {
+    const value = await (options.runWorker ?? runPowerShellWorker)({ action: "terminate-one-cim", target }, options.workerDeadlineMs ?? 5_000);
+    const outcome = value && typeof value === "object" ? (value as Record<string, unknown>).outcome : undefined;
+    return typeof outcome === "string" && OUTCOMES.has(outcome as KillOutcome) ? outcome as KillOutcome : "query-failed";
+  } catch { return "query-failed"; }
 }
 
 async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: number): Promise<unknown> {
@@ -218,7 +285,11 @@ function Snapshot {
 }
 function OpenVerified($node, $cim) {
   $h=[XacpxNativeProcess]::Open([uint32]$node.pid)
-  if($h -eq [IntPtr]::Zero){return @{ok=$false;status=($(if([XacpxNativeProcess]::LastError() -eq 5){'access-denied'}else{'already-exited'}));handle=$h}}
+  if($h -eq [IntPtr]::Zero){
+    $code=[XacpxNativeProcess]::LastError()
+    $status=if($code -eq 5){'access-denied'}elseif($code -eq 87 -or $code -eq 1168){'already-exited'}else{'query-failed'}
+    return @{ok=$false;status=$status;handle=$h}
+  }
   $actual=[XacpxNativeProcess]::Creation($h)
   if(!$actual){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
   $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($actual)-[Numerics.BigInteger]::Parse([string]$node.creationDate))
@@ -233,13 +304,33 @@ function OpenVerified($node, $cim) {
 }
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
-  if($h -eq [IntPtr]::Zero){Write-Output 'null';exit 0}
+  if($h -eq [IntPtr]::Zero){
+    $code=[XacpxNativeProcess]::LastError()
+    $status=if($code -eq 87 -or $code -eq 1168){'missing'}else{'unavailable'}
+    Write-Output (@{status=$status} | ConvertTo-Json -Compress);exit 0
+  }
   try {
     $creation=[XacpxNativeProcess]::Creation($h);$image=[XacpxNativeProcess]::Image($h)
-    if(!$creation -or !$image){Write-Output 'null';exit 0}
-    Write-Output (@{pid=[int]$request.pid;creationDate=$creation;executablePath=$image} | ConvertTo-Json -Compress)
+    if(!$creation -or !$image){Write-Output (@{status='unavailable'} | ConvertTo-Json -Compress);exit 0}
+    Write-Output (@{status='found';identity=@{pid=[int]$request.pid;creationDate=$creation;executablePath=$image}} | ConvertTo-Json -Depth 4 -Compress)
     exit 0
   } finally {[XacpxNativeProcess]::Close($h)}
+}
+if($request.action -eq 'token-snapshot'){
+  $needle='--xacpx-owner-token '+[string]$request.token
+  $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
+  Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
+}
+if($request.action -eq 'terminate-one-cim'){
+  $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
+  $check=OpenVerified $target $true
+  if(!$check.ok){Write-Output (@{outcome=$check.status} | ConvertTo-Json -Compress);exit 0}
+  try {
+    if(![XacpxNativeProcess]::Alive($check.handle)){$status='already-exited'}
+    elseif(![XacpxNativeProcess]::Kill($check.handle)){$status=if([XacpxNativeProcess]::LastError() -eq 5){'access-denied'}else{'query-failed'}}
+    else{$status=if([XacpxNativeProcess]::WaitDead($check.handle)){'killed'}else{'kill-requested-unconfirmed'}}
+    Write-Output (@{outcome=$status} | ConvertTo-Json -Compress);exit 0
+  } finally {[XacpxNativeProcess]::Close($check.handle)}
 }
 $root=[pscustomobject]@{pid=[int]$request.root.pid;creationDate=[string]$request.root.creationDate;commandLine=$request.root.commandLine;executablePath=$request.root.executablePath}
 $handles=@{}

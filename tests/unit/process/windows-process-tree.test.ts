@@ -3,7 +3,10 @@ import { spawn } from "node:child_process";
 
 import {
   decodeWindowsTreeWorkerResponse,
+  probeWindowsProcessIdentity,
   queryWindowsProcessIdentity,
+  snapshotWindowsProcessesByToken,
+  terminateWindowsResidual,
   terminateWindowsProcessTree,
   type BatchTarget,
 } from "../../../src/process/windows-process-tree";
@@ -60,6 +63,33 @@ test("identity queries accept only handle-derived canonical fingerprints", async
     runWorker: async () => ({ pid: 42, creationDate: "0133830000000000000", executablePath: "C:\\node.exe" }),
   });
   expect(invalid).toBeNull();
+});
+
+test("identity probes preserve missing versus unavailable", async () => {
+  expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({ status: "missing" }) })).toEqual({ status: "missing" });
+  expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({ status: "unavailable" }) })).toEqual({ status: "unavailable" });
+  expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({
+    status: "found",
+    identity: { pid: 42, creationDate: "133830000000000000", executablePath: "C:\\node.exe" },
+  }) })).toEqual({
+    status: "found",
+    identity: { pid: 42, creationDate: "133830000000000000", executablePath: "C:\\node.exe" },
+  });
+});
+
+test("token snapshots and residual termination reject malformed worker responses", async () => {
+  const token = "11111111-1111-4111-8111-111111111111";
+  const snapshot = await snapshotWindowsProcessesByToken(token, { runWorker: async () => ({ items: [{
+    pid: 42,
+    creationDate: "133830000000000000",
+    commandLine: `agent --xacpx-owner-token ${token}`,
+    executablePath: "C:\\agent.exe",
+  }] }) });
+  expect(snapshot).toHaveLength(1);
+  expect(await snapshotWindowsProcessesByToken("not-a-token", { runWorker: async () => { throw new Error("not invoked"); } })).toBeNull();
+  expect(await snapshotWindowsProcessesByToken(token, { runWorker: async () => ({ items: [{ pid: 42 }] }) })).toBeNull();
+  expect(await terminateWindowsResidual(root, { runWorker: async () => ({ outcome: "skipped-replaced" }) })).toBe("skipped-replaced");
+  expect(await terminateWindowsResidual(root, { runWorker: async () => ({ outcome: "future" }) })).toBe("query-failed");
 });
 
 const windowsTest = process.platform === "win32" ? test : test.skip;

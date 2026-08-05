@@ -23,7 +23,16 @@ export interface ReapQueueOwnersDeps {
   terminate?: (acpxRecordId: string) => Promise<void>;
   /** Overall budget for the whole sweep; on expiry we return what finished. */
   timeoutMs?: number;
+  platform?: NodeJS.Platform;
   onError?: (target: ReapTarget, error: unknown) => void;
+}
+
+export class LegacyOwnerUnverifiableError extends Error {
+  readonly code = "legacy-owner-unverifiable";
+
+  constructor() {
+    super("legacy Windows queue owner has no durable token identity and cannot be auto-reaped");
+  }
 }
 
 /**
@@ -43,7 +52,15 @@ export async function reapQueueOwners(
   deps: ReapQueueOwnersDeps = {},
 ): Promise<{ terminated: number; attempted: number }> {
   const resolveRecordId = deps.resolveRecordId ?? defaultResolveRecordId;
-  const terminate = deps.terminate ?? terminateAcpxQueueOwner;
+  const platform = deps.platform ?? process.platform;
+  // The legacy terminator ultimately accepts only a queue-lock PID. That remains
+  // valid on Unix (process-group semantics), but is intentionally disabled on
+  // Windows: token-less pre-upgrade owners are reusable/degraded evidence, never
+  // candidates for an automatic bare-PID kill. Registered Windows owners are
+  // reconciled by windows-orphan-reaper instead.
+  const terminate = deps.terminate ?? (platform === "win32"
+    ? async () => { throw new LegacyOwnerUnverifiableError(); }
+    : terminateAcpxQueueOwner);
   const timeoutMs = deps.timeoutMs ?? 5_000;
 
   // Several aliases can share one transport session; the queue owner is per

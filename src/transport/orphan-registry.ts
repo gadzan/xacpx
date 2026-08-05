@@ -211,11 +211,21 @@ export class OrphanRegistry {
     return name;
   }
 
+  async deleteOwner(filename: string): Promise<void> {
+    this.assertRecordFilename(filename, "owner");
+    await rm(join(this.categoryPath("owners"), filename), { force: true });
+  }
+
   async writeResidual(record: ResidualRecord): Promise<string> {
     if (!decodeResidualRecord(record)) throw new Error("invalid residual record");
     const name = `${record.ownerToken}-${record.pid}.json`;
     await this.durableWrite(join(this.categoryPath("residuals"), name), record);
     return name;
+  }
+
+  async deleteResidual(filename: string): Promise<void> {
+    this.assertRecordFilename(filename, "residual");
+    await rm(join(this.categoryPath("residuals"), filename), { force: true });
   }
 
   async migrateIntentToOwner(token: string, owner: OwnerRecord): Promise<void> {
@@ -225,9 +235,9 @@ export class OrphanRegistry {
   }
 
   async migrateOwnerToResiduals(ownerFilename: string, residuals: ResidualRecord[]): Promise<void> {
-    if (basename(ownerFilename) !== ownerFilename || !ownerFilename.endsWith(".json")) throw new Error("invalid owner filename");
+    this.assertRecordFilename(ownerFilename, "owner");
     for (const residual of residuals) await this.writeResidual(residual);
-    await rm(join(this.categoryPath("owners"), ownerFilename), { force: true });
+    await this.deleteOwner(ownerFilename);
   }
 
   async readCategory(category: OrphanCategory): Promise<Array<{ filename: string; record: OrphanRecord }> | null> {
@@ -290,5 +300,11 @@ export class OrphanRegistry {
     await this.faults.onBoundary?.("before-rename", path);
     await rename(tmp, path);
     await this.faults.onBoundary?.("after-rename", path);
+  }
+
+  private assertRecordFilename(filename: string, kind: "owner" | "residual"): void {
+    if (basename(filename) !== filename || !filename.endsWith(".json") || filename.includes(".tmp-")) {
+      throw new Error(`invalid ${kind} filename`);
+    }
   }
 }

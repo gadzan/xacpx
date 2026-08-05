@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 
-import { parseRecordId, reapQueueOwners, type ReapTarget } from "../../../src/transport/queue-owner-reaper";
+import {
+  LegacyOwnerUnverifiableError,
+  parseRecordId,
+  reapQueueOwners,
+  type ReapTarget,
+} from "../../../src/transport/queue-owner-reaper";
 
 const target = (transportSession: string, cwd = "/tmp/backend"): ReapTarget => ({
   agent: "codex",
@@ -138,6 +143,19 @@ test("swallows resolver and terminate errors so one bad session never blocks the
 
   expect(terminated).toEqual(["record-backend:ok"]);
   expect(result.terminated).toBe(1);
+});
+
+test("Windows default path preserves token-less legacy owners and reports degraded", async () => {
+  const errors: unknown[] = [];
+  const result = await reapQueueOwners("acpx", [target("backend:legacy")], {
+    platform: "win32",
+    resolveRecordId: async () => "legacy-record",
+    onError: (_target, error) => errors.push(error),
+  });
+
+  expect(result.terminated).toBe(0);
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toBeInstanceOf(LegacyOwnerUnverifiableError);
 });
 
 test("parseRecordId reads a bare quiet id, a JSON record, or returns null", () => {
