@@ -78,7 +78,7 @@ windowsTest("real Windows guard is exclusive across processes and crash-released
   const root = await mkdtemp(join(tmpdir(), "ipc-guard-process-"));
   roots.push(root);
   const helper = join(process.cwd(), "tests", "helpers", "ipc-guard-child.ts");
-  const spawnHelper = (hold?: boolean) => spawn("bun", ["run", helper, root, ...(hold ? ["hold"] : [])], {
+  const spawnHelper = (hold?: boolean) => spawn("tsx", [helper, root, ...(hold ? ["hold"] : [])], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const waitForOutput = (child: ReturnType<typeof spawn>, expected: RegExp) => new Promise<string>((resolveOutput, reject) => {
