@@ -1,13 +1,15 @@
 import { randomBytes } from "node:crypto";
+import { dirname } from "node:path";
 import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import {
-  classifyPreinstalledAdapterCommandShape,
+  classifyRecordedPreinstalledAdapterCommand,
   isManagedAdapterCommand,
   isManagedAdapterId,
   MANAGED_ADAPTERS,
 } from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
 import { renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
+import { resolveConfigPathForCurrentEnv } from "../config/config-path";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -79,6 +81,8 @@ interface SessionServiceOptions {
   now?: () => number;
   /** Injectable for tests; defaults to the real platform. */
   platform?: NodeJS.Platform;
+  /** Trusted root for classifying persisted preinstalled adapter identities. */
+  runtimeRoot?: string;
 }
 
 export interface SessionStateWriter extends Pick<StateStore, "save"> {
@@ -93,6 +97,7 @@ export class SessionService {
   private readonly stateMutex: AsyncMutex;
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
+  private readonly runtimeRoot: string;
   private readonly pendingSessionAliasOperations = new Set<string>();
 
   constructor(
@@ -104,6 +109,7 @@ export class SessionService {
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.now = options.now ?? (() => Date.now());
     this.platform = options.platform ?? process.platform;
+    this.runtimeRoot = options.runtimeRoot ?? dirname(resolveConfigPathForCurrentEnv());
   }
 
   async createSession(alias: string, agent: string, workspace: string): Promise<ResolvedSession> {
@@ -781,7 +787,10 @@ export class SessionService {
     agentConfig: AgentConfig,
     platform: NodeJS.Platform = this.platform,
   ): AgentLaunchSpec {
-    const current = resolveConfiguredAgentLaunch(agentConfig, this.config.transport);
+    const current = resolveConfiguredAgentLaunch(agentConfig, this.config.transport, {
+      platform,
+      runtimeRoot: this.runtimeRoot,
+    });
     // 1. Explicit config `command` (Unix raw override) wins over any recording.
     if (current.rawCommand) {
       return current;
@@ -790,7 +799,12 @@ export class SessionService {
     // session created under argv A must keep operating as A even if the config
     // later changes to B — otherwise the session silently jumps to B's alias
     // and its history is orphaned.
-    const recordedArgv = isDerivedAgentArgv(agentConfig.driver, session.transport_agent_argv)
+    const recordedArgv = isDerivedAgentArgv(
+      agentConfig.driver,
+      session.transport_agent_argv,
+      this.runtimeRoot,
+      platform,
+    )
       ? undefined
       : session.transport_agent_argv;
     if (recordedArgv && session.transport_acpx_agent) {
@@ -815,7 +829,10 @@ export class SessionService {
         isHermesShimCommand(session.transport_agent_command!)
       )) ||
       isManagedAdapterCommand(agentConfig.driver, session.transport_agent_command) ||
-      classifyPreinstalledAdapterCommandShape(session.transport_agent_command) === agentConfig.driver
+      classifyRecordedPreinstalledAdapterCommand(session.transport_agent_command, {
+        runtimeRoot: this.runtimeRoot,
+        platform,
+      }) === agentConfig.driver
     );
     const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
     if (recordedCommand) {
@@ -1091,7 +1108,12 @@ export class SessionService {
 
 /** Derived argv (managed adapter pin, hermes shim, local fallback) is recomputed
  * from the current config on restart; only custom argv survives in state. */
-function isDerivedAgentArgv(driver: string, argv: string[] | undefined): boolean {
+function isDerivedAgentArgv(
+  driver: string,
+  argv: string[] | undefined,
+  runtimeRoot: string,
+  platform: NodeJS.Platform,
+): boolean {
   if (!argv || argv.length === 0) {
     return false;
   }
@@ -1103,7 +1125,10 @@ function isDerivedAgentArgv(driver: string, argv: string[] | undefined): boolean
         argv[1] === "-y" &&
         argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
       ) ||
-      classifyPreinstalledAdapterCommandShape(renderAgentArgvIdentity(argv)) === driver
+      classifyRecordedPreinstalledAdapterCommand(renderAgentArgvIdentity(argv), {
+        runtimeRoot,
+        platform,
+      }) === driver
     );
   }
   if (driver === "hermes") {

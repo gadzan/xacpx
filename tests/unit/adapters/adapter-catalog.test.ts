@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   adapterRegistryHash8,
   buildManagedAdapterCommand,
+  classifyPreinstalledAdapterCommandShape,
+  classifyRecordedPreinstalledAdapterCommand,
   createAdapterReleaseId,
   decodeManagedAdapterCommand,
   effectiveAdapterVersion,
@@ -13,6 +15,33 @@ import {
   isManagedAdapterCommand,
   parseAdapterReleaseId,
 } from "../../../src/adapters/adapter-catalog";
+
+test("recorded preinstalled classification requires the trusted complete release layout", () => {
+  const releaseId = createAdapterReleaseId(
+    "1.1.4",
+    "https://registry.npmjs.org",
+    "12345678-0000-4000-8000-000000000000",
+  );
+  const validEntry = `/trusted/adapters/codex/releases/${releaseId}/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js`;
+  const validCommand = `"/usr/bin/node" "${validEntry}"`;
+  const outsideCommand = validCommand.replace("/trusted/adapters", "/srv/adapters");
+
+  expect(classifyRecordedPreinstalledAdapterCommand(validCommand, {
+    runtimeRoot: "/trusted",
+    platform: "linux",
+  })).toBe("codex");
+  expect(classifyRecordedPreinstalledAdapterCommand(outsideCommand, {
+    runtimeRoot: "/trusted",
+    platform: "linux",
+  })).toBeNull();
+  expect(classifyRecordedPreinstalledAdapterCommand(
+    validCommand.replace("/@agentclientprotocol/codex-acp/", "/@agentclientprotocol/custom-acp/"),
+    { runtimeRoot: "/trusted", platform: "linux" },
+  )).toBeNull();
+
+  // The broad classifier intentionally remains shape-only for mandatory fencing.
+  expect(classifyPreinstalledAdapterCommandShape(outsideCommand)).toBe("codex");
+});
 
 test("managed adapters use tested exact defaults and accept local overrides", () => {
   expect(effectiveAdapterVersion("codex", {})).toBe("1.1.9");

@@ -1160,7 +1160,10 @@ test("windows upgrades a recorded preinstalled managed command instead of treati
       '"C:\\xacpx\\runtime\\node.exe" "C:\\xacpx\\runtime\\adapters\\codex\\releases\\1.1.8-12345678-abcdef12\\node_modules\\@agentclientprotocol\\codex-acp\\bin\\codex-acp.js"',
   };
 
-  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  const service = new SessionService(config, new MemoryStateStore(), state, {
+    platform: "win32",
+    runtimeRoot: "C:\\xacpx\\runtime",
+  });
   const session = await service.getSession("review");
 
   expect(session?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
@@ -1184,11 +1187,57 @@ test("recorded preinstalled argv is derived and follows the active managed relea
     ],
   };
 
-  const service = new SessionService(config, new MemoryStateStore(), state);
+  const service = new SessionService(config, new MemoryStateStore(), state, {
+    runtimeRoot: "/opt/xacpx/runtime",
+  });
   const session = await service.getSession("review");
 
   expect(session?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
   expect(session?.agentCommand).not.toContain("1.1.8-12345678-abcdef12");
+});
+
+test("custom recorded argv containing a managed-looking release path stays sticky", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-codex-custompath",
+    transport_agent_command:
+      '"/usr/bin/node" "/srv/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js"',
+    transport_agent_argv: [
+      "/usr/bin/node",
+      "/srv/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js",
+    ],
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+
+  expect(session?.acpxAgent).toBe("xacpx-managed-codex-custompath");
+  expect(session?.agentArgv).toEqual([
+    "/usr/bin/node",
+    "/srv/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js",
+  ]);
+});
+
+test("windows rejects a custom recorded command containing a managed-looking release path", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command:
+      '"C:\\usr\\bin\\node.exe" "C:\\srv\\adapters\\codex\\releases\\custom\\agent.js"',
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+
+  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
 });
 
 // ── windows recorded raw command guard ───────────────────────────────────────

@@ -209,6 +209,49 @@ export function classifyPreinstalledAdapterCommandShape(command: string | undefi
   return null;
 }
 
+export interface ClassifyRecordedPreinstalledAdapterCommandOptions {
+  /** Trusted xacpx runtime root containing the managed adapters directory. */
+  runtimeRoot: string;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Strict structural classifier for persisted session identity. Unlike the broad
+ * fencing classifier above, this only treats a command as derived managed state
+ * when its entry is under the trusted runtime adapter root and has the complete
+ * immutable release/package layout.
+ */
+export function classifyRecordedPreinstalledAdapterCommand(
+  command: string | undefined,
+  options: ClassifyRecordedPreinstalledAdapterCommandOptions,
+): ManagedAdapterId | null {
+  if (!command) return null;
+  const platform = options.platform ?? process.platform;
+  const pathApi = platform === "win32" ? win32 : posix;
+  const args = splitAdapterCommand(command);
+  if (!args || args.length !== 2 || !pathApi.isAbsolute(args[1]!)) return null;
+
+  const adaptersRoot = pathApi.resolve(options.runtimeRoot, "adapters");
+  const entryPath = pathApi.resolve(args[1]!);
+  const rel = pathApi.relative(adaptersRoot, entryPath);
+  if (!rel || rel === ".." || rel.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(rel)) return null;
+
+  const segments = rel.split(/[\\/]+/);
+  if (segments.length < 7) return null;
+  const [rawId, releases, releaseId, nodeModules, scope, packageLeaf, ...entrySegments] = segments;
+  const fold = (value: string | undefined) => platform === "win32" ? value?.toLowerCase() : value;
+  const id = fold(rawId);
+  if (!id || !isManagedAdapterId(id)) return null;
+  if (
+    fold(releases) !== "releases"
+    || fold(nodeModules) !== "node_modules"
+    || `${fold(scope)}/${fold(packageLeaf)}` !== fold(MANAGED_ADAPTERS[id].packageName)
+    || !parseAdapterReleaseId(releaseId!)
+    || entrySegments.some((segment) => segment.length === 0)
+  ) return null;
+  return id;
+}
+
 export interface DecodeManagedAdapterCommandOptions {
   adaptersRoot?: string;
   controlledNodeExecutable?: string;

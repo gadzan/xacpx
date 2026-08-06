@@ -9,7 +9,7 @@ import {
   tryRepairAcpxSessionIndex,
   type CommandRunnerOptions,
 } from "../../../src/bridge/bridge-runtime";
-import type { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
 test("injects the filtered Claude environment into bridge acpx commands", async () => {
   const observed: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -804,6 +804,45 @@ test("prompt starts queue owner with orchestration MCP identity", async () => {
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
   }]);
+});
+
+test("prompt replaces a bridge queue owner when the resolved model changes", async () => {
+  const payloads: Array<{ sessionOptions?: { model?: string } }> = [];
+  let alive = false;
+  let terminateCount = 0;
+  const queueOwnerLauncher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async (_command, _args, options) => {
+      alive = true;
+      payloads.push(JSON.parse(options.env.ACPX_QUEUE_OWNER_PAYLOAD));
+      return 100 + payloads.length;
+    },
+    terminateOwner: async () => {
+      terminateCount += 1;
+      alive = false;
+    },
+    isOwnerAlive: async () => alive,
+  });
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+  const baseInput = {
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    mcpCoordinatorSession: "backend:main",
+  };
+
+  await runtime.prompt({ ...baseInput, model: " model-a " });
+  await runtime.prompt({ ...baseInput, model: "model-b" });
+
+  expect(terminateCount).toBe(2);
+  expect(payloads.map((payload) => payload.sessionOptions?.model)).toEqual(["model-a", "model-b"]);
 });
 
 test("prompt persists effort before launching the queue owner so reconnect replays it", async () => {

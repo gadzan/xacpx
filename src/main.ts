@@ -299,8 +299,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       });
     },
   });
-  const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex });
   const runtimeRoot = dirname(paths.configPath);
+  const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
   const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
     platform: process.platform,
     runtimeRoot,

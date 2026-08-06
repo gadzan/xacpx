@@ -607,6 +607,7 @@ export class BridgeRuntime {
       ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
       permissionMode: this.options.permissionMode ?? "approve-all",
       nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
+      ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
       ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
       ...(adapterContext ? { adapterContext } : {}),
       ...(env ? { env } : {}),
