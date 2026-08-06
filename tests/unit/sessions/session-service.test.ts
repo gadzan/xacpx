@@ -1148,6 +1148,49 @@ test("recorded custom argv stays sticky across restart while managed argv recomp
   expect(session2?.acpxAgent).not.toBe("xacpx-managed-codex-oldhash9999");
 });
 
+test("windows upgrades a recorded preinstalled managed command instead of treating it as raw", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command:
+      '"C:\\xacpx\\runtime\\node.exe" "C:\\xacpx\\runtime\\adapters\\codex\\releases\\1.1.8-12345678-abcdef12\\node_modules\\@agentclientprotocol\\codex-acp\\bin\\codex-acp.js"',
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  const session = await service.getSession("review");
+
+  expect(session?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
+  expect(session?.agentCommand).not.toContain("1.1.8-12345678-abcdef12");
+});
+
+test("recorded preinstalled argv is derived and follows the active managed release", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-codex-oldrelease",
+    transport_agent_command:
+      '"/opt/xacpx/runtime/node" "/opt/xacpx/runtime/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js"',
+    transport_agent_argv: [
+      "/opt/xacpx/runtime/node",
+      "/opt/xacpx/runtime/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js",
+    ],
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+
+  expect(session?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
+  expect(session?.agentCommand).not.toContain("1.1.8-12345678-abcdef12");
+});
+
 // ── windows recorded raw command guard ───────────────────────────────────────
 
 test("windows rejects a recorded multi-token raw command instead of resurrecting it", async () => {

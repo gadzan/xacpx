@@ -645,6 +645,31 @@ test("ensureSession surfaces the configured total when a later step times out", 
   expect((caught as Error).message).toBe("session initialization timed out after 100s");
 });
 
+test("ensureSession fails closed when sessions show succeeds with a corrupt record", async () => {
+  const calls: string[][] = [];
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async (_command, args) => {
+      calls.push(args);
+      if (args.includes("show")) {
+        return { code: 0, stdout: "{truncated", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  );
+
+  await expect(runtime.ensureSession({
+    agent: "custom",
+    acpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    agentCommand: "/opt/custom --acp",
+    agentArgv: ["/opt/custom", "--acp"],
+    cwd: "/repo",
+    name: "demo",
+  })).rejects.toThrow(/record|parse|malformed|corrupt/i);
+
+  expect(calls.some((args) => args.includes("ensure") || args.includes("new"))).toBe(false);
+});
+
 test("prompt is unbounded while management commands get the management timeout", async () => {
   const timeouts: Array<number | undefined> = [];
   const runtime = new BridgeRuntime(

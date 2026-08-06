@@ -85,7 +85,15 @@ export class SessionControlService {
         if (!exists) {
           throw new Error(`transport session "${session.transportSession}" could not be verified`);
         }
-        await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+        await this.sessions.attachSession(
+          internalAlias,
+          agent,
+          workspace,
+          session.transportSession,
+          session.agentCommand,
+          session.acpxAgent,
+          session.agentArgv,
+        );
         if (normalizedModel) {
           await this.sessions.setSessionModel(internalAlias, normalizedModel);
         }
@@ -300,18 +308,14 @@ export class SessionControlService {
         if (!exists) {
           throw new Error(`transport session "${session.transportSession}" could not be verified`);
         }
-        const agentConfig = this.config?.agents[agent];
-        const launch = agentConfig
-          ? resolveConfiguredAgentLaunch(agentConfig, this.config?.transport)
-          : undefined;
         await this.sessions.attachNativeSession({
           alias: internalAlias,
           agent,
           workspace,
           transportSession: session.transportSession,
-          ...(launch?.agentCommand ? { transportAgentCommand: launch.agentCommand } : {}),
-          ...(launch?.acpxAgent ? { transportAcpxAgent: launch.acpxAgent } : {}),
-          ...(launch?.agentArgv ? { transportAgentArgv: launch.agentArgv } : {}),
+          ...(session.agentCommand ? { transportAgentCommand: session.agentCommand } : {}),
+          ...(session.acpxAgent ? { transportAcpxAgent: session.acpxAgent } : {}),
+          ...(session.agentArgv ? { transportAgentArgv: session.agentArgv } : {}),
           agentSessionId,
           ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
           ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),

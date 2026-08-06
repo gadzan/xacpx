@@ -125,7 +125,12 @@ export function buildXacpxMcpServerSpec(input: {
   };
 }
 
-function launchFingerprint(input: LaunchQueueOwnerInput): string {
+function launchFingerprint(input: LaunchQueueOwnerInput, effectiveEnv: NodeJS.ProcessEnv): string {
+  const environmentDigest = createHash("sha256")
+    .update(JSON.stringify(Object.entries(stringEnv(effectiveEnv)).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    )))
+    .digest("hex");
   return JSON.stringify({
     coordinatorSession: input.coordinatorSession,
     sourceHandle: input.sourceHandle ?? null,
@@ -133,6 +138,7 @@ function launchFingerprint(input: LaunchQueueOwnerInput): string {
     nonInteractivePermissions: input.nonInteractivePermissions,
     sessionOptions: input.sessionOptions ?? null,
     agentCommand: input.agentCommand ?? null,
+    environmentDigest,
   });
 }
 
@@ -221,7 +227,8 @@ export class AcpxQueueOwnerLauncher {
     // model options, and the agent command are all baked into the owner's
     // payload at spawn time. Reusing it under changed parameters would keep an
     // old permission/MCP/model/command profile alive (forever with ttl=0).
-    const fingerprint = launchFingerprint(input);
+    const childEnv = input.env ?? this.baseEnv;
+    const fingerprint = launchFingerprint(input, childEnv);
     if (
       await this.isOwnerAlive(input.acpxRecordId)
       && this.lastLaunchFingerprint.get(input.acpxRecordId) === fingerprint
@@ -229,6 +236,12 @@ export class AcpxQueueOwnerLauncher {
       return { agentCommand: input.agentCommand };
     }
     await this.terminateOwner(input.acpxRecordId);
+    if (await this.isOwnerAlive(input.acpxRecordId)) {
+      throw new Error(
+        `queue owner for session ${input.acpxRecordId} is still live after termination; refusing to spawn a replacement`,
+      );
+    }
+    this.lastLaunchFingerprint.delete(input.acpxRecordId);
 
     const managedShape = classifyPreinstalledAdapterCommandShape(input.agentCommand);
     if (managedShape && !input.adapterContext) {
@@ -281,7 +294,6 @@ export class AcpxQueueOwnerLauncher {
       "__queue-owner",
       ...(intentToken && adapter?.platform === "win32" ? ["--xacpx-owner-token", intentToken] : []),
     ]);
-    const childEnv = input.env ?? this.baseEnv;
     let spawnedPid: number | undefined;
     try {
       spawnedPid = await this.spawnOwner(spawnSpec.command, spawnSpec.args, {
@@ -295,29 +307,44 @@ export class AcpxQueueOwnerLauncher {
       if (adapter && intentToken && adapter.platform === "win32") await adapter.cancel(intentToken);
       throw error;
     }
-    this.lastLaunchFingerprint.set(input.acpxRecordId, fingerprint);
-    if (!adapter || !intentToken || adapter.platform !== "win32") return { agentCommand: launchAgentCommand };
-
-    await adapter.spawned(intentToken);
-    const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
-    if (ownerPid !== undefined) {
-      await adapter.settle({
-        intentToken,
-        outcome: "owner-committed",
-        ownerPid,
-        ownerAcpxRecordId: input.acpxRecordId,
-      });
+    const committedFingerprint = launchFingerprint({
+      ...input,
+      ...(launchAgentCommand ? { agentCommand: launchAgentCommand } : { agentCommand: undefined }),
+    }, childEnv);
+    if (!adapter || !intentToken || adapter.platform !== "win32") {
+      this.lastLaunchFingerprint.set(input.acpxRecordId, committedFingerprint);
       return { agentCommand: launchAgentCommand };
     }
-    const status = await this.probeSpawnedProcess(spawnedPid);
-    if (status === "exited") {
-      await adapter.settle({ intentToken, outcome: "launch-failed" });
+
+    try {
+      await adapter.spawned(intentToken);
+      const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
+      if (ownerPid !== undefined) {
+        await adapter.settle({
+          intentToken,
+          outcome: "owner-committed",
+          ownerPid,
+          ownerAcpxRecordId: input.acpxRecordId,
+        });
+        this.lastLaunchFingerprint.set(input.acpxRecordId, committedFingerprint);
+        return { agentCommand: launchAgentCommand };
+      }
+      const status = await this.probeSpawnedProcess(spawnedPid);
+      if (status === "exited") {
+        await adapter.settle({ intentToken, outcome: "launch-failed" });
+      }
+      throw new Error(status === "alive"
+        ? `queue owner ${spawnedPid} did not become ready before timeout`
+        : status === "exited"
+          ? `queue owner ${spawnedPid} exited before becoming ready`
+          : `queue owner ${spawnedPid} readiness could not be determined`);
+    } catch (error) {
+      // A spawn is not reusable until the Windows intent has durably settled as
+      // owner-committed. A late lock from a timed-out owner is handled by the
+      // next launch's verified terminate-or-fail-closed path.
+      this.lastLaunchFingerprint.delete(input.acpxRecordId);
+      throw error;
     }
-    throw new Error(status === "alive"
-      ? `queue owner ${spawnedPid} did not become ready before timeout`
-      : status === "exited"
-        ? `queue owner ${spawnedPid} exited before becoming ready`
-        : `queue owner ${spawnedPid} readiness could not be determined`);
   }
 
   private async waitForOwnerPid(sessionId: string): Promise<number | undefined> {
@@ -429,7 +456,7 @@ async function defaultProbeSpawnedProcess(pid: number): Promise<"alive" | "exite
 
 function createDefaultQueueOwnerTerminator(_acpxCommand: string): QueueOwnerTerminator {
   return async (sessionId) => {
-    await terminateAcpxQueueOwner(sessionId);
+    await terminateAcpxQueueOwnerVerified(sessionId);
   };
 }
 

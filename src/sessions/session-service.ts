@@ -1,6 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
-import { isManagedAdapterCommand, isManagedAdapterId, MANAGED_ADAPTERS } from "../adapters/adapter-catalog";
+import {
+  classifyPreinstalledAdapterCommandShape,
+  isManagedAdapterCommand,
+  isManagedAdapterId,
+  MANAGED_ADAPTERS,
+} from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
 import { renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
@@ -809,7 +814,8 @@ export class SessionService {
         isDefaultHermesCommand(session.transport_agent_command!) ||
         isHermesShimCommand(session.transport_agent_command!)
       )) ||
-      isManagedAdapterCommand(agentConfig.driver, session.transport_agent_command)
+      isManagedAdapterCommand(agentConfig.driver, session.transport_agent_command) ||
+      classifyPreinstalledAdapterCommandShape(session.transport_agent_command) === agentConfig.driver
     );
     const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
     if (recordedCommand) {
@@ -1092,9 +1098,12 @@ function isDerivedAgentArgv(driver: string, argv: string[] | undefined): boolean
   if (isManagedAdapterId(driver)) {
     const spec = MANAGED_ADAPTERS[driver];
     return (
-      argv[0] === "npx" &&
-      argv[1] === "-y" &&
-      argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
+      (
+        argv[0] === "npx" &&
+        argv[1] === "-y" &&
+        argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
+      ) ||
+      classifyPreinstalledAdapterCommandShape(renderAgentArgvIdentity(argv)) === driver
     );
   }
   if (driver === "hermes") {

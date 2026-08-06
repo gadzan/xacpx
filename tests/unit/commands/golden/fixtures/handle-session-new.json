@@ -12,7 +12,7 @@
     "logger.info(transport.ensure_session)",
     "transport.hasSession(session(demo/backend:demo:reset-<n>))",
     "logger.info(transport.has_session)",
-    "sessions.attachSession(\"demo\", \"codex\", \"backend\", \"backend:demo:reset-<n>\")",
+    "sessions.attachSession(\"demo\", \"codex\", \"backend\", \"backend:demo:reset-<n>\", \"npx -y --registry=https://registry.npmjs…\", \"xacpx-managed-codex-f4349e35c3c8\", {…})",
     "sessions.useSession(\"wx:user\", \"demo\")",
     "sessions.getSession(\"demo\")",
     "logger.info(session.created)",

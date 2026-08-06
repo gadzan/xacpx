@@ -308,6 +308,7 @@ test("reuses a live warm owner only when launch parameters are unchanged", async
   const terminated: string[] = [];
   const terminateOwner: QueueOwnerTerminator = mock(async (sessionId) => {
     terminated.push(sessionId);
+    alive = false;
   });
   let alive = false;
   const launcher = new AcpxQueueOwnerLauncher({
@@ -345,7 +346,36 @@ test("reuses a live warm owner only when launch parameters are unchanged", async
   expect(spawns).toHaveLength(2);
 });
 
-test("a live owner with no recorded fingerprint is not reused", async () => {
+test("a changed effective environment replaces the warm owner without exposing secrets in the fingerprint", async () => {
+  const spawns: Array<Record<string, string>> = [];
+  let alive = false;
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async (_command, _args, options) => {
+      alive = true;
+      spawns.push(options.env);
+      return 100 + spawns.length;
+    },
+    terminateOwner: async () => { alive = false; },
+    isOwnerAlive: async () => alive,
+  });
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+  };
+
+  await launcher.launch({ ...input, env: { ANTHROPIC_AUTH_TOKEN: "secret-a", CLAUDE_CONFIG_DIR: "/isolated-a" } });
+  await launcher.launch({ ...input, env: { ANTHROPIC_AUTH_TOKEN: "secret-b", CLAUDE_CONFIG_DIR: "/isolated-b" } });
+
+  expect(spawns).toHaveLength(2);
+  const fingerprints = [...(launcher as unknown as { lastLaunchFingerprint: Map<string, string> }).lastLaunchFingerprint.values()];
+  expect(fingerprints.join(" ")).not.toContain("secret-b");
+  expect(fingerprints.join(" ")).not.toContain("/isolated-b");
+});
+
+test("a live owner with no recorded fingerprint fails closed when termination cannot be verified", async () => {
   const spawns: Array<{ command: string; args: string[] }> = [];
   const spawnOwner: QueueOwnerSpawner = mock(async (command, args) => {
     spawns.push({ command, args });
@@ -358,14 +388,57 @@ test("a live owner with no recorded fingerprint is not reused", async () => {
     isOwnerAlive: async () => true, // owner exists but WE never spawned it
   });
 
-  await launcher.launch({
+  await expect(launcher.launch({
     acpxRecordId: "acpx-record-1",
     coordinatorSession: "backend:main",
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
-  });
+  })).rejects.toThrow(/owner|terminat|live/i);
 
-  expect(spawns).toHaveLength(1);
+  expect(spawns).toHaveLength(0);
+});
+
+test("a failed Windows handshake never publishes a reusable launch fingerprint", async () => {
+  let spawnCount = 0;
+  let terminateCount = 0;
+  let alive = false;
+  const settlements: string[] = [];
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async () => {
+      spawnCount += 1;
+      alive = true;
+      return 200 + spawnCount;
+    },
+    terminateOwner: async () => {
+      terminateCount += 1;
+      alive = false;
+    },
+    isOwnerAlive: async () => alive,
+    readOwnerPid: async () => spawnCount >= 2 ? 902 : undefined,
+    probeSpawnedProcess: async () => "alive",
+    handshakeTimeoutMs: 0,
+    sleep: async () => {},
+  });
+  const adapter = adapterContext({
+    settle: async ({ outcome }) => { settlements.push(outcome); },
+  });
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+    agentCommand: MANAGED_COMMAND,
+    adapterContext: adapter,
+  };
+
+  await expect(launcher.launch(input)).rejects.toThrow(/did not become ready/);
+  alive = true; // The failed owner publishes its lock after the timed-out launch.
+  await expect(launcher.launch(input)).resolves.toEqual({ agentCommand: MANAGED_COMMAND });
+
+  expect(spawnCount).toBe(2);
+  expect(terminateCount).toBe(2);
+  expect(settlements).toEqual(["owner-committed"]);
 });
 
 test("verified termination is a no-op when no owner lock exists", async () => {

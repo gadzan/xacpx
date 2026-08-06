@@ -333,7 +333,12 @@ export class TransportInvoker {
       return;
     }
 
-    await this.sessions.setSessionTransportAgentCommand(alias, transportAgentCommand);
+    await this.sessions.setSessionTransportAgentCommand(
+      alias,
+      transportAgentCommand,
+      session.acpxAgent,
+      session.agentArgv,
+    );
   }
 }
 

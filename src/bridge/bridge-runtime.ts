@@ -663,7 +663,9 @@ export class BridgeRuntime {
       throw error;
     }
     if (!recordId) {
-      return;
+      throw new Error(
+        `failed to resolve acpx session record id from successful sessions show output for "${input.name}"`,
+      );
     }
     const result = await migrateSessionArgvFile(recordId, {
       agentCommand: renderAgentArgvIdentity(input.agentArgv),
