@@ -50,6 +50,50 @@ test("dashboard renders three columns and loads instances on mount", async () =>
   expect(wrapper.findAll('[data-test="column"]').length).toBe(3);
 });
 
+test("mount auto-loads sessions for every online instance without user action", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+    const url = typeof input === "string" ? input : String(input);
+    const body = url.includes("/rpc")
+      ? { result: { sessions: [], hasMore: false } }
+      : { instances: [
+        { id: "i1", name: "pc", online: true, lastSeenAt: null },
+        { id: "i2", name: "off", online: false, lastSeenAt: null },
+      ] };
+    return new Response(JSON.stringify(body), { status: 200 });
+  }));
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+  const store = useInstancesStore();
+  // No "load sessions" click needed: the online instance's list loads on entry.
+  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+  expect(store.byId("i2")!.sessionsLoaded).toBe(false);
+});
+
+test("reconnect snapshot re-pull auto-loads sessions for online instances", async () => {
+  // Instance is OFFLINE at mount, so the initial auto-load skips it; it comes online
+  // only after a drop/reconnect cycle, and the re-pull must load it without user action.
+  let online = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+    const url = typeof input === "string" ? input : String(input);
+    const body = url.includes("/rpc")
+      ? { result: { sessions: [], hasMore: false } }
+      : { instances: [{ id: "i1", name: "pc", online, lastSeenAt: null }] };
+    return new Response(JSON.stringify(body), { status: 200 });
+  }));
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+  const store = useInstancesStore();
+  expect(store.byId("i1")!.sessionsLoaded).toBe(false);
+
+  online = true;
+  // A real socket fires open-status on connect; everOnline gates the re-pull on it.
+  captured.onStatus?.(true);
+  captured.onStatus?.(false);
+  captured.onStatus?.(true);
+  await flushPromises();
+  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+});
+
 test("selecting a session routes it into the chat store", async () => {
   const chat = useChatStore();
   const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, "router-link": true } } });

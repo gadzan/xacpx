@@ -205,8 +205,17 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - 每个实例可独立选择侧栏分组模式：`instance`（平铺，默认）/ `workspace` / `agent`。偏好存
   localStorage（`xacpx.sidebar.groupMode.<instanceId>`，helpers 在 `src/lib/sidebar-group-mode.ts`），
   响应式镜像在 instances store（`groupModeFor`/`setGroupMode`），改动即时生效。
-- **组只由 session 派生**（不读 workspaces/agents 目录 → 无空组），按服务器首现顺序排列；组内 active
-  保持顺序、archived 沉底置灰。分组模式下**取消 10 行截断**（组折叠即长度控制，折叠为会话内状态、不持久化）。
+- **组由活跃 session 派生**（不读 workspaces/agents 目录），按服务器首现顺序排列；组内 active
+  保持顺序。分组模式下**取消 10 行截断**（组折叠即长度控制，折叠为会话内状态、不持久化）。
+- **分组模式的睡眠会话按组分页加载**：每组底部有「显示已睡眠会话」开关，首次展开时经
+  `control.sessions.list {archivedOnly, workspace|agent, offset, limit:5}` 拉第一页，组内「加载更多」
+  每次追加一页直到 `hasMore=false`，可再次点击隐藏（缓存保留）。睡眠行排在该组活跃会话下方置灰。
+  组状态存 `InstanceView.groupArchived`（键 `${mode}:${groupKey}`，不并入 `inst.sessions`、不喂
+  `reconcileTailCache`），`sessions-changed`/archive/unarchive 只刷新已加载的组。最后一个活跃会话
+  被睡眠后，已加载过睡眠页的组仍保留显示。**平铺模式保持实例级一次性快照开关**（footer 按钮），
+  实例级「加载更多」在所有模式下保留（活跃列表超一页时的唯一入口）。
+- **会话列表自动加载**：进入页面、浏览器重连、实例从离线变在线时，自动为所有在线实例加载会话
+  列表（`loadSessionsForOnlineInstances`）；手动「加载会话」按钮保留为失败兜底。
 - **视觉**：实例=浅色卡片、组=更浅一层的底色块 + 极小缩进（tinted-zone，三种模式视觉同构）。组头 =
   折叠箭头 + 类型图标（workspace→文件夹 / agent→品牌图标）+ 名称 + 计数；agent 分组下行内品牌图标去除。
 - **前缀去重**（仅展示层）：workspace 组内剥掉 `<组名>-` 前缀、agent 组内剥掉 `-<组名>` 后缀

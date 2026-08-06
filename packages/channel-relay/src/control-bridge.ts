@@ -154,8 +154,15 @@ async function dispatchControlRequest(
     case MSG.sessionsList: {
       const input = parseControlPayload(MSG.sessionsList, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.sessionsList}: malformed payload`);
-      if (input.offset !== undefined || input.limit !== undefined) {
-        return control.listSessionsPage(input.chatKey, input.offset, input.limit, input.includeArchived);
+      const hasFilters =
+        input.includeArchived !== undefined || input.archivedOnly !== undefined
+        || input.workspace !== undefined || input.agent !== undefined;
+      if (input.offset !== undefined || input.limit !== undefined || hasFilters) {
+        return control.listSessionsPage(input.chatKey, input.offset, input.limit, input.includeArchived, {
+          archivedOnly: input.archivedOnly,
+          workspace: input.workspace,
+          agent: input.agent,
+        });
       }
       return { sessions: control.listSessions(input.chatKey) }; // ControlSessionInfo is field-identical to SessionDto
     }

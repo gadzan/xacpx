@@ -54,9 +54,36 @@ export interface InstanceView {
   sessionsLoading?: boolean;
   archivedSessionsLoaded?: boolean;
   archivedSessionsLoading?: boolean;
+  // Grouped sidebar modes page sleeping sessions PER GROUP from the server instead of
+  // merging them into `sessions` (flat mode's one-shot snapshot). Keyed `${mode}:${groupKey}`.
+  groupArchived?: Record<string, GroupArchivedState>;
   agents: AgentDto[];
   workspaces: WorkspaceDto[];
   agentCatalog: AgentCatalogEntryDto[];
+}
+
+/** Sidebar grouping modes that support per-group sleeping-session pages. */
+export type GroupArchivedMode = "workspace" | "agent";
+
+export interface GroupArchivedState {
+  sessions: SessionRow[];
+  loaded: boolean;
+  hasMore: boolean;
+  nextOffset: number;
+  loading?: boolean;
+}
+
+export function groupArchivedKey(mode: GroupArchivedMode, groupKey: string): string {
+  return `${mode}:${groupKey}`;
+}
+
+/** Inverse of {@link groupArchivedKey}; null for keys not in `${mode}:${groupKey}` form. */
+export function parseGroupArchivedKey(key: string): { mode: GroupArchivedMode; groupKey: string } | null {
+  const sep = key.indexOf(":");
+  if (sep < 0) return null;
+  const mode = key.slice(0, sep);
+  if (mode !== "workspace" && mode !== "agent") return null;
+  return { mode, groupKey: key.slice(sep + 1) };
 }
 
 export const useInstancesStore = defineStore("instances", () => {
@@ -72,6 +99,30 @@ export const useInstancesStore = defineStore("instances", () => {
 
   function sessionRenameKey(instanceId: string, alias: string): string {
     return JSON.stringify([instanceId, alias]);
+  }
+
+  // Snapshot pending-rename confirmation revisions at request time so a stale list
+  // response cannot downgrade a rename confirmed while the request was in flight.
+  function renameRevisionsAtRequest(): Map<string, number> {
+    return new Map([...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]));
+  }
+
+  function emptyGroupArchivedState(): GroupArchivedState {
+    return { sessions: [], loaded: false, hasMore: false, nextOffset: 0 };
+  }
+
+  function groupArchivedFilter(mode: GroupArchivedMode, groupKey: string): { workspace: string } | { agent: string } {
+    return mode === "workspace" ? { workspace: groupKey } : { agent: groupKey };
+  }
+
+  // Discard-and-refetch idiom shared by every session-list loader: an event that
+  // lands while a fetch is in flight leaves a pending mark; once the fetch settles,
+  // re-run the work until no new mark survives a full pass.
+  async function drainPendingRefresh(pending: Set<string>, key: string, work: () => Promise<void>): Promise<void> {
+    do {
+      pending.delete(key);
+      await work();
+    } while (pending.has(key));
   }
 
   function overlaySessionRename(instanceId: string, session: SessionDto, confirmedRevisionsAtRequest: Map<string, number>): SessionRow {
@@ -108,7 +159,7 @@ export const useInstancesStore = defineStore("instances", () => {
     const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
     instances.value = rows.map((r) => {
       const prev = byId(r.id);
-      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, sessionsHasMore: prev?.sessionsHasMore ?? false, sessionsNextOffset: prev?.sessionsNextOffset ?? 0, sessionsLoading: false, archivedSessionsLoaded: prev?.archivedSessionsLoaded ?? false, archivedSessionsLoading: false, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
+      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, sessionsHasMore: prev?.sessionsHasMore ?? false, sessionsNextOffset: prev?.sessionsNextOffset ?? 0, sessionsLoading: false, archivedSessionsLoaded: prev?.archivedSessionsLoaded ?? false, archivedSessionsLoading: false, groupArchived: prev?.groupArchived, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
     });
   }
 
@@ -121,10 +172,7 @@ export const useInstancesStore = defineStore("instances", () => {
       pendingSessionRefreshes.add(instanceId);
       return;
     }
-    do {
-      pendingSessionRefreshes.delete(instanceId);
-      await fetchSessionsPage(instanceId, 0, true);
-    } while (pendingSessionRefreshes.has(instanceId));
+    await drainPendingRefresh(pendingSessionRefreshes, instanceId, () => fetchSessionsPage(instanceId, 0, true));
   }
 
   async function loadMoreSessions(instanceId: string): Promise<void> {
@@ -132,6 +180,17 @@ export const useInstancesStore = defineStore("instances", () => {
     if (!inst || !inst.sessionsHasMore || inst.sessionsLoading) return;
     await fetchSessionsPage(instanceId, inst.sessionsNextOffset ?? inst.sessions.length, false);
     if (pendingSessionRefreshes.has(instanceId)) await loadSessions(instanceId);
+  }
+
+  // Auto-load entry point: fire session fetches for every online instance not yet
+  // loaded (the dashboard calls this on mount and on reconnect). loadSessions
+  // coalesces, so re-firing for an in-flight instance is harmless.
+  function loadSessionsForOnlineInstances(): void {
+    for (const inst of instances.value) {
+      if (inst.online && !inst.sessionsLoaded && !inst.sessionsLoading) {
+        void loadSessions(inst.id).catch(() => {});
+      }
+    }
   }
 
   /** Load the full session set only when the user asks to recover sleeping sessions. */
@@ -143,11 +202,8 @@ export const useInstancesStore = defineStore("instances", () => {
     }
     if (inst) inst.archivedSessionsLoading = true;
     try {
-      do {
-        pendingArchivedRefreshes.delete(instanceId);
-        const confirmedRevisionsAtRequest = new Map(
-          [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
-        );
+      await drainPendingRefresh(pendingArchivedRefreshes, instanceId, async () => {
+        const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
         let offset = 0;
         const all: SessionDto[] = [];
         let hasMore = true;
@@ -161,7 +217,7 @@ export const useInstancesStore = defineStore("instances", () => {
         }
         // If an event arrived while this snapshot was in flight, discard it and
         // immediately fetch a fresh authoritative snapshot before publishing.
-        if (pendingArchivedRefreshes.has(instanceId)) continue;
+        if (pendingArchivedRefreshes.has(instanceId)) return;
         const current = byId(instanceId);
         if (current) {
           // The full response is authoritative. Keep only local transient rows that
@@ -175,10 +231,137 @@ export const useInstancesStore = defineStore("instances", () => {
           current.archivedSessionsLoaded = true;
         }
         useChatStore().reconcileTailCache(instanceId, all.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
-      } while (pendingArchivedRefreshes.has(instanceId));
+      });
     } finally {
       const current = byId(instanceId);
       if (current) current.archivedSessionsLoading = false;
+    }
+  }
+
+  // Per-group sleeping-session paging for the grouped sidebar modes. Unlike flat
+  // mode's one-shot `loadArchivedSessions`, these pages stay OUTSIDE `inst.sessions`
+  // and never call reconcileTailCache (a partial page would purge valid tails).
+  const GROUP_ARCHIVED_PAGE = 5;
+  const pendingGroupArchivedRefreshes = new Set<string>();
+
+  function groupArchivedPendingKey(instanceId: string, mode: GroupArchivedMode, groupKey: string): string {
+    return `${instanceId}|${groupArchivedKey(mode, groupKey)}`;
+  }
+
+  function groupArchivedStateFor(instanceId: string, mode: GroupArchivedMode, groupKey: string): GroupArchivedState | undefined {
+    return byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
+  }
+
+  /** Merge a patch into a group's archived state, creating the record if needed. */
+  function patchGroupArchivedState(instanceId: string, mode: GroupArchivedMode, groupKey: string, patch: Partial<GroupArchivedState>): void {
+    const inst = byId(instanceId);
+    if (!inst) return;
+    inst.groupArchived ??= {};
+    const key = groupArchivedKey(mode, groupKey);
+    const prev = inst.groupArchived[key] ?? emptyGroupArchivedState();
+    inst.groupArchived[key] = { ...prev, ...patch };
+  }
+
+  async function loadGroupArchivedSessions(instanceId: string, mode: GroupArchivedMode, groupKey: string, append = false): Promise<void> {
+    const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
+    const state = groupArchivedStateFor(instanceId, mode, groupKey);
+    if (state?.loading) {
+      if (!append) pendingGroupArchivedRefreshes.add(pk);
+      return;
+    }
+    let appendPage = append;
+    let rerun = false;
+    await drainPendingRefresh(pendingGroupArchivedRefreshes, pk, async () => {
+      const current = groupArchivedStateFor(instanceId, mode, groupKey);
+      const offset = appendPage && current ? current.nextOffset : 0;
+      // A pending refresh re-enters through loadGroupArchivedSessions (offset 0, replace):
+      // fetchGroupArchivedPage's loading guard would otherwise bail and drop the refresh.
+      if (appendPage) await fetchGroupArchivedPage(instanceId, mode, groupKey, offset, GROUP_ARCHIVED_PAGE, true);
+      else if (rerun) await loadGroupArchivedSessions(instanceId, mode, groupKey, false);
+      else await fetchGroupArchivedPage(instanceId, mode, groupKey, 0, GROUP_ARCHIVED_PAGE, false);
+      appendPage = false;
+      rerun = true;
+    });
+  }
+
+  async function fetchGroupArchivedPage(instanceId: string, mode: GroupArchivedMode, groupKey: string, offset: number, limit: number, append: boolean): Promise<void> {
+    if (groupArchivedStateFor(instanceId, mode, groupKey)?.loading) return;
+    patchGroupArchivedState(instanceId, mode, groupKey, { loading: true });
+    const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
+    try {
+      const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", {
+        offset, limit, archivedOnly: true,
+        ...groupArchivedFilter(mode, groupKey),
+      });
+      const inst = byId(instanceId);
+      if (inst) {
+        const key = groupArchivedKey(mode, groupKey);
+        const rows = page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
+        const base = append ? (inst.groupArchived?.[key]?.sessions ?? []) : [];
+        patchGroupArchivedState(instanceId, mode, groupKey, {
+          sessions: [...base, ...rows.filter((row) => !base.some((old) => old.alias === row.alias))],
+          loaded: true,
+          hasMore: page.hasMore === true,
+          nextOffset: page.nextOffset ?? offset + page.sessions.length,
+        });
+      }
+    } finally {
+      patchGroupArchivedState(instanceId, mode, groupKey, { loading: false });
+    }
+  }
+
+  /** Re-fetch every already-loaded group page (e.g. after sessions-changed). Never loads unloaded groups. */
+  function refreshLoadedGroupArchivedSessions(instanceId: string): void {
+    const inst = byId(instanceId);
+    if (!inst?.groupArchived) return;
+    for (const [key, state] of Object.entries(inst.groupArchived)) {
+      if (!state.loaded) continue;
+      const parsed = parseGroupArchivedKey(key);
+      if (!parsed) continue;
+      // Loading groups are NOT skipped: refetchGroupArchived waits for the in-flight
+      // page and lets its pending-drain perform the discard-and-refetch.
+      void refetchGroupArchived(instanceId, parsed.mode, parsed.groupKey, state.sessions.length).catch(() => {});
+    }
+  }
+
+  // Refetch a loaded group's rows atomically (collect all pages first, publish once)
+  // so a refresh never flickers rows away. An empty group still probes one page so a
+  // newly archived session surfaces without hide/show.
+  async function refetchGroupArchived(instanceId: string, mode: GroupArchivedMode, groupKey: string, loadedCount: number): Promise<void> {
+    const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
+    // A page load may already be in flight for this group. Its own pending-drain loop
+    // performs the discard-and-refetch, so mark pending and wait for it to settle
+    // instead of racing a second fetch (a bare return would leave the mark un-consumed).
+    while (groupArchivedStateFor(instanceId, mode, groupKey)?.loading) {
+      pendingGroupArchivedRefreshes.add(pk);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (!pendingGroupArchivedRefreshes.has(pk)) return;
+    }
+    const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
+    patchGroupArchivedState(instanceId, mode, groupKey, { loading: true });
+    try {
+      await drainPendingRefresh(pendingGroupArchivedRefreshes, pk, async () => {
+        const target = Math.max(GROUP_ARCHIVED_PAGE, loadedCount);
+        let offset = 0;
+        const all: SessionRow[] = [];
+        let hasMore = false;
+        let nextOffset = 0;
+        while (all.length < target) {
+          const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", {
+            offset, limit: Math.min(100, target - all.length), archivedOnly: true,
+            ...groupArchivedFilter(mode, groupKey),
+          });
+          all.push(...page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
+          hasMore = page.hasMore === true;
+          nextOffset = page.nextOffset ?? offset + page.sessions.length;
+          if (!hasMore || nextOffset <= offset) break;
+          offset = nextOffset;
+        }
+        if (pendingGroupArchivedRefreshes.has(pk)) return;
+        patchGroupArchivedState(instanceId, mode, groupKey, { sessions: all, loaded: true, hasMore, nextOffset });
+      });
+    } finally {
+      patchGroupArchivedState(instanceId, mode, groupKey, { loading: false });
     }
   }
 
@@ -186,12 +369,7 @@ export const useInstancesStore = defineStore("instances", () => {
     const instBefore = byId(instanceId);
     if (instBefore?.sessionsLoading) return;
     if (instBefore) instBefore.sessionsLoading = true;
-    // A list request can start before a rename succeeds and return afterwards.
-    // Snapshot confirmation revisions so that stale response cannot downgrade a
-    // newer value confirmed while the request was in flight.
-    const confirmedRevisionsAtRequest = new Map(
-      [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
-    );
+    const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
     // Pull the configured agents alongside the session list (once) so the sidebar and chat
     // can map each session's agent NAME → driver for the brand icon. Agents otherwise only
     // load when a create/manage dialog opens (loadFormOptions), so in the normal
@@ -400,12 +578,14 @@ export const useInstancesStore = defineStore("instances", () => {
     // lets waking it paint instantly.
     await loadSessions(instanceId);
     if (byId(instanceId)?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
+    refreshLoadedGroupArchivedSessions(instanceId);
   }
 
   async function unarchiveSession(instanceId: string, alias: string): Promise<void> {
     await api.rpc(instanceId, "control.sessions.unarchive", { alias });
     if (byId(instanceId)?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
     else await loadSessions(instanceId);
+    refreshLoadedGroupArchivedSessions(instanceId);
   }
 
   // The display label lives in core session state. Update the local row before the
@@ -485,14 +665,18 @@ export const useInstancesStore = defineStore("instances", () => {
       const inst = byId(event.instanceId);
       if (inst) {
         inst.online = event.online;
-        // An instance that just came online may not have had its sessions fetched yet
-        // (it was offline at the initial snapshot) — pull them now so the sidebar fills in.
-        if (event.online && inst.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
+        // An instance that just came online needs its sessions fetched regardless of
+        // prior state (auto-load covers instances that were offline at mount too).
+        if (event.online) {
+          void loadSessions(event.instanceId).catch(() => {});
+          refreshLoadedGroupArchivedSessions(event.instanceId);
+        }
       }
     } else if (event.kind === "control-event" && event.event.type === "sessions-changed") {
       const inst = byId(event.instanceId);
       if (inst?.sessionsLoaded) void loadSessions(event.instanceId).catch(() => {});
       if (inst?.archivedSessionsLoaded) void loadArchivedSessions(event.instanceId).catch(() => {});
+      if (inst) refreshLoadedGroupArchivedSessions(event.instanceId);
     } else if (event.kind === "control-event" && event.event.type === "workspaces-changed") {
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.
@@ -504,5 +688,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
+  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
 });

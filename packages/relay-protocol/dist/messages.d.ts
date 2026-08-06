@@ -184,6 +184,12 @@ export interface SessionsListPayload {
     limit?: number;
     /** Include sleeping sessions for explicit recovery/cache reconciliation queries. */
     includeArchived?: boolean;
+    /** Restrict the listing to sleeping (archived) sessions; wins over includeArchived. */
+    archivedOnly?: boolean;
+    /** Exact-match workspace filter (empty string matches sessions without a workspace). */
+    workspace?: string;
+    /** Exact-match agent filter (empty string matches sessions without an agent). */
+    agent?: string;
 }
 export interface SessionsListResult {
     sessions: SessionDto[];
