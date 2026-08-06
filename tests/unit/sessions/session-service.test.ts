@@ -1165,7 +1165,7 @@ test("windows rejects a recorded multi-token raw command instead of resurrecting
   await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
 });
 
-test("windows converts a recorded single-token command to argv losslessly", async () => {
+test("windows rejects a recorded single-token command too (no overlay alias exists for it)", async () => {
   const config = createConfig();
   config.agents.custom = { driver: "custom" };
   const state = createEmptyState();
@@ -1177,7 +1177,5 @@ test("windows converts a recorded single-token command to argv losslessly", asyn
     transport_agent_command: "myagent.exe",
   };
   const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
-  const session = await service.getSession("review");
-  expect(session?.agentArgv).toEqual(["myagent.exe"]);
-  expect(session?.rawCommand).toBeUndefined();
+  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
 });

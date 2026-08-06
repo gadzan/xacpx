@@ -811,21 +811,17 @@ export class SessionService {
     const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
     if (recordedCommand) {
       if (platform === "win32") {
-        if (/\s/.test(recordedCommand)) {
-          // Fails closed instead of resurrecting a raw `--agent` string acpx
-          // rejects on Windows: guessing a quote split would corrupt boundaries.
-          throw new Error(
-            `session "${session.alias}" was created with a raw command that cannot be launched ` +
-              "on Windows without lossy quoting. Migrate the agent to an argv array in config: " +
-              'agents.<name>.argv = ["agent.exe", "--acp", ...]',
-          );
-        }
-        // A single token converts losslessly.
-        return {
-          acpxAgent: agentConfig.driver,
-          agentCommand: recordedCommand,
-          agentArgv: [recordedCommand],
-        };
+        // Fails closed for EVERY recorded raw command on Windows: acpx rejects
+        // raw `--agent` strings there, and a synthetic single-token argv would
+        // key an alias the overlay never provisions (overlay entries come from
+        // the CURRENT config), so the selector would fall back to the bare
+        // driver and never find the legacy record. Require an explicit config
+        // migration instead.
+        throw new Error(
+          `session "${session.alias}" was created with a raw command that cannot be launched ` +
+            "on Windows. Migrate the agent to an argv array in config: " +
+            'agents.<name>.argv = ["agent.exe", "--acp", ...]',
+        );
       }
       return { acpxAgent: agentConfig.driver, rawCommand: recordedCommand, agentCommand: recordedCommand };
     }
