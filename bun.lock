@@ -42,7 +42,7 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.4.1",
+      "version": "0.5.0-beta.0",
       "dependencies": {
         "@ganglion/xacpx-relay-protocol": "^0.2.0",
         "ws": "^8.20.0",
@@ -78,7 +78,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.10.4",
+      "version": "0.11.0-beta.0",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
@@ -91,7 +91,7 @@
     },
     "packages/relay-protocol": {
       "name": "@ganglion/xacpx-relay-protocol",
-      "version": "0.2.1",
+      "version": "0.3.0-beta.0",
     },
     "packages/relay-web": {
       "name": "@ganglion/xacpx-relay-web",
@@ -1992,6 +1992,8 @@
     "@babel/helper-create-regexp-features-plugin/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
 
     "@babel/preset-env/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
+
+    "@ganglion/xacpx-relay-web/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.2.1", "", {}, "sha512-qmg/l1+BsFfqNPJi03VcMnx9NCDVTFkuQPxBvQpqufUaYfV8ZYbjxIg/VpC+JXLJ/g92U7BU4OT0n00kwn5tWw=="],
 
     "@modelcontextprotocol/sdk/zod": ["zod@4.3.6", "", {}, ""],
 

@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.20.0-beta.0] - 2026-08-06
+
+### Added
+
+- Pool and ZeroClaw agent templates.
+- Structured ACP agent launches: namespaced acpx agent aliases and provisioned session aliases.
+- Refresh managed Codex/Claude adapter pins; upgrade acpx to 0.13.0.
+
+### Fixed
+
+- Close adapter identity and bridge model gaps.
+- Harden structured session lifecycle; guard teardown against scheduler races.
+- Windows: fail closed for every recorded raw command, migrate legacy acpx sessions to structured argv, recognize unique acpx index temp files, harden orphan cleanup.
+- Transport: ensure-first session creation with shared deadline; harden overlay merge type narrowing.
+- Relay: recover running turns and history across hub restarts; preserve renamed session after clear.
+
+## [relay 0.11.0-beta.0] - 2026-08-06
+
+### Added
+
+- Lazily load paginated active sessions in the relay-web dashboard.
+
+### Fixed
+
+- Recover running turns and history across hub restarts.
+- Converge paginated session state safely; preserve session pagination on refresh; finish session recovery convergence.
+- Avoid false send failures on network jitter.
+- Ignore stale expanded directories.
+
+## [relay-protocol 0.3.0-beta.0] - 2026-08-06
+
+### Added
+
+- Session recovery wire messages, web DTOs, and hub limits for running-turn/history recovery.
+
+## [channel-relay 0.5.0-beta.0] - 2026-08-06
+
+### Added
+
+- Session state mirror to recover running turns and history across hub restarts.
+
+### Fixed
+
+- Align control bridge with the new protocol messages.
+
 ## [0.19.3] - 2026-07-31
 
 ### Added
