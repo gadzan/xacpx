@@ -93,6 +93,38 @@ test("publishes durable runtime state only after the consumer lock is held", asy
   ]);
 });
 
+test("refuses runtime activation when no consumer ownership lock exists", async () => {
+  const events: string[] = [];
+
+  await expect(runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        agent: {} as never,
+        router: {} as never,
+        sessions: {} as never,
+        stateStore: {} as never,
+        configStore: {} as never,
+        scheduled: createScheduledRuntime(),
+        logger: createNoopAppLogger(),
+        orchestration: {
+          service: {
+            reconcileParallelSlots: async () => { events.push("reconcile"); },
+          },
+        } as never,
+        reapStaleQueueOwners: async () => { events.push("reap"); },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => { events.push("channel:start"); },
+      },
+      afterConsumerLockAcquired: async () => { events.push("generation:publish"); },
+    },
+  )).rejects.toThrow("runtime ownership lock is required");
+
+  expect(events).toEqual(["dispose"]);
+});
+
 test("releases the weixin consumer lock when sdk.start fails", async () => {
   const events: string[] = [];
 

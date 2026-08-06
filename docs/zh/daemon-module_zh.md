@@ -115,9 +115,11 @@ daemon 进程内的运行时登记器。
 指纹；指纹变化或无法取得时会保留证据并拒绝只凭 PID 终止。
 
 新的 Windows daemon 会在真实发布版 `cli.js run` 启动路径上创建 generation identity，并把尚未
-激活的 identity 上下文传给 `buildApp`；只有在可选的渠道 consumer guard 获取成功后、任何启动
-协调或 orphan sweep 之前，才会持久化 generation。普通前台 `xacpx run` 不发布 daemon generation；
-consumer guard 冲突而退出的进程既不能覆盖，也不能清扫现有 daemon 的 durable 证据。
+激活的 identity 上下文传给 `buildApp`。每个默认 runtime 都必须先取得与渠道无关的核心 consumer
+lock；若渠道还提供 legacy lock，则同时持有两把锁，以继续阻挡升级前启动的旧 daemon。只有取得
+runtime ownership 后、任何启动协调或 orphan sweep 之前，才会持久化 generation。普通前台
+`xacpx run` 既不发布 daemon generation，也不登记 daemon PID/status；ownership lock 冲突而退出
+的进程既不能覆盖，也不能清扫现有 daemon 的 durable 证据。
 升级前启动、尚未写入 durable generation identity
 的 daemon 可以在原地升级后安全停止，
 但不会退回到只凭 PID 强杀。controller 只有在 PID/status、近期心跳、handle 读取的创建时间与

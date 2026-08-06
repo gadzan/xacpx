@@ -17,6 +17,7 @@ import { resolveDaemonPaths, resolveRuntimeDirFromConfigPath } from "./daemon/da
 import type { DaemonController } from "./daemon/daemon-controller";
 import { DaemonRuntime } from "./daemon/daemon-runtime";
 import type { DaemonStatus } from "./daemon/daemon-status";
+import { createRuntimeConsumerLock } from "./daemon/runtime-consumer-lock";
 import { initializeWindowsDaemonRuntime } from "./daemon/windows-daemon-runtime";
 import type { DoctorRunOptions } from "./doctor/doctor-types";
 import { runXacpxMcpServer } from "./mcp/xacpx-mcp-server";
@@ -1014,6 +1015,14 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
   const daemonPaths = resolveDaemonPathsForCurrentConfig();
   const daemonRuntime = new DaemonRuntime(daemonPaths, { pid: process.pid });
   const isDaemonRun = coreEnv(DAEMON_RUN_ENV_SUFFIX) === "1";
+  if (!isDaemonRun) {
+    const current = await createDefaultController().getStatus();
+    if (current.state === "running" || current.state === "indeterminate") {
+      throw new Error(
+        `xacpx daemon process is already running (pid ${current.pid}); stop it before starting a foreground runtime`,
+      );
+    }
+  }
   const windowsDaemonRuntime = isDaemonRun
     ? await initializeWindowsDaemonRuntime({
         configPath: runtimePaths.configPath,
@@ -1047,18 +1056,21 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
       : undefined,
     channels: channelRegistry,
     channelStartupPolicy: isDaemonRun ? "best-effort" : "require-one",
-    daemonRuntime,
-    ...(firstLockCreator
-      ? {
-          consumerLockFactory: (runtime) =>
-            firstLockCreator.create({
-              lockFilePath: `${daemonPaths.runtimeDir}${sep}${firstLockCreator.channel.id}-consumer.lock.json`,
-              onDiagnostic: async (event, context) => {
-                await runtime.logger.info(`${firstLockCreator.channel.id}.consumer_lock.${event}`, `${firstLockCreator.channel.id} consumer lock diagnostic`, context);
-              },
-            }),
-        }
-      : {}),
+    ...(isDaemonRun ? { daemonRuntime } : {}),
+    consumerLockFactory: (runtime) => createRuntimeConsumerLock({
+      runtimeDir: daemonPaths.runtimeDir,
+      ...(firstLockCreator
+        ? { channelLock: firstLockCreator.create({
+            lockFilePath: `${daemonPaths.runtimeDir}${sep}${firstLockCreator.channel.id}-consumer.lock.json`,
+            onDiagnostic: async (event, context) => {
+              await runtime.logger.info(`${firstLockCreator.channel.id}.consumer_lock.${event}`, `${firstLockCreator.channel.id} consumer lock diagnostic`, context);
+            },
+          }) }
+        : {}),
+      onDiagnostic: async (event, context) => {
+        await runtime.logger.info(`runtime.consumer_lock.${event}`, "runtime ownership lock diagnostic", context);
+      },
+    }),
   });
 }
 

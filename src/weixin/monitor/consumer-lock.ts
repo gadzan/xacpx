@@ -49,6 +49,11 @@ interface CreateWeixinConsumerLockOptions {
   isProcessRunning?: (pid: number) => boolean;
   platform?: NodeJS.Platform;
   acquireGuard?: typeof acquireIpcGuard;
+  windowsGuardRole?: string;
+  activeLockError?: (
+    lockFilePath: string,
+    existing: WeixinConsumerLockMetadata,
+  ) => Error;
   onDiagnostic?: (
     event:
       | "lock_exists"
@@ -78,13 +83,14 @@ export function createWeixinConsumerLock(
       if (platform === "win32") {
         try {
           windowsGuard = await (options.acquireGuard ?? acquireIpcGuard)(
-            { role: "consumer", configRoot: dirname(meta.configPath) },
+            { role: options.windowsGuardRole ?? "consumer", configRoot: dirname(meta.configPath) },
             { platform },
           );
         } catch (error) {
           if (!(error instanceof IpcGuardBusyError)) throw error;
           const existing = await loadLockMetadata(lockFilePath) ?? meta;
-          throw new ActiveWeixinConsumerLockError(lockFilePath, existing);
+          throw options.activeLockError?.(lockFilePath, existing)
+            ?? new ActiveWeixinConsumerLockError(lockFilePath, existing);
         }
         windowsLockId = meta.lockId ?? randomUUID();
         const metadata: WeixinConsumerLockMetadata = {
@@ -166,7 +172,8 @@ export function createWeixinConsumerLock(
             requestedPid: meta.pid,
             requestedMode: meta.mode,
           });
-          throw new ActiveWeixinConsumerLockError(lockFilePath, existing);
+          throw options.activeLockError?.(lockFilePath, existing)
+            ?? new ActiveWeixinConsumerLockError(lockFilePath, existing);
         }
       }
     },

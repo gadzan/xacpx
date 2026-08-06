@@ -281,7 +281,7 @@ Server side:
 - `getStatus()`: matching PID/status and a live process → running; conflicting or incomplete live metadata → read-only indeterminate; dead PID metadata is cleaned up: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
 - `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts)
 - `stop()`: reconcile daemon identity → revalidate recovered POSIX process identity → terminate → wait for exit → clean up pid/status; status-only POSIX recovery additionally requires consumer-lock and OS start-time proof: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
-- Internal Windows `cli.js run` prepares the generation/orphan context shared with `buildApp`, then publishes it only after consumer ownership: [windows-daemon-runtime.ts](../src/daemon/windows-daemon-runtime.ts), [run-console.ts](../src/run-console.ts)
+- Every default runtime holds a channel-independent core consumer lock (plus any legacy channel lock); internal Windows `cli.js run` publishes its generation/orphan context only after that ownership: [runtime-consumer-lock.ts](../src/daemon/runtime-consumer-lock.ts), [windows-daemon-runtime.ts](../src/daemon/windows-daemon-runtime.ts), [run-console.ts](../src/run-console.ts)
 
 ### 5.10 Orchestration (src/orchestration/*)
 

@@ -135,6 +135,30 @@ test("Windows guard is acquired before diagnostic metadata v2 and release is own
   expect(events).toEqual(["guard", "release"]);
 });
 
+test("Windows consumer lock accepts a dedicated runtime ownership guard role", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-win-"));
+  let acquiredRole: string | undefined;
+  const lock = createWeixinConsumerLock({
+    lockFilePath: join(dir, "runtime-consumer.lock.json"),
+    platform: "win32",
+    windowsGuardRole: "runtime-owner",
+    acquireGuard: async (key) => {
+      acquiredRole = key.role;
+      return { release: async () => {} };
+    },
+  });
+
+  await lock.acquire({
+    pid: 456,
+    mode: "daemon",
+    startedAt: "2026-04-05T00:01:00.000Z",
+    configPath: join(dir, "config.json"),
+    statePath: join(dir, "state.json"),
+  });
+  expect(acquiredRole).toBe("runtime-owner");
+  await lock.release();
+});
+
 test("Windows duplicate consumer trusts the guard, not stale metadata liveness", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-win-"));
   const lockFilePath = join(dir, "weixin-consumer.lock.json");

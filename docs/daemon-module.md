@@ -118,12 +118,14 @@ the controller probes its OS start-time fingerprint again; a changed or unavaila
 fingerprint preserves the evidence and refuses the PID-only kill.
 
 New Windows daemons create their generation identity on the real published `cli.js run`
-startup path and pass an inactive identity context to `buildApp`. The generation is
-published only after the optional channel consumer guard is acquired and before any
-startup reconciliation or orphan sweep. Ordinary foreground `xacpx run` processes do
-not publish daemon generations, and a process that loses the consumer guard cannot
-overwrite or sweep the active daemon's durable evidence. A daemon started before
-durable generation identities were introduced
+startup path and pass an inactive identity context to `buildApp`. Every default runtime
+first acquires a channel-independent core consumer lock; when a channel also provides a
+legacy lock, both are held so upgraded runtimes still conflict with older daemons. The
+generation is published only after runtime ownership is acquired and before any startup
+reconciliation or orphan sweep. Ordinary foreground `xacpx run` processes neither
+publish daemon generations nor register daemon PID/status, and a process that loses an
+ownership lock cannot overwrite or sweep the active daemon's durable evidence. A daemon
+started before durable generation identities were introduced
 can be stopped after an in-place upgrade without falling back to an unverified PID
 kill. The controller adopts that legacy daemon only when all independent evidence
 agrees: PID/status metadata, a recent heartbeat, the handle-derived creation time

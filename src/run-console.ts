@@ -143,6 +143,9 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       }
     }
 
+    if (!consumerLock && deps.afterConsumerLockAcquired) {
+      throw new Error("runtime ownership lock is required before activating shared runtime state");
+    }
     if (deps.afterConsumerLockAcquired) {
       await deps.afterConsumerLockAcquired(runtime);
     }
