@@ -73,6 +73,7 @@ daemon 进程内的运行时登记器。
   - `stdout.log`
   - `stderr.log`
   - `app.log`
+  - `runtime-consumer.lock.json`（OS 持有的核心锁所使用的稳定元数据路径）
 
 它不做读写，只负责**路径约定收口**。
 
@@ -107,6 +108,31 @@ daemon 进程内的运行时登记器。
 4. 清理 PID 和状态文件。
 5. 返回停止结果。
 
+非 Windows 平台原地升级时，可能遇到旧 daemon 仍存活且 `status.json` 心跳仍新鲜、
+但 PID 文件缺失的情况。普通查询保持只读并返回 indeterminate，因此 `start` 不能重复拉起。
+只有显式执行 `stop` 或 `restart`，且 config/state 路径、daemon 模式 consumer lock、近期心跳
+和 OS 报告的进程启动时间全部一致时，controller 才会接管 status 中的 PID。PID 复用、过期
+证据或冲突元数据一律 fail-closed。终止恢复出的进程前，controller 会再次探测 OS 启动时间
+指纹；指纹变化或无法取得时会保留证据并拒绝只凭 PID 终止。
+
+新的 Windows daemon 会在真实发布版 `cli.js run` 启动路径上创建 generation identity，并把尚未
+激活的 identity 上下文传给 `buildApp`。每个默认 runtime 都必须先取得与渠道无关的核心 consumer
+lock；若渠道还提供 legacy lock，则同时持有两把锁，以继续阻挡升级前启动的旧 daemon。核心锁由
+OS 持有（POSIX 使用 `flock`，Windows 使用 runtime-owner IPC guard），进程崩溃时会自动
+释放 ownership，无需删除或回收稳定的诊断 JSON 文件。Bun 通过 Node helper 持有 POSIX 原生 flock
+时，helper 会忽略进程组的优雅停机信号，只在父进程关闭控制管道后释放；若 helper 意外丢失，owner
+会在另一个 runtime 并发运行前 fail-closed 终止。POSIX legacy 渠道元数据还记录进程启动
+指纹，用来识别 PID 复用。包括直接源码 `main()` 在内的所有 runtime 入口都走同一受保护路径。只有取得
+runtime ownership 后、任何启动协调或 orphan sweep 之前，才会持久化 generation。普通前台
+`xacpx run` 既不发布 daemon generation，也不登记 daemon PID/status；ownership lock 冲突而退出
+的进程既不能覆盖，也不能清扫现有 daemon 的 durable 证据。
+升级前启动、尚未写入 durable generation identity
+的 daemon 可以在原地升级后安全停止，
+但不会退回到只凭 PID 强杀。controller 只有在 PID/status、近期心跳、handle 读取的创建时间与
+可执行文件、当前配置根目录和精确的 `node cli.js run` 命令行全部一致时，才接管这个 legacy daemon；
+接管得到的创建身份会先持久化，再进入现有的 handle-fenced 进程树终止流程。任何缺失、过期或冲突证据
+仍然 fail-closed。
+
 ## 关键状态模型
 
 daemon 当前不是靠“只看一个 PID 文件”判断是否存活，而是组合判断：
@@ -114,10 +140,12 @@ daemon 当前不是靠“只看一个 PID 文件”判断是否存活，而是�
 - **进程是否存在**：告诉我们“这个 PID 现在还活着没有”。
 - **状态文件**：告诉我们“这个 daemon 是否已经完成自我登记”。
 
-这三者组合后的结果大致有三类：
-- **running**：有 PID，进程存在，且有有效状态文件。
-- **stopped**：没有 PID，或者没有状态信息。
+这三者组合后的结果大致有四类：
+- **running**：进程存在且 PID/status 一致。
+- **stopped**：没有存活 daemon 的证据。
 - **stale stopped**：有旧 PID/状态，但对应进程已经不存在，控制器会清理残局。
+- **indeterminate**：进程仍存活，但 PID/status 元数据不完整、不一致，或过旧而无法安全修复。
+  该状态必须阻止启动第二个 daemon；PID 仍存活期间普通 status/doctor 查询保持只读。
 
 这也是 `daemon-controller.ts` 的核心价值：它不只看文件，还做**活性校验**。
 

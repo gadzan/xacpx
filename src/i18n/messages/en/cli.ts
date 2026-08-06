@@ -32,7 +32,7 @@ export const cli: CliMessages = {
   // status command
   running: "xacpx is running",
   notRunning: "xacpx is not running",
-  indeterminate: "xacpx process is still running but status metadata is missing",
+  indeterminate: "xacpx process is still running but daemon metadata is incomplete or inconsistent",
 
   // stop command
   stopped: "xacpx stopped",
@@ -41,8 +41,8 @@ export const cli: CliMessages = {
   restarting: "xacpx restarting...",
   restartNotRunning: "xacpx is not running, starting...",
   restartFailed: (detail) => `xacpx failed to restart: ${detail}`,
-  restartIndeterminate: "xacpx process is still running but status metadata is missing",
-  restartIndeterminateHint: "Run `xacpx stop` first, or manually clean up the stale PID/status before retrying.",
+  restartIndeterminate: "xacpx process is still running but daemon metadata is incomplete or inconsistent",
+  restartIndeterminateHint: "Verify the PID shown above and stop that process before retrying; do not delete runtime metadata while it is still alive.",
 
   // daemon log hints
   checkAppLog: (path) => `Check App Log: ${path}`,

@@ -35,7 +35,6 @@ import { createActiveTurnRegistry, type ActiveTurnRegistry } from "./sessions/ac
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
 import type { AppState } from "./state/types";
-import { runConsole } from "./run-console";
 import { spawnAcpxBridgeClient } from "./transport/acpx-bridge/acpx-bridge-client";
 import { AcpxBridgeTransport } from "./transport/acpx-bridge/acpx-bridge-transport";
 import { AcpxCliTransport } from "./transport/acpx-cli/acpx-cli-transport";
@@ -44,7 +43,6 @@ import type { ResolvedSession, SessionTransport } from "./transport/types";
 import { reapQueueOwners } from "./transport/queue-owner-reaper";
 import { collectReapTargets } from "./transport/collect-reap-targets";
 import type { MessageChannelRuntime, CoordinatorMessageInput } from "./channels/types.js";
-import { MessageChannelRegistry } from "./channels/channel-registry.js";
 import { RuntimeMediaStore } from "./channels/media-store.js";
 import { isQuotaDeferredError } from "./weixin/messaging/quota-errors";
 import { normalizeWeixinUserIdFromChatKey } from "./weixin/messaging/inbound.js";
@@ -60,7 +58,7 @@ import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
-import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
+import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
@@ -149,6 +147,7 @@ interface RuntimeDeps {
   stateSaveDebounceMs?: number;
   daemonIdentity?: DaemonIdentity;
   orphanRegistry?: OrphanRegistry;
+  canReapQueueOwners?: () => boolean;
   /**
    * Provision xacpx-managed acpx agent overlays before transport creation.
    * Injectable for tests; defaults to provisioning from the loaded config.
@@ -1074,6 +1073,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // bounded: failures/timeouts just leave owners to expire on TTL.
   const reapWarmQueueOwners = async (phase: "startup" | "periodic" | "shutdown"): Promise<void> => {
     try {
+      if (deps.canReapQueueOwners && !deps.canReapQueueOwners()) return;
       if (deps.orphanRegistry && deps.daemonIdentity) {
         const outcome = await sweepWindowsOrphans(
           deps.orphanRegistry,
@@ -1182,39 +1182,16 @@ function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
   Object.assign(target, source);
 }
 
+/**
+ * The source entrypoint delegates to the same guarded runtime path as
+ * `xacpx run`; it must never grow a second, lock-free startup sequence.
+ */
 export async function main(): Promise<void> {
   const paths = resolveRuntimePaths();
 
   try {
-    const { createMessageChannels } = await import("./channels/create-channel.js");
-    let daemonIdentity: DaemonIdentity | undefined;
-    let orphanRegistry: OrphanRegistry | undefined;
-    if (process.platform === "win32") {
-      const configRoot = dirname(paths.configPath);
-      orphanRegistry = new OrphanRegistry(join(configRoot, "runtime"));
-      await orphanRegistry.initialize();
-      daemonIdentity = await createDaemonIdentity({ configRoot });
-      await orphanRegistry.writeGeneration(daemonIdentity);
-    }
-    await ensureConfigExists(paths.configPath);
-    const startupConfig = await loadConfig(paths.configPath);
-
-    const { loadConfiguredPlugins } = await import("./plugins/plugin-loader.js");
-    await loadConfiguredPlugins({
-      plugins: startupConfig.plugins,
-      onPluginError: ({ name, error }) => {
-        console.error(
-          `[xacpx] skipping plugin ${name}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      },
-    });
-
-    const { channelDeps } = await prepareChannelMedia(paths.configPath, startupConfig);
-    const channelRegistry = new MessageChannelRegistry(createMessageChannels(startupConfig.channels, channelDeps));
-    await runConsole(paths, {
-      buildApp: (paths) => buildApp(paths, { channel: channelRegistry, daemonIdentity, orphanRegistry }),
-      channels: channelRegistry,
-    });
+    const runRuntime = (await import("./cli.js")).runDefaultRuntime;
+    await runRuntime();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -1229,7 +1206,13 @@ export async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  // Do not top-level-await main(): runDefaultRuntime imports this module's
+  // buildApp exports, so awaiting here would leave both sides of that dynamic
+  // import cycle waiting for this module evaluation to finish.
+  void main().catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exitCode = 1;
+  });
 }
 
 export async function prepareChannelMedia(configPath: string, config: AppConfig): Promise<{

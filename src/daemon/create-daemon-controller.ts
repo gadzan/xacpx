@@ -64,6 +64,8 @@ export function createDaemonController(
       }
     },
     terminateProcess: options.terminateProcess ?? defaultTerminateProcess,
+    expectedProcessExecPath: options.processExecPath,
+    expectedCliEntryPath: options.cliEntryPath,
   });
 }
 

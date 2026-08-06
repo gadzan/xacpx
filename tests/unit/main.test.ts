@@ -7,6 +7,7 @@ import { buildApp as buildAppRaw, resolveRuntimePaths } from "../../src/main";
 import { coreHomeDir } from "../../src/runtime/core-home";
 import { sameWorkspacePath } from "../../src/commands/workspace-path";
 import { setLocale } from "../../src/i18n";
+import { OrphanRegistry } from "../../src/transport/orphan-registry";
 
 beforeEach(() => { setLocale("zh"); });
 afterAll(() => { setLocale("en"); });
@@ -71,6 +72,48 @@ test("builds the runtime services from config and state paths", async () => {
     configStore: expect.anything(),
     orchestration: expect.anything(),
   });
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("an unowned runtime cannot sweep the active daemon's orphan registry during cleanup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-unowned-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  }));
+  const registry = new OrphanRegistry(join(dir, "runtime"));
+  await registry.initialize();
+  let generationReads = 0;
+  registry.readGeneration = async () => {
+    generationReads += 1;
+    return null;
+  };
+
+  const runtime = await buildApp({ configPath, statePath }, {
+    daemonIdentity: {
+      generationId: "44444444-4444-4444-8444-444444444444",
+      daemonPid: 70002,
+      daemonCreationDate: "133801632000100000",
+      configRoot: dir,
+    },
+    orphanRegistry: registry,
+    canReapQueueOwners: () => false,
+    createCliTransport: () => ({
+      ensureSession: async () => {},
+      prompt: async () => ({ text: "ok" }),
+      cancel: async () => ({ cancelled: true, message: "cancelled" }),
+      hasSession: async () => true,
+      listSessions: async () => [],
+    }),
+  });
+
+  await runtime.reapStaleQueueOwners();
+  await runtime.dispose();
+  expect(generationReads).toBe(0);
 
   await rm(dir, { recursive: true, force: true });
 });

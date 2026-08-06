@@ -55,6 +55,75 @@ test("acquires and releases the weixin consumer lock around sdk.start", async ()
   expect(events).toEqual(["lock:acquire:foreground", "channel:start", "dispose", "lock:release"]);
 });
 
+test("publishes durable runtime state only after the consumer lock is held", async () => {
+  const events: string[] = [];
+
+  await runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        agent: {} as never,
+        router: {} as never,
+        sessions: {} as never,
+        stateStore: {} as never,
+        configStore: {} as never,
+        scheduled: createScheduledRuntime(),
+        logger: createNoopAppLogger(),
+        reapStaleQueueOwners: async () => { events.push("reap"); },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => { events.push("channel:start"); },
+      },
+      consumerLock: {
+        acquire: async () => { events.push("lock:acquire"); },
+        release: async () => { events.push("lock:release"); },
+      },
+      afterConsumerLockAcquired: async () => { events.push("generation:publish"); },
+    },
+  );
+
+  expect(events).toEqual([
+    "lock:acquire",
+    "generation:publish",
+    "reap",
+    "channel:start",
+    "dispose",
+    "lock:release",
+  ]);
+});
+
+test("refuses runtime activation when no consumer ownership lock exists, even without an activation hook", async () => {
+  const events: string[] = [];
+
+  await expect(runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        agent: {} as never,
+        router: {} as never,
+        sessions: {} as never,
+        stateStore: {} as never,
+        configStore: {} as never,
+        scheduled: createScheduledRuntime(),
+        logger: createNoopAppLogger(),
+        orchestration: {
+          service: {
+            reconcileParallelSlots: async () => { events.push("reconcile"); },
+          },
+        } as never,
+        reapStaleQueueOwners: async () => { events.push("reap"); },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => { events.push("channel:start"); },
+      },
+    },
+  )).rejects.toThrow("runtime ownership lock is required");
+
+  expect(events).toEqual(["dispose"]);
+});
+
 test("releases the weixin consumer lock when sdk.start fails", async () => {
   const events: string[] = [];
 
@@ -134,6 +203,9 @@ test("does not release the lock if acquisition fails before startup", async () =
             events.push("lock:release");
           },
         },
+        afterConsumerLockAcquired: async () => {
+          events.push("generation:publish");
+        },
       },
     ),
   ).rejects.toThrow("already running");
@@ -191,8 +263,8 @@ test("logs active lock holder diagnostics when another consumer already owns the
     ),
   ).rejects.toThrow("xacpx Weixin consumer is already running.");
 
-  expect(logs.some((line) => line.includes("info:weixin.consumer_lock.acquire_attempt"))).toBe(true);
-  expect(logs.some((line) => line.includes("error:weixin.consumer_lock.acquire_failed"))).toBe(true);
+  expect(logs.some((line) => line.includes("info:runtime.consumer_lock.acquire_attempt"))).toBe(true);
+  expect(logs.some((line) => line.includes("error:runtime.consumer_lock.acquire_failed"))).toBe(true);
   expect(logs.some((line) => line.includes("\"activePid\":123"))).toBe(true);
   expect(logs.some((line) => line.includes("\"conflictType\":\"active_lock_holder\""))).toBe(true);
 });

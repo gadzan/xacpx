@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -8,6 +8,25 @@ import { DaemonStatusStore, type DaemonStatus } from "../../../src/daemon/daemon
 test("returns null when the daemon status file is missing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-status-"));
   const store = new DaemonStatusStore(join(dir, "status.json"));
+
+  await expect(store.load()).resolves.toBeNull();
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("returns null for parseable status JSON with an invalid schema", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-status-"));
+  const store = new DaemonStatusStore(join(dir, "status.json"));
+  await writeFile(join(dir, "status.json"), JSON.stringify({
+    pid: "12345",
+    started_at: "not-a-date",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: "/cfg",
+    state_path: "/state",
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  }));
 
   await expect(store.load()).resolves.toBeNull();
 

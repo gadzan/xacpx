@@ -114,10 +114,10 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
 
 ### 4.1 Foreground Run (development/debugging)
 
-- Entrypoint: `xacpx run` -> [defaultRun()](../src/cli.ts#L487-L524)
+- Entrypoints: `xacpx run` and direct [main()](../src/main.ts) both delegate to [runDefaultRuntime()](../src/cli.ts)
 - Core steps:
   - Resolve runtimePaths: `resolveRuntimePaths()`: [main.ts](../src/main.ts#L653-L668)
-  - Create `DaemonRuntime` (writes status/heartbeat even in the foreground, for unified observability): [cli.ts](../src/cli.ts#L497-L523)
+  - Refuse to overlap a live/indeterminate daemon, then acquire the same core runtime ownership lock used by background mode; foreground runs do not create `DaemonRuntime` or write daemon PID/status: [cli.ts](../src/cli.ts)
   - Create the channels registry and enter `runConsole()`: [run-console.ts](../src/run-console.ts#L45-L152)
 
 ### 4.2 Background daemon (normal usage)
@@ -175,8 +175,8 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
   - Write daemon runtime metadata: `daemonRuntime.start(...)`: [run-console.ts](../src/run-console.ts#L70-L82)
   - Start the orchestration IPC server: `runtime.orchestration.server.start()`: [run-console.ts](../src/run-console.ts#L75-L75)
   - Periodic heartbeat: [run-console.ts](../src/run-console.ts#L76-L81)
-- consumer lock (to avoid multiple processes consuming the same channel redundantly):
-  - A failed acquire throws `ActiveWeixinConsumerLockError`: [run-console.ts](../src/run-console.ts#L84-L129)
+- required runtime ownership lock (before shared-state reconciliation, orphan sweeps, scheduler, or channel activation):
+  - A failed acquire follows the generic `ActiveConsumerLockError` contract; POSIX core ownership is a kernel-held `flock`, while Windows uses the runtime-owner IPC guard: [runtime-consumer-lock.ts](../src/daemon/runtime-consumer-lock.ts), [run-console.ts](../src/run-console.ts)
 - Start the channels: `channels.startAll(...)`: [run-console.ts](../src/run-console.ts#L132-L137)
 - finally cleanup: stop IPC / dispose / stopAll / release lock: [run-console.ts](../src/run-console.ts#L154-L209)
 
@@ -278,9 +278,10 @@ Server side:
 
 `DaemonController`: external control surface (called by the CLI)
 
-- `getStatus()`: PID does not exist → stopped; PID exists but the process is gone → clean up runtime files; PID present but no status → indeterminate: [daemon-controller.ts](../src/daemon/daemon-controller.ts#L51-L73)
-- `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts#L75-L93)
-- `stop()`: terminate → wait for exit → clean up pid/status: [daemon-controller.ts](../src/daemon/daemon-controller.ts#L96-L109)
+- `getStatus()`: matching PID/status and a live process → running; conflicting or incomplete live metadata → read-only indeterminate; dead PID metadata is cleaned up: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
+- `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts)
+- `stop()`: reconcile daemon identity → revalidate recovered POSIX process identity → terminate → wait for exit → clean up pid/status; status-only POSIX recovery additionally requires consumer-lock and OS start-time proof: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
+- Every runtime entry holds a channel-independent, OS-held core consumer lock (plus any legacy channel lock); the stable core JSON file is diagnostic metadata rather than the mutex. Internal Windows `cli.js run` publishes its generation/orphan context only after that ownership: [runtime-consumer-lock.ts](../src/daemon/runtime-consumer-lock.ts), [windows-daemon-runtime.ts](../src/daemon/windows-daemon-runtime.ts), [run-console.ts](../src/run-console.ts)
 
 ### 5.10 Orchestration (src/orchestration/*)
 

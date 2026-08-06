@@ -33,6 +33,7 @@ export interface WindowsProcessIdentity {
   pid: number;
   creationDate: string;
   executablePath: string;
+  commandLine?: string;
 }
 
 export interface WindowsTokenProcess {
@@ -151,7 +152,12 @@ export async function queryWindowsProcessIdentity(
     if (item.pid !== pid || parseCanonicalFileTime(item.creationDate) === null || typeof item.executablePath !== "string" || !item.executablePath) {
       return null;
     }
-    return { pid, creationDate: String(item.creationDate), executablePath: item.executablePath };
+    return {
+      pid,
+      creationDate: String(item.creationDate),
+      executablePath: item.executablePath,
+      ...(typeof item.commandLine === "string" && item.commandLine ? { commandLine: item.commandLine } : {}),
+    };
   } catch {
     return null;
   }
@@ -312,7 +318,18 @@ if($request.action -eq 'identity'){
   try {
     $creation=[XacpxNativeProcess]::Creation($h);$image=[XacpxNativeProcess]::Image($h)
     if(!$creation -or !$image){Write-Output (@{status='unavailable'} | ConvertTo-Json -Compress);exit 0}
-    Write-Output (@{status='found';identity=@{pid=[int]$request.pid;creationDate=$creation;executablePath=$image}} | ConvertTo-Json -Depth 4 -Compress)
+    $commandLine=$null
+    try {
+      $cim=Get-CimInstance Win32_Process -Filter ("ProcessId = "+[int]$request.pid)
+      if($cim -and $cim.CreationDate){
+        $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
+        $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
+        if($delta -le 9 -and [string]::Equals([string]$image,[string]$cim.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)){
+          $commandLine=$cim.CommandLine
+        }
+      }
+    } catch {}
+    Write-Output (@{status='found';identity=@{pid=[int]$request.pid;creationDate=$creation;executablePath=$image;commandLine=$commandLine}} | ConvertTo-Json -Depth 4 -Compress)
     exit 0
   } finally {[XacpxNativeProcess]::Close($h)}
 }

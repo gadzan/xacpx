@@ -107,6 +107,23 @@ export interface ConsumerLockMetadata {
   schemaVersion?: 2;
   lockId?: string;
   processCreationDate?: string | null;
+  processStartedAtMs?: number;
+}
+
+/**
+ * Shared conflict shape for runtime and channel compatibility locks. Keeping
+ * it in the generic channel contract lets the console report an active owner
+ * without importing a channel-specific implementation.
+ */
+export class ActiveConsumerLockError extends Error {
+  constructor(
+    message: string,
+    readonly lockFilePath: string,
+    readonly existing: ConsumerLockMetadata,
+  ) {
+    super(message);
+    this.name = "ActiveConsumerLockError";
+  }
 }
 
 export interface ConsumerLock {

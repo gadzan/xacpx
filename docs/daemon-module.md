@@ -73,6 +73,7 @@ Responsibilities:
   - `stdout.log`
   - `stderr.log`
   - `app.log`
+  - `runtime-consumer.lock.json` (stable metadata path for the OS-held core lock)
 
 It does no reading or writing; it is only responsible for **consolidating the path conventions**.
 
@@ -107,6 +108,40 @@ Taking `xacpx stop` as an example:
 4. Clean up the PID and status files.
 5. Return the stop result.
 
+On non-Windows platforms, an in-place upgrade can encounter a live legacy daemon
+whose `status.json` heartbeat is still current but whose PID file is missing. When
+queried, this remains read-only and indeterminate, so `start` cannot launch a
+duplicate. An explicit `stop` or `restart` can adopt the status PID only when the
+config/state paths, a daemon-mode consumer lock, a recent heartbeat, and the
+OS-reported process start time all agree. PID reuse, stale evidence, or conflicting
+metadata remains fail-closed. Immediately before terminating a recovered process,
+the controller probes its OS start-time fingerprint again; a changed or unavailable
+fingerprint preserves the evidence and refuses the PID-only kill.
+
+New Windows daemons create their generation identity on the real published `cli.js run`
+startup path and pass an inactive identity context to `buildApp`. Every default runtime
+first acquires a channel-independent core consumer lock; when a channel also provides a
+legacy lock, both are held so upgraded runtimes still conflict with older daemons. The
+core lock is OS-held (`flock` on POSIX and the runtime-owner IPC guard on Windows), so a
+crash releases ownership without deleting or reclaiming its stable diagnostic JSON file.
+When Bun uses a Node helper to hold the POSIX native flock, the helper ignores process-group
+graceful-stop signals and releases only when the parent closes its control pipe; unexpected
+helper loss terminates the owner fail-closed before another runtime can proceed concurrently.
+Legacy POSIX channel metadata includes the owner's process-start fingerprint to distinguish
+PID reuse. Every runtime entry, including direct source `main()`, uses this same guarded path.
+The generation is published only after runtime ownership is acquired and before any startup
+reconciliation or orphan sweep. Ordinary foreground `xacpx run` processes neither
+publish daemon generations nor register daemon PID/status, and a process that loses an
+ownership lock cannot overwrite or sweep the active daemon's durable evidence. A daemon
+started before durable generation identities were introduced
+can be stopped after an in-place upgrade without falling back to an unverified PID
+kill. The controller adopts that legacy daemon only when all independent evidence
+agrees: PID/status metadata, a recent heartbeat, the handle-derived creation time
+and executable, the current config root, and the exact `node cli.js run` command
+line. The adopted creation identity is written durably before the existing
+handle-fenced process-tree termination runs. Missing, stale, or conflicting
+evidence remains fail-closed.
+
 ## Key state model
 
 The daemon currently does not judge liveness by "looking at a single PID file"; it judges by combination:
@@ -114,10 +149,13 @@ The daemon currently does not judge liveness by "looking at a single PID file"; 
 - **Whether the process exists**: tells us "whether this PID is still alive now".
 - **Status file**: tells us "whether this daemon has completed self-registration".
 
-After combining these three, the result falls roughly into three categories:
-- **running**: there is a PID, the process exists, and there is a valid status file.
-- **stopped**: there is no PID, or there is no status information.
+After combining these three, the result falls roughly into four categories:
+- **running**: the process exists and PID/status metadata agree.
+- **stopped**: there is no evidence of a live daemon.
 - **stale stopped**: there is an old PID/status, but the corresponding process no longer exists, and the controller cleans up the remnants.
+- **indeterminate**: a process is alive but its PID/status metadata is incomplete,
+  inconsistent, or too stale to repair safely. It blocks a second daemon start;
+  ordinary status/doctor probes remain read-only while that PID is still alive.
 
 This is also the core value of `daemon-controller.ts`: it not only looks at files, but also performs **liveness validation**.
 

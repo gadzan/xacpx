@@ -13,10 +13,16 @@ import { loadConfig } from "./config/load-config";
 import { ensureConfigExists } from "./config/ensure-config";
 import { getAgentTemplate, listAgentTemplates, sameAgentConfig } from "./config/agent-templates";
 import { createDaemonController } from "./daemon/create-daemon-controller";
-import { resolveDaemonPaths, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
+import {
+  resolveDaemonPaths,
+  resolveRuntimeConsumerLockPath,
+  resolveRuntimeDirFromConfigPath,
+} from "./daemon/daemon-files";
 import type { DaemonController } from "./daemon/daemon-controller";
 import { DaemonRuntime } from "./daemon/daemon-runtime";
 import type { DaemonStatus } from "./daemon/daemon-status";
+import { createRuntimeConsumerLock } from "./daemon/runtime-consumer-lock";
+import { initializeWindowsDaemonRuntime } from "./daemon/windows-daemon-runtime";
 import type { DoctorRunOptions } from "./doctor/doctor-types";
 import { runXacpxMcpServer } from "./mcp/xacpx-mcp-server";
 import {
@@ -325,7 +331,7 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
         isInteractive: deps.isInteractive,
         promptText: deps.promptText,
       });
-      await (deps.run ?? defaultRun)({ firstRunOnboarding: onboarding ?? undefined });
+      await (deps.run ?? runDefaultRuntime)({ firstRunOnboarding: onboarding ?? undefined });
       return 0;
     case "update": {
       const result = await (deps.update ?? ((subArgs) => defaultUpdate(subArgs, {
@@ -463,7 +469,7 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
           return 0;
         }
         if (status.state === "indeterminate") {
-          throw new Error(`xacpx daemon process is already running (pid ${status.pid}) but status metadata is missing`);
+          throw new Error(`xacpx daemon process is already running (pid ${status.pid}) but daemon metadata is incomplete or inconsistent`);
         }
         const onboarding = await runOnboardingBeforeStart({
           print,
@@ -991,7 +997,7 @@ async function defaultLoadConfiguredPluginsForChannelCli(): Promise<void> {
 
 const DAEMON_RUN_ENV_SUFFIX = "DAEMON_RUN";
 
-async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan } = {}): Promise<void> {
+export async function runDefaultRuntime(options: { firstRunOnboarding?: FirstRunOnboardingPlan } = {}): Promise<void> {
   const [{ buildApp, resolveRuntimePaths, prepareChannelMedia }, { runConsole }] = await Promise.all([
     import("./main"),
     import("./run-console"),
@@ -1012,6 +1018,23 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
   const { MessageChannelRegistry } = await import("./channels/channel-registry.js");
   const daemonPaths = resolveDaemonPathsForCurrentConfig();
   const daemonRuntime = new DaemonRuntime(daemonPaths, { pid: process.pid });
+  const isDaemonRun = coreEnv(DAEMON_RUN_ENV_SUFFIX) === "1";
+  if (!isDaemonRun) {
+    const current = await createDefaultController().getStatus();
+    if (current.state === "running" || current.state === "indeterminate") {
+      throw new Error(
+        `xacpx daemon process is already running (pid ${current.pid}); stop it before starting a foreground runtime`,
+      );
+    }
+  }
+  const windowsDaemonRuntime = isDaemonRun
+    ? await initializeWindowsDaemonRuntime({
+        configPath: runtimePaths.configPath,
+        runtimeDir: daemonPaths.runtimeDir,
+      })
+    : {};
+  const { publishGeneration, ...windowsDaemonRuntimeDeps } = windowsDaemonRuntime;
+  let ownsRuntime = false;
   const { channelDeps } = await prepareChannelMedia(runtimePaths.configPath, config);
   const channelRegistry = new MessageChannelRegistry(createMessageChannels(config.channels, channelDeps));
   const lockCreators = channelRegistry.createConsumerLocks();
@@ -1023,26 +1046,35 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
       buildApp(paths, {
         defaultLoggingLevel: resolveCliEntryPath().includes(`${sep}src${sep}`) ? "debug" : "info",
         channel: channelRegistry,
+        canReapQueueOwners: () => ownsRuntime,
+        ...windowsDaemonRuntimeDeps,
       }),
+    afterConsumerLockAcquired: async () => {
+      await publishGeneration?.();
+      ownsRuntime = true;
+    },
     beforeReady: firstRunOnboarding
       ? async (runtime) => {
           await createFirstRunSession(runtime, firstRunOnboarding);
         }
       : undefined,
     channels: channelRegistry,
-    channelStartupPolicy: coreEnv(DAEMON_RUN_ENV_SUFFIX) === "1" ? "best-effort" : "require-one",
-    daemonRuntime,
-    ...(firstLockCreator
-      ? {
-          consumerLockFactory: (runtime) =>
-            firstLockCreator.create({
-              lockFilePath: `${daemonPaths.runtimeDir}${sep}${firstLockCreator.channel.id}-consumer.lock.json`,
-              onDiagnostic: async (event, context) => {
-                await runtime.logger.info(`${firstLockCreator.channel.id}.consumer_lock.${event}`, `${firstLockCreator.channel.id} consumer lock diagnostic`, context);
-              },
-            }),
-        }
-      : {}),
+    channelStartupPolicy: isDaemonRun ? "best-effort" : "require-one",
+    ...(isDaemonRun ? { daemonRuntime } : {}),
+    consumerLockFactory: (runtime) => createRuntimeConsumerLock({
+      lockFilePath: resolveRuntimeConsumerLockPath(daemonPaths.runtimeDir),
+      ...(firstLockCreator
+        ? { channelLock: firstLockCreator.create({
+            lockFilePath: `${daemonPaths.runtimeDir}${sep}${firstLockCreator.channel.id}-consumer.lock.json`,
+            onDiagnostic: async (event, context) => {
+              await runtime.logger.info(`${firstLockCreator.channel.id}.consumer_lock.${event}`, `${firstLockCreator.channel.id} consumer lock diagnostic`, context);
+            },
+          }) }
+        : {}),
+      onDiagnostic: async (event, context) => {
+        await runtime.logger.info(`runtime.consumer_lock.${event}`, "runtime ownership lock diagnostic", context);
+      },
+    }),
   });
 }
 
@@ -1183,13 +1215,16 @@ export async function restartDaemonCli(
 ): Promise<number> {
   const status = await controller.getStatus();
   if (status.state === "indeterminate") {
-    print(t().cli.restartIndeterminate);
-    print(`PID: ${status.pid}`);
-    print(t().cli.restartIndeterminateHint);
-    return 1;
-  }
-
-  if (status.state === "running") {
+    if (status.reason !== "missing-pid") {
+      print(t().cli.restartIndeterminate);
+      print(`PID: ${status.pid}`);
+      print(t().cli.restartIndeterminateHint);
+      return 1;
+    }
+    print(t().cli.restarting);
+    await controller.stop();
+    print(t().cli.stopped);
+  } else if (status.state === "running") {
     print(t().cli.restarting);
     await controller.stop();
     print(t().cli.stopped);

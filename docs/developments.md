@@ -118,7 +118,7 @@ One sentence per directory to make its responsibility clear; deeper content is i
 | --- | --- | --- |
 | `src/cli.ts` | Top-level CLI entry, `xacpx <command>` dispatch | `runCli()` |
 | `src/main.ts` | `buildApp()` assembles the runtime; `resolveRuntimePaths()` resolves paths | `buildApp` |
-| `src/run-console.ts` | Startup sequence: channel → daemon runtime → consumer lock → channel start | `runConsole()` |
+| `src/run-console.ts` | Startup sequence: build runtime → required core ownership lock → reconcile/reap → daemon ready → channel/scheduler start | `runConsole()` |
 | `src/console-agent.ts` | Bridges inbound messages to the router | `ConsoleAgent` |
 | `src/channels/` | Channel registry; built-in weixin; exposes `MessageChannelRuntime` to plugins | `channels/types.ts`, `channels/plugin.ts` |
 | `src/commands/` | Command parsing + handlers + router | `command-router.ts`, `parse-command.ts` |

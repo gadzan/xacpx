@@ -1,7 +1,17 @@
 import { expect, test } from "bun:test";
 
 import { createNoopAppLogger } from "../../src/logging/app-logger";
-import { runConsole } from "../../src/run-console";
+import { runConsole as runConsoleWithOwnership } from "../../src/run-console";
+
+const noOpConsumerLock = {
+  acquire: async () => {},
+  release: async () => {},
+};
+
+const runConsole = (
+  paths: Parameters<typeof runConsoleWithOwnership>[0],
+  deps: Parameters<typeof runConsoleWithOwnership>[1],
+) => runConsoleWithOwnership(paths, { consumerLock: noOpConsumerLock, ...deps });
 
 function createScheduledRuntime() {
   return {

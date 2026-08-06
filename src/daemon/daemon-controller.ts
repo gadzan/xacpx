@@ -1,13 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { open, readFile, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { win32 } from "node:path";
 
 import type { DaemonPaths } from "./daemon-files";
 import { DaemonStatusStore, type DaemonStatus } from "./daemon-status";
+import { verifyPosixStatusOnlyDaemon } from "./posix-daemon-recovery";
 import { ensurePrivateRuntimeDir } from "./private-runtime-dir";
 import { acquireIpcGuard, type IpcGuard } from "../process/ipc-guard";
+import { probePosixProcessIdentity } from "../process/posix-process-identity";
 import { probeWindowsProcessIdentity, terminateWindowsProcessTree } from "../process/windows-process-tree";
+import type { WindowsProcessIdentity } from "../process/windows-process-tree";
+import { parseCanonicalFileTime } from "../process/windows-process-identity";
 import { OrphanRegistry } from "../transport/orphan-registry";
 import { sweepWindowsOrphans } from "../transport/windows-orphan-reaper";
+
+const WINDOWS_FILETIME_UNIX_EPOCH_TICKS = 116_444_736_000_000_000n;
+const WINDOWS_FILETIME_TICKS_PER_MILLISECOND = 10_000n;
+const LEGACY_DAEMON_MAX_FUTURE_HEARTBEAT_MS = 5_000;
+const LEGACY_DAEMON_MAX_HEARTBEAT_AGE_MS = 90_000;
 
 export interface DaemonStartupWaitPoll {
   elapsedMs: number;
@@ -39,12 +50,15 @@ interface DaemonControllerDeps {
   probeWindowsIdentity?: typeof probeWindowsProcessIdentity;
   terminateWindowsTree?: typeof terminateWindowsProcessTree;
   sweepWindows?: typeof sweepWindowsOrphans;
+  expectedProcessExecPath?: string;
+  expectedCliEntryPath?: string;
+  probePosixIdentity?: typeof probePosixProcessIdentity;
 }
 
 type DaemonState =
   | { state: "stopped"; stale?: boolean }
   | { state: "running"; pid: number; status: DaemonStatus }
-  | { state: "indeterminate"; pid: number; reason: "missing-status" }
+  | { state: "indeterminate"; pid: number; reason: "missing-pid" | "missing-status" | "pid-mismatch" }
   | { state: "already-running"; pid: number };
 
 export class DaemonController {
@@ -86,8 +100,22 @@ export class DaemonController {
     const pid = await this.loadPid();
     const status = await this.statusStore.load();
 
+    if (!pid && status && this.deps.isProcessRunning(status.pid)) {
+      return { state: "indeterminate", pid: status.pid, reason: "missing-pid" };
+    }
+
     if (!pid) {
       return { state: "stopped" };
+    }
+
+    if (status && status.pid !== pid) {
+      const pidIsRunning = this.deps.isProcessRunning(pid);
+      const statusPidIsRunning = this.deps.isProcessRunning(status.pid);
+      if (!pidIsRunning && !statusPidIsRunning) {
+        await this.clearRuntimeFiles();
+        return { state: "stopped", stale: true };
+      }
+      return { state: "indeterminate", pid, reason: "pid-mismatch" };
     }
 
     if (!this.deps.isProcessRunning(pid)) {
@@ -120,7 +148,7 @@ export class DaemonController {
     }
     if (current.state === "indeterminate") {
       throw new Error(
-        `xacpx daemon process is already running (pid ${current.pid}) but status metadata is missing`,
+        `xacpx daemon process is already running (pid ${current.pid}) but daemon metadata is incomplete or inconsistent`,
       );
     }
 
@@ -159,12 +187,43 @@ export class DaemonController {
     if ((this.deps.platform ?? process.platform) === "win32") {
       return await this.withWindowsLifecycleGuard(() => this.stopWindows());
     }
-    const pid = await this.loadPid();
-    if (!pid) {
+    const current = await this.getStatus();
+    let pid: number;
+    let recoveredIdentity: { pid: number; startedAtMs: number } | null = null;
+    if (current.state === "running") {
+      pid = current.pid;
+    } else if (current.state === "indeterminate" && current.reason === "missing-pid") {
+      const status = await this.statusStore.load();
+      if (!status || !this.deps.configRoot) throw this.indeterminateDaemonError(current.pid);
+      recoveredIdentity = await verifyPosixStatusOnlyDaemon({
+        status,
+        runtimeDir: this.paths.runtimeDir,
+        configRoot: this.deps.configRoot,
+        now: this.now(),
+        startupTimeoutMs: this.onboardingStartupTimeoutMs,
+        maxHeartbeatAgeMs: LEGACY_DAEMON_MAX_HEARTBEAT_AGE_MS,
+        maxFutureHeartbeatMs: LEGACY_DAEMON_MAX_FUTURE_HEARTBEAT_MS,
+        probeIdentity: this.deps.probePosixIdentity ?? probePosixProcessIdentity,
+      });
+      if (!recoveredIdentity || !this.deps.isProcessRunning(status.pid)) {
+        throw this.indeterminateDaemonError(current.pid);
+      }
+      pid = status.pid;
+    } else if (current.state === "indeterminate") {
+      throw this.indeterminateDaemonError(current.pid);
+    } else {
       return { state: "stopped", detail: "not-running" };
     }
 
     if (this.deps.isProcessRunning(pid)) {
+      if (recoveredIdentity) {
+        const finalProbe = await (this.deps.probePosixIdentity ?? probePosixProcessIdentity)(pid);
+        if (finalProbe.status !== "found"
+          || finalProbe.identity.pid !== recoveredIdentity.pid
+          || finalProbe.identity.startedAtMs !== recoveredIdentity.startedAtMs) {
+          throw this.indeterminateDaemonError(pid);
+        }
+      }
       await this.deps.terminateProcess(pid);
       await this.waitForShutdown(pid);
     }
@@ -176,9 +235,18 @@ export class DaemonController {
   private async stopWindows(): Promise<{ state: "stopped"; detail: "not-running" | "stopped" }> {
     const registry = this.deps.orphanRegistry ?? new OrphanRegistry(this.paths.runtimeDir);
     await registry.initialize();
-    const generation = await registry.readGeneration();
+    let generation = await registry.readGeneration();
     const pid = await this.loadPid();
     if (!pid && !generation) return { state: "stopped", detail: "not-running" };
+    if (generation && (!this.deps.configRoot || !sameWindowsPath(generation.configRoot, this.deps.configRoot))) {
+      throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
+    }
+    if (pid && generation && pid !== generation.daemonPid) {
+      throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
+    }
+    if (pid && (!generation || generation.daemonCreationDate === null)) {
+      generation = await this.adoptLegacyWindowsGeneration(registry, pid, generation?.generationId);
+    }
     if (!generation || generation.daemonCreationDate === null || (pid !== null && pid !== generation.daemonPid)) {
       throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
     }
@@ -208,6 +276,63 @@ export class DaemonController {
     return { state: "stopped", detail: "stopped" };
   }
 
+  private async adoptLegacyWindowsGeneration(
+    registry: OrphanRegistry,
+    pid: number,
+    generationId?: string,
+  ) {
+    const status = await this.statusStore.load();
+    const probe = await (this.deps.probeWindowsIdentity ?? probeWindowsProcessIdentity)(pid);
+    if (probe.status !== "found" || !this.isVerifiedLegacyWindowsDaemon(pid, status, probe.identity)) {
+      throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
+    }
+    const identity = {
+      generationId: generationId ?? randomUUID(),
+      daemonPid: pid,
+      daemonCreationDate: probe.identity.creationDate,
+      configRoot: this.deps.configRoot!,
+    };
+    await registry.writeGeneration(identity);
+    return identity;
+  }
+
+  private isVerifiedLegacyWindowsDaemon(
+    pid: number,
+    status: DaemonStatus | null,
+    identity: WindowsProcessIdentity,
+  ): boolean {
+    const configRoot = this.deps.configRoot;
+    const expectedProcessExecPath = this.deps.expectedProcessExecPath;
+    const expectedCliEntryPath = this.deps.expectedCliEntryPath;
+    if (!status || status.pid !== pid || identity.pid !== pid || !configRoot
+      || !expectedProcessExecPath || !expectedCliEntryPath || !identity.commandLine) {
+      return false;
+    }
+    if (!sameWindowsPath(win32.dirname(status.config_path), configRoot)) return false;
+    if (!sameWindowsPath(identity.executablePath, expectedProcessExecPath)) return false;
+
+    const startedAt = Date.parse(status.started_at);
+    const heartbeatAt = Date.parse(status.heartbeat_at);
+    const creationTicks = parseCanonicalFileTime(identity.creationDate);
+    if (!Number.isFinite(startedAt) || !Number.isFinite(heartbeatAt) || creationTicks === null) return false;
+    const creationTime = Number(
+      (creationTicks - WINDOWS_FILETIME_UNIX_EPOCH_TICKS) / WINDOWS_FILETIME_TICKS_PER_MILLISECOND,
+    );
+    const now = this.now();
+    if (!Number.isSafeInteger(creationTime)
+      || creationTime > startedAt
+      || startedAt - creationTime > this.onboardingStartupTimeoutMs
+      || heartbeatAt < startedAt
+      || heartbeatAt > now + LEGACY_DAEMON_MAX_FUTURE_HEARTBEAT_MS
+      || now - heartbeatAt > LEGACY_DAEMON_MAX_HEARTBEAT_AGE_MS) return false;
+
+    const argv = splitWindowsCommandLine(identity.commandLine);
+    return argv?.length === 3
+      && sameWindowsPath(argv[0]!, expectedProcessExecPath)
+      && sameWindowsPath(argv[1]!, expectedCliEntryPath)
+      && argv[2]?.toLowerCase() === "run";
+  }
+
   private async withWindowsLifecycleGuard<T>(operation: () => Promise<T>): Promise<T> {
     const configRoot = this.deps.configRoot;
     if (!configRoot && !this.deps.acquireLifecycleGuard) {
@@ -218,6 +343,12 @@ export class DaemonController {
       : acquireIpcGuard({ role: "lifecycle", configRoot: configRoot! }, { platform: "win32" }));
     try { return await operation(); }
     finally { await guard.release(); }
+  }
+
+  private indeterminateDaemonError(pid: number): Error {
+    return new Error(
+      `xacpx daemon process is already running (pid ${pid}) but daemon metadata is incomplete or inconsistent`,
+    );
   }
 
   private async loadPid(): Promise<number | null> {
@@ -299,4 +430,41 @@ export class DaemonController {
 
     throw new Error(`xacpx daemon did not exit within ${this.shutdownTimeoutMs}ms (pid ${pid})`);
   }
+}
+
+function sameWindowsPath(left: string, right: string): boolean {
+  return win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase();
+}
+
+function splitWindowsCommandLine(commandLine: string): string[] | null {
+  const args: string[] = [];
+  let index = 0;
+  while (index < commandLine.length) {
+    while (index < commandLine.length && /\s/.test(commandLine[index]!)) index += 1;
+    if (index >= commandLine.length) break;
+
+    let arg = "";
+    let inQuotes = false;
+    while (index < commandLine.length) {
+      let backslashes = 0;
+      while (commandLine[index] === "\\") {
+        backslashes += 1;
+        index += 1;
+      }
+      if (commandLine[index] === '"') {
+        arg += "\\".repeat(Math.floor(backslashes / 2));
+        if (backslashes % 2 === 1) arg += '"';
+        else inQuotes = !inQuotes;
+        index += 1;
+        continue;
+      }
+      arg += "\\".repeat(backslashes);
+      if (index >= commandLine.length || (!inQuotes && /\s/.test(commandLine[index]!))) break;
+      arg += commandLine[index]!;
+      index += 1;
+    }
+    if (inQuotes) return null;
+    args.push(arg);
+  }
+  return args;
 }

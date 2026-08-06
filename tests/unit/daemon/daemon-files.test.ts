@@ -1,7 +1,11 @@
 import { expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 
-import { isProcessAlive, resolveDaemonPaths } from "../../../src/daemon/daemon-files";
+import {
+  isProcessAlive,
+  resolveDaemonPaths,
+  resolveRuntimeConsumerLockPath,
+} from "../../../src/daemon/daemon-files";
 
 function killError(code: string): NodeJS.ErrnoException {
   const error = new Error(`kill failed: ${code}`) as NodeJS.ErrnoException;
@@ -38,6 +42,12 @@ test("allows overriding the runtime directory", () => {
     stderrLog: join("/tmp/weacpx-runtime", "stderr.log"),
     appLog: join("/tmp/weacpx-runtime", "app.log"),
   });
+});
+
+test("centralizes the stable core runtime lock metadata path", () => {
+  expect(resolveRuntimeConsumerLockPath("/tmp/xacpx-runtime")).toBe(
+    join("/tmp/xacpx-runtime", "runtime-consumer.lock.json"),
+  );
 });
 
 test("isProcessAlive reports the current process as alive", () => {
