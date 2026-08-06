@@ -104,11 +104,16 @@ async function defaultResolveRecordId(acpxCommand: string, target: ReapTarget): 
   const args = [
     // JSON (not quiet): quiet emits a bare id line whose parsing is platform-
     // sensitive (Windows stdout framing); the JSON branch of parseRecordId is
-    // the same one the transports use successfully everywhere.
+    // the same one the transports use successfully everywhere. Permission args
+    // mirror the transports exactly — acpx rejects management commands without
+    // them on Windows, which previously made record resolution fail there.
     "--format",
     "json",
     "--cwd",
     target.cwd,
+    "--approve-all",
+    "--non-interactive-permissions",
+    "deny",
     // Same launch selector as the transports: raw Unix override → `--agent`;
     // overlay alias → positional; legacy `agentCommand`-only targets keep the
     // old `--agent` form; otherwise the bare agent name.
@@ -124,7 +129,9 @@ async function defaultResolveRecordId(acpxCommand: string, target: ReapTarget): 
     target.transportSession,
   ];
   const spawnSpec = resolveSpawnCommand(acpxCommand, args);
-  const result = await runCapture(spawnSpec.command, spawnSpec.args, 4_000);
+  // Generous: Windows node startup is slow and the show must not be killed
+  // before it answers (a false "no record" would leave the owner un-reaped).
+  const result = await runCapture(spawnSpec.command, spawnSpec.args, 10_000);
   if (result.code !== 0) {
     return null;
   }
