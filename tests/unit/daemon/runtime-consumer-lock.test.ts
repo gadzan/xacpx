@@ -1,10 +1,16 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createRuntimeConsumerLock } from "../../../src/daemon/runtime-consumer-lock";
 import type { ConsumerLock, ConsumerLockMetadata } from "../../../src/channels/types";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 const metadata: ConsumerLockMetadata = {
   pid: 70002,
@@ -19,7 +25,7 @@ test("runtime ownership composes the core lock with a legacy channel lock", asyn
   const core = fakeLock("core", events);
   const channel = fakeLock("channel", events);
   const lock = createRuntimeConsumerLock({
-    runtimeDir: "/runtime",
+    lockFilePath: "/runtime/runtime-consumer.lock.json",
     channelLock: channel,
     createCoreLock: () => core,
   });
@@ -38,7 +44,7 @@ test("runtime ownership composes the core lock with a legacy channel lock", asyn
 test("channel lock failure releases the core ownership claim", async () => {
   const events: string[] = [];
   const lock = createRuntimeConsumerLock({
-    runtimeDir: "/runtime",
+    lockFilePath: "/runtime/runtime-consumer.lock.json",
     createCoreLock: () => fakeLock("core", events),
     channelLock: {
       acquire: async () => {
@@ -55,8 +61,10 @@ test("channel lock failure releases the core ownership claim", async () => {
 
 test("the core runtime lock is exclusive without any channel lock", async () => {
   const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-consumer-lock-"));
-  const first = createRuntimeConsumerLock({ runtimeDir: join(root, "runtime") });
-  const second = createRuntimeConsumerLock({ runtimeDir: join(root, "runtime") });
+  roots.push(root);
+  const lockFilePath = join(root, "runtime", "runtime-consumer.lock.json");
+  const first = createRuntimeConsumerLock({ lockFilePath });
+  const second = createRuntimeConsumerLock({ lockFilePath });
   const input: ConsumerLockMetadata = {
     ...metadata,
     pid: process.pid,
@@ -70,8 +78,70 @@ test("the core runtime lock is exclusive without any channel lock", async () => 
   await second.acquire(input);
   await second.release();
 
-  await rm(root, { recursive: true, force: true });
 });
+
+test("Windows core ownership uses the dedicated runtime-owner guard", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-consumer-lock-win-"));
+  roots.push(root);
+  let role: string | undefined;
+  const lock = createRuntimeConsumerLock({
+    lockFilePath: join(root, "runtime", "runtime-consumer.lock.json"),
+    platform: "win32",
+    acquireGuard: async (key) => {
+      role = key.role;
+      return { release: async () => {} };
+    },
+  });
+
+  await lock.acquire({
+    ...metadata,
+    configPath: join(root, "config.json"),
+    statePath: join(root, "state.json"),
+  });
+  expect(role).toBe("runtime-owner");
+  await lock.release();
+});
+
+test("POSIX core ownership is crash-released and exclusive across processes", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-consumer-flock-"));
+  roots.push(root);
+  const outdir = await mkdtemp(join(process.cwd(), "node_modules", ".runtime-lock-test-"));
+  roots.push(outdir);
+  const result = await Bun.build({
+    entrypoints: [join(process.cwd(), "tests", "helpers", "runtime-consumer-lock-child.ts")],
+    outdir,
+    target: "node",
+    external: ["fs-ext"],
+  });
+  if (!result.success) throw new Error(result.logs.map(String).join("\n"));
+  const helper = join(outdir, "runtime-consumer-lock-child.js");
+  const start = (mode?: "hold") => spawn("node", [helper, root, ...(mode ? [mode] : [])], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = (child: ReturnType<typeof start>, pattern: RegExp) => new Promise<string>((resolveOutput, reject) => {
+    let value = "";
+    const timer = setTimeout(() => reject(new Error(`timeout: ${value}`)), 10_000);
+    child.stdout.on("data", (chunk) => {
+      value += String(chunk);
+      if (pattern.test(value)) {
+        clearTimeout(timer);
+        resolveOutput(value);
+      }
+    });
+    child.stderr.on("data", (chunk) => { value += String(chunk); });
+    child.once("error", reject);
+  });
+
+  const holder = start("hold");
+  await output(holder, /ACQUIRED/);
+  const contender = start();
+  expect(await output(contender, /BUSY/)).toContain("BUSY");
+  holder.kill("SIGKILL");
+  await new Promise<void>((resolveClose) => holder.once("close", () => resolveClose()));
+  const replacement = start();
+  expect(await output(replacement, /ACQUIRED/)).toContain("ACQUIRED");
+}, 20_000);
 
 function fakeLock(name: string, events: string[]): ConsumerLock {
   return {

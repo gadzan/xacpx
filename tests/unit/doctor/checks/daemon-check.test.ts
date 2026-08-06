@@ -136,6 +136,25 @@ test("daemon check ignores a missing consumer lock", async () => {
   }
 });
 
+test("daemon check never removes the stable metadata file for the OS-held core lock", async () => {
+  const home = await createTempHome();
+  const runtimeDir = join(home, ".xacpx", "runtime");
+  try {
+    await writeLock(runtimeDir, 99999, "runtime");
+    const removed: string[] = [];
+    const result = await checkDaemon({
+      home,
+      isProcessRunning: () => false,
+      removeConsumerLock: async (path) => { removed.push(path); },
+    });
+
+    expect(result.fixes?.some((entry) => entry.id === "daemon.clear-stale-lock") ?? false).toBe(false);
+    expect(removed).toEqual([]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("daemon check detects a stale non-weixin (feishu) consumer lock", async () => {
   const home = await createTempHome();
   const runtimeDir = join(home, ".xacpx", "runtime");

@@ -20,6 +20,10 @@ test("rejects when an active consumer lock already exists", async () => {
   const lock = createWeixinConsumerLock({
     lockFilePath,
     isProcessRunning: (pid) => pid === 123,
+    probeProcessIdentity: async () => ({
+      status: "found",
+      identity: { pid: 123, startedAtMs: Date.parse("2026-04-04T23:59:00.000Z") },
+    }),
   });
 
   try {
@@ -99,8 +103,78 @@ test("emits diagnostics when it replaces a stale lock", async () => {
 
   expect(diagnostics.some((line) => line.includes("lock_exists"))).toBe(true);
   expect(diagnostics.some((line) => line.includes("lock_stale_removed"))).toBe(true);
-  expect(diagnostics.some((line) => line.includes("\"reason\":\"owner_process_not_running\""))).toBe(true);
+  expect(diagnostics.some((line) => line.includes("\"reason\":\"owner_process_missing_or_identity_changed\""))).toBe(true);
   expect(diagnostics.some((line) => line.includes("lock_acquired"))).toBe(true);
+});
+
+test("reclaims a legacy POSIX lock when its pid was reused by a different process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-reused-pid-"));
+  const lockFilePath = join(dir, "weixin-consumer.lock.json");
+  await writeFile(lockFilePath, JSON.stringify({
+    pid: 123,
+    mode: "daemon",
+    startedAt: "2026-04-05T00:00:00.000Z",
+    configPath: "/cfg-old",
+    statePath: "/state-old",
+  }));
+  const lock = createWeixinConsumerLock({
+    lockFilePath,
+    isProcessRunning: () => true,
+    probeProcessIdentity: async (pid) => ({
+      status: "found",
+      identity: {
+        pid,
+        startedAtMs: pid === 123
+          ? Date.parse("2026-04-05T01:00:00.000Z")
+          : Date.parse("2026-04-05T00:59:00.000Z"),
+      },
+    }),
+  });
+
+  await lock.acquire({
+    pid: 456,
+    mode: "daemon",
+    startedAt: "2026-04-05T01:01:00.000Z",
+    configPath: "/cfg-new",
+    statePath: "/state-new",
+  });
+  expect(JSON.parse(await readFile(lockFilePath, "utf8"))).toMatchObject({
+    pid: 456,
+    schemaVersion: 2,
+    processStartedAtMs: Date.parse("2026-04-05T00:59:00.000Z"),
+  });
+  await lock.release();
+});
+
+test("POSIX release does not unlink a replacement lock owned by another process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-release-"));
+  const lockFilePath = join(dir, "weixin-consumer.lock.json");
+  const lock = createWeixinConsumerLock({
+    lockFilePath,
+    probeProcessIdentity: async (pid) => ({
+      status: "found",
+      identity: { pid, startedAtMs: Date.parse("2026-04-05T00:00:00.000Z") },
+    }),
+  });
+  await lock.acquire({
+    pid: 456,
+    mode: "daemon",
+    startedAt: "2026-04-05T00:01:00.000Z",
+    configPath: "/cfg",
+    statePath: "/state",
+  });
+  await writeFile(lockFilePath, JSON.stringify({
+    schemaVersion: 2,
+    lockId: "replacement",
+    pid: 789,
+    mode: "daemon",
+    startedAt: "2026-04-05T00:02:00.000Z",
+    configPath: "/cfg",
+    statePath: "/state",
+  }));
+
+  await lock.release();
+  expect(JSON.parse(await readFile(lockFilePath, "utf8"))).toMatchObject({ lockId: "replacement", pid: 789 });
 });
 
 test("Windows guard is acquired before diagnostic metadata v2 and release is ownership checked", async () => {
@@ -133,30 +207,6 @@ test("Windows guard is acquired before diagnostic metadata v2 and release is own
   });
   await lock.release();
   expect(events).toEqual(["guard", "release"]);
-});
-
-test("Windows consumer lock accepts a dedicated runtime ownership guard role", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-win-"));
-  let acquiredRole: string | undefined;
-  const lock = createWeixinConsumerLock({
-    lockFilePath: join(dir, "runtime-consumer.lock.json"),
-    platform: "win32",
-    windowsGuardRole: "runtime-owner",
-    acquireGuard: async (key) => {
-      acquiredRole = key.role;
-      return { release: async () => {} };
-    },
-  });
-
-  await lock.acquire({
-    pid: 456,
-    mode: "daemon",
-    startedAt: "2026-04-05T00:01:00.000Z",
-    configPath: join(dir, "config.json"),
-    statePath: join(dir, "state.json"),
-  });
-  expect(acquiredRole).toBe("runtime-owner");
-  await lock.release();
 });
 
 test("Windows duplicate consumer trusts the guard, not stale metadata liveness", async () => {

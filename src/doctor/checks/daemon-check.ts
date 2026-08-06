@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createDaemonController } from "../../daemon/create-daemon-controller";
 import {
   isProcessAlive,
+  RUNTIME_CONSUMER_LOCK_FILE,
   resolveDaemonPaths,
   resolveRuntimeDirFromConfigPath,
   type DaemonPaths,
@@ -168,7 +169,9 @@ async function detectStaleConsumerLockFix(
   const lockFiles = await deps.listConsumerLocks(runtimeDir);
   const stalePaths: string[] = [];
   for (const fileName of lockFiles) {
-    if (!fileName.endsWith(CONSUMER_LOCK_SUFFIX)) {
+    // The core runtime file is stable metadata for an OS-held lock. Deleting
+    // its pathname can split future flock contenders onto a different inode.
+    if (fileName === RUNTIME_CONSUMER_LOCK_FILE || !fileName.endsWith(CONSUMER_LOCK_SUFFIX)) {
       continue;
     }
     const lockPath = join(runtimeDir, fileName);

@@ -93,7 +93,7 @@ test("publishes durable runtime state only after the consumer lock is held", asy
   ]);
 });
 
-test("refuses runtime activation when no consumer ownership lock exists", async () => {
+test("refuses runtime activation when no consumer ownership lock exists, even without an activation hook", async () => {
   const events: string[] = [];
 
   await expect(runConsole(
@@ -118,7 +118,6 @@ test("refuses runtime activation when no consumer ownership lock exists", async 
       channels: {
         startAll: async () => { events.push("channel:start"); },
       },
-      afterConsumerLockAcquired: async () => { events.push("generation:publish"); },
     },
   )).rejects.toThrow("runtime ownership lock is required");
 
@@ -264,8 +263,8 @@ test("logs active lock holder diagnostics when another consumer already owns the
     ),
   ).rejects.toThrow("xacpx Weixin consumer is already running.");
 
-  expect(logs.some((line) => line.includes("info:weixin.consumer_lock.acquire_attempt"))).toBe(true);
-  expect(logs.some((line) => line.includes("error:weixin.consumer_lock.acquire_failed"))).toBe(true);
+  expect(logs.some((line) => line.includes("info:runtime.consumer_lock.acquire_attempt"))).toBe(true);
+  expect(logs.some((line) => line.includes("error:runtime.consumer_lock.acquire_failed"))).toBe(true);
   expect(logs.some((line) => line.includes("\"activePid\":123"))).toBe(true);
   expect(logs.some((line) => line.includes("\"conflictType\":\"active_lock_holder\""))).toBe(true);
 });

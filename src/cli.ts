@@ -13,7 +13,11 @@ import { loadConfig } from "./config/load-config";
 import { ensureConfigExists } from "./config/ensure-config";
 import { getAgentTemplate, listAgentTemplates, sameAgentConfig } from "./config/agent-templates";
 import { createDaemonController } from "./daemon/create-daemon-controller";
-import { resolveDaemonPaths, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
+import {
+  resolveDaemonPaths,
+  resolveRuntimeConsumerLockPath,
+  resolveRuntimeDirFromConfigPath,
+} from "./daemon/daemon-files";
 import type { DaemonController } from "./daemon/daemon-controller";
 import { DaemonRuntime } from "./daemon/daemon-runtime";
 import type { DaemonStatus } from "./daemon/daemon-status";
@@ -327,7 +331,7 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
         isInteractive: deps.isInteractive,
         promptText: deps.promptText,
       });
-      await (deps.run ?? defaultRun)({ firstRunOnboarding: onboarding ?? undefined });
+      await (deps.run ?? runDefaultRuntime)({ firstRunOnboarding: onboarding ?? undefined });
       return 0;
     case "update": {
       const result = await (deps.update ?? ((subArgs) => defaultUpdate(subArgs, {
@@ -993,7 +997,7 @@ async function defaultLoadConfiguredPluginsForChannelCli(): Promise<void> {
 
 const DAEMON_RUN_ENV_SUFFIX = "DAEMON_RUN";
 
-async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan } = {}): Promise<void> {
+export async function runDefaultRuntime(options: { firstRunOnboarding?: FirstRunOnboardingPlan } = {}): Promise<void> {
   const [{ buildApp, resolveRuntimePaths, prepareChannelMedia }, { runConsole }] = await Promise.all([
     import("./main"),
     import("./run-console"),
@@ -1058,7 +1062,7 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
     channelStartupPolicy: isDaemonRun ? "best-effort" : "require-one",
     ...(isDaemonRun ? { daemonRuntime } : {}),
     consumerLockFactory: (runtime) => createRuntimeConsumerLock({
-      runtimeDir: daemonPaths.runtimeDir,
+      lockFilePath: resolveRuntimeConsumerLockPath(daemonPaths.runtimeDir),
       ...(firstLockCreator
         ? { channelLock: firstLockCreator.create({
             lockFilePath: `${daemonPaths.runtimeDir}${sep}${firstLockCreator.channel.id}-consumer.lock.json`,

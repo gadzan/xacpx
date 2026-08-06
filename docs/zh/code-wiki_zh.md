@@ -114,10 +114,10 @@
 
 ### 4.1 前台运行（开发调试）
 
-- 入口：`xacpx run` -> [defaultRun()](../../src/cli.ts#L487-L524)
+- 入口：`xacpx run` 与直接 [main()](../../src/main.ts) 都委托给 [runDefaultRuntime()](../../src/cli.ts)
 - 核心步骤：
   - 解析 runtimePaths：`resolveRuntimePaths()`：[main.ts](../../src/main.ts#L653-L668)
-  - 创建 `DaemonRuntime`（即使前台也写 status/heartbeat，便于统一观测）：[cli.ts](../../src/cli.ts#L497-L523)
+  - 先拒绝与 running/indeterminate daemon 重叠，再取得与后台模式相同的核心 runtime ownership lock；前台运行不创建 `DaemonRuntime`，也不写 daemon PID/status：[cli.ts](../../src/cli.ts)
   - 创建 channels registry 并进入 `runConsole()`：[run-console.ts](../../src/run-console.ts#L45-L152)
 
 ### 4.2 后台 daemon（常规使用）
@@ -174,8 +174,8 @@
   - 写 daemon runtime metadata：`daemonRuntime.start(...)`：[run-console.ts](../../src/run-console.ts#L70-L82)
   - 启动 orchestration IPC server：`runtime.orchestration.server.start()`：[run-console.ts](../../src/run-console.ts#L75-L75)
   - 定时 heartbeat：[run-console.ts](../../src/run-console.ts#L76-L81)
-- consumer lock（避免多进程重复消费同一渠道）：
-  - acquire 失败会抛出 `ActiveWeixinConsumerLockError`：[run-console.ts](../../src/run-console.ts#L84-L129)
+- 必需的 runtime ownership lock（必须先于共享状态协调、orphan sweep、scheduler 与渠道激活）：
+  - acquire 失败遵循通用 `ActiveConsumerLockError` 契约；POSIX 核心 ownership 使用内核持有的 `flock`，Windows 使用 runtime-owner IPC guard：[runtime-consumer-lock.ts](../../src/daemon/runtime-consumer-lock.ts)、[run-console.ts](../../src/run-console.ts)
 - 启动 channels：`channels.startAll(...)`：[run-console.ts](../../src/run-console.ts#L132-L137)
 - finally 清理：stop IPC / dispose / stopAll / release lock：[run-console.ts](../../src/run-console.ts#L154-L209)
 
@@ -274,7 +274,7 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 - `getStatus()`：PID/status 一致且进程存活→running；存活但元数据冲突或不完整→只读的 indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `stop()`：协调 daemon 身份 → 重新核验恢复出的 POSIX 进程身份 → terminate → 等待退出 → 清理 pid/status；POSIX status-only 恢复还要求 consumer lock 与 OS 启动时间证据：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
-- 每个默认 runtime 都持有与渠道无关的核心 consumer lock（以及可用的 legacy 渠道锁）；内部 Windows `cli.js run` 只在取得该 ownership 后发布 generation/orphan 上下文：[runtime-consumer-lock.ts](../../src/daemon/runtime-consumer-lock.ts)、[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)、[run-console.ts](../../src/run-console.ts)
+- 每个 runtime 入口都持有与渠道无关、由 OS 持有的核心 consumer lock（以及可用的 legacy 渠道锁）；稳定的核心 JSON 文件只是诊断元数据，不充当 mutex。内部 Windows `cli.js run` 只在取得该 ownership 后发布 generation/orphan 上下文：[runtime-consumer-lock.ts](../../src/daemon/runtime-consumer-lock.ts)、[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)、[run-console.ts](../../src/run-console.ts)
 
 ### 5.10 Orchestration（src/orchestration/*）
 

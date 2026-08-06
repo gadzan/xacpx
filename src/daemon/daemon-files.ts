@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { coreHomeDir } from "../runtime/core-home";
 import { resolveOrchestrationEndpoint } from "../orchestration/orchestration-ipc";
 
+export const RUNTIME_CONSUMER_LOCK_FILE = "runtime-consumer.lock.json";
+
 export interface DaemonPaths {
   runtimeDir: string;
   pidFile: string;
@@ -33,6 +35,11 @@ export function resolveDaemonPaths(options: ResolveDaemonPathsOptions): DaemonPa
 
 export function resolveRuntimeDirFromConfigPath(configPath: string): string {
   return join(dirname(configPath), "runtime");
+}
+
+/** Stable metadata path for the OS-held, channel-independent runtime lock. */
+export function resolveRuntimeConsumerLockPath(runtimeDir: string): string {
+  return join(runtimeDir, RUNTIME_CONSUMER_LOCK_FILE);
 }
 
 export function resolveDaemonOrchestrationSocketPath(

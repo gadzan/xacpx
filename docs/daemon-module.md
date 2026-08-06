@@ -73,6 +73,7 @@ Responsibilities:
   - `stdout.log`
   - `stderr.log`
   - `app.log`
+  - `runtime-consumer.lock.json` (stable metadata path for the OS-held core lock)
 
 It does no reading or writing; it is only responsible for **consolidating the path conventions**.
 
@@ -121,7 +122,11 @@ New Windows daemons create their generation identity on the real published `cli.
 startup path and pass an inactive identity context to `buildApp`. Every default runtime
 first acquires a channel-independent core consumer lock; when a channel also provides a
 legacy lock, both are held so upgraded runtimes still conflict with older daemons. The
-generation is published only after runtime ownership is acquired and before any startup
+core lock is OS-held (`flock` on POSIX and the runtime-owner IPC guard on Windows), so a
+crash releases ownership without deleting or reclaiming its stable diagnostic JSON file.
+Legacy POSIX channel metadata includes the owner's process-start fingerprint to distinguish
+PID reuse. Every runtime entry, including direct source `main()`, uses this same guarded path.
+The generation is published only after runtime ownership is acquired and before any startup
 reconciliation or orphan sweep. Ordinary foreground `xacpx run` processes neither
 publish daemon generations nor register daemon PID/status, and a process that loses an
 ownership lock cannot overwrite or sweep the active daemon's durable evidence. A daemon

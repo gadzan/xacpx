@@ -1,6 +1,10 @@
 import type { AppRuntime, RuntimePaths } from "./main";
-import type { ChannelStartInput, ConsumerLock, ConsumerLockMetadata } from "./channels/types.js";
-import { ActiveWeixinConsumerLockError } from "./weixin/monitor/consumer-lock";
+import {
+  ActiveConsumerLockError,
+  type ChannelStartInput,
+  type ConsumerLock,
+  type ConsumerLockMetadata,
+} from "./channels/types.js";
 import { listXacpxCommandHints } from "./commands/command-hints.js";
 import { XACPX_CORE_VERSION } from "./version.js";
 import { getLocale } from "./i18n/index.js";
@@ -22,7 +26,7 @@ interface RunConsoleDeps {
   buildApp: (paths: RuntimePaths) => Promise<AppRuntime>;
   afterBuild?: (runtime: AppRuntime) => Promise<void>;
   /**
-   * Activates durable process-owned state after the optional consumer lock is
+   * Activates durable process-owned state after the required consumer lock is
    * held, but before reconciliation or orphan cleanup can mutate shared state.
    */
   afterConsumerLockAcquired?: (runtime: AppRuntime) => Promise<void>;
@@ -104,7 +108,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
           processCreationDate: runtime.daemonIdentity.daemonCreationDate,
         } : {}),
       };
-      await runtime.logger.info("weixin.consumer_lock.acquire_attempt", "attempting to acquire weixin consumer lock", {
+      await runtime.logger.info("runtime.consumer_lock.acquire_attempt", "attempting to acquire runtime ownership lock", {
         pid: lockMeta.pid,
         mode: lockMeta.mode,
         configPath: lockMeta.configPath,
@@ -114,15 +118,15 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       try {
         await consumerLock.acquire(lockMeta);
         consumerLockAcquired = true;
-        await runtime.logger.info("weixin.consumer_lock.acquired", "acquired weixin consumer lock", {
+        await runtime.logger.info("runtime.consumer_lock.acquired", "acquired runtime ownership lock", {
           pid: lockMeta.pid,
           mode: lockMeta.mode,
           configPath: lockMeta.configPath,
           statePath: lockMeta.statePath,
         });
       } catch (error) {
-        if (error instanceof ActiveWeixinConsumerLockError) {
-          await runtime.logger.error("weixin.consumer_lock.acquire_failed", "weixin consumer lock is already held by another process", {
+        if (error instanceof ActiveConsumerLockError) {
+          await runtime.logger.error("runtime.consumer_lock.acquire_failed", "runtime ownership lock is already held by another process", {
             conflictType: "active_lock_holder",
             activePid: error.existing.pid,
             activeMode: error.existing.mode,
@@ -132,7 +136,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
             requestedMode: lockMeta.mode,
           });
         } else {
-          await runtime.logger.error("weixin.consumer_lock.acquire_failed", "failed to acquire weixin consumer lock", {
+          await runtime.logger.error("runtime.consumer_lock.acquire_failed", "failed to acquire runtime ownership lock", {
             conflictType: deps.daemonRuntime ? "daemon_startup_lock_failure" : "foreground_startup_lock_failure",
             requestedPid: lockMeta.pid,
             requestedMode: lockMeta.mode,
@@ -143,7 +147,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       }
     }
 
-    if (!consumerLock && deps.afterConsumerLockAcquired) {
+    if (!consumerLock) {
       throw new Error("runtime ownership lock is required before activating shared runtime state");
     }
     if (deps.afterConsumerLockAcquired) {
@@ -366,7 +370,7 @@ async function runCleanupSequence(input: RunCleanupSequenceInput): Promise<void>
     try {
       await input.consumerLock?.release();
       if (input.runtime) {
-        await input.runtime.logger.info("weixin.consumer_lock.released", "released weixin consumer lock", {
+        await input.runtime.logger.info("runtime.consumer_lock.released", "released runtime ownership lock", {
           pid: input.processPid,
         });
       }
