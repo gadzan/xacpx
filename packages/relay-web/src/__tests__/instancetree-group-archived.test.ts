@@ -87,7 +87,7 @@ describe("InstanceTree grouped sleeping sessions", () => {
     await flushPromises();
     expect(load).toHaveBeenCalledWith("i1", "agent", "codex");
     expect(w.text()).toContain("s1");
-    // No active-list load-more involvement for a fully-loaded group.
+    // A fully-loaded group (hasMore=false) shows no group load-more button.
     expect(w.find('[data-test="group-load-more"]').exists()).toBe(false);
   });
 
