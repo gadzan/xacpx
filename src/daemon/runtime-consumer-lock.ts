@@ -321,7 +321,11 @@ async function acquireFlockHelper(
       timedOut = true;
       child.kill("SIGKILL");
       killWaitTimer = setTimeout(() => {
-        finish(() => reject(new Error(`runtime lock helper did not exit after acquisition timeout${stderr ? `: ${stderr}` : ""}`)));
+        // Returning while this child might still own the kernel lock would
+        // abandon an untracked owner. If even SIGKILL cannot produce close,
+        // the parent must not continue through a catch handler without proof
+        // that acquisition cleanup completed.
+        process.kill(process.pid, "SIGKILL");
       }, 5_000);
     }, timeoutMs);
     const finish = (callback: () => void) => {
@@ -335,7 +339,12 @@ async function acquireFlockHelper(
       if (newline >= 0 && !timedOut) finish(() => resolve(stdout.slice(0, newline)));
     });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.once("error", (error) => finish(() => reject(error)));
+    child.once("error", (error) => {
+      // Once timeout cleanup starts, only close proves the helper can no
+      // longer own flock. Keep waiting (or fail closed above) instead of
+      // losing the child reference through an early error rejection.
+      if (!timedOut) finish(() => reject(error));
+    });
     child.once("close", (code) => {
       if (timedOut) {
         finish(() => reject(new Error(`runtime lock helper timed out${stderr ? `: ${stderr}` : ""}`)));

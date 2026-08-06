@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { createRuntimeConsumerLock } from "../../../src/daemon/runtime-consumer-
 import type { ConsumerLock, ConsumerLockMetadata } from "../../../src/channels/types";
 
 const roots: string[] = [];
+const require = createRequire(import.meta.url);
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -93,12 +95,28 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
   };
   const timedOut = createRuntimeConsumerLock({
     lockFilePath,
-    helperAcquireTimeoutMs: 100,
+    helperAcquireTimeoutMs: 3_000,
     // The Node helper takes the flock before delaying its protocol response.
-    helperHandshakeDelayMs: 2_000,
+    helperHandshakeDelayMs: 10_000,
   });
 
-  await expect(timedOut.acquire(input)).rejects.toThrow("runtime lock helper timed out");
+  const acquisition = timedOut.acquire(input).then(
+    () => ({ ok: true as const }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  const busyDeadline = Date.now() + 2_000;
+  let observedBusy = false;
+  while (!observedBusy && Date.now() < busyDeadline) {
+    observedBusy = await probeFlockBusy(lockFilePath);
+    if (!observedBusy) await Bun.sleep(25);
+  }
+  expect(observedBusy).toBe(true);
+
+  const result = await acquisition;
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.error).toEqual(expect.objectContaining({
+    message: expect.stringContaining("runtime lock helper timed out"),
+  }));
 
   // Timeout rejection waits for SIGKILL/close, so no unreferenced helper can
   // retain the kernel lock after acquire() has told the caller it failed.
@@ -276,4 +294,48 @@ function fakeLock(name: string, events: string[]): ConsumerLock {
     acquire: async (input) => { events.push(`${name}:acquire:${input.pid}`); },
     release: async () => { events.push(`${name}:release`); },
   };
+}
+
+const FLOCK_PROBE_SOURCE = String.raw`
+const fs = require("node:fs");
+const fsExt = require(process.argv[1]);
+const fd = fs.openSync(process.argv[2], "a+", 0o600);
+fsExt.flock(fd, "exnb", (error) => {
+  if (error) {
+    const busy = error.code === "EAGAIN" || error.code === "EWOULDBLOCK";
+    if (busy) {
+      process.stdout.write("BUSY\n");
+      fs.closeSync(fd);
+      return;
+    }
+    process.stderr.write(String(error.stack || error));
+    fs.closeSync(fd);
+    process.exitCode = 1;
+    return;
+  }
+  fsExt.flock(fd, "un", () => {
+    fs.closeSync(fd);
+    process.stdout.write("FREE\n");
+  });
+});
+`;
+
+function probeFlockBusy(lockFilePath: string): Promise<boolean> {
+  const child = spawn("node", [
+    "-e",
+    FLOCK_PROBE_SOURCE,
+    require.resolve("fs-ext"),
+    lockFilePath,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  return new Promise((resolveProbe, reject) => {
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code !== 0) reject(new Error(`flock probe exited with code ${code}: ${stderr}`));
+      else resolveProbe(stdout.trim() === "BUSY");
+    });
+  });
 }
