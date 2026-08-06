@@ -248,9 +248,13 @@ export const useInstancesStore = defineStore("instances", () => {
     return `${instanceId}|${groupArchivedKey(mode, groupKey)}`;
   }
 
+  function groupArchivedStateFor(instanceId: string, mode: GroupArchivedMode, groupKey: string): GroupArchivedState | undefined {
+    return byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
+  }
+
   async function loadGroupArchivedSessions(instanceId: string, mode: GroupArchivedMode, groupKey: string, append = false): Promise<void> {
     const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
-    const state = byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
+    const state = groupArchivedStateFor(instanceId, mode, groupKey);
     if (state?.loading) {
       if (!append) pendingGroupArchivedRefreshes.add(pk);
       return;
@@ -258,7 +262,7 @@ export const useInstancesStore = defineStore("instances", () => {
     let appendPage = append;
     let rerun = false;
     await drainPendingRefresh(pendingGroupArchivedRefreshes, pk, async () => {
-      const current = byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
+      const current = groupArchivedStateFor(instanceId, mode, groupKey);
       const offset = appendPage && current ? current.nextOffset : 0;
       // A pending refresh re-enters through loadGroupArchivedSessions (offset 0, replace):
       // fetchGroupArchivedPage's loading guard would otherwise bail and drop the refresh.
@@ -298,7 +302,7 @@ export const useInstancesStore = defineStore("instances", () => {
         };
       }
     } finally {
-      const current = byId(instanceId)?.groupArchived?.[key];
+      const current = groupArchivedStateFor(instanceId, mode, groupKey);
       if (current) current.loading = false;
     }
   }
@@ -326,7 +330,7 @@ export const useInstancesStore = defineStore("instances", () => {
     // A page load may already be in flight for this group. Its own pending-drain loop
     // performs the discard-and-refetch, so mark pending and wait for it to settle
     // instead of racing a second fetch (a bare return would leave the mark un-consumed).
-    while (byId(instanceId)?.groupArchived?.[key]?.loading) {
+    while (groupArchivedStateFor(instanceId, mode, groupKey)?.loading) {
       pendingGroupArchivedRefreshes.add(pk);
       await new Promise((resolve) => setTimeout(resolve, 25));
       if (!pendingGroupArchivedRefreshes.has(pk)) return;

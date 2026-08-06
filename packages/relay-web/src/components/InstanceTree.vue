@@ -133,8 +133,8 @@ function sectionsFor(inst: InstanceView): SidebarSection[] {
   const mode = groupModeOf(inst);
   if (mode === "instance") return [{ key: null, sessions: visibleSessions(inst) }];
   // Grouped modes page sleeping sessions PER GROUP from the server; groups come from
-  // active sessions plus any group that already has a loaded sleeping page (so a group
-  // whose last active session was just archived stays visible with its sleeping rows).
+  // active sessions plus any group already tracked in groupArchived (so a group whose
+  // last active session was just archived stays visible with its sleeping rows).
   const groups = groupSessions(activeSessions(inst), mode);
   const present = new Set(groups.map((g) => g.key));
   for (const recordKey of Object.keys(inst.groupArchived ?? {})) {
@@ -152,6 +152,11 @@ function sectionsFor(inst: InstanceView): SidebarSection[] {
       archivedState: state,
     };
   });
+}
+
+/** A section's renderable rows: active rows, then any expanded sleeping rows. */
+function sectionRows(section: SidebarSection): InstanceView["sessions"] {
+  return [...section.sessions, ...(section.archivedSessions ?? [])];
 }
 
 // Per-group sleeping-session expansion (grouped modes). Keyed by mode like
@@ -343,7 +348,7 @@ const rowSwipes = computed(() => {
   for (const inst of store.instances) {
     if (!inst.online) continue;
     for (const section of sectionsFor(inst)) {
-      for (const s of [...section.sessions, ...(section.archivedSessions ?? [])]) {
+      for (const s of sectionRows(section)) {
         const key = `${inst.id}:${s.alias}`;
         if (map[key]) continue;
         const reveal = revealPx(s);
@@ -420,7 +425,7 @@ const rowSwipes = computed(() => {
           </div>
           <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
             <div
-              v-for="s in [...grp.sessions, ...(grp.archivedSessions ?? [])]"
+              v-for="s in sectionRows(grp)"
               :key="s.alias"
               data-test="session-row"
               class="group relative rounded-md"
