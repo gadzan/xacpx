@@ -1102,6 +1102,7 @@ export class AcpxCliTransport implements SessionTransport {
         agent: query.agent,
         agentCommand: query.agentCommand,
         acpxAgent: query.acpxAgent,
+        rawCommand: query.rawCommand,
         cwd: query.cwd,
         permission: this.permissionInput(),
       },

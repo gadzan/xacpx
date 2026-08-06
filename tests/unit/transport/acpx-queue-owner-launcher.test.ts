@@ -359,3 +359,22 @@ test("verified termination fails closed when the owner cannot be terminated", as
   })).rejects.toThrow(/could not be terminated safely/);
   await rm(dir, { recursive: true, force: true });
 });
+
+test("verified termination fails closed when the lock is unverifiable (non-ENOENT)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-verify-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 99999999 }));
+  // access() raises EACCES: we cannot prove the lock is gone, so migration
+  // must NOT proceed even though the terminator would remove the lock.
+  await expect(terminateAcpxQueueOwnerVerifiedWithDeps("session-1", {
+    lockPath,
+    terminate: async () => { await rm(lockPath, { force: true }); },
+    delay: async () => {},
+    accessFn: async () => {
+      const error = new Error("permission denied") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      throw error;
+    },
+  })).rejects.toThrow(/cannot verify queue owner lock state/);
+  await rm(dir, { recursive: true, force: true });
+});

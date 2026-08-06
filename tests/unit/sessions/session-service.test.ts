@@ -1147,3 +1147,37 @@ test("recorded custom argv stays sticky across restart while managed argv recomp
   expect(session2?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
   expect(session2?.acpxAgent).not.toBe("xacpx-managed-codex-oldhash9999");
 });
+
+// ── windows recorded raw command guard ───────────────────────────────────────
+
+test("windows rejects a recorded multi-token raw command instead of resurrecting it", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "node C:/path with space/agent.js --acp",
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+});
+
+test("windows converts a recorded single-token command to argv losslessly", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "myagent.exe",
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  const session = await service.getSession("review");
+  expect(session?.agentArgv).toEqual(["myagent.exe"]);
+  expect(session?.rawCommand).toBeUndefined();
+});

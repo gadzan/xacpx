@@ -623,6 +623,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
       ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
       ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+      ...(launch.agentArgv ? { agentArgv: launch.agentArgv } : {}),
       model: agentConfig.model,
       workspace: input.workspace,
       transportSession: input.workerSession,

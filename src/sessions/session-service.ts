@@ -72,6 +72,8 @@ interface NativeSessionListResult {
 interface SessionServiceOptions {
   stateMutex?: AsyncMutex;
   now?: () => number;
+  /** Injectable for tests; defaults to the real platform. */
+  platform?: NodeJS.Platform;
 }
 
 export interface SessionStateWriter extends Pick<StateStore, "save"> {
@@ -85,6 +87,7 @@ export interface SessionLockedTransaction {
 export class SessionService {
   private readonly stateMutex: AsyncMutex;
   private readonly now: () => number;
+  private readonly platform: NodeJS.Platform;
   private readonly pendingSessionAliasOperations = new Set<string>();
 
   constructor(
@@ -95,6 +98,7 @@ export class SessionService {
   ) {
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.now = options.now ?? (() => Date.now());
+    this.platform = options.platform ?? process.platform;
   }
 
   async createSession(alias: string, agent: string, workspace: string): Promise<ResolvedSession> {
@@ -767,7 +771,11 @@ export class SessionService {
    * adapter pins, hermes shim, local fallback) are recomputed on restart from the
    * current pin, so the acpx session identity follows the current pin.
    */
-  private resolveLaunchSpec(session: LogicalSession, agentConfig: AgentConfig): AgentLaunchSpec {
+  private resolveLaunchSpec(
+    session: LogicalSession,
+    agentConfig: AgentConfig,
+    platform: NodeJS.Platform = this.platform,
+  ): AgentLaunchSpec {
     const current = resolveConfiguredAgentLaunch(agentConfig, this.config.transport);
     // 1. Explicit config `command` (Unix raw override) wins over any recording.
     if (current.rawCommand) {
@@ -802,6 +810,23 @@ export class SessionService {
     );
     const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
     if (recordedCommand) {
+      if (platform === "win32") {
+        if (/\s/.test(recordedCommand)) {
+          // Fails closed instead of resurrecting a raw `--agent` string acpx
+          // rejects on Windows: guessing a quote split would corrupt boundaries.
+          throw new Error(
+            `session "${session.alias}" was created with a raw command that cannot be launched ` +
+              "on Windows without lossy quoting. Migrate the agent to an argv array in config: " +
+              'agents.<name>.argv = ["agent.exe", "--acp", ...]',
+          );
+        }
+        // A single token converts losslessly.
+        return {
+          acpxAgent: agentConfig.driver,
+          agentCommand: recordedCommand,
+          agentArgv: [recordedCommand],
+        };
+      }
       return { acpxAgent: agentConfig.driver, rawCommand: recordedCommand, agentCommand: recordedCommand };
     }
     // 5. Derived current resolution (managed pin, hermes shim, local fallback, bare driver).

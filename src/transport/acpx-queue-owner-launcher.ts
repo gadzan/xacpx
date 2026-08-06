@@ -476,6 +476,8 @@ export interface VerifiedOwnerTerminationDeps {
   /** Defaults to terminateAcpxQueueOwner (a no-op for unverifiable Windows locks). */
   terminate?: () => Promise<void>;
   delay?: (ms: number) => Promise<void>;
+  /** Test seam for lock-liveness checks; defaults to fs access(). */
+  accessFn?: (path: string) => Promise<void>;
 }
 
 /**
@@ -499,17 +501,16 @@ export async function terminateAcpxQueueOwnerVerifiedWithDeps(
 ): Promise<void> {
   const lockPath = deps.lockPath ?? queueLockFilePath(sessionId);
   const delay = deps.delay ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
-  try {
-    await access(lockPath);
-  } catch {
+  const accessFn = deps.accessFn ?? access;
+  if (await lockFileGone(lockPath, accessFn)) {
     return; // no lock → no owner → nothing to terminate
   }
   await (deps.terminate ?? (() => terminateAcpxQueueOwner(sessionId)))();
-  // Bounded wait for the lock to actually disappear.
+  // Bounded wait for the lock to actually disappear. Any non-ENOENT access
+  // error (EACCES/EPERM/EIO...) means we cannot PROVE the owner is gone —
+  // fail closed rather than migrating under an unverifiable owner.
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      await access(lockPath);
-    } catch {
+    if (await lockFileGone(lockPath, accessFn)) {
       return; // lock gone → owner terminated
     }
     await delay(100);
@@ -518,6 +519,25 @@ export async function terminateAcpxQueueOwnerVerifiedWithDeps(
     `queue owner for session ${sessionId} could not be terminated safely; ` +
       "refusing to rewrite the session record while the owner may still be running",
   );
+}
+
+/** True only when the lock is verifiably absent; other errors throw. */
+async function lockFileGone(
+  lockPath: string,
+  accessFn: (path: string) => Promise<void>,
+): Promise<boolean> {
+  try {
+    await accessFn(lockPath);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    throw new Error(
+      `cannot verify queue owner lock state at ${lockPath}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
 }
 
 export function resolveDefaultXacpxCommand(env: NodeJS.ProcessEnv): string {
