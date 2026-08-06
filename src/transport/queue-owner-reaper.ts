@@ -102,8 +102,11 @@ export async function reapQueueOwners(
 
 async function defaultResolveRecordId(acpxCommand: string, target: ReapTarget): Promise<string | null> {
   const args = [
+    // JSON (not quiet): quiet emits a bare id line whose parsing is platform-
+    // sensitive (Windows stdout framing); the JSON branch of parseRecordId is
+    // the same one the transports use successfully everywhere.
     "--format",
-    "quiet",
+    "json",
     "--cwd",
     target.cwd,
     // Same launch selector as the transports: raw Unix override → `--agent`;

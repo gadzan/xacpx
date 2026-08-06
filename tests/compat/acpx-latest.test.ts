@@ -282,13 +282,21 @@ test("mcpCoordinatorSession spawns a warm queue owner that the second turn reuse
       cwd: spec.cwd,
       transportSession: spec.transportSession,
     }], { timeoutMs: 30_000 });
-    expect(reaped.terminated).toBe(1);
-    let ownerStillAlive = false;
-    try { process.kill(ownerBeforeReap!, 0); ownerStillAlive = true; } catch { /* gone */ }
-    console.log("[compat] after reap: pid=%s alive=%s", ownerBeforeReap, ownerStillAlive);
-
-    const ownerAfter = await readQueueOwnerPid(recordId);
-    expect(ownerAfter).toBeUndefined();
+    if (process.platform === "win32") {
+      // terminateAcpxQueueOwner does not consume Windows queue locks (no
+      // verifiable provenance yet); the owner stays alive and is freed by its
+      // TTL or the daemon's orphan sweep. The reaper must still RESOLVE the
+      // record id (attempted=1) so record discovery is proven on Windows.
+      expect(reaped.attempted).toBe(1);
+      expect(reaped.terminated).toBe(1);
+    } else {
+      expect(reaped.terminated).toBe(1);
+      let ownerStillAlive = false;
+      try { process.kill(ownerBeforeReap!, 0); ownerStillAlive = true; } catch { /* gone */ }
+      console.log("[compat] after reap: pid=%s alive=%s", ownerBeforeReap, ownerStillAlive);
+      const ownerAfter = await readQueueOwnerPid(recordId);
+      expect(ownerAfter).toBeUndefined();
+    }
 
     // Session still open and promptable (cold start).
     const third = await transport.prompt(spec, "after-reap");
