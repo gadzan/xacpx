@@ -21,6 +21,11 @@ type ChannelStartupPolicy = "require-one" | "best-effort";
 interface RunConsoleDeps {
   buildApp: (paths: RuntimePaths) => Promise<AppRuntime>;
   afterBuild?: (runtime: AppRuntime) => Promise<void>;
+  /**
+   * Activates durable process-owned state after the optional consumer lock is
+   * held, but before reconciliation or orphan cleanup can mutate shared state.
+   */
+  afterConsumerLockAcquired?: (runtime: AppRuntime) => Promise<void>;
   beforeReady?: (runtime: AppRuntime) => Promise<void>;
   channels: ChannelRegistry;
   channelStartupPolicy?: ChannelStartupPolicy;
@@ -83,19 +88,6 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     if (deps.afterBuild) {
       await deps.afterBuild(runtime);
     }
-    // Drain any tasks that were queued at shutdown and close stale ephemeral
-    // worker sessions left over from a previous run.
-    try {
-      await runtime.orchestration.service.reconcileParallelSlots();
-    } catch (reconcileError) {
-      await runtime.logger.error(
-        "orchestration.parallel.reconcile_failed",
-        "failed to reconcile parallel slots at startup",
-        {
-          message: reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
-        },
-      );
-    }
     consumerLock = deps.consumerLock ?? deps.consumerLockFactory?.(runtime);
 
     if (consumerLock) {
@@ -149,6 +141,26 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         }
         throw error;
       }
+    }
+
+    if (deps.afterConsumerLockAcquired) {
+      await deps.afterConsumerLockAcquired(runtime);
+    }
+
+    // Drain any tasks that were queued at shutdown and close stale ephemeral
+    // worker sessions left over from a previous run. This must happen only
+    // after this process owns the consumer/runtime identity; a conflicting
+    // foreground process must not mutate the active daemon's state.
+    try {
+      await runtime.orchestration.service.reconcileParallelSlots();
+    } catch (reconcileError) {
+      await runtime.logger.error(
+        "orchestration.parallel.reconcile_failed",
+        "failed to reconcile parallel slots at startup",
+        {
+          message: reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
+        },
+      );
     }
 
     // Sweep warm acpx queue owners orphaned by a previous daemon that exited without a

@@ -568,6 +568,51 @@ test("stop refuses a fresh status-only daemon when its pid was reused by a newer
   await rm(dir, { recursive: true, force: true });
 });
 
+test("stop refuses a status-only daemon replaced after identity verification", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  let probes = 0;
+  let terminated = false;
+  const originalStartedAt = Date.parse("2026-03-26T00:00:00.000Z");
+  const controller = createController(dir, {
+    now: () => Date.parse("2026-03-26T00:01:30.000Z"),
+    isProcessRunning: (pid) => pid === 24680,
+    terminateProcess: async () => { terminated = true; },
+    probePosixIdentity: async (pid) => ({
+      status: "found",
+      identity: {
+        pid,
+        startedAtMs: probes++ === 0
+          ? originalStartedAt
+          : Date.parse("2026-03-26T00:01:20.000Z"),
+      },
+    }),
+  });
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 24680,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+  await writeFile(join(dir, "weixin-consumer.lock.json"), JSON.stringify({
+    pid: 24680,
+    mode: "daemon",
+    startedAt: "2026-03-26T00:00:00.000Z",
+    configPath: join(dir, "config.json"),
+    statePath: join(dir, "state.json"),
+  }));
+
+  await expect(controller.stop()).rejects.toThrow("daemon metadata is incomplete or inconsistent");
+  expect(probes).toBe(2);
+  expect(terminated).toBe(false);
+  await expect(Bun.file(join(dir, "status.json")).exists()).resolves.toBe(true);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("stop waits for the daemon process to exit before clearing runtime files", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   await writeFile(join(dir, "daemon.pid"), "12345\n");

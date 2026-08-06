@@ -113,11 +113,17 @@ queried, this remains read-only and indeterminate, so `start` cannot launch a
 duplicate. An explicit `stop` or `restart` can adopt the status PID only when the
 config/state paths, a daemon-mode consumer lock, a recent heartbeat, and the
 OS-reported process start time all agree. PID reuse, stale evidence, or conflicting
-metadata remains fail-closed.
+metadata remains fail-closed. Immediately before terminating a recovered process,
+the controller probes its OS start-time fingerprint again; a changed or unavailable
+fingerprint preserves the evidence and refuses the PID-only kill.
 
-New Windows daemons create and durably write their generation identity on the real
-published `cli.js run` startup path before `buildApp` receives the identity and
-orphan registry. A daemon started before durable generation identities were introduced
+New Windows daemons create their generation identity on the real published `cli.js run`
+startup path and pass an inactive identity context to `buildApp`. The generation is
+published only after the optional channel consumer guard is acquired and before any
+startup reconciliation or orphan sweep. Ordinary foreground `xacpx run` processes do
+not publish daemon generations, and a process that loses the consumer guard cannot
+overwrite or sweep the active daemon's durable evidence. A daemon started before
+durable generation identities were introduced
 can be stopped after an in-place upgrade without falling back to an unverified PID
 kill. The controller adopts that legacy daemon only when all independent evidence
 agrees: PID/status metadata, a recent heartbeat, the handle-derived creation time

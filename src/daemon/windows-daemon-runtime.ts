@@ -17,6 +17,7 @@ interface InitializeWindowsDaemonRuntimeOptions {
 export type WindowsDaemonRuntimeDeps = {
   daemonIdentity?: DaemonIdentity;
   orphanRegistry?: OrphanRegistry;
+  publishGeneration?: () => Promise<void>;
 };
 
 export async function initializeWindowsDaemonRuntime(
@@ -32,6 +33,15 @@ export async function initializeWindowsDaemonRuntime(
     configRoot,
     platform: "win32",
   });
-  await orphanRegistry.writeGeneration(daemonIdentity);
-  return { daemonIdentity, orphanRegistry };
+  let generationPublished = false;
+  const publishGeneration = async (): Promise<void> => {
+    if (generationPublished) return;
+    await orphanRegistry.writeGeneration(daemonIdentity);
+    generationPublished = true;
+  };
+  return {
+    daemonIdentity,
+    orphanRegistry,
+    publishGeneration,
+  };
 }

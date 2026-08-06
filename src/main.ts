@@ -62,7 +62,6 @@ import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
-import { initializeWindowsDaemonRuntime } from "./daemon/windows-daemon-runtime";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
@@ -150,6 +149,7 @@ interface RuntimeDeps {
   stateSaveDebounceMs?: number;
   daemonIdentity?: DaemonIdentity;
   orphanRegistry?: OrphanRegistry;
+  canReapQueueOwners?: () => boolean;
   /**
    * Provision xacpx-managed acpx agent overlays before transport creation.
    * Injectable for tests; defaults to provisioning from the loaded config.
@@ -1075,6 +1075,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // bounded: failures/timeouts just leave owners to expire on TTL.
   const reapWarmQueueOwners = async (phase: "startup" | "periodic" | "shutdown"): Promise<void> => {
     try {
+      if (deps.canReapQueueOwners && !deps.canReapQueueOwners()) return;
       if (deps.orphanRegistry && deps.daemonIdentity) {
         const outcome = await sweepWindowsOrphans(
           deps.orphanRegistry,
@@ -1188,10 +1189,6 @@ export async function main(): Promise<void> {
 
   try {
     const { createMessageChannels } = await import("./channels/create-channel.js");
-    const { daemonIdentity, orphanRegistry } = await initializeWindowsDaemonRuntime({
-      configPath: paths.configPath,
-      runtimeDir: resolveRuntimeDirFromConfigPath(paths.configPath),
-    });
     await ensureConfigExists(paths.configPath);
     const startupConfig = await loadConfig(paths.configPath);
 
@@ -1208,7 +1205,7 @@ export async function main(): Promise<void> {
     const { channelDeps } = await prepareChannelMedia(paths.configPath, startupConfig);
     const channelRegistry = new MessageChannelRegistry(createMessageChannels(startupConfig.channels, channelDeps));
     await runConsole(paths, {
-      buildApp: (paths) => buildApp(paths, { channel: channelRegistry, daemonIdentity, orphanRegistry }),
+      buildApp: (paths) => buildApp(paths, { channel: channelRegistry }),
       channels: channelRegistry,
     });
   } catch (error) {

@@ -189,12 +189,13 @@ export class DaemonController {
     }
     const current = await this.getStatus();
     let pid: number;
+    let recoveredIdentity: { pid: number; startedAtMs: number } | null = null;
     if (current.state === "running") {
       pid = current.pid;
     } else if (current.state === "indeterminate" && current.reason === "missing-pid") {
       const status = await this.statusStore.load();
       if (!status || !this.deps.configRoot) throw this.indeterminateDaemonError(current.pid);
-      const verified = await verifyPosixStatusOnlyDaemon({
+      recoveredIdentity = await verifyPosixStatusOnlyDaemon({
         status,
         runtimeDir: this.paths.runtimeDir,
         configRoot: this.deps.configRoot,
@@ -204,7 +205,7 @@ export class DaemonController {
         maxFutureHeartbeatMs: LEGACY_DAEMON_MAX_FUTURE_HEARTBEAT_MS,
         probeIdentity: this.deps.probePosixIdentity ?? probePosixProcessIdentity,
       });
-      if (!verified || !this.deps.isProcessRunning(status.pid)) {
+      if (!recoveredIdentity || !this.deps.isProcessRunning(status.pid)) {
         throw this.indeterminateDaemonError(current.pid);
       }
       pid = status.pid;
@@ -215,6 +216,14 @@ export class DaemonController {
     }
 
     if (this.deps.isProcessRunning(pid)) {
+      if (recoveredIdentity) {
+        const finalProbe = await (this.deps.probePosixIdentity ?? probePosixProcessIdentity)(pid);
+        if (finalProbe.status !== "found"
+          || finalProbe.identity.pid !== recoveredIdentity.pid
+          || finalProbe.identity.startedAtMs !== recoveredIdentity.startedAtMs) {
+          throw this.indeterminateDaemonError(pid);
+        }
+      }
       await this.deps.terminateProcess(pid);
       await this.waitForShutdown(pid);
     }

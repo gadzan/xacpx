@@ -111,10 +111,14 @@ daemon 进程内的运行时登记器。
 但 PID 文件缺失的情况。普通查询保持只读并返回 indeterminate，因此 `start` 不能重复拉起。
 只有显式执行 `stop` 或 `restart`，且 config/state 路径、daemon 模式 consumer lock、近期心跳
 和 OS 报告的进程启动时间全部一致时，controller 才会接管 status 中的 PID。PID 复用、过期
-证据或冲突元数据一律 fail-closed。
+证据或冲突元数据一律 fail-closed。终止恢复出的进程前，controller 会再次探测 OS 启动时间
+指纹；指纹变化或无法取得时会保留证据并拒绝只凭 PID 终止。
 
-新的 Windows daemon 会在真实发布版 `cli.js run` 启动路径上创建并持久化 generation identity，
-再把 identity 和 orphan registry 传给 `buildApp`。升级前启动、尚未写入 durable generation identity
+新的 Windows daemon 会在真实发布版 `cli.js run` 启动路径上创建 generation identity，并把尚未
+激活的 identity 上下文传给 `buildApp`；只有在可选的渠道 consumer guard 获取成功后、任何启动
+协调或 orphan sweep 之前，才会持久化 generation。普通前台 `xacpx run` 不发布 daemon generation；
+consumer guard 冲突而退出的进程既不能覆盖，也不能清扫现有 daemon 的 durable 证据。
+升级前启动、尚未写入 durable generation identity
 的 daemon 可以在原地升级后安全停止，
 但不会退回到只凭 PID 强杀。controller 只有在 PID/status、近期心跳、handle 读取的创建时间与
 可执行文件、当前配置根目录和精确的 `node cli.js run` 命令行全部一致时，才接管这个 legacy daemon；

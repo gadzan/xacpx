@@ -55,6 +55,44 @@ test("acquires and releases the weixin consumer lock around sdk.start", async ()
   expect(events).toEqual(["lock:acquire:foreground", "channel:start", "dispose", "lock:release"]);
 });
 
+test("publishes durable runtime state only after the consumer lock is held", async () => {
+  const events: string[] = [];
+
+  await runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        agent: {} as never,
+        router: {} as never,
+        sessions: {} as never,
+        stateStore: {} as never,
+        configStore: {} as never,
+        scheduled: createScheduledRuntime(),
+        logger: createNoopAppLogger(),
+        reapStaleQueueOwners: async () => { events.push("reap"); },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => { events.push("channel:start"); },
+      },
+      consumerLock: {
+        acquire: async () => { events.push("lock:acquire"); },
+        release: async () => { events.push("lock:release"); },
+      },
+      afterConsumerLockAcquired: async () => { events.push("generation:publish"); },
+    },
+  );
+
+  expect(events).toEqual([
+    "lock:acquire",
+    "generation:publish",
+    "reap",
+    "channel:start",
+    "dispose",
+    "lock:release",
+  ]);
+});
+
 test("releases the weixin consumer lock when sdk.start fails", async () => {
   const events: string[] = [];
 
@@ -133,6 +171,9 @@ test("does not release the lock if acquisition fails before startup", async () =
           release: async () => {
             events.push("lock:release");
           },
+        },
+        afterConsumerLockAcquired: async () => {
+          events.push("generation:publish");
         },
       },
     ),

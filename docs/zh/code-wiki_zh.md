@@ -273,8 +273,8 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 
 - `getStatus()`：PID/status 一致且进程存活→running；存活但元数据冲突或不完整→只读的 indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
-- `stop()`：协调 daemon 身份 → terminate → 等待退出 → 清理 pid/status；POSIX status-only 恢复还要求 consumer lock 与 OS 启动时间证据：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
-- Windows `cli.js run` 会初始化传给 `buildApp` 的 durable generation/orphan 上下文：[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)
+- `stop()`：协调 daemon 身份 → 重新核验恢复出的 POSIX 进程身份 → terminate → 等待退出 → 清理 pid/status；POSIX status-only 恢复还要求 consumer lock 与 OS 启动时间证据：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
+- 内部 Windows `cli.js run` 会准备传给 `buildApp` 的 generation/orphan 上下文，并只在取得 consumer ownership 后发布：[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)、[run-console.ts](../../src/run-console.ts)
 
 ### 5.10 Orchestration（src/orchestration/*）
 

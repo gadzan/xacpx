@@ -1013,10 +1013,15 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
   const { MessageChannelRegistry } = await import("./channels/channel-registry.js");
   const daemonPaths = resolveDaemonPathsForCurrentConfig();
   const daemonRuntime = new DaemonRuntime(daemonPaths, { pid: process.pid });
-  const windowsDaemonRuntime = await initializeWindowsDaemonRuntime({
-    configPath: runtimePaths.configPath,
-    runtimeDir: daemonPaths.runtimeDir,
-  });
+  const isDaemonRun = coreEnv(DAEMON_RUN_ENV_SUFFIX) === "1";
+  const windowsDaemonRuntime = isDaemonRun
+    ? await initializeWindowsDaemonRuntime({
+        configPath: runtimePaths.configPath,
+        runtimeDir: daemonPaths.runtimeDir,
+      })
+    : {};
+  const { publishGeneration, ...windowsDaemonRuntimeDeps } = windowsDaemonRuntime;
+  let ownsRuntime = false;
   const { channelDeps } = await prepareChannelMedia(runtimePaths.configPath, config);
   const channelRegistry = new MessageChannelRegistry(createMessageChannels(config.channels, channelDeps));
   const lockCreators = channelRegistry.createConsumerLocks();
@@ -1028,15 +1033,20 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
       buildApp(paths, {
         defaultLoggingLevel: resolveCliEntryPath().includes(`${sep}src${sep}`) ? "debug" : "info",
         channel: channelRegistry,
-        ...windowsDaemonRuntime,
+        canReapQueueOwners: () => ownsRuntime,
+        ...windowsDaemonRuntimeDeps,
       }),
+    afterConsumerLockAcquired: async () => {
+      await publishGeneration?.();
+      ownsRuntime = true;
+    },
     beforeReady: firstRunOnboarding
       ? async (runtime) => {
           await createFirstRunSession(runtime, firstRunOnboarding);
         }
       : undefined,
     channels: channelRegistry,
-    channelStartupPolicy: coreEnv(DAEMON_RUN_ENV_SUFFIX) === "1" ? "best-effort" : "require-one",
+    channelStartupPolicy: isDaemonRun ? "best-effort" : "require-one",
     daemonRuntime,
     ...(firstLockCreator
       ? {

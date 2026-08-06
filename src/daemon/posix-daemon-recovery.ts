@@ -15,6 +15,11 @@ interface ConsumerLockMetadata {
   statePath: string;
 }
 
+export interface VerifiedPosixDaemonIdentity {
+  pid: number;
+  startedAtMs: number;
+}
+
 export async function verifyPosixStatusOnlyDaemon(input: {
   status: DaemonStatus;
   runtimeDir: string;
@@ -24,27 +29,27 @@ export async function verifyPosixStatusOnlyDaemon(input: {
   maxHeartbeatAgeMs: number;
   maxFutureHeartbeatMs: number;
   probeIdentity: (pid: number) => Promise<PosixProcessIdentityProbe>;
-}): Promise<boolean> {
+}): Promise<VerifiedPosixDaemonIdentity | null> {
   const { status } = input;
-  if (!Number.isSafeInteger(status.pid) || status.pid <= 0) return false;
-  if (!samePath(dirname(status.config_path), input.configRoot)) return false;
+  if (!Number.isSafeInteger(status.pid) || status.pid <= 0) return null;
+  if (!samePath(dirname(status.config_path), input.configRoot)) return null;
 
   const startedAt = Date.parse(status.started_at);
   const heartbeatAt = Date.parse(status.heartbeat_at);
   if (!Number.isFinite(startedAt) || !Number.isFinite(heartbeatAt)
     || startedAt > heartbeatAt
     || heartbeatAt > input.now + input.maxFutureHeartbeatMs
-    || input.now - heartbeatAt > input.maxHeartbeatAgeMs) return false;
+    || input.now - heartbeatAt > input.maxHeartbeatAgeMs) return null;
 
   const probe = await input.probeIdentity(status.pid);
-  if (probe.status !== "found" || probe.identity.pid !== status.pid) return false;
+  if (probe.status !== "found" || probe.identity.pid !== status.pid) return null;
   const processStartedAt = probe.identity.startedAtMs;
   if (!Number.isSafeInteger(processStartedAt)
     || processStartedAt > startedAt
-    || startedAt - processStartedAt > input.startupTimeoutMs) return false;
+    || startedAt - processStartedAt > input.startupTimeoutMs) return null;
 
   const locks = await loadConsumerLocks(input.runtimeDir);
-  return locks.some((lock) => {
+  const matchingLock = locks.some((lock) => {
     const lockStartedAt = Date.parse(lock.startedAt);
     return lock.pid === status.pid
       && lock.mode === "daemon"
@@ -56,6 +61,7 @@ export async function verifyPosixStatusOnlyDaemon(input: {
       && lockStartedAt <= startedAt + MAX_LOCK_TO_STATUS_SKEW_MS
       && startedAt - lockStartedAt <= input.startupTimeoutMs;
   });
+  return matchingLock ? { pid: status.pid, startedAtMs: processStartedAt } : null;
 }
 
 async function loadConsumerLocks(runtimeDir: string): Promise<ConsumerLockMetadata[]> {
