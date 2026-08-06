@@ -17,6 +17,7 @@ import { resolveDaemonPaths, resolveRuntimeDirFromConfigPath } from "./daemon/da
 import type { DaemonController } from "./daemon/daemon-controller";
 import { DaemonRuntime } from "./daemon/daemon-runtime";
 import type { DaemonStatus } from "./daemon/daemon-status";
+import { initializeWindowsDaemonRuntime } from "./daemon/windows-daemon-runtime";
 import type { DoctorRunOptions } from "./doctor/doctor-types";
 import { runXacpxMcpServer } from "./mcp/xacpx-mcp-server";
 import {
@@ -1012,6 +1013,10 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
   const { MessageChannelRegistry } = await import("./channels/channel-registry.js");
   const daemonPaths = resolveDaemonPathsForCurrentConfig();
   const daemonRuntime = new DaemonRuntime(daemonPaths, { pid: process.pid });
+  const windowsDaemonRuntime = await initializeWindowsDaemonRuntime({
+    configPath: runtimePaths.configPath,
+    runtimeDir: daemonPaths.runtimeDir,
+  });
   const { channelDeps } = await prepareChannelMedia(runtimePaths.configPath, config);
   const channelRegistry = new MessageChannelRegistry(createMessageChannels(config.channels, channelDeps));
   const lockCreators = channelRegistry.createConsumerLocks();
@@ -1023,6 +1028,7 @@ async function defaultRun(options: { firstRunOnboarding?: FirstRunOnboardingPlan
       buildApp(paths, {
         defaultLoggingLevel: resolveCliEntryPath().includes(`${sep}src${sep}`) ? "debug" : "info",
         channel: channelRegistry,
+        ...windowsDaemonRuntime,
       }),
     beforeReady: firstRunOnboarding
       ? async (runtime) => {
@@ -1183,13 +1189,16 @@ export async function restartDaemonCli(
 ): Promise<number> {
   const status = await controller.getStatus();
   if (status.state === "indeterminate") {
-    print(t().cli.restartIndeterminate);
-    print(`PID: ${status.pid}`);
-    print(t().cli.restartIndeterminateHint);
-    return 1;
-  }
-
-  if (status.state === "running") {
+    if (status.reason !== "missing-pid") {
+      print(t().cli.restartIndeterminate);
+      print(`PID: ${status.pid}`);
+      print(t().cli.restartIndeterminateHint);
+      return 1;
+    }
+    print(t().cli.restarting);
+    await controller.stop();
+    print(t().cli.stopped);
+  } else if (status.state === "running") {
     print(t().cli.restarting);
     await controller.stop();
     print(t().cli.stopped);

@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { dirname, resolve, win32 } from "node:path";
+import { win32 } from "node:path";
 
 import type { DaemonPaths } from "./daemon-files";
 import { DaemonStatusStore, type DaemonStatus } from "./daemon-status";
+import { verifyPosixStatusOnlyDaemon } from "./posix-daemon-recovery";
 import { ensurePrivateRuntimeDir } from "./private-runtime-dir";
 import { acquireIpcGuard, type IpcGuard } from "../process/ipc-guard";
+import { probePosixProcessIdentity } from "../process/posix-process-identity";
 import { probeWindowsProcessIdentity, terminateWindowsProcessTree } from "../process/windows-process-tree";
 import type { WindowsProcessIdentity } from "../process/windows-process-tree";
 import { parseCanonicalFileTime } from "../process/windows-process-identity";
@@ -50,12 +52,13 @@ interface DaemonControllerDeps {
   sweepWindows?: typeof sweepWindowsOrphans;
   expectedProcessExecPath?: string;
   expectedCliEntryPath?: string;
+  probePosixIdentity?: typeof probePosixProcessIdentity;
 }
 
 type DaemonState =
   | { state: "stopped"; stale?: boolean }
   | { state: "running"; pid: number; status: DaemonStatus }
-  | { state: "indeterminate"; pid: number; reason: "missing-pid" | "missing-status" }
+  | { state: "indeterminate"; pid: number; reason: "missing-pid" | "missing-status" | "pid-mismatch" }
   | { state: "already-running"; pid: number };
 
 export class DaemonController {
@@ -98,14 +101,21 @@ export class DaemonController {
     const status = await this.statusStore.load();
 
     if (!pid && status && this.deps.isProcessRunning(status.pid)) {
-      if (this.isRecoverableStatusOnlyDaemon(status) && await this.repairPidFile(status.pid)) {
-        return { state: "running", pid: status.pid, status };
-      }
       return { state: "indeterminate", pid: status.pid, reason: "missing-pid" };
     }
 
     if (!pid) {
       return { state: "stopped" };
+    }
+
+    if (status && status.pid !== pid) {
+      const pidIsRunning = this.deps.isProcessRunning(pid);
+      const statusPidIsRunning = this.deps.isProcessRunning(status.pid);
+      if (!pidIsRunning && !statusPidIsRunning) {
+        await this.clearRuntimeFiles();
+        return { state: "stopped", stale: true };
+      }
+      return { state: "indeterminate", pid, reason: "pid-mismatch" };
     }
 
     if (!this.deps.isProcessRunning(pid)) {
@@ -177,18 +187,31 @@ export class DaemonController {
     if ((this.deps.platform ?? process.platform) === "win32") {
       return await this.withWindowsLifecycleGuard(() => this.stopWindows());
     }
-    let pid = await this.loadPid();
-    if (!pid) {
-      const current = await this.getStatus();
-      if (current.state === "running") {
-        pid = current.pid;
-      } else if (current.state === "indeterminate") {
-        throw new Error(
-          `xacpx daemon process is already running (pid ${current.pid}) but daemon metadata is incomplete or inconsistent`,
-        );
-      } else {
-        return { state: "stopped", detail: "not-running" };
+    const current = await this.getStatus();
+    let pid: number;
+    if (current.state === "running") {
+      pid = current.pid;
+    } else if (current.state === "indeterminate" && current.reason === "missing-pid") {
+      const status = await this.statusStore.load();
+      if (!status || !this.deps.configRoot) throw this.indeterminateDaemonError(current.pid);
+      const verified = await verifyPosixStatusOnlyDaemon({
+        status,
+        runtimeDir: this.paths.runtimeDir,
+        configRoot: this.deps.configRoot,
+        now: this.now(),
+        startupTimeoutMs: this.onboardingStartupTimeoutMs,
+        maxHeartbeatAgeMs: LEGACY_DAEMON_MAX_HEARTBEAT_AGE_MS,
+        maxFutureHeartbeatMs: LEGACY_DAEMON_MAX_FUTURE_HEARTBEAT_MS,
+        probeIdentity: this.deps.probePosixIdentity ?? probePosixProcessIdentity,
+      });
+      if (!verified || !this.deps.isProcessRunning(status.pid)) {
+        throw this.indeterminateDaemonError(current.pid);
       }
+      pid = status.pid;
+    } else if (current.state === "indeterminate") {
+      throw this.indeterminateDaemonError(current.pid);
+    } else {
+      return { state: "stopped", detail: "not-running" };
     }
 
     if (this.deps.isProcessRunning(pid)) {
@@ -206,6 +229,9 @@ export class DaemonController {
     let generation = await registry.readGeneration();
     const pid = await this.loadPid();
     if (!pid && !generation) return { state: "stopped", detail: "not-running" };
+    if (generation && (!this.deps.configRoot || !sameWindowsPath(generation.configRoot, this.deps.configRoot))) {
+      throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
+    }
     if (pid && generation && pid !== generation.daemonPid) {
       throw new Error("cannot safely stop Windows daemon: durable daemon identity is missing or inconsistent");
     }
@@ -261,43 +287,6 @@ export class DaemonController {
     return identity;
   }
 
-  private isRecoverableStatusOnlyDaemon(status: DaemonStatus): boolean {
-    if ((this.deps.platform ?? process.platform) === "win32" || !this.deps.configRoot) return false;
-    if (resolve(dirname(status.config_path)) !== resolve(this.deps.configRoot)) return false;
-
-    const startedAt = Date.parse(status.started_at);
-    const heartbeatAt = Date.parse(status.heartbeat_at);
-    const now = this.now();
-    return Number.isFinite(startedAt)
-      && Number.isFinite(heartbeatAt)
-      && startedAt <= heartbeatAt
-      && heartbeatAt <= now + LEGACY_DAEMON_MAX_FUTURE_HEARTBEAT_MS
-      && now - heartbeatAt <= LEGACY_DAEMON_MAX_HEARTBEAT_AGE_MS;
-  }
-
-  private async repairPidFile(pid: number): Promise<boolean> {
-    await ensurePrivateRuntimeDir(this.paths.runtimeDir);
-    let handle: FileHandle;
-    try {
-      handle = await open(this.paths.pidFile, "wx", 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        return await this.loadPid() === pid;
-      }
-      throw error;
-    }
-
-    try {
-      await handle.write(`${pid}\n`);
-      return true;
-    } catch (error) {
-      await rm(this.paths.pidFile, { force: true }).catch(() => {});
-      throw error;
-    } finally {
-      await handle.close().catch(() => {});
-    }
-  }
-
   private isVerifiedLegacyWindowsDaemon(
     pid: number,
     status: DaemonStatus | null,
@@ -345,6 +334,12 @@ export class DaemonController {
       : acquireIpcGuard({ role: "lifecycle", configRoot: configRoot! }, { platform: "win32" }));
     try { return await operation(); }
     finally { await guard.release(); }
+  }
+
+  private indeterminateDaemonError(pid: number): Error {
+    return new Error(
+      `xacpx daemon process is already running (pid ${pid}) but daemon metadata is incomplete or inconsistent`,
+    );
   }
 
   private async loadPid(): Promise<number | null> {

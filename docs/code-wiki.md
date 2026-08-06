@@ -278,9 +278,10 @@ Server side:
 
 `DaemonController`: external control surface (called by the CLI)
 
-- `getStatus()`: matching PID/status and a live process → running; a fresh status-only live daemon on non-Windows repairs its PID file; stale or incomplete live metadata → indeterminate; dead PID metadata is cleaned up: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
-- `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts#L75-L93)
-- `stop()`: terminate → wait for exit → clean up pid/status: [daemon-controller.ts](../src/daemon/daemon-controller.ts#L96-L109)
+- `getStatus()`: matching PID/status and a live process → running; conflicting or incomplete live metadata → read-only indeterminate; dead PID metadata is cleaned up: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
+- `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts)
+- `stop()`: reconcile daemon identity → terminate → wait for exit → clean up pid/status; status-only POSIX recovery additionally requires consumer-lock and OS start-time proof: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
+- Windows `cli.js run` initializes the durable generation/orphan context shared with `buildApp`: [windows-daemon-runtime.ts](../src/daemon/windows-daemon-runtime.ts)
 
 ### 5.10 Orchestration (src/orchestration/*)
 

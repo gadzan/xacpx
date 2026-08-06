@@ -271,9 +271,10 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 
 `DaemonController`：外部控制面（CLI 调用）
 
-- `getStatus()`：PID/status 一致且进程存活→running；非 Windows 平台遇到新鲜的 status-only 存活 daemon 时补回 PID 文件；存活但元数据过期或不完整→indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
-- `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts#L75-L93)
-- `stop()`：terminate → 等待退出 → 清理 pid/status：[daemon-controller.ts](../../src/daemon/daemon-controller.ts#L96-L109)
+- `getStatus()`：PID/status 一致且进程存活→running；存活但元数据冲突或不完整→只读的 indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
+- `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
+- `stop()`：协调 daemon 身份 → terminate → 等待退出 → 清理 pid/status；POSIX status-only 恢复还要求 consumer lock 与 OS 启动时间证据：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
+- Windows `cli.js run` 会初始化传给 `buildApp` 的 durable generation/orphan 上下文：[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)
 
 ### 5.10 Orchestration（src/orchestration/*）
 

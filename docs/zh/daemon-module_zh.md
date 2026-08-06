@@ -108,12 +108,14 @@ daemon 进程内的运行时登记器。
 5. 返回停止结果。
 
 非 Windows 平台原地升级时，可能遇到旧 daemon 仍存活且 `status.json` 心跳仍新鲜、
-但 PID 文件缺失的情况。status 中的 PID 存活、配置根目录与当前安装一致，且心跳近期并
-内部一致时，controller 会原子补回 PID 文件；随后 `start` 会识别已有 daemon，`stop`
-和 `restart` 则可走正常生命周期终止它。过期或冲突的 status 仍保持 indeterminate，
-绝不会允许重复启动。
+但 PID 文件缺失的情况。普通查询保持只读并返回 indeterminate，因此 `start` 不能重复拉起。
+只有显式执行 `stop` 或 `restart`，且 config/state 路径、daemon 模式 consumer lock、近期心跳
+和 OS 报告的进程启动时间全部一致时，controller 才会接管 status 中的 PID。PID 复用、过期
+证据或冲突元数据一律 fail-closed。
 
-Windows 上，升级前启动、尚未写入 durable generation identity 的 daemon 可以在原地升级后安全停止，
+新的 Windows daemon 会在真实发布版 `cli.js run` 启动路径上创建并持久化 generation identity，
+再把 identity 和 orphan registry 传给 `buildApp`。升级前启动、尚未写入 durable generation identity
+的 daemon 可以在原地升级后安全停止，
 但不会退回到只凭 PID 强杀。controller 只有在 PID/status、近期心跳、handle 读取的创建时间与
 可执行文件、当前配置根目录和精确的 `node cli.js run` 命令行全部一致时，才接管这个 legacy daemon；
 接管得到的创建身份会先持久化，再进入现有的 handle-fenced 进程树终止流程。任何缺失、过期或冲突证据
@@ -127,12 +129,11 @@ daemon 当前不是靠“只看一个 PID 文件”判断是否存活，而是�
 - **状态文件**：告诉我们“这个 daemon 是否已经完成自我登记”。
 
 这三者组合后的结果大致有四类：
-- **running**：进程存在且 PID/status 一致；非 Windows 平台可先根据新鲜的 status-only
-  元数据补回缺失的 PID 文件。
+- **running**：进程存在且 PID/status 一致。
 - **stopped**：没有存活 daemon 的证据。
 - **stale stopped**：有旧 PID/状态，但对应进程已经不存在，控制器会清理残局。
 - **indeterminate**：进程仍存活，但 PID/status 元数据不完整、不一致，或过旧而无法安全修复。
-  该状态必须阻止启动第二个 daemon；PID 仍存活期间不得删除 runtime 元数据。
+  该状态必须阻止启动第二个 daemon；PID 仍存活期间普通 status/doctor 查询保持只读。
 
 这也是 `daemon-controller.ts` 的核心价值：它不只看文件，还做**活性校验**。
 

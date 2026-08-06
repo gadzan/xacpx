@@ -23,7 +23,7 @@ export class DaemonStatusStore {
       if (content.trim() === "") {
         return null;
       }
-      return JSON.parse(content) as DaemonStatus;
+      return decodeDaemonStatus(JSON.parse(content));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return null;
@@ -47,4 +47,26 @@ export class DaemonStatusStore {
   async clear(): Promise<void> {
     await rm(this.path, { force: true });
   }
+}
+
+function decodeDaemonStatus(value: unknown): DaemonStatus | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(status.pid) || Number(status.pid) <= 0
+    || !validIsoDate(status.started_at)
+    || !validIsoDate(status.heartbeat_at)
+    || !nonempty(status.config_path)
+    || !nonempty(status.state_path)
+    || !nonempty(status.app_log)
+    || !nonempty(status.stdout_log)
+    || !nonempty(status.stderr_log)) return null;
+  return status as unknown as DaemonStatus;
+}
+
+function nonempty(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function validIsoDate(value: unknown): value is string {
+  return nonempty(value) && Number.isFinite(Date.parse(value));
 }

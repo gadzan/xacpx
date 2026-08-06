@@ -1800,6 +1800,32 @@ test("restart rejects indeterminate daemon state", async () => {
   ]);
 });
 
+test("restart explicitly recovers a status-only daemon before starting the replacement", async () => {
+  setLocale("zh");
+  const lines: string[] = [];
+  const events: string[] = [];
+
+  await expect(
+    runCli(["restart"], {
+      controller: {
+        getStatus: async () => ({ state: "indeterminate", pid: 444, reason: "missing-pid" }),
+        stop: async () => {
+          events.push("stop");
+          return { state: "stopped", detail: "stopped" };
+        },
+        start: async () => {
+          events.push("start");
+          return { state: "started", pid: 555 };
+        },
+      },
+      print: (line) => lines.push(line),
+    }),
+  ).resolves.toBe(0);
+
+  expect(events).toEqual(["stop", "start"]);
+  expect(lines).toEqual([t().cli.restarting, t().cli.stopped, t().cli.started, "PID: 555"]);
+});
+
 test("prints help for '-h' flag and exits 0", async () => {
   setLocale("zh");
   const lines: string[] = [];

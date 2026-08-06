@@ -90,6 +90,22 @@ test("Windows stop refuses to adopt a legacy generation recorded for a different
   await rm(fixture.dir, { recursive: true, force: true });
 });
 
+test("Windows stop refuses to adopt a legacy generation recorded for a different config root", async () => {
+  const fixture = await createLegacyWindowsStopFixture({
+    generationConfigRoot: "C:\\Users\\other\\.xacpx",
+  });
+
+  await expect(fixture.controller.stop()).rejects.toThrow("durable daemon identity is missing or inconsistent");
+  expect(fixture.terminationRoots).toEqual([]);
+  expect(await fixture.registry.readGeneration()).toMatchObject({
+    daemonPid: fixture.pid,
+    daemonCreationDate: null,
+    configRoot: "C:\\Users\\other\\.xacpx",
+  });
+
+  await rm(fixture.dir, { recursive: true, force: true });
+});
+
 test("Windows stop retains frozen evidence when identity or tree termination is unconfirmed", async () => {
   for (const mode of ["identity", "termination"] as const) {
     const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-"));
@@ -171,7 +187,41 @@ test("reports indeterminate when pid is alive but status metadata is missing", a
   await rm(dir, { recursive: true, force: true });
 });
 
-test("repairs a missing pid file from fresh status metadata for a live non-Windows daemon", async () => {
+test("pid/status disagreement stays indeterminate and cannot spawn or terminate", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  let spawned = false;
+  let terminated = false;
+  const controller = createController(dir, {
+    isProcessRunning: (pid) => pid === 12345 || pid === 54321,
+    spawnDetached: async () => { spawned = true; return 99999; },
+    terminateProcess: async () => { terminated = true; },
+  });
+  await writeFile(join(dir, "daemon.pid"), "12345\n");
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 54321,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+
+  await expect(controller.getStatus()).resolves.toEqual({
+    state: "indeterminate",
+    pid: 12345,
+    reason: "pid-mismatch",
+  });
+  await expect(controller.start()).rejects.toThrow("daemon metadata is incomplete or inconsistent");
+  await expect(controller.stop()).rejects.toThrow("daemon metadata is incomplete or inconsistent");
+  expect(spawned).toBe(false);
+  expect(terminated).toBe(false);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("reports a fresh status-only live daemon without mutating runtime metadata", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   const controller = createController(dir, {
     isProcessRunning: (pid) => pid === 12345,
@@ -189,20 +239,11 @@ test("repairs a missing pid file from fresh status metadata for a live non-Windo
   });
 
   await expect(controller.getStatus()).resolves.toEqual({
-    state: "running",
+    state: "indeterminate",
     pid: 12345,
-    status: {
-      pid: 12345,
-      started_at: "2026-03-26T00:00:00.000Z",
-      heartbeat_at: "2026-03-26T00:01:00.000Z",
-      config_path: join(dir, "config.json"),
-      state_path: join(dir, "state.json"),
-      app_log: "/app",
-      stdout_log: "/out",
-      stderr_log: "/err",
-    },
+    reason: "missing-pid",
   });
-  await expect(readFile(join(dir, "daemon.pid"), "utf8")).resolves.toBe("12345\n");
+  await expect(Bun.file(join(dir, "daemon.pid")).exists()).resolves.toBe(false);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -312,7 +353,7 @@ test("start refuses to spawn a second daemon when pid is alive but status metada
   await rm(dir, { recursive: true, force: true });
 });
 
-test("start repairs a missing pid file and reports the live daemon instead of spawning a second one", async () => {
+test("start refuses a fresh status-only live daemon without spawning or repairing metadata", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   let spawned = false;
   const controller = createController(dir, {
@@ -334,9 +375,9 @@ test("start repairs a missing pid file and reports the live daemon instead of sp
     stderr_log: "/err",
   });
 
-  await expect(controller.start()).resolves.toEqual({ state: "already-running", pid: 22222 });
+  await expect(controller.start()).rejects.toThrow("daemon metadata is incomplete or inconsistent");
   expect(spawned).toBe(false);
-  await expect(readFile(join(dir, "daemon.pid"), "utf8")).resolves.toBe("22222\n");
+  await expect(Bun.file(join(dir, "daemon.pid")).exists()).resolves.toBe(false);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -459,6 +500,10 @@ test("stop recovers a fresh status-only non-Windows daemon before terminating it
       terminatedPid = pid;
       running = false;
     },
+    probePosixIdentity: async (pid) => ({
+      status: "found",
+      identity: { pid, startedAtMs: Date.parse("2026-03-26T00:00:00.000Z") },
+    }),
   });
   await new DaemonStatusStore(join(dir, "status.json")).save({
     pid: 24680,
@@ -470,11 +515,55 @@ test("stop recovers a fresh status-only non-Windows daemon before terminating it
     stdout_log: "/out",
     stderr_log: "/err",
   });
+  await writeFile(join(dir, "weixin-consumer.lock.json"), JSON.stringify({
+    pid: 24680,
+    mode: "daemon",
+    startedAt: "2026-03-26T00:00:00.000Z",
+    configPath: join(dir, "config.json"),
+    statePath: join(dir, "state.json"),
+  }));
 
   await expect(controller.stop()).resolves.toEqual({ state: "stopped", detail: "stopped" });
   expect(terminatedPid).toBe(24680);
   await expect(Bun.file(join(dir, "daemon.pid")).exists()).resolves.toBe(false);
   await expect(Bun.file(join(dir, "status.json")).exists()).resolves.toBe(false);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("stop refuses a fresh status-only daemon when its pid was reused by a newer process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  let terminated = false;
+  const controller = createController(dir, {
+    now: () => Date.parse("2026-03-26T00:01:30.000Z"),
+    isProcessRunning: (pid) => pid === 24680,
+    terminateProcess: async () => { terminated = true; },
+    probePosixIdentity: async (pid) => ({
+      status: "found",
+      identity: { pid, startedAtMs: Date.parse("2026-03-26T00:01:15.000Z") },
+    }),
+  });
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 24680,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+  await writeFile(join(dir, "weixin-consumer.lock.json"), JSON.stringify({
+    pid: 24680,
+    mode: "daemon",
+    startedAt: "2026-03-26T00:00:00.000Z",
+    configPath: join(dir, "config.json"),
+    statePath: join(dir, "state.json"),
+  }));
+
+  await expect(controller.stop()).rejects.toThrow("daemon metadata is incomplete or inconsistent");
+  expect(terminated).toBe(false);
+  await expect(Bun.file(join(dir, "status.json")).exists()).resolves.toBe(true);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -703,6 +792,7 @@ function createController(
     shutdownTimeoutMs: overrides.shutdownTimeoutMs ?? 50,
     onShutdownPoll: overrides.onShutdownPoll ?? (async () => {}),
     ...(overrides.now ? { now: overrides.now } : {}),
+    ...(overrides.probePosixIdentity ? { probePosixIdentity: overrides.probePosixIdentity } : {}),
   });
 }
 
@@ -718,6 +808,10 @@ interface ControllerDeps {
   shutdownTimeoutMs: number;
   onShutdownPoll: () => Promise<void>;
   now: () => number;
+  probePosixIdentity: (pid: number) => Promise<
+    | { status: "found"; identity: { pid: number; startedAtMs: number } }
+    | { status: "missing" | "unavailable" }
+  >;
 }
 
 function pathsFor(runtimeDir: string): DaemonPaths {
@@ -733,6 +827,7 @@ function pathsFor(runtimeDir: string): DaemonPaths {
 
 async function createLegacyWindowsStopFixture(options: {
   generationDaemonPid?: number;
+  generationConfigRoot?: string;
   identityExecutablePath?: string;
 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-legacy-"));
@@ -744,12 +839,12 @@ async function createLegacyWindowsStopFixture(options: {
   const terminationRoots: Array<{ pid: number; creationDate: string | null; executablePath?: string }> = [];
 
   await registry.initialize();
-  if (options.generationDaemonPid !== undefined) {
+  if (options.generationDaemonPid !== undefined || options.generationConfigRoot !== undefined) {
     await registry.writeGeneration({
       generationId: "33333333-3333-4333-8333-333333333333",
-      daemonPid: options.generationDaemonPid,
+      daemonPid: options.generationDaemonPid ?? pid,
       daemonCreationDate: null,
-      configRoot,
+      configRoot: options.generationConfigRoot ?? configRoot,
     });
   }
   await writeFile(join(dir, "daemon.pid"), `${pid}\n`);

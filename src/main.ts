@@ -60,8 +60,9 @@ import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
-import { createDaemonIdentity, OrphanRegistry, type DaemonIdentity } from "./transport/orphan-registry";
+import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
+import { initializeWindowsDaemonRuntime } from "./daemon/windows-daemon-runtime";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
@@ -1187,15 +1188,10 @@ export async function main(): Promise<void> {
 
   try {
     const { createMessageChannels } = await import("./channels/create-channel.js");
-    let daemonIdentity: DaemonIdentity | undefined;
-    let orphanRegistry: OrphanRegistry | undefined;
-    if (process.platform === "win32") {
-      const configRoot = dirname(paths.configPath);
-      orphanRegistry = new OrphanRegistry(join(configRoot, "runtime"));
-      await orphanRegistry.initialize();
-      daemonIdentity = await createDaemonIdentity({ configRoot });
-      await orphanRegistry.writeGeneration(daemonIdentity);
-    }
+    const { daemonIdentity, orphanRegistry } = await initializeWindowsDaemonRuntime({
+      configPath: paths.configPath,
+      runtimeDir: resolveRuntimeDirFromConfigPath(paths.configPath),
+    });
     await ensureConfigExists(paths.configPath);
     const startupConfig = await loadConfig(paths.configPath);
 
