@@ -67,6 +67,30 @@ describe("InstanceTree grouped sleeping sessions", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it("loads per-group sleeping pages filtered by agent in agent mode", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([active("a", "backend", "codex"), active("b", "web", "claude")])] as never;
+    store.setGroupMode("i1", "agent");
+    const load = vi.spyOn(store, "loadGroupArchivedSessions").mockImplementation(async (instanceId, mode, groupKey) => {
+      store.byId(instanceId)!.groupArchived = {
+        [groupArchivedKey(mode, groupKey)]: {
+          sessions: [sleeping("s1", "backend", groupKey)], loaded: true, hasMore: false, nextOffset: 5,
+        },
+      };
+    });
+    const w = mountTree();
+
+    const toggles = w.findAll('[data-test="group-toggle-archived"]');
+    expect(toggles).toHaveLength(2);
+    // First group in first-appearance order is codex.
+    await toggles[0]!.trigger("click");
+    await flushPromises();
+    expect(load).toHaveBeenCalledWith("i1", "agent", "codex");
+    expect(w.text()).toContain("s1");
+    // No active-list load-more involvement for a fully-loaded group.
+    expect(w.find('[data-test="group-load-more"]').exists()).toBe(false);
+  });
+
   it("appends the next page via load-more until hasMore is false", async () => {
     const store = useInstancesStore();
     store.instances = [instance([active("a", "backend")])] as never;
