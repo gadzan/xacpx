@@ -54,6 +54,42 @@ test("Windows stop uses four-state identity fencing and never kills a reused pid
   expect(await registry.readGeneration()).toBeNull();
 });
 
+test("Windows stop adopts a verified daemon started before durable identities were introduced", async () => {
+  const fixture = await createLegacyWindowsStopFixture();
+
+  await expect(fixture.controller.stop()).resolves.toEqual({ state: "stopped", detail: "stopped" });
+  expect(fixture.terminationRoots).toEqual([{
+    pid: fixture.pid,
+    creationDate: "133801632000000000",
+    executablePath: "C:\\Program Files\\nodejs\\node.exe",
+  }]);
+  expect(await fixture.registry.readGeneration()).toBeNull();
+
+  await rm(fixture.dir, { recursive: true, force: true });
+});
+
+test("Windows stop refuses legacy adoption when the handle-bound executable does not match the daemon command", async () => {
+  const fixture = await createLegacyWindowsStopFixture({
+    identityExecutablePath: "C:\\Windows\\System32\\not-node.exe",
+  });
+
+  await expect(fixture.controller.stop()).rejects.toThrow("durable daemon identity is missing or inconsistent");
+  expect(fixture.terminationRoots).toEqual([]);
+  expect(await fixture.registry.readGeneration()).toBeNull();
+
+  await rm(fixture.dir, { recursive: true, force: true });
+});
+
+test("Windows stop refuses to adopt a legacy generation recorded for a different pid", async () => {
+  const fixture = await createLegacyWindowsStopFixture({ generationDaemonPid: 11111 });
+
+  await expect(fixture.controller.stop()).rejects.toThrow("durable daemon identity is missing or inconsistent");
+  expect(fixture.terminationRoots).toEqual([]);
+  expect(await fixture.registry.readGeneration()).toMatchObject({ daemonPid: 11111, daemonCreationDate: null });
+
+  await rm(fixture.dir, { recursive: true, force: true });
+});
+
 test("Windows stop retains frozen evidence when identity or tree termination is unconfirmed", async () => {
   for (const mode of ["identity", "termination"] as const) {
     const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-"));
@@ -135,6 +171,69 @@ test("reports indeterminate when pid is alive but status metadata is missing", a
   await rm(dir, { recursive: true, force: true });
 });
 
+test("repairs a missing pid file from fresh status metadata for a live non-Windows daemon", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  const controller = createController(dir, {
+    isProcessRunning: (pid) => pid === 12345,
+    now: () => Date.parse("2026-03-26T00:01:30.000Z"),
+  });
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 12345,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+
+  await expect(controller.getStatus()).resolves.toEqual({
+    state: "running",
+    pid: 12345,
+    status: {
+      pid: 12345,
+      started_at: "2026-03-26T00:00:00.000Z",
+      heartbeat_at: "2026-03-26T00:01:00.000Z",
+      config_path: join(dir, "config.json"),
+      state_path: join(dir, "state.json"),
+      app_log: "/app",
+      stdout_log: "/out",
+      stderr_log: "/err",
+    },
+  });
+  await expect(readFile(join(dir, "daemon.pid"), "utf8")).resolves.toBe("12345\n");
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("keeps a status-only daemon indeterminate when its heartbeat is stale", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  const controller = createController(dir, {
+    isProcessRunning: (pid) => pid === 12345,
+    now: () => Date.parse("2026-03-26T00:03:00.001Z"),
+  });
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 12345,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+
+  await expect(controller.getStatus()).resolves.toEqual({
+    state: "indeterminate",
+    pid: 12345,
+    reason: "missing-pid",
+  });
+  await expect(Bun.file(join(dir, "daemon.pid")).exists()).resolves.toBe(false);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("treats dead pid files as stale and clears runtime files", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   const controller = createController(dir, {
@@ -207,8 +306,37 @@ test("start refuses to spawn a second daemon when pid is alive but status metada
   });
   await writeFile(join(dir, "daemon.pid"), "22222\n");
 
-  await expect(controller.start()).rejects.toThrow("status metadata is missing");
+  await expect(controller.start()).rejects.toThrow("daemon metadata is incomplete or inconsistent");
   expect(spawned).toBe(false);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("start repairs a missing pid file and reports the live daemon instead of spawning a second one", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  let spawned = false;
+  const controller = createController(dir, {
+    isProcessRunning: (pid) => pid === 22222,
+    now: () => Date.parse("2026-03-26T00:01:30.000Z"),
+    spawnDetached: async () => {
+      spawned = true;
+      return 33333;
+    },
+  });
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 22222,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+
+  await expect(controller.start()).resolves.toEqual({ state: "already-running", pid: 22222 });
+  expect(spawned).toBe(false);
+  await expect(readFile(join(dir, "daemon.pid"), "utf8")).resolves.toBe("22222\n");
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -316,6 +444,37 @@ test("stop handles missing pid file gracefully", async () => {
     state: "stopped",
     detail: "not-running",
   });
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("stop recovers a fresh status-only non-Windows daemon before terminating it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
+  let running = true;
+  let terminatedPid: number | null = null;
+  const controller = createController(dir, {
+    now: () => Date.parse("2026-03-26T00:01:30.000Z"),
+    isProcessRunning: (pid) => pid === 24680 && running,
+    terminateProcess: async (pid) => {
+      terminatedPid = pid;
+      running = false;
+    },
+  });
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid: 24680,
+    started_at: "2026-03-26T00:00:00.000Z",
+    heartbeat_at: "2026-03-26T00:01:00.000Z",
+    config_path: join(dir, "config.json"),
+    state_path: join(dir, "state.json"),
+    app_log: "/app",
+    stdout_log: "/out",
+    stderr_log: "/err",
+  });
+
+  await expect(controller.stop()).resolves.toEqual({ state: "stopped", detail: "stopped" });
+  expect(terminatedPid).toBe(24680);
+  await expect(Bun.file(join(dir, "daemon.pid")).exists()).resolves.toBe(false);
+  await expect(Bun.file(join(dir, "status.json")).exists()).resolves.toBe(false);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -570,6 +729,72 @@ function pathsFor(runtimeDir: string): DaemonPaths {
     stdoutLog: join(runtimeDir, "stdout.log"),
     stderrLog: join(runtimeDir, "stderr.log"),
   };
+}
+
+async function createLegacyWindowsStopFixture(options: {
+  generationDaemonPid?: number;
+  identityExecutablePath?: string;
+} = {}) {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-stop-win-legacy-"));
+  const registry = new OrphanRegistry(dir);
+  const configRoot = "C:\\Users\\tester\\.xacpx";
+  const processExecPath = "C:\\Program Files\\nodejs\\node.exe";
+  const cliEntryPath = "C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules\\@ganglion\\xacpx\\dist\\cli.js";
+  const pid = 75792;
+  const terminationRoots: Array<{ pid: number; creationDate: string | null; executablePath?: string }> = [];
+
+  await registry.initialize();
+  if (options.generationDaemonPid !== undefined) {
+    await registry.writeGeneration({
+      generationId: "33333333-3333-4333-8333-333333333333",
+      daemonPid: options.generationDaemonPid,
+      daemonCreationDate: null,
+      configRoot,
+    });
+  }
+  await writeFile(join(dir, "daemon.pid"), `${pid}\n`);
+  await new DaemonStatusStore(join(dir, "status.json")).save({
+    pid,
+    started_at: "2025-01-01T00:00:01.000Z",
+    heartbeat_at: "2025-01-01T00:00:45.000Z",
+    config_path: `${configRoot}\\config.json`,
+    state_path: `${configRoot}\\state.json`,
+    app_log: `${configRoot}\\runtime\\app.log`,
+    stdout_log: `${configRoot}\\runtime\\stdout.log`,
+    stderr_log: `${configRoot}\\runtime\\stderr.log`,
+  });
+
+  const controller = new DaemonController(pathsFor(dir), {
+    platform: "win32",
+    configRoot,
+    expectedProcessExecPath: processExecPath,
+    expectedCliEntryPath: cliEntryPath,
+    isProcessRunning: () => true,
+    spawnDetached: async () => 1,
+    terminateProcess: async () => {},
+    now: () => Date.parse("2025-01-01T00:01:00.000Z"),
+    acquireLifecycleGuard: async () => ({ release: async () => {} }),
+    orphanRegistry: registry,
+    probeWindowsIdentity: async () => ({
+      status: "found",
+      identity: {
+        pid,
+        creationDate: "133801632000000000",
+        executablePath: options.identityExecutablePath ?? processExecPath,
+        commandLine: `"${processExecPath}" "${cliEntryPath}" run`,
+      },
+    }),
+    terminateWindowsTree: async (root) => {
+      terminationRoots.push(root);
+      return {
+        rootOutcome: "killed",
+        outcomes: [{ target: root, outcome: "killed" }],
+      };
+    },
+    sweepWindows: async () => emptySweep(),
+  });
+
+  return { controller, dir, pid, registry, terminationRoots };
 }
 
 function emptySweep() {

@@ -463,7 +463,7 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
           return 0;
         }
         if (status.state === "indeterminate") {
-          throw new Error(`xacpx daemon process is already running (pid ${status.pid}) but status metadata is missing`);
+          throw new Error(`xacpx daemon process is already running (pid ${status.pid}) but daemon metadata is incomplete or inconsistent`);
         }
         const onboarding = await runOnboardingBeforeStart({
           print,

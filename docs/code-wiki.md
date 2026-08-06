@@ -278,7 +278,7 @@ Server side:
 
 `DaemonController`: external control surface (called by the CLI)
 
-- `getStatus()`: PID does not exist → stopped; PID exists but the process is gone → clean up runtime files; PID present but no status → indeterminate: [daemon-controller.ts](../src/daemon/daemon-controller.ts#L51-L73)
+- `getStatus()`: matching PID/status and a live process → running; a fresh status-only live daemon on non-Windows repairs its PID file; stale or incomplete live metadata → indeterminate; dead PID metadata is cleaned up: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
 - `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts#L75-L93)
 - `stop()`: terminate → wait for exit → clean up pid/status: [daemon-controller.ts](../src/daemon/daemon-controller.ts#L96-L109)
 

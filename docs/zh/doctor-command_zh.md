@@ -119,8 +119,8 @@ WARN Runtime: daemon runtime dir should be private (mode 0700) (fixable — run:
 `xacpx stop`" 的原因报告。先停止 daemon，重跑 `xacpx doctor --fix`，再启动
 它。
 
-daemon 存活与否的判定独立于任何检查结果：`indeterminate` 状态（daemon pid
-存活但 `status.json` 缺失）被视为存活的 daemon，因此那种情况下也不会提供锁
+daemon 存活与否的判定独立于任何检查结果：`indeterminate` 状态（daemon 进程
+存活，但 PID/status 元数据无法安全协调）被视为存活的 daemon，因此那种情况下也不会提供锁
 清理。进程存在但无法发送信号（`EPERM`）同样算作存活。如果完全无法确定
 daemon 状态，doctor 会按安全方向处理：视为 daemon 正在运行，扣留所有改动
 状态的修复。

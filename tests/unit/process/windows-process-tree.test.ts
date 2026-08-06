@@ -56,9 +56,19 @@ test("malformed, duplicate, missing-root, and inconsistent worker results fail c
 
 test("identity queries accept only handle-derived canonical fingerprints", async () => {
   const valid = await queryWindowsProcessIdentity(42, {
-    runWorker: async () => ({ pid: 42, creationDate: "133830000000000000", executablePath: "C:\\node.exe" }),
+    runWorker: async () => ({
+      pid: 42,
+      creationDate: "133830000000000000",
+      executablePath: "C:\\node.exe",
+      commandLine: '"C:\\node.exe" "C:\\xacpx\\dist\\cli.js" run',
+    }),
   });
-  expect(valid).toEqual({ pid: 42, creationDate: "133830000000000000", executablePath: "C:\\node.exe" });
+  expect(valid).toEqual({
+    pid: 42,
+    creationDate: "133830000000000000",
+    executablePath: "C:\\node.exe",
+    commandLine: '"C:\\node.exe" "C:\\xacpx\\dist\\cli.js" run',
+  });
   const invalid = await queryWindowsProcessIdentity(42, {
     runWorker: async () => ({ pid: 42, creationDate: "0133830000000000000", executablePath: "C:\\node.exe" }),
   });

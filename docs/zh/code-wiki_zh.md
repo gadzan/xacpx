@@ -271,7 +271,7 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 
 `DaemonController`：外部控制面（CLI 调用）
 
-- `getStatus()`：PID 不存在→stopped；PID 存在但进程不在→清理 runtime files；有 PID 但无 status→indeterminate：[daemon-controller.ts](../../src/daemon/daemon-controller.ts#L51-L73)
+- `getStatus()`：PID/status 一致且进程存活→running；非 Windows 平台遇到新鲜的 status-only 存活 daemon 时补回 PID 文件；存活但元数据过期或不完整→indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts#L75-L93)
 - `stop()`：terminate → 等待退出 → 清理 pid/status：[daemon-controller.ts](../../src/daemon/daemon-controller.ts#L96-L109)
 

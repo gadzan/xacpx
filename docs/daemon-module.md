@@ -107,6 +107,23 @@ Taking `xacpx stop` as an example:
 4. Clean up the PID and status files.
 5. Return the stop result.
 
+On non-Windows platforms, an in-place upgrade can encounter a live legacy daemon
+whose `status.json` heartbeat is still current but whose PID file is missing. When
+the status PID is alive, its config root matches the active installation, and its
+heartbeat is recent and internally consistent, the controller atomically restores
+the PID file. `start` then reports the existing daemon, while `stop` and `restart`
+can terminate it through the normal lifecycle. Stale or conflicting status remains
+indeterminate and never permits a duplicate start.
+
+On Windows, a daemon started before durable generation identities were introduced
+can be stopped after an in-place upgrade without falling back to an unverified PID
+kill. The controller adopts that legacy daemon only when all independent evidence
+agrees: PID/status metadata, a recent heartbeat, the handle-derived creation time
+and executable, the current config root, and the exact `node cli.js run` command
+line. The adopted creation identity is written durably before the existing
+handle-fenced process-tree termination runs. Missing, stale, or conflicting
+evidence remains fail-closed.
+
 ## Key state model
 
 The daemon currently does not judge liveness by "looking at a single PID file"; it judges by combination:
@@ -114,10 +131,14 @@ The daemon currently does not judge liveness by "looking at a single PID file"; 
 - **Whether the process exists**: tells us "whether this PID is still alive now".
 - **Status file**: tells us "whether this daemon has completed self-registration".
 
-After combining these three, the result falls roughly into three categories:
-- **running**: there is a PID, the process exists, and there is a valid status file.
-- **stopped**: there is no PID, or there is no status information.
+After combining these three, the result falls roughly into four categories:
+- **running**: the process exists and PID/status metadata agree; on non-Windows,
+  fresh status-only metadata can first restore the missing PID file.
+- **stopped**: there is no evidence of a live daemon.
 - **stale stopped**: there is an old PID/status, but the corresponding process no longer exists, and the controller cleans up the remnants.
+- **indeterminate**: a process is alive but its PID/status metadata is incomplete,
+  inconsistent, or too stale to repair safely. It blocks a second daemon start;
+  runtime metadata must not be deleted while that PID is still alive.
 
 This is also the core value of `daemon-controller.ts`: it not only looks at files, but also performs **liveness validation**.
 

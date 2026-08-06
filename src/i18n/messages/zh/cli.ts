@@ -32,7 +32,7 @@ export const cli: CliMessages = {
   // status command
   running: "xacpx 正在运行",
   notRunning: "xacpx 未运行",
-  indeterminate: "xacpx 进程仍在运行，但状态元数据缺失",
+  indeterminate: "xacpx 进程仍在运行，但 daemon 元数据不完整或不一致",
 
   // stop command
   stopped: "xacpx 已停止",
@@ -41,8 +41,8 @@ export const cli: CliMessages = {
   restarting: "xacpx 正在重启...",
   restartNotRunning: "xacpx 未运行，正在启动...",
   restartFailed: (detail) => `xacpx 重启失败：${detail}`,
-  restartIndeterminate: "xacpx 进程仍在运行，但状态元数据缺失",
-  restartIndeterminateHint: "请先执行 `xacpx stop`，或手动清理 stale PID/status 后再重试。",
+  restartIndeterminate: "xacpx 进程仍在运行，但 daemon 元数据不完整或不一致",
+  restartIndeterminateHint: "请先核对上方 PID 并停止该进程；进程仍存活时不要删除 runtime 元数据。",
 
   // daemon log hints
   checkAppLog: (path) => `请查看 App Log: ${path}`,
