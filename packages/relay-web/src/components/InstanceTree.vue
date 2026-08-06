@@ -158,11 +158,14 @@ function sectionsFor(inst: InstanceView): SidebarSection[] {
 // collapsedGroups so switching modes never carries stale expansion over. Hiding
 // keeps the loaded page cached; re-showing only refetches when never loaded.
 const groupArchivedExpanded = ref<Set<string>>(new Set());
+function groupViewKey(inst: InstanceView, key: string): string {
+  return `${inst.id}:${groupModeOf(inst)}:${key}`;
+}
 function groupArchivedIsExpanded(inst: InstanceView, key: string): boolean {
-  return groupArchivedExpanded.value.has(grpKey(inst, key));
+  return groupArchivedExpanded.value.has(groupViewKey(inst, key));
 }
 async function toggleGroupArchived(inst: InstanceView, key: string): Promise<void> {
-  const k = grpKey(inst, key);
+  const k = groupViewKey(inst, key);
   const next = new Set(groupArchivedExpanded.value);
   if (next.has(k)) {
     next.delete(k);
@@ -181,16 +184,13 @@ function loadMoreGroupArchived(inst: InstanceView, key: string): void {
 }
 
 // Group collapse is in-session view state only (not persisted), keyed by mode so
-// switching modes never carries stale collapse over.
+// switching modes never carries stale collapse over. Shares groupViewKey (above).
 const collapsedGroups = ref<Set<string>>(new Set());
-function grpKey(inst: InstanceView, key: string): string {
-  return `${inst.id}:${groupModeOf(inst)}:${key}`;
-}
 function isGroupCollapsed(inst: InstanceView, key: string): boolean {
-  return collapsedGroups.value.has(grpKey(inst, key));
+  return collapsedGroups.value.has(groupViewKey(inst, key));
 }
 function toggleGroup(inst: InstanceView, key: string): void {
-  const k = grpKey(inst, key);
+  const k = groupViewKey(inst, key);
   const next = new Set(collapsedGroups.value);
   if (next.has(k)) next.delete(k);
   else next.add(k);

@@ -115,6 +115,16 @@ export const useInstancesStore = defineStore("instances", () => {
     return mode === "workspace" ? { workspace: groupKey } : { agent: groupKey };
   }
 
+  // Discard-and-refetch idiom shared by every session-list loader: an event that
+  // lands while a fetch is in flight leaves a pending mark; once the fetch settles,
+  // re-run the work until no new mark survives a full pass.
+  async function drainPendingRefresh(pending: Set<string>, key: string, work: () => Promise<void>): Promise<void> {
+    do {
+      pending.delete(key);
+      await work();
+    } while (pending.has(key));
+  }
+
   function overlaySessionRename(instanceId: string, session: SessionDto, confirmedRevisionsAtRequest: Map<string, number>): SessionRow {
     const key = sessionRenameKey(instanceId, session.alias);
     const pending = pendingSessionRenames.get(key);
@@ -162,10 +172,7 @@ export const useInstancesStore = defineStore("instances", () => {
       pendingSessionRefreshes.add(instanceId);
       return;
     }
-    do {
-      pendingSessionRefreshes.delete(instanceId);
-      await fetchSessionsPage(instanceId, 0, true);
-    } while (pendingSessionRefreshes.has(instanceId));
+    await drainPendingRefresh(pendingSessionRefreshes, instanceId, () => fetchSessionsPage(instanceId, 0, true));
   }
 
   async function loadMoreSessions(instanceId: string): Promise<void> {
@@ -195,8 +202,7 @@ export const useInstancesStore = defineStore("instances", () => {
     }
     if (inst) inst.archivedSessionsLoading = true;
     try {
-      do {
-        pendingArchivedRefreshes.delete(instanceId);
+      await drainPendingRefresh(pendingArchivedRefreshes, instanceId, async () => {
         const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
         let offset = 0;
         const all: SessionDto[] = [];
@@ -211,7 +217,7 @@ export const useInstancesStore = defineStore("instances", () => {
         }
         // If an event arrived while this snapshot was in flight, discard it and
         // immediately fetch a fresh authoritative snapshot before publishing.
-        if (pendingArchivedRefreshes.has(instanceId)) continue;
+        if (pendingArchivedRefreshes.has(instanceId)) return;
         const current = byId(instanceId);
         if (current) {
           // The full response is authoritative. Keep only local transient rows that
@@ -225,7 +231,7 @@ export const useInstancesStore = defineStore("instances", () => {
           current.archivedSessionsLoaded = true;
         }
         useChatStore().reconcileTailCache(instanceId, all.map((s) => ({ alias: s.alias, incarnation: s.transportSession })));
-      } while (pendingArchivedRefreshes.has(instanceId));
+      });
     } finally {
       const current = byId(instanceId);
       if (current) current.archivedSessionsLoading = false;
@@ -251,8 +257,7 @@ export const useInstancesStore = defineStore("instances", () => {
     }
     let appendPage = append;
     let rerun = false;
-    do {
-      pendingGroupArchivedRefreshes.delete(pk);
+    await drainPendingRefresh(pendingGroupArchivedRefreshes, pk, async () => {
       const current = byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
       const offset = appendPage && current ? current.nextOffset : 0;
       // A pending refresh re-enters through loadGroupArchivedSessions (offset 0, replace):
@@ -262,7 +267,7 @@ export const useInstancesStore = defineStore("instances", () => {
       else await fetchGroupArchivedPage(instanceId, mode, groupKey, 0, GROUP_ARCHIVED_PAGE, false);
       appendPage = false;
       rerun = true;
-    } while (pendingGroupArchivedRefreshes.has(pk));
+    });
   }
 
   async function fetchGroupArchivedPage(instanceId: string, mode: GroupArchivedMode, groupKey: string, offset: number, limit: number, append: boolean): Promise<void> {
@@ -336,8 +341,7 @@ export const useInstancesStore = defineStore("instances", () => {
     };
     patchState({ loading: true });
     try {
-      do {
-        pendingGroupArchivedRefreshes.delete(pk);
+      await drainPendingRefresh(pendingGroupArchivedRefreshes, pk, async () => {
         const target = Math.max(GROUP_ARCHIVED_PAGE, loadedCount);
         let offset = 0;
         const all: SessionRow[] = [];
@@ -354,9 +358,9 @@ export const useInstancesStore = defineStore("instances", () => {
           if (!hasMore || nextOffset <= offset) break;
           offset = nextOffset;
         }
-        if (pendingGroupArchivedRefreshes.has(pk)) continue;
+        if (pendingGroupArchivedRefreshes.has(pk)) return;
         patchState({ sessions: all, loaded: true, hasMore, nextOffset });
-      } while (pendingGroupArchivedRefreshes.has(pk));
+      });
     } finally {
       patchState({ loading: false });
     }
