@@ -80,8 +80,9 @@ export function groupArchivedKey(mode: GroupArchivedMode, groupKey: string): str
 /** Inverse of {@link groupArchivedKey}; null for keys not in `${mode}:${groupKey}` form. */
 export function parseGroupArchivedKey(key: string): { mode: GroupArchivedMode; groupKey: string } | null {
   const sep = key.indexOf(":");
+  if (sep < 0) return null;
   const mode = key.slice(0, sep);
-  if (sep < 0 || (mode !== "workspace" && mode !== "agent")) return null;
+  if (mode !== "workspace" && mode !== "agent") return null;
   return { mode, groupKey: key.slice(sep + 1) };
 }
 
