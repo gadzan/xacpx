@@ -80,6 +80,33 @@ test("the core runtime lock is exclusive without any channel lock", async () => 
 
 });
 
+test("Bun acquisition timeout kills a helper that already holds flock before its handshake", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-helper-acquire-timeout-"));
+  roots.push(root);
+  const lockFilePath = join(root, "runtime-consumer.lock.json");
+  const input: ConsumerLockMetadata = {
+    ...metadata,
+    pid: process.pid,
+    configPath: join(root, "config.json"),
+    statePath: join(root, "state.json"),
+  };
+  const timedOut = createRuntimeConsumerLock({
+    lockFilePath,
+    helperAcquireTimeoutMs: 100,
+    // The Node helper takes the flock before delaying its protocol response.
+    helperHandshakeDelayMs: 2_000,
+  });
+
+  await expect(timedOut.acquire(input)).rejects.toThrow("runtime lock helper timed out");
+
+  // Timeout rejection waits for SIGKILL/close, so no unreferenced helper can
+  // retain the kernel lock after acquire() has told the caller it failed.
+  const replacement = createRuntimeConsumerLock({ lockFilePath });
+  await replacement.acquire(input);
+  await replacement.release();
+}, 20_000);
+
 test("Windows core ownership uses the dedicated runtime-owner guard", async () => {
   const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-consumer-lock-win-"));
   roots.push(root);

@@ -33,6 +33,8 @@ interface CreateRuntimeConsumerLockOptions {
   platform?: NodeJS.Platform;
   acquireGuard?: typeof acquireIpcGuard;
   loadFsExt?: () => FsExt;
+  helperAcquireTimeoutMs?: number;
+  helperHandshakeDelayMs?: number;
 }
 
 export class ActiveRuntimeConsumerLockError extends ActiveConsumerLockError {
@@ -148,7 +150,11 @@ function createCoreRuntimeLock(options: CreateRuntimeConsumerLockOptions): Consu
             // installed Node ABI binary, so a tiny Node child holds the same
             // kernel flock and ties its lifetime to this process via stdin.
             await handle.close();
-            posixHelper = await acquireFlockHelper(options.lockFilePath);
+            posixHelper = await acquireFlockHelper(
+              options.lockFilePath,
+              options.helperAcquireTimeoutMs,
+              options.helperHandshakeDelayMs,
+            );
             await emitDiagnostic(onDiagnostic, "lock_helper_started", {
               lockFilePath: options.lockFilePath,
               helperPid: posixHelper.pid,
@@ -260,6 +266,7 @@ const FLOCK_HELPER_SOURCE = String.raw`
 const fs = require("node:fs");
 const fsExt = require(process.argv[1]);
 const path = process.argv[2];
+const handshakeDelayMs = Number(process.argv[3] || 0);
 const fd = fs.openSync(path, "a+", 0o600);
 fsExt.flock(fd, "exnb", (error) => {
   if (error) {
@@ -275,7 +282,6 @@ fsExt.flock(fd, "exnb", (error) => {
   // before the parent finishes dispose/reap/status cleanup.
   process.on("SIGTERM", () => {});
   process.on("SIGINT", () => {});
-  process.stdout.write("ACQUIRED\n");
   process.stdin.resume();
   let released = false;
   const release = () => {
@@ -288,34 +294,52 @@ fsExt.flock(fd, "exnb", (error) => {
   };
   process.stdin.once("end", release);
   process.stdin.once("error", release);
+  const reportAcquired = () => process.stdout.write("ACQUIRED\n");
+  if (handshakeDelayMs > 0) setTimeout(reportAcquired, handshakeDelayMs);
+  else reportAcquired();
 });
 `;
 
-async function acquireFlockHelper(lockFilePath: string): Promise<ChildProcessWithoutNullStreams> {
+async function acquireFlockHelper(
+  lockFilePath: string,
+  timeoutMs = 10_000,
+  handshakeDelayMs = 0,
+): Promise<ChildProcessWithoutNullStreams> {
   const fsExtPath = require.resolve("fs-ext");
-  const child = spawn("node", ["-e", FLOCK_HELPER_SOURCE, fsExtPath, lockFilePath], {
+  const child = spawn("node", ["-e", FLOCK_HELPER_SOURCE, fsExtPath, lockFilePath, String(handshakeDelayMs)], {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const line = await new Promise<string>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let killWaitTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`runtime lock helper timed out${stderr ? `: ${stderr}` : ""}`));
-    }, 10_000);
+      // The helper may already hold the flock and therefore ignore graceful
+      // group-stop signals. Before ownership has been handed to the caller,
+      // timeout cleanup must be unconditional or it can orphan the lock.
+      timedOut = true;
+      child.kill("SIGKILL");
+      killWaitTimer = setTimeout(() => {
+        finish(() => reject(new Error(`runtime lock helper did not exit after acquisition timeout${stderr ? `: ${stderr}` : ""}`)));
+      }, 5_000);
+    }, timeoutMs);
     const finish = (callback: () => void) => {
       clearTimeout(timer);
+      if (killWaitTimer) clearTimeout(killWaitTimer);
       callback();
     };
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
       const newline = stdout.indexOf("\n");
-      if (newline >= 0) finish(() => resolve(stdout.slice(0, newline)));
+      if (newline >= 0 && !timedOut) finish(() => resolve(stdout.slice(0, newline)));
     });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.once("error", (error) => finish(() => reject(error)));
     child.once("close", (code) => {
-      if (!stdout.includes("\n")) {
+      if (timedOut) {
+        finish(() => reject(new Error(`runtime lock helper timed out${stderr ? `: ${stderr}` : ""}`)));
+      } else if (!stdout.includes("\n")) {
         finish(() => reject(new Error(`runtime lock helper exited with code ${code}${stderr ? `: ${stderr}` : ""}`)));
       }
     });
