@@ -308,12 +308,14 @@ test("mcpCoordinatorSession spawns a warm queue owner that the second turn reuse
       console.log("[compat] reap errors:", reapErrors.map((e) => e instanceof Error ? e.message : String(e)).join(" | "));
     }
     if (process.platform === "win32") {
-      // terminateAcpxQueueOwner does not consume Windows queue locks (no
-      // verifiable provenance yet); the owner stays alive and is freed by its
-      // TTL or the daemon's orphan sweep. The reaper must still RESOLVE the
-      // record id (attempted=1) so record discovery is proven on Windows.
+      // #250: a legacy Windows queue lock has no durable token identity, so
+      // the reaper FAILS CLOSED instead of killing an unverifiable owner. The
+      // owner is freed by its TTL or the daemon's orphan sweep. The reaper
+      // must still RESOLVE the record id (attempted=1) and surface the refusal.
       expect(reaped.attempted).toBe(1);
-      expect(reaped.terminated).toBe(1);
+      expect(reaped.terminated).toBe(0);
+      expect(reapErrors.length).toBe(1);
+      expect(String(reapErrors[0])).toContain("cannot be auto-reaped");
     } else {
       expect(reaped.terminated).toBe(1);
       let ownerStillAlive = false;
