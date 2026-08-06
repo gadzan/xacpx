@@ -103,7 +103,7 @@ export function createWeixinConsumerLock(
           windowsLockId = undefined;
           throw error;
         }
-        await onDiagnostic?.("lock_acquired", { lockFilePath, pid: meta.pid, mode: meta.mode });
+        await emitDiagnostic(onDiagnostic, "lock_acquired", { lockFilePath, pid: meta.pid, mode: meta.mode });
         return;
       }
 
@@ -121,7 +121,7 @@ export function createWeixinConsumerLock(
           } finally {
             await handle.close();
           }
-          await onDiagnostic?.("lock_acquired", {
+          await emitDiagnostic(onDiagnostic, "lock_acquired", {
             lockFilePath,
             pid: meta.pid,
             mode: meta.mode,
@@ -136,7 +136,7 @@ export function createWeixinConsumerLock(
             throw error;
           }
 
-          await onDiagnostic?.("lock_exists", {
+          await emitDiagnostic(onDiagnostic, "lock_exists", {
             lockFilePath,
             pid: meta.pid,
             mode: meta.mode,
@@ -145,7 +145,7 @@ export function createWeixinConsumerLock(
           const existing = await loadLockMetadata(lockFilePath);
           if (!existing) {
             await rm(lockFilePath, { force: true });
-            await onDiagnostic?.("lock_invalid_removed", {
+            await emitDiagnostic(onDiagnostic, "lock_invalid_removed", {
               lockFilePath,
               reason: "invalid_or_unreadable_metadata",
             });
@@ -157,7 +157,7 @@ export function createWeixinConsumerLock(
             probeProcessIdentity: options.probeProcessIdentity ?? probePosixProcessIdentity,
           })) {
             await rm(lockFilePath, { force: true });
-            await onDiagnostic?.("lock_stale_removed", {
+            await emitDiagnostic(onDiagnostic, "lock_stale_removed", {
               lockFilePath,
               stalePid: existing.pid,
               staleMode: existing.mode,
@@ -168,7 +168,7 @@ export function createWeixinConsumerLock(
             continue;
           }
 
-          await onDiagnostic?.("lock_active_conflict", {
+          await emitDiagnostic(onDiagnostic, "lock_active_conflict", {
             lockFilePath,
             activePid: existing.pid,
             activeMode: existing.mode,
@@ -188,17 +188,29 @@ export function createWeixinConsumerLock(
         await windowsGuard?.release();
         windowsGuard = undefined;
         windowsLockId = undefined;
-        await onDiagnostic?.("lock_released", { lockFilePath });
+        await emitDiagnostic(onDiagnostic, "lock_released", { lockFilePath });
         return;
       }
       const metadata = await loadLockMetadata(lockFilePath);
       if (metadata?.lockId === posixLockId) await rm(lockFilePath, { force: true });
       posixLockId = undefined;
-      await onDiagnostic?.("lock_released", {
+      await emitDiagnostic(onDiagnostic, "lock_released", {
         lockFilePath,
       });
     },
   };
+}
+
+async function emitDiagnostic(
+  callback: CreateWeixinConsumerLockOptions["onDiagnostic"],
+  event: Parameters<NonNullable<CreateWeixinConsumerLockOptions["onDiagnostic"]>>[0],
+  context: Record<string, string | number | boolean | undefined>,
+): Promise<void> {
+  try {
+    await callback?.(event, context);
+  } catch {
+    // Diagnostics must not acquire, leak, or release compatibility ownership.
+  }
 }
 
 async function isSamePosixProcess(

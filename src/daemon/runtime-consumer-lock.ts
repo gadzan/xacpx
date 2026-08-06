@@ -12,6 +12,7 @@ import { acquireIpcGuard, IpcGuardBusyError } from "../process/ipc-guard";
 
 const require = createRequire(import.meta.url);
 const expectedHelperExits = new WeakSet<ChildProcessWithoutNullStreams>();
+const FLOCK_HELPER_RELEASE_TIMEOUT_MS = 5_000;
 
 interface FsExt {
   flock(
@@ -148,6 +149,10 @@ function createCoreRuntimeLock(options: CreateRuntimeConsumerLockOptions): Consu
             // kernel flock and ties its lifetime to this process via stdin.
             await handle.close();
             posixHelper = await acquireFlockHelper(options.lockFilePath);
+            await emitDiagnostic(onDiagnostic, "lock_helper_started", {
+              lockFilePath: options.lockFilePath,
+              helperPid: posixHelper.pid,
+            });
           } else {
             const fsExt = options.loadFsExt?.() ?? require("fs-ext") as FsExt;
             await flock(fsExt, handle.fd, "exnb");
@@ -218,8 +223,21 @@ async function releasePosixLock(
     expectedHelperExits.add(helper);
     if (helper.exitCode !== null || helper.signalCode !== null) return;
     const closePromise = new Promise<void>((resolve, reject) => {
-      helper.once("error", reject);
-      helper.once("close", (code) => code === 0 ? resolve() : reject(new Error(`runtime lock helper exited with code ${code}`)));
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback();
+      };
+      const timer = setTimeout(() => {
+        helper.kill("SIGKILL");
+        finish(() => reject(new Error("runtime lock helper did not release within 5000ms")));
+      }, FLOCK_HELPER_RELEASE_TIMEOUT_MS);
+      helper.once("error", (error) => finish(() => reject(error)));
+      helper.once("close", (code) => finish(() => code === 0
+        ? resolve()
+        : reject(new Error(`runtime lock helper exited with code ${code}`))));
     });
     helper.stdin.end();
     await closePromise;
@@ -251,6 +269,12 @@ fsExt.flock(fd, "exnb", (error) => {
     process.exitCode = busy ? 2 : 1;
     return;
   }
+  // The daemon controller signals the whole POSIX process group during a
+  // graceful stop. Once ownership is acquired, only the parent stdin lifetime
+  // may release this helper's flock; group SIGTERM/SIGINT must not unlock it
+  // before the parent finishes dispose/reap/status cleanup.
+  process.on("SIGTERM", () => {});
+  process.on("SIGINT", () => {});
   process.stdout.write("ACQUIRED\n");
   process.stdin.resume();
   let released = false;
@@ -302,7 +326,7 @@ async function acquireFlockHelper(lockFilePath: string): Promise<ChildProcessWit
         // Running without the helper's kernel lock would violate the runtime
         // ownership invariant. End the Bun parent so its normal cleanup path
         // cannot keep serving or mutating shared state without ownership.
-        process.kill(process.pid, "SIGTERM");
+        process.kill(process.pid, "SIGKILL");
       }
     });
     return child;

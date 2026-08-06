@@ -1182,19 +1182,15 @@ function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
   Object.assign(target, source);
 }
 
-interface MainDeps {
-  runRuntime?: () => Promise<void>;
-}
-
 /**
  * The source entrypoint delegates to the same guarded runtime path as
  * `xacpx run`; it must never grow a second, lock-free startup sequence.
  */
-export async function main(deps: MainDeps = {}): Promise<void> {
+export async function main(): Promise<void> {
   const paths = resolveRuntimePaths();
 
   try {
-    const runRuntime = deps.runRuntime ?? (await import("./cli.js")).runDefaultRuntime;
+    const runRuntime = (await import("./cli.js")).runDefaultRuntime;
     await runRuntime();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1210,7 +1206,13 @@ export async function main(deps: MainDeps = {}): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  // Do not top-level-await main(): runDefaultRuntime imports this module's
+  // buildApp exports, so awaiting here would leave both sides of that dynamic
+  // import cycle waiting for this module evaluation to finish.
+  void main().catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exitCode = 1;
+  });
 }
 
 export async function prepareChannelMedia(configPath: string, config: AppConfig): Promise<{

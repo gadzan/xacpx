@@ -124,6 +124,9 @@ first acquires a channel-independent core consumer lock; when a channel also pro
 legacy lock, both are held so upgraded runtimes still conflict with older daemons. The
 core lock is OS-held (`flock` on POSIX and the runtime-owner IPC guard on Windows), so a
 crash releases ownership without deleting or reclaiming its stable diagnostic JSON file.
+When Bun uses a Node helper to hold the POSIX native flock, the helper ignores process-group
+graceful-stop signals and releases only when the parent closes its control pipe; unexpected
+helper loss terminates the owner fail-closed before another runtime can proceed concurrently.
 Legacy POSIX channel metadata includes the owner's process-start fingerprint to distinguish
 PID reuse. Every runtime entry, including direct source `main()`, uses this same guarded path.
 The generation is published only after runtime ownership is acquired and before any startup

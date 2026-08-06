@@ -119,7 +119,9 @@ daemon 进程内的运行时登记器。
 激活的 identity 上下文传给 `buildApp`。每个默认 runtime 都必须先取得与渠道无关的核心 consumer
 lock；若渠道还提供 legacy lock，则同时持有两把锁，以继续阻挡升级前启动的旧 daemon。核心锁由
 OS 持有（POSIX 使用 `flock`，Windows 使用 runtime-owner IPC guard），进程崩溃时会自动
-释放 ownership，无需删除或回收稳定的诊断 JSON 文件。POSIX legacy 渠道元数据还记录进程启动
+释放 ownership，无需删除或回收稳定的诊断 JSON 文件。Bun 通过 Node helper 持有 POSIX 原生 flock
+时，helper 会忽略进程组的优雅停机信号，只在父进程关闭控制管道后释放；若 helper 意外丢失，owner
+会在另一个 runtime 并发运行前 fail-closed 终止。POSIX legacy 渠道元数据还记录进程启动
 指纹，用来识别 PID 复用。包括直接源码 `main()` 在内的所有 runtime 入口都走同一受保护路径。只有取得
 runtime ownership 后、任何启动协调或 orphan sweep 之前，才会持久化 generation。普通前台
 `xacpx run` 既不发布 daemon generation，也不登记 daemon PID/status；ownership lock 冲突而退出

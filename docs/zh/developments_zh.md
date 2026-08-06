@@ -118,7 +118,7 @@ xacpx/
 | --- | --- | --- |
 | `src/cli.ts` | CLI 总入口，`xacpx <command>` 派发 | `runCli()` |
 | `src/main.ts` | `buildApp()` 装配运行时；`resolveRuntimePaths()` 路径解析 | `buildApp` |
-| `src/run-console.ts` | 启动序列：channel → daemon runtime → consumer lock → channel start | `runConsole()` |
+| `src/run-console.ts` | 启动序列：构建 runtime → 必需的核心 ownership lock → reconcile/reap → daemon ready → channel/scheduler start | `runConsole()` |
 | `src/console-agent.ts` | 把入站消息桥接到 router | `ConsoleAgent` |
 | `src/channels/` | 频道注册中心；内置 weixin；暴露 `MessageChannelRuntime` 给插件 | `channels/types.ts`、`channels/plugin.ts` |
 | `src/commands/` | 命令解析 + handler + router | `command-router.ts`、`parse-command.ts` |

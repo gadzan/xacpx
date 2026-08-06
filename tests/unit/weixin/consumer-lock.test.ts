@@ -177,6 +177,33 @@ test("POSIX release does not unlink a replacement lock owned by another process"
   expect(JSON.parse(await readFile(lockFilePath, "utf8"))).toMatchObject({ lockId: "replacement", pid: 789 });
 });
 
+test("diagnostic failures cannot leak an acquired compatibility lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-diagnostic-"));
+  const lockFilePath = join(dir, "weixin-consumer.lock.json");
+  const create = () => createWeixinConsumerLock({
+    lockFilePath,
+    probeProcessIdentity: async (pid) => ({
+      status: "found",
+      identity: { pid, startedAtMs: Date.parse("2026-04-05T00:00:00.000Z") },
+    }),
+    onDiagnostic: async () => { throw new Error("logger unavailable"); },
+  });
+  const input = {
+    pid: process.pid,
+    mode: "daemon" as const,
+    startedAt: "2026-04-05T00:01:00.000Z",
+    configPath: "/cfg",
+    statePath: "/state",
+  };
+
+  const first = create();
+  await first.acquire(input);
+  await first.release();
+  const replacement = create();
+  await replacement.acquire(input);
+  await replacement.release();
+});
+
 test("Windows guard is acquired before diagnostic metadata v2 and release is ownership checked", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-consumer-lock-win-"));
   const lockFilePath = join(dir, "weixin-consumer.lock.json");

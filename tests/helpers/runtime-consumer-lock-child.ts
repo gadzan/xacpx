@@ -6,10 +6,32 @@ import {
 } from "../../src/daemon/runtime-consumer-lock";
 
 const runtimeRoot = process.argv[2]!;
-const hold = process.argv[3] === "hold";
+const mode = process.argv[3];
+const hold = mode === "hold" || mode === "lose-helper" || mode === "graceful-group";
+if (mode === "lose-helper") {
+  process.on("SIGTERM", () => {
+    process.stdout.write("SIGTERM_CAUGHT\n");
+  });
+}
 const lock = createRuntimeConsumerLock({
   lockFilePath: join(runtimeRoot, "runtime-consumer.lock.json"),
+  onDiagnostic: (event, context) => {
+    if (event === "lock_helper_started") {
+      process.stdout.write(`HELPER:${context.helperPid}\n`);
+    }
+  },
 });
+if (mode === "graceful-group") {
+  let releasing = false;
+  process.on("SIGTERM", () => {
+    if (releasing) return;
+    releasing = true;
+    void lock.release().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  });
+}
 
 try {
   await lock.acquire({

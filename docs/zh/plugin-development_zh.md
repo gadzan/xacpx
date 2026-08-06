@@ -812,11 +812,13 @@ CLI 不会自动 disable 出错的插件——需要用户手工 `xacpx plugin d
    4.2 factory(options, deps) → MessageChannelRuntime
 5. runConsole(...)：
    5.1 channel.configureOrchestration?.(callbacks)
-   5.2 consumer lock acquire（可选）
-   5.3 channel.start({ agent, abortSignal, quota, logger })
+   5.2 取得必需且与渠道无关的核心 runtime ownership lock
+   5.3 若渠道提供 consumer lock，则同时取得（作为兼容旧 daemon 的 fence）
+   5.4 发布 daemon identity，再协调共享状态并清理陈旧 owner
+   5.5 报告 daemon ready，再执行 channel.start({ agent, abortSignal, quota, logger }) 与 scheduler.start()
 6. 收消息：channel → agent.handle(chatKey, text) → router
 7. 出消息：orchestration → channel.notifyTaskCompletion / sendCoordinatorMessage
-8. SIGTERM / SIGINT：abortSignal aborted → channel 自己 cleanup → registry.stopAll：channel.stop?()（回退：logout()）→ daemon exit
+8. SIGTERM / SIGINT：abortSignal aborted → 持有 ownership 完成 dispose/reap → registry.stopAll：channel.stop?()（回退：logout()）→ 释放兼容锁与核心锁 → daemon exit
 ```
 
 正常退出走 `abortSignal` 加非破坏性的 `stop()`；破坏性的 `logout()` 只在 `xacpx logout` 显式调用时被触发——唯一例外是没有实现 `stop()` 的遗留频道，关停时会回退到 `logout()`。

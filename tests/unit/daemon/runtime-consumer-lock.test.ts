@@ -143,6 +143,107 @@ test("POSIX core ownership is crash-released and exclusive across processes", as
   expect(await output(replacement, /ACQUIRED/)).toContain("ACQUIRED");
 }, 20_000);
 
+test("Bun exits uncatchably if its flock helper dies after ownership is acquired", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-helper-loss-"));
+  roots.push(root);
+  const victim = spawn(
+    "bun",
+    ["run", join(process.cwd(), "tests", "helpers", "runtime-consumer-lock-child.ts"), root, "lose-helper"],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let combined = "";
+  const acquired = new Promise<number>((resolveHelper, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout: ${combined}`)), 10_000);
+    const inspect = () => {
+      const match = combined.match(/HELPER:(\d+)[\s\S]*ACQUIRED:/);
+      if (match) {
+        clearTimeout(timer);
+        resolveHelper(Number(match[1]));
+      }
+    };
+    victim.stdout.on("data", (chunk) => { combined += String(chunk); inspect(); });
+    victim.stderr.on("data", (chunk) => { combined += String(chunk); inspect(); });
+    victim.once("error", reject);
+  });
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
+    const timer = setTimeout(() => {
+      victim.kill("SIGKILL");
+      reject(new Error(`victim did not fail closed: ${combined}`));
+    }, 10_000);
+    victim.once("close", (code, signal) => {
+      clearTimeout(timer);
+      resolveClose({ code, signal });
+    });
+  });
+
+  const helperPid = await acquired;
+  process.kill(helperPid, "SIGKILL");
+  expect(await closed).toEqual({ code: null, signal: "SIGKILL" });
+
+  // The helper's kernel lock was released, so a replacement can take over
+  // immediately even though the killed owner left diagnostic metadata behind.
+  const replacement = createRuntimeConsumerLock({
+    lockFilePath: join(root, "runtime-consumer.lock.json"),
+  });
+  await replacement.acquire({
+    ...metadata,
+    pid: process.pid,
+    configPath: join(root, "config.json"),
+    statePath: join(root, "state.json"),
+  });
+  await replacement.release();
+}, 20_000);
+
+test("Bun keeps the flock through a graceful process-group SIGTERM until parent release", async () => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(join(tmpdir(), "xacpx-runtime-helper-group-stop-"));
+  roots.push(root);
+  const victim = spawn(
+    "bun",
+    ["run", join(process.cwd(), "tests", "helpers", "runtime-consumer-lock-child.ts"), root, "graceful-group"],
+    { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let combined = "";
+  const acquired = new Promise<void>((resolveAcquired, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout: ${combined}`)), 10_000);
+    const inspect = () => {
+      if (/HELPER:\d+[\s\S]*ACQUIRED:/.test(combined)) {
+        clearTimeout(timer);
+        resolveAcquired();
+      }
+    };
+    victim.stdout.on("data", (chunk) => { combined += String(chunk); inspect(); });
+    victim.stderr.on("data", (chunk) => { combined += String(chunk); inspect(); });
+    victim.once("error", reject);
+  });
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
+    const timer = setTimeout(() => {
+      try { process.kill(-victim.pid!, "SIGKILL"); } catch {}
+      reject(new Error(`graceful group stop timed out: ${combined}`));
+    }, 10_000);
+    victim.once("close", (code, signal) => {
+      clearTimeout(timer);
+      resolveClose({ code, signal });
+    });
+  });
+
+  await acquired;
+  process.kill(-victim.pid!, "SIGTERM");
+  expect(await closed).toEqual({ code: 0, signal: null });
+
+  const replacement = createRuntimeConsumerLock({
+    lockFilePath: join(root, "runtime-consumer.lock.json"),
+  });
+  await replacement.acquire({
+    ...metadata,
+    pid: process.pid,
+    configPath: join(root, "config.json"),
+    statePath: join(root, "state.json"),
+  });
+  await replacement.release();
+}, 20_000);
+
 function fakeLock(name: string, events: string[]): ConsumerLock {
   return {
     acquire: async (input) => { events.push(`${name}:acquire:${input.pid}`); },

@@ -812,11 +812,13 @@ Every plugin command accepts `--restart` / `--no-restart`, and by default asks i
    4.2 factory(options, deps) → MessageChannelRuntime
 5. runConsole(...):
    5.1 channel.configureOrchestration?.(callbacks)
-   5.2 consumer lock acquire (optional)
-   5.3 channel.start({ agent, abortSignal, quota, logger })
+   5.2 acquire the required, channel-independent core runtime ownership lock
+   5.3 acquire a channel-provided consumer lock when available (legacy-daemon compatibility fence)
+   5.4 publish daemon identity, then reconcile shared state and reap stale owners
+   5.5 report daemon ready, then channel.start({ agent, abortSignal, quota, logger }) and scheduler.start()
 6. Receive messages: channel → agent.handle(chatKey, text) → router
 7. Send messages: orchestration → channel.notifyTaskCompletion / sendCoordinatorMessage
-8. SIGTERM / SIGINT: abortSignal aborted → channel cleans up itself → registry.stopAll: channel.stop?() (fallback: logout()) → daemon exit
+8. SIGTERM / SIGINT: abortSignal aborted → dispose/reap while ownership remains held → registry.stopAll: channel.stop?() (fallback: logout()) → release compatibility/core locks → daemon exit
 ```
 
 Normal exit goes through `abortSignal` plus the non-destructive `stop()`; the destructive `logout()` is triggered only when `xacpx logout` is explicitly invoked — except as the shutdown fallback for legacy channels that do not implement `stop()`.
