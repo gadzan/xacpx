@@ -88,10 +88,10 @@ const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 // The queue owner inherits its stdio (xacpx spawns it with stdio "ignore"), so
 // this agent's stdin can be /dev/null: when the owner dies there is NO EOF to
 // end us. An idle watchdog guarantees the harness never leaks the process.
-let idleTimer = setTimeout(() => process.exit(0), 60_000);
+let idleTimer = setTimeout(() => process.exit(0), 10_000);
 function refreshIdle() {
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => process.exit(0), 60_000);
+  idleTimer = setTimeout(() => process.exit(0), 10_000);
 }
 
 rl.on("line", (line) => {

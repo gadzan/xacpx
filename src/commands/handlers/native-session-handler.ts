@@ -96,6 +96,7 @@ export async function handleNativeSessionList(
     agent: target.agent,
     agentCommand: target.agentCommand,
     ...(target.acpxAgent ? { acpxAgent: target.acpxAgent } : {}),
+    ...(target.rawCommand ? { rawCommand: target.rawCommand } : {}),
     ...(target.driver ? { driver: target.driver } : {}),
     ...(target.settingsPolicy ? { settingsPolicy: target.settingsPolicy } : {}),
     cwd: target.cwd,

@@ -202,3 +202,20 @@ test("acpxSessionRecordFilePath matches acpx's encodeURIComponent layout", () =>
   expect(acpxSessionRecordFilePath("/sessions", "a b/c"))
     .toBe("/sessions/a%20b%2Fc.json");
 });
+
+test("post-write verification fails when the write did not land", async () => {
+  const { dir, filePath, recordId } = await makeSessionsDir(LEGACY_FIXTURE);
+  try {
+    // Simulate a writer that reports success but leaves the record without argv.
+    await expect(migrateSessionArgvFile(recordId, TARGET, {
+      sessionsDir: dir,
+      writeAtomicFn: async () => {
+        // intentionally do nothing: the file keeps its legacy shape
+      },
+    })).rejects.toThrow(/failed post-write verification/);
+    const record = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+    expect(record.agent_argv).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

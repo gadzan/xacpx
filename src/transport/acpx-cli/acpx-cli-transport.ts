@@ -35,7 +35,7 @@ import {
 } from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../../config/agent-launch";
@@ -775,7 +775,7 @@ export class AcpxCliTransport implements SessionTransport {
       agentCommand: renderAgentArgvIdentity(session.agentArgv),
       agentArgv: session.agentArgv,
     }, {
-      beforeWrite: (id) => terminateAcpxQueueOwner(id),
+      beforeWrite: (id) => terminateAcpxQueueOwnerVerified(id),
     });
     if (result.status === "rejected" || result.status === "invalid") {
       const detail = result.detail ? `: ${result.detail}` : "";

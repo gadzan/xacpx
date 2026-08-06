@@ -57,8 +57,19 @@ async function makeHarness(): Promise<Harness> {
         else process.env[key] = value;
       }
       savedEnv.clear();
-      await rm(home, { recursive: true, force: true });
-      await rm(ws, { recursive: true, force: true });
+      // Windows releases process handles lazily: a mock agent whose owner was
+      // just terminated can still hold the workspace for a few hundred ms, so
+      // rm can hit EBUSY. Retry briefly, then leave the temp dir to the OS.
+      for (const dir of [home, ws]) {
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          try {
+            await rm(dir, { recursive: true, force: true });
+            break;
+          } catch {
+            await Bun.sleep(200);
+          }
+        }
+      }
     },
   };
 }

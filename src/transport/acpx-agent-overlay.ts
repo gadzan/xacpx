@@ -189,6 +189,15 @@ export async function ensureAgentOverlays(
     for (const entry of entries) {
       const merged = mergeAcpxAgentOverlayEntry(next, entry);
       result.outcomes[entry.alias] = merged.outcome;
+      if (merged.outcome === "rejected") {
+        // Fail closed: the on-disk alias holds a DIFFERENT argv than the launch
+        // xacpx computed. Continuing would let acpx execute the disk entry's
+        // command — silently launching a different agent than configured.
+        throw new Error(
+          `acpx config agent alias ${entry.alias} already exists with a different argv ` +
+            `(${path}); refusing to overwrite. Remove or fix the conflicting entry, then restart.`,
+        );
+      }
       if (merged.outcome === "provisioned") {
         next = merged.config;
         changed = true;

@@ -1,5 +1,5 @@
 import { expect, mock, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -11,6 +11,8 @@ import {
   type QueueOwnerTerminator,
   type QueueOwnerAdapterContext,
   terminateAcpxQueueOwnerWithDeps,
+  terminateAcpxQueueOwnerVerified,
+  terminateAcpxQueueOwnerVerifiedWithDeps,
 } from "../../../src/transport/acpx-queue-owner-launcher";
 
 const TOKEN = "11111111-1111-4111-8111-111111111111";
@@ -324,4 +326,36 @@ test("reuses a live warm owner instead of kill+respawn", async () => {
 
   expect(terminated).toEqual([]);
   expect(spawns).toHaveLength(0);
+});
+
+test("verified termination is a no-op when no owner lock exists", async () => {
+  await expect(terminateAcpxQueueOwnerVerified("no-such-session")).resolves.toBeUndefined();
+});
+
+test("verified termination waits for the lock to disappear after terminating", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-verify-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 99999999 }));
+  await expect(terminateAcpxQueueOwnerVerifiedWithDeps("session-1", {
+    lockPath,
+    terminate: async () => {
+      await rm(lockPath, { force: true });
+    },
+    delay: async () => {},
+  })).resolves.toBeUndefined();
+  await expect(access(lockPath)).rejects.toThrow();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("verified termination fails closed when the owner cannot be terminated", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-verify-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 99999999 }));
+  // Simulate a terminator that never removes the lock (e.g. Windows no-op).
+  await expect(terminateAcpxQueueOwnerVerifiedWithDeps("session-1", {
+    lockPath,
+    terminate: async () => {},
+    delay: async () => {},
+  })).rejects.toThrow(/could not be terminated safely/);
+  await rm(dir, { recursive: true, force: true });
 });

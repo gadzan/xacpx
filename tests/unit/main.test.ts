@@ -21,7 +21,7 @@ const buildApp = (paths: BuildAppArgs[0], deps: BuildAppArgs[1] = {}): ReturnTyp
     ...deps,
   });
 
-async function readJsonWithRetry<T>(path: string, attempts = 5): Promise<T> {
+async function readJsonWithRetry<T>(path: string, attempts = 200): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -2738,6 +2738,65 @@ test("buildApp provisions acpx agent overlays before transport creation", async 
 
     expect(provisionedConfig).toMatchObject({
       agents: { codex: { driver: "codex" }, pool: { driver: "pool" } },
+    });
+    await runtime.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("config hot reload provisions overlays for newly added agents", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-main-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+
+    const provisioned: Array<Record<string, unknown>> = [];
+    const runtime = await buildApp({ configPath, statePath }, {
+      createCliTransport: () => ({
+        ensureSession: async () => ({}),
+        prompt: async () => ({ text: "ok" }),
+        setMode: async () => ({}),
+        cancel: async () => ({}),
+        hasSession: () => false,
+        dispose: async () => {},
+      }),
+      provisionAgentOverlays: async (config) => {
+        provisioned.push(config.agents as Record<string, unknown>);
+        return { outcomes: {}, raced: false };
+      },
+    });
+
+    expect(provisioned).toHaveLength(1); // startup provision
+
+    // Add an argv agent at runtime; the watcher reload must provision its alias.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: {
+          codex: { driver: "codex" },
+          custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
+        },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await readJsonWithRetry<{ agents?: unknown }>(configPath).then(async () => {
+      for (let attempt = 0; attempt < 50 && provisioned.length < 2; attempt += 1) {
+        await Bun.sleep(20);
+      }
+    });
+    expect(provisioned.length).toBeGreaterThanOrEqual(2);
+    expect(provisioned.at(-1)).toMatchObject({
+      custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
     });
     await runtime.dispose();
   } finally {

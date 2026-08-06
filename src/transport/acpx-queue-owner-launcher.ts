@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, unlink } from "node:fs/promises";
+import { access, readFile, unlink } from "node:fs/promises";
 
 import { join } from "node:path";
 
@@ -469,6 +469,55 @@ function queueLockFilePath(sessionId: string): string {
 
 function shortHash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
+}
+
+export interface VerifiedOwnerTerminationDeps {
+  lockPath?: string;
+  /** Defaults to terminateAcpxQueueOwner (a no-op for unverifiable Windows locks). */
+  terminate?: () => Promise<void>;
+  delay?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Terminate the warm owner for a session AND prove it is gone before returning.
+ * Used before mutating a session record: if the owner cannot be shown to be
+ * terminated (the lock still exists), writing the record could race the
+ * owner's own writes. Fails closed instead.
+ *
+ * Note: on Windows terminateAcpxQueueOwner deliberately does not consume the
+ * queue lock (no verifiable provenance yet), so a live owner there makes the
+ * migration unsafe — callers surface the error and the operator frees the
+ * owner (or waits for the daemon's orphan sweep) before retrying.
+ */
+export async function terminateAcpxQueueOwnerVerified(sessionId: string): Promise<void> {
+  await terminateAcpxQueueOwnerVerifiedWithDeps(sessionId, {});
+}
+
+export async function terminateAcpxQueueOwnerVerifiedWithDeps(
+  sessionId: string,
+  deps: VerifiedOwnerTerminationDeps,
+): Promise<void> {
+  const lockPath = deps.lockPath ?? queueLockFilePath(sessionId);
+  const delay = deps.delay ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  try {
+    await access(lockPath);
+  } catch {
+    return; // no lock → no owner → nothing to terminate
+  }
+  await (deps.terminate ?? (() => terminateAcpxQueueOwner(sessionId)))();
+  // Bounded wait for the lock to actually disappear.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await access(lockPath);
+    } catch {
+      return; // lock gone → owner terminated
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `queue owner for session ${sessionId} could not be terminated safely; ` +
+      "refusing to rewrite the session record while the owner may still be running",
+  );
 }
 
 export function resolveDefaultXacpxCommand(env: NodeJS.ProcessEnv): string {

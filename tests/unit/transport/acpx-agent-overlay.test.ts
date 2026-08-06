@@ -146,15 +146,16 @@ test("ensureAgentOverlays is a no-op when aliases already match", async () => {
   }
 });
 
-test("ensureAgentOverlays rejects conflicting aliases without writing", async () => {
+test("ensureAgentOverlays fails closed on a conflicting alias and preserves the file", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-overlay-"));
   try {
     await mkdir(join(dir, ".acpx"), { recursive: true });
     await writeFile(join(dir, ".acpx", "config.json"), JSON.stringify({
       agents: { [codexAlias]: { argv: ["npx", "codex-acp@0.0.1"] } },
     }), { flag: "wx" });
-    const result = await ensureAgentOverlays([codexEntry], { home: dir });
-    expect(result.outcomes[codexAlias]).toBe("rejected");
+    await expect(ensureAgentOverlays([codexEntry], { home: dir })).rejects.toThrow(
+      /already exists with a different argv/,
+    );
     const written = JSON.parse(await readFile(join(dir, ".acpx", "config.json"), "utf8")) as Record<string, any>;
     expect(written.agents[codexAlias]).toEqual({ argv: ["npx", "codex-acp@0.0.1"] });
   } finally {

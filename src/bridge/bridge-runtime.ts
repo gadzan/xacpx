@@ -18,7 +18,7 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
@@ -659,7 +659,7 @@ export class BridgeRuntime {
       agentCommand: renderAgentArgvIdentity(input.agentArgv),
       agentArgv: input.agentArgv,
     }, {
-      beforeWrite: (id) => terminateAcpxQueueOwner(id),
+      beforeWrite: (id) => terminateAcpxQueueOwnerVerified(id),
     });
     if (result.status === "rejected" || result.status === "invalid") {
       const detail = result.detail ? `: ${result.detail}` : "";

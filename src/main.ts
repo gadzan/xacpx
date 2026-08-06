@@ -215,8 +215,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     defaultLoggingLevel: deps.defaultLoggingLevel,
   });
   setLocale(resolveLocale({ configLanguage: config.language }));
+  // Hot-reload path: any new/changed agent (argv, adapter pin, registry) may need
+  // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
+  // conflicting/failed overlay never leaves memory and disk disagreeing.
+  const provisionOverlays = async (target: AppConfig): Promise<void> => {
+    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(target, logger);
+  };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
     const updated = await configStore.load();
+    await provisionOverlays(updated);
     setLocale(resolveLocale({ configLanguage: updated.language }));
     replaceRuntimeConfig(config, updated);
     return config;
@@ -953,6 +960,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       catalog: () => listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
         const updated = await configStore.upsertAgent(name, { driver });
+        await provisionOverlays(updated);
         replaceRuntimeConfig(config, updated);
         return { name, driver };
       },

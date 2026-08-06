@@ -166,11 +166,13 @@ export async function migrateSessionArgvFile(
     );
   });
 
-  // Post-write verification: the record must round-trip with the same fields and
-  // the exact target argv.
+  // Post-write verification: the record must now CARRY the target argv. A
+  // `noop` means the write landed (or a concurrent writer migrated it); any
+  // other outcome means agent_argv is still absent or wrong — the write did
+  // not take effect, so report failure instead of claiming success.
   const after = JSON.parse(await readFileFn(filePath, "utf8")) as unknown;
   const verified = evaluateSessionArgvMigration(after, target);
-  if (verified.status !== "noop" && verified.status !== "backfilled") {
+  if (verified.status !== "noop") {
     throw new Error(`acpx session record ${acpxRecordId} failed post-write verification`);
   }
 

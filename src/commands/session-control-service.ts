@@ -257,6 +257,7 @@ export class SessionControlService {
       agent,
       ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
       ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
       ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
       ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
       cwd: workspaceConfig.cwd,
