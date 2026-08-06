@@ -252,6 +252,16 @@ export const useInstancesStore = defineStore("instances", () => {
     return byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
   }
 
+  /** Merge a patch into a group's archived state, creating the record if needed. */
+  function patchGroupArchivedState(instanceId: string, mode: GroupArchivedMode, groupKey: string, patch: Partial<GroupArchivedState>): void {
+    const inst = byId(instanceId);
+    if (!inst) return;
+    inst.groupArchived ??= {};
+    const key = groupArchivedKey(mode, groupKey);
+    const prev = inst.groupArchived[key] ?? emptyGroupArchivedState();
+    inst.groupArchived[key] = { ...prev, ...patch };
+  }
+
   async function loadGroupArchivedSessions(instanceId: string, mode: GroupArchivedMode, groupKey: string, append = false): Promise<void> {
     const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
     const state = groupArchivedStateFor(instanceId, mode, groupKey);
@@ -275,14 +285,8 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function fetchGroupArchivedPage(instanceId: string, mode: GroupArchivedMode, groupKey: string, offset: number, limit: number, append: boolean): Promise<void> {
-    const key = groupArchivedKey(mode, groupKey);
-    const instBefore = byId(instanceId);
-    if (!instBefore) return;
-    instBefore.groupArchived ??= {};
-    const state = instBefore.groupArchived[key] ?? emptyGroupArchivedState();
-    if (state.loading) return;
-    state.loading = true;
-    instBefore.groupArchived[key] = state;
+    if (groupArchivedStateFor(instanceId, mode, groupKey)?.loading) return;
+    patchGroupArchivedState(instanceId, mode, groupKey, { loading: true });
     const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
     try {
       const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", {
@@ -291,19 +295,18 @@ export const useInstancesStore = defineStore("instances", () => {
       });
       const inst = byId(instanceId);
       if (inst) {
-        inst.groupArchived ??= {};
+        const key = groupArchivedKey(mode, groupKey);
         const rows = page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
-        const base = append ? (inst.groupArchived[key]?.sessions ?? []) : [];
-        inst.groupArchived[key] = {
+        const base = append ? (inst.groupArchived?.[key]?.sessions ?? []) : [];
+        patchGroupArchivedState(instanceId, mode, groupKey, {
           sessions: [...base, ...rows.filter((row) => !base.some((old) => old.alias === row.alias))],
           loaded: true,
           hasMore: page.hasMore === true,
           nextOffset: page.nextOffset ?? offset + page.sessions.length,
-        };
+        });
       }
     } finally {
-      const current = groupArchivedStateFor(instanceId, mode, groupKey);
-      if (current) current.loading = false;
+      patchGroupArchivedState(instanceId, mode, groupKey, { loading: false });
     }
   }
 
@@ -325,7 +328,6 @@ export const useInstancesStore = defineStore("instances", () => {
   // so a refresh never flickers rows away. An empty group still probes one page so a
   // newly archived session surfaces without hide/show.
   async function refetchGroupArchived(instanceId: string, mode: GroupArchivedMode, groupKey: string, loadedCount: number): Promise<void> {
-    const key = groupArchivedKey(mode, groupKey);
     const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
     // A page load may already be in flight for this group. Its own pending-drain loop
     // performs the discard-and-refetch, so mark pending and wait for it to settle
@@ -336,14 +338,7 @@ export const useInstancesStore = defineStore("instances", () => {
       if (!pendingGroupArchivedRefreshes.has(pk)) return;
     }
     const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
-    const patchState = (patch: Partial<GroupArchivedState>): void => {
-      const inst = byId(instanceId);
-      if (!inst) return;
-      inst.groupArchived ??= {};
-      const prev = inst.groupArchived[key] ?? emptyGroupArchivedState();
-      inst.groupArchived[key] = { ...prev, ...patch };
-    };
-    patchState({ loading: true });
+    patchGroupArchivedState(instanceId, mode, groupKey, { loading: true });
     try {
       await drainPendingRefresh(pendingGroupArchivedRefreshes, pk, async () => {
         const target = Math.max(GROUP_ARCHIVED_PAGE, loadedCount);
@@ -363,10 +358,10 @@ export const useInstancesStore = defineStore("instances", () => {
           offset = nextOffset;
         }
         if (pendingGroupArchivedRefreshes.has(pk)) return;
-        patchState({ sessions: all, loaded: true, hasMore, nextOffset });
+        patchGroupArchivedState(instanceId, mode, groupKey, { sessions: all, loaded: true, hasMore, nextOffset });
       });
     } finally {
-      patchState({ loading: false });
+      patchGroupArchivedState(instanceId, mode, groupKey, { loading: false });
     }
   }
 
