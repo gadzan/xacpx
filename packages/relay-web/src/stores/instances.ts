@@ -77,6 +77,14 @@ export function groupArchivedKey(mode: GroupArchivedMode, groupKey: string): str
   return `${mode}:${groupKey}`;
 }
 
+/** Inverse of {@link groupArchivedKey}; null for keys not in `${mode}:${groupKey}` form. */
+export function parseGroupArchivedKey(key: string): { mode: GroupArchivedMode; groupKey: string } | null {
+  const sep = key.indexOf(":");
+  const mode = key.slice(0, sep);
+  if (sep < 0 || (mode !== "workspace" && mode !== "agent")) return null;
+  return { mode, groupKey: key.slice(sep + 1) };
+}
+
 export const useInstancesStore = defineStore("instances", () => {
   const instances = ref<InstanceView[]>([]);
   const pendingSessionRenames = new Map<string, {
@@ -90,6 +98,20 @@ export const useInstancesStore = defineStore("instances", () => {
 
   function sessionRenameKey(instanceId: string, alias: string): string {
     return JSON.stringify([instanceId, alias]);
+  }
+
+  // Snapshot pending-rename confirmation revisions at request time so a stale list
+  // response cannot downgrade a rename confirmed while the request was in flight.
+  function renameRevisionsAtRequest(): Map<string, number> {
+    return new Map([...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]));
+  }
+
+  function emptyGroupArchivedState(): GroupArchivedState {
+    return { sessions: [], loaded: false, hasMore: false, nextOffset: 0 };
+  }
+
+  function groupArchivedFilter(mode: GroupArchivedMode, groupKey: string): { workspace: string } | { agent: string } {
+    return mode === "workspace" ? { workspace: groupKey } : { agent: groupKey };
   }
 
   function overlaySessionRename(instanceId: string, session: SessionDto, confirmedRevisionsAtRequest: Map<string, number>): SessionRow {
@@ -174,9 +196,7 @@ export const useInstancesStore = defineStore("instances", () => {
     try {
       do {
         pendingArchivedRefreshes.delete(instanceId);
-        const confirmedRevisionsAtRequest = new Map(
-          [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
-        );
+        const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
         let offset = 0;
         const all: SessionDto[] = [];
         let hasMore = true;
@@ -229,12 +249,18 @@ export const useInstancesStore = defineStore("instances", () => {
       return;
     }
     let appendPage = append;
+    let rerun = false;
     do {
       pendingGroupArchivedRefreshes.delete(pk);
       const current = byId(instanceId)?.groupArchived?.[groupArchivedKey(mode, groupKey)];
       const offset = appendPage && current ? current.nextOffset : 0;
-      await fetchGroupArchivedPage(instanceId, mode, groupKey, offset, GROUP_ARCHIVED_PAGE, appendPage);
+      // A pending refresh re-enters through loadGroupArchivedSessions (offset 0, replace):
+      // fetchGroupArchivedPage's loading guard would otherwise bail and drop the refresh.
+      if (appendPage) await fetchGroupArchivedPage(instanceId, mode, groupKey, offset, GROUP_ARCHIVED_PAGE, true);
+      else if (rerun) await loadGroupArchivedSessions(instanceId, mode, groupKey, false);
+      else await fetchGroupArchivedPage(instanceId, mode, groupKey, 0, GROUP_ARCHIVED_PAGE, false);
       appendPage = false;
+      rerun = true;
     } while (pendingGroupArchivedRefreshes.has(pk));
   }
 
@@ -243,17 +269,15 @@ export const useInstancesStore = defineStore("instances", () => {
     const instBefore = byId(instanceId);
     if (!instBefore) return;
     instBefore.groupArchived ??= {};
-    const state = instBefore.groupArchived[key] ?? { sessions: [], loaded: false, hasMore: false, nextOffset: 0 };
+    const state = instBefore.groupArchived[key] ?? emptyGroupArchivedState();
     if (state.loading) return;
     state.loading = true;
     instBefore.groupArchived[key] = state;
-    const confirmedRevisionsAtRequest = new Map(
-      [...pendingSessionRenames].map(([renameKey, pending]) => [renameKey, pending.confirmedRevision]),
-    );
+    const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
     try {
       const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", {
         offset, limit, archivedOnly: true,
-        ...(mode === "workspace" ? { workspace: groupKey } : { agent: groupKey }),
+        ...groupArchivedFilter(mode, groupKey),
       });
       const inst = byId(instanceId);
       if (inst) {
@@ -278,11 +302,12 @@ export const useInstancesStore = defineStore("instances", () => {
     const inst = byId(instanceId);
     if (!inst?.groupArchived) return;
     for (const [key, state] of Object.entries(inst.groupArchived)) {
-      if (!state.loaded || state.loading) continue;
-      const sep = key.indexOf(":");
-      const mode = key.slice(0, sep) as GroupArchivedMode;
-      const groupKey = key.slice(sep + 1);
-      void refetchGroupArchived(instanceId, mode, groupKey, state.sessions.length).catch(() => {});
+      if (!state.loaded) continue;
+      const parsed = parseGroupArchivedKey(key);
+      if (!parsed) continue;
+      // Loading groups are NOT skipped: refetchGroupArchived waits for the in-flight
+      // page and lets its pending-drain perform the discard-and-refetch.
+      void refetchGroupArchived(instanceId, parsed.mode, parsed.groupKey, state.sessions.length).catch(() => {});
     }
   }
 
@@ -292,19 +317,20 @@ export const useInstancesStore = defineStore("instances", () => {
   async function refetchGroupArchived(instanceId: string, mode: GroupArchivedMode, groupKey: string, loadedCount: number): Promise<void> {
     const key = groupArchivedKey(mode, groupKey);
     const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
-    const state = byId(instanceId)?.groupArchived?.[key];
-    if (state?.loading) {
+    // A page load may already be in flight for this group. Its own pending-drain loop
+    // performs the discard-and-refetch, so mark pending and wait for it to settle
+    // instead of racing a second fetch (a bare return would leave the mark un-consumed).
+    while (byId(instanceId)?.groupArchived?.[key]?.loading) {
       pendingGroupArchivedRefreshes.add(pk);
-      return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (!pendingGroupArchivedRefreshes.has(pk)) return;
     }
-    const confirmedRevisionsAtRequest = new Map(
-      [...pendingSessionRenames].map(([renameKey, pending]) => [renameKey, pending.confirmedRevision]),
-    );
+    const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
     const patchState = (patch: Partial<GroupArchivedState>): void => {
       const inst = byId(instanceId);
       if (!inst) return;
       inst.groupArchived ??= {};
-      const prev = inst.groupArchived[key] ?? { sessions: [], loaded: false, hasMore: false, nextOffset: 0 };
+      const prev = inst.groupArchived[key] ?? emptyGroupArchivedState();
       inst.groupArchived[key] = { ...prev, ...patch };
     };
     patchState({ loading: true });
@@ -319,7 +345,7 @@ export const useInstancesStore = defineStore("instances", () => {
         while (all.length < target) {
           const page = await api.rpc<{ sessions: SessionDto[]; hasMore?: boolean; nextOffset?: number }>(instanceId, "control.sessions.list", {
             offset, limit: Math.min(100, target - all.length), archivedOnly: true,
-            ...(mode === "workspace" ? { workspace: groupKey } : { agent: groupKey }),
+            ...groupArchivedFilter(mode, groupKey),
           });
           all.push(...page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
           hasMore = page.hasMore === true;
@@ -339,12 +365,7 @@ export const useInstancesStore = defineStore("instances", () => {
     const instBefore = byId(instanceId);
     if (instBefore?.sessionsLoading) return;
     if (instBefore) instBefore.sessionsLoading = true;
-    // A list request can start before a rename succeeds and return afterwards.
-    // Snapshot confirmation revisions so that stale response cannot downgrade a
-    // newer value confirmed while the request was in flight.
-    const confirmedRevisionsAtRequest = new Map(
-      [...pendingSessionRenames].map(([key, pending]) => [key, pending.confirmedRevision]),
-    );
+    const confirmedRevisionsAtRequest = renameRevisionsAtRequest();
     // Pull the configured agents alongside the session list (once) so the sidebar and chat
     // can map each session's agent NAME → driver for the brand icon. Agents otherwise only
     // load when a create/manage dialog opens (loadFormOptions), so in the normal
@@ -644,7 +665,6 @@ export const useInstancesStore = defineStore("instances", () => {
         // prior state (auto-load covers instances that were offline at mount too).
         if (event.online) {
           void loadSessions(event.instanceId).catch(() => {});
-          if (inst.archivedSessionsLoaded) void loadArchivedSessions(event.instanceId).catch(() => {});
           refreshLoadedGroupArchivedSessions(event.instanceId);
         }
       }

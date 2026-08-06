@@ -128,3 +128,53 @@ test("refresh refetches at least one page for an empty loaded group so new archi
   expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual(["newly-archived"]);
   vi.restoreAllMocks();
 });
+
+test("replays sessions-changed during an in-flight append page and discards the stale result", async () => {
+  vi.useFakeTimers();
+  try {
+    const store = seed();
+    const { api } = await import("../api/client");
+    const rpc = vi.spyOn(api, "rpc");
+    // First page settles normally → group is loaded (only loaded groups refresh on events).
+    rpc.mockResolvedValueOnce({ sessions: [sleeping("s1")], hasMore: true, nextOffset: 5 });
+    await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+
+    // The append page hangs; a sessions-changed lands mid-flight and must force a
+    // discard-and-refetch from offset 0 once the append settles.
+    let resolveAppend!: (value: unknown) => void;
+    const appendPage = new Promise((resolve) => { resolveAppend = resolve; });
+    rpc.mockImplementationOnce(() => appendPage as never);
+    const append = store.loadGroupArchivedSessions("i1", "workspace", "backend", true);
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+    resolveAppend({ sessions: [sleeping("stale")], hasMore: false });
+    rpc.mockResolvedValue({ sessions: [sleeping("fresh")], hasMore: false });
+    await append;
+    // The refresh waiter polls on a 25ms timer; advance past it so it observes the drain.
+    await vi.advanceTimersByTimeAsync(100);
+
+    const archivedCalls = rpc.mock.calls.filter((call) => (call[2] as { archivedOnly?: boolean })?.archivedOnly);
+    expect(archivedCalls).toHaveLength(3);
+    // The refetch replaces from offset 0 — the stale appended row never survives.
+    expect(archivedCalls[2]).toEqual(["i1", "control.sessions.list", { offset: 0, limit: 5, archivedOnly: true, workspace: "backend" }]);
+    expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual(["fresh"]);
+    vi.restoreAllMocks();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("unarchiveSession refreshes loaded group pages", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc");
+  rpc.mockResolvedValueOnce({ sessions: [sleeping("s1")], hasMore: false });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  rpc.mockClear();
+  rpc.mockResolvedValue({ sessions: [], hasMore: false });
+
+  await store.unarchiveSession("i1", "s1");
+
+  const archivedCalls = rpc.mock.calls.filter((call) => (call[2] as { archivedOnly?: boolean })?.archivedOnly);
+  expect(archivedCalls).toHaveLength(1);
+  vi.restoreAllMocks();
+});

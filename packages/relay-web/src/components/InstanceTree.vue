@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArchiveRestore, ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, Trash2, Unplug } from "lucide-vue-next";
-import { useInstancesStore, groupArchivedKey } from "../stores/instances";
+import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -138,10 +138,9 @@ function sectionsFor(inst: InstanceView): SidebarSection[] {
   const groups = groupSessions(activeSessions(inst), mode);
   const present = new Set(groups.map((g) => g.key));
   for (const recordKey of Object.keys(inst.groupArchived ?? {})) {
-    const sep = recordKey.indexOf(":");
-    if (recordKey.slice(0, sep) !== mode) continue;
-    const groupKey = recordKey.slice(sep + 1);
-    if (!present.has(groupKey)) groups.push({ key: groupKey, sessions: [] });
+    const parsed = parseGroupArchivedKey(recordKey);
+    if (!parsed || parsed.mode !== mode) continue;
+    if (!present.has(parsed.groupKey)) groups.push({ key: parsed.groupKey, sessions: [] });
   }
   return groups.map((g) => {
     const state = inst.groupArchived?.[groupArchivedKey(mode, g.key)];
@@ -553,6 +552,8 @@ const rowSwipes = computed(() => {
           {{ $t("instance.collapseSessions") }}
         </button>
 
+              <!-- Instance-level ACTIVE-list load-more, deliberately NOT mode-gated: grouped modes
+                   still page active sessions 20 at a time, and this is their only "next page" entry. -->
               <button v-if="inst.sessionsHasMore && !inst.sessionsLoading" data-test="sessions-load-more"
                 class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-accent hover:text-fg"
                 @click.stop="store.loadMoreSessions(inst.id).catch(() => {})">
