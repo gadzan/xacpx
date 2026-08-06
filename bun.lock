@@ -114,7 +114,7 @@
         "@codemirror/view": "^6.0.0",
         "@fontsource/inter": "^5.2.8",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@ganglion/xacpx-relay-protocol": "^0.2.0",
+        "@ganglion/xacpx-relay-protocol": "^0.3.0-beta.0",
         "@lezer/highlight": "^1.0.0",
         "@lobehub/icons-static-svg": "^1.91.0",
         "codemirror": "^6.0.0",
@@ -1992,8 +1992,6 @@
     "@babel/helper-create-regexp-features-plugin/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
 
     "@babel/preset-env/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
-
-    "@ganglion/xacpx-relay-web/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.2.1", "", {}, "sha512-qmg/l1+BsFfqNPJi03VcMnx9NCDVTFkuQPxBvQpqufUaYfV8ZYbjxIg/VpC+JXLJ/g92U7BU4OT0n00kwn5tWw=="],
 
     "@modelcontextprotocol/sdk/zod": ["zod@4.3.6", "", {}, ""],
 
