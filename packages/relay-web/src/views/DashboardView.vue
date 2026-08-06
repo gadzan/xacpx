@@ -165,6 +165,11 @@ const validSessionKeys = computed(() => {
   for (const inst of instances.instances) {
     if (!inst.sessionsLoaded || inst.sessionsHasMore) continue;
     for (const s of inst.sessions) keys.add(sessionKey(inst.id, s.alias));
+    // Grouped sleeping pages live outside `sessions`; count their loaded rows as valid
+    // too or an open sleeping session's tabs get pruned here.
+    for (const state of Object.values(inst.groupArchived ?? {})) {
+      for (const s of state.sessions) keys.add(sessionKey(inst.id, s.alias));
+    }
   }
   return keys;
 });
@@ -208,6 +213,7 @@ let everOnline = false;
 const subscribedInstanceIds = (): string[] => instances.instances.map((instance) => instance.id);
 async function reloadSnapshot() {
   await instances.loadInstances().catch(() => {});
+  instances.loadSessionsForOnlineInstances();
   if (chat.instanceId && chat.sessionAlias) {
     await instances.loadSessions(chat.instanceId).catch(() => {});
     await chat.loadHistory().catch(() => {});
@@ -240,6 +246,7 @@ onMounted(async () => {
     desktopMql.addEventListener("change", onDesktopChange);
   }
   await instances.loadInstances();
+  instances.loadSessionsForOnlineInstances();
   disconnect = connectEvents((event) => {
     instances.applyEvent(event);
     chat.applyEvent(event);

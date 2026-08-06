@@ -39,6 +39,12 @@ test("fsCreate enforces the kind literal union", () => {
 test("chatKey-only and chatKey+alias families validate their shape", () => {
   expect(parseControlPayload(MSG.sessionsList, { chatKey: "relay:a1" })).not.toBeNull();
   expect(parseControlPayload(MSG.sessionsList, {})).toBeNull();
+  expect(parseControlPayload(MSG.sessionsList, {
+    chatKey: "relay:a1", offset: 0, limit: 5, archivedOnly: true, workspace: "",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionsList, { chatKey: "relay:a1", agent: "codex" })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionsList, { chatKey: "relay:a1", archivedOnly: "yes" })).toBeNull();
+  expect(parseControlPayload(MSG.sessionsList, { chatKey: "relay:a1", workspace: 3 })).toBeNull();
   expect(parseControlPayload(MSG.sessionsRemove, { chatKey: "relay:a1", alias: "s" })).not.toBeNull();
   expect(parseControlPayload(MSG.sessionsRemove, { chatKey: "relay:a1" })).toBeNull();
 });

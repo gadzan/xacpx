@@ -50,6 +50,25 @@ test("dashboard renders three columns and loads instances on mount", async () =>
   expect(wrapper.findAll('[data-test="column"]').length).toBe(3);
 });
 
+test("mount auto-loads sessions for every online instance without user action", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo) => {
+    const url = typeof input === "string" ? input : String(input);
+    const body = url.includes("/rpc")
+      ? { result: { sessions: [], hasMore: false } }
+      : { instances: [
+        { id: "i1", name: "pc", online: true, lastSeenAt: null },
+        { id: "i2", name: "off", online: false, lastSeenAt: null },
+      ] };
+    return new Response(JSON.stringify(body), { status: 200 });
+  }));
+  mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
+  await flushPromises();
+  const store = useInstancesStore();
+  // No "load sessions" click needed: the online instance's list loads on entry.
+  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
+  expect(store.byId("i2")!.sessionsLoaded).toBe(false);
+});
+
 test("selecting a session routes it into the chat store", async () => {
   const chat = useChatStore();
   const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, "router-link": true } } });

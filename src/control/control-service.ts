@@ -605,8 +605,24 @@ export class ControlService {
       });
   }
 
-  listSessionsPage(chatKey: string, offset = 0, limit = 20, includeArchived = false): { sessions: ControlSessionInfo[]; hasMore: boolean; nextOffset: number } {
-    const all = this.listSessions(chatKey).filter((session) => includeArchived || !session.archived);
+  listSessionsPage(
+    chatKey: string,
+    offset = 0,
+    limit = 20,
+    includeArchived = false,
+    filters?: { archivedOnly?: boolean; workspace?: string; agent?: string },
+  ): { sessions: ControlSessionInfo[]; hasMore: boolean; nextOffset: number } {
+    const archivedVisible = (session: ControlSessionInfo): boolean => {
+      if (filters?.archivedOnly) return session.archived;
+      return includeArchived || !session.archived;
+    };
+    // Filters use !== undefined (not truthiness) so "" matches sessions lacking the field.
+    const all = this.listSessions(chatKey).filter((session) => {
+      if (!archivedVisible(session)) return false;
+      if (filters?.workspace !== undefined && (session.workspace ?? "") !== filters.workspace) return false;
+      if (filters?.agent !== undefined && (session.agent ?? "") !== filters.agent) return false;
+      return true;
+    });
     const safeOffset = Math.max(0, Math.floor(offset));
     const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
     const sessions = all.slice(safeOffset, safeOffset + safeLimit);

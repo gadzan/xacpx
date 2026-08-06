@@ -162,15 +162,32 @@ test("loadInstances does not eagerly load sessions for online instances", async 
   vi.unstubAllGlobals();
 });
 
-test("applyEvent instance-status does not load sessions before the user requests them", async () => {
+test("loadSessionsForOnlineInstances loads all online instances and skips offline/loaded ones", async () => {
   const store = useInstancesStore();
-  store.instances = [{ id: "i1", name: "pc", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [], workspaces: [], agentCatalog: [] }];
+  store.instances = [
+    { id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] },
+    { id: "i2", name: "off", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [], workspaces: [], agentCatalog: [] },
+    { id: "i3", name: "done", online: true, lastSeenAt: null, sessions: [{ alias: "x", agent: "a", workspace: "/w", transportSession: "t", running: false, archived: false }], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+  ];
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [], hasMore: false });
+  store.loadSessionsForOnlineInstances();
+  await new Promise((r) => setTimeout(r, 0));
+  const listed = rpc.mock.calls.filter((call) => call[1] === "control.sessions.list").map((call) => call[0]);
+  expect(listed).toEqual(["i1"]);
+  vi.restoreAllMocks();
+});
+
+test("applyEvent instance-status auto-loads sessions when an instance comes online", async () => {
+  const store = useInstancesStore();
+  store.instances = [{ id: "i1", name: "pc", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: false, agents: [{ name: "a", driver: "codex" }], workspaces: [], agentCatalog: [] }];
   const { api } = await import("../api/client");
   const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [{ alias: "backend", agent: "claude", workspace: "/w", transportSession: "t", running: false }] });
   store.applyEvent({ kind: "instance-status", instanceId: "i1", online: true });
   await new Promise((r) => setTimeout(r, 0));
-  expect(rpc).not.toHaveBeenCalled();
-  expect(store.byId("i1")!.sessionsLoaded).toBe(false);
+  // Auto-load: no prior sessionsLoaded gate — coming online fetches the session list.
+  expect(rpc).toHaveBeenCalledWith("i1", "control.sessions.list", { offset: 0, limit: 20 });
+  expect(store.byId("i1")!.sessionsLoaded).toBe(true);
   vi.restoreAllMocks();
 });
 

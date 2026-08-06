@@ -108,6 +108,35 @@ test("sessions.list / prompt / command.execute dispatch and shape results", asyn
   expect(await dispatch(bridge, req(MSG.commandExecute, { chatKey: "k", text: "/status", senderId: "acct" }))).toEqual({ output: "output" });
 });
 
+test("sessions.list routes filter-only payloads to the paginated path and passes filters through", async () => {
+  const paged: Array<Record<string, unknown>> = [];
+  const { control } = makeFakeControl({
+    listSessionsPage: (chatKey: string, offset: number | undefined, limit: number | undefined, includeArchived: boolean | undefined, filters: unknown) => {
+      paged.push({ chatKey, offset, limit, includeArchived, filters });
+      return { sessions: [], hasMore: false, nextOffset: 0 };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+
+  // archivedOnly + workspace without offset/limit must still hit the paginated path.
+  expect(await dispatch(bridge, req(MSG.sessionsList, { chatKey: "relay:acct", archivedOnly: true, workspace: "/ws", limit: 5 })))
+    .toEqual({ sessions: [], hasMore: false, nextOffset: 0 });
+  expect(paged).toEqual([{
+    chatKey: "relay:acct", offset: undefined, limit: 5, includeArchived: undefined,
+    filters: { archivedOnly: true, workspace: "/ws", agent: undefined },
+  }]);
+
+  // includeArchived alone also takes the paginated path (previously ignored without offset/limit).
+  await dispatch(bridge, req(MSG.sessionsList, { chatKey: "relay:acct", includeArchived: true }));
+  expect(paged[1]).toMatchObject({ includeArchived: true, filters: { archivedOnly: undefined, workspace: undefined, agent: undefined } });
+
+  // A bare payload keeps the full-list path.
+  expect(await dispatch(bridge, req(MSG.sessionsList, { chatKey: "relay:acct" }))).toEqual({
+    sessions: [{ alias: "a", agent: "claude", workspace: "/ws", transportSession: "t", running: false }],
+  });
+  expect(paged).toHaveLength(2);
+});
+
 test("queue.cancel dispatches to cancelQueuedItem and returns its result", async () => {
   const { control, calls } = makeFakeControl();
   const bridge = createControlBridge(control as never);

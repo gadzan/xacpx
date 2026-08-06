@@ -94,6 +94,28 @@ test("listSessionsPage filters sleeping sessions and returns a server cursor", (
   expect(control.listSessionsPage("relay:acct", 0, 2, true).sessions.map((session) => session.alias)).toEqual(["s0", "s1"]);
 });
 
+test("listSessionsPage supports archivedOnly, workspace and agent filters", () => {
+  const { deps } = makeDeps();
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "a", agent: "claude", workspace: "/ws/a", transportSession: "t-a" },
+    { alias: "b", agent: "claude", workspace: "/ws/b", transportSession: "t-b", archived: true },
+    { alias: "c", agent: "codex", workspace: "/ws/a", transportSession: "t-c", archived: true },
+    { alias: "d", agent: "codex", transportSession: "t-d", archived: true },
+  ];
+  const control = new ControlService(deps as never);
+
+  // archivedOnly returns only sleeping sessions, ignoring includeArchived.
+  expect(control.listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true }).sessions.map((s) => s.alias)).toEqual(["b", "c", "d"]);
+  // Workspace filter narrows the sleeping page; cursor math runs on the filtered set.
+  expect(control.listSessionsPage("relay:acct", 0, 1, false, { archivedOnly: true, workspace: "/ws/a" }))
+    .toMatchObject({ sessions: [expect.objectContaining({ alias: "c" })], hasMore: false, nextOffset: 1 });
+  // Empty-string workspace matches sessions without a workspace.
+  expect(control.listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true, workspace: "" }).sessions.map((s) => s.alias)).toEqual(["d"]);
+  // Agent filter works on the active listing too.
+  expect(control.listSessionsPage("relay:acct", 0, 10, false, { agent: "codex" }).sessions.map((s) => s.alias)).toEqual([]);
+  expect(control.listSessionsPage("relay:acct", 0, 10, true, { agent: "codex" }).sessions.map((s) => s.alias)).toEqual(["c", "d"]);
+});
+
 test("listSessions marks an agent-side (native) session with native: true", () => {
   const { deps } = makeDeps();
   // A native-attached session carries source "agent-side"; a fresh xacpx session does not.

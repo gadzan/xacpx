@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArchiveRestore, ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, Trash2, Unplug } from "lucide-vue-next";
-import { useInstancesStore } from "../stores/instances";
+import { useInstancesStore, groupArchivedKey } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -15,7 +15,7 @@ import { groupSessions, dedupedSessionName, archivedLast } from "../lib/sidebar-
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
-import type { InstanceView } from "../stores/instances";
+import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
 
 // Local directive: focus + select an element on mount (the rename input).
 const vFocus = {
@@ -125,11 +125,60 @@ interface SidebarSection {
   /** Group name (workspace or agent), or null for the flat (ungrouped) section. */
   key: string | null;
   sessions: InstanceView["sessions"];
+  /** Sleeping rows paged in for this group (grouped modes only, when expanded). */
+  archivedSessions?: InstanceView["sessions"];
+  archivedState?: GroupArchivedState;
 }
 function sectionsFor(inst: InstanceView): SidebarSection[] {
   const mode = groupModeOf(inst);
   if (mode === "instance") return [{ key: null, sessions: visibleSessions(inst) }];
-  return groupSessions(displaySessions(inst), mode);
+  // Grouped modes page sleeping sessions PER GROUP from the server; groups come from
+  // active sessions plus any group that already has a loaded sleeping page (so a group
+  // whose last active session was just archived stays visible with its sleeping rows).
+  const groups = groupSessions(activeSessions(inst), mode);
+  const present = new Set(groups.map((g) => g.key));
+  for (const recordKey of Object.keys(inst.groupArchived ?? {})) {
+    const sep = recordKey.indexOf(":");
+    if (recordKey.slice(0, sep) !== mode) continue;
+    const groupKey = recordKey.slice(sep + 1);
+    if (!present.has(groupKey)) groups.push({ key: groupKey, sessions: [] });
+  }
+  return groups.map((g) => {
+    const state = inst.groupArchived?.[groupArchivedKey(mode, g.key)];
+    const expanded = groupArchivedIsExpanded(inst, g.key);
+    return {
+      key: g.key,
+      sessions: g.sessions,
+      archivedSessions: expanded && state ? archivedLast(state.sessions) : [],
+      archivedState: state,
+    };
+  });
+}
+
+// Per-group sleeping-session expansion (grouped modes). Keyed by mode like
+// collapsedGroups so switching modes never carries stale expansion over. Hiding
+// keeps the loaded page cached; re-showing only refetches when never loaded.
+const groupArchivedExpanded = ref<Set<string>>(new Set());
+function groupArchivedIsExpanded(inst: InstanceView, key: string): boolean {
+  return groupArchivedExpanded.value.has(grpKey(inst, key));
+}
+async function toggleGroupArchived(inst: InstanceView, key: string): Promise<void> {
+  const k = grpKey(inst, key);
+  const next = new Set(groupArchivedExpanded.value);
+  if (next.has(k)) {
+    next.delete(k);
+    groupArchivedExpanded.value = next;
+    return;
+  }
+  const mode = groupModeOf(inst) as GroupArchivedMode;
+  const state = inst.groupArchived?.[groupArchivedKey(mode, key)];
+  if (!state?.loaded) await store.loadGroupArchivedSessions(inst.id, mode, key).catch(() => {});
+  next.add(k);
+  groupArchivedExpanded.value = next;
+}
+function loadMoreGroupArchived(inst: InstanceView, key: string): void {
+  const mode = groupModeOf(inst) as GroupArchivedMode;
+  void store.loadGroupArchivedSessions(inst.id, mode, key, true).catch(() => {});
 }
 
 // Group collapse is in-session view state only (not persisted), keyed by mode so
@@ -294,21 +343,24 @@ const rowSwipes = computed(() => {
   const map: Record<string, ReturnType<typeof useSwipeActions>["handlers"]> = {};
   for (const inst of store.instances) {
     if (!inst.online) continue;
-    for (const s of displaySessions(inst)) {
-      const key = `${inst.id}:${s.alias}`;
-      const reveal = revealPx(s);
-      map[key] = useSwipeActions({
-        pointerTypes: ["touch", "pen"],
-        onMove: (dx) => { openMenuFor.value = null; draggingKey.value = key; dragDx.value = dx; },
-        onEnd: (dx) => {
-          // Snap open if the row ended past the halfway point, else closed.
-          const base = openSwipeFor.value === key ? -reveal : 0;
-          const finalX = Math.max(-reveal, Math.min(0, base + dx));
-          openSwipeFor.value = finalX <= -reveal / 2 ? key : null;
-          draggingKey.value = null;
-          dragDx.value = 0;
-        },
-      }).handlers;
+    for (const section of sectionsFor(inst)) {
+      for (const s of [...section.sessions, ...(section.archivedSessions ?? [])]) {
+        const key = `${inst.id}:${s.alias}`;
+        if (map[key]) continue;
+        const reveal = revealPx(s);
+        map[key] = useSwipeActions({
+          pointerTypes: ["touch", "pen"],
+          onMove: (dx) => { openMenuFor.value = null; draggingKey.value = key; dragDx.value = dx; },
+          onEnd: (dx) => {
+            // Snap open if the row ended past the halfway point, else closed.
+            const base = openSwipeFor.value === key ? -reveal : 0;
+            const finalX = Math.max(-reveal, Math.min(0, base + dx));
+            openSwipeFor.value = finalX <= -reveal / 2 ? key : null;
+            draggingKey.value = null;
+            dragDx.value = 0;
+          },
+        }).handlers;
+      }
     }
   }
   return map;
@@ -369,7 +421,7 @@ const rowSwipes = computed(() => {
           </div>
           <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
             <div
-              v-for="s in grp.sessions"
+              v-for="s in [...grp.sessions, ...(grp.archivedSessions ?? [])]"
               :key="s.alias"
               data-test="session-row"
               class="group relative rounded-md"
@@ -466,6 +518,23 @@ const rowSwipes = computed(() => {
               <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
             </div>
             </div>
+            <!-- Per-group sleeping-session controls (grouped modes): page sleeping rows
+                 from the server 5 at a time instead of flat mode's one-shot snapshot. -->
+            <template v-if="grp.key !== null && inst.online">
+              <button data-test="group-toggle-archived"
+                      class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
+                      @click.stop="void toggleGroupArchived(inst, grp.key)">
+                <ArchiveRestore :size="11" class="shrink-0" />
+                {{ $t(groupArchivedIsExpanded(inst, grp.key) ? "instance.hideArchivedSessions" : "instance.showArchivedSessions") }}
+              </button>
+              <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
+                   class="py-0.5 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
+              <button v-else-if="groupArchivedIsExpanded(inst, grp.key) && grp.archivedState?.hasMore" data-test="group-load-more"
+                      class="w-full py-0.5 pl-2.5 text-left text-[11px] font-medium text-accent hover:text-fg"
+                      @click.stop="loadMoreGroupArchived(inst, grp.key)">
+                {{ $t("instance.loadMoreSessions") }}
+              </button>
+            </template>
           </div>
         </div>
 
@@ -494,7 +563,7 @@ const rowSwipes = computed(() => {
 
         <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria. -->
         <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
-          <button v-if="inst.online && inst.sessionsLoaded" data-test="toggle-archived-sessions"
+          <button v-if="inst.online && inst.sessionsLoaded && groupModeOf(inst) === 'instance'" data-test="toggle-archived-sessions"
                   :title="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
                   :aria-label="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
                   class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
