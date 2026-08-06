@@ -294,12 +294,19 @@ test("mcpCoordinatorSession spawns a warm queue owner that the second turn reuse
       console.log("[compat] win32 show diag:", JSON.stringify(diag).slice(0, 600));
     }
     const ownerBeforeReap = ownerPid1;
+    const reapErrors: unknown[] = [];
     const reaped = await reapQueueOwners(ACPX, [{
       agent: spec.agent,
       acpxAgent: spec.acpxAgent,
       cwd: spec.cwd,
       transportSession: spec.transportSession,
-    }], { timeoutMs: 30_000 });
+    }], {
+      timeoutMs: 30_000,
+      onError: (target, error) => reapErrors.push(error),
+    });
+    if (reapErrors.length > 0) {
+      console.log("[compat] reap errors:", reapErrors.map((e) => e instanceof Error ? e.message : String(e)).join(" | "));
+    }
     if (process.platform === "win32") {
       // terminateAcpxQueueOwner does not consume Windows queue locks (no
       // verifiable provenance yet); the owner stays alive and is freed by its
