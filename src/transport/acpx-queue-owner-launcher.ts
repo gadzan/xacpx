@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, unlink } from "node:fs/promises";
-import { homedir } from "node:os";
+import { access, readFile, unlink } from "node:fs/promises";
+
 import { join } from "node:path";
 
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
@@ -9,6 +9,8 @@ import { resolveSpawnCommand } from "../process/spawn-command";
 import { terminateProcessTree } from "../process/terminate-process-tree";
 import { quoteIfNeeded } from "../util/text.js";
 import { getLocale } from "../i18n";
+import { resolveAcpxHomeDir } from "./acpx-session-files";
+import { isProcessAlive } from "../daemon/daemon-files";
 import { coreEnv } from "../runtime/core-env";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
@@ -51,6 +53,13 @@ export interface AcpxQueueOwnerLauncherOptions {
   xacpxCommand?: string;
   spawnOwner?: QueueOwnerSpawner;
   terminateOwner?: QueueOwnerTerminator;
+  /**
+   * Liveness check for an existing warm owner. When it reports alive, launch()
+   * REUSES the running owner instead of kill+respawn — consecutive turns of a
+   * coordinator session share one warm agent instead of cold-starting each turn.
+   * Defaults to reading the acpx queue lock pid.
+   */
+  isOwnerAlive?: (sessionId: string) => Promise<boolean>;
   baseEnv?: NodeJS.ProcessEnv;
   ttlMs?: number;
   maxQueueDepth?: number;
@@ -116,6 +125,23 @@ export function buildXacpxMcpServerSpec(input: {
   };
 }
 
+function launchFingerprint(input: LaunchQueueOwnerInput, effectiveEnv: NodeJS.ProcessEnv): string {
+  const environmentDigest = createHash("sha256")
+    .update(JSON.stringify(Object.entries(stringEnv(effectiveEnv)).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    )))
+    .digest("hex");
+  return JSON.stringify({
+    coordinatorSession: input.coordinatorSession,
+    sourceHandle: input.sourceHandle ?? null,
+    permissionMode: input.permissionMode,
+    nonInteractivePermissions: input.nonInteractivePermissions,
+    sessionOptions: input.sessionOptions ?? null,
+    agentCommand: input.agentCommand ?? null,
+    environmentDigest,
+  });
+}
+
 export function buildQueueOwnerPayload(input: {
   sessionId: string;
   agentCommand?: string;
@@ -145,6 +171,7 @@ export class AcpxQueueOwnerLauncher {
   private readonly xacpxCommand: string;
   private readonly spawnOwner: QueueOwnerSpawner;
   private readonly terminateOwner: QueueOwnerTerminator;
+  private readonly isOwnerAlive: (sessionId: string) => Promise<boolean>;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly ttlMs?: number;
   private readonly maxQueueDepth?: number;
@@ -156,12 +183,15 @@ export class AcpxQueueOwnerLauncher {
   private readonly sleep: (ms: number) => Promise<void>;
   /** Per-session mutex: serializes terminate+spawn to prevent concurrent clobbering. */
   private readonly launchLocks = new Map<string, Promise<{ agentCommand?: string }>>();
+  /** Fingerprint of the parameters the CURRENT owner was spawned with. */
+  private readonly lastLaunchFingerprint = new Map<string, string>();
 
   constructor(options: AcpxQueueOwnerLauncherOptions) {
     this.acpxCommand = options.acpxCommand;
     this.xacpxCommand = options.xacpxCommand ?? resolveDefaultXacpxCommand(options.baseEnv ?? process.env);
     this.spawnOwner = options.spawnOwner ?? defaultQueueOwnerSpawner;
     this.terminateOwner = options.terminateOwner ?? createDefaultQueueOwnerTerminator(options.acpxCommand);
+    this.isOwnerAlive = options.isOwnerAlive ?? defaultOwnerAliveCheck;
     this.baseEnv = options.baseEnv ?? process.env;
     this.ttlMs = options.ttlMs;
     this.maxQueueDepth = options.maxQueueDepth;
@@ -192,7 +222,26 @@ export class AcpxQueueOwnerLauncher {
   }
 
   private async doLaunch(input: LaunchQueueOwnerInput): Promise<{ agentCommand?: string }> {
+    // A live warm owner can only be reused when the launch parameters are
+    // UNCHANGED since it was spawned: permission mode, coordinator/source,
+    // model options, and the agent command are all baked into the owner's
+    // payload at spawn time. Reusing it under changed parameters would keep an
+    // old permission/MCP/model/command profile alive (forever with ttl=0).
+    const childEnv = input.env ?? this.baseEnv;
+    const fingerprint = launchFingerprint(input, childEnv);
+    if (
+      await this.isOwnerAlive(input.acpxRecordId)
+      && this.lastLaunchFingerprint.get(input.acpxRecordId) === fingerprint
+    ) {
+      return { agentCommand: input.agentCommand };
+    }
     await this.terminateOwner(input.acpxRecordId);
+    if (await this.isOwnerAlive(input.acpxRecordId)) {
+      throw new Error(
+        `queue owner for session ${input.acpxRecordId} is still live after termination; refusing to spawn a replacement`,
+      );
+    }
+    this.lastLaunchFingerprint.delete(input.acpxRecordId);
 
     const managedShape = classifyPreinstalledAdapterCommandShape(input.agentCommand);
     if (managedShape && !input.adapterContext) {
@@ -245,7 +294,6 @@ export class AcpxQueueOwnerLauncher {
       "__queue-owner",
       ...(intentToken && adapter?.platform === "win32" ? ["--xacpx-owner-token", intentToken] : []),
     ]);
-    const childEnv = input.env ?? this.baseEnv;
     let spawnedPid: number | undefined;
     try {
       spawnedPid = await this.spawnOwner(spawnSpec.command, spawnSpec.args, {
@@ -259,28 +307,44 @@ export class AcpxQueueOwnerLauncher {
       if (adapter && intentToken && adapter.platform === "win32") await adapter.cancel(intentToken);
       throw error;
     }
-    if (!adapter || !intentToken || adapter.platform !== "win32") return { agentCommand: launchAgentCommand };
-
-    await adapter.spawned(intentToken);
-    const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
-    if (ownerPid !== undefined) {
-      await adapter.settle({
-        intentToken,
-        outcome: "owner-committed",
-        ownerPid,
-        ownerAcpxRecordId: input.acpxRecordId,
-      });
+    const committedFingerprint = launchFingerprint({
+      ...input,
+      ...(launchAgentCommand ? { agentCommand: launchAgentCommand } : { agentCommand: undefined }),
+    }, childEnv);
+    if (!adapter || !intentToken || adapter.platform !== "win32") {
+      this.lastLaunchFingerprint.set(input.acpxRecordId, committedFingerprint);
       return { agentCommand: launchAgentCommand };
     }
-    const status = await this.probeSpawnedProcess(spawnedPid);
-    if (status === "exited") {
-      await adapter.settle({ intentToken, outcome: "launch-failed" });
+
+    try {
+      await adapter.spawned(intentToken);
+      const ownerPid = await this.waitForOwnerPid(input.acpxRecordId);
+      if (ownerPid !== undefined) {
+        await adapter.settle({
+          intentToken,
+          outcome: "owner-committed",
+          ownerPid,
+          ownerAcpxRecordId: input.acpxRecordId,
+        });
+        this.lastLaunchFingerprint.set(input.acpxRecordId, committedFingerprint);
+        return { agentCommand: launchAgentCommand };
+      }
+      const status = await this.probeSpawnedProcess(spawnedPid);
+      if (status === "exited") {
+        await adapter.settle({ intentToken, outcome: "launch-failed" });
+      }
+      throw new Error(status === "alive"
+        ? `queue owner ${spawnedPid} did not become ready before timeout`
+        : status === "exited"
+          ? `queue owner ${spawnedPid} exited before becoming ready`
+          : `queue owner ${spawnedPid} readiness could not be determined`);
+    } catch (error) {
+      // A spawn is not reusable until the Windows intent has durably settled as
+      // owner-committed. A late lock from a timed-out owner is handled by the
+      // next launch's verified terminate-or-fail-closed path.
+      this.lastLaunchFingerprint.delete(input.acpxRecordId);
+      throw error;
     }
-    throw new Error(status === "alive"
-      ? `queue owner ${spawnedPid} did not become ready before timeout`
-      : status === "exited"
-        ? `queue owner ${spawnedPid} exited before becoming ready`
-        : `queue owner ${spawnedPid} readiness could not be determined`);
   }
 
   private async waitForOwnerPid(sessionId: string): Promise<number | undefined> {
@@ -392,8 +456,14 @@ async function defaultProbeSpawnedProcess(pid: number): Promise<"alive" | "exite
 
 function createDefaultQueueOwnerTerminator(_acpxCommand: string): QueueOwnerTerminator {
   return async (sessionId) => {
-    await terminateAcpxQueueOwner(sessionId);
+    await terminateAcpxQueueOwnerVerified(sessionId);
   };
+}
+
+/** A warm owner is alive when acpx's queue lock records a live pid. */
+async function defaultOwnerAliveCheck(sessionId: string): Promise<boolean> {
+  const pid = await readQueueOwnerPid(sessionId);
+  return pid !== undefined && isProcessAlive(pid);
 }
 
 export async function readQueueOwnerPid(sessionId: string): Promise<number | undefined> {
@@ -442,11 +512,80 @@ export async function terminateAcpxQueueOwnerWithDeps(
 }
 
 function queueLockFilePath(sessionId: string): string {
-  return join(homedir(), ".acpx", "queues", `${shortHash(sessionId, 24)}.lock`);
+  return join(resolveAcpxHomeDir(), ".acpx", "queues", `${shortHash(sessionId, 24)}.lock`);
 }
 
 function shortHash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
+}
+
+export interface VerifiedOwnerTerminationDeps {
+  lockPath?: string;
+  /** Defaults to terminateAcpxQueueOwner (a no-op for unverifiable Windows locks). */
+  terminate?: () => Promise<void>;
+  delay?: (ms: number) => Promise<void>;
+  /** Test seam for lock-liveness checks; defaults to fs access(). */
+  accessFn?: (path: string) => Promise<void>;
+}
+
+/**
+ * Terminate the warm owner for a session AND prove it is gone before returning.
+ * Used before mutating a session record: if the owner cannot be shown to be
+ * terminated (the lock still exists), writing the record could race the
+ * owner's own writes. Fails closed instead.
+ *
+ * Note: on Windows terminateAcpxQueueOwner deliberately does not consume the
+ * queue lock (no verifiable provenance yet), so a live owner there makes the
+ * migration unsafe — callers surface the error and the operator frees the
+ * owner (or waits for the daemon's orphan sweep) before retrying.
+ */
+export async function terminateAcpxQueueOwnerVerified(sessionId: string): Promise<void> {
+  await terminateAcpxQueueOwnerVerifiedWithDeps(sessionId, {});
+}
+
+export async function terminateAcpxQueueOwnerVerifiedWithDeps(
+  sessionId: string,
+  deps: VerifiedOwnerTerminationDeps,
+): Promise<void> {
+  const lockPath = deps.lockPath ?? queueLockFilePath(sessionId);
+  const delay = deps.delay ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const accessFn = deps.accessFn ?? access;
+  if (await lockFileGone(lockPath, accessFn)) {
+    return; // no lock → no owner → nothing to terminate
+  }
+  await (deps.terminate ?? (() => terminateAcpxQueueOwner(sessionId)))();
+  // Bounded wait for the lock to actually disappear. Any non-ENOENT access
+  // error (EACCES/EPERM/EIO...) means we cannot PROVE the owner is gone —
+  // fail closed rather than migrating under an unverifiable owner.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await lockFileGone(lockPath, accessFn)) {
+      return; // lock gone → owner terminated
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `queue owner for session ${sessionId} could not be terminated safely; ` +
+      "refusing to rewrite the session record while the owner may still be running",
+  );
+}
+
+/** True only when the lock is verifiably absent; other errors throw. */
+async function lockFileGone(
+  lockPath: string,
+  accessFn: (path: string) => Promise<void>,
+): Promise<boolean> {
+  try {
+    await accessFn(lockPath);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    throw new Error(
+      `cannot verify queue owner lock state at ${lockPath}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
 }
 
 export function resolveDefaultXacpxCommand(env: NodeJS.ProcessEnv): string {

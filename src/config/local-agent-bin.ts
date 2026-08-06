@@ -66,6 +66,22 @@ export function isExecutableOnPath(
 
 /**
  * If `driver` is a known npx-fallback agent AND its native CLI is on PATH, return the
+ * structured argv (e.g. `["opencode", "acp"]`); otherwise undefined (let acpx fall back
+ * to its npx default). The bare bin name is resolved on PATH at spawn time, sidestepping
+ * any path-with-spaces quoting concerns.
+ */
+export function resolveLocalAgentArgv(
+  driver: string,
+  onPath: (name: string) => boolean = (name) => isExecutableOnPath(name),
+): string[] | undefined {
+  const spec = LOCAL_AGENT_BINS[driver];
+  if (!spec) return undefined;
+  if (!onPath(spec.bin)) return undefined;
+  return [spec.bin, ...spec.args];
+}
+
+/**
+ * If `driver` is a known npx-fallback agent AND its native CLI is on PATH, return the
  * native command (e.g. `"opencode acp"`) to hand acpx via `--agent`; otherwise undefined
  * (let acpx fall back to its npx default). Returns the bare bin name — acpx resolves it
  * on PATH at spawn time, sidestepping any path-with-spaces quoting concerns.
@@ -74,8 +90,5 @@ export function resolveLocalAgentCommand(
   driver: string,
   onPath: (name: string) => boolean = (name) => isExecutableOnPath(name),
 ): string | undefined {
-  const spec = LOCAL_AGENT_BINS[driver];
-  if (!spec) return undefined;
-  if (!onPath(spec.bin)) return undefined;
-  return [spec.bin, ...spec.args].join(" ");
+  return resolveLocalAgentArgv(driver, onPath)?.join(" ");
 }

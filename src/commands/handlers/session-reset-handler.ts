@@ -64,6 +64,9 @@ export async function handleSessionResetCommand(
           agent: resetSession.agent,
           workspace: resetSession.workspace,
           transportSession: resetSession.transportSession,
+          ...(resetSession.agentCommand ? { transportAgentCommand: resetSession.agentCommand } : {}),
+          ...(resetSession.acpxAgent ? { transportAcpxAgent: resetSession.acpxAgent } : {}),
+          ...(resetSession.agentArgv ? { transportAgentArgv: resetSession.agentArgv } : {}),
           agentSessionId: freshAgentSessionId,
           updatedAt: new Date(ops.now()).toISOString(),
         });
@@ -73,6 +76,9 @@ export async function handleSessionResetCommand(
           resetSession.agent,
           resetSession.workspace,
           resetSession.transportSession,
+          resetSession.agentCommand,
+          resetSession.acpxAgent,
+          resetSession.agentArgv,
         );
       }
 

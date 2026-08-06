@@ -11,7 +11,7 @@ import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
-import { resolveConfiguredAgentCommand } from "./config/resolve-agent-command";
+import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
@@ -69,6 +69,23 @@ import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstal
 import { classifyPreinstalledAdapterCommandShape } from "./adapters/adapter-catalog";
 import { probeWindowsProcessIdentity, snapshotWindowsProcessesByToken } from "./process/windows-process-tree";
 import { createQueueOwnerAdapterContext } from "./transport/queue-owner-adapter-context";
+import {
+  computeAgentOverlayEntries,
+  ensureAgentOverlays,
+  type EnsureAgentOverlaysResult,
+} from "./transport/acpx-agent-overlay";
+
+async function defaultProvisionAgentOverlays(
+  config: AppConfig,
+  logger: AppLogger,
+): Promise<EnsureAgentOverlaysResult> {
+  const entries = computeAgentOverlayEntries(config);
+  const result = await ensureAgentOverlays(entries);
+  for (const [alias, outcome] of Object.entries(result.outcomes)) {
+    await logger.info("acpx.overlay", `acpx agent overlay ${outcome}`, { alias });
+  }
+  return result;
+}
 
 export interface RuntimePaths {
   configPath: string;
@@ -132,6 +149,14 @@ interface RuntimeDeps {
   stateSaveDebounceMs?: number;
   daemonIdentity?: DaemonIdentity;
   orphanRegistry?: OrphanRegistry;
+  /**
+   * Provision xacpx-managed acpx agent overlays before transport creation.
+   * Injectable for tests; defaults to provisioning from the loaded config.
+   */
+  provisionAgentOverlays?: (
+    config: AppConfig,
+    logger: AppLogger,
+  ) => Promise<EnsureAgentOverlaysResult>;
 }
 
 function startProgressHeartbeat(
@@ -190,8 +215,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     defaultLoggingLevel: deps.defaultLoggingLevel,
   });
   setLocale(resolveLocale({ configLanguage: config.language }));
+  // Hot-reload path: any new/changed agent (argv, adapter pin, registry) may need
+  // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
+  // conflicting/failed overlay never leaves memory and disk disagreeing.
+  const provisionOverlays = async (target: AppConfig): Promise<void> => {
+    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(target, logger);
+  };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
     const updated = await configStore.load();
+    await provisionOverlays(updated);
     setLocale(resolveLocale({ configLanguage: updated.language }));
     replaceRuntimeConfig(config, updated);
     return config;
@@ -219,6 +251,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       })
     : createNoopPerfTracer();
   await perfTracer.cleanup();
+  // Provision xacpx-managed acpx agent overlays (`~/.acpx/config.json` agents
+  // entries) before any transport exists, so every acpx launch resolves its
+  // positional alias to the exact structured argv.
+  await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
   const acpxCommand = resolveAcpxCommand({ configuredCommand: config.transport.command });
   const stateStore = new StateStore(paths.statePath);
   const state = await stateStore.load();
@@ -263,8 +299,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       });
     },
   });
-  const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex });
   const runtimeRoot = dirname(paths.configPath);
+  const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
   const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
     platform: process.platform,
     runtimeRoot,
@@ -315,6 +351,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
               await spawnAcpxBridgeClient({
                 acpxCommand,
                 bridgeEntryPath: resolveBridgeEntryPath(),
+                agentOverlays: computeAgentOverlayEntries(config),
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions: config.transport.nonInteractivePermissions,
                 ...(typeof config.transport.permissionPolicy === "string"
@@ -577,12 +614,16 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       throw new Error(`agent "${input.targetAgent}" is not configured`);
     }
 
+    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
       driver: agentConfig.driver,
       settingsPolicy: agentConfig.settingsPolicy,
-      agentCommand: resolveConfiguredAgentCommand(agentConfig, config.transport),
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+      ...(launch.agentArgv ? { agentArgv: launch.agentArgv } : {}),
       model: agentConfig.model,
       workspace: input.workspace,
       transportSession: input.workerSession,
@@ -920,6 +961,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       catalog: () => listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
         const updated = await configStore.upsertAgent(name, { driver });
+        await provisionOverlays(updated);
         replaceRuntimeConfig(config, updated);
         return { name, driver };
       },

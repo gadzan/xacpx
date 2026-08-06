@@ -14,6 +14,7 @@ import { coreEnv } from "../runtime/core-env";
 import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
+import { ensureAgentOverlays, parseAgentOverlayEntries } from "../transport/acpx-agent-overlay";
 
 type BridgeInput = AsyncIterable<string> & {
   close(): void;
@@ -63,6 +64,15 @@ export async function processBridgeInput(options: {
 }
 
 export async function runBridgeMain(): Promise<void> {
+  // The console hands the bridge the exact overlay entries it needs; re-provisioning
+  // here is idempotent and keeps standalone bridge invocations consistent.
+  const overlaysEnv = coreEnv("BRIDGE_AGENT_OVERLAYS");
+  if (overlaysEnv) {
+    await ensureAgentOverlays(parseAgentOverlayEntries(overlaysEnv));
+    // The full argv list must not leak into the environment of the acpx/agent
+    // children this bridge spawns (or hit Windows env-block size limits).
+    delete process.env.XACPX_BRIDGE_AGENT_OVERLAYS;
+  }
   let server: BridgeServer;
   const runtime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
       permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),

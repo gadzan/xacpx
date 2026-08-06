@@ -432,7 +432,10 @@ test("start uses the onboarding startup timeout when creating the first session"
     isProcessRunning: (pid) => pid === 77777,
     spawnDetached: async () => 77777,
     startupTimeoutMs: 5,
-    onboardingStartupTimeoutMs: 100,
+    // Onboarding timeout must be far above the startup timeout (5ms) to prove
+    // the right deadline is chosen, but needs slow-machine headroom: the poll
+    // loop's status save + 3ms sleeps can exceed 100ms on Windows CI.
+    onboardingStartupTimeoutMs: 500,
     onStartupPoll: async () => {
       polls += 1;
       if (polls === 3) {

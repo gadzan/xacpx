@@ -134,6 +134,64 @@ test("createSessionWithTransport resolves, ensures the transport session, and bi
   expect(await sessions.getSession("relay:demo")).toBeTruthy();
 });
 
+test("createSessionWithTransport persists the exact structured launch across config changes", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom", argv: ["/opt/agent-a", "--acp", ""] };
+  config.workspaces.home = { cwd: "/tmp/home" };
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+  await router.createSessionWithTransport("relay:demo", "custom", "home");
+
+  expect(state.sessions["relay:demo"]?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
+  expect(state.sessions["relay:demo"]?.transport_agent_argv).toEqual(["/opt/agent-a", "--acp", ""]);
+
+  config.agents.custom = { driver: "custom", argv: ["/opt/agent-b", "--acp"] };
+  const reloaded = new SessionService(config, new MemoryStateStore(), state);
+  expect((await reloaded.getSession("relay:demo"))?.agentArgv).toEqual(["/opt/agent-a", "--acp", ""]);
+});
+
+test("chat session creation persists the exact structured launch across config changes", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom", argv: ["/opt/chat-agent-a", "--acp"] };
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+  await router.handle("wx:user", "/session new sticky --agent custom --ws backend");
+
+  expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/chat-agent-a", "--acp"]);
+
+  config.agents.custom = { driver: "custom", argv: ["/opt/chat-agent-b", "--acp"] };
+  const reloaded = new SessionService(config, new MemoryStateStore(), state);
+  expect((await reloaded.getSession("sticky"))?.agentArgv).toEqual(["/opt/chat-agent-a", "--acp"]);
+});
+
+test("chat attach and reset persist the structured launch they actually use", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom", argv: ["/opt/attached-agent", "--acp", ""] };
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+  await router.handle(
+    "wx:user",
+    "/session attach sticky --agent custom --ws backend --name existing-sticky",
+  );
+  expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/attached-agent", "--acp", ""]);
+
+  const reset = await router.handle("wx:user", "/session reset");
+  expect(reset.text).toBe(t().misc.sessionResetSuccess("sticky"));
+  expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/attached-agent", "--acp", ""]);
+});
+
 test("createSessionWithTransport applies a model override to the session and persists it", async () => {
   const { router, transport, sessions, config } = buildRouter();
   config.workspaces.home = { cwd: "/tmp/home" };
@@ -1216,7 +1274,8 @@ test("/ssn lists native sessions from the current session context", async () => 
   expect(reply.text).not.toContain("61456d60-b7e1-47e6-8641-72bbe8e552e7");
   expect(transport.listAgentSessions).toHaveBeenCalledWith({
     agent: "codex",
-    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+    acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
     driver: "codex",
     cwd: "/tmp/project",
     filterCwd: "/tmp/project",
@@ -1311,7 +1370,8 @@ test("/ssn preserves transport method this binding when listing native sessions"
   expect(transport.client.calls).toEqual([
     {
       agent: "codex",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+      acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
       driver: "codex",
       cwd: "/tmp/project",
       filterCwd: "/tmp/project",
@@ -1500,7 +1560,8 @@ test("/ssn --all preserves all scope in next page commands", async () => {
   expect(reply.text).toContain("更多：/ssn codex --ws project --all --cursor cursor-2");
   expect(transport.listAgentSessions).toHaveBeenCalledWith({
     agent: "codex",
-    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+    acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
     driver: "codex",
     cwd: "/tmp/project",
   });

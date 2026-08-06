@@ -31,19 +31,31 @@ export function buildModelArgs(model: string | undefined): string[] {
 export interface SessionArgsInput {
   agent: string;
   agentCommand?: string;
+  /**
+   * Positional acpx agent: bare built-in driver or xacpx-managed overlay alias.
+   * When set, the agent launches through acpx's native structured argv path.
+   */
+  acpxAgent?: string;
+  /** Unix-only legacy raw override: passed as acpx `--agent <rawCommand>`. */
+  rawCommand?: string;
   cwd: string;
   model?: string;
   permission: PermissionArgsInput;
 }
 
-// Agent selection: `--agent <cmd>` when an explicit adapter command is set, else the
-// bare agent name — appended after the flag prefix, before the operation tail. Shared by
-// all three arg builders so the branch lives in exactly one place.
+// Agent selection — the ONLY place the launch selector lives. All transports and
+// management by-passes must route through this so they can never drift:
+// 1. `rawCommand` → `--agent <rawCommand>` (Unix legacy override).
+// 2. `acpxAgent` → positional agent (overlay alias or bare driver).
+// 3. legacy compat (old bridge clients): `agentCommand` → `--agent <cmd>`.
+// 4. bare positional `agent`.
 function appendAgentAndTail(
   prefix: string[],
-  input: { agent: string; agentCommand?: string },
+  input: { agent: string; agentCommand?: string; acpxAgent?: string; rawCommand?: string },
   tail: string[],
 ): string[] {
+  if (input.rawCommand) return [...prefix, "--agent", input.rawCommand, ...tail];
+  if (input.acpxAgent) return [...prefix, input.acpxAgent, ...tail];
   if (input.agentCommand) return [...prefix, "--agent", input.agentCommand, ...tail];
   return [...prefix, input.agent, ...tail];
 }
@@ -78,7 +90,14 @@ export function buildPromptArgs(
 }
 
 export function buildAgentQueryArgs(
-  input: { agent: string; agentCommand?: string; cwd: string; permission: PermissionArgsInput },
+  input: {
+    agent: string;
+    agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    cwd: string;
+    permission: PermissionArgsInput;
+  },
   format: "json" | "quiet",
   tail: string[],
 ): string[] {

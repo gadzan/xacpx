@@ -106,7 +106,7 @@ test("creates a session with xacpx's pinned managed adapter", async () => {
 
   expect(session.transportSession).toBe("backend:api-fix");
   expect(session.cwd).toBe("/tmp/backend");
-  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9");
 });
 
 test("carries Claude execution policy from config to a resolved session", async () => {
@@ -135,7 +135,7 @@ test("ignores a legacy raw codex command and falls back to xacpx's pinned adapte
 
   const session = await service.createSession("api-fix", "codex", "backend");
 
-  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4");
+  expect(session.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9");
 });
 
 test("refreshes recorded generated adapter commands but preserves custom recorded commands", async () => {
@@ -172,7 +172,7 @@ test("refreshes a recorded legacy codex shim to the current managed pin", async 
 
   const service = new SessionService(config, new MemoryStateStore(), state);
   expect((await service.getSession("review"))?.agentCommand).toBe(
-    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
   );
 });
 
@@ -886,7 +886,7 @@ test("recreating an alias with a different agent does not inherit transport agen
 
   const recreated = await service.createSession("foo", "claude", "backend");
 
-  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(recreated.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.64.2");
   expect(recreated.modeId).toBeUndefined();
   expect(recreated.replyMode).toBeUndefined();
   expect(state.sessions.foo?.transport_agent_command).toBeUndefined();
@@ -921,7 +921,7 @@ test("resolveSession does not reuse a cached transport agent command from a diff
   await service.setSessionTransportAgentCommand("foo", "npx @zed-industries/codex-acp@^0.9.5");
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
-  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.59.0");
+  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.64.2");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");
@@ -1074,4 +1074,243 @@ test("fresh transport incarnations do not collide across service instances with 
   expect(firstName).toMatch(/^backend:review:reset-\d+$/);
   expect(secondName).toMatch(/^backend:review:reset-\d+$/);
   expect(secondName).not.toBe(firstName);
+});
+
+// ── structured launch metadata ───────────────────────────────────────────────
+
+test("resolves managed launches to an overlay alias with canonical identity", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const session = await service.createSession("alias-run", "codex", "backend");
+
+  expect(session.acpxAgent).toMatch(/^xacpx-managed-codex-[0-9a-f]{12}$/);
+  expect(session.agentCommand).toBe(
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+  );
+  expect(session.agentArgv).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
+    "@agentclientprotocol/codex-acp@1.1.9",
+  ]);
+  expect(session.rawCommand).toBeUndefined();
+});
+
+test("resolves bare built-in drivers positionally", async () => {
+  const config = createConfig();
+  config.agents.pool = { driver: "pool" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const session = await service.createSession("pool-run", "pool", "backend");
+
+  expect(session.acpxAgent).toBe("pool");
+  expect(session.agentCommand).toBeUndefined();
+  expect(session.agentArgv).toBeUndefined();
+});
+
+test("explicit unix command resolves to a raw override with identity", async () => {
+  const config = createConfig();
+  config.agents.codex = { driver: "codex", command: "custom-codex --acp" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const session = await service.createSession("raw-run", "codex", "backend");
+
+  expect(session.rawCommand).toBe("custom-codex --acp");
+  expect(session.agentCommand).toBe("custom-codex --acp");
+  expect(session.acpxAgent).toBe("codex");
+});
+
+test("recorded custom argv stays sticky across restart while managed argv recomputes", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-codex-customhash1234",
+    transport_agent_command: "custom agent",
+    transport_agent_argv: ["/opt/agent", "--acp", ""],
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+  expect(session?.acpxAgent).toBe("xacpx-managed-codex-customhash1234");
+  expect(session?.agentArgv).toEqual(["/opt/agent", "--acp", ""]);
+  expect(session?.agentCommand).toBe("custom agent");
+
+  // Managed-shaped recorded argv is derived: recomputed to the current pin.
+  delete state.sessions.review!.transport_agent_command;
+  state.sessions.review!.transport_acpx_agent = "xacpx-managed-codex-oldhash9999";
+  state.sessions.review!.transport_agent_argv = [
+    "npx", "-y", "@agentclientprotocol/codex-acp@1.0.0",
+  ];
+  const refreshed = new SessionService(config, new MemoryStateStore(), state);
+  const session2 = await refreshed.getSession("review");
+  expect(session2?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
+  expect(session2?.acpxAgent).not.toBe("xacpx-managed-codex-oldhash9999");
+});
+
+test("windows upgrades a recorded preinstalled managed command instead of treating it as raw", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command:
+      '"C:\\xacpx\\runtime\\node.exe" "C:\\xacpx\\runtime\\adapters\\codex\\releases\\1.1.8-12345678-abcdef12\\node_modules\\@agentclientprotocol\\codex-acp\\bin\\codex-acp.js"',
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state, {
+    platform: "win32",
+    runtimeRoot: "C:\\xacpx\\runtime",
+  });
+  const session = await service.getSession("review");
+
+  expect(session?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
+  expect(session?.agentCommand).not.toContain("1.1.8-12345678-abcdef12");
+});
+
+test("recorded preinstalled argv is derived and follows the active managed release", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-codex-oldrelease",
+    transport_agent_command:
+      '"/opt/xacpx/runtime/node" "/opt/xacpx/runtime/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js"',
+    transport_agent_argv: [
+      "/opt/xacpx/runtime/node",
+      "/opt/xacpx/runtime/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js",
+    ],
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state, {
+    runtimeRoot: "/opt/xacpx/runtime",
+  });
+  const session = await service.getSession("review");
+
+  expect(session?.agentArgv).toContain("@agentclientprotocol/codex-acp@1.1.9");
+  expect(session?.agentCommand).not.toContain("1.1.8-12345678-abcdef12");
+});
+
+test("custom recorded argv containing a managed-looking release path stays sticky", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-codex-custompath",
+    transport_agent_command:
+      '"/usr/bin/node" "/srv/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js"',
+    transport_agent_argv: [
+      "/usr/bin/node",
+      "/srv/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js",
+    ],
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+
+  expect(session?.acpxAgent).toBe("xacpx-managed-codex-custompath");
+  expect(session?.agentArgv).toEqual([
+    "/usr/bin/node",
+    "/srv/adapters/codex/releases/1.1.8-12345678-abcdef12/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js",
+  ]);
+});
+
+test("windows rejects a custom recorded command containing a managed-looking release path", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command:
+      '"C:\\usr\\bin\\node.exe" "C:\\srv\\adapters\\codex\\releases\\custom\\agent.js"',
+  };
+
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+
+  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+});
+
+// ── windows recorded raw command guard ───────────────────────────────────────
+
+test("windows rejects a recorded multi-token raw command instead of resurrecting it", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "node C:/path with space/agent.js --acp",
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+});
+
+test("windows rejects a recorded single-token command too (no overlay alias exists for it)", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "myagent.exe",
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+});
+
+test("recorded custom argv stays sticky even when the config argv changes", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom", argv: ["C:\\Program Files\\agent-b.exe", "--acp"] };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-custom-aaaabbbbcccc",
+    transport_agent_command: "C:\\Program Files\\agent-a.exe --acp",
+    transport_agent_argv: ["C:\\Program Files\\agent-a.exe", "--acp"],
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+  expect(session?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
+  expect(session?.acpxAgent).toBe("xacpx-managed-custom-aaaabbbbcccc");
+});
+
+test("command refresh preserves recorded structured launch fields", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const created = await service.attachNativeSession({
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transportSession: "backend:review",
+    transportAgentCommand: "C:\\Program Files\\agent-a.exe --acp",
+    transportAcpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    transportAgentArgv: ["C:\\Program Files\\agent-a.exe", "--acp"],
+    agentSessionId: "thread-1",
+  });
+  expect(created.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
+
+  // Refresh-style call with only the command: structured fields must survive.
+  await service.setSessionTransportAgentCommand("review", "C:\\Program Files\\agent-b.exe --acp");
+  const after = await service.getSession("review");
+  expect(after?.agentCommand).toBe("C:\\Program Files\\agent-b.exe --acp");
+  expect(after?.acpxAgent).toBe("xacpx-managed-custom-aaaabbbbcccc");
+  expect(after?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
 });

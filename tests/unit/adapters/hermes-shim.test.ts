@@ -143,3 +143,14 @@ test("shim strips resume from the initialize response and passes the rest throug
   const passthrough = JSON.parse(lines[1]!) as { params: { note: string } };
   expect(passthrough.params.note).toBe("pass-through-你好");
 }, 15000);
+
+import { hermesAcpShimArgv } from "../../../src/adapters/hermes-shim";
+
+test("hermesAcpShimArgv is the structured form of the shim command", () => {
+  expect(hermesAcpShimArgv("/usr/local/bin/node", "/opt/x acpx/dist/adapters/hermes-acp-shim.js")).toEqual([
+    "/usr/local/bin/node",
+    "/opt/x acpx/dist/adapters/hermes-acp-shim.js",
+    "hermes",
+    "acp",
+  ]);
+});

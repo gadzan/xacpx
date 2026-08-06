@@ -18,8 +18,8 @@ If you want to manage WeChat/Feishu message channels, see [`docs/channel-managem
     "queueOwnerTtlSeconds": 1800,
     "adapterRegistry": "https://registry.npmjs.org/",
     "adapterVersions": {
-      "codex": "1.1.4",
-      "claude": "0.59.0"
+      "codex": "1.1.9",
+      "claude": "0.64.2"
     }
   },
   "logging": {
@@ -95,7 +95,7 @@ How xacpx communicates with the acpx backend.
 | `queueOwnerTtlSeconds` | `number` | No | acpx queue owner idle time-to-live (seconds), passed through to the prompt command as `acpx --ttl <value>`. Defaults to `1800` (30 minutes); `0` = live forever. See the "Reducing agent cold starts" notes below |
 | `turnIdleTimeoutSeconds` | `number` | No | Inactivity watchdog for in-flight agent turns. If a turn produces no streamed agent activity (output/tool/thought/usage/plan/command event) for this many seconds, it is aborted and reported as `Turn timed out due to inactivity`, reclaiming its slot. The timer resets on every streamed event, so long but actively-working turns are unaffected — **but a single tool call that stays silent for the whole window (e.g. `sleep`, a long compile/clone with no interleaved output) will still trip it**; raise this value or set `0` for workloads with long silent operations. Defaults to `600` (10 minutes); `0` disables the watchdog. Each reclaim is logged as `control.turn.idle_timeout` (with the session and the concrete threshold) for diagnosis |
 | `preferLocalAgents` | `boolean` | No | Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback when one is on `PATH` (currently the unpinned-npx drivers `opencode` and `kilocode`). Avoids a per-cold-start npm-registry fetch — faster and immune to network blips (e.g. `ECONNRESET` during agent init). Defaults to `true`; set `false` to always use acpx's default resolution. A per-agent `command` override still takes precedence |
-| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `1.1.4`, `claude` `0.59.0` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
+| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `1.1.9`, `claude` `0.64.2` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
 | `adapterRegistry` | `string` | No | npm registry used only for xacpx-managed Codex/Claude adapters. Defaults to `https://registry.npmjs.org/` and does **not** inherit the machine/company npm default. Change it with `xacpx adapter registry set <url>`; only credential-free HTTP(S) URLs are accepted |
 
 ### Managed ACP adapter versions
@@ -470,9 +470,45 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `driver` | `string` | Yes | Agent driver type, passed as the first positional argument to acpx |
-| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins |
+| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins. **Mutually exclusive with `argv`**. On Windows a raw command cannot be launched losslessly (acpx rejects it); migrate to `argv` instead (see below) |
+| `argv` | `string[]` | No | Exact executable + argument boundaries (`["C:\\Program Files\\agent.exe", "--acp", ...]`). First element must be a non-empty executable; every element is passed to acpx verbatim (spaces, backslashes, empty strings preserved). **Mutually exclusive with `command`**. This is the only lossless launch form on Windows. Mutating `argv` creates a NEW acpx session identity (content-addressed alias); old sessions keep their recorded identity |
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
 | `settingsPolicy` | `"provider-only"` \| `"isolated"` \| `"full-user"` | No | Claude user-settings policy. The implicit default is `"provider-only"`; other drivers ignore this field. See below |
+
+#### Windows raw command migration
+
+An old Unix-style `command` that contains whitespace cannot be launched on Windows
+(acpx rejects raw `--agent` strings there, and guessing a quote split would corrupt
+boundaries). xacpx fails closed with a migration error instead of guessing. Convert
+the agent to structured argv:
+
+```json
+{
+  "agents": {
+    "my-agent": {
+      "driver": "custom",
+      "argv": ["C:\\Program Files\\agent\\agent.exe", "--acp", "--flag", "two words"]
+    }
+  }
+}
+```
+
+A single-token command (no whitespace, e.g. `"myagent.exe"`) is converted to
+`["myagent.exe"]` automatically.
+
+#### xacpx-managed acpx agent aliases
+
+Structured launches (managed Codex/Claude pins, the hermes shim, local fallbacks,
+and user `argv`) are exposed to acpx as content-addressed positional aliases
+(`xacpx-managed-<driver>-<sha256-prefix>`). At startup xacpx safely merges
+`{ "argv": [...] }` for those aliases into `~/.acpx/config.json`'s `agents` node
+under a proper-lockfile, preserving every other key and user agent entry. It never
+writes `.acpxrc.json`, never overwrites an existing alias with a different argv
+(conflicts fail closed), and never prunes stale aliases automatically (old sessions
+or pins may still reference them). Existing sessions are never deleted or closed by
+an upgrade; when a legacy session record lacks `agent_argv`, xacpx backfills it only
+when the record's `agent_command` matches the target argv's canonical identity
+exactly, then resumes the same record id.
 
 ### Claude third-party provider settings
 
@@ -559,9 +595,11 @@ The following built-in templates are used when you send `/agent add <name>` via 
 | `kiro` | `"kiro"` | None (uses acpx default) |
 | `mux` | `"mux"` | None (uses acpx default) |
 | `opencode` | `"opencode"` | None (uses acpx default) |
+| `pool` | `"pool"` | None (uses acpx default) |
 | `qoder` | `"qoder"` | None (uses acpx default) |
 | `qwen` | `"qwen"` | None (uses acpx default) |
 | `trae` | `"trae"` | None (uses acpx default) |
+| `zeroclaw` | `"zeroclaw"` | None (uses acpx default) |
 
 `hermes` is not in acpx's builtin registry, so xacpx supplies its launch command at spawn time: a bundled stdio shim (`dist/adapters/hermes-acp-shim.js`) that runs `hermes acp` and strips the advertised `sessionCapabilities.resume` from the initialize response. This works around hermes-agent replaying the full transcript on every `session/resume` ([NousResearch/hermes-agent#32201](https://github.com/NousResearch/hermes-agent/issues/32201)) by forcing acpx onto its replay-guarded `session/load` path; the shim command is resolved at runtime and never written into `config.json`. It requires [Hermes Agent](https://hermes-agent.nousresearch.com/) installed locally with its ACP extra (`uv pip install -e '.[acp]'`) and provider credentials configured under `~/.hermes/`. Setting an explicit `agents.<name>.command` (other than the literal `hermes acp`, which is treated as the template default) bypasses the shim. Note that the shim command embeds the node executable and xacpx install paths, so upgrading node or relocating the install changes the command string acpx keys session records by — acpx then starts a fresh backend session record for hermes instead of reusing the old one.
 

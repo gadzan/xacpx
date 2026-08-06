@@ -67,7 +67,7 @@ test("ensureSession retries without --model when the agent does not advertise th
   expect(calls.some((a) => !a.includes("--model"))).toBe(true);
 });
 
-test("ensureSession surfaces non-model failures without retrying", async () => {
+test("ensureSession surfaces non-model failures without the model retry", async () => {
   let attempts = 0;
   const run = mock(async () => {
     attempts += 1;
@@ -75,7 +75,9 @@ test("ensureSession surfaces non-model failures without retrying", async () => {
   });
   const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
   await expect(transport.ensureSession(modelSession)).rejects.toThrow("unrelated boom");
-  expect(attempts).toBe(1);
+  // ensure → show probe → new (mirrors the bridge); the model retry is NOT one
+  // of them, so a non-model failure surfaces as-is after the fallback chain.
+  expect(attempts).toBe(3);
 });
 
 test("setModel issues `set ... model <id>` with the new model consistently", async () => {

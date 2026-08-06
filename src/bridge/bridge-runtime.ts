@@ -18,8 +18,10 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
+import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
+import { renderAgentArgvIdentity } from "../config/agent-launch";
 import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
@@ -97,6 +99,9 @@ interface BridgeSessionInput {
   driver?: string;
   settingsPolicy?: ClaudeSettingsPolicy;
   agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+  agentArgv?: string[];
   cwd: string;
   name: string;
   sessionKey?: string;
@@ -202,6 +207,9 @@ export class BridgeRuntime {
   async listAgentSessions(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -232,6 +240,9 @@ export class BridgeRuntime {
   async resumeAgentSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -285,6 +296,9 @@ export class BridgeRuntime {
   async hasSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -306,6 +320,9 @@ export class BridgeRuntime {
   async tailSessionHistory(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -375,6 +392,10 @@ export class BridgeRuntime {
     onProgress?: (progress: EnsureSessionProgress) => void,
   ): Promise<Record<string, never>> {
     onProgress?.("spawn");
+    // Structured launches first migrate a legacy record (agent_command present,
+    // agent_argv missing) so acpx can resume it on Windows with exact argv
+    // boundaries. No record → the ensure below creates one from the overlay argv.
+    await this.migrateLegacySessionArgvIfNeeded(input);
     const timeoutMs = this.sessionInitTimeoutMs();
     // One shared deadline for every subprocess step (ensure, show probe, new,
     // verbose-fallback retry): each step only gets the remaining budget so the
@@ -586,6 +607,7 @@ export class BridgeRuntime {
       ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
       permissionMode: this.options.permissionMode ?? "approve-all",
       nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
+      ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
       ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
       ...(adapterContext ? { adapterContext } : {}),
       ...(env ? { env } : {}),
@@ -613,6 +635,54 @@ export class BridgeRuntime {
     return result.stdout;
   }
 
+  /**
+   * Backfill `agent_argv` into a legacy acpx session record before the session is
+   * ensured/launched, so Windows can resume it with exact boundaries. Runs only
+   * for structured launches (agentArgv present); fails closed on identity or argv
+   * mismatches rather than reusing a session that would launch a different agent.
+   */
+  private async migrateLegacySessionArgvIfNeeded(input: BridgeSessionInput): Promise<void> {
+    if (!input.agentArgv || input.agentArgv.length === 0) {
+      return;
+    }
+    let recordId: string | null = null;
+    try {
+      recordId = parseAcpxSessionRecordId(
+        await this.readRawSessionRecord(input, "read-session-record", "quiet"),
+      )?.acpxRecordId ?? null;
+    } catch (error) {
+      // Only a genuinely missing session means "nothing to migrate" — the
+      // ensure below creates the record from the overlay argv. Timeouts,
+      // crashes, permission errors, or corrupt output must FAIL CLOSED or the
+      // follow-up ensure/new could duplicate records and orphan history.
+      if (isMissingAcpxSessionError(
+        error instanceof Error ? error.message : "",
+        "",
+      )) {
+        return;
+      }
+      throw error;
+    }
+    if (!recordId) {
+      throw new Error(
+        `failed to resolve acpx session record id from successful sessions show output for "${input.name}"`,
+      );
+    }
+    const result = await migrateSessionArgvFile(recordId, {
+      agentCommand: renderAgentArgvIdentity(input.agentArgv),
+      agentArgv: input.agentArgv,
+    }, {
+      beforeWrite: (id) => terminateAcpxQueueOwnerVerified(id),
+    });
+    if (result.status === "rejected" || result.status === "invalid") {
+      const detail = result.detail ? `: ${result.detail}` : "";
+      throw new Error(
+        `session record ${recordId} cannot be migrated to a structured launch${detail}. ` +
+          "Recreate the session (sessions close + new) or fix the agent config.",
+      );
+    }
+  }
+
   private async readSessionRecord(input: BridgeSessionInput): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
     const record = parseAcpxSessionRecordId(await this.readRawSessionRecord(input, "read-session-record", "json"));
     if (record) return record;
@@ -622,6 +692,9 @@ export class BridgeRuntime {
   async getAgentSessionId(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -634,6 +707,9 @@ export class BridgeRuntime {
   async setMode(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -661,6 +737,9 @@ export class BridgeRuntime {
   async setModel(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -690,6 +769,9 @@ export class BridgeRuntime {
   async getSessionModel(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -723,6 +805,9 @@ export class BridgeRuntime {
   async getSessionEffort(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -738,6 +823,9 @@ export class BridgeRuntime {
   async setSessionEffort(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -783,6 +871,9 @@ export class BridgeRuntime {
   async cancel(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -811,6 +902,9 @@ export class BridgeRuntime {
   async removeSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -839,6 +933,9 @@ export class BridgeRuntime {
   async deleteSession(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -862,6 +959,9 @@ export class BridgeRuntime {
   async freeWarmProcess(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -899,6 +999,9 @@ export class BridgeRuntime {
   async isSessionWarm(input: {
     agent: string;
     agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: string[];
     driver?: string;
     settingsPolicy?: ClaudeSettingsPolicy;
     cwd: string;
@@ -926,6 +1029,9 @@ export class BridgeRuntime {
     input: {
       agent: string;
       agentCommand?: string;
+      acpxAgent?: string;
+      rawCommand?: string;
+      agentArgv?: string[];
       cwd: string;
       name?: string;
       model?: string;
@@ -937,6 +1043,8 @@ export class BridgeRuntime {
       {
         agent: input.agent,
         agentCommand: input.agentCommand,
+        acpxAgent: input.acpxAgent,
+        rawCommand: input.rawCommand,
         cwd: input.cwd,
         model: input.model,
         permission: this.permissionInput(),
@@ -950,6 +1058,9 @@ export class BridgeRuntime {
     input: {
       agent: string;
       agentCommand?: string;
+      acpxAgent?: string;
+      rawCommand?: string;
+      agentArgv?: string[];
       cwd: string;
       name: string;
       model?: string;
@@ -960,6 +1071,8 @@ export class BridgeRuntime {
       {
         agent: input.agent,
         agentCommand: input.agentCommand,
+        acpxAgent: input.acpxAgent,
+        rawCommand: input.rawCommand,
         cwd: input.cwd,
         model: input.model,
         permission: this.permissionInput(),
@@ -1202,12 +1315,14 @@ export function selectLatestAcpxSessionIndexTmp(files: string[]): string | null 
   let latestTime = 0;
 
   for (const file of files) {
-    const match = file.match(/^index\.json\.\d+\.(\d+)\.tmp$/);
+    // legacy: index.json.<pid>.<timestamp>.tmp
+    // current: index.json.<pid>.<timestamp>.<unique-id>.tmp (unique-id may contain dashes)
+    const match = file.match(/^index\.json\.(\d+)\.(\d+)(\.[^.]+)?\.tmp$/);
     if (!match) {
       continue;
     }
 
-    const timestamp = Number(match[1]);
+    const timestamp = Number(match[2]);
     if (timestamp > latestTime) {
       latestTime = timestamp;
       latestTmp = file;

@@ -1,10 +1,18 @@
 import { dirname } from "node:path";
 
-import { resolveLocalAgentCommand } from "./local-agent-bin";
-import { MANAGED_ADAPTERS, effectiveAdapterVersion, isManagedAdapterId, resolveManagedAdapterCommand, type AdapterVersionOverrides } from "../adapters/adapter-catalog";
+import { resolveLocalAgentArgv, resolveLocalAgentCommand } from "./local-agent-bin";
+import {
+  MANAGED_ADAPTERS,
+  effectiveAdapterVersion,
+  isManagedAdapterId,
+  resolveManagedAdapterArgv,
+  resolveManagedAdapterCommand,
+  type AdapterVersionOverrides,
+} from "../adapters/adapter-catalog";
 import { effectiveAdapterRegistry } from "../adapters/adapter-registry";
-import { resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
-import { hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
+import { resolveActiveAdapterArgvSync, resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
+import { hermesAcpShimArgv, hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
+import { deriveAgentAlias, renderAgentArgvIdentity, type AgentLaunchSpec } from "./agent-launch";
 import type { AgentConfig, TransportConfig } from "./types";
 import { resolveConfigPathForCurrentEnv } from "./config-path";
 
@@ -85,6 +93,97 @@ export function resolveConfiguredAgentCommand(
     transport?.adapterVersions,
     transport?.adapterRegistry,
   );
+}
+
+export interface ResolveAgentLaunchOptions {
+  platform?: NodeJS.Platform;
+  /** Runtime root for preinstalled adapter releases; defaults like the runtime resolver. */
+  runtimeRoot?: string;
+}
+
+/**
+ * Structured launch spec for an agent: the single selector every runtime path
+ * (transports, state, reaper, doctor) must use.
+ *
+ * Selection order:
+ * 1. explicit raw `command`: Unix keeps it as `--agent`; Windows converts a
+ *    single token to argv and rejects anything multi-token with migration guidance.
+ * 2. user `argv`: content-addressed overlay alias + canonical identity.
+ * 3. managed codex/claude: structured pinned npx argv (alias launch).
+ * 4. hermes: ACP shim argv (alias launch).
+ * 5. local fallback (opencode/kilocode on PATH): structured argv (alias launch).
+ * 6. anything else: bare built-in driver positional.
+ */
+export function resolveConfiguredAgentLaunch(
+  agent: Pick<AgentConfig, "driver" | "command" | "argv">,
+  transport?: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry">,
+  options: ResolveAgentLaunchOptions = {},
+): AgentLaunchSpec {
+  const platform = options.platform ?? process.platform;
+  const explicit = resolveAgentCommand(agent.driver, agent.command);
+  if (explicit) {
+    if (platform === "win32") {
+      if (/\s/.test(explicit)) {
+        throw new Error(
+          `agent "${agent.driver}" command cannot be launched on Windows without lossy quoting. ` +
+            "Migrate it to an argv array in config: agents.<name>.argv = [\"agent.exe\", \"--acp\", ...]",
+        );
+      }
+      const argv = [explicit];
+      return {
+        acpxAgent: deriveAgentAlias(agent.driver, argv),
+        agentCommand: renderAgentArgvIdentity(argv),
+        agentArgv: argv,
+      };
+    }
+    // agentCommand is the canonical session identity: for a raw command the raw
+    // string itself (acpx persists it verbatim via splitCommandLine).
+    return { acpxAgent: agent.driver, rawCommand: explicit, agentCommand: explicit };
+  }
+
+  const argv = structuredAgentArgv(agent, transport, options.runtimeRoot);
+  if (argv) {
+    return {
+      acpxAgent: deriveAgentAlias(agent.driver, argv),
+      agentCommand: renderAgentArgvIdentity(argv),
+      agentArgv: argv,
+    };
+  }
+
+  return { acpxAgent: agent.driver };
+}
+
+/** Structured argv for explicit-launch agents; undefined for bare built-ins. */
+export function structuredAgentArgv(
+  agent: Pick<AgentConfig, "driver" | "command" | "argv">,
+  transport?: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry">,
+  runtimeRoot: string = dirname(resolveConfigPathForCurrentEnv()),
+): string[] | undefined {
+  if (agent.argv) return [...agent.argv];
+  if (isManagedAdapterId(agent.driver)) {
+    // An active preinstalled release replaces the generated npx command for
+    // real session launches too (not just --agent paths): offline startup and
+    // Windows durable-owner fencing depend on the structured launch honoring it.
+    const preinstalled = resolveActiveAdapterArgvSync(runtimeRoot, {
+      id: agent.driver,
+      version: effectiveAdapterVersion(agent.driver, transport?.adapterVersions),
+      registry: effectiveAdapterRegistry(transport?.adapterRegistry),
+      packageName: MANAGED_ADAPTERS[agent.driver].packageName,
+    });
+    if (preinstalled) return preinstalled;
+  }
+  const managed = resolveManagedAdapterArgv(
+    agent.driver,
+    transport?.adapterVersions,
+    transport?.adapterRegistry,
+  );
+  if (managed) return managed;
+  if (agent.driver === "hermes") return hermesAcpShimArgv();
+  if (transport?.preferLocalAgents !== false) {
+    const local = resolveLocalAgentArgv(agent.driver);
+    if (local) return local;
+  }
+  return undefined;
 }
 
 export function isLegacyCodexCommand(command: string): boolean {

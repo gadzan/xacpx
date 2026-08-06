@@ -30,6 +30,11 @@ export interface LogicalSession {
   agent_session_updated_at?: string;
   attached_at?: string;
   transport_agent_command?: string;
+  /** Positional acpx agent recorded at launch: overlay alias for structured
+   * launches. Derived managed values are recomputed on restart from the current
+   * pin; only truly custom launches keep their recorded alias/argv. */
+  transport_acpx_agent?: string;
+  transport_agent_argv?: string[];
   mode_id?: string;
   /** Per-session LLM model override (e.g. `gpt-5.2[high]`); falls back to the agent config default. */
   model?: string;

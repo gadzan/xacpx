@@ -1057,7 +1057,15 @@ async function createFirstRunSession(
     if (!exists) {
       throw new Error(`first-run onboarding failed to create transport session: ${plan.alias}`);
     }
-    await runtime.sessions.attachSession(plan.alias, plan.agent, plan.workspace, session.transportSession);
+    await runtime.sessions.attachSession(
+      plan.alias,
+      plan.agent,
+      plan.workspace,
+      session.transportSession,
+      session.agentCommand,
+      session.acpxAgent,
+      session.agentArgv,
+    );
   } catch (error) {
     await rollbackFirstRunConfig(runtime, plan);
     throw error;

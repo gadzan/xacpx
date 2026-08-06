@@ -57,6 +57,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   opencode: {
     driver: "opencode",
   },
+  // acpx 0.13 builtin: command-free so the default command comes from acpx's own
+  // registry (`pool acp`), never duplicated here.
+  pool: {
+    driver: "pool",
+  },
   qoder: {
     driver: "qoder",
   },
@@ -65,6 +70,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   },
   trae: {
     driver: "trae",
+  },
+  // acpx 0.13 builtin: command-free so the default command comes from acpx's own
+  // registry (`zeroclaw acp`), never duplicated here.
+  zeroclaw: {
+    driver: "zeroclaw",
   },
 };
 

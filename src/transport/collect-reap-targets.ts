@@ -1,4 +1,4 @@
-import { resolveConfiguredAgentCommand } from "../config/resolve-agent-command";
+import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import type { OrchestrationState } from "../orchestration/orchestration-types";
 import type { ResolvedSession } from "./types";
@@ -21,6 +21,8 @@ export function collectReapTargets(
     ...sessions.listAllResolvedSessions().map((session) => ({
       agent: session.agent,
       ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+      ...(session.acpxAgent ? { acpxAgent: session.acpxAgent } : {}),
+      ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
       cwd: session.cwd,
       transportSession: session.transportSession,
     })),
@@ -36,8 +38,8 @@ export function collectReapTargets(
  * SessionService.listAllResolvedSessions; coordinator sessions that are logical are
  * already in that set, and external coordinators have no xacpx-spawned owner.
  *
- * Resolution mirrors resolveWorkerRuntimeSession: agent command from config (or the
- * agent name for built-ins), cwd from the binding or its workspace. Bindings whose
+ * Resolution mirrors resolveWorkerRuntimeSession: agent launch spec from config (or the
+ * bare driver for built-ins), cwd from the binding or its workspace. Bindings whose
  * agent/workspace are no longer registered are skipped (their owner, if any, just
  * expires on its own TTL).
  */
@@ -55,10 +57,12 @@ export function workerBindingReapTargets(
     if (!cwd) {
       continue;
     }
-    const agentCommand = resolveConfiguredAgentCommand(agentConfig, config.transport);
+    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
     targets.push({
       agent: binding.targetAgent,
-      ...(agentCommand ? { agentCommand } : {}),
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
       cwd,
       transportSession: workerSession,
     });

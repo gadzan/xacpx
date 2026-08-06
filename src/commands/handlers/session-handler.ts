@@ -259,7 +259,15 @@ export async function handleSessionNew(
         return context.recovery.renderSessionCreationError(session, error);
       }
 
-      await context.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+      await context.sessions.attachSession(
+        internalAlias,
+        agent,
+        workspace,
+        session.transportSession,
+        session.agentCommand,
+        session.acpxAgent,
+        session.agentArgv,
+      );
       if (normalizedModel) {
         await context.sessions.setSessionModel(internalAlias, normalizedModel);
       }
@@ -315,7 +323,15 @@ export async function handleSessionAttach(
       }
       context.lifecycle.markSessionReady?.(attached);
 
-      await context.sessions.attachSession(internalAlias, agent, workspace, transportSession);
+      await context.sessions.attachSession(
+        internalAlias,
+        agent,
+        workspace,
+        transportSession,
+        attached.agentCommand,
+        attached.acpxAgent,
+        attached.agentArgv,
+      );
       await context.sessions.useSession(chatKey, internalAlias);
       await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.attach.agent_command_refresh_failed");
       await context.logger.info("session.attached", "attached existing transport session", {

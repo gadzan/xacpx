@@ -1,5 +1,5 @@
 import { expect, mock, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -11,6 +11,8 @@ import {
   type QueueOwnerTerminator,
   type QueueOwnerAdapterContext,
   terminateAcpxQueueOwnerWithDeps,
+  terminateAcpxQueueOwnerVerified,
+  terminateAcpxQueueOwnerVerifiedWithDeps,
 } from "../../../src/transport/acpx-queue-owner-launcher";
 
 const TOKEN = "11111111-1111-4111-8111-111111111111";
@@ -298,166 +300,194 @@ test("uses WEACPX_DAEMON_ARG0 as the default weacpx CLI command", async () => {
   ]);
 });
 
-test("uses one launch token for registration, argv, spawned ack, and owner settlement", async () => {
-  const events: string[] = [];
-  let spawnArgs: string[] = [];
-  const context = adapterContext({
-    prepare: async (token) => { events.push(`prepare:${token}`); return { agentCommand: MANAGED_COMMAND, generationId: "g" }; },
-    isGenerationCurrent: async (generation) => { events.push(`fence:${generation}`); return true; },
-    spawned: async (token) => { events.push(`spawned:${token}`); },
-    settle: async (item) => { events.push(`settle:${item.intentToken}:${item.outcome}:${item.ownerPid}`); },
+test("reuses a live warm owner only when launch parameters are unchanged", async () => {
+  const spawns: Array<{ command: string; args: string[] }> = [];
+  const spawnOwner: QueueOwnerSpawner = mock(async (command, args) => {
+    spawns.push({ command, args });
   });
+  const terminated: string[] = [];
+  const terminateOwner: QueueOwnerTerminator = mock(async (sessionId) => {
+    terminated.push(sessionId);
+    alive = false;
+  });
+  let alive = false;
   const launcher = new AcpxQueueOwnerLauncher({
     acpxCommand: "acpx",
-    uuid: () => TOKEN,
-    spawnOwner: async (_command, args) => { events.push("spawn"); spawnArgs = args; return 700; },
-    terminateOwner: async () => {},
-    readOwnerPid: async () => 701,
-  });
-  await launcher.launch({
-    acpxRecordId: "record-1",
-    coordinatorSession: "main",
-    permissionMode: "approve-all",
-    nonInteractivePermissions: "deny",
-    agentCommand: MANAGED_COMMAND,
-    adapterContext: context,
-  });
-  expect(spawnArgs.slice(-2)).toEqual(["--xacpx-owner-token", TOKEN]);
-  expect(events).toEqual([
-    `prepare:${TOKEN}`,
-    "fence:g",
-    "spawn",
-    `spawned:${TOKEN}`,
-    `settle:${TOKEN}:owner-committed:701`,
-  ]);
-});
-
-test("returns the durable adapter command selected during prepare for this launch", async () => {
-  const preparedCommand = '"C:/node.exe" "C:/runtime/adapters/codex/releases/2/node_modules/@agentclientprotocol/codex-acp/bin.js"';
-  let payload: { agentCommand?: string } | undefined;
-  const launcher = new AcpxQueueOwnerLauncher({
-    acpxCommand: "acpx",
-    uuid: () => TOKEN,
-    spawnOwner: async (_command, _args, options) => {
-      payload = JSON.parse(options.env.ACPX_QUEUE_OWNER_PAYLOAD) as { agentCommand?: string };
-      return 700;
+    xacpxCommand: "node ./dist/cli.js",
+    spawnOwner: async (command, args, options) => {
+      alive = true;
+      await spawnOwner(command, args, options);
     },
-    terminateOwner: async () => {},
-    readOwnerPid: async () => 701,
+    terminateOwner,
+    isOwnerAlive: async () => alive,
   });
-  const result = await launcher.launch({
-    acpxRecordId: "record-1",
-    coordinatorSession: "main",
-    permissionMode: "approve-all",
-    nonInteractivePermissions: "deny",
-    agentCommand: MANAGED_COMMAND,
-    adapterContext: adapterContext({
-      prepare: async () => ({ agentCommand: preparedCommand, generationId: "g" }),
-    }),
-  });
-  expect(result.agentCommand).toBe(preparedCommand);
-  expect(payload?.agentCommand).toBe(preparedCommand);
+
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+  };
+
+  // First launch spawns (and best-effort terminates any stale owner) and
+  // records the parameter fingerprint.
+  await launcher.launch(input);
+  expect(spawns).toHaveLength(1);
+  expect(terminated).toHaveLength(1);
+
+  // Same parameters + live owner → reuse: no NEW terminate, no spawn.
+  await launcher.launch(input);
+  expect(spawns).toHaveLength(1);
+  expect(terminated).toHaveLength(1);
+
+  // Changed parameters → the old owner must be replaced, not reused.
+  await launcher.launch({ ...input, coordinatorSession: "backend:other" });
+  expect(terminated).toHaveLength(2);
+  expect(spawns).toHaveLength(2);
 });
 
-test("generation fencing cancels the registered intent and never spawns", async () => {
-  const events: string[] = [];
+test("a changed effective environment replaces the warm owner without exposing secrets in the fingerprint", async () => {
+  const spawns: Array<Record<string, string>> = [];
+  let alive = false;
   const launcher = new AcpxQueueOwnerLauncher({
     acpxCommand: "acpx",
-    uuid: () => TOKEN,
-    spawnOwner: async () => { events.push("spawn"); return 700; },
-    terminateOwner: async () => {},
-  });
-  await expect(launcher.launch({
-    acpxRecordId: "record-1",
-    coordinatorSession: "main",
-    permissionMode: "approve-all",
-    nonInteractivePermissions: "deny",
-    agentCommand: MANAGED_COMMAND,
-    adapterContext: adapterContext({
-      isGenerationCurrent: async () => false,
-      cancel: async (token) => { events.push(`cancel:${token}`); },
-    }),
-  })).rejects.toThrow("generation changed");
-  expect(events).toEqual([`cancel:${TOKEN}`]);
-});
-
-test("managed shape without context fails closed, and registration failure sends best-effort cancel", async () => {
-  let spawns = 0;
-  const launcher = new AcpxQueueOwnerLauncher({
-    acpxCommand: "acpx",
-    uuid: () => TOKEN,
-    spawnOwner: async () => { spawns += 1; return 700; },
-    terminateOwner: async () => {},
+    spawnOwner: async (_command, _args, options) => {
+      alive = true;
+      spawns.push(options.env);
+      return 100 + spawns.length;
+    },
+    terminateOwner: async () => { alive = false; },
+    isOwnerAlive: async () => alive,
   });
   const input = {
-    acpxRecordId: "record-1",
-    coordinatorSession: "main",
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+  };
+
+  await launcher.launch({ ...input, env: { ANTHROPIC_AUTH_TOKEN: "secret-a", CLAUDE_CONFIG_DIR: "/isolated-a" } });
+  await launcher.launch({ ...input, env: { ANTHROPIC_AUTH_TOKEN: "secret-b", CLAUDE_CONFIG_DIR: "/isolated-b" } });
+
+  expect(spawns).toHaveLength(2);
+  const fingerprints = [...(launcher as unknown as { lastLaunchFingerprint: Map<string, string> }).lastLaunchFingerprint.values()];
+  expect(fingerprints.join(" ")).not.toContain("secret-b");
+  expect(fingerprints.join(" ")).not.toContain("/isolated-b");
+});
+
+test("a live owner with no recorded fingerprint fails closed when termination cannot be verified", async () => {
+  const spawns: Array<{ command: string; args: string[] }> = [];
+  const spawnOwner: QueueOwnerSpawner = mock(async (command, args) => {
+    spawns.push({ command, args });
+  });
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    xacpxCommand: "node ./dist/cli.js",
+    spawnOwner,
+    terminateOwner: async () => {},
+    isOwnerAlive: async () => true, // owner exists but WE never spawned it
+  });
+
+  await expect(launcher.launch({
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+  })).rejects.toThrow(/owner|terminat|live/i);
+
+  expect(spawns).toHaveLength(0);
+});
+
+test("a failed Windows handshake never publishes a reusable launch fingerprint", async () => {
+  let spawnCount = 0;
+  let terminateCount = 0;
+  let alive = false;
+  const settlements: string[] = [];
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async () => {
+      spawnCount += 1;
+      alive = true;
+      return 200 + spawnCount;
+    },
+    terminateOwner: async () => {
+      terminateCount += 1;
+      alive = false;
+    },
+    isOwnerAlive: async () => alive,
+    readOwnerPid: async () => spawnCount >= 2 ? 902 : undefined,
+    probeSpawnedProcess: async () => "alive",
+    handshakeTimeoutMs: 0,
+    sleep: async () => {},
+  });
+  const adapter = adapterContext({
+    settle: async ({ outcome }) => { settlements.push(outcome); },
+  });
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
     permissionMode: "approve-all" as const,
     nonInteractivePermissions: "deny" as const,
     agentCommand: MANAGED_COMMAND,
+    adapterContext: adapter,
   };
-  await expect(launcher.launch(input)).rejects.toThrow("missing adapterContext");
 
-  const canceled: string[] = [];
-  await expect(launcher.launch({
-    ...input,
-    adapterContext: adapterContext({
-      prepare: async () => { throw new Error("ack lost"); },
-      cancel: async (token) => { canceled.push(token); },
-    }),
-  })).rejects.toThrow("ack lost");
-  expect(canceled).toEqual([TOKEN]);
-  expect(spawns).toBe(0);
+  await expect(launcher.launch(input)).rejects.toThrow(/did not become ready/);
+  alive = true; // The failed owner publishes its lock after the timed-out launch.
+  await expect(launcher.launch(input)).resolves.toEqual({ agentCommand: MANAGED_COMMAND });
+
+  expect(spawnCount).toBe(2);
+  expect(terminateCount).toBe(2);
+  expect(settlements).toEqual(["owner-committed"]);
 });
 
-test("readiness timeout preserves an alive or unknown launch but settles a confirmed exit", async () => {
-  for (const status of ["alive", "unknown", "exited"] as const) {
-    const settlements: string[] = [];
-    const launcher = new AcpxQueueOwnerLauncher({
-      acpxCommand: "acpx",
-      uuid: () => TOKEN,
-      spawnOwner: async () => 700,
-      terminateOwner: async () => {},
-      readOwnerPid: async () => undefined,
-      handshakeTimeoutMs: 0,
-      probeSpawnedProcess: async () => status,
-    });
-    await expect(launcher.launch({
-      acpxRecordId: "record-1",
-      coordinatorSession: "main",
-      permissionMode: "approve-all",
-      nonInteractivePermissions: "deny",
-      agentCommand: MANAGED_COMMAND,
-      adapterContext: adapterContext({
-        settle: async (item) => { settlements.push(item.outcome); },
-      }),
-    })).rejects.toThrow();
-    expect(settlements).toEqual(status === "exited" ? ["launch-failed"] : []);
-  }
+test("verified termination is a no-op when no owner lock exists", async () => {
+  await expect(terminateAcpxQueueOwnerVerified("no-such-session")).resolves.toBeUndefined();
 });
 
-test("Unix managed launch resolves before spawn without token state or token argv", async () => {
-  const events: string[] = [];
-  let args: string[] = [];
-  const launcher = new AcpxQueueOwnerLauncher({
-    acpxCommand: "acpx",
-    uuid: () => TOKEN,
-    spawnOwner: async (_command, value) => { events.push("spawn"); args = value; return 700; },
-    terminateOwner: async () => {},
-  });
-  await launcher.launch({
-    acpxRecordId: "record-1",
-    coordinatorSession: "main",
-    permissionMode: "approve-all",
-    nonInteractivePermissions: "deny",
-    agentCommand: MANAGED_COMMAND,
-    adapterContext: adapterContext({
-      platform: "linux",
-      prepare: async () => { events.push("resolve"); return { agentCommand: MANAGED_COMMAND }; },
-      spawned: async () => { events.push("spawned"); },
-      settle: async () => { events.push("settle"); },
-    }),
-  });
-  expect(events).toEqual(["resolve", "spawn"]);
-  expect(args).not.toContain("--xacpx-owner-token");
+test("verified termination waits for the lock to disappear after terminating", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-verify-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 99999999 }));
+  await expect(terminateAcpxQueueOwnerVerifiedWithDeps("session-1", {
+    lockPath,
+    terminate: async () => {
+      await rm(lockPath, { force: true });
+    },
+    delay: async () => {},
+  })).resolves.toBeUndefined();
+  await expect(access(lockPath)).rejects.toThrow();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("verified termination fails closed when the owner cannot be terminated", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-verify-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 99999999 }));
+  // Simulate a terminator that never removes the lock (e.g. Windows no-op).
+  await expect(terminateAcpxQueueOwnerVerifiedWithDeps("session-1", {
+    lockPath,
+    terminate: async () => {},
+    delay: async () => {},
+  })).rejects.toThrow(/could not be terminated safely/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("verified termination fails closed when the lock is unverifiable (non-ENOENT)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-verify-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 99999999 }));
+  // access() raises EACCES: we cannot prove the lock is gone, so migration
+  // must NOT proceed even though the terminator would remove the lock.
+  await expect(terminateAcpxQueueOwnerVerifiedWithDeps("session-1", {
+    lockPath,
+    terminate: async () => { await rm(lockPath, { force: true }); },
+    delay: async () => {},
+    accessFn: async () => {
+      const error = new Error("permission denied") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      throw error;
+    },
+  })).rejects.toThrow(/cannot verify queue owner lock state/);
+  await rm(dir, { recursive: true, force: true });
 });

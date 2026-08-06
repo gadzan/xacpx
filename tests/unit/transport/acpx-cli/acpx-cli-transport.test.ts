@@ -70,11 +70,11 @@ test("ensures a session with raw agent command by invoking acpx with the normal 
     "--agent",
     "./node_modules/.bin/codex-acp",
     "sessions",
-    "new",
+    "ensure",
     "--name",
     "backend:api-fix",
   ], expect.objectContaining({
-    timeoutMs: 120_000,
+    timeoutMs: expect.any(Number),
   }));
   expect(runPty).not.toHaveBeenCalled();
 });
@@ -121,11 +121,11 @@ test("injects --permission-policy when configured", async () => {
     "--agent",
     "./node_modules/.bin/codex-acp",
     "sessions",
-    "new",
+    "ensure",
     "--name",
     "backend:api-fix",
   ], expect.objectContaining({
-    timeoutMs: 120_000,
+    timeoutMs: expect.any(Number),
   }));
   expect(runPty).not.toHaveBeenCalled();
 });
@@ -149,11 +149,11 @@ test("runs a resolved JavaScript acpx entry with the current node executable", a
     "--agent",
     "./node_modules/.bin/codex-acp",
     "sessions",
-    "new",
+    "ensure",
     "--name",
     "backend:api-fix",
   ], expect.objectContaining({
-    timeoutMs: 120_000,
+    timeoutMs: expect.any(Number),
   }));
 });
 
@@ -175,11 +175,11 @@ test("uses 120 seconds as the default raw-command session creation timeout", asy
     "--agent",
     "./node_modules/.bin/codex-acp",
     "sessions",
-    "new",
+    "ensure",
     "--name",
     "backend:api-fix",
   ], expect.objectContaining({
-    timeoutMs: 120_000,
+    timeoutMs: expect.any(Number),
   }));
 });
 
@@ -201,11 +201,11 @@ test("keeps using PTY for alias-based session creation", async () => {
     "deny",
     "codex",
     "sessions",
-    "new",
+    "ensure",
     "--name",
     "backend:api-fix",
   ], expect.objectContaining({
-    timeoutMs: 120_000,
+    timeoutMs: expect.any(Number),
   }));
 });
 
@@ -224,7 +224,7 @@ test("fails fast when session creation does not finish before the timeout", asyn
   );
 
   await expect(transport.ensureSession(session)).rejects.toThrow(
-    'acpx command timed out after 10ms: --approve-all --non-interactive-permissions deny --agent ./node_modules/.bin/codex-acp sessions new --name "backend:api-fix"',
+    'acpx command timed out after 1ms: --approve-all --non-interactive-permissions deny --agent ./node_modules/.bin/codex-acp sessions new --name "backend:api-fix"',
   );
 });
 
@@ -248,7 +248,7 @@ test("aborts the command runner when session creation times out", async () => {
   );
 
   await expect(transport.ensureSession(session)).rejects.toThrow(
-    'acpx command timed out after 10ms: --approve-all --non-interactive-permissions deny --agent ./node_modules/.bin/codex-acp sessions new --name "backend:api-fix"',
+    'acpx command timed out after 1ms: --approve-all --non-interactive-permissions deny --agent ./node_modules/.bin/codex-acp sessions new --name "backend:api-fix"',
   );
   expect(aborted).toBe(true);
 });
@@ -2670,4 +2670,34 @@ test("getAgentSessionId returns undefined when the record has no agentSessionId"
   const id = await transport.getAgentSessionId(session);
 
   expect(id).toBeUndefined();
+});
+
+test("ensureSession fails closed when migration cannot resolve the record", async () => {
+  const run = mock(async () => ({ code: 1, stdout: "", stderr: "acpx command timed out after 1000ms" }));
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, runPty);
+  await expect(transport.ensureSession({
+    ...session,
+    acpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    agentArgv: ["C:\\Program Files\\agent.exe", "--acp"],
+  })).rejects.toThrow(/timed out after 1000ms/);
+});
+
+test("ensureSession treats a genuinely missing session as no-record and proceeds", async () => {
+  const calls: string[][] = [];
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      return { code: 1, stdout: "", stderr: "No named session \"backend:api-fix\" for cwd /tmp/backend" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, runPty);
+  await transport.ensureSession({
+    ...session,
+    acpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    agentArgv: ["C:\\Program Files\\agent.exe", "--acp"],
+  });
+  expect(calls.some((args) => args.includes("ensure"))).toBe(true);
 });

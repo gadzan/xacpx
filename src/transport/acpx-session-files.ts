@@ -2,6 +2,15 @@ import { readdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+/**
+ * acpx's home dir. Env-first (mirrors acpx, which reads HOME/USERPROFILE at
+ * startup) so tests can isolate `~/.acpx` by overriding the env, and so the
+ * daemon never disagrees with the acpx child it spawns.
+ */
+export function resolveAcpxHomeDir(): string {
+  return process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+}
+
 export interface DeleteAcpxSessionFilesOptions {
   acpxRecordId: string;
   /** Override for the acpx sessions dir (tests). Defaults to `<home>/.acpx/sessions`. */
@@ -28,7 +37,7 @@ export interface DeleteAcpxSessionFilesOptions {
  *  Windows orphan persists until a manual prune. This is an accepted residual risk:
  *  the queue-owner is a third-party process we cannot reap or await from here. */
 export async function deleteAcpxSessionFiles(options: DeleteAcpxSessionFilesOptions): Promise<void> {
-  const dir = options.sessionsDir ?? join(homedir(), ".acpx", "sessions");
+  const dir = options.sessionsDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
   const safeId = encodeURIComponent(options.acpxRecordId);
 
   await unlink(join(dir, `${safeId}.json`)).catch(() => undefined);

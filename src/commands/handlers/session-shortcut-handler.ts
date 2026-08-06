@@ -90,7 +90,15 @@ export async function handleSessionShortcutCommand(
         return renderShortcutSessionCreationError(workspace, display);
       }
 
-      await context.sessions.attachSession(alias, agent, workspace.name, session.transportSession);
+      await context.sessions.attachSession(
+        alias,
+        agent,
+        workspace.name,
+        session.transportSession,
+        session.agentCommand,
+        session.acpxAgent,
+        session.agentArgv,
+      );
       await context.sessions.useSession(chatKey, alias);
       try {
         await ops.refreshSessionTransportAgentCommand(alias);

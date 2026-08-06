@@ -247,6 +247,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -255,6 +256,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           lines: requirePositiveInt(params, "lines"),
@@ -263,6 +265,7 @@ export class BridgeServer {
         return await this.runtime.listAgentSessions({
           agent: requireString(params, "agent"),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           driver: asOptionalString(params.driver),
           settingsPolicy: asOptionalClaudeSettingsPolicy(params.settingsPolicy),
           cwd: requireString(params, "cwd"),
@@ -274,6 +277,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           sessionKey: asOptionalString(params.sessionKey),
@@ -302,6 +306,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           sessionKey: asOptionalString(params.sessionKey),
@@ -362,6 +367,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           agentSessionId: requireString(params, "agentSessionId"),
@@ -371,6 +377,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           modeId: requireString(params, "modeId"),
@@ -380,6 +387,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           modelId: requireString(params, "modelId"),
@@ -389,6 +397,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -397,6 +406,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           effort: requireString(params, "effort"),
@@ -406,6 +416,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -414,6 +425,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -422,6 +434,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -430,6 +443,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -438,6 +452,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -446,6 +461,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -454,6 +470,7 @@ export class BridgeServer {
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         });
@@ -605,6 +622,23 @@ function asOptionalString(value: unknown): string | undefined {
   }
 
   return value;
+}
+
+function asOptionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string")) {
+    return undefined;
+  }
+  return [...value] as string[];
+}
+
+/** Structured launch selection (acpxAgent/rawCommand/agentArgv) carried by new
+ * clients; old clients omit it and keep the legacy `--agent agentCommand` path. */
+function agentLaunchSelection(params: Record<string, unknown>) {
+  return {
+    acpxAgent: asOptionalString(params.acpxAgent),
+    rawCommand: asOptionalString(params.rawCommand),
+    agentArgv: asOptionalStringArray(params.agentArgv),
+  };
 }
 
 function agentExecutionSettings(params: Record<string, unknown>) {

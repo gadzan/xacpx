@@ -35,8 +35,10 @@ import {
 } from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
+import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
+import { renderAgentArgvIdentity } from "../../config/agent-launch";
 import { isProcessAlive } from "../../daemon/daemon-files";
 import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js";
 import { runAgentSessionList } from "../agent-session-list";
@@ -267,6 +269,7 @@ export class AcpxCliTransport implements SessionTransport {
   // CommandRouter (emitted before the call) but will not receive mid-flight updates.
   async ensureSession(session: ResolvedSession, _onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
     this.invalidateRecordIdCache(session);
+    await this.migrateLegacySessionArgvIfNeeded(session);
     try {
       await this.runEnsureSession(session);
     } catch (error) {
@@ -285,17 +288,53 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private async runEnsureSession(session: ResolvedSession): Promise<void> {
-    const args = this.buildArgs(session, [
+    const runEnsure = session.agentCommand ? this.run : this.runWithPty;
+    // One shared deadline for every subprocess step (ensure, show probe, new):
+    // each step only gets the remaining budget so the whole ensure path is
+    // bounded by sessionInitTimeoutMs end-to-end, like the bridge.
+    const deadline = Date.now() + this.sessionInitTimeoutMs;
+    const remainingTimeoutMs = () => Math.max(deadline - Date.now(), 1);
+    const ensureArgs = this.buildArgs(session, [
       "sessions",
-      "new",
+      "ensure",
       "--name",
       session.transportSession,
     ]);
-    const runEnsure = session.agentCommand ? this.run : this.runWithPty;
-    await runEnsure.call(this, args, {
-      timeoutMs: this.sessionInitTimeoutMs,
-      env: this.spawnEnvironment(session),
-    });
+    try {
+      // `sessions ensure` reuses an identity-matching legacy record (which the
+      // argv migration backfilled just above); `sessions new` would orphan it.
+      await runEnsure.call(this, ensureArgs, {
+        timeoutMs: remainingTimeoutMs(),
+        env: this.spawnEnvironment(session),
+      });
+      return;
+    } catch (error) {
+      // Mirrors the bridge: a failed ensure may mean the session already exists
+      // (show succeeds) or that it must be created fresh (show fails → new).
+      try {
+        await this.run(this.buildArgs(session, [
+          "sessions",
+          "show",
+          session.transportSession,
+        ], "quiet"), {
+          timeoutMs: Math.min(this.managementCommandTimeoutMs, remainingTimeoutMs()),
+          env: this.spawnEnvironment(session),
+        });
+        return;
+      } catch {
+        // fall through to sessions new
+      }
+      const newArgs = this.buildArgs(session, [
+        "sessions",
+        "new",
+        "--name",
+        session.transportSession,
+      ]);
+      await runEnsure.call(this, newArgs, {
+        timeoutMs: remainingTimeoutMs(),
+        env: this.spawnEnvironment(session),
+      });
+    }
   }
 
   async listAgentSessions(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined> {
@@ -455,11 +494,11 @@ export class AcpxCliTransport implements SessionTransport {
   // `<agent> status --format json`. Returns an empty list when status output is
   // not parseable, so callers can still show the current model.
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
-    const prefix = ["--format", "json", "--cwd", session.cwd, ...this.buildPermissionArgs()];
-    const tail = ["status", "-s", session.transportSession];
-    const args = session.agentCommand
-      ? [...prefix, "--agent", session.agentCommand, ...tail]
-      : [...prefix, session.agent, ...tail];
+    const args = this.buildAgentQueryArgs(
+      this.sessionInput(session),
+      "json",
+      ["status", "-s", session.transportSession],
+    );
     const result = await this.runCommandWithTimeout(this.runCommand, args, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "get-session-model",
@@ -714,6 +753,47 @@ export class AcpxCliTransport implements SessionTransport {
     const record = parseAcpxSessionRecordId(result.stdout);
     if (record) return record;
     throw new Error("failed to resolve acpx session record id");
+  }
+
+  /**
+   * Backfill `agent_argv` into a legacy acpx session record before the session is
+   * ensured/launched, so Windows can resume it with exact boundaries. Runs only
+   * for structured launches (agentArgv present); fails closed on identity or argv
+   * mismatches rather than reusing a session that would launch a different agent.
+   */
+  private async migrateLegacySessionArgvIfNeeded(session: ResolvedSession): Promise<void> {
+    if (!session.agentArgv || session.agentArgv.length === 0) {
+      return;
+    }
+    let recordId: string | null = null;
+    try {
+      ({ acpxRecordId: recordId } = await this.readSessionRecord(session));
+    } catch (error) {
+      // Only a genuinely missing session means "nothing to migrate" — the
+      // ensure below creates the record from the overlay argv. Timeouts,
+      // crashes, permission errors, or corrupt output must FAIL CLOSED or the
+      // follow-up ensure/new could duplicate records and orphan history.
+      if (isMissingAcpxSessionError(
+        error instanceof Error ? error.message : "",
+        "",
+      )) {
+        return;
+      }
+      throw error;
+    }
+    const result = await migrateSessionArgvFile(recordId, {
+      agentCommand: renderAgentArgvIdentity(session.agentArgv),
+      agentArgv: session.agentArgv,
+    }, {
+      beforeWrite: (id) => terminateAcpxQueueOwnerVerified(id),
+    });
+    if (result.status === "rejected" || result.status === "invalid") {
+      const detail = result.detail ? `: ${result.detail}` : "";
+      throw new Error(
+        `session record ${recordId} cannot be migrated to a structured launch${detail}. ` +
+          "Recreate the session (sessions close + new) or fix the agent config.",
+      );
+    }
   }
 
   async getAgentSessionId(session: ResolvedSession): Promise<string | undefined> {
@@ -1014,6 +1094,8 @@ export class AcpxCliTransport implements SessionTransport {
     return {
       agent: session.agent,
       agentCommand: session.agentCommand,
+      acpxAgent: session.acpxAgent,
+      rawCommand: session.rawCommand,
       cwd: session.cwd,
       model: session.model,
       permission: this.permissionInput(),
@@ -1026,7 +1108,14 @@ export class AcpxCliTransport implements SessionTransport {
 
   private buildAgentQueryArgs(query: AgentSessionListQuery, format: "json" | "quiet", tail: string[]): string[] {
     return sharedBuildAgentQueryArgs(
-      { agent: query.agent, agentCommand: query.agentCommand, cwd: query.cwd, permission: this.permissionInput() },
+      {
+        agent: query.agent,
+        agentCommand: query.agentCommand,
+        acpxAgent: query.acpxAgent,
+        rawCommand: query.rawCommand,
+        cwd: query.cwd,
+        permission: this.permissionInput(),
+      },
       format,
       tail,
     );

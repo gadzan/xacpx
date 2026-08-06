@@ -116,7 +116,7 @@ test("list is local-only and shows default versus configured effective versions"
   expect(networkCalls).toBe(0);
   expect(ctx.lines.join("\n")).toContain("codex");
   expect(ctx.lines.join("\n")).toContain("1.1.2");
-  expect(ctx.lines.join("\n")).toContain("1.1.4");
+  expect(ctx.lines.join("\n")).toContain("1.1.9");
 });
 
 test("set verifies a published exact version before persisting it", async () => {

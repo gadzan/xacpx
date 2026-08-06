@@ -3,7 +3,7 @@ import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
-import { resolveConfiguredAgentCommand } from "../config/resolve-agent-command";
+import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { OrchestrationRouterOps } from "./router-types";
 import type { TransportInvoker } from "./transport-invoker";
 
@@ -85,7 +85,15 @@ export class SessionControlService {
         if (!exists) {
           throw new Error(`transport session "${session.transportSession}" could not be verified`);
         }
-        await this.sessions.attachSession(internalAlias, agent, workspace, session.transportSession);
+        await this.sessions.attachSession(
+          internalAlias,
+          agent,
+          workspace,
+          session.transportSession,
+          session.agentCommand,
+          session.acpxAgent,
+          session.agentArgv,
+        );
         if (normalizedModel) {
           await this.sessions.setSessionModel(internalAlias, normalizedModel);
         }
@@ -252,10 +260,12 @@ export class SessionControlService {
     if (!agentConfig || !workspaceConfig) {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
-    const agentCommand = resolveConfiguredAgentCommand(agentConfig, this.config?.transport);
+    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
     const result = await listAgentSessions({
       agent,
-      ...(agentCommand ? { agentCommand } : {}),
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
       ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
       ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
       cwd: workspaceConfig.cwd,
@@ -303,6 +313,9 @@ export class SessionControlService {
           agent,
           workspace,
           transportSession: session.transportSession,
+          ...(session.agentCommand ? { transportAgentCommand: session.agentCommand } : {}),
+          ...(session.acpxAgent ? { transportAcpxAgent: session.acpxAgent } : {}),
+          ...(session.agentArgv ? { transportAgentArgv: session.agentArgv } : {}),
           agentSessionId,
           ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
           ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),

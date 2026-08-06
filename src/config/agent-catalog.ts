@@ -8,9 +8,11 @@ export interface AgentCatalogEntry {
   installed: "builtin" | "yes" | "unknown";
 }
 
-/** Narrow view of acpx's registry supplied by the transport boundary. */
+/** Narrow view of acpx's registry supplied by the transport boundary. acpx 0.13
+ * resolves drivers to argv arrays (`["codex", "--acp"]`); older releases returned
+ * command strings. Both are accepted. */
 export interface AgentCommandRegistry {
-  resolve(driver: string): string;
+  resolve(driver: string): string | string[];
 }
 
 export interface ListAgentCatalogOptions {
@@ -35,10 +37,12 @@ export interface ListAgentCatalogOptions {
 
 /**
  * Which CLI to probe for a driver: the first token of the command acpx would run.
- * The `?? ""` is unreachable (split always yields >= 1 element) but noUncheckedIndexedAccess
- * types `[0]` as possibly-undefined.
+ * acpx 0.13 resolves drivers to argv arrays; older releases returned strings.
  */
-function probeTarget(command: string): string {
+function probeTarget(command: string | string[]): string {
+  if (Array.isArray(command)) {
+    return command[0] ?? "";
+  }
   return command.trim().split(/\s+/)[0] ?? "";
 }
 

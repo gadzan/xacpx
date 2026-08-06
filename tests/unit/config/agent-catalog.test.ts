@@ -128,3 +128,40 @@ test("every entry comes from listAgentTemplates and has the three fields", () =>
     expect(["builtin", "yes", "unknown"]).toContain(e.installed);
   }
 });
+
+// ── pool / zeroclaw templates ────────────────────────────────────────────────
+
+test("pool and zeroclaw are command-free usable templates", () => {
+  expect(getAgentTemplate("pool")).toEqual({ driver: "pool" });
+  expect(getAgentTemplate("zeroclaw")).toEqual({ driver: "zeroclaw" });
+  expect(listAgentTemplates()).toContain("pool");
+  expect(listAgentTemplates()).toContain("zeroclaw");
+});
+
+// Registry drift guard: the pinned acpx must keep knowing pool/zeroclaw, else the
+// templates would launch a driver acpx cannot resolve.
+test("acpx registry knows pool and zeroclaw (drift guard)", () => {
+  const names = listAgentTemplates();
+  const registered = names.filter((name) => name === "pool" || name === "zeroclaw");
+  const unknown = registered.filter((name) => {
+    try {
+      registry.resolve(name);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  expect(unknown).toEqual([]);
+  // The registry's default commands are `pool acp` / `zeroclaw acp`.
+  expect(registry.resolve("pool")).toEqual(["pool", "acp"]);
+  expect(registry.resolve("zeroclaw")).toEqual(["zeroclaw", "acp"]);
+});
+
+test("pool and zeroclaw probe their own binaries when not builtin", () => {
+  const cat = catalog(cfg({}), { probe: (bin) => bin === "pool" || bin === "zeroclaw" });
+  expect(cat.find((e) => e.driver === "pool")!.installed).toBe("yes");
+  expect(cat.find((e) => e.driver === "zeroclaw")!.installed).toBe("yes");
+  const none = catalog(cfg({}), { probe: () => false });
+  expect(none.find((e) => e.driver === "pool")!.installed).toBe("unknown");
+  expect(none.find((e) => e.driver === "zeroclaw")!.installed).toBe("unknown");
+});

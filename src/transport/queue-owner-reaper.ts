@@ -12,6 +12,10 @@ import { terminateAcpxQueueOwner } from "./acpx-queue-owner-launcher";
 export interface ReapTarget {
   agent: string;
   agentCommand?: string;
+  /** Positional acpx agent (overlay alias or bare driver) for structured launches. */
+  acpxAgent?: string;
+  /** Unix-only legacy raw override passed as acpx `--agent`. */
+  rawCommand?: string;
   cwd: string;
   transportSession: string;
 }
@@ -98,17 +102,36 @@ export async function reapQueueOwners(
 
 async function defaultResolveRecordId(acpxCommand: string, target: ReapTarget): Promise<string | null> {
   const args = [
+    // JSON (not quiet): quiet emits a bare id line whose parsing is platform-
+    // sensitive (Windows stdout framing); the JSON branch of parseRecordId is
+    // the same one the transports use successfully everywhere. Permission args
+    // mirror the transports exactly — acpx rejects management commands without
+    // them on Windows, which previously made record resolution fail there.
     "--format",
-    "quiet",
+    "json",
     "--cwd",
     target.cwd,
-    ...(target.agentCommand ? ["--agent", target.agentCommand] : [target.agent]),
+    "--approve-all",
+    "--non-interactive-permissions",
+    "deny",
+    // Same launch selector as the transports: raw Unix override → `--agent`;
+    // overlay alias → positional; legacy `agentCommand`-only targets keep the
+    // old `--agent` form; otherwise the bare agent name.
+    ...(target.rawCommand
+      ? ["--agent", target.rawCommand]
+      : target.acpxAgent
+        ? [target.acpxAgent]
+        : target.agentCommand
+          ? ["--agent", target.agentCommand]
+          : [target.agent]),
     "sessions",
     "show",
     target.transportSession,
   ];
   const spawnSpec = resolveSpawnCommand(acpxCommand, args);
-  const result = await runCapture(spawnSpec.command, spawnSpec.args, 4_000);
+  // Generous: Windows node startup is slow and the show must not be killed
+  // before it answers (a false "no record" would leave the owner un-reaped).
+  const result = await runCapture(spawnSpec.command, spawnSpec.args, 10_000);
   if (result.code !== 0) {
     return null;
   }

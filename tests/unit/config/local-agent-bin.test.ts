@@ -74,3 +74,15 @@ test("resolveRuntimeAgentCommand: no explicit command + preferLocal prefers the 
 test("resolveRuntimeAgentCommand: preferLocal=false never returns a local command", () => {
   expect(resolveRuntimeAgentCommand("opencode", undefined, false)).toBeUndefined();
 });
+
+import { resolveLocalAgentArgv } from "../../../src/config/local-agent-bin";
+
+test("resolveLocalAgentArgv returns structured argv for a native CLI on PATH", () => {
+  expect(resolveLocalAgentArgv("opencode", (name) => name === "opencode")).toEqual(["opencode", "acp"]);
+  expect(resolveLocalAgentArgv("kilocode", (name) => name === "kilocode")).toEqual(["kilocode", "acp"]);
+});
+
+test("resolveLocalAgentArgv returns undefined when the native CLI is not on PATH", () => {
+  expect(resolveLocalAgentArgv("opencode", () => false)).toBeUndefined();
+  expect(resolveLocalAgentArgv("gemini", () => true)).toBeUndefined();
+});

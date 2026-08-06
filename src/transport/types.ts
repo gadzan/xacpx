@@ -63,7 +63,18 @@ export interface ResolvedSession {
   /** Resolved ACP driver behind the configured agent alias. */
   driver?: string;
   settingsPolicy?: ClaudeSettingsPolicy;
+  /** Canonical acpx session identity (renderArgvIdentity for structured launches). */
   agentCommand?: string;
+  /**
+   * Positional acpx agent: bare built-in driver or xacpx-managed overlay alias.
+   * Structured launches (managed adapters, hermes, user argv) resolve to the
+   * alias provisioned in ~/.acpx/config.json; bare drivers pass through.
+   */
+  acpxAgent?: string;
+  /** Unix-only legacy raw override passed as acpx `--agent`. */
+  rawCommand?: string;
+  /** Exact executable + argument boundaries for overlay/migration. */
+  agentArgv?: string[];
   /**
    * LLM model id to run this session under (e.g. `gpt-5.2[high]`). Resolved from
    * the session's own override first, then the agent config default. When unset,
@@ -120,6 +131,10 @@ export interface AgentSession {
 export interface AgentSessionListQuery {
   agent: string;
   agentCommand?: string;
+  /** Positional acpx agent for list/show queries (overlay alias or bare driver). */
+  acpxAgent?: string;
+  /** Unix-only legacy raw override; the shared builder prefers it over acpxAgent. */
+  rawCommand?: string;
   /** Resolved acpx driver for `agent` (e.g. a custom `my-codex` agent has driver `codex`). Used to gate driver-specific list filtering. */
   driver?: string;
   settingsPolicy?: ClaudeSettingsPolicy;

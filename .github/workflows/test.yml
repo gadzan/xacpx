@@ -36,6 +36,12 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # Real acpx CLI compat smoke against the npm-installed target acpx (no
+      # WeChat/credentials): structured argv boundaries, legacy record backfill,
+      # queue-owner warm reuse. Gates on the pinned acpx, so drift fails here.
+      - name: acpx compat smoke (Linux)
+        run: bun run test:compat:acpx
+
       # Build ALL workspace packages, not just the root. Each package's own
       # tsconfig (e.g. the relay stack's stricter noUncheckedIndexedAccess) is
       # only compiled by its `build:*` script — `bun run build` alone misses
@@ -97,3 +103,9 @@ jobs:
       # forward-slash cwd and asserts the byte stream round-trips.
       - name: Terminal ConPTY smoke (Node)
         run: node scripts/smoke-terminal-conpty.mjs
+
+      # Real acpx compat smoke on Windows with Node 24 + npm production install:
+      # structured argv launches through the overlay alias (the exact path raw
+      # `--agent` cannot take), legacy record backfill, and index repair.
+      - name: acpx compat smoke (Windows)
+        run: bun run test:compat:acpx

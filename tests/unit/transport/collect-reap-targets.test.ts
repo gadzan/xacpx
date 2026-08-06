@@ -46,13 +46,16 @@ test("builds reap targets from worker bindings, resolving cwd and agent command"
   expect(targets).toEqual([
     {
       agent: "codex",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+      acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },
     {
       agent: "opencode",
+      acpxAgent: "opencode",
       agentCommand: "npx -y opencode-ai acp",
+      rawCommand: "npx -y opencode-ai acp",
       cwd: "/tmp/backend",
       transportSession: "backend:opencode:wk",
     },
@@ -73,7 +76,8 @@ test("falls back to workspace cwd when the binding has no explicit cwd", () => {
   expect(targets).toEqual([
     {
       agent: "codex",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+      acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },
@@ -117,7 +121,8 @@ test("collectReapTargets combines logical sessions and worker bindings", () => {
     { agent: "opencode", agentCommand: "npx -y opencode-ai acp", cwd: "/tmp/b", transportSession: "wx:bob" },
     {
       agent: "codex",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.4",
+      acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },

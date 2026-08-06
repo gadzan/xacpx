@@ -9,7 +9,7 @@ import {
   tryRepairAcpxSessionIndex,
   type CommandRunnerOptions,
 } from "../../../src/bridge/bridge-runtime";
-import type { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
 test("injects the filtered Claude environment into bridge acpx commands", async () => {
   const observed: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -365,6 +365,24 @@ test("selectLatestAcpxSessionIndexTmp ignores malformed files and picks latest t
   ])).toBe("index.json.3.250.tmp");
 });
 
+test("selectLatestAcpxSessionIndexTmp accepts UUID temp files and mixes legacy/current formats", () => {
+  expect(selectLatestAcpxSessionIndexTmp([
+    "index.json.1.100.550e8400-e29b-41d4-a716-446655440000.tmp",
+    "index.json.2.250.tmp",
+    "index.json.3.249.550e8400-e29b-41d4-a716-446655440001.tmp",
+    "index.json.4.250.9d2d9c9a-1f2e-4a3b-8c5d-0f6e7a8b9c0d.tmp",
+  ])).toBe("index.json.2.250.tmp");
+});
+
+test("selectLatestAcpxSessionIndexTmp ignores extra hierarchy levels and wrong suffixes", () => {
+  expect(selectLatestAcpxSessionIndexTmp([
+    "index.json.1.100.abc.def.tmp",
+    "index.json.2.200.tmp.bak",
+    "index.json.3.300.550e8400-e29b-41d4-a716-446655440000.json",
+    "index.json.4.400.tmp",
+  ])).toBe("index.json.4.400.tmp");
+});
+
 test("tryRepairAcpxSessionIndex copies latest tmp over index on windows", async () => {
   const calls: Array<{ from: string; to: string }> = [];
   await expect(tryRepairAcpxSessionIndex({
@@ -372,8 +390,8 @@ test("tryRepairAcpxSessionIndex copies latest tmp over index on windows", async 
     home: "C:\\Users\\alice",
     readdirFn: async () => [
       "index.json",
-      "index.json.10.111.tmp",
-      "index.json.11.222.tmp",
+      "index.json.10.111.550e8400-e29b-41d4-a716-446655440000.tmp",
+      "index.json.11.222.550e8400-e29b-41d4-a716-446655440001.tmp",
       "random.txt",
     ],
     copyFileFn: async (from, to) => {
@@ -383,7 +401,7 @@ test("tryRepairAcpxSessionIndex copies latest tmp over index on windows", async 
 
   expect(calls).toEqual([
     {
-      from: "C:\\Users\\alice\\.acpx\\sessions\\index.json.11.222.tmp",
+      from: "C:\\Users\\alice\\.acpx\\sessions\\index.json.11.222.550e8400-e29b-41d4-a716-446655440001.tmp",
       to: "C:\\Users\\alice\\.acpx\\sessions\\index.json",
     },
   ]);
@@ -627,6 +645,31 @@ test("ensureSession surfaces the configured total when a later step times out", 
   expect((caught as Error).message).toBe("session initialization timed out after 100s");
 });
 
+test("ensureSession fails closed when sessions show succeeds with a corrupt record", async () => {
+  const calls: string[][] = [];
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async (_command, args) => {
+      calls.push(args);
+      if (args.includes("show")) {
+        return { code: 0, stdout: "{truncated", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  );
+
+  await expect(runtime.ensureSession({
+    agent: "custom",
+    acpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    agentCommand: "/opt/custom --acp",
+    agentArgv: ["/opt/custom", "--acp"],
+    cwd: "/repo",
+    name: "demo",
+  })).rejects.toThrow(/record|parse|malformed|corrupt/i);
+
+  expect(calls.some((args) => args.includes("ensure") || args.includes("new"))).toBe(false);
+});
+
 test("prompt is unbounded while management commands get the management timeout", async () => {
   const timeouts: Array<number | undefined> = [];
   const runtime = new BridgeRuntime(
@@ -761,6 +804,45 @@ test("prompt starts queue owner with orchestration MCP identity", async () => {
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
   }]);
+});
+
+test("prompt replaces a bridge queue owner when the resolved model changes", async () => {
+  const payloads: Array<{ sessionOptions?: { model?: string } }> = [];
+  let alive = false;
+  let terminateCount = 0;
+  const queueOwnerLauncher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async (_command, _args, options) => {
+      alive = true;
+      payloads.push(JSON.parse(options.env.ACPX_QUEUE_OWNER_PAYLOAD));
+      return 100 + payloads.length;
+    },
+    terminateOwner: async () => {
+      terminateCount += 1;
+      alive = false;
+    },
+    isOwnerAlive: async () => alive,
+  });
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+  const baseInput = {
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    mcpCoordinatorSession: "backend:main",
+  };
+
+  await runtime.prompt({ ...baseInput, model: " model-a " });
+  await runtime.prompt({ ...baseInput, model: "model-b" });
+
+  expect(terminateCount).toBe(2);
+  expect(payloads.map((payload) => payload.sessionOptions?.model)).toEqual(["model-a", "model-b"]);
 });
 
 test("prompt persists effort before launching the queue owner so reconnect replays it", async () => {

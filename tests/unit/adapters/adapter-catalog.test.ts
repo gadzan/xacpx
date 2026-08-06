@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   adapterRegistryHash8,
   buildManagedAdapterCommand,
+  classifyPreinstalledAdapterCommandShape,
+  classifyRecordedPreinstalledAdapterCommand,
   createAdapterReleaseId,
   decodeManagedAdapterCommand,
   effectiveAdapterVersion,
@@ -14,9 +16,36 @@ import {
   parseAdapterReleaseId,
 } from "../../../src/adapters/adapter-catalog";
 
+test("recorded preinstalled classification requires the trusted complete release layout", () => {
+  const releaseId = createAdapterReleaseId(
+    "1.1.4",
+    "https://registry.npmjs.org",
+    "12345678-0000-4000-8000-000000000000",
+  );
+  const validEntry = `/trusted/adapters/codex/releases/${releaseId}/node_modules/@agentclientprotocol/codex-acp/bin/codex-acp.js`;
+  const validCommand = `"/usr/bin/node" "${validEntry}"`;
+  const outsideCommand = validCommand.replace("/trusted/adapters", "/srv/adapters");
+
+  expect(classifyRecordedPreinstalledAdapterCommand(validCommand, {
+    runtimeRoot: "/trusted",
+    platform: "linux",
+  })).toBe("codex");
+  expect(classifyRecordedPreinstalledAdapterCommand(outsideCommand, {
+    runtimeRoot: "/trusted",
+    platform: "linux",
+  })).toBeNull();
+  expect(classifyRecordedPreinstalledAdapterCommand(
+    validCommand.replace("/@agentclientprotocol/codex-acp/", "/@agentclientprotocol/custom-acp/"),
+    { runtimeRoot: "/trusted", platform: "linux" },
+  )).toBeNull();
+
+  // The broad classifier intentionally remains shape-only for mandatory fencing.
+  expect(classifyPreinstalledAdapterCommandShape(outsideCommand)).toBe("codex");
+});
+
 test("managed adapters use tested exact defaults and accept local overrides", () => {
-  expect(effectiveAdapterVersion("codex", {})).toBe("1.1.4");
-  expect(effectiveAdapterVersion("claude", {})).toBe("0.59.0");
+  expect(effectiveAdapterVersion("codex", {})).toBe("1.1.9");
+  expect(effectiveAdapterVersion("claude", {})).toBe("0.64.2");
   expect(effectiveAdapterVersion("codex", { codex: "1.1.2" })).toBe("1.1.2");
   expect(buildManagedAdapterCommand("codex", "1.1.2")).toBe(
     "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.2",
@@ -117,10 +146,33 @@ test("adapter versions are exact semver values, never ranges or package specs", 
 test("recognizes only generated commands for managed adapter packages", () => {
   expect(isManagedAdapterCommand(
     "codex",
-    "npx -y --registry=https://registry.npmjs.org/ --@agentclientprotocol:registry=https://registry.npmjs.org/ @agentclientprotocol/codex-acp@1.1.4",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
   )).toBe(true);
-  expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@1.1.4")).toBe(true);
+  expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@1.1.9")).toBe(true);
   expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@^0.0.44")).toBe(true);
   expect(isManagedAdapterCommand("codex", "custom-codex-acp")).toBe(false);
-  expect(isManagedAdapterCommand("claude", "npx -y @agentclientprotocol/codex-acp@1.1.4")).toBe(false);
+  expect(isManagedAdapterCommand("claude", "npx -y @agentclientprotocol/codex-acp@1.1.9")).toBe(false);
+});
+
+import {
+  buildManagedAdapterArgv,
+  resolveManagedAdapterArgv,
+} from "../../../src/adapters/adapter-catalog";
+
+test("managed adapter argv keeps exact boundaries and pinned registry/version", () => {
+  expect(buildManagedAdapterArgv("codex", "1.1.2")).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
+    "@agentclientprotocol/codex-acp@1.1.2",
+  ]);
+  expect(resolveManagedAdapterArgv("claude", { claude: "0.58.1" })).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
+    "@agentclientprotocol/claude-agent-acp@0.58.1",
+  ]);
+  expect(resolveManagedAdapterArgv("gemini")).toBeUndefined();
 });
