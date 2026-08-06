@@ -86,7 +86,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "acpx": "^0.13.0",
+    "acpx": "0.13.0",
     "node-pty": "^1.1.0",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^7.5.6",

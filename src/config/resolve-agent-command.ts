@@ -10,7 +10,7 @@ import {
   type AdapterVersionOverrides,
 } from "../adapters/adapter-catalog";
 import { effectiveAdapterRegistry } from "../adapters/adapter-registry";
-import { resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
+import { resolveActiveAdapterArgvSync, resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
 import { hermesAcpShimArgv, hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
 import { deriveAgentAlias, renderAgentArgvIdentity, type AgentLaunchSpec } from "./agent-launch";
 import type { AgentConfig, TransportConfig } from "./types";
@@ -97,6 +97,8 @@ export function resolveConfiguredAgentCommand(
 
 export interface ResolveAgentLaunchOptions {
   platform?: NodeJS.Platform;
+  /** Runtime root for preinstalled adapter releases; defaults like the runtime resolver. */
+  runtimeRoot?: string;
 }
 
 /**
@@ -139,7 +141,7 @@ export function resolveConfiguredAgentLaunch(
     return { acpxAgent: agent.driver, rawCommand: explicit, agentCommand: explicit };
   }
 
-  const argv = structuredAgentArgv(agent, transport);
+  const argv = structuredAgentArgv(agent, transport, options.runtimeRoot);
   if (argv) {
     return {
       acpxAgent: deriveAgentAlias(agent.driver, argv),
@@ -155,8 +157,21 @@ export function resolveConfiguredAgentLaunch(
 export function structuredAgentArgv(
   agent: Pick<AgentConfig, "driver" | "command" | "argv">,
   transport?: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry">,
+  runtimeRoot: string = dirname(resolveConfigPathForCurrentEnv()),
 ): string[] | undefined {
   if (agent.argv) return [...agent.argv];
+  if (isManagedAdapterId(agent.driver)) {
+    // An active preinstalled release replaces the generated npx command for
+    // real session launches too (not just --agent paths): offline startup and
+    // Windows durable-owner fencing depend on the structured launch honoring it.
+    const preinstalled = resolveActiveAdapterArgvSync(runtimeRoot, {
+      id: agent.driver,
+      version: effectiveAdapterVersion(agent.driver, transport?.adapterVersions),
+      registry: effectiveAdapterRegistry(transport?.adapterRegistry),
+      packageName: MANAGED_ADAPTERS[agent.driver].packageName,
+    });
+    if (preinstalled) return preinstalled;
+  }
   const managed = resolveManagedAdapterArgv(
     agent.driver,
     transport?.adapterVersions,

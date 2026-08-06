@@ -69,6 +69,9 @@ export async function runBridgeMain(): Promise<void> {
   const overlaysEnv = coreEnv("BRIDGE_AGENT_OVERLAYS");
   if (overlaysEnv) {
     await ensureAgentOverlays(parseAgentOverlayEntries(overlaysEnv));
+    // The full argv list must not leak into the environment of the acpx/agent
+    // children this bridge spawns (or hit Windows env-block size limits).
+    delete process.env.XACPX_BRIDGE_AGENT_OVERLAYS;
   }
   let server: BridgeServer;
   const runtime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {

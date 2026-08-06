@@ -300,7 +300,7 @@ test("uses WEACPX_DAEMON_ARG0 as the default weacpx CLI command", async () => {
   ]);
 });
 
-test("reuses a live warm owner instead of kill+respawn", async () => {
+test("reuses a live warm owner only when launch parameters are unchanged", async () => {
   const spawns: Array<{ command: string; args: string[] }> = [];
   const spawnOwner: QueueOwnerSpawner = mock(async (command, args) => {
     spawns.push({ command, args });
@@ -309,12 +309,53 @@ test("reuses a live warm owner instead of kill+respawn", async () => {
   const terminateOwner: QueueOwnerTerminator = mock(async (sessionId) => {
     terminated.push(sessionId);
   });
+  let alive = false;
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    xacpxCommand: "node ./dist/cli.js",
+    spawnOwner: async (command, args, options) => {
+      alive = true;
+      await spawnOwner(command, args, options);
+    },
+    terminateOwner,
+    isOwnerAlive: async () => alive,
+  });
+
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+  };
+
+  // First launch spawns (and best-effort terminates any stale owner) and
+  // records the parameter fingerprint.
+  await launcher.launch(input);
+  expect(spawns).toHaveLength(1);
+  expect(terminated).toHaveLength(1);
+
+  // Same parameters + live owner → reuse: no NEW terminate, no spawn.
+  await launcher.launch(input);
+  expect(spawns).toHaveLength(1);
+  expect(terminated).toHaveLength(1);
+
+  // Changed parameters → the old owner must be replaced, not reused.
+  await launcher.launch({ ...input, coordinatorSession: "backend:other" });
+  expect(terminated).toHaveLength(2);
+  expect(spawns).toHaveLength(2);
+});
+
+test("a live owner with no recorded fingerprint is not reused", async () => {
+  const spawns: Array<{ command: string; args: string[] }> = [];
+  const spawnOwner: QueueOwnerSpawner = mock(async (command, args) => {
+    spawns.push({ command, args });
+  });
   const launcher = new AcpxQueueOwnerLauncher({
     acpxCommand: "acpx",
     xacpxCommand: "node ./dist/cli.js",
     spawnOwner,
-    terminateOwner,
-    isOwnerAlive: async () => true,
+    terminateOwner: async () => {},
+    isOwnerAlive: async () => true, // owner exists but WE never spawned it
   });
 
   await launcher.launch({
@@ -324,8 +365,7 @@ test("reuses a live warm owner instead of kill+respawn", async () => {
     nonInteractivePermissions: "deny",
   });
 
-  expect(terminated).toEqual([]);
-  expect(spawns).toHaveLength(0);
+  expect(spawns).toHaveLength(1);
 });
 
 test("verified termination is a no-op when no owner lock exists", async () => {

@@ -768,8 +768,18 @@ export class AcpxCliTransport implements SessionTransport {
     let recordId: string | null = null;
     try {
       ({ acpxRecordId: recordId } = await this.readSessionRecord(session));
-    } catch {
-      return; // no record yet → the ensure below creates one from the overlay argv
+    } catch (error) {
+      // Only a genuinely missing session means "nothing to migrate" — the
+      // ensure below creates the record from the overlay argv. Timeouts,
+      // crashes, permission errors, or corrupt output must FAIL CLOSED or the
+      // follow-up ensure/new could duplicate records and orphan history.
+      if (isMissingAcpxSessionError(
+        error instanceof Error ? error.message : "",
+        "",
+      )) {
+        return;
+      }
+      throw error;
     }
     const result = await migrateSessionArgvFile(recordId, {
       agentCommand: renderAgentArgvIdentity(session.agentArgv),

@@ -79,6 +79,12 @@ export async function checkSmoke(
       };
     }
 
+    // Provision overlay aliases first: a fresh HOME or a daemon that never ran
+    // would otherwise leave managed/user-argv aliases unresolvable and turn the
+    // smoke into a false "unknown agent" failure.
+    const { ensureAgentOverlays, computeAgentOverlayEntries } = await import("../../transport/acpx-agent-overlay");
+    await ensureAgentOverlays(computeAgentOverlayEntries(config));
+
     const metadata = (resolvedOptions.resolveAcpxCommandMetadata ?? resolveAcpxCommandMetadata)({
       configuredCommand: config.transport.command,
     });

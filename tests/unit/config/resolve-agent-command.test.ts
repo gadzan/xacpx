@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
@@ -207,4 +207,37 @@ test("windows rejects a multi-token raw command with migration guidance", () => 
     undefined,
     { platform: "win32" },
   )).toThrow(/Migrate it to an argv array in config/);
+});
+
+test("structured launches prefer an active preinstalled release over the npx argv", async () => {
+  const runtimeRoot = await mkdtemp(join(tmpdir(), "adapter-structured-resolution-"));
+  try {
+    const releaseId = createAdapterReleaseId("1.1.9", "https://registry.npmjs.org", "99999999-0000-4000-8000-000000000000");
+    const release = join(runtimeRoot, "adapters", "codex", "releases", releaseId);
+    const entry = join(release, "node_modules", "@agentclientprotocol", "codex-acp", "bin", "codex-acp.js");
+    const node = join(runtimeRoot, "runtime", "node");
+    await mkdir(dirname(entry), { recursive: true });
+    await mkdir(dirname(node), { recursive: true });
+    await writeFile(entry, "export {};\n");
+    await writeFile(node, "#!/bin/sh\n");
+    await chmod(node, 0o755);
+    await writeFile(join(release, "installed.json"), JSON.stringify({
+      schemaVersion: 1, id: "codex", packageName: "@agentclientprotocol/codex-acp", version: "1.1.9",
+      releaseId, registry: "https://registry.npmjs.org", nodeExecutable: node,
+      entryRelPath: relative(release, entry), installedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    await writeFile(join(runtimeRoot, "adapters", "codex", "active.json"),
+      JSON.stringify({ version: "1.1.9", releaseId, activatedAt: "now" }));
+
+    const spec = resolveConfiguredAgentLaunch({ driver: "codex" }, undefined, {
+      platform: "darwin",
+      runtimeRoot,
+    });
+    const realNode = await realpath(node);
+    const realEntry = await realpath(entry);
+    expect(spec.agentArgv).toEqual([realNode, realEntry]);
+    expect(spec.acpxAgent).toBe(deriveAgentAlias("codex", [realNode, realEntry]));
+  } finally {
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
 });

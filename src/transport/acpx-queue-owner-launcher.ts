@@ -125,6 +125,17 @@ export function buildXacpxMcpServerSpec(input: {
   };
 }
 
+function launchFingerprint(input: LaunchQueueOwnerInput): string {
+  return JSON.stringify({
+    coordinatorSession: input.coordinatorSession,
+    sourceHandle: input.sourceHandle ?? null,
+    permissionMode: input.permissionMode,
+    nonInteractivePermissions: input.nonInteractivePermissions,
+    sessionOptions: input.sessionOptions ?? null,
+    agentCommand: input.agentCommand ?? null,
+  });
+}
+
 export function buildQueueOwnerPayload(input: {
   sessionId: string;
   agentCommand?: string;
@@ -166,6 +177,8 @@ export class AcpxQueueOwnerLauncher {
   private readonly sleep: (ms: number) => Promise<void>;
   /** Per-session mutex: serializes terminate+spawn to prevent concurrent clobbering. */
   private readonly launchLocks = new Map<string, Promise<{ agentCommand?: string }>>();
+  /** Fingerprint of the parameters the CURRENT owner was spawned with. */
+  private readonly lastLaunchFingerprint = new Map<string, string>();
 
   constructor(options: AcpxQueueOwnerLauncherOptions) {
     this.acpxCommand = options.acpxCommand;
@@ -203,9 +216,16 @@ export class AcpxQueueOwnerLauncher {
   }
 
   private async doLaunch(input: LaunchQueueOwnerInput): Promise<{ agentCommand?: string }> {
-    // A live warm owner already holds the session's ACP agent: reuse it, so a
-    // follow-up turn skips the cold start instead of kill+respawn churn.
-    if (await this.isOwnerAlive(input.acpxRecordId)) {
+    // A live warm owner can only be reused when the launch parameters are
+    // UNCHANGED since it was spawned: permission mode, coordinator/source,
+    // model options, and the agent command are all baked into the owner's
+    // payload at spawn time. Reusing it under changed parameters would keep an
+    // old permission/MCP/model/command profile alive (forever with ttl=0).
+    const fingerprint = launchFingerprint(input);
+    if (
+      await this.isOwnerAlive(input.acpxRecordId)
+      && this.lastLaunchFingerprint.get(input.acpxRecordId) === fingerprint
+    ) {
       return { agentCommand: input.agentCommand };
     }
     await this.terminateOwner(input.acpxRecordId);
@@ -275,6 +295,7 @@ export class AcpxQueueOwnerLauncher {
       if (adapter && intentToken && adapter.platform === "win32") await adapter.cancel(intentToken);
       throw error;
     }
+    this.lastLaunchFingerprint.set(input.acpxRecordId, fingerprint);
     if (!adapter || !intentToken || adapter.platform !== "win32") return { agentCommand: launchAgentCommand };
 
     await adapter.spawned(intentToken);

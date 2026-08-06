@@ -294,6 +294,21 @@ export function resolveActiveAdapterCommandSync(
   runtimeRoot: string,
   expected: Omit<ValidateReleaseExpected, "releaseId">,
 ): string | null {
+  return resolveActiveAdapterLaunchSync(runtimeRoot, expected)?.command ?? null;
+}
+
+/** Structured-argv variant of the spawn-time resolution for lossless launches. */
+export function resolveActiveAdapterArgvSync(
+  runtimeRoot: string,
+  expected: Omit<ValidateReleaseExpected, "releaseId">,
+): string[] | null {
+  return resolveActiveAdapterLaunchSync(runtimeRoot, expected)?.argv ?? null;
+}
+
+function resolveActiveAdapterLaunchSync(
+  runtimeRoot: string,
+  expected: Omit<ValidateReleaseExpected, "releaseId">,
+): { command: string; argv: string[] } | null {
   try {
     const idRoot = join(runtimeRoot, "adapters", expected.id);
     const pointer = JSON.parse(readFileSync(join(idRoot, "active.json"), "utf8")) as ActiveAdapterPointer;
@@ -318,7 +333,10 @@ export function resolveActiveAdapterCommandSync(
     if (process.platform !== "win32") accessSync(node, constants.X_OK);
     const entry = realpathSync(resolve(releaseDir, manifest.entryRelPath));
     if (!isContained(releaseDir, entry) || !statSync(entry).isFile()) return null;
-    return `${JSON.stringify(node)} ${JSON.stringify(entry)}`;
+    return {
+      command: `${JSON.stringify(node)} ${JSON.stringify(entry)}`,
+      argv: [node, entry],
+    };
   } catch {
     return null;
   }

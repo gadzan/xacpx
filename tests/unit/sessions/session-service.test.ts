@@ -1179,3 +1179,46 @@ test("windows rejects a recorded single-token command too (no overlay alias exis
   const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
   await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
 });
+
+test("recorded custom argv stays sticky even when the config argv changes", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom", argv: ["C:\\Program Files\\agent-b.exe", "--acp"] };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_acpx_agent: "xacpx-managed-custom-aaaabbbbcccc",
+    transport_agent_command: "C:\\Program Files\\agent-a.exe --acp",
+    transport_agent_argv: ["C:\\Program Files\\agent-a.exe", "--acp"],
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state);
+  const session = await service.getSession("review");
+  expect(session?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
+  expect(session?.acpxAgent).toBe("xacpx-managed-custom-aaaabbbbcccc");
+});
+
+test("command refresh preserves recorded structured launch fields", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const created = await service.attachNativeSession({
+    alias: "review",
+    agent: "custom",
+    workspace: "backend",
+    transportSession: "backend:review",
+    transportAgentCommand: "C:\\Program Files\\agent-a.exe --acp",
+    transportAcpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    transportAgentArgv: ["C:\\Program Files\\agent-a.exe", "--acp"],
+    agentSessionId: "thread-1",
+  });
+  expect(created.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
+
+  // Refresh-style call with only the command: structured fields must survive.
+  await service.setSessionTransportAgentCommand("review", "C:\\Program Files\\agent-b.exe --acp");
+  const after = await service.getSession("review");
+  expect(after?.agentCommand).toBe("C:\\Program Files\\agent-b.exe --acp");
+  expect(after?.acpxAgent).toBe("xacpx-managed-custom-aaaabbbbcccc");
+  expect(after?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
+});

@@ -781,11 +781,10 @@ export class SessionService {
     if (current.rawCommand) {
       return current;
     }
-    // 2. Explicit config `argv` wins over any recording.
-    if (agentConfig.argv) {
-      return current;
-    }
-    // 3. Recorded custom argv (attach-native or config history) stays sticky.
+    // 2. Recorded custom argv stays sticky (like recorded raw commands): a
+    // session created under argv A must keep operating as A even if the config
+    // later changes to B — otherwise the session silently jumps to B's alias
+    // and its history is orphaned.
     const recordedArgv = isDerivedAgentArgv(agentConfig.driver, session.transport_agent_argv)
       ? undefined
       : session.transport_agent_argv;
@@ -795,6 +794,10 @@ export class SessionService {
         agentCommand: session.transport_agent_command ?? renderAgentArgvIdentity(recordedArgv),
         agentArgv: recordedArgv,
       };
+    }
+    // 3. Explicit config `argv` (for sessions that have no recorded launch).
+    if (agentConfig.argv) {
+      return current;
     }
     // 4. Recorded legacy custom raw command stays sticky so a session launched
     // with a custom command keeps its identity even if config changed later.
@@ -932,15 +935,19 @@ export class SessionService {
       } else {
         delete session.transport_agent_command;
       }
-      if (transportAcpxAgent) {
+      // Structured launch fields are only ever UPDATED here, never cleared by
+      // omission: refresh paths call with (alias, command) only, and deleting
+      // the recorded alias/argv on such a call would orphan the session from
+      // its exact launch identity right after attach recorded it.
+      if (transportAcpxAgent !== undefined) {
         session.transport_acpx_agent = transportAcpxAgent;
-      } else {
-        delete session.transport_acpx_agent;
       }
-      if (transportAgentArgv && transportAgentArgv.length > 0) {
-        session.transport_agent_argv = [...transportAgentArgv];
-      } else {
-        delete session.transport_agent_argv;
+      if (transportAgentArgv !== undefined) {
+        if (transportAgentArgv.length > 0) {
+          session.transport_agent_argv = [...transportAgentArgv];
+        } else {
+          delete session.transport_agent_argv;
+        }
       }
 
       session.last_used_at = new Date().toISOString();

@@ -24,6 +24,8 @@ interface NativeTarget {
   acpxAgent?: string;
   /** Unix-only legacy raw override passed as acpx `--agent`. */
   rawCommand?: string;
+  /** Exact launch argv, recorded on attach so identity survives config/PATH changes. */
+  agentArgv?: string[];
   /** Resolved acpx driver for `agent` (e.g. a `my-codex` agent has driver `codex`). */
   driver?: string;
   settingsPolicy?: ClaudeSettingsPolicy;
@@ -230,6 +232,7 @@ async function attachNativeSession(
       transportSession,
       ...(target.agentCommand ? { transportAgentCommand: target.agentCommand } : {}),
       ...(target.acpxAgent ? { transportAcpxAgent: target.acpxAgent } : {}),
+      ...(target.agentArgv ? { transportAgentArgv: target.agentArgv } : {}),
       agentSessionId: session.sessionId,
       title: session.title,
       updatedAt: session.updatedAt,
@@ -282,12 +285,13 @@ async function resolveNativeTarget(
 function nativeTargetLaunchFields(
   agentConfig: { driver: string; command?: string; argv?: string[] },
   transport?: AppConfig["transport"],
-): Pick<NativeTarget, "agentCommand" | "acpxAgent" | "rawCommand"> {
+): Pick<NativeTarget, "agentCommand" | "acpxAgent" | "rawCommand" | "agentArgv"> {
   const launch = resolveConfiguredAgentLaunch(agentConfig, transport);
   return {
     ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
     ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
     ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+    ...(launch.agentArgv ? { agentArgv: launch.agentArgv } : {}),
   };
 }
 

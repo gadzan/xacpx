@@ -2671,3 +2671,33 @@ test("getAgentSessionId returns undefined when the record has no agentSessionId"
 
   expect(id).toBeUndefined();
 });
+
+test("ensureSession fails closed when migration cannot resolve the record", async () => {
+  const run = mock(async () => ({ code: 1, stdout: "", stderr: "acpx command timed out after 1000ms" }));
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, runPty);
+  await expect(transport.ensureSession({
+    ...session,
+    acpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    agentArgv: ["C:\\Program Files\\agent.exe", "--acp"],
+  })).rejects.toThrow(/timed out after 1000ms/);
+});
+
+test("ensureSession treats a genuinely missing session as no-record and proceeds", async () => {
+  const calls: string[][] = [];
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      return { code: 1, stdout: "", stderr: "No named session \"backend:api-fix\" for cwd /tmp/backend" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, runPty);
+  await transport.ensureSession({
+    ...session,
+    acpxAgent: "xacpx-managed-custom-aaaabbbbcccc",
+    agentArgv: ["C:\\Program Files\\agent.exe", "--acp"],
+  });
+  expect(calls.some((args) => args.includes("ensure"))).toBe(true);
+});
