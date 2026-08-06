@@ -275,6 +275,24 @@ test("mcpCoordinatorSession spawns a warm queue owner that the second turn reuse
     expect(ownerPid2).toBe(ownerPid1);
 
     // Reaper terminates the owner by record id but does NOT close the session.
+    if (process.platform === "win32") {
+      // Diagnostic: surface what the reaper's record-resolution spawn sees.
+      const { spawn } = await import("node:child_process");
+      const diag = await new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [ACPX, "--format", "json", "--cwd", spec.cwd, "--approve-all", "--non-interactive-permissions", "deny", spec.acpxAgent!, "sessions", "show", spec.transportSession],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (chunk) => { out += String(chunk); });
+        child.stderr.on("data", (chunk) => { err += String(chunk); });
+        child.on("close", (code) => resolve({ code, out, err }));
+        setTimeout(() => child.kill(), 15_000);
+      });
+      console.log("[compat] win32 show diag:", JSON.stringify(diag).slice(0, 600));
+    }
     const ownerBeforeReap = ownerPid1;
     const reaped = await reapQueueOwners(ACPX, [{
       agent: spec.agent,
