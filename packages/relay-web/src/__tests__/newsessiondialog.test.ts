@@ -319,6 +319,37 @@ describe("NewSessionDialog", () => {
     expect(wrapper.get('[data-test="ns-create"]').attributes("disabled")).toBeDefined();
   });
 
+  it("ignores a stale native-list response that resolves after a newer selection", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [
+        { name: "backend", cwd: "/b" },
+        { name: "frontend", cwd: "/f" },
+      ],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    // Deferred per workspace: the backend list hangs while the frontend list resolves
+    // right away — the stale backend response must not overwrite the newer one.
+    let resolveBackend!: (sessions: Array<{ sessionId: string; title?: string }>) => void;
+    vi.mocked(store.listNativeSessions).mockImplementation((_id, _agent, workspace) =>
+      workspace === "backend"
+        ? new Promise((resolve) => { resolveBackend = resolve; })
+        : Promise.resolve([{ sessionId: "ses_new", title: "Fresh frontend" }]),
+    );
+    await flushPromises();
+    await wrapper.get('[data-test="ns-source-native"]').trigger("click"); // starts the backend list
+    await pick(wrapper, "ns-workspace", "frontend"); // supersedes it before it resolves
+    await flushPromises();
+    // The newer (frontend) list has landed.
+    expect(wrapper.get('[data-test="ns-native"]').text()).toContain("Fresh frontend");
+    // Now the stale backend response finally resolves — it must be ignored.
+    resolveBackend([{ sessionId: "ses_old", title: "Stale backend" }]);
+    await flushPromises();
+    expect(wrapper.get('[data-test="ns-native"]').text()).toContain("Fresh frontend");
+    expect(wrapper.get('[data-test="ns-native"]').text()).not.toContain("Stale backend");
+  });
+
   it("renders Chinese strings when the locale is zh-CN", async () => {
     i18n.global.locale.value = "zh-CN";
     try {
