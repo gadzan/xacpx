@@ -10,6 +10,7 @@ import {
   terminateWindowsProcessTree,
   type BatchTarget,
 } from "../../../src/process/windows-process-tree";
+import { parseCanonicalFileTime } from "../../../src/process/windows-process-identity";
 
 const root: BatchTarget = {
   pid: 100,
@@ -104,6 +105,18 @@ test("token snapshots and residual termination reject malformed worker responses
 
 const windowsTest = process.platform === "win32" ? test : test.skip;
 
+// Regression: the real worker must actually run on Windows. Piping the script
+// to `powershell -Command -` let PS 5.1 drop every multi-line construct and
+// return empty output, which the tree test below masked by skipping.
+windowsTest("real worker resolves the current process identity", async () => {
+  const probe = await probeWindowsProcessIdentity(process.pid);
+  expect(probe.status).toBe("found");
+  if (probe.status !== "found") return;
+  expect(probe.identity.pid).toBe(process.pid);
+  expect(parseCanonicalFileTime(probe.identity.creationDate)).not.toBeNull();
+  expect(probe.identity.executablePath.length).toBeGreaterThan(0);
+}, 15_000);
+
 windowsTest("real worker rejects a replaced identity and kills a verified tree through retained handles", async () => {
   const rootProcess = spawn("node", ["-e", [
     "const {spawn}=require('node:child_process')",
@@ -145,7 +158,9 @@ windowsTest("real worker rejects a replaced identity and kills a verified tree t
     executablePath: identity!.executablePath,
   });
   expect(result.rootOutcome).toBe("killed");
-  expect(result.outcomes.some((item) => item.target.pid === childPid && item.outcome === "killed")).toBe(true);
+  // Node/libuv children are bound to a kill-on-close Job, so the leaf may be
+  // reaped by the parent's cascade before our retained handle reaches it.
+  expect(result.outcomes.some((item) => item.target.pid === childPid && (item.outcome === "killed" || item.outcome === "already-exited"))).toBe(true);
   expect(() => process.kill(rootProcess.pid!, 0)).toThrow();
   expect(() => process.kill(childPid, 0)).toThrow();
 }, 30_000);

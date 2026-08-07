@@ -79,8 +79,10 @@ function decodeTarget(value: unknown): BatchTarget | null {
   const item = value as Record<string, unknown>;
   if (!Number.isSafeInteger(item.pid) || Number(item.pid) <= 0) return null;
   if (parseCanonicalFileTime(item.creationDate) === null) return null;
-  if (item.commandLine !== undefined && typeof item.commandLine !== "string") return null;
-  if (item.executablePath !== undefined && typeof item.executablePath !== "string") return null;
+  // The worker emits JSON null for fingerprints the caller did not supply;
+  // treat null like an absent field rather than rejecting the whole response.
+  if (item.commandLine !== undefined && item.commandLine !== null && typeof item.commandLine !== "string") return null;
+  if (item.executablePath !== undefined && item.executablePath !== null && typeof item.executablePath !== "string") return null;
   return {
     pid: Number(item.pid),
     creationDate: String(item.creationDate),
@@ -215,8 +217,16 @@ export async function terminateWindowsResidual(
 
 async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: number): Promise<unknown> {
   return await new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"], {
-      stdio: ["pipe", "pipe", "pipe"],
+    // Windows PowerShell 5.1 processes `-Command -` stdin line by line and
+    // silently discards any line that opens a multi-line construct (blocks,
+    // here-strings), so piping the script leaves the worker producing no
+    // output at all. `-EncodedCommand` (base64 UTF-16LE) delivers the script
+    // intact — the same transport buildWindowsLauncherScript already uses.
+    // Ceiling: the encoded script must fit the 32767-char CreateProcess
+    // command line; keep the worker script compact.
+    const encodedScript = Buffer.from(WINDOWS_TREE_WORKER_SCRIPT, "utf16le").toString("base64");
+    const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedScript], {
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       env: {
         ...process.env,
@@ -244,7 +254,6 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.once("error", (error) => finish(error));
     child.once("close", (code) => code === 0 ? finish() : finish(new Error(`Windows process worker failed (${code}): ${stderr}`)));
-    child.stdin.end(WINDOWS_TREE_WORKER_SCRIPT);
   });
 }
 
@@ -344,7 +353,14 @@ if($request.action -eq 'terminate-one-cim'){
   if(!$check.ok){Write-Output (@{outcome=$check.status} | ConvertTo-Json -Compress);exit 0}
   try {
     if(![XacpxNativeProcess]::Alive($check.handle)){$status='already-exited'}
-    elseif(![XacpxNativeProcess]::Kill($check.handle)){$status=if([XacpxNativeProcess]::LastError() -eq 5){'access-denied'}else{'query-failed'}}
+    elseif(![XacpxNativeProcess]::Kill($check.handle)){
+      $code=[XacpxNativeProcess]::LastError()
+      # Ancestor kills can cascade through Job objects (libuv/Node children
+      # die with their parent), so a failed kill on an already-dying process
+      # is a confirmed exit, not a denial.
+      if([XacpxNativeProcess]::WaitDead($check.handle)){$status='already-exited'}
+      else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}
+    }
     else{$status=if([XacpxNativeProcess]::WaitDead($check.handle)){'killed'}else{'kill-requested-unconfirmed'}}
     Write-Output (@{outcome=$status} | ConvertTo-Json -Compress);exit 0
   } finally {[XacpxNativeProcess]::Close($check.handle)}
@@ -399,7 +415,15 @@ try {
   foreach($node in $nodes){
     $h=$handles[$node.pid]
     if(![XacpxNativeProcess]::Alive($h)){[void]$outcomes.Add((Outcome $node 'already-exited'));continue}
-    if(![XacpxNativeProcess]::Kill($h)){$status=if([XacpxNativeProcess]::LastError() -eq 5){'access-denied'}else{'query-failed'};[void]$outcomes.Add((Outcome $node $status));continue}
+    if(![XacpxNativeProcess]::Kill($h)){
+      $code=[XacpxNativeProcess]::LastError()
+      # Ancestor kills can cascade through Job objects (libuv/Node children
+      # die with their parent), so a failed kill on an already-dying process
+      # is a confirmed exit, not a denial.
+      if([XacpxNativeProcess]::WaitDead($h)){$status='already-exited'}
+      else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}
+      [void]$outcomes.Add((Outcome $node $status));continue
+    }
     $status=if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}
     [void]$outcomes.Add((Outcome $node $status))
   }
