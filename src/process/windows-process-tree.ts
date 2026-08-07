@@ -259,7 +259,9 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
 
 // One PowerShell process owns every verified handle from identity check through
 // termination. No verified PID is ever handed to Stop-Process/taskkill later.
-const WINDOWS_TREE_WORKER_SCRIPT = String.raw`
+// Exported so the test suite can statically guard against the encoded payload
+// exceeding Windows' CreateProcess command-line ceiling.
+export const WINDOWS_TREE_WORKER_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XACPX_PROCESS_REQUEST)) | ConvertFrom-Json
 Add-Type -TypeDefinition @'

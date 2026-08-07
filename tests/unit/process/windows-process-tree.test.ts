@@ -8,6 +8,7 @@ import {
   snapshotWindowsProcessesByToken,
   terminateWindowsResidual,
   terminateWindowsProcessTree,
+  WINDOWS_TREE_WORKER_SCRIPT,
   type BatchTarget,
 } from "../../../src/process/windows-process-tree";
 import { parseCanonicalFileTime } from "../../../src/process/windows-process-identity";
@@ -104,6 +105,16 @@ test("token snapshots and residual termination reject malformed worker responses
 });
 
 const windowsTest = process.platform === "win32" ? test : test.skip;
+
+test("encoded Windows worker command line stays below the CreateProcess ceiling", () => {
+  // `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand <encoded>`
+  // is 67 fixed chars plus the base64 payload. The hard ceiling is 32767 chars
+  // (CreateProcessW); this asserts a slightly tighter budget so future script
+  // growth fails loudly instead of silently truncating. The current payload is
+  // ~29 KB so headroom is intentionally small.
+  const encoded = Buffer.from(WINDOWS_TREE_WORKER_SCRIPT, "utf16le").toString("base64");
+  expect(67 + encoded.length).toBeLessThan(32_500);
+});
 
 // Regression: the real worker must actually run on Windows. Piping the script
 // to `powershell -Command -` let PS 5.1 drop every multi-line construct and
