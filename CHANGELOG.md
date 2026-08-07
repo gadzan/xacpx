@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.20.0] - 2026-08-07
+
+First stable release of the 0.20 line.
+
+### Added
+
+- Daemon: channel-independent runtime ownership with POSIX recovery and Windows daemon runtime support; recover after in-place upgrades.
+- Relay-web dashboard: auto-load sessions with per-group sleeping-session pagination (server-side paging, 5 per page with load-more).
+- `control.sessions.list` filter fields: `archivedOnly`, `workspace`, `agent`.
+
+### Changed
+
+- Control: extend `control.sessions.list` with `archivedOnly` / `workspace` / `agent` filters to back per-group session pages.
+- Channel-relay: dispatch `control.sessions.list` archived/workspace/agent filters to the hub.
+
+### Fixed
+
+- Daemon: close runtime-consumer-lock races, fail closed on unconfirmed flock cleanup, harden flock helper acquisition timeout.
+- Daemon: fix Bun runtime ownership lifecycle and runtime ownership locking on POSIX.
+- Relay-web: guard `parseGroupArchivedKey` against colon-less keys; unify group archived state writes; converge paginated session state safely.
+
 ## [0.20.0-beta.1] - 2026-08-07
 
 ### Added

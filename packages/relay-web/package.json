@@ -28,7 +28,7 @@
     "@codemirror/view": "^6.0.0",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
-    "@ganglion/xacpx-relay-protocol": "^0.3.0-beta.1",
+    "@ganglion/xacpx-relay-protocol": "^0.3.0",
     "@lezer/highlight": "^1.0.0",
     "@lobehub/icons-static-svg": "^1.91.0",
     "codemirror": "^6.0.0",
