@@ -50,11 +50,41 @@ jobs:
         run: bun run build:packages
 
   terminal-windows:
+    # On PRs, only run when changes touch Windows/terminal/daemon/adapter/transport
+    # surface or shared infra that could break the Windows build. Always runs on
+    # push to main so the default branch stays green.
+    if: github.event_name == 'push' || steps.paths.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Detect Windows-relevant changes
+        id: paths
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            windows:
+              - 'src/daemon/**'
+              - 'src/transport/**'
+              - 'src/process/**'
+              - 'src/adapters/**'
+              - 'src/bridge/**'
+              - 'src/cli/**'
+              - 'tests/unit/daemon/**'
+              - 'tests/unit/transport/**'
+              - 'tests/unit/process/**'
+              - 'tests/unit/adapters/**'
+              - 'tests/unit/integration/**'
+              - 'tests/smoke/**'
+              - 'scripts/smoke-*.mjs'
+              - 'src/config/**'
+              - 'package.json'
+              - 'bun.lock'
+              - 'package-lock.json'
+              - '.github/workflows/test.yml'
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
