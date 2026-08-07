@@ -38,8 +38,11 @@ test("times out and terminates an adapter that never initializes", async () => {
   const startedAt = Date.now();
   await expect(verifyAcpInitialize(process.execPath, ["-e", script], { timeoutMs: 30 }))
     .rejects.toThrow("timed out after 30ms");
-  expect(Date.now() - startedAt).toBeLessThan(2_000);
-});
+  // On Windows the teardown really probes and kills the tree through the
+  // PowerShell worker (CIM enumeration included), which takes seconds; the
+  // budget only needs to prove the 30ms timeout fired instead of hanging.
+  expect(Date.now() - startedAt).toBeLessThan(process.platform === "win32" ? 15_000 : 2_000);
+}, 20_000);
 
 test("npm E404 failures point users to the adapter registry setting", async () => {
   await expect(verifyAcpInitialize(
