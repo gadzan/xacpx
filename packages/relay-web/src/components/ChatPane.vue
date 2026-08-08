@@ -5,8 +5,6 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
 import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
-import { useElementWidth } from "../lib/use-element-width";
-import { computePlanPlacement, type PlanPlacement } from "../lib/plan-placement";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
@@ -24,16 +22,8 @@ const composer = useComposerStore();
 // composer's safe-area bottom padding is just a gap — drop it then (see the template).
 const keyboardInset = useVirtualKeyboardInset();
 
-// Wide-pane plan placement (issue #231): the pane root spans the middle column
-// (absolute inset-0), so its width is the placement input. Observing the root —
-// not the message area — avoids a feedback loop when the side column appears.
-const paneEl = ref<HTMLElement | null>(null);
-const paneWidth = useElementWidth(paneEl);
-const planPlacement = ref<PlanPlacement>("inline");
-watch(paneWidth, (w) => { planPlacement.value = computePlanPlacement(w, planPlacement.value); });
-const planSide = computed(() => planPlacement.value === "side" && (chat.sessionPlan?.length ?? 0) > 0);
-// Owned here (not inside PlanPanel) so the manual expand/collapse survives the inline↔side
-// switch, which remounts the panel. Seeded from busy to match the panel's own default.
+// Plan and live status now share the composer stack as overlays above the input.
+// Keep expansion state here so toggles survive rerenders of the surrounding stack.
 const planExpanded = ref(chat.busy);
 
 function onSend(text: string, media: PromptAttachmentRef[] = []) {
@@ -123,7 +113,7 @@ const verb = computed(() => {
 </script>
 
 <template>
-  <div ref="paneEl" class="flex h-full flex-1 flex-col">
+  <div class="flex h-full flex-1 flex-col">
     <div v-if="!chat.sessionAlias" class="flex flex-1 items-center justify-center text-fg-muted">
       {{ $t("chat.selectSession") }}
     </div>
@@ -188,53 +178,65 @@ const verb = computed(() => {
       </div>
       <template v-else>
       <!-- min-h-0 keeps the column height chain intact (flex min-height:auto would let a
-           long transcript blow past the pane); relative anchors the absolutely positioned
-           plan side column below. -->
-      <div class="relative flex min-h-0 flex-1" data-test="chat-body">
-      <MessageList class="min-w-0" :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
-                   :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
-                   :scroll-to-scheduled="chat.scrollRequest"
-                   :side-gutter="planSide"
-                   :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
-                   :loading-history="chat.loadingHistory"
-                   @resend="chat.resend" @load-older="chat.loadOlder" />
-      <!-- Wide panes only: the plan panel floats over the right-hand gutter MessageList
-           reserves via `side-gutter`, so the transcript scrollbar stays at the pane's true
-           right edge (right of the panel) instead of landing between the two columns.
-           pointer-events-none on the container keeps the scrollbar under its padding strip
-           clickable; the panel re-enables its own pointer events. The column itself never
-           scrolls — scrolling stays inside the panel's list so active-entry tracking works. -->
-      <aside v-if="planSide" data-test="plan-side-col"
-             class="pointer-events-none absolute inset-y-0 right-0 flex w-72 flex-col py-5 pr-5"
-             :aria-label="$t('plan.title')">
-        <PlanPanel class="pointer-events-auto" variant="side" v-model:expanded="planExpanded" :entries="chat.sessionPlan ?? []" :active="chat.busy" />
-      </aside>
+           long transcript blow past the pane). -->
+      <div class="flex min-h-0 flex-1" data-test="chat-body">
+        <MessageList class="min-w-0" :messages="chat.messages" :live-turn="chat.liveTurn" :driver="currentDriver"
+                     :session-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                     :scroll-to-scheduled="chat.scrollRequest"
+                     :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
+                     :loading-history="chat.loadingHistory"
+                     @resend="chat.resend" @load-older="chat.loadOlder" />
       </div>
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
            inset is applied ONCE here (the bottommost element) and never stacks on top of the
            composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-      <div class="shrink-0 space-y-2 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+      <div class="relative shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
            :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
            data-test="composer-area">
-        <!-- TURN HUD -->
-        <div v-if="chat.busy" data-test="turn-hud"
-             class="flex items-center gap-2 rounded-lg border border-run/20 bg-run/8 px-3 py-1.5">
-          <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
-          <span class="text-[12px] font-semibold text-run">{{ verb }}…</span>
-          <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
-          <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? $t("chat.tool") : $t("chat.tools") }}</span>
-          <span class="flex-1" />
-          <button data-test="cancel-turn"
-                  class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
-                  @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
+        <!-- Layered composer stack: plan/status float above the input instead of taking
+             a separate side column or pushing the composer down. -->
+        <TransitionGroup
+          tag="div"
+          name="composer-layer"
+          class="pointer-events-none absolute inset-x-2 bottom-full z-30 mb-2 space-y-2 lg:inset-x-5"
+        >
+          <PlanPanel v-if="chat.sessionPlan?.length" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan" :active="chat.busy" variant="overlay"
+                     class="pointer-events-auto ml-auto w-full max-w-xl border border-border/70 bg-surface/95 shadow-e3 backdrop-blur-md transition-transform duration-200 ease-out" />
+          <div v-if="chat.busy" key="status-layer" data-test="turn-hud"
+               class="pointer-events-auto ml-auto flex w-full max-w-xl items-center gap-2 rounded-lg border border-run/20 bg-surface/95 px-3 py-1.5 shadow-e2 backdrop-blur-md transition-transform duration-200 ease-out">
+            <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
+            <span class="text-[12px] font-semibold text-run">{{ verb }}…</span>
+            <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
+            <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? $t("chat.tool") : $t("chat.tools") }}</span>
+            <span class="flex-1" />
+            <button data-test="cancel-turn"
+                    class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
+                    @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
+          </div>
+        </TransitionGroup>
+        <div class="space-y-2">
+          <QueueStrip />
+          <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                       :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
+                       @send="onSend" @cancel="chat.cancel" />
         </div>
-        <QueueStrip />
-        <PlanPanel v-if="!planSide && chat.sessionPlan?.length" v-model:expanded="planExpanded" :entries="chat.sessionPlan" :active="chat.busy" />
-        <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
-                     :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                     @send="onSend" @cancel="chat.cancel" />
       </div>
       </template>
     </template>
   </div>
 </template>
+
+<style scoped>
+.composer-layer-enter-active,
+.composer-layer-leave-active {
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.composer-layer-enter-from,
+.composer-layer-leave-to {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+}
+.composer-layer-move {
+  transition: transform 180ms ease;
+}
+</style>

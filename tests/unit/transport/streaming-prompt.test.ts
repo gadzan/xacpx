@@ -680,6 +680,111 @@ test("ignores a plan update with no entries array", () => {
   expect(called).toBe(false);
 });
 
+test("forwards an explicit empty plan as a clear signal", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, { onPlan: (entries) => plans.push(entries) });
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: { update: { sessionUpdate: "plan", entries: [] } },
+  }));
+  expect(plans).toEqual([[]]);
+});
+
+test("adapts Cursor TodoWrite calls into merged plan updates instead of tool cards", () => {
+  const plans: unknown[] = [];
+  const toolEvents: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "cursor",
+    onPlan: (entries) => plans.push(entries),
+    onToolEvent: (event) => toolEvents.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "todo-1",
+    title: "TodoWrite",
+    kind: "other",
+    rawInput: {
+      merge: false,
+      todos: [
+        { id: "inspect", content: "Inspect relay web", status: "in_progress" },
+        { id: "implement", content: "Implement adapter", status: "pending" },
+      ],
+    },
+  });
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "todo-2",
+    title: "TodoWrite",
+    kind: "other",
+    rawInput: {
+      merge: true,
+      todos: [
+        { id: "inspect", status: "completed" },
+        { id: "verify", content: "Verify cards", status: "pending" },
+      ],
+    },
+  });
+
+  expect(plans).toEqual([
+    [
+      { content: "Inspect relay web", status: "in_progress" },
+      { content: "Implement adapter", status: "pending" },
+    ],
+    [
+      { content: "Inspect relay web", status: "completed" },
+      { content: "Implement adapter", status: "pending" },
+      { content: "Verify cards", status: "pending" },
+    ],
+  ]);
+  expect(toolEvents).toEqual([]);
+});
+
+test("normalizes Cursor Task and built-in tool names for structured cards", () => {
+  const events: Array<Record<string, unknown>> = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "cursor",
+    onToolEvent: (event) => events.push(event as unknown as Record<string, unknown>),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "task-1",
+    title: "Task",
+    kind: "other",
+    rawInput: {
+      subagent_type: "generalPurpose",
+      description: "Inspect relay web",
+      prompt: "Find the missing plan event mapping",
+      run_in_background: false,
+    },
+  });
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "glob-1",
+    title: "Glob",
+    kind: "other",
+    rawInput: { glob_pattern: "**/*.vue", target_directory: "packages/relay-web" },
+  });
+
+  expect(events[0]).toMatchObject({
+    toolName: "Task",
+    kind: "think",
+    isSubagent: true,
+  });
+  expect(events[1]).toMatchObject({
+    toolName: "Glob",
+    kind: "search",
+    summary: "**/*.vue in packages/relay-web",
+  });
+});
+
 test("interleaved stream: thoughts reach onThought in order, agent message lands in segments, thoughts do not appear in segments or buffer", () => {
   const thoughts: string[] = [];
   const state = createStreamingPromptState(true, {
