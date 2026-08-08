@@ -76,6 +76,30 @@ it("shows a working HUD while a live turn is active", async () => {
   expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
 });
 
+it("stacks the plan panel and working HUD above the composer as overlays", async () => {
+  seedInstance();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "plan", sessionAlias: "backend",
+    entries: [{ content: "a", status: "completed" }, { content: "b", status: "in_progress" }],
+  } } as never);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+
+  const composer = w.find('[data-test="composer-area"]');
+  expect(composer.exists()).toBe(true);
+  expect(composer.classes()).toContain("relative");
+
+  const overlayStack = composer.find(".absolute.bottom-full");
+  expect(overlayStack.exists()).toBe(true);
+  expect(overlayStack.find('[data-test="plan-panel"]').exists()).toBe(true);
+  expect(overlayStack.find('[data-test="turn-hud"]').exists()).toBe(true);
+  expect(overlayStack.find('[data-test="turn-hud"]').classes()).toContain("shadow-e2");
+  expect(overlayStack.find('[data-test="turn-hud"]').classes()).toContain("backdrop-blur-md");
+});
+
 it("localizes the empty-state prompt when locale is zh-CN", () => {
   i18n.global.locale.value = "zh-CN";
   const w = mount(ChatPane); // no session selected → empty state

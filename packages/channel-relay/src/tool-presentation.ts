@@ -21,6 +21,11 @@ function asString(v: unknown): string | undefined {
 function rec(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
+function toolInput(v: unknown): Record<string, unknown> {
+  const input = rec(v);
+  const nested = rec(input.args);
+  return Object.keys(nested).length > 0 ? nested : input;
+}
 function blocksOf(content: unknown): Record<string, unknown>[] {
   if (Array.isArray(content)) return content.filter((b) => b && typeof b === "object") as Record<string, unknown>[];
   if (content && typeof content === "object") return [content as Record<string, unknown>];
@@ -87,7 +92,7 @@ function primitiveFields(input: Record<string, unknown>): Array<{ label: string;
 
 /** Normalize a raw core ToolUseEvent into a friendly, capped, presentation-ready step. */
 export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
-  const input = rec(event.rawInput);
+  const input = toolInput(event.rawInput);
   const blocks = blocksOf(event.content);
   const output = rec(event.rawOutput);
   // acpx may emit a scalar (bare string/number) rawOutput; rec() yields {} for those,
@@ -169,14 +174,22 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   }
 
   if (event.kind === "search") {
-    const query = asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd) ?? fallbackTitle;
+    const globPattern = asString(input.glob_pattern);
+    const targetDirectory = asString(input.target_directory);
+    const query = globPattern
+      ? (targetDirectory ? `${globPattern} in ${targetDirectory}` : globPattern)
+      : asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd) ?? fallbackTitle;
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     const detail: ToolDetailDto = { type: "search", query, ...(out ? { output: cap(out) } : {}) };
     return { ...base, title: query, detail };
   }
 
   if (event.kind === "think") {
-    const text = asString(input.description) ?? asString(input.prompt) ?? textFromBlocks(blocks) ?? "";
+    const mode = asString(input.target_mode_id) ?? asString(input.mode_id);
+    const explanation = asString(input.explanation);
+    const text = mode && explanation
+      ? `${mode}: ${explanation}`
+      : explanation ?? mode ?? asString(input.description) ?? asString(input.prompt) ?? textFromBlocks(blocks) ?? "";
     return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
   }
 

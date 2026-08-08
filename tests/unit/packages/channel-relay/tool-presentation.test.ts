@@ -120,6 +120,17 @@ test("search uses Codex parsed_cmd for the query", () => {
   expect(step.detail).toMatchObject({ type: "search", query: "rg -n session src" });
 });
 
+test("Cursor Glob shows its pattern and target directory in the search card", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "glob-1", toolName: "Glob", kind: "search", status: "running",
+    rawInput: { glob_pattern: "**/*.vue", target_directory: "packages/relay-web" },
+  });
+  expect(step).toMatchObject({
+    title: "**/*.vue in packages/relay-web",
+    detail: { type: "search", query: "**/*.vue in packages/relay-web" },
+  });
+});
+
 test("unknown tool falls back to primitive fields only (no nested JSON)", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t5", toolName: "Mystery", kind: "other", status: "running",
@@ -174,6 +185,14 @@ test("think uses description as prose text", () => {
     rawInput: { description: "Explore code", subagent_type: "Explore" },
   });
   expect(step.detail).toEqual({ type: "text", text: "Explore code" });
+});
+
+test("Cursor SwitchMode shows its target mode and explanation", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "mode-1", toolName: "SwitchMode", kind: "think", status: "success",
+    rawInput: { target_mode_id: "plan", explanation: "Inspect the UI before editing" },
+  });
+  expect(step.detail).toEqual({ type: "text", text: "plan: Inspect the UI before editing" });
 });
 
 test("preserves subagent ownership metadata for Relay Web grouping", () => {
