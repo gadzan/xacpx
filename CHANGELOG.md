@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.1] - 2026-08-07
+
+### Fixed
+
+- Daemon: repair Windows process worker so `stop`/`restart` work again.
+
+## [relay 0.11.1] - 2026-08-07
+
+### Fixed
+
+- Relay-web: drop stale native-session and model-suggestion RPC responses.
+
 ## [0.20.0] - 2026-08-07
 
 First stable release of the 0.20 line.
