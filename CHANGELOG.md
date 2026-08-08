@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.20.2] - 2026-08-08
+
+### Fixed
+
+- Transport: normalize Cursor plan updates (TodoWrite tool calls) even when the channel has no structured tool callback; merge partial ACP updates per toolCallId so the terminal frame stays consistent.
+
+## [relay 0.11.2] - 2026-08-08
+
+### Fixed
+
+- Relay-web: fix Cursor tool and plan event rendering in the chat pane, message list, and plan panel.
+
+## [channel-relay 0.5.1] - 2026-08-08
+
+### Fixed
+
+- Tool presentation: handle tool `input` robustly (mode/explanation rendering) for Cursor plan events.
+
 ## [0.20.1] - 2026-08-07
 
 ### Fixed
