@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.20.3-beta.0] - 2026-08-09
+
+### Fixed
+
+- Transport: resolve Cursor tool identity from `rawInput._toolName`, recognize `updateTodos`/`todoRead`, keep announcement-only todo frames from clearing an existing plan, and read todo lists from `rawOutput` when needed.
+
+## [relay 0.11.3-beta.0] - 2026-08-09
+
+### Changed
+
+- Relay-web: stack the turn status bar, plan panel, and message input as a document-flow layered composer (peek-behind overlap with reserved padding; no absolute overlays).
+
+## [channel-relay 0.5.2-beta.0] - 2026-08-09
+
+### Fixed
+
+- Tool presentation: show Cursor `rawOutput.content` for reads, summarize search count-only results, hide `_toolName`, and omit empty detail drawers.
+
 ## [0.20.2] - 2026-08-08
 
 ### Fixed
