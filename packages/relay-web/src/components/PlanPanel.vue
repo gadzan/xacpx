@@ -5,10 +5,10 @@ import type { PlanEntryDto } from "@ganglion/xacpx-relay-protocol";
 
 // `active` defaults to `undefined` (not Vue's Boolean-cast `false`) so an unspecified prop
 // leaves the panel expanded and the auto expand/collapse watch dormant.
-// `variant: "overlay"` renders in the composer stack as a floating panel above the
-// input: the list keeps a bounded height instead of expanding into a side column.
+// `variant: "stack"` renders in the composer document-flow stack (between the
+// status bar and the input): the list keeps a bounded height for mobile space.
 const props = withDefaults(
-  defineProps<{ entries: PlanEntryDto[]; active?: boolean; variant?: "inline" | "overlay" }>(),
+  defineProps<{ entries: PlanEntryDto[]; active?: boolean; variant?: "inline" | "stack" }>(),
   { active: undefined, variant: "inline" },
 );
 // `expanded` is a two-way model so ChatPane can own it and preserve the expand/collapse
@@ -47,7 +47,7 @@ watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
 
 <template>
   <div v-if="entries.length" data-test="plan-panel"
-       :class="['rounded-md border border-border bg-surface p-2 text-sm', variant === 'overlay' ? 'max-h-[min(40vh,20rem)] overflow-hidden rounded-xl border-border/70 bg-surface/95 backdrop-blur-md' : '']">
+       :class="['rounded-md border border-border bg-surface text-sm', variant === 'stack' ? 'max-h-[min(40vh,20rem)] overflow-hidden rounded-xl border-border/70 bg-surface/95 px-2 pt-2 backdrop-blur-md' : 'p-2']">
     <button
       type="button"
       data-test="plan-toggle"
@@ -63,7 +63,7 @@ watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
       <span class="ml-auto font-mono tabular-nums">{{ done }}/{{ entries.length }}</span>
     </button>
     <ul v-show="expanded" id="plan-list" ref="listEl"
-        :class="['overflow-y-auto thin-scroll space-y-0.5', variant === 'overlay' ? 'max-h-[calc(min(40vh,20rem)-2.5rem)]' : 'max-h-48']">
+        :class="['overflow-y-auto thin-scroll space-y-0.5', variant === 'stack' ? 'max-h-[calc(min(40vh,20rem)-2.5rem)]' : 'max-h-48']">
       <li
         v-for="(e, i) in entries"
         :key="i"

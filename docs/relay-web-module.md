@@ -98,8 +98,11 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - Cursor 的 `Task`（带 `subagent_type`/`prompt`）同样在 transport 层标记为 subagent，并把 `Read`、`Grep`、`Glob`、
   `Shell`、`StrReplace` 等 provider 工具名归一化为 relay 的通用 kind。`Glob` 的 `glob_pattern` 与 `target_directory`
   会合并成搜索卡片的可读查询，避免 Web 只显示通用工具名。
-- Cursor 的 `TodoWrite` 是 tool call 而非 ACP `session/update` 的 `plan` 事件。transport 会把 `todos`（包括
-  `merge: true` 的增量更新）转换成完整 `PlanEntry[]`，交给同一 `onPlan` 管线，并抑制重复的普通工具卡；显式空列表会清除旧计划。
+- Cursor 的计划工具（`TodoWrite` / `updateTodos` / `todoRead` 等）是 tool call 而非 ACP `session/update` 的
+  `plan` 事件。transport 优先用 `rawInput._toolName` 识别工具（显示 title 是散文，会随版本变化），再从
+  `rawInput`（必要时回退 `rawOutput`）读取 `todos`/`todoList`，把 `merge: true` 的增量更新转换成完整
+  `PlanEntry[]`，交给同一 `onPlan` 管线并抑制重复的普通工具卡。显式空列表会清除旧计划；仅带 `_toolName`、
+  没有条目的公告帧不会清掉已有计划。
 - Claude subagent 内部工具的 `parentToolUseId` 继续标准化为 `parentToolCallId`，经 channel-relay 和 `ToolStepDto`
   原样进入 Relay Web。Qoder、Kimi、Codex 当前 ACP 主流没有提供子工具父子关系，因此不虚构执行时间线；channel-relay
   在 `event.isSubagent` 步骤上把委派 prompt 放入 `detail.text`、把子代理流式/最终输出放入 `detail.output`，
@@ -316,10 +319,11 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     所以抽屉开合 `leftOpen`/`rightOpen` 仅在移动端可见、桌面无副作用——无需 JS 断点检测。
   - 半透明 backdrop 点击关闭；选中会话自动关左抽屉直达对话；抽屉头部有 `✕` 关闭按钮（`lg:hidden`）。
 - 中栏聊天始终占据剩余宽度；登录页/设置页（`max-w-2xl mx-auto`）本身是流式宽度，移动端无需额外处理。
-- **Composer 上方的层叠状态面板**：`ChatPane.vue` 在 composer 的 `relative` 容器中用 `absolute bottom-full` 的
-  stack 放置 `PlanPanel` 与 turn HUD；两者不会改变消息列表高度，也不会为宽屏额外保留侧列 gutter。外层
-  `pointer-events-none`，面板自身恢复 `pointer-events-auto`，避免遮挡输入区之外的点击；`PlanPanel variant="overlay"`
-  使用最大高度和独立滚动，`TransitionGroup` 负责面板出现/消失动画。
+- **Composer 层叠状态面板**：`ChatPane.vue` 在文档流 `composer-stack` 中按「状态条 → 计划面板 → 输入框」
+  垂直排列（输入框在最上层）。视觉重叠用负 `margin-top` + 下层预留的 `padding-bottom`（`--stack-overlap`，
+  桌面 16px / 窄屏 12px）实现，内容不被裁切；递进缩进让下层卡片边缘露出。消息列表与底部 stack 分栏，
+  气泡不被遮挡。`PlanPanel variant="stack"` 限制最大高度并独立滚动；`TransitionGroup` 负责出现/消失动画。
+  `PromptInput` 自身结构与样式尽量保持不变，只由外层 stack 包裹。
 
 ## 文件地图
 

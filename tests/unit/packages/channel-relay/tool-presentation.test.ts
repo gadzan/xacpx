@@ -195,6 +195,59 @@ test("Cursor SwitchMode shows its target mode and explanation", () => {
   expect(step.detail).toEqual({ type: "text", text: "plan: Inspect the UI before editing" });
 });
 
+test("Cursor read shows the file body it returns as rawOutput.content", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "r-cursor", toolName: "Read File", kind: "read", status: "success",
+    rawInput: {},
+    rawOutput: { content: "127.0.0.1\tlocalhost\n" },
+  });
+  expect(step.detail).toMatchObject({ type: "read", preview: "127.0.0.1\tlocalhost\n" });
+});
+
+test("Cursor search summarizes count-only results instead of rendering nothing", () => {
+  const grep = toolUseEventToStepDto({
+    toolCallId: "s1", toolName: "grep", kind: "search", status: "success",
+    rawInput: {}, rawOutput: { totalMatches: 4, truncated: false },
+  });
+  expect(grep.detail).toMatchObject({ type: "search", output: "4 matches" });
+
+  const find = toolUseEventToStepDto({
+    toolCallId: "s2", toolName: "Find", kind: "search", status: "success",
+    rawInput: {}, rawOutput: { totalFiles: 3087, truncated: true },
+  });
+  expect(find.detail).toMatchObject({ type: "search", output: "3087 files · truncated" });
+});
+
+test("drops the adapter's internal _toolName marker from rendered fields", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "m1", toolName: "MCP: tool", kind: "other", status: "success",
+    rawInput: { _toolName: "mcp_do_thing", scope: "repo" },
+  });
+  expect(step.detail).toEqual({ type: "fields", fields: [{ label: "scope", value: "repo" }] });
+});
+
+test("omits the detail entirely when the adapter sent nothing to show", () => {
+  const think = toolUseEventToStepDto({
+    toolCallId: "todo-1", toolName: "Update TODOs", kind: "think", status: "success",
+    rawInput: { _toolName: "updateTodos" },
+  });
+  expect(think.detail).toBeUndefined();
+  expect(think.title).toBe("Update TODOs");
+
+  const other = toolUseEventToStepDto({
+    toolCallId: "o1", toolName: "MCP: tool", kind: "other", status: "success",
+    rawInput: { _toolName: "mcp_thing" },
+  });
+  expect(other.detail).toBeUndefined();
+
+  const edit = toolUseEventToStepDto({
+    toolCallId: "e1", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { _toolName: "edit" },
+  });
+  expect(edit.detail).toBeUndefined();
+  expect(edit.title).toBe("Edit");
+});
+
 test("preserves subagent ownership metadata for Relay Web grouping", () => {
   const parent = toolUseEventToStepDto({
     toolCallId: "agent-1", toolName: "Task", kind: "think", status: "running",

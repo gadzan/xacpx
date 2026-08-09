@@ -76,7 +76,7 @@ it("shows a working HUD while a live turn is active", async () => {
   expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
 });
 
-it("stacks the plan panel and working HUD above the composer as overlays", async () => {
+it("stacks status, plan, and composer as document-flow layers (status → plan → input)", async () => {
   seedInstance();
   const chat = useChatStore();
   chat.select("i1", "backend");
@@ -88,16 +88,33 @@ it("stacks the plan panel and working HUD above the composer as overlays", async
   const w = mount(ChatPane);
   await w.vm.$nextTick();
 
-  const composer = w.find('[data-test="composer-area"]');
-  expect(composer.exists()).toBe(true);
-  expect(composer.classes()).toContain("relative");
+  const area = w.find('[data-test="composer-area"]');
+  expect(area.exists()).toBe(true);
+  const stack = area.find('[data-test="composer-stack"]');
+  expect(stack.exists()).toBe(true);
+  expect(stack.classes()).toContain("composer-stack");
+  expect(stack.classes()).not.toContain("absolute");
 
-  const overlayStack = composer.find(".absolute.bottom-full");
-  expect(overlayStack.exists()).toBe(true);
-  expect(overlayStack.find('[data-test="plan-panel"]').exists()).toBe(true);
-  expect(overlayStack.find('[data-test="turn-hud"]').exists()).toBe(true);
-  expect(overlayStack.find('[data-test="turn-hud"]').classes()).toContain("shadow-e2");
-  expect(overlayStack.find('[data-test="turn-hud"]').classes()).toContain("backdrop-blur-md");
+  const status = stack.find('[data-test="turn-hud"]');
+  const plan = stack.find('[data-test="plan-panel"]');
+  expect(status.exists()).toBe(true);
+  expect(plan.exists()).toBe(true);
+  expect(status.classes()).toContain("stack-layer--status");
+  expect(plan.classes()).toContain("stack-layer--plan");
+  expect(plan.classes()).toContain("stack-layer--pull");
+  expect(status.classes()).toContain("shadow-e2");
+  expect(status.classes()).toContain("backdrop-blur-md");
+
+  // DOM order: status (bottom layer) → plan (middle) → composer (top).
+  const stackEl = stack.element as HTMLElement;
+  const statusEl = status.element as HTMLElement;
+  const planEl = plan.element as HTMLElement;
+  const composerEl = stackEl.querySelector(".stack-layer--composer") as HTMLElement | null;
+  expect(composerEl).toBeTruthy();
+  expect(composerEl!.classList.contains("stack-layer--pull")).toBe(true);
+  const kids = [...stackEl.children] as HTMLElement[];
+  expect(kids.indexOf(statusEl)).toBeLessThan(kids.indexOf(planEl));
+  expect(kids.indexOf(planEl)).toBeLessThan(kids.indexOf(composerEl!));
 });
 
 it("localizes the empty-state prompt when locale is zh-CN", () => {

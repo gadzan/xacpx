@@ -538,7 +538,12 @@ function buildToolUseEvent(
   };
 }
 
-const CURSOR_PLAN_TOOL_NAMES = new Set(["todowrite", "createplan", "updateplan", "plan"]);
+/** Internal marker cursor-agent injects into `rawInput` to name the tool. */
+export const CURSOR_TOOL_NAME_KEY = "_toolName";
+
+const CURSOR_PLAN_TOOL_NAMES = new Set([
+  "todowrite", "createplan", "updateplan", "plan", "updatetodos", "todoread",
+]);
 
 /** Convert Cursor's TodoWrite tool protocol into the provider-neutral ACP plan shape. */
 function normalizeCursorPlanUpdate(
@@ -546,19 +551,24 @@ function normalizeCursorPlanUpdate(
   update: MergedToolUpdate,
 ): PlanEntry[] | undefined {
   if (state.driver !== "cursor") return undefined;
-  const title = normalizeCursorToolName(update.title);
-  if (!CURSOR_PLAN_TOOL_NAMES.has(title)) return undefined;
+  if (!CURSOR_PLAN_TOOL_NAMES.has(cursorToolIdentity(update))) return undefined;
 
   const input = cursorToolInput(update.rawInput);
-  if (!Array.isArray(input?.todos)) return undefined;
+  const output = cursorToolInput(update.rawOutput);
+  // cursor-agent ≥2026.08 announces the todo tool but ships no entries with it
+  // (`rawInput` is just `{_toolName:"updateTodos"}`), so there is nothing to feed
+  // the plan panel. Leave it to the tool card rather than clearing a good plan.
+  // `todoRead` may also put the list only on `rawOutput`.
+  const todos = readCursorTodoList(input) ?? readCursorTodoList(output);
+  if (todos === undefined) return undefined;
 
-  const merge = input.merge === true;
-  if (input.todos.length === 0) {
+  const merge = input?.merge === true || output?.merge === true;
+  if (todos.length === 0) {
     state.cursorPlanEntries.clear();
     return [];
   }
 
-  const patches = input.todos
+  const patches = todos
     .map((todo, index) => parseCursorPlanTodo(todo, index))
     .filter((todo): todo is CursorPlanTodo => todo !== undefined);
   // A non-empty but entirely malformed payload should not erase a good plan.
@@ -579,6 +589,16 @@ function normalizeCursorPlanUpdate(
   }
 
   return [...state.cursorPlanEntries.values()];
+}
+
+/** The todo array under the keys cursor-agent has used, or undefined when the
+ *  call carries no list at all (announcement-only frames). */
+function readCursorTodoList(input: Record<string, unknown> | undefined): unknown[] | undefined {
+  if (!input) return undefined;
+  for (const key of ["todos", "todoList"] as const) {
+    if (Array.isArray(input[key])) return input[key];
+  }
+  return undefined;
 }
 
 interface CursorPlanTodo {
@@ -644,6 +664,17 @@ function normalizeCursorToolName(title: string | undefined): string {
   return (title ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
 }
 
+/** cursor-agent labels a call with a display `title` ("Update TODOs", "Read File")
+ *  and puts the machine name in `rawInput._toolName` ("updateTodos"). Match on the
+ *  machine name first — the display title is prose and varies between releases. */
+function cursorToolIdentity(update: { title?: string; rawInput?: unknown }): string {
+  const input = cursorToolInput(update.rawInput);
+  const declared = typeof input?.[CURSOR_TOOL_NAME_KEY] === "string"
+    ? (input[CURSOR_TOOL_NAME_KEY] as string)
+    : undefined;
+  return normalizeCursorToolName(declared ?? update.title);
+}
+
 const CURSOR_SUBAGENT_TOOL_NAMES = new Set(["task", "delegate", "runsubagent", "subagent"]);
 
 function normalizeToolKind(
@@ -655,12 +686,14 @@ function normalizeToolKind(
     case "read": case "search": case "execute": case "edit": case "think": return kindRaw;
   }
   if (driver !== "cursor") return "other";
-  switch (normalizeCursorToolName(update?.title)) {
+  switch (cursorToolIdentity(update ?? {})) {
     case "read":
     case "readfile":
       return "read";
     case "grep":
     case "glob":
+    case "find":
+    case "codebasesearch":
     case "search":
       return "search";
     case "shell":
@@ -678,6 +711,8 @@ function normalizeToolKind(
     case "runsubagent":
     case "switchmode":
     case "todowrite":
+    case "updatetodos":
+    case "todoread":
     case "createplan":
     case "updateplan":
     case "plan":
@@ -688,8 +723,7 @@ function normalizeToolKind(
 }
 
 function isCursorSubagentInput(rawInput: unknown, title: string): boolean {
-  const normalizedTitle = normalizeCursorToolName(title);
-  if (!CURSOR_SUBAGENT_TOOL_NAMES.has(normalizedTitle)) return false;
+  if (!CURSOR_SUBAGENT_TOOL_NAMES.has(cursorToolIdentity({ title, rawInput }))) return false;
   const input = cursorToolInput(rawInput);
   return input !== undefined
     && readFirstString(input, ["subagent_type", "subagentType", "agent", "agentType", "prompt", "instructions"]) !== undefined;
