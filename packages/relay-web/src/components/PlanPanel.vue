@@ -5,8 +5,8 @@ import type { PlanEntryDto } from "@ganglion/xacpx-relay-protocol";
 
 // `active` defaults to `undefined` (not Vue's Boolean-cast `false`) so an unspecified prop
 // leaves the panel expanded and the auto expand/collapse watch dormant.
-// `variant: "overlay"` renders in the composer stack as a floating panel above the
-// input: the list keeps a bounded height instead of expanding into a side column.
+// `variant: "overlay"` renders in the composer document-flow stack (between the
+// status bar and the input): the list keeps a bounded height for mobile space.
 const props = withDefaults(
   defineProps<{ entries: PlanEntryDto[]; active?: boolean; variant?: "inline" | "overlay" }>(),
   { active: undefined, variant: "inline" },
@@ -47,7 +47,7 @@ watch(() => props.active, (a) => { if (a !== undefined) expanded.value = a; });
 
 <template>
   <div v-if="entries.length" data-test="plan-panel"
-       :class="['rounded-md border border-border bg-surface p-2 text-sm', variant === 'overlay' ? 'max-h-[min(40vh,20rem)] overflow-hidden rounded-xl border-border/70 bg-surface/95 backdrop-blur-md' : '']">
+       :class="['rounded-md border border-border bg-surface text-sm', variant === 'overlay' ? 'max-h-[min(40vh,20rem)] overflow-hidden rounded-xl border-border/70 bg-surface/95 px-2 pt-2 backdrop-blur-md' : 'p-2']">
     <button
       type="button"
       data-test="plan-toggle"

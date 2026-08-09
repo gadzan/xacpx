@@ -22,9 +22,12 @@ const composer = useComposerStore();
 // composer's safe-area bottom padding is just a gap — drop it then (see the template).
 const keyboardInset = useVirtualKeyboardInset();
 
-// Plan and live status now share the composer stack as overlays above the input.
-// Keep expansion state here so toggles survive rerenders of the surrounding stack.
+// Plan and live status share a document-flow composer stack with the input:
+// status (bottom layer) → plan (middle) → input (top). Visual overlap uses
+// negative margin + reserved padding so content is never clipped.
+// Keep expansion state here so toggles survive stack rerenders.
 const planExpanded = ref(chat.busy);
+const showPlan = computed(() => (chat.sessionPlan?.length ?? 0) > 0);
 
 function onSend(text: string, media: PromptAttachmentRef[] = []) {
   void chat.send(text, media);
@@ -190,20 +193,20 @@ const verb = computed(() => {
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
            inset is applied ONCE here (the bottommost element) and never stacks on top of the
            composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-      <div class="relative shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+      <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
            :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
            data-test="composer-area">
-        <!-- Layered composer stack: plan/status float above the input instead of taking
-             a separate side column or pushing the composer down. -->
+        <!-- Document-flow stack: status (bottom) → plan (middle) → input (top).
+             Overlap is visual only — lower layers reserve padding-bottom equal to the
+             pull-up so content stays fully visible. -->
         <TransitionGroup
           tag="div"
           name="composer-layer"
-          class="pointer-events-none absolute inset-x-2 bottom-full z-30 mb-2 space-y-2 lg:inset-x-5"
+          class="composer-stack flex flex-col"
+          data-test="composer-stack"
         >
-          <PlanPanel v-if="chat.sessionPlan?.length" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan" :active="chat.busy" variant="overlay"
-                     class="pointer-events-auto ml-auto w-full max-w-xl border border-border/70 bg-surface/95 shadow-e3 backdrop-blur-md transition-transform duration-200 ease-out" />
           <div v-if="chat.busy" key="status-layer" data-test="turn-hud"
-               class="pointer-events-auto ml-auto flex w-full max-w-xl items-center gap-2 rounded-lg border border-run/20 bg-surface/95 px-3 py-1.5 shadow-e2 backdrop-blur-md transition-transform duration-200 ease-out">
+               class="stack-layer stack-layer--status relative z-10 mx-4 flex items-center gap-2 rounded-xl border border-run/20 bg-surface/95 px-3 pt-1.5 pb-[calc(0.375rem+var(--stack-overlap))] shadow-e2 backdrop-blur-md sm:mx-6">
             <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
             <span class="text-[12px] font-semibold text-run">{{ verb }}…</span>
             <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
@@ -213,13 +216,19 @@ const verb = computed(() => {
                     class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
                     @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
           </div>
+          <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="overlay"
+                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e3 sm:mx-3"
+                     :class="{ 'stack-layer--pull': chat.busy }" />
+          <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
+               :class="{ 'stack-layer--pull': chat.busy || showPlan }">
+            <div class="space-y-2">
+              <QueueStrip />
+              <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                           :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
+                           @send="onSend" @cancel="chat.cancel" />
+            </div>
+          </div>
         </TransitionGroup>
-        <div class="space-y-2">
-          <QueueStrip />
-          <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
-                       :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                       @send="onSend" @cancel="chat.cancel" />
-        </div>
       </div>
       </template>
     </template>
@@ -227,6 +236,18 @@ const verb = computed(() => {
 </template>
 
 <style scoped>
+.composer-stack {
+  --stack-overlap: 16px;
+}
+@media (max-width: 640px) {
+  .composer-stack {
+    --stack-overlap: 12px;
+  }
+}
+/* Pull the next layer up by the reserved overlap; padding is set via Tailwind. */
+.stack-layer--pull {
+  margin-top: calc(-1 * var(--stack-overlap));
+}
 .composer-layer-enter-active,
 .composer-layer-leave-active {
   transition: opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
