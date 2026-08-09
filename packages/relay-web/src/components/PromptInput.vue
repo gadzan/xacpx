@@ -292,7 +292,10 @@ function onInput() {
   <!-- No bottom padding on the form: the parent composer wrapper (ChatPane) owns the bottom
        spacing via max(1rem, env(safe-area-inset-bottom)), so the composer sits flush above the
        iOS home indicator (like native input bars) instead of leaving an extra gap below it. -->
-  <form class="relative border-t border-border px-0 pt-3 lg:pt-3" @submit.prevent="submit"
+  <!-- No form-level border-t: the composer is a rounded elevated card (and may sit under
+       status/plan stack layers). A full-width top rule would cut straight across those
+       rounded edges. Separation comes from the card border + ChatPane stack shadows. -->
+  <form class="relative px-0 pt-3 lg:pt-3" @submit.prevent="submit"
         @drop.prevent="onDrop" @dragover.prevent>
     <!-- Resize handle: a thin grab strip above the composer card (desktop only).
          touch-none keeps a touch on it from scrolling; it's hidden < lg anyway.
