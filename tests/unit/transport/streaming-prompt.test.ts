@@ -743,6 +743,52 @@ test("adapts Cursor TodoWrite calls into merged plan updates instead of tool car
   expect(toolEvents).toEqual([]);
 });
 
+test("recognizes the Cursor todo tool by rawInput._toolName, not its prose title", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "cursor",
+    onPlan: (entries) => plans.push(entries),
+    onToolEvent: () => {},
+  });
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "tool_call",
+    toolCallId: "todo-1",
+    title: "Update TODOs",
+    kind: "other",
+    rawInput: { _toolName: "updateTodos", todos: [{ id: "a", content: "Ship it", status: "pending" }] },
+  } } }));
+
+  expect(plans).toEqual([[{ content: "Ship it", status: "pending" }]]);
+});
+
+test("keeps an announcement-only Cursor todo call as a think card without clearing the plan", () => {
+  const plans: unknown[] = [];
+  const events: Array<Record<string, unknown>> = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "cursor",
+    onPlan: (entries) => plans.push(entries),
+    onToolEvent: (event) => events.push(event as unknown as Record<string, unknown>),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call", toolCallId: "todo-1", title: "TodoWrite", kind: "other",
+    rawInput: { todos: [{ id: "a", content: "Ship it", status: "pending" }] },
+  });
+  // cursor-agent ≥2026.08 announces the tool with no entries attached.
+  send({
+    sessionUpdate: "tool_call", toolCallId: "todo-2", title: "Update TODOs", kind: "other",
+    rawInput: { _toolName: "updateTodos" },
+  });
+
+  expect(plans).toEqual([[{ content: "Ship it", status: "pending" }]]);
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ toolCallId: "todo-2", kind: "think" });
+});
+
 test("normalizes Cursor Task and built-in tool names for structured cards", () => {
   const events: Array<Record<string, unknown>> = [];
   const state = createStreamingPromptState(false, {

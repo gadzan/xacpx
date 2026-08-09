@@ -81,13 +81,30 @@ function readLines(input: Record<string, unknown>): string | undefined {
   if (typeof limit === "number") return `first ${limit}`;
   return undefined;
 }
+/** Adapter bookkeeping that names the tool rather than describing the call
+ *  (cursor-agent stamps every rawInput with `_toolName`). The card already shows
+ *  the tool name in its header, so rendering it again is pure noise. */
+const INTERNAL_INPUT_KEYS = new Set(["_toolName"]);
+
 function primitiveFields(input: Record<string, unknown>): Array<{ label: string; value: string }> {
   const out: Array<{ label: string; value: string }> = [];
   for (const [label, v] of Object.entries(input)) {
+    if (INTERNAL_INPUT_KEYS.has(label)) continue;
     const value = asString(v);
     if (value !== undefined) out.push({ label, value: cap(value) });
   }
   return out;
+}
+
+/** Cursor reports search results as counts instead of matched text
+ *  (`{totalMatches,truncated}` for grep, `{totalFiles,truncated}` for Find). */
+function countSummary(output: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  if (typeof output.totalMatches === "number") parts.push(`${output.totalMatches} matches`);
+  if (typeof output.totalFiles === "number") parts.push(`${output.totalFiles} files`);
+  if (parts.length === 0) return undefined;
+  if (output.truncated === true) parts.push("truncated");
+  return parts.join(" · ");
 }
 
 /** Normalize a raw core ToolUseEvent into a friendly, capped, presentation-ready step. */
@@ -160,7 +177,9 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   if (event.kind === "read") {
     const path = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event) ?? fallbackTitle;
     const lines = readLines(input);
-    const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    // `output.content` is cursor-agent's file body — without it a Cursor read card
+    // has no preview at all, since it sends neither content blocks nor stdout.
+    const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? asString(output.content) ?? rawOutputText;
     const detail: ToolDetailDto = { type: "read", path, ...(lines ? { lines } : {}), ...(preview ? { preview: cap(preview) } : {}) };
     return { ...base, title: path, detail };
   }
@@ -179,7 +198,7 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const query = globPattern
       ? (targetDirectory ? `${globPattern} in ${targetDirectory}` : globPattern)
       : asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd) ?? fallbackTitle;
-    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
     const detail: ToolDetailDto = { type: "search", query, ...(out ? { output: cap(out) } : {}) };
     return { ...base, title: query, detail };
   }
@@ -190,9 +209,15 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const text = mode && explanation
       ? `${mode}: ${explanation}`
       : explanation ?? mode ?? asString(input.description) ?? asString(input.prompt) ?? textFromBlocks(blocks) ?? "";
+    // A think step whose payload the adapter withheld (Cursor's todo tool announces
+    // itself with no arguments) has nothing to expand into — omit the detail so the
+    // card renders as a single header row instead of an empty drawer.
+    if (!text) return { ...base, title: fallbackTitle };
     return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
   }
 
   const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-  return { ...base, title: fallbackTitle, detail: { type: "fields", fields: primitiveFields(input), ...(out ? { output: cap(out) } : {}) } };
+  const fields = primitiveFields(input);
+  if (fields.length === 0 && !out) return { ...base, title: fallbackTitle };
+  return { ...base, title: fallbackTitle, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
 }
