@@ -554,13 +554,15 @@ function normalizeCursorPlanUpdate(
   if (!CURSOR_PLAN_TOOL_NAMES.has(cursorToolIdentity(update))) return undefined;
 
   const input = cursorToolInput(update.rawInput);
+  const output = cursorToolInput(update.rawOutput);
   // cursor-agent ≥2026.08 announces the todo tool but ships no entries with it
   // (`rawInput` is just `{_toolName:"updateTodos"}`), so there is nothing to feed
   // the plan panel. Leave it to the tool card rather than clearing a good plan.
-  const todos = readCursorTodoList(input);
+  // `todoRead` may also put the list only on `rawOutput`.
+  const todos = readCursorTodoList(input) ?? readCursorTodoList(output);
   if (todos === undefined) return undefined;
 
-  const merge = input?.merge === true;
+  const merge = input?.merge === true || output?.merge === true;
   if (todos.length === 0) {
     state.cursorPlanEntries.clear();
     return [];
@@ -589,11 +591,11 @@ function normalizeCursorPlanUpdate(
   return [...state.cursorPlanEntries.values()];
 }
 
-/** The todo array under whichever key the running cursor-agent uses, or undefined
- *  when the call carries no list at all (announcement-only frames). */
+/** The todo array under the keys cursor-agent has used, or undefined when the
+ *  call carries no list at all (announcement-only frames). */
 function readCursorTodoList(input: Record<string, unknown> | undefined): unknown[] | undefined {
   if (!input) return undefined;
-  for (const key of ["todos", "todoList", "items", "entries", "plan"]) {
+  for (const key of ["todos", "todoList"] as const) {
     if (Array.isArray(input[key])) return input[key];
   }
   return undefined;

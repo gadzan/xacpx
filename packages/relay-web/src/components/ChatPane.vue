@@ -216,7 +216,7 @@ const verb = computed(() => {
                     class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
                     @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
           </div>
-          <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="overlay"
+          <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="stack"
                      class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e3 sm:mx-3"
                      :class="{ 'stack-layer--pull': chat.busy }" />
           <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"

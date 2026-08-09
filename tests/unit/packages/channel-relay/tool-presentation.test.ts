@@ -239,6 +239,13 @@ test("omits the detail entirely when the adapter sent nothing to show", () => {
     rawInput: { _toolName: "mcp_thing" },
   });
   expect(other.detail).toBeUndefined();
+
+  const edit = toolUseEventToStepDto({
+    toolCallId: "e1", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { _toolName: "edit" },
+  });
+  expect(edit.detail).toBeUndefined();
+  expect(edit.title).toBe("Edit");
 });
 
 test("preserves subagent ownership metadata for Relay Web grouping", () => {

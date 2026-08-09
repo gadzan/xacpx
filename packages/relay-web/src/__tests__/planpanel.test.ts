@@ -44,8 +44,8 @@ describe("PlanPanel", () => {
     expect(classes).toContain("max-h-48");
     expect(classes).toContain("overflow-y-auto");
   });
-  it("bounds the list height in the overlay variant", () => {
-    const w = mount(PlanPanel, { props: { variant: "overlay", entries: [
+  it("bounds the list height in the stack variant", () => {
+    const w = mount(PlanPanel, { props: { variant: "stack", entries: [
       { content: "a", status: "in_progress" },
     ] } });
     const classes = w.find("#plan-list").classes();
@@ -54,8 +54,8 @@ describe("PlanPanel", () => {
     expect(classes).toContain("overflow-y-auto");
     expect(w.find('[data-test="plan-panel"]').classes()).toContain("max-h-[min(40vh,20rem)]");
   });
-  it("still toggles in the overlay variant", async () => {
-    const w = mount(PlanPanel, { props: { variant: "overlay", entries: [
+  it("still toggles in the stack variant", async () => {
+    const w = mount(PlanPanel, { props: { variant: "stack", entries: [
       { content: "a", status: "in_progress" },
     ] } });
     expect(w.find('[data-test="plan-toggle"]').attributes("aria-expanded")).toBe("true");

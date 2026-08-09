@@ -789,6 +789,26 @@ test("keeps an announcement-only Cursor todo call as a think card without cleari
   expect(events[0]).toMatchObject({ toolCallId: "todo-2", kind: "think" });
 });
 
+test("reads Cursor todoRead lists from rawOutput when rawInput has none", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "cursor",
+    onPlan: (entries) => plans.push(entries),
+    onToolEvent: () => {},
+  });
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "tool_call",
+    toolCallId: "todo-read-1",
+    title: "Todo Read",
+    kind: "other",
+    rawInput: { _toolName: "todoRead" },
+    rawOutput: { todoList: [{ id: "a", content: "Ship it", status: "completed" }] },
+  } } }));
+
+  expect(plans).toEqual([[{ content: "Ship it", status: "completed" }]]);
+});
+
 test("normalizes Cursor Task and built-in tool names for structured cards", () => {
   const events: Array<Record<string, unknown>> = [];
   const state = createStreamingPromptState(false, {

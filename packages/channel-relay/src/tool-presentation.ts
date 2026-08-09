@@ -82,8 +82,9 @@ function readLines(input: Record<string, unknown>): string | undefined {
   return undefined;
 }
 /** Adapter bookkeeping that names the tool rather than describing the call
- *  (cursor-agent stamps every rawInput with `_toolName`). The card already shows
- *  the tool name in its header, so rendering it again is pure noise. */
+ *  (cursor-agent stamps every rawInput with `_toolName`). Keep in sync with
+ *  `CURSOR_TOOL_NAME_KEY` in `src/transport/streaming-prompt.ts` — channel-relay
+ *  cannot import transport. The card already shows the tool name in its header. */
 const INTERNAL_INPUT_KEYS = new Set(["_toolName"]);
 
 function primitiveFields(input: Record<string, unknown>): Array<{ label: string; value: string }> {
@@ -171,7 +172,9 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       };
       return { ...base, title: path, detail };
     }
-    return { ...base, title: path, detail: { type: "fields", fields: primitiveFields(input) } };
+    const fields = primitiveFields(input);
+    if (fields.length === 0) return { ...base, title: path };
+    return { ...base, title: path, detail: { type: "fields", fields } };
   }
 
   if (event.kind === "read") {
