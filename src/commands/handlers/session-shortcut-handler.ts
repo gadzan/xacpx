@@ -191,23 +191,6 @@ async function resolveShortcutWorkspace(
   };
 }
 
-async function allocateUniqueSessionAlias(
-  context: CommandRouterContext,
-  baseAlias: string,
-  chatKey: string,
-): Promise<string> {
-  if (!(await hasLogicalSession(context, baseAlias, chatKey))) {
-    return baseAlias;
-  }
-
-  let suffix = 2;
-  while (await hasLogicalSession(context, `${baseAlias}-${suffix}`, chatKey)) {
-    suffix += 1;
-  }
-
-  return `${baseAlias}-${suffix}`;
-}
-
 async function hasLogicalSession(context: CommandRouterContext, alias: string, chatKey: string): Promise<boolean> {
   const sessions = await context.sessions.listSessions(chatKey);
   return sessions.some((session) => session.internalAlias === alias);

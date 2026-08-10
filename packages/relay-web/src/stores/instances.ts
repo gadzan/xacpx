@@ -512,7 +512,7 @@ export const useInstancesStore = defineStore("instances", () => {
   // false return as a duplicate-alias error instead.
   function beginSessionCreation(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): boolean {
     const inst = byId(instanceId);
-    if (!inst || inst.sessions.some((s) => s.alias === alias)) return false;
+    if (!inst || inst.sessions.some((s) => s.alias === alias && !s.archived)) return false;
     inst.sessions = [
       // A native attach (agentSessionId set) yields a native session — badge the optimistic
       // row immediately so the marker doesn't pop in only once the server row lands.
