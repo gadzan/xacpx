@@ -1,8 +1,34 @@
 {
   "record": [
-    "sessions.tryReserveNewSessionAlias(\"relay:demo\")"
+    "sessions.tryReserveFreeSessionAlias(\"relay:demo\")",
+    "sessions.buildFreshTransportSession(\"backend:relay:demo-2\")",
+    "sessions.resolveSession(\"relay:demo-2\", \"codex\", \"backend\", \"backend:relay:demo-2:reset-<n>\")",
+    "orchestration.reserveLogicalTransportSession(\"backend:relay:demo-2\")",
+    "transport.ensureSession(session(relay:demo-2/backend:relay:demo-2:reset-<n>), fn)",
+    "logger.info(transport.ensure_session)",
+    "transport.hasSession(session(relay:demo-2/backend:relay:demo-2:reset-<n>))",
+    "logger.info(transport.has_session)",
+    "sessions.attachSession(\"relay:demo-2\", \"codex\", \"backend\", \"backend:relay:demo-2:reset-<n>\", \"npx -y --registry=https://registry.npmjs…\", \"xacpx-managed-codex-f4349e35c3c8\", {…})",
+    "sessions.getSession(\"relay:demo-2\")"
   ],
   "outcome": {
-    "threw": "session \"relay:demo\" already exists"
+    "ok": {
+      "alias": "relay:demo-2",
+      "agent": "codex",
+      "driver": "codex",
+      "agentCommand": "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+      "acpxAgent": "xacpx-managed-codex-f4349e35c3c8",
+      "agentArgv": [
+        "npx",
+        "-y",
+        "--registry=https://registry.npmjs.org",
+        "--@agentclientprotocol:registry=https://registry.npmjs.org",
+        "@agentclientprotocol/codex-acp@1.1.9"
+      ],
+      "workspace": "backend",
+      "transportSession": "backend:relay:demo-2:reset-<n>",
+      "cwd": "/tmp/backend",
+      "archived": false
+    }
   }
 }

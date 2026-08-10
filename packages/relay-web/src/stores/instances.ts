@@ -464,16 +464,35 @@ export const useInstancesStore = defineStore("instances", () => {
   // so a timeout is reported as `{pending:true}` (not a hard error). Every other
   // failure — including the instance-side `{error}` payload surfaced by `unwrap` —
   // is a real failure and rethrows.
+  //
+  // The RPC returns the ACTUAL alias chosen by the backend, which may differ from
+  // the request alias when the desired name collides with an existing archived
+  // session (the backend derives `<alias>-2`, `<alias>-3`, …). When that happens
+  // we patch the optimistic row to the final alias BEFORE reloading the session
+  // list, so `loadSessions` can match the real row against the corrected one and
+  // the user never sees a stale "name not found" error card.
   async function createSession(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): Promise<{ pending: boolean }> {
+    let result: SessionDto | undefined;
     try {
       // agentSessionId, when set, resumes an existing agent-native session instead of
       // creating a fresh transport session (the web "attach native session" option).
       // model, when set, overrides the agent's default model for the new session
       // (empty/"default" is omitted so the agent default is used).
-      unwrap(await api.rpc(instanceId, "control.sessions.create", { alias, agent, workspace, ...(agentSessionId ? { agentSessionId } : {}), ...(model ? { model } : {}) }));
+      result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.create", { alias, agent, workspace, ...(agentSessionId ? { agentSessionId } : {}), ...(model ? { model } : {}) }));
     } catch (e) {
       if (e instanceof ApiError && (e.status === 504 || e.code === "timeout")) return { pending: true };
       throw e;
+    }
+    if (result && result.alias !== alias) {
+      const inst = byId(instanceId);
+      if (inst) {
+        const idx = inst.sessions.findIndex((s) => s.alias === alias && !!s.creating);
+        if (idx >= 0) {
+          // Preserve any in-flight optimistic fields (creating, creatingSince, native)
+          // while retargeting the row to the server-chosen alias.
+          inst.sessions.splice(idx, 1, { ...inst.sessions[idx]!, alias: result.alias });
+        }
+      }
     }
     await loadSessions(instanceId);
     return { pending: false };
@@ -493,7 +512,7 @@ export const useInstancesStore = defineStore("instances", () => {
   // false return as a duplicate-alias error instead.
   function beginSessionCreation(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): boolean {
     const inst = byId(instanceId);
-    if (!inst || inst.sessions.some((s) => s.alias === alias)) return false;
+    if (!inst || inst.sessions.some((s) => s.alias === alias && !s.archived)) return false;
     inst.sessions = [
       // A native attach (agentSessionId set) yields a native session — badge the optimistic
       // row immediately so the marker doesn't pop in only once the server row lands.

@@ -1314,3 +1314,65 @@ test("command refresh preserves recorded structured launch fields", async () => 
   expect(after?.acpxAgent).toBe("xacpx-managed-custom-aaaabbbbcccc");
   expect(after?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
 });
+
+test("deriveFreeAlias returns the desired alias when it is free", () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  expect(service.deriveFreeAlias("new-session")).toBe("new-session");
+  expect(service.deriveFreeAlias("relay:new-session")).toBe("relay:new-session");
+});
+
+test("deriveFreeAlias appends -2 when the desired alias already exists", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.attachNativeSession({
+    alias: "demo", agent: "codex", workspace: "backend", transportSession: "backend:demo", agentSessionId: "a",
+  });
+  expect(service.deriveFreeAlias("demo")).toBe("demo-2");
+});
+
+test("deriveFreeAlias keeps appending suffixes until a free slot is found", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.attachNativeSession({
+    alias: "demo", agent: "codex", workspace: "backend", transportSession: "backend:demo", agentSessionId: "a1",
+  });
+  await service.attachNativeSession({
+    alias: "demo-2", agent: "codex", workspace: "backend", transportSession: "backend:demo-2", agentSessionId: "a2",
+  });
+  await service.attachNativeSession({
+    alias: "demo-3", agent: "codex", workspace: "backend", transportSession: "backend:demo-3", agentSessionId: "a3",
+  });
+  expect(service.deriveFreeAlias("demo")).toBe("demo-4");
+});
+
+test("deriveFreeAlias preserves a channel prefix when appending the suffix", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.attachNativeSession({
+    alias: "relay:demo", agent: "codex", workspace: "backend", transportSession: "backend:relay-demo", agentSessionId: "a",
+  });
+  expect(service.deriveFreeAlias("relay:demo")).toBe("relay:demo-2");
+});
+
+test("deriveFreeAlias increments an existing numeric suffix instead of stacking a new one", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.attachNativeSession({
+    alias: "demo-2", agent: "codex", workspace: "backend", transportSession: "backend:demo-2", agentSessionId: "a",
+  });
+  expect(service.deriveFreeAlias("demo-2")).toBe("demo-3");
+});
+
+test("deriveFreeAlias increments an existing numeric suffix when a channel prefix is present", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.attachNativeSession({
+    alias: "relay:demo-5", agent: "codex", workspace: "backend", transportSession: "backend:relay-demo-5", agentSessionId: "a",
+  });
+  expect(service.deriveFreeAlias("relay:demo-5")).toBe("relay:demo-6");
+});
+
+test("deriveFreeAlias treats archived sessions as taken (collisions still suffix)", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await service.attachNativeSession({
+    alias: "demo", agent: "codex", workspace: "backend", transportSession: "backend:demo", agentSessionId: "a",
+  });
+  await service.setArchived("demo", true);
+  expect(service.deriveFreeAlias("demo")).toBe("demo-2");
+});
+

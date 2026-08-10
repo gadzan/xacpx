@@ -21,6 +21,8 @@ export const session: SessionMessages = {
       `会话「${alias}」已存在（${agent} @ ${workspace}）。`,
       `发送 /use ${alias} 切换到它，或先执行 /session rm ${alias} 删除后再创建。`,
     ].join("\n"),
+  sessionAliasCollided: (desiredAlias, finalAlias) =>
+    `你指定的会话名「${desiredAlias}」已被其他会话（含已睡眠/归档）占用，已自动改为「${finalAlias}」创建。`,
   sessionAttachNotFound: (alias, agent, workspace) =>
     [
       "没有找到可绑定的已有会话。",

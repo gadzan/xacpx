@@ -1,6 +1,6 @@
 {
   "record": [
-    "sessions.tryReserveNewSessionAlias(\"relay:demo\")",
+    "sessions.tryReserveFreeSessionAlias(\"relay:demo\")",
     "sessions.buildFreshTransportSession(\"backend:relay:demo\")",
     "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo:reset-<n>\")",
     "orchestration.reserveLogicalTransportSession(\"backend:relay:demo\")",

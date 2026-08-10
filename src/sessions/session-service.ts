@@ -477,6 +477,59 @@ export class SessionService {
   }
 
   /**
+   * Derive a free internal alias for a new session. When `desiredAlias` is already
+   * taken (by an active OR archived session), append `-2`, `-3`, … until a free
+   * slot is found.
+   *
+   * The alias may carry a channel prefix (`relay:demo`, `weixin:chat123/demo`); the
+   * numeric suffix is always appended to the last path segment after the rightmost
+   * `:` so prefix semantics are preserved (e.g. `relay:demo-2`, never `relay-2:demo`).
+   */
+  deriveFreeAlias(desiredAlias: string): string {
+    const taken = Object.keys(this.state.sessions);
+    const takenSet = new Set(taken);
+    if (!takenSet.has(desiredAlias)) return desiredAlias;
+    const sep = desiredAlias.lastIndexOf(":");
+    const prefix = sep >= 0 ? desiredAlias.slice(0, sep + 1) : "";
+    const base = sep >= 0 ? desiredAlias.slice(sep + 1) : desiredAlias;
+    // If the base already carries a numeric suffix (e.g. "demo-2"), start
+    // incrementing from that suffix instead of stacking a new one ("demo-2-2").
+    const suffixMatch = /-(\d+)$/.exec(base);
+    let startN = 2;
+    let stem = base;
+    if (suffixMatch) {
+      startN = Number(suffixMatch[1]) + 1;
+      stem = base.slice(0, -suffixMatch[0].length);
+    }
+    for (let n = startN; n <= 9999; n += 1) {
+      const candidate = `${prefix}${stem}-${n}`;
+      if (!takenSet.has(candidate)) return candidate;
+    }
+    // Extremely defensive fallback — 9999 collisions would require an absurd number
+    // of sessions sharing the same base alias.
+    throw new Error(`could not derive a free alias for "${desiredAlias}" after 9999 attempts`);
+  }
+
+  /**
+   * Convenience: atomically derive a free alias (see `deriveFreeAlias`) AND
+   * reserve it via `tryReserveNewSessionAlias`. If the derived alias loses the
+   * race between the derive step and the reserve step (extremely rare because
+   * callers typically run this while holding the state mutex), retry up to a
+   * small, bounded number of times.
+   *
+   * Returns the chosen alias together with the reservation release callback, or
+   * `null` if no reservation could be obtained.
+   */
+  tryReserveFreeSessionAlias(desiredAlias: string): { alias: string; release: () => void } | null {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const alias = this.deriveFreeAlias(desiredAlias);
+      const release = this.tryReserveNewSessionAlias(alias);
+      if (release) return { alias, release };
+    }
+    return null;
+  }
+
+  /**
    * Allocate a fresh acpx transport incarnation while preserving a stable logical
    * coordinator identity. Explicit "new session" paths use this; archive/restore
    * deliberately keep the transport already stored on the logical session.
