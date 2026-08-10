@@ -1,26 +1,16 @@
 {
   "record": [
     "logger.debug(command.parsed)",
-    "sessions.getResolvedSessionByInternalAlias(\"demo\")",
-    "sessions.tryReserveNewSessionAlias(\"demo\")",
+    "sessions.tryReserveFreeSessionAlias(\"demo\")",
     "sessions.buildFreshTransportSession(\"backend:demo\")",
     "sessions.resolveSession(\"demo\", \"codex\", \"backend\", \"backend:demo:reset-<n>\")",
     "orchestration.reserveLogicalTransportSession(\"backend:demo\")",
     "transport.ensureSession(session(demo/backend:demo:reset-<n>), fn)",
     "reply(\"🚀 Starting `codex`…\")",
-    "reply(\"⏳ `codex` is still starting up… (waited …\")",
-    "logger.info(transport.ensure_session)",
-    "transport.hasSession(session(demo/backend:demo:reset-<n>))",
-    "logger.info(transport.has_session)",
-    "sessions.attachSession(\"demo\", \"codex\", \"backend\", \"backend:demo:reset-<n>\", \"npx -y --registry=https://registry.npmjs…\", \"xacpx-managed-codex-f4349e35c3c8\", {…})",
-    "sessions.useSession(\"wx:user\", \"demo\")",
-    "sessions.getSession(\"demo\")",
-    "logger.info(session.created)",
-    "logger.info(command.completed)"
+    "logger.error(transport.ensure_session.failed)",
+    "logger.error(command.failed)"
   ],
   "outcome": {
-    "ok": {
-      "text": "Session \"demo\" created and switched."
-    }
+    "threw": "jest.advanceTimersByTime is not a function. (In 'jest.advanceTimersByTime(30000)', 'jest.advanceTimersByTime' is undefined)"
   }
 }
