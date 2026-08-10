@@ -492,8 +492,17 @@ export class SessionService {
     const sep = desiredAlias.lastIndexOf(":");
     const prefix = sep >= 0 ? desiredAlias.slice(0, sep + 1) : "";
     const base = sep >= 0 ? desiredAlias.slice(sep + 1) : desiredAlias;
-    for (let n = 2; n <= 9999; n += 1) {
-      const candidate = `${prefix}${base}-${n}`;
+    // If the base already carries a numeric suffix (e.g. "demo-2"), start
+    // incrementing from that suffix instead of stacking a new one ("demo-2-2").
+    const suffixMatch = /-(\d+)$/.exec(base);
+    let startN = 2;
+    let stem = base;
+    if (suffixMatch) {
+      startN = Number(suffixMatch[1]) + 1;
+      stem = base.slice(0, -suffixMatch[0].length);
+    }
+    for (let n = startN; n <= 9999; n += 1) {
+      const candidate = `${prefix}${stem}-${n}`;
       if (!takenSet.has(candidate)) return candidate;
     }
     // Extremely defensive fallback — 9999 collisions would require an absurd number

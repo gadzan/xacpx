@@ -294,6 +294,12 @@ export class SessionControlService {
     if (!this.transport.resumeAgentSession) {
       throw new Error("the active transport does not support native sessions");
     }
+    // Deliberately skip the transport-uniqueness derivation that the chat-side
+    // /ssn handler performs before atomic reservation: the transport uniqueness
+    // constraint is advisory for native attach and never a correctness barrier.
+    // Using tryReserveFreeSessionAlias directly keeps this path deterministic
+    // and lets us surface the same "suffix auto-derived" semantics as chat-side
+    // creation when the logical alias collides with an archived session.
     const reserved = this.sessions.tryReserveFreeSessionAlias(internalAlias);
     if (!reserved) {
       throw new Error(`session "${internalAlias}" already exists and could not derive a free alias`);
