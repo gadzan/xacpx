@@ -1,5 +1,11 @@
 # Changelog
 
+## [relay 0.11.3-beta.1] - 2026-08-10
+
+### Fixed
+
+- Relay-web: drop the composer form's full-width top border so it doesn't cut across the rounded elevated card edges when the composer sits under status/plan stack layers.
+
 ## [0.20.3-beta.0] - 2026-08-09
 
 ### Fixed
