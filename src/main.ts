@@ -72,6 +72,7 @@ import {
   computeAgentOverlayEntries,
   ensureAgentOverlays,
   type EnsureAgentOverlaysResult,
+  computeSessionOverlayEntries,
 } from "./transport/acpx-agent-overlay";
 
 async function defaultProvisionAgentOverlays(
@@ -124,6 +125,15 @@ export interface AppRuntime {
    * any owners yet, so every owner recorded for a known session is stale. Best-effort.
    */
   reapStaleQueueOwners: () => Promise<void>;
+  /**
+   * Run the state.json raw-command → structured-argv auto-migration. Must be
+   * invoked by the console lifecycle AFTER the runtime ownership lock is held
+   * and before any service uses config/state: buildApp loads the shared
+   * config/state before the lock, so executing the migration inline there
+   * would race a concurrently-running `xacpx migrate argv` and could boot
+   * with a stale in-memory copy. Reloads config and state in place.
+   */
+  autoMigrateArgv?: () => Promise<void>;
   reconcileOrphans?: () => Promise<void>;
   dispose: () => Promise<void>;
 }
@@ -260,51 +270,74 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const state = await stateStore.load();
   // Auto-migrate any state.json session whose recorded raw command contains
   // whitespace (the Windows fail-closed trigger) to the structured argv form.
-  // Idempotent and best-effort: errors are logged, never block startup. After
-  // the patch we reload state so downstream services see the new argv fields.
-  const argvMigration = await migrateStateAgentArgv({
-    statePath: paths.statePath,
-    configPath: paths.configPath,
-    logger,
-  });
-  for (const m of argvMigration.migrated) {
-    await logger.info("state.argv_auto_migrated", "backfilled session to structured argv", {
-      alias: m.alias,
-      agent: m.agent,
-      argv: JSON.stringify(m.argv),
+  // Idempotent and best-effort: errors are logged, never block startup.
+  //
+  // Deliberately NOT executed here. buildApp runs BEFORE the runtime consumer
+  // lock is acquired (see run-console.ts), and this function reads AND writes
+  // the shared config/state files. If it ran inline, a concurrently-running
+  // `xacpx migrate argv` CLI could migrate the disk between our load and our
+  // own migration — our planning pass would then see "already migrated" and
+  // skip, but our in-memory config/state (and SessionService, constructed
+  // below) would keep the STALE pre-migration values, booting a daemon that
+  // does not see the migrated argv. The console lifecycle calls
+  // `autoMigrateArgv()` AFTER acquiring the runtime ownership lock and before
+  // any service uses config/state; it then reloads config and state IN PLACE
+  // so every holder of the references (SessionService, transports, ...)
+  // observes the migrated values.
+  const autoMigrateArgv = async (): Promise<void> => {
+    const argvMigration = await migrateStateAgentArgv({
+      statePath: paths.statePath,
+      configPath: paths.configPath,
+      logger,
     });
-  }
-  for (const update of argvMigration.configUpdates) {
-    await logger.info("config.argv_added", "added argv to agent config", {
-      agent: update.agent,
-      argv: JSON.stringify(update.argv),
-    });
-  }
-  for (const skip of argvMigration.skipped) {
-    await logger.warn("state.argv_migration_skipped", "session argv migration skipped", {
-      alias: skip.alias,
-      reason: skip.reason,
-    });
-  }
-  if (argvMigration.migrated.length > 0 || argvMigration.configUpdates.length > 0) {
-    // Reload state so the in-memory copy carries any freshly-written
-    // transport_agent_argv. Done unconditionally (regardless of which side
-    // changed) because both lists are derived from the same planning pass.
+    for (const m of argvMigration.migrated) {
+      await logger.info("state.argv_auto_migrated", "backfilled session to structured argv (session-local alias)", {
+        alias: m.alias,
+        agent: m.agent,
+        argv: JSON.stringify(m.argv),
+        acpxAgent: m.acpxAgent,
+      });
+    }
+    for (const update of argvMigration.configUpdates) {
+      await logger.info("config.argv_added", "added argv to agent config", {
+        agent: update.agent,
+        argv: JSON.stringify(update.argv),
+      });
+    }
+    for (const skip of argvMigration.skipped) {
+      await logger.warn("state.argv_migration_skipped", "session argv migration skipped", {
+        alias: skip.alias,
+        reason: skip.reason,
+      });
+    }
+    // Always reload BOTH config and state: even when OUR planning pass saw
+    // everything already-migrated (noop) — e.g. a concurrent CLI
+    // migration landed between our pre-lock load and this post-lock run — the
+    // disk may be newer than the in-memory snapshot buildApp loaded. Reloading
+    // unconditionally makes this run the authoritative read of the shared
+    // files. `reloadRuntimeConfig` re-provisions acpx agent overlays for any
+    // new `xacpx-managed-*` alias before swapping the runtime config in place.
     const updatedState = await stateStore.load();
     replaceRuntimeState(state, updatedState);
-    if (argvMigration.configUpdates.length > 0) {
-      // `reloadRuntimeConfig` provisions acpx agent overlays under the fresh
-      // config and replaces the runtime config in place. Critical for
-      // `acpx-cli` transport: without re-provisioning, the new
-      // `xacpx-managed-<driver>-<hash>` alias acpx-cli will launch as a
-      // positional has no entry in `~/.acpx/config.json` and falls back to
-      // the bare driver (which is the exact identity we just migrated away
-      // from). Bridge happens to self-provision via
-      // `spawnAcpxBridgeClient({ agentOverlays: computeAgentOverlayEntries(...) })`
-      // so the bug was invisible there.
-      await reloadRuntimeConfig();
+    await reloadRuntimeConfig();
+    // Re-provision session-derived overlays. Under path A the migration is
+    // session-local: each migrated session sticks to a `xacpx-managed-*`
+    // alias via `transport_acpx_agent`. On every startup (including noop
+    // restarts after acpx-config churn) ensure those aliases are present in
+    // `~/.acpx/config.json` so acpx can resolve `--agent <alias>`. Idempotent
+    // and content-hashed, so the same argv maps to the same alias.
+    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
+    const sessionEntries = computeSessionOverlayEntries(state);
+    if (sessionEntries.length > 0) {
+      try {
+        await ensureAgentOverlays(sessionEntries);
+      } catch (error) {
+        await logger.error("state.session_overlay_provision_failed",
+          "failed to re-provision session overlays from live state; sessions with transport_acpx_agent may fail to launch",
+          { error: error instanceof Error ? error.message : String(error) }).catch(() => {});
+      }
     }
-  }
+  };
   const stateLoadReport = stateStore.lastLoadReport;
   if (stateLoadReport) {
     // Loud by design: a quarantined record means data was dropped to keep the
@@ -1190,6 +1223,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
     control,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
+    autoMigrateArgv,
     ...(deps.orphanRegistry && deps.daemonIdentity
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
       : {}),

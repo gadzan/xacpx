@@ -386,12 +386,21 @@ test("start waits for daemon status metadata before returning", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   const statusStore = new DaemonStatusStore(join(dir, "status.json"));
   let checks = 0;
+  // Deterministic status write: fire it after the 3rd poll rather than on a
+  // wall-clock timer. The production loop (waitForStartupMetadata) checks
+  // status BEFORE calling onStartupPoll, so the 4th poll sees the saved
+  // status and start() resolves. This removes the 20ms setTimeout + 200ms
+  // timeout race that flaked under parallel CI load.
+  let releaseStatus!: () => void;
+  const statusReady = new Promise<void>((resolve) => {
+    releaseStatus = resolve;
+  });
 
   const controller = createController(dir, {
     isProcessRunning: (pid) => pid === 44444,
     spawnDetached: async () => {
-      setTimeout(() => {
-        void statusStore.save({
+      void statusReady.then(() =>
+        statusStore.save({
           pid: 44444,
           started_at: "2026-03-26T00:00:00.000Z",
           heartbeat_at: "2026-03-26T00:01:00.000Z",
@@ -400,14 +409,15 @@ test("start waits for daemon status metadata before returning", async () => {
           app_log: "/app",
           stdout_log: "/out",
           stderr_log: "/err",
-        });
-      }, 20);
+        }),
+      );
       return 44444;
     },
     startupPollIntervalMs: 5,
     startupTimeoutMs: 200,
     onStartupPoll: async () => {
       checks += 1;
+      if (checks === 3) releaseStatus();
     },
   });
 

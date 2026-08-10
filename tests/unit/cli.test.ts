@@ -10,6 +10,8 @@ import { listAgentTemplates } from "../../src/config/agent-templates";
 import { loadConfig } from "../../src/config/load-config";
 import { createEmptyState } from "../../src/state/types";
 import { setLocale, t } from "../../src/i18n";
+import { ActiveConsumerLockError, type ConsumerLock } from "../../src/channels/types";
+import type { StateArgvMigrationResult } from "../../src/state/auto-migrate-agent-argv";
 
 async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
   const home = await mkdtemp(join(tmpdir(), "xacpx-cli-"));
@@ -1919,4 +1921,139 @@ test("adapter registry CLI persists and resets only transport.adapterRegistry", 
     expect(await runCli(["adapter", "registry", "reset"], { print: () => {} })).toBe(0);
     expect((await readConfigJson(home)).transport.adapterRegistry).toBeUndefined();
   });
+});
+
+function fakeMigrateResult(overrides: Partial<StateArgvMigrationResult> = {}): StateArgvMigrationResult {
+  return { migrated: [], skipped: [], configUpdates: [], errors: [], ...overrides };
+}
+
+function stoppedController() {
+  return {
+    getStatus: async () => ({ state: "stopped", detail: "not-running" }),
+    start: async () => ({ state: "started", pid: 12345 }),
+    stop: async () => ({ state: "stopped", detail: "stopped" }),
+  };
+}
+
+test("migrate argv acquires and releases the runtime consumer lock around the mutation", async () => {
+  const events: string[] = [];
+  const lock: ConsumerLock = {
+    acquire: async () => { events.push("lock.acquire"); },
+    release: async () => { events.push("lock.release"); },
+  };
+  const code = await runCli(["migrate", "argv"], {
+    migrateCliDeps: {
+      controller: stoppedController(),
+      configPath: "/cfg/config.json",
+      statePath: "/cfg/state.json",
+      createRuntimeLock: () => lock,
+      migrate: async () => {
+        events.push("migrate");
+        return fakeMigrateResult();
+      },
+    },
+    print: () => {},
+    stderr: () => {},
+  });
+  expect(code).toBe(0);
+  expect(events).toEqual(["lock.acquire", "migrate", "lock.release"]);
+});
+
+test("migrate argv refuses when the runtime consumer lock is busy (foreground runtime or starting daemon)", async () => {
+  // The daemon-status observation alone cannot fence a foreground
+  // `xacpx run` or a daemon still starting up (buildApp runs before its
+  // lock acquire). The correctness fence is the runtime consumer lock
+  // itself: busy => refuse, and the migration must not run at all.
+  const errs: string[] = [];
+  let migrated = false;
+  const code = await runCli(["migrate", "argv"], {
+    migrateCliDeps: {
+      controller: stoppedController(),
+      configPath: "/cfg/config.json",
+      statePath: "/cfg/state.json",
+      createRuntimeLock: () => ({
+        acquire: async () => {
+          throw new ActiveConsumerLockError(
+            "xacpx runtime is already running.",
+            "/cfg/runtime/runtime-consumer.lock.json",
+            { pid: 4242, mode: "foreground", startedAt: "2026-08-11T00:00:00.000Z", configPath: "/cfg/config.json", statePath: "/cfg/state.json" },
+          );
+        },
+        release: async () => {},
+      }),
+      migrate: async () => {
+        migrated = true;
+        return fakeMigrateResult();
+      },
+    },
+    print: () => {},
+    stderr: (text) => errs.push(text),
+  });
+  expect(code).toBe(1);
+  expect(migrated).toBe(false);
+  expect(errs.join("")).toMatch(/already running/);
+  expect(errs.join("")).toMatch(/pid 4242/);
+});
+
+test("migrate argv refuses while the daemon status reports running", async () => {
+  const errs: string[] = [];
+  let migrated = false;
+  const code = await runCli(["migrate", "argv"], {
+    migrateCliDeps: {
+      controller: {
+        getStatus: async () => ({
+          state: "running",
+          pid: 12345,
+          status: {
+            pid: 12345,
+            started_at: "2026-08-11T00:00:00.000Z",
+            heartbeat_at: "2026-08-11T00:01:00.000Z",
+            config_path: "/cfg",
+            state_path: "/state",
+            app_log: "/app",
+            stdout_log: "/out",
+            stderr_log: "/err",
+          },
+        }),
+        start: async () => ({ state: "started", pid: 12345 }),
+        stop: async () => ({ state: "stopped", detail: "stopped" }),
+      },
+      configPath: "/cfg/config.json",
+      statePath: "/cfg/state.json",
+      createRuntimeLock: () => {
+        throw new Error("lock must not be acquired when the daemon is running");
+      },
+      migrate: async () => {
+        migrated = true;
+        return fakeMigrateResult();
+      },
+    },
+    print: () => {},
+    stderr: (text) => errs.push(text),
+  });
+  expect(code).toBe(1);
+  expect(migrated).toBe(false);
+  expect(errs.join("")).toMatch(/Stop it first/);
+});
+
+test("migrate argv --dry-run plans without acquiring the runtime lock", async () => {
+  let lockAcquired = false;
+  const code = await runCli(["migrate", "argv", "--dry-run"], {
+    migrateCliDeps: {
+      configPath: "/cfg/config.json",
+      statePath: "/cfg/state.json",
+      createRuntimeLock: () => ({
+        acquire: async () => { lockAcquired = true; },
+        release: async () => {},
+      }),
+      migrate: async () => fakeMigrateResult({
+        migrated: [{ alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"] }],
+        configUpdates: [{ agent: "kimi", argv: ["kimi", "acp"] }],
+      }),
+    },
+    print: () => {},
+    stderr: () => {},
+  });
+  expect(code).toBe(0);
+  expect(lockAcquired).toBe(false);
 });

@@ -2846,3 +2846,96 @@ test("config hot reload provisions overlays for newly added agents", async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("autoMigrateArgv runs post-build and reloads config/state in place (no stale in-memory boot)", async () => {
+  // buildApp must NOT migrate inline: it loads shared config/state before the
+  // runtime lock, so an inline migration would race a concurrent `xacpx migrate
+  // argv` and boot with a stale in-memory copy. The lifecycle calls
+  // `runtime.autoMigrateArgv()` after the lock; verify it (a) leaves the disk
+  // untouched until called, and (b) makes a config/state change that landed
+  // AFTER buildApp authoritative in memory (unconditional in-place reload), so
+  // the SAME SessionService instance resolves the session via the structured
+  // launch instead of the legacy raw command.
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+
+  // Initial config: NO argv. Session state: raw command only.
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "/tmp/demo" } },
+    }),
+  );
+  const stateBefore = {
+    version: 1,
+    sessions: {
+      "relay:demo": {
+        alias: "relay:demo",
+        agent: "kimi",
+        workspace: "demo",
+        transport_session: "demo:relay:demo:reset-1",
+        transport_agent_command: "kimi acp",
+        created_at: "2026-08-10T09:00:00.000Z",
+        last_used_at: "2026-08-10T09:00:00.000Z",
+      },
+    },
+    chat_contexts: {},
+    orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+    scheduled_tasks: {},
+  };
+  await writeFile(statePath, JSON.stringify(stateBefore));
+
+  const runtime = await buildApp({ configPath, statePath });
+  try {
+    // (a) buildApp did not run the migration inline.
+    const afterBuild = JSON.parse(await readFile(statePath, "utf8")) as {
+      sessions: Record<string, { transport_agent_argv?: string[] }>;
+    };
+    expect(afterBuild.sessions["relay:demo"]!.transport_agent_argv).toBeUndefined();
+
+    // In-memory config has no argv yet -> the session must NOT resolve through
+    // a structured launch: on Windows it is fail-closed (absent from the
+    // resolved list entirely — the raw-command error), elsewhere it resolves
+    // via the legacy raw-command path.
+    const beforeSession = runtime.sessions.listAllResolvedSessions().find((s) => s.alias === "relay:demo");
+    if (process.platform === "win32") {
+      expect(beforeSession).toBeUndefined();
+    } else {
+      expect(beforeSession!.rawCommand).toBe("kimi acp");
+      expect(beforeSession!.agentArgv).toBeUndefined();
+    }
+
+    // Simulate a concurrent writer (e.g. `xacpx migrate argv` from another
+    // terminal) adding the argv to config.json AFTER buildApp loaded it.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { kimi: { driver: "kimi", argv: ["kimi", "acp"] } },
+        workspaces: { demo: { cwd: "/tmp/demo" } },
+      }),
+    );
+
+    // (b) The lifecycle runs the migration post-lock. Its unconditional reload
+    // makes the external config/state change authoritative in memory.
+    await runtime.autoMigrateArgv!();
+
+    const afterMigrate = JSON.parse(await readFile(statePath, "utf8")) as {
+      sessions: Record<string, { transport_agent_argv?: string[] }>;
+    };
+    expect(afterMigrate.sessions["relay:demo"]!.transport_agent_argv).toEqual(["kimi", "acp"]);
+
+    // In-place reload: the SAME SessionService instance now resolves via the
+    // structured launch (config argv present in memory).
+    const afterSession = runtime.sessions.listAllResolvedSessions().find((s) => s.alias === "relay:demo")!;
+    expect(afterSession.agentArgv).toEqual(["kimi", "acp"]);
+    expect(afterSession.rawCommand).toBeUndefined();
+  } finally {
+    await runtime.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+

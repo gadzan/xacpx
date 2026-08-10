@@ -7,6 +7,8 @@ import { resolveAcpxHomeDir } from "./acpx-session-files";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
+import type { AppState } from "../state/types";
+import { deriveAgentAlias } from "../config/agent-launch";
 
 export const ACPX_MANAGED_ALIAS_PREFIX = "xacpx-managed-";
 
@@ -59,6 +61,30 @@ export function computeAgentOverlayEntries(config: AppConfig): AcpxAgentOverlayE
     if (seen.has(spec.acpxAgent)) continue;
     seen.add(spec.acpxAgent);
     entries.push({ alias: spec.acpxAgent, argv: spec.agentArgv });
+  }
+  return entries;
+}
+
+/**
+ * Overlay entries required by session-local argv persistence. Each session
+ * whose `transport_acpx_agent` + `transport_agent_argv` is set (via the
+ * session-local structured migration, or already-present in state) needs the
+ * matching `xacpx-managed-<driver>-<hash>` alias present in
+ * `~/.acpx/config.json` so acpx can resolve `--agent <alias>` to the exact
+ * argv. Deduped by alias (content-hash on argv → identical argv shares an
+ * alias → one overlay entry per unique argv across all sessions).
+ */
+export function computeSessionOverlayEntries(state: AppState): AcpxAgentOverlayEntry[] {
+  const entries: AcpxAgentOverlayEntry[] = [];
+  const seen = new Set<string>();
+  for (const session of Object.values(state.sessions)) {
+    const acpxAgent = session.transport_acpx_agent;
+    const argv = session.transport_agent_argv;
+    if (typeof acpxAgent !== "string" || acpxAgent.length === 0) continue;
+    if (!Array.isArray(argv) || argv.length === 0 || !argv.every((e) => typeof e === "string")) continue;
+    if (seen.has(acpxAgent)) continue;
+    seen.add(acpxAgent);
+    entries.push({ alias: acpxAgent, argv: argv as string[] });
   }
   return entries;
 }

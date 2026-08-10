@@ -494,7 +494,11 @@ the agent to structured argv:
 ```
 
 A single-token command (no whitespace, e.g. `"myagent.exe"`) is converted to
-`["myagent.exe"]` automatically.
+`["myagent.exe"]` automatically **only when the conversion is lossless** — the
+single element must re-render to exactly the original command via the canonical
+identity renderer. Tokens outside the identity-safe charset (Windows paths with
+backslashes, quotes, ...) render JSON-quoted and would re-key the acpx record,
+so those sessions are skipped and fail closed until migrated manually.
 
 ##### Auto-migration at daemon startup
 
@@ -505,9 +509,16 @@ writes `transport_agent_command: "<driver> acp"` into `state.json` after the
 first launch via `refreshSessionTransportAgentCommand`. The next daemon restart
 on Windows then hits the fail-closed throw.
 
-To make the migration automatic, every daemon startup runs
+To make the migration automatic, the console lifecycle runs
 `migrateStateAgentArgv` ([`src/state/auto-migrate-agent-argv.ts`](../src/state/auto-migrate-agent-argv.ts))
-**after `state.json` is loaded and before `SessionService` is constructed**:
+**after the runtime consumer lock is acquired** (and before any service touches
+config/state). This ordering matters: `buildApp` loads the shared config/state
+before the lock, so running the migration inline there would race a
+concurrently-running `xacpx migrate argv` — the daemon would see the CLI's
+changes as "already migrated", skip, and boot with a stale in-memory copy.
+Running it under the lock and then reloading config/state **in place** (the
+migration always re-reads both, so every reference holder — `SessionService`,
+transports, ... — observes the migrated values) closes that window:
 
 1. **Per-agent invariant (all-or-nothing)**: the safety set covers
    EVERY non-sticky session for the agent. The three-case rule:
@@ -535,30 +546,78 @@ To make the migration automatic, every daemon startup runs
    so the whole agent is rejected — we cannot prove the new argv
    matches what the session was doing.
 
+   **Planned-driver binding**: the planning phase captures the agent's
+   `driver` from `agents.<name>.driver` in the config snapshot. The
+   fresh-state per-agent recheck inside the lock uses this PLANNED
+   driver (not a fresh-read of the config, which a concurrent writer
+   may have changed) to call `isDerivedAgentArgv`. Without this, a
+   fresh session with a `["opencode","acp"]` argv could be misclassified
+   as "custom" if the migration fell back to the agent name `foo`
+   instead of the driver `opencode`.
+
+   **Config driver fence**: the lock-acquired `patchConfig` mutator
+   compares the on-disk `agents.<name>.driver` against
+   `plannedDriverByAgent.get(name)`. Any mismatch aborts the whole
+   transaction — a concurrent writer who changed the driver between
+   planning and lock could have flipped the derived/custom
+   classification of existing argvs, and writing the planned argv
+   would then re-key sessions the planning-time gate considered safe.
+
    The function also requires unanimous known identity across the bucket
    and at least one backfillable session to anchor argv. A bucket that
    is unanimous-and-all-noop is steady state (no writes needed).
+
+   **Session-local structured migration (provenance-aware, no global write)**:
+   a planned argv is persisted as a **session-local structured launch** via a
+   `xacpx-managed-<driver>-<hash>` alias — the historical session sticks to
+   it via `resolveLaunchSpec` step 2 (`transport_acpx_agent` +
+   `transport_agent_argv`). **`agents.<name>.argv` is NEVER written** — the
+   migration is purely session-local so future bare sessions of the same
+   driver continue to resolve through acpx and honor `~/.acpx/config.json`
+   global overrides AND `<cwd>/.acpxrc.json` per-workspace project
+   overrides. Three provenances gate whether the session-local alias is
+   provisioned at all:
+   - `derived` (managed adapter npx pin, hermes shim, opencode / kilocode
+     local fallback) → **skip**. Derived launches are recomputed on
+     restart from the CURRENT pin / config so the session identity follows
+     it; pinning one into a session-local alias would defeat that. The
+     session stays fail-closed on its raw command until migrated manually.
+   - `bare-acpx-registry` (kimi / qwen / gemini / ...) → **provision**.
+   - `explicit-config` (config already carries the argv) → **provision**
+     (the same `xacpx-managed-*` alias is derived from the same argv;
+     config-side overlay provisioning has already created the entry).
+
+   Failures skip the entire agent:
+   - **historical custom argv that does not match the current default**:
+     elevating the registry argv into a session-local alias would shadow
+     the current launch — skip (user must migrate manually).
+   - **all non-sticky sessions for the agent must agree on identity**, and
+     at least one must be backfilled; otherwise skip the whole agent.
 2. **Locked transactional apply**: the apply phase runs inside
    `withPrivateFileLock(statePath, …)`:
-   - Re-read `state.json` fresh inside the lock and (a) validate every
-     planned session update against the fresh record (alias still
-     exists, same `agent`, same `transport_agent_command` identity, no
-     clobbering `argv`), and (b) re-run the per-agent safety invariant
-     against the fresh state to catch NEW sessions for a planned
-     agent that appeared between planning and lock acquire. Either
-     failure aborts the whole migration — no config write, no state
-     write.
-   - Then attempt the config patch (ConfigStore acquires its own lock
-     briefly). The mutator tracks three outcomes per agent: `written`
-     (we set argv), `matched` (argv was already present with the same
-     identity), `conflicted` (agent removed, raw command present, or argv
-     identity mismatch). Any `conflicted` aborts the entire migration.
-     `result.configUpdates` is committed only after `patchConfig`
-     resolves, so a patch failure does not leave a stale "updated"
-     report.
-   - Only on a clean validation AND a clean config patch is state
-     written, with every other top-level key from the fresh snapshot
-     preserved verbatim.
+   - Re-read `state.json` fresh inside the lock and validate every
+     planned session update against the fresh record (alias still exists,
+     same `agent`, same `transport_agent_command` identity, no
+     clobbering `transport_agent_argv` / `transport_acpx_agent`). A
+     validation failure aborts the whole transaction — no overlay
+     provision, no state write.
+   - Provision the new session overlays (`xacpx-managed-<driver>-<hash>`
+     entries) into `~/.acpx/config.json` via `ensureAgentOverlays` so
+     acpx can resolve `--agent <alias>` to the exact argv. Must run
+     BEFORE the state write — a state session that points at a
+     non-existent alias would fail to launch on Windows. If provisioning
+     throws, abort the whole transaction.
+   - Write state with the validated sessions: persist
+     `transport_acpx_agent` (the alias) and `transport_agent_argv`. No
+     `config.json` (xacpx config) write happens. Preserve every other
+     top-level key from the fresh snapshot. Queue `migrated` entries
+     locally and commit to `result.migrated` only AFTER `writeLocked`
+     resolves successfully.
+   - **Restart robustness**: on every startup `autoMigrateArgv`
+     re-provisions session overlays from the LIVE state (via
+     `computeSessionOverlayEntries(state)`) so the aliases survive
+     `~/.acpx/config.json` cleanup or churn. Content-hashed on argv →
+     idempotent.
 3. **Errors surface to the operator**: any I/O failure (state read, config
    read, config patch, state write, acpx record read, corrupt acpx
    index) is appended to `result.errors` AND logged via the app logger.
@@ -587,7 +646,13 @@ files after a partial failure.
 
 The CLI command `xacpx migrate argv [--dry-run]` exposes the same evaluation as
 a standalone operator surface (it prints the planned migrations and exits
-non-zero when anything was skipped or errored).
+non-zero when anything was skipped or errored). The mutating path acquires the
+same **runtime consumer lock** every console instance (background daemon OR
+foreground `xacpx run`) holds while serving, and holds it for the whole
+migration — the daemon-status observation is only a friendlier error message,
+not the correctness fence. A busy lock (daemon running, foreground runtime, or
+a daemon still starting up) refuses the migration with a non-zero exit.
+`--dry-run` is lock-free but its snapshot may be stale.
 
 #### xacpx-managed acpx agent aliases
 

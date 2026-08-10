@@ -22,6 +22,7 @@ export const cli: CliMessages = {
     "xacpx workspace list|add [name] [--raw]|rm <name> - 管理本机工作区（别名：ws）",
     "xacpx later|lt list|cancel <id> - 管理本机待执行定时任务",
     "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - 启动 MCP stdio 服务",
+    "xacpx migrate argv [--dry-run] - 把 raw-command session 迁移为结构化 argv（先停止 daemon）",
   ],
 
   // start command

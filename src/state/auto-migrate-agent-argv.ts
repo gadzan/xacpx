@@ -4,12 +4,16 @@ import { join } from "node:path";
 import {
   isDerivedAgentArgv,
   renderAgentArgvIdentity,
+  deriveAgentAlias,
 } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
-import type { AgentConfig } from "../config/types";
+import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import type { AgentConfig, TransportConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
+import { createAcpxAgentRegistryLoader } from "../transport/agent-registry";
 import { resolveAcpxHomeDir } from "../transport/acpx-session-files";
 import { withPrivateFileLock, writePrivateFileAtomic } from "../util/private-file";
+import { ensureAgentOverlays, type AcpxAgentOverlayEntry } from "../transport/acpx-agent-overlay";
 
 import type { LogicalSession } from "./types";
 
@@ -29,8 +33,9 @@ export interface StateArgvMigrationEvaluation {
  * acpx session identity?
  *
  * A session is migratable iff:
- * - it has a recorded multi-token raw `transport_agent_command` (the Windows
- *   fail-closed trigger; single-token or absent commands are fine),
+ * - it has a recorded raw `transport_agent_command` (the Windows fail-closed
+ *   trigger) that is either a single token whose canonical identity round-trips
+ *   losslessly (`[command]` re-renders to `command`), OR a multi-token command,
  * - `transport_agent_argv` is not already set,
  * - and at least one of the two identity-proving sources is available:
  *     a. `agents[session.agent]` already has an `argv` whose canonical identity
@@ -61,7 +66,16 @@ export function evaluateStateSessionArgvMigration(
     return { status: "noop" };
   }
   if (!/\s/.test(command)) {
-    return { status: "noop" };
+    // Single-token raw command. A single-element argv is lossless ONLY when
+    // the canonical identity round-trips (e.g. "kimi" -> ["kimi"]). Tokens
+    // outside the identity-safe charset (Windows paths with backslashes,
+    // quotes, etc.) render JSON-quoted, so `[command]` would re-key the acpx
+    // record — those must fall through to the config-argv / acpx-record
+    // identity proof below and fail closed when none exists.
+    const argv = [command];
+    if (renderAgentArgvIdentity(argv) === command) {
+      return { status: "backfilled", targetArgv: argv };
+    }
   }
   if (agentConfig === undefined) {
     return {
@@ -106,12 +120,44 @@ export function evaluateStateSessionArgvMigration(
   return { status: "backfilled", targetArgv: [...acpxRecordArgv] };
 }
 
-/** Returns the parsed acpx session record matching the given transport_session name. */
-export type AcpxRecordReader = (transportSession: string) => Promise<Record<string, unknown> | null>;
+/**
+ * Returns the parsed acpx session record matching the given transport_session
+ * name. The `expectedCommand` (when provided) is used to disambiguate when
+ * multiple records share the same name — this is the documented behavior
+ * of acpx: two sessions can share a transport_session name but differ in
+ * `agent_command` (e.g. aliasing on top of one another). The reader must
+ * fail closed on ambiguity (return null) rather than picking arbitrarily.
+ */
+export type AcpxRecordReader = (
+  transportSession: string,
+  expectedCommand?: string,
+) => Promise<Record<string, unknown> | null>;
 
 export interface StateArgvMigrationConfigUpdate {
   agent: string;
   argv: string[];
+}
+
+/**
+ * Where a driver's effective default argv came from. Provenance decides
+ * whether the migration may elevate that argv into explicit
+ * `agents.<name>.argv`:
+ *
+ * - `bare-acpx-registry`: acpx's builtin registry default (kimi →
+ *   `["kimi","acp"]`). Stable across pin bumps — safe to elevate.
+ * - `explicit-config`: the agent already carries its own `argv` in config.
+ *   Elevating just mirrors what is already there (state backfill).
+ * - `derived`: managed adapter npx pin, hermes shim, or opencode/kilocode
+ *   local fallback. `SessionService` deliberately recomputes these on
+ *   restart so the session identity follows the CURRENT pin/config —
+ *   freezing one into explicit argv would make future adapter-version or
+ *   `preferLocalAgents` changes silently ineffective. NEVER elevated.
+ */
+export type DefaultArgvSource = "explicit-config" | "bare-acpx-registry" | "derived";
+
+export interface DefaultArgvResolution {
+  argv: string[];
+  source: DefaultArgvSource;
 }
 
 export interface StateArgvMigrationPlanEntry {
@@ -144,7 +190,7 @@ export interface StateArgvMigrationPlanEntry {
 }
 
 export interface StateArgvMigrationResult {
-  migrated: Array<{ alias: string; agent: string; argv: string[] }>;
+  migrated: Array<{ alias: string; agent: string; argv: string[]; acpxAgent: string }>;
   skipped: Array<{ alias: string; agent?: string; reason: string }>;
   configUpdates: StateArgvMigrationConfigUpdate[];
   /**
@@ -164,8 +210,13 @@ export interface MigrateStateAgentArgvDeps {
   readAcpxRecord?: AcpxRecordReader;
   /** Tests inject this; default is `node:fs/promises.readFile(path, "utf8")`. */
   readFile?: (path: string) => Promise<string>;
-  /** Patch the parsed raw config object; default delegates to `ConfigStore.patchRaw` (locked). */
-  patchConfig?: (mutate: (raw: Record<string, unknown>) => void) => Promise<void>;
+  /**
+   * Provision the session-local acpx overlays (`xacpx-managed-*` entries)
+   * into acpx's config. Production default calls `ensureAgentOverlays` with
+   * the real `~/.acpx/config.json`. Tests inject a no-op or a fixture to
+   * avoid touching the real acpx home.
+   */
+  provisionOverlays?: (entries: AcpxAgentOverlayEntry[]) => Promise<void>;
   logger: AppLogger;
   /** When true, every write is skipped and only the plan is returned. */
   dryRun?: boolean;
@@ -175,6 +226,30 @@ export interface MigrateStateAgentArgvDeps {
   runtimeRoot?: string;
   /** Platform for the same classification. Defaults to `process.platform`. */
   platform?: NodeJS.Platform;
+  /**
+   * Compute the argv a brand-new session of this agent would launch with,
+   * plus its provenance (bare-acpx-registry / explicit-config / derived).
+   * Defaults to `computeDefaultAgentArgv`. Tests inject this to avoid PATH /
+   * registry dependencies. A bare-array return is accepted for backward
+   * compat and is treated as `bare-acpx-registry` (the only auto-elevatable
+   * source besides explicit-config); tests that need the derived case return
+   * a `DefaultArgvResolution`.
+   */
+  resolveDefaultArgv?: (
+    agentName: string,
+    fullConfig: Record<string, unknown>,
+    platform: NodeJS.Platform,
+    runtimeRoot: string,
+  ) => DefaultArgvResolution | string[] | undefined;
+}
+
+/** Normalize a seam return into a `DefaultArgvResolution` (or undefined). */
+function toDefaultArgvResolution(
+  value: DefaultArgvResolution | string[] | undefined,
+): DefaultArgvResolution | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return { argv: value, source: "bare-acpx-registry" };
+  return value;
 }
 
 /**
@@ -211,7 +286,12 @@ export async function migrateStateAgentArgv(
     deps.acpxSessionsDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
   const readAcpxRecord = deps.readAcpxRecord ?? defaultReadAcpxRecord(sessionsDir);
   const readFile = deps.readFile ?? defaultReadFile;
-  const patchConfig = deps.patchConfig ?? defaultPatchConfig(deps.configPath);
+  // Provision session-local acpx overlays into the user's `~/.acpx/config.json`
+  // by default. Tests inject `provisionOverlays` to avoid touching the real
+  // acpx home and to assert on the entries.
+  const provisionOverlays = deps.provisionOverlays ?? (async (entries: AcpxAgentOverlayEntry[]): Promise<void> => {
+    await ensureAgentOverlays(entries);
+  });
   // Shared classification inputs (used both in the planning bucket's
   // isSticky check and the fresh-state per-agent recheck). Must agree
   // with `SessionService.resolveLaunchSpec`'s derived/custom split
@@ -241,6 +321,11 @@ export async function migrateStateAgentArgv(
   if (!isRecord(initialSessions)) return result;
 
   const configAgents = await readConfigAgentsMap(readFile, deps.configPath, result, deps.logger);
+  // Load the full config too — the per-agent default-launch check needs
+  // `config.transport` (for managed pin detection). Read once here and
+  // pass to the bucket.
+  const fullConfigRaw = await readFullConfig(readFile, deps.configPath, result, deps.logger);
+  const fullConfig = fullConfigRaw ?? { agents: {} };
 
   const plan: StateArgvMigrationPlanEntry[] = [];
   for (const [alias, rawSession] of Object.entries(initialSessions)) {
@@ -316,42 +401,68 @@ export async function migrateStateAgentArgv(
     });
   }
 
-  const { agentArgvByName, sessionUpdates } = aggregatePerAgent(plan, result);
+  const resolveDefaultArgv =
+    deps.resolveDefaultArgv ??
+    ((agentName: string, raw: Record<string, unknown>, plat: NodeJS.Platform, root: string) =>
+      computeDefaultAgentArgv(agentName, raw, plat, root));
+  // Normalize the seam return (tests may pass bare arrays) into a resolution
+  // carrying provenance, which `aggregatePerAgent` uses to decide elevation.
+  const resolveDefaultArgvNormalized = (
+    agentName: string,
+    raw: Record<string, unknown>,
+    plat: NodeJS.Platform,
+    root: string,
+  ): DefaultArgvResolution | undefined =>
+    toDefaultArgvResolution(resolveDefaultArgv(agentName, raw, plat, root));
+  const { sessionUpdates } = aggregatePerAgent(
+    plan,
+    result,
+    fullConfig,
+    platform,
+    runtimeRoot,
+    resolveDefaultArgvNormalized,
+  );
   if (deps.dryRun) {
-    for (const [name, argv] of agentArgvByName) {
-      result.configUpdates.push({ agent: name, argv: [...argv] });
-    }
     for (const update of sessionUpdates) {
-      result.migrated.push(update);
+      result.migrated.push({
+        alias: update.alias,
+        agent: update.agent,
+        argv: update.argv,
+        acpxAgent: update.acpxAgent,
+      });
     }
     return result;
   }
 
   // === Apply phase ===
 //
-// All writes (config + state) happen inside the same `withPrivateFileLock`
-// acquisition on the state file. Ordering:
+// All writes happen inside the same `withPrivateFileLock` acquisition on
+// the state file. Ordering:
 //   1. Re-read state fresh inside the lock.
 //   2. Validate every planned session update against the fresh record.
 //      Any session that no longer matches (deleted, retargeted, command
 //      changed, argv changed) is reported as a skip; if any update fails
-//      validation, we abort the WHOLE migration — no config write, no
-//      state write — so the existing state and config stay in sync.
-//   3. Patch config (acquires its own lock briefly). If the mutator
-//      silently skipped an agent (agent removed, raw command present,
-//      argv identity conflict), abort BEFORE writing state — otherwise
-//      we'd persist `transport_agent_argv` that points at an argv the
-//      config won't have.
-//   4. Write state with the validated sessions; preserve every other
-//      top-level key from the fresh snapshot.
+//      validation, we abort the WHOLE migration — no state write, no
+//      overlay write — so the existing state and acpx config stay in sync.
+//   3. Provision the new session overlays (`xacpx-managed-<driver>-<hash>`
+//      entries) into `~/.acpx/config.json` so acpx can resolve
+//      `--agent <alias>` to the exact argv. If provisioning throws, abort
+//      the whole transaction — we never write state pointing at an alias
+//      acpx cannot resolve.
+//   4. Write state with the validated sessions (including
+//      `transport_acpx_agent` + `transport_agent_argv`); preserve every
+//      other top-level key from the fresh snapshot. No `config.json`
+//      write happens — the migration is purely session-local so future
+//      sessions of the same driver continue to honor acpx global /
+//      `.acpxrc.json` project overrides.
 //
 // The state lock prevents concurrent daemon `state.json` writes from
-// interleaving between any of the four steps. Config writes happen with
-// state lock held; a `config` lock is acquired only briefly inside
-// `patchConfig` (which already re-reads under its own lock). No deadlock:
-// the daemon's own state writes never take the config lock.
+// interleaving between any of the steps. The overlay provision acquires
+// acpx config's own proper-lockfile (`withPrivateFileLock` inside
+// `ensureAgentOverlays`); the lock order is state → acpx config, held
+// one at a time — no deadlock.
 
-if (sessionUpdates.length > 0 || agentArgvByName.size > 0) {
+if (sessionUpdates.length > 0) {
   try {
     await withPrivateFileLock(deps.statePath, async (writeLocked) => {
       const freshRaw = await safeReadText(
@@ -448,156 +559,61 @@ if (sessionUpdates.length > 0 || agentArgvByName.size > 0) {
         return;
       }
 
-      // (2.5) Fresh per-agent safety recheck. The per-session validation
-      // above only walked the planned aliases. If a new session for one
-      // of the targeted agents was added between planning and lock
-      // acquire, the planning-time per-agent invariant no longer holds.
-      // Scan every fresh non-sticky session for each planned agent and
-      // abort the whole transaction if any session has a different
-      // identity OR has an unknown identity (no argv, no command).
-      // This is the commit-time complement to the planning-time
-      // per-agent check; uses the same `isDerivedAgentArgv` classification
-      // as `resolveLaunchSpec` so the safety set is exact.
-      let anyAgentUnsafe = false;
-      for (const [agent, plannedArgv] of agentArgvByName) {
-        const targetIdentity = renderAgentArgvIdentity(plannedArgv);
-        for (const [freshAlias, freshSession] of Object.entries(freshSessions)) {
-          if (!isRecord(freshSession)) continue;
-          if (typeof freshSession.agent !== "string" || freshSession.agent !== agent) continue;
-          const freshExistingArgv =
-            Array.isArray(freshSession.transport_agent_argv) &&
-            freshSession.transport_agent_argv.length > 0 &&
-            freshSession.transport_agent_argv.every((e) => typeof e === "string")
-              ? (freshSession.transport_agent_argv as string[])
-              : undefined;
-          const freshIsStickyByRecorded =
-            typeof freshSession.transport_acpx_agent === "string" &&
-            freshSession.transport_acpx_agent.length > 0 &&
-            freshExistingArgv !== undefined;
-          const freshIsSticky = freshIsStickyByRecorded && !isDerivedAgentArgv(
-            agent,
-            freshExistingArgv,
-            runtimeRoot,
-            platform,
-          );
-          if (freshIsSticky) continue;
-          const freshCmd =
-            typeof freshSession.transport_agent_command === "string"
-              ? freshSession.transport_agent_command
-              : undefined;
-          const freshIdentity = freshExistingArgv
-            ? renderAgentArgvIdentity(freshExistingArgv)
-            : freshCmd ?? undefined;
-          if (freshIdentity === undefined) {
-            anyAgentUnsafe = true;
-            result.skipped.push({
-              alias: freshAlias,
-              agent,
-              reason: `fresh state: session "${freshAlias}" has no recorded identity; writing global argv would silently re-key it (cannot prove safety)`,
-            });
-            continue;
-          }
-          if (freshIdentity !== targetIdentity) {
-            anyAgentUnsafe = true;
-            result.skipped.push({
-              alias: freshAlias,
-              agent,
-              reason: `fresh state: session "${freshAlias}" argv identity (${freshIdentity}) differs from planned agent "${agent}" argv identity (${targetIdentity}); writing global argv would silently re-key it`,
-            });
-          }
-        }
+      // (3) Provision the new session overlays into `~/.acpx/config.json` so
+      // acpx can resolve `--agent <alias>` to the exact argv. Deduped by
+      // alias (content-hash on argv). MUST run before the state write — a
+      // state session that points at a non-existent alias would fail to
+      // launch on Windows. If provisioning throws, abort the whole
+      // transaction (no state write).
+      const newOverlayEntries: AcpxAgentOverlayEntry[] = [];
+      const overlaySeen = new Set<string>();
+      for (const update of sessionUpdates) {
+        if (overlaySeen.has(update.acpxAgent)) continue;
+        overlaySeen.add(update.acpxAgent);
+        newOverlayEntries.push({ alias: update.acpxAgent, argv: update.argv });
       }
-      if (anyAgentUnsafe) {
-        pushError(result, deps.logger, "state.argv_migration.fresh_state_per_agent_aborted",
-          "fresh state contains a session for a planned agent whose argv identity does not match the target; argv migration aborted (no writes applied)",
-          { statePath: deps.statePath }, undefined);
-        return;
-      }
-
-      // (3) Patch config. The mutator tracks three outcomes per agent:
-      //   - written: we set argv on the agent (queued for result.configUpdates)
-      //   - matched: argv was already present with the same identity (no-op)
-      //   - conflicted: agent missing, raw command present, or argv identity
-      //     mismatch - refuses to clobber user override and aborts state
-      //     migration so we do not persist transport_agent_argv that
-      //     points at an argv the config will not have.
-      //
-      // We commit to result.configUpdates only AFTER patchConfig resolves
-      // successfully. The actual file write happens inside patchConfig
-      // (ConfigStore.patchRaw holds its own config lock); if it throws,
-      // the queued configUpdates is discarded and the error message
-      // reflects that config may have been partially written.
-      const configOutcome: { written: number; matched: number; conflicted: number } = {
-        written: 0,
-        matched: 0,
-        conflicted: 0,
-      };
-      const queuedConfigUpdates: StateArgvMigrationConfigUpdate[] = [];
-      if (agentArgvByName.size > 0) {
+      if (newOverlayEntries.length > 0) {
         try {
-          await patchConfig((raw) => {
-            const agents = ensureRecordAt(raw, "agents");
-            for (const [name, argv] of agentArgvByName) {
-              const existing = agents[name];
-              if (!isRecord(existing)) {
-                configOutcome.conflicted += 1;
-                continue;
-              }
-              const driver = typeof existing.driver === "string" ? existing.driver : "";
-              if (!driver) {
-                configOutcome.conflicted += 1;
-                continue;
-              }
-              if (Array.isArray(existing.argv) && existing.argv.length > 0) {
-                const identity = renderAgentArgvIdentity(existing.argv);
-                const targetIdentity = renderAgentArgvIdentity(argv);
-                if (identity === targetIdentity) {
-                  configOutcome.matched += 1;
-                } else {
-                  configOutcome.conflicted += 1;
-                }
-                continue;
-              }
-              if (typeof existing.command === "string" && existing.command.length > 0) {
-                configOutcome.conflicted += 1;
-                continue;
-              }
-              existing.argv = [...argv];
-              queuedConfigUpdates.push({ agent: name, argv: [...argv] });
-              configOutcome.written += 1;
-            }
-          });
-          // patchConfig resolved without throwing: the config lock write
-          // succeeded for every queued agent. Commit to result.
-          for (const update of queuedConfigUpdates) {
-            result.configUpdates.push(update);
-          }
+          await provisionOverlays(newOverlayEntries);
         } catch (error) {
-          pushError(result, deps.logger, "state.argv_migration.config_patch_failed",
-            "config.json patch failed; argv migration aborted (state was NOT written, config may have been partially written)",
-            { configPath: deps.configPath }, error);
-          return;
-        }
-        if (configOutcome.conflicted > 0) {
-          pushError(result, deps.logger, "state.argv_migration.config_patch_conflicted",
-            `config.json patch conflicted for ${configOutcome.conflicted} agent(s) (agent removed, raw command present, or argv identity mismatch); argv migration aborted (no state write)`,
-            { configPath: deps.configPath }, undefined);
+          pushError(result, deps.logger, "state.argv_migration.overlay_provision_failed",
+            "failed to provision session-local acpx overlays; argv migration aborted (no state write)",
+            { error: errorMessage(error) }, error);
           return;
         }
       }
 
-      // (4) Write state with the validated sessions. Preserve every other
-      // top-level key from the fresh snapshot.
+      // (4) Write state with the validated sessions. Persist BOTH
+      // `transport_acpx_agent` AND `transport_agent_argv` so
+      // `resolveLaunchSpec` step 2 (recorded argv sticky) launches the
+      // session via the overlay alias — fixing the Windows fail-closed
+      // throw. Preserve every other top-level key from the fresh
+      // snapshot. Queue `migrated` entries locally and commit to
+      // `result.migrated` only AFTER writeLocked resolves successfully.
+      const queuedMigrated: Array<{ alias: string; agent: string; argv: string[]; acpxAgent: string }> = [];
       const nextSessions: Record<string, unknown> = { ...freshSessions };
       for (const update of validated) {
         const fresh = nextSessions[update.alias];
         if (!isRecord(fresh)) continue; // defensive
-        nextSessions[update.alias] = { ...fresh, transport_agent_argv: [...update.argv] };
-        result.migrated.push(update);
+        nextSessions[update.alias] = {
+          ...fresh,
+          transport_acpx_agent: update.acpxAgent,
+          transport_agent_argv: [...update.argv],
+        };
+        queuedMigrated.push(update);
       }
       const next: Record<string, unknown> = { ...freshParsed, sessions: nextSessions };
       const serialized = `${JSON.stringify(next, null, 2)}\n`;
       await writeLocked(serialized);
+      // State write succeeded. Commit queued migrated entries to result.
+      for (const update of queuedMigrated) {
+        result.migrated.push({
+          alias: update.alias,
+          agent: update.agent,
+          argv: update.argv,
+          acpxAgent: update.acpxAgent,
+        });
+      }
     });
   } catch (error) {
     // The state lock acquire, fresh re-read, or final writeLocked threw
@@ -607,9 +623,9 @@ if (sessionUpdates.length > 0 || agentArgvByName.size > 0) {
     // `writePrivateFileAtomic` does temp+rename which is atomic on POSIX
     // and best-effort on Windows where the fallback direct write can
     // leave a partial file. State did NOT complete successfully; the
-    // operator must verify both files, not assume "no writes applied".
+    // operator must verify state.json, not assume "no writes applied".
     pushError(result, deps.logger, "state.argv_migration.write_failed",
-      "argv migration failed during the state write step; state.json write did not complete successfully and may be unchanged or partially written; config.json may have been updated already and is now inconsistent with state.json",
+      "argv migration failed during the state write step; state.json write did not complete successfully and may be unchanged or partially written. A new acpx overlay may have been provisioned and is now referenced only by sessions that did not get persisted.",
       { statePath: deps.statePath }, error);
   }
 }
@@ -618,22 +634,29 @@ return result;
 }
 
 /**
- * Per-agent all-or-nothing (Issue 1 v2 + v3): the safety bucket covers
- * Per-agent all-or-nothing (Issue 1 v2 + v3 + v4): the safety set
- * covers EVERY non-sticky session for the agent. The three-case rule
- * from the reviewer:
+ * Per-agent all-or-nothing for session-local structured migration. The
+ * safety bucket covers EVERY non-sticky session for the agent:
  *
  *   - sticky (per `isDerivedAgentArgv`-aware check; matches
- *     `resolveLaunchSpec` step 2)        => immune to config argv override
- *   - non-sticky + known identity == target => safe
- *   - non-sticky + known identity != target => abort (conflict)
- *   - non-sticky + unknown identity         => abort (cannot prove safety)
- *
- * A session has "unknown identity" when it has neither
- * `transport_agent_argv` nor `transport_agent_command`. Such a session
- * would currently resolve via `resolveLaunchSpec` step 5 (default
- * launch); writing `agents.<name>.argv` would change its behavior to
- * step 3 and is therefore unsafe.
+ *     `resolveLaunchSpec` step 2)        => immune to step 3 / overlay arg
+ *   - non-sticky + known identity matches the current driver's default =>
+ *     session-local structured migration (derive xacpx-managed alias from
+ *     the argv, provision the overlay so acpx resolves `--agent <alias>`
+ *     to the exact argv, persist `transport_acpx_agent` +
+ *     `transport_agent_argv` on the session). NEVER writes
+ *     `agents.<name>.argv` — future sessions of this driver still resolve
+ *     bare and continue to honor acpx global / `.acpxrc.json` project
+ *     overrides, while the migrated historical session sticks to the
+ *     alias via `resolveLaunchSpec` step 2.
+ *   - non-sticky + known identity matches a DERIVED default (managed
+ *     adapter npx pin, hermes shim, opencode / kilocode local fallback)
+ *     => skip. Derived launches must stay re-derivable on restart so the
+ *     session identity follows the current pin / config.
+ *   - non-sticky + known identity != current default => skip (fail closed):
+ *     historical custom argv that does not match is left untouched.
+ *   - non-sticky + unknown identity (no `transport_agent_argv` and no
+ *     `transport_agent_command`) => abort the whole agent (cannot prove
+ *     the new argv would not silently re-key it).
  *
  * The function also requires unanimous known identity across the bucket
  * and at least one backfillable session to anchor argv.
@@ -641,12 +664,14 @@ return result;
 function aggregatePerAgent(
   plan: StateArgvMigrationPlanEntry[],
   result: StateArgvMigrationResult,
+  fullConfig: Record<string, unknown>,
+  platform: NodeJS.Platform,
+  runtimeRoot: string,
+  resolveDefaultArgv: (agentName: string, fullConfig: Record<string, unknown>, platform: NodeJS.Platform, runtimeRoot: string) => DefaultArgvResolution | undefined,
 ): {
-  agentArgvByName: Map<string, string[]>;
-  sessionUpdates: Array<{ alias: string; agent: string; argv: string[] }>;
+  sessionUpdates: Array<{ alias: string; agent: string; driver: string; argv: string[]; acpxAgent: string }>;
 } {
-  const agentArgvByName = new Map<string, string[]>();
-  const sessionUpdates: Array<{ alias: string; agent: string; argv: string[] }> = [];
+  const sessionUpdates: Array<{ alias: string; agent: string; driver: string; argv: string[]; acpxAgent: string }> = [];
 
   // Bucket every non-sticky session for the agent — including those
   // without a target identity. Unknown-identity sessions go in as a
@@ -671,7 +696,7 @@ function aggregatePerAgent(
         result.skipped.push({
           alias: e.alias,
           agent,
-          reason: `agent "${agent}" has ${knownIdentities.size} different argv identities (${list}); writing global argv would silently re-key the others`,
+          reason: `agent "${agent}" has ${knownIdentities.size} different argv identities (${list}); writing session-local argv would silently re-key the others`,
         });
       }
       continue;
@@ -700,27 +725,84 @@ function aggregatePerAgent(
     }
     if (unknown.length > 0) {
       // Unknown-identity sessions for this agent: cannot prove they
-      // would not be silently re-keyed by the new config argv.
+      // would not be silently re-keyed by the new session-local argv.
       // Abort the whole agent.
       for (const e of unknown) {
         result.skipped.push({
           alias: e.alias,
           agent,
-          reason: `agent "${agent}" has session "${e.alias}" with no recorded identity; writing global argv would silently re-key it (cannot prove safety)`,
+          reason: `agent "${agent}" has session "${e.alias}" with no recorded identity; writing session-local argv would silently re-key it (cannot prove safety)`,
         });
       }
       continue;
     }
     // All non-sticky sessions for the agent agree on argv identity and
-    // at least one is backfilled. Migrate every session in the bucket.
+    // at least one is backfilled. Resolve the driver (agent config's
+    // driver, or the agent name as fallback) and check the default's
+    // provenance.
     const argv = [...backfilled.evaluation.targetArgv!];
-    agentArgvByName.set(agent, argv);
+    const agentConfigRaw = isRecord(fullConfig.agents) ? (fullConfig.agents as Record<string, unknown>)[agent] : undefined;
+    const driver = isRecord(agentConfigRaw) && typeof agentConfigRaw.driver === "string"
+      ? agentConfigRaw.driver
+      : agent;
+    const defaultResolution = resolveDefaultArgv(agent, fullConfig, platform, runtimeRoot);
+    const defaultArgv = defaultResolution?.argv;
+    const matchesDefault =
+      defaultArgv !== undefined &&
+      defaultArgv.length === argv.length &&
+      defaultArgv.every((entry, index) => entry === argv[index]);
+    if (matchesDefault && defaultResolution!.source === "derived") {
+      // Derived launches (managed adapter npx pin, hermes shim, opencode /
+      // kilocode local fallback) are recomputed on restart from the CURRENT
+      // pin/config so the session identity follows them. Even though the
+      // planned argv matches the derived default RIGHT NOW, freezing that
+      // argv into a session-local alias would still leave the session
+      // pinned to a specific pin forever. Leave the session untouched
+      // (Windows: fail-closed on its raw command) so it stays re-derivable.
+      for (const e of entries) {
+        result.skipped.push({
+          alias: e.alias,
+          agent,
+          reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) matches a derived launch (managed pin / hermes shim / local fallback); session-local alias would freeze a launch that should stay recomputed on restart — left untouched (migrate manually if needed)`,
+        });
+      }
+      continue;
+    }
+    if (!matchesDefault) {
+      // argv is custom / historical / stale relative to the current driver
+      // default. Fail closed: we do NOT write a session-local argv for it.
+      // The session stays fail-closed on its raw command (Windows) until the
+      // user migrates the agent manually via `agents.<name>.argv`.
+      for (const e of entries) {
+        result.skipped.push({
+          alias: e.alias,
+          agent,
+          reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) does not match the current driver's default launch (${defaultArgv === undefined ? "unknown" : renderAgentArgvIdentity(defaultArgv)}); refusing to write a session-local argv that the daemon would launch but that does not match the current launch — migrate this agent manually`,
+        });
+      }
+      continue;
+    }
+    // Match (bare-registry or explicit-config): session-local structured
+    // migration. Derive a content-hashed xacpx-managed alias for this
+    // argv, provision the overlay so acpx can resolve `--agent <alias>`
+    // to the exact argv, and persist the alias + argv on the session.
+    // No `agents.<name>.argv` is ever written — future sessions of this
+    // driver still resolve bare (honoring acpx global / `.acpxrc.json`
+    // project overrides), while the migrated historical session stays
+    // pinned to the alias via `resolveLaunchSpec` step 2.
+    const acpxAgent = deriveAgentAlias(driver, argv);
     for (const e of entries) {
-      sessionUpdates.push({ alias: e.alias, agent, argv: [...argv] });
+      sessionUpdates.push({
+        alias: e.alias,
+        agent,
+        driver,
+        argv: [...argv],
+        acpxAgent,
+      });
     }
   }
 
-  return { agentArgvByName, sessionUpdates };
+  return { sessionUpdates };
 }
 
 async function readConfigAgentsMap(
@@ -743,6 +825,105 @@ async function readConfigAgentsMap(
   }
   if (isRecord(parsed) && isRecord(parsed.agents)) return parsed.agents;
   return {};
+}
+
+async function readFullConfig(
+  readFile: (path: string) => Promise<string>,
+  configPath: string,
+  result: StateArgvMigrationResult,
+  logger: AppLogger,
+): Promise<Record<string, unknown> | null> {
+  if (typeof configPath !== "string" || configPath.length === 0) return null;
+  const raw = await safeReadText(readFile, configPath, "config.json", result.errors, logger);
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (error) {
+    pushError(result, logger, "state.argv_migration.config_read_failed",
+      "config.json is not valid JSON; argv migration will rely on acpx records only",
+      { configPath }, error);
+    return null;
+  }
+}
+
+// Lazy, cached loader for acpx's agent registry. Loaded lazily so the
+// migration still works (with a narrower safety set) when the acpx runtime
+// cannot be required, and so `require("acpx/runtime")` never runs at import
+// time in tests that inject `resolveDefaultArgv`.
+const loadAcpxAgentRegistry = createAcpxAgentRegistryLoader();
+
+function computeDefaultAgentArgv(
+  agentName: string,
+  rawConfig: Record<string, unknown>,
+  platform: NodeJS.Platform,
+  runtimeRoot: string,
+): DefaultArgvResolution | undefined {
+  const agents = isRecord(rawConfig.agents) ? rawConfig.agents : {};
+  const agentRaw = agents[agentName];
+  if (!isRecord(agentRaw)) return undefined;
+  const driver = typeof agentRaw.driver === "string" ? agentRaw.driver : "";
+  if (!driver) return undefined;
+  // Skip agents that have an explicit raw command — those are
+  // command-based, not argv-based. The migration should not try to
+  // elevate argv for them (the user has a raw command intentionally).
+  if (typeof agentRaw.command === "string" && agentRaw.command.length > 0) {
+    return undefined;
+  }
+  const hasExplicitArgv =
+    Array.isArray(agentRaw.argv) &&
+    agentRaw.argv.length > 0 &&
+    agentRaw.argv.every((e) => typeof e === "string");
+  const agentConfig: AgentConfig = {
+    driver,
+    ...(hasExplicitArgv ? { argv: agentRaw.argv as string[] } : {}),
+  };
+  const transport = isRecord(rawConfig.transport) ? (rawConfig.transport as Partial<TransportConfig>) : undefined;
+  const spec = resolveConfiguredAgentLaunch(
+    agentConfig,
+    transport as TransportConfig,
+    { platform, runtimeRoot },
+  );
+  if (spec.agentArgv) {
+    // Structured launch without an explicit agent.argv is one of the
+    // DERIVED sources (managed adapter npx pin, hermes shim, opencode /
+    // kilocode local fallback). resolveLaunchSpec deliberately recomputes
+    // these on restart so the session identity follows the current
+    // pin/config — the migration must NOT freeze one into explicit argv.
+    return {
+      argv: [...spec.agentArgv],
+      source: hasExplicitArgv ? "explicit-config" : "derived",
+    };
+  }
+  // Bare acpx builtin driver: the daemon spawns it as a bare positional and
+  // acpx resolves the launch from its builtin registry (kimi -> ["kimi",
+  // "acp"]). That is the argv a brand-new session of this driver would
+  // record, so it is the correct oracle for the elevation check.
+  // (Note: acpx-level user overrides in `~/.acpx/config.json` — global
+  // `agents.<driver>` entries and project `.acpxrc.json` entries — only
+  // affect NEW bare sessions created after the migration. The migration
+  // does NOT write global `agents.<name>.argv`; migrated historical
+  // sessions get a session-local alias so they keep their existing
+  // launch identity, while future sessions of the same driver continue
+  // to resolve through acpx and honor any user overrides — global or
+  // per-cwd project.)
+  // acpx versions differ in what the registry's resolve() returns: newer
+  // builds return a structured argv array, older ones (<=0.12) return the
+  // command string. Handle both; for the string form, split into tokens only
+  // when the canonical identity round-trips losslessly (registry defaults are
+  // plain space-separated tokens, never quoted).
+  const registry = loadAcpxAgentRegistry();
+  if (!registry) return undefined;
+  const resolved = registry.resolve(driver);
+  if (Array.isArray(resolved)) {
+    return { argv: [...resolved], source: "bare-acpx-registry" };
+  }
+  if (typeof resolved === "string" && resolved.length > 0) {
+    const tokens = resolved.split(/\s+/).filter((entry) => entry.length > 0);
+    if (tokens.length > 0 && renderAgentArgvIdentity(tokens) === resolved) {
+      return { argv: tokens, source: "bare-acpx-registry" };
+    }
+  }
+  return undefined;
 }
 
 async function safeReadText(
@@ -814,7 +995,15 @@ async function maybeReadAcpxRecordArgv(
   errors: string[],
   logger: AppLogger,
 ): Promise<string[] | undefined> {
-  if (typeof command !== "string" || command.length === 0 || !/\s/.test(command)) return undefined;
+  if (typeof command !== "string" || command.length === 0) return undefined;
+  // Lossless single-token commands are backfilled directly by the pure
+  // evaluator as [command]; no record corroboration is needed. Anything
+  // else (multi-token, or single-token that does NOT round-trip losslessly
+  // such as a Windows path) must consult the acpx record below to prove the
+  // planned argv keeps the same identity.
+  if (!/\s/.test(command) && renderAgentArgvIdentity([command]) === command) {
+    return undefined;
+  }
   // If the agent already carries an argv whose identity matches the recorded
   // command, we don't need the acpx record as a corroborating source.
   if (agentConfigRaw !== undefined) {
@@ -828,7 +1017,7 @@ async function maybeReadAcpxRecordArgv(
   if (!transportSession) return undefined;
   let record: Record<string, unknown> | null;
   try {
-    record = await readAcpxRecord(transportSession);
+    record = await readAcpxRecord(transportSession, command);
   } catch (error) {
     // I/O failure is a real problem (issue 3 fix): the troubleshooting path
     // needs to see it on stderr and exit non-zero, not just see the
@@ -882,16 +1071,27 @@ function defaultReadAcpxRecord(sessionsDir: string): AcpxRecordReader {
   // state.json has `transport_session` (which equals the record's `name`
   // field), but not `acpx_record_id`. Use the index to map name→file.
   //
-  // I/O failures (other than ENOENT for missing files) and JSON parse errors
-  // are propagated to the caller as thrown exceptions so the migration can
-  // surface them on stderr and exit non-zero. Returning null silently here
-  // would hide the most likely cause of "cannot prove identity" — a corrupt
-  // index or a permission error on a record file.
-  const indexByName = new Map<string, string>();
+  // Multiple records can share the same `name` (e.g. when an alias is
+  // reused on top of an older session that has since been reaped, or when
+  // acpx is restarted and a new session accidentally reuses the name).
+  // The old impl collapsed these to a single `Map<name, file>` and lost
+  // the earlier ones — which silently returned the wrong record's argv
+  // to the migration and broke identity proof. Now we keep all candidates
+  // and disambiguate by the supplied `expectedCommand` (the session's
+  // `transport_agent_command`). On ambiguity, return null and let the
+  // caller report "cannot prove identity".
+  //
+  // I/O failures (other than ENOENT for missing files) and JSON parse
+  // errors are propagated to the caller as thrown exceptions so the
+  // migration can surface them on stderr and exit non-zero. Returning
+  // null silently here would hide the most likely cause of "cannot
+  // prove identity" — a corrupt index or a permission error on a record
+  // file.
+  const indexCandidatesByName = new Map<string, Array<{ file: string; agentCommand?: string }>>();
   let indexLoaded = false;
 
-  const loadIndex = async (): Promise<Map<string, string>> => {
-    if (indexLoaded) return indexByName;
+  const loadIndex = async (): Promise<Map<string, Array<{ file: string; agentCommand?: string }>>> => {
+    if (indexLoaded) return indexCandidatesByName;
     const indexPath = join(sessionsDir, "index.json");
     let raw: string;
     try {
@@ -899,7 +1099,7 @@ function defaultReadAcpxRecord(sessionsDir: string): AcpxRecordReader {
     } catch (error) {
       if (isMissingFileError(error)) {
         indexLoaded = true;
-        return indexByName;
+        return indexCandidatesByName;
       }
       throw error;
     }
@@ -919,18 +1119,33 @@ function defaultReadAcpxRecord(sessionsDir: string): AcpxRecordReader {
           typeof entry.name === "string" &&
           typeof entry.file === "string"
         ) {
-          indexByName.set(entry.name, entry.file);
+          const list = indexCandidatesByName.get(entry.name) ?? [];
+          list.push({
+            file: entry.file,
+            ...(typeof entry.agentCommand === "string" ? { agentCommand: entry.agentCommand } : {}),
+          });
+          indexCandidatesByName.set(entry.name, list);
         }
       }
     }
     indexLoaded = true;
-    return indexByName;
+    return indexCandidatesByName;
   };
 
-  return async (transportSession: string) => {
-    const byName = await loadIndex();
-    const file = byName.get(transportSession);
-    if (!file) return null;
+  return async (transportSession: string, expectedCommand?: string) => {
+    const candidates = await loadIndex();
+    const list = candidates.get(transportSession) ?? [];
+    if (list.length === 0) return null;
+    // Disambiguate by expectedCommand when available; otherwise we can
+    // only safely pick a candidate when there is exactly one.
+    const matches = expectedCommand !== undefined
+      ? list.filter((c) => c.agentCommand === expectedCommand)
+      : list;
+    if (matches.length !== 1) {
+      // Ambiguous (or zero) — fail closed rather than picking arbitrarily.
+      return null;
+    }
+    const file = matches[0]!.file;
     const raw = await readFile(join(sessionsDir, file), "utf8");
     const parsed: unknown = JSON.parse(raw);
     return isRecord(parsed) ? parsed : null;
@@ -941,29 +1156,8 @@ async function defaultReadFile(path: string): Promise<string> {
   return await readFile(path, "utf8");
 }
 
-function defaultPatchConfig(configPath: string) {
-  return async (mutate: (raw: Record<string, unknown>) => void): Promise<void> => {
-    const { ConfigStore } = await import("../config/config-store.js");
-    const store = new ConfigStore(configPath);
-    await store.patchRaw(mutate);
-  };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function ensureRecordAt(raw: Record<string, unknown>, key: string): Record<string, unknown> {
-  const existing = raw[key];
-  if (existing === undefined) {
-    const created: Record<string, unknown> = {};
-    raw[key] = created;
-    return created;
-  }
-  if (!isRecord(existing)) {
-    throw new Error(`refusing to overwrite config key "${key}": it is not a JSON object`);
-  }
-  return existing;
 }
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {

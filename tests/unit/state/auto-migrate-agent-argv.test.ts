@@ -10,6 +10,11 @@ import {
 } from "../../../src/state/auto-migrate-agent-argv";
 import type { LogicalSession } from "../../../src/state/types";
 import { createNoopAppLogger } from "../../../src/logging/app-logger";
+import {
+  resolveManagedAdapterArgv,
+  resolveManagedAdapterCommand,
+} from "../../../src/adapters/adapter-catalog";
+import { deriveAgentAlias } from "../../../src/config/agent-launch";
 
 function sessionFixture(overrides: Partial<LogicalSession> = {}): LogicalSession {
   return {
@@ -33,13 +38,14 @@ test("pure: noop when transport_agent_argv already present", () => {
   expect(result.status).toBe("noop");
 });
 
-test("pure: noop when transport_agent_command is single-token", () => {
+test("pure: single-token command is backfillable as [command]", () => {
   const result = evaluateStateSessionArgvMigration(
     sessionFixture({ transport_agent_command: "kimi" }),
     { driver: "kimi" },
     ["kimi", "acp"],
   );
-  expect(result.status).toBe("noop");
+  expect(result.status).toBe("backfilled");
+  expect(result.targetArgv).toEqual(["kimi"]);
 });
 
 test("pure: noop when transport_agent_command is missing", () => {
@@ -60,6 +66,13 @@ test("pure: rejected when agent is no longer configured", () => {
   expect(result.status).toBe("rejected");
   expect(result.reason).toMatch(/ghost-agent/);
 });
+
+const defaultArgvResolver = (agentName: string): string[] | undefined => {
+  if (agentName === "kimi") return ["kimi", "acp"];
+  if (agentName === "qwen") return ["qwen", "acp"];
+  if (agentName === "opencode") return ["opencode", "acp"];
+  return undefined;
+};
 
 test("pure: backfilled from config argv when identity matches", () => {
   const result = evaluateStateSessionArgvMigration(
@@ -172,7 +185,7 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
 }
 
-test("io: migrates state and config when acpx record corroborates identity", async () => {
+test("io: migrates state to session-local structured argv via overlay alias", async () => {
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportSession = "demo:relay:demo:reset-1";
@@ -208,27 +221,28 @@ test("io: migrates state and config when acpx record corroborates identity", asy
     await writeFile(configPath, JSON.stringify(configBefore));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([
-      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"] },
+      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
     ]);
-    expect(result.configUpdates).toEqual([
-      { agent: "kimi", argv: ["kimi", "acp"] },
-    ]);
+    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toEqual([]);
 
     const stateAfter = await readJson(statePath);
     const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_acpx_agent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
     expect(sessionAfter.transport_agent_argv).toEqual(["kimi", "acp"]);
     expect(sessionAfter.transport_agent_command).toBe("kimi acp");
 
     const configAfter = await readJson(configPath);
     const agentAfter = (configAfter.agents as Record<string, Record<string, unknown>>).kimi!;
-    expect(agentAfter.argv).toEqual(["kimi", "acp"]);
+    expect(agentAfter.argv).toBeUndefined();
     expect(agentAfter.command).toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -265,7 +279,9 @@ test("io: backfills only state when config already has matching argv", async () 
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toHaveLength(1);
     expect(result.configUpdates).toEqual([]);
@@ -302,7 +318,9 @@ test("io: skips session when acpx record is missing", async () => {
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.configUpdates).toEqual([]);
@@ -314,7 +332,7 @@ test("io: skips session when acpx record is missing", async () => {
   }
 });
 
-test("io: idempotent on second run", async () => {
+test("io: idempotent on second run (session-local alias is content-stable)", async () => {
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportSession = "demo:relay:demo:reset-1";
@@ -344,13 +362,19 @@ test("io: idempotent on second run", async () => {
     }));
 
     const first = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(first.migrated).toHaveLength(1);
-    expect(first.configUpdates).toHaveLength(1);
+    expect(first.migrated[0]?.acpxAgent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
+    expect(first.configUpdates).toHaveLength(0);
+    expect(first.skipped).toHaveLength(0);
 
     const second = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(second.migrated).toEqual([]);
     expect(second.configUpdates).toEqual([]);
@@ -360,7 +384,7 @@ test("io: idempotent on second run", async () => {
   }
 });
 
-test("io: dry-run reports plan without writing", async () => {
+test("io: dry-run reports session-local plan without writing", async () => {
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportSession = "demo:relay:demo:reset-1";
@@ -392,12 +416,14 @@ test("io: dry-run reports plan without writing", async () => {
     await writeFile(configPath, configRaw);
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
       dryRun: true,
     });
-    expect(result.migrated).toEqual([{ alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"] }]);
-    expect(result.configUpdates).toEqual([{ agent: "kimi", argv: ["kimi", "acp"] }]);
+    expect(result.migrated).toEqual([{ alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) }]);
+    expect(result.configUpdates).toEqual([]);
 
     expect(await readFile(statePath, "utf8")).toBe(stateRaw);
     expect(await readFile(configPath, "utf8")).toBe(configRaw);
@@ -410,7 +436,9 @@ test("io: returns empty result when state.json is missing", async () => {
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result).toEqual({ migrated: [], skipped: [], configUpdates: [], errors: [] });
   } finally {
@@ -449,11 +477,13 @@ test("io: skips silently when acpx record read throws", async () => {
       throw new Error("simulated EIO");
     };
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       readAcpxRecord: throwingReader,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.skipped).toHaveLength(1);
@@ -494,7 +524,9 @@ test("io: skips session when acpx record exists but agent_command mismatches", a
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.skipped).toHaveLength(1);
@@ -550,7 +582,9 @@ test("issue 1: per-agent all-or-nothing when sessions have conflicting target id
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.configUpdates).toEqual([]);
@@ -575,7 +609,7 @@ test("issue 1: per-agent all-or-nothing when sessions have conflicting target id
   }
 });
 
-test("issue 1: agents with unanimous argv identity are migrated together", async () => {
+test("issue 1: agents with unanimous argv identity get a shared session-local alias", async () => {
   // Same driver, two sessions, identical recorded command and identical argv
   // identity — should backfill both, write argv to config exactly once.
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
@@ -615,10 +649,12 @@ test("issue 1: agents with unanimous argv identity are migrated together", async
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toHaveLength(2);
-    expect(result.configUpdates).toEqual([{ agent: "kimi", argv: ["kimi", "acp"] }]);
+    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toEqual([]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -695,15 +731,17 @@ test("issue 2: state read-modify-write re-reads fresh under lock; concurrent wri
     await writeFile(configPath, configRaw);
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       readFile: customReadFile,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     // A was already migrated in the fresh snapshot; we count it as migrated.
     expect(result.migrated).toEqual([
-      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"] },
+      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]), driver: "kimi" },
     ]);
     expect(result.skipped).toEqual([]);
     expect(result.errors).toEqual([]);
@@ -716,8 +754,13 @@ test("issue 2: state read-modify-write re-reads fresh under lock; concurrent wri
     // Config argv is still written — the plan was valid against the planning
     // snapshot, and the re-read only confirmed A didn't need re-migration.
     const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    // Under path A the migration never writes the xacpx config — the
+    // historical session is pinned to a session-local overlay alias in
+    // acpx's config, and `agents.kimi.argv` is deliberately NOT created
+    // so future bare kimi sessions still honor `.acpxrc.json` /
+    // `~/.acpx/config.json` overrides.
     expect((configAfter.agents as Record<string, Record<string, unknown>>).kimi!.argv)
-      .toEqual(["kimi", "acp"]);
+      .toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -764,11 +807,13 @@ test("issue 2: state write aborts when lock-acquired re-read sees session delete
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       readFile: customReadFile,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     // Session was gone by the time we held the lock; not a hard error, just
@@ -850,7 +895,9 @@ test("io: rejects acpx record with mismatched argv identity at the I/O seam", as
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.configUpdates).toEqual([]);
@@ -864,15 +911,25 @@ test("io: rejects acpx record with mismatched argv identity at the I/O seam", as
 test("issue 5: surfaces I/O errors in result.errors and skips writes", async () => {
   const { dir, statePath, configPath } = await setupFixtureDir();
   try {
-    const throwingReader = async () => {
-      throw new Error("simulated EIO reading state.json");
+    const nodeReadFile = (await import("node:fs/promises")).readFile;
+    const throwingReader = async (path: string): Promise<string> => {
+      if (path === statePath) {
+        throw new Error("simulated EIO reading state.json");
+      }
+      // Everything else (config, acpx config) reads normally; the acpx
+      // config path points at a non-existent fixture file so the reader
+      // must not touch the real ~/.acpx/config.json.
+      return await nodeReadFile(path, "utf8");
     };
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: "/nonexistent",
+      acpxConfigPath: join(dir, "acpx-config.json"),
       readFile: throwingReader,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.configUpdates).toEqual([]);
@@ -884,64 +941,10 @@ test("issue 5: surfaces I/O errors in result.errors and skips writes", async () 
   }
 });
 
-test("issue 5: surfaces config-patch failure and aborts state write", async () => {
-  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
-  try {
-    const transportSession = "demo:relay:demo:reset-1";
-    await writeAcpxRecord(acpxDir, transportSession, "kimi acp", ["kimi", "acp"]);
-    await writeFile(statePath, JSON.stringify({
-      version: 1,
-      sessions: {
-        "relay:demo": {
-          alias: "relay:demo", agent: "kimi", workspace: "demo",
-          transport_session: transportSession,
-          transport_agent_command: "kimi acp",
-          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
-        },
-      },
-      chat_contexts: {},
-      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
-      scheduled_tasks: {},
-    }));
-    await writeFile(configPath, JSON.stringify({
-      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
-      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
-      channel: { type: "weixin", replyMode: "stream" },
-      channels: [], plugins: [],
-      agents: { kimi: { driver: "kimi" } },
-      workspaces: { demo: { cwd: "C:\\demo" } },
-      later: { defaultMode: "temp" },
-    }));
-    const beforeState = await readFile(statePath, "utf8");
-
-    const result = await migrateStateAgentArgv({
-      statePath,
-      configPath,
-      acpxSessionsDir: acpxDir,
-      patchConfig: async () => {
-        throw new Error("simulated EIO writing config.json");
-      },
-      logger: createNoopAppLogger(),
-    });
-
-    expect(result.migrated).toEqual([]);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/config\.json patch failed.*simulated EIO/);
-    // State MUST be untouched when config patch fails.
-    expect(await readFile(statePath, "utf8")).toBe(beforeState);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 
-// is now obsolete: under the all-or-nothing transactional ordering, the
-// config patch only runs AFTER fresh-state validation succeeds AND before
-// the state write. If the state write fails, no config was ever written
-// (or it was written together with the validation gate - abort happens
-// before either write). The new tests below cover the abort paths.
 
-test("issue 2 v2: fresh-state re-read failure aborts BOTH config and state writes", async () => {
+test("issue 2 v2: fresh-state re-read failure aborts the migration", async () => {
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportSession = "demo:relay:demo:reset-1";
@@ -983,11 +986,13 @@ test("issue 2 v2: fresh-state re-read failure aborts BOTH config and state write
     };
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       readFile: customReadFile,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
 
     // Neither file is touched.
@@ -1001,72 +1006,6 @@ test("issue 2 v2: fresh-state re-read failure aborts BOTH config and state write
   }
 });
 
-test("issue 2 v2: config patch conflict (existing argv differs) aborts state write", async () => {
-  // Planning: A is backfillable from acpx record. Between planning and
-  // the locked transaction, a concurrent writer sets kimi.argv to a
-  // different identity. patchConfig (the dep) sees the conflict and
-  // marks configOutcome.conflicted; the transaction must abort.
-  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
-  try {
-    const transportSession = "demo:relay:demo:reset-1";
-    await writeAcpxRecord(acpxDir, transportSession, "kimi acp", ["kimi", "acp"]);
-    const stateRaw = JSON.stringify({
-      version: 1,
-      sessions: {
-        "relay:demo": {
-          alias: "relay:demo", agent: "kimi", workspace: "demo",
-          transport_session: transportSession,
-          transport_agent_command: "kimi acp",
-          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
-        },
-      },
-      chat_contexts: {},
-      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
-      scheduled_tasks: {},
-    });
-    await writeFile(statePath, stateRaw);
-    // Initial config has matching argv (planning succeeds).
-    await writeFile(configPath, JSON.stringify({
-      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
-      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
-      channel: { type: "weixin", replyMode: "stream" },
-      channels: [], plugins: [],
-      agents: { kimi: { driver: "kimi", argv: ["kimi", "acp"] } },
-      workspaces: { demo: { cwd: "C:\\demo" } },
-      later: { defaultMode: "temp" },
-    }));
-
-    // Inject a patchConfig that simulates the post-planning conflict: the
-    // live config has a DIFFERENT argv identity, so the mutator counts it
-    // as a conflict and does not write.
-    const customPatchConfig = async (mutate: (raw: Record<string, unknown>) => void): Promise<void> => {
-      const raw = {
-        transport: { type: "acpx-bridge" },
-        agents: { kimi: { driver: "kimi", argv: ["kimi", "--other"] } },
-      };
-      mutate(raw);
-    };
-
-    const result = await migrateStateAgentArgv({
-      statePath,
-      configPath,
-      acpxSessionsDir: acpxDir,
-      patchConfig: customPatchConfig,
-      logger: createNoopAppLogger(),
-    });
-
-    // Session is not in skipped (fresh-state validation passed) and not
-    // in migrated (config patch aborted). errors carries the conflict
-    // reason so the operator sees what happened.
-    expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
-    expect(result.errors.some((e) => /conflicted|conflict/i.test(e))).toBe(true);
-    // State stays untouched.
-    expect(await readFile(statePath, "utf8")).toBe(stateRaw);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 test("issue 3 v2: acpx record read failure populates errors", async () => {
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
@@ -1099,11 +1038,13 @@ test("issue 3 v2: acpx record read failure populates errors", async () => {
       throw new Error("simulated EIO reading acpx record");
     };
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       readAcpxRecord: throwingReader,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.configUpdates).toEqual([]);
@@ -1152,10 +1093,12 @@ test("issue 3 v2: corrupt acpx index.json propagates as error (not silent fallba
     await writeFile(join(acpxDir, "index.json"), "{ this is not valid JSON");
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath,
       configPath,
       acpxSessionsDir: acpxDir,
       logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
     expect(result.errors.some((e) => /failed to parse acpx session index/.test(e))).toBe(true);
@@ -1168,71 +1111,6 @@ test("issue 3 v2: corrupt acpx index.json propagates as error (not silent fallba
 // v3: per-agent safety bucket now covers single-token sessions + fresh per-agent recheck
 // ============================================================================
 
-test("issue 1 v3: multi-token backfillable + single-token legacy raw => entire agent rejected", async () => {
-  // A is backfillable (whitespace raw "kimi acp" with acpx record proving
-  // argv). B has single-token raw "custom-agent.exe" with no argv. The
-  // v2 per-agent bucket only saw A and would have written
-  // agents.kimi.argv = ["kimi", "acp"]; B's resolveLaunchSpec would
-  // then silently re-key onto the new argv via step 3. v3 must catch B
-  // in the safety bucket and reject the whole agent.
-  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
-  try {
-    const transportA = "demo:relay:demo-a:reset-1";
-    const transportB = "demo:relay:demo-b:reset-2";
-    await writeAcpxRecord(acpxDir, transportA, "kimi acp", ["kimi", "acp"]);
-    await writeFile(statePath, JSON.stringify({
-      version: 1,
-      sessions: {
-        "relay:demo-a": {
-          alias: "relay:demo-a", agent: "kimi", workspace: "demo",
-          transport_session: transportA,
-          transport_agent_command: "kimi acp",
-          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
-        },
-        "relay:demo-b": {
-          alias: "relay:demo-b", agent: "kimi", workspace: "demo",
-          transport_session: transportB,
-          transport_agent_command: "custom-agent.exe",
-          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
-        },
-      },
-      chat_contexts: {},
-      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
-      scheduled_tasks: {},
-    }));
-    await writeFile(configPath, JSON.stringify({
-      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
-      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
-      channel: { type: "weixin", replyMode: "stream" },
-      channels: [], plugins: [],
-      agents: { kimi: { driver: "kimi" } },
-      workspaces: { demo: { cwd: "C:\\demo" } },
-      later: { defaultMode: "temp" },
-    }));
-
-    const result = await migrateStateAgentArgv({
-      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
-    });
-    expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
-    expect(result.skipped).toHaveLength(2);
-    const aliases = result.skipped.map((s) => s.alias).sort();
-    expect(aliases).toEqual(["relay:demo-a", "relay:demo-b"]);
-    for (const s of result.skipped) {
-      expect(s.reason).toMatch(/different argv identities/);
-    }
-    // Config and state should be unchanged.
-    const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
-    const agentAfter = (configAfter.agents as Record<string, Record<string, unknown>>).kimi!;
-    expect(agentAfter.argv).toBeUndefined();
-    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
-    const sessionsAfter = stateAfter.sessions as Record<string, Record<string, unknown>>;
-    expect(sessionsAfter["relay:demo-a"]!.transport_agent_argv).toBeUndefined();
-    expect(sessionsAfter["relay:demo-b"]!.transport_agent_argv).toBeUndefined();
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 test("issue 1 v3: sticky session is excluded from the safety bucket", async () => {
   // A is backfillable (whitespace raw). C is sticky: has both
@@ -1277,7 +1155,9 @@ test("issue 1 v3: sticky session is excluded from the safety bucket", async () =
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     // A is migrated (backfilled); C is noop (already correct).
     expect(result.migrated.length).toBeGreaterThanOrEqual(1);
@@ -1327,7 +1207,9 @@ test("issue 1 v3: bucket of all noop sessions is steady state, not a skip", asyn
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.skipped).toEqual([]);
     expect(result.configUpdates).toEqual([]);
@@ -1338,62 +1220,106 @@ test("issue 1 v3: bucket of all noop sessions is steady state, not a skip", asyn
   }
 });
 
-test("issue 2 v3: fresh state per-agent recheck catches new conflicting session added between planning and lock", async () => {
-  // Planning: A = "kimi acp" (backfillable). No other sessions in the
-  // bucket. Lock-acquired re-read of state reveals a new session B =
-  // "kimi --other" for the same agent. The fresh per-agent recheck
-  // must abort the whole transaction — without it, A would be migrated
-  // and B would be silently re-keyed to A's argv via config step 3.
+
+
+// ============================================================================
+// v4 + v5: shared isDerivedAgentArgv + unknown-identity safety +
+//          planned-driver fence for both fresh-state and config patch
+// ============================================================================
+
+test("issue 1 v4: derived-argv session (opencode [driver, acp]) is NOT sticky even with transport_acpx_agent set", async () => {
+  // A is backfillable with a custom argv (NOT derived). B has the opencode
+  // default argv ["opencode", "acp"] which `isDerivedAgentArgv("opencode", ...)`
+  // returns true for. The naive isSticky (transport_acpx_agent + argv) would
+  // have excluded B from the safety bucket, letting the migration write
+  // foo.argv = ["opencode", "--custom-acp"] and silently re-key B via
+  // step 3. v4 uses the same `isDerivedAgentArgv` as SessionService.
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportA = "demo:relay:demo-a:reset-1";
     const transportB = "demo:relay:demo-b:reset-2";
-    await writeAcpxRecord(acpxDir, transportA, "kimi acp", ["kimi", "acp"]);
-    const planningState = JSON.stringify({
+    await writeAcpxRecord(acpxDir, transportA, "opencode --custom-acp", ["opencode", "--custom-acp"]);
+    await writeFile(statePath, JSON.stringify({
       version: 1,
       sessions: {
         "relay:demo-a": {
-          alias: "relay:demo-a", agent: "kimi", workspace: "demo",
+          alias: "relay:demo-a", agent: "foo", workspace: "demo",
           transport_session: transportA,
-          transport_agent_command: "kimi acp",
-          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
-        },
-      },
-      chat_contexts: {},
-      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
-      scheduled_tasks: {},
-    });
-    // Fresh state: same as planning PLUS a new session B with a different identity.
-    const freshState = JSON.stringify({
-      version: 1,
-      sessions: {
-        "relay:demo-a": {
-          alias: "relay:demo-a", agent: "kimi", workspace: "demo",
-          transport_session: transportA,
-          transport_agent_command: "kimi acp",
+          transport_agent_command: "opencode --custom-acp",
           created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
         },
         "relay:demo-b": {
-          alias: "relay:demo-b", agent: "kimi", workspace: "demo",
+          alias: "relay:demo-b", agent: "foo", workspace: "demo",
           transport_session: transportB,
-          transport_agent_command: "kimi --other",
+          transport_agent_command: "opencode acp",
+          transport_acpx_agent: "xacpx-managed-opencode-abcdef",
+          transport_agent_argv: ["opencode", "acp"],
           created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
         },
       },
       chat_contexts: {},
       orchestration: { tasks: {}, workerBindings: {}, groups: {} },
       scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { foo: { driver: "opencode" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-    await writeFile(statePath, planningState);
+    expect(result.migrated).toEqual([]);
+    expect(result.configUpdates).toEqual([]);
+    expect(result.skipped).toHaveLength(2);
+    const skippedAliases = result.skipped.map((s) => s.alias).sort();
+    expect(skippedAliases).toEqual(["relay:demo-a", "relay:demo-b"]);
+    for (const s of result.skipped) {
+      expect(s.reason).toMatch(/different argv identities/);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
-    let readCount = 0;
-    const nodeReadFile = (await import("node:fs/promises")).readFile;
-    const customReadFile = async (path: string): Promise<string> => {
-      if (path !== statePath) return await nodeReadFile(path, "utf8");
-      readCount += 1;
-      return readCount === 1 ? planningState : freshState;
-    };
-
+test("issue 1 v4: truly-sticky session (custom argv + transport_acpx_agent) is excluded", async () => {
+  // A is backfillable with custom argv. C has a custom argv (NOT derived)
+  // + transport_acpx_agent — truly sticky per resolveLaunchSpec step 2.
+  // C should be excluded from the safety bucket.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transportA = "demo:relay:demo-a:reset-1";
+    const transportC = "demo:relay:demo-c:reset-2";
+    await writeAcpxRecord(acpxDir, transportA, "kimi acp", ["kimi", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo-a": {
+          alias: "relay:demo-a", agent: "kimi", workspace: "demo",
+          transport_session: transportA,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+        "relay:demo-c": {
+          alias: "relay:demo-c", agent: "kimi", workspace: "demo",
+          transport_session: transportC,
+          transport_agent_command: "kimi acp",
+          transport_acpx_agent: "xacpx-managed-kimi-abc",
+          transport_agent_argv: ["kimi", "acp"],
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
     await writeFile(configPath, JSON.stringify({
       transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
       logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
@@ -1405,25 +1331,85 @@ test("issue 2 v3: fresh state per-agent recheck catches new conflicting session 
     }));
 
     const result = await migrateStateAgentArgv({
-      statePath, configPath, acpxSessionsDir: acpxDir,
-      readFile: customReadFile, logger: createNoopAppLogger(),
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-
-    expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
-    expect(result.skipped.some((s) => s.alias === "relay:demo-b")).toBe(true);
-    expect(result.errors.some((e) => /fresh state contains a session|fresh state.*differs from planned/.test(e))).toBe(true);
-    // Both files untouched.
-    expect(await readFile(statePath, "utf8")).toBe(planningState);
+    expect(result.migrated.some((m) => m.alias === "relay:demo-a")).toBe(true);
+    expect(result.skipped).toEqual([]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("issue 3 v3: result.configUpdates is empty when patchConfig throws", async () => {
-  // The mutator pushes to a queue. If the actual config write throws
-  // (simulated), result.configUpdates must NOT contain the queued
-  // updates. result.errors gets the failure.
+test("issue 2 v4: non-sticky session with no recorded identity aborts the whole agent", async () => {
+  // A is backfillable with "kimi acp". B has no recorded command and no
+  // argv — currently resolves via step 5 (default launch). The migration
+  // would write kimi.argv = ["kimi", "acp"] and silently re-key B via
+  // step 3. The whole agent must be rejected because B's identity is
+  // unknown and we cannot prove safety.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transportA = "demo:relay:demo-a:reset-1";
+    await writeAcpxRecord(acpxDir, transportA, "kimi acp", ["kimi", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo-a": {
+          alias: "relay:demo-a", agent: "kimi", workspace: "demo",
+          transport_session: transportA,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+        "relay:demo-b": {
+          alias: "relay:demo-b", agent: "kimi", workspace: "demo",
+          transport_session: "demo:relay:demo-b:reset-2",
+          // no recorded_agent_command, no argv, no transport_acpx_agent
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+    });
+    expect(result.migrated).toEqual([]);
+    expect(result.configUpdates).toEqual([]);
+    expect(result.skipped.some((s) => s.alias === "relay:demo-b")).toBe(true);
+    expect(result.skipped.find((s) => s.alias === "relay:demo-b")?.reason).toMatch(
+      /no recorded identity/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+
+
+
+test("production: acpx builtin default argv (kimi) becomes a session-local overlay alias WITHOUT an injected resolver", async () => {
+  // Reviewer finding (v6): the production `computeDefaultAgentArgv` must
+  // know acpx's builtin default argv (kimi -> ["kimi","acp"]). The old
+  // implementation only returned structured argv for codex/claude/hermes/
+  // opencode/kilocode and returned undefined for bare builtins, so the
+  // core PR scenario (a historical "kimi acp" session) was misjudged as
+  // custom and never migrated. No `resolveDefaultArgv` is injected here:
+  // the acpx registry is the oracle, exactly as in the daemon.
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportSession = "demo:relay:demo:reset-1";
@@ -1453,17 +1439,390 @@ test("issue 3 v3: result.configUpdates is empty when patchConfig throws", async 
     }));
 
     const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
       statePath, configPath, acpxSessionsDir: acpxDir,
-      patchConfig: async () => { throw new Error("simulated EIO writing config.json"); },
+      // Missing fixture acpx config → no acpx-level overrides → registry is
+      // the oracle. Never read the real ~/.acpx/config.json in a unit test.
+      acpxConfigPath: join(dir, "acpx-config.json"),
       logger: createNoopAppLogger(),
     });
-
-    // patchConfig threw before the actual file write; result.configUpdates
-    // was not committed.
+    expect(result.migrated).toEqual([
+      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
+    ]);
     expect(result.configUpdates).toEqual([]);
+    expect(result.skipped).toEqual([]);
+    const configAfter = await readJson(configPath);
+    // No global config write under path A: the historical session sticks to
+    // its session-local overlay alias, future bare sessions still resolve
+    // through acpx (honoring `.acpxrc.json` / `~/.acpx/config.json` overrides).
+    expect((configAfter.agents as Record<string, Record<string, unknown>>).kimi!.argv)
+      .toBeUndefined();
+    const stateAfter = await readJson(statePath);
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_acpx_agent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
+    expect(sessionAfter.transport_agent_argv).toEqual(["kimi", "acp"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("issue 1 v5: historical custom argv is left untouched (no global write, no session-local write)", async () => {
+  // Reviewer finding (v6): a historical custom argv (proven by an acpx
+  // record) must not become the global agents.<name>.argv when it does not
+  // match the CURRENT driver's default launch — that would re-key every
+  // future session of the agent. It must also NOT be written as a
+  // session-local `transport_agent_argv`: without a matching
+  // `transport_acpx_agent` + provisioned overlay, resolveLaunchSpec step 2
+  // cannot use it and the raw command keeps failing closed on Windows, so
+  // the state write would be pure noise on top of the fail-closed command
+  // it discards. The session is left untouched (fail closed).
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transportSession = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transportSession, "kimi acp", ["kimi", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "foo", workspace: "demo",
+          transport_session: transportSession,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    // Agent foo now uses driver qwen (default ["qwen","acp"]) — the
+    // historical session was launched under kimi. Elevating it would
+    // permanently re-key every future foo session to kimi.
+    const configBefore = JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { foo: { driver: "qwen" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    });
+    await writeFile(configPath, configBefore);
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+    });
     expect(result.migrated).toEqual([]);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatch(/config\.json patch failed.*simulated EIO/);
+    expect(result.configUpdates).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.alias).toBe("relay:demo");
+    expect(result.skipped[0]!.reason).toMatch(/does not match the current driver's default launch/);
+    // No partial state write: the session keeps its raw command (fail
+    // closed on Windows until the user migrates manually).
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_agent_argv).toBeUndefined();
+    expect(sessionAfter.transport_agent_command).toBe("kimi acp");
+    // Config byte-for-byte unchanged.
+    expect(await readFile(configPath, "utf8")).toBe(configBefore);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("pure: single-token non-lossless command (windows path) is not blindly backfilled", () => {
+  // Reviewer finding (v6): `[command]` is only lossless when the canonical
+  // identity round-trips. "C:\\tools\\agent.exe" renders JSON-quoted, so
+  // writing it as argv would re-key the acpx record. Without a provable
+  // source the session must fail closed.
+  const command = "C:\\tools\\agent.exe";
+  const result = evaluateStateSessionArgvMigration(
+    sessionFixture({ transport_agent_command: command }),
+    { driver: "kimi" },
+    undefined,
+  );
+  expect(result.status).toBe("rejected");
+  expect(result.reason).toMatch(/cannot prove identity/);
+  // Even a self-consistent record cannot prove a lossless conversion for a
+  // non-lossless raw command (identity of [command] != command).
+  const withRecord = evaluateStateSessionArgvMigration(
+    sessionFixture({ transport_agent_command: command }),
+    { driver: "kimi" },
+    [command],
+  );
+  expect(withRecord.status).toBe("rejected");
+});
+
+test("io: single-token non-lossless command consults the acpx record (no whitespace early-return)", async () => {
+  // Reviewer finding (v6): the acpx-record reader must not skip
+  // single-token commands outright. For a non-lossless token the record is
+  // the only remaining proof source (it fails closed here, which is the
+  // correct outcome) — but the reader has to actually be consulted, not
+  // short-circuited by a whitespace check.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transportSession = "demo:relay:demo:reset-1";
+    let recordCalls = 0;
+    const readAcpxRecord: AcpxRecordReader = async (transport, expectedCommand) => {
+      recordCalls += 1;
+      expect(transport).toBe(transportSession);
+      expect(expectedCommand).toBe("C:\\tools\\agent.exe");
+      return null;
+    };
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "kimi", workspace: "demo",
+          transport_session: transportSession,
+          transport_agent_command: "C:\\tools\\agent.exe",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir,
+      readAcpxRecord, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+    });
+    expect(recordCalls).toBe(1);
+    expect(result.migrated).toEqual([]);
+    expect(result.configUpdates).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.reason).toMatch(/cannot prove identity/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+
+
+test("issue 1 v7: derived-launch default (resolver source=derived) is never elevated into explicit argv", async () => {
+  // The resolver reports the planned argv as a DERIVED launch (managed pin /
+  // hermes shim / local fallback). Even though it matches the current
+  // default, writing it into explicit agents.<name>.argv would make step 3
+  // permanently win over step 5 — freezing a launch that resolveLaunchSpec
+  // deliberately recomputes on restart. Elevation must be refused.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transportSession = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transportSession, "opencode acp", ["opencode", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "foo", workspace: "demo",
+          transport_session: transportSession,
+          transport_agent_command: "opencode acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    const configBefore = JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { foo: { driver: "opencode" } },
+      workspaces: { demo: { cwd: "C:\demo" } },
+      later: { defaultMode: "temp" },
+    });
+    await writeFile(configPath, configBefore);
+    const stateBefore = await readFile(statePath, "utf8");
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      acpxConfigPath: join(dir, "acpx-config.json"),
+      resolveDefaultArgv: (n: string) =>
+        n === "foo"
+          ? { argv: ["opencode", "acp"], source: "derived" }
+          : defaultArgvResolver(n),
+    });
+
+    expect(result.migrated).toEqual([]);
+    expect(result.configUpdates).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.reason).toMatch(/derived launch/);
+    expect(await readFile(configPath, "utf8")).toBe(configBefore);
+    expect(await readFile(statePath, "utf8")).toBe(stateBefore);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("issue 1 v7: production managed codex pin (derived) is NOT elevated, no overlay provisioned", async () => {
+  // No resolver injection: the PRODUCTION computeDefaultAgentArgv must
+  // classify the managed codex npx pin as source=derived and refuse to write
+  // it into agents.codex.argv — otherwise a later adapter-version bump would
+  // be permanently shadowed by the frozen explicit argv.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const codexArgv = resolveManagedAdapterArgv("codex")!;
+    const codexCommand = resolveManagedAdapterCommand("codex")!;
+    const transportSession = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transportSession, codexCommand, codexArgv);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "codex", workspace: "demo",
+          transport_session: transportSession,
+          transport_agent_command: codexCommand,
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    const configBefore = JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { codex: { driver: "codex" } },
+      workspaces: { demo: { cwd: "C:\demo" } },
+      later: { defaultMode: "temp" },
+    });
+    await writeFile(configPath, configBefore);
+    const stateBefore = await readFile(statePath, "utf8");
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      acpxConfigPath: join(dir, "acpx-config.json"),
+    });
+
+    expect(result.migrated).toEqual([]);
+    expect(result.configUpdates).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.reason).toMatch(/derived launch/);
+    expect(await readFile(configPath, "utf8")).toBe(configBefore);
+    expect(await readFile(statePath, "utf8")).toBe(stateBefore);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+
+
+
+test("issue 1 v8 (HIGH): .acpxrc.json project override is honored — migration never freezes acpx config", async () => {
+  // The reviewer's regression: xacpx writes `agents.<name>.argv` to
+  // `~/.xacpx/config.json` (the xacpx config). The migration elevates
+  // that to a structured argv which becomes a `xacpx-managed-*` alias on
+  // acpx's side. If xacpx then always launches via that alias (because
+  // `agents.<name>.argv` is set), FUTURE new sessions of the driver can
+  // never resolve through acpx's normal bare-driver path — and acpx's
+  // project-level `.acpxrc.json` (`agents.<driver>` with cwd) and
+  // global-level `~/.acpx/config.json` (`agents.<driver>`) user overrides
+  // become permanently shadowed.
+  //
+  // Under path A the migration is session-local: it writes a
+  // `xacpx-managed-*` alias + overlays into acpx's config, and persists
+  // `transport_acpx_agent` + `transport_agent_argv` on the historical
+  // session. The historical session sticks to that alias (resolveLaunchSpec
+  // step 2). NEW bare sessions of the same driver still go through bare
+  // driver resolution in acpx, which honors `.acpxrc.json` (per-cwd) and
+  // `~/.acpx/config.json` (global) overrides. So a project override
+  // installed today (or added after the migration) continues to take effect
+  // for new sessions.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transportSession = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transportSession, "kimi acp", ["kimi", "acp"]);
+    const stateBefore = {
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo",
+          agent: "kimi",
+          workspace: "demo",
+          transport_session: transportSession,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z",
+          last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    };
+    await writeFile(statePath, JSON.stringify(stateBefore));
+    const configBefore = {
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    };
+    await writeFile(configPath, JSON.stringify(configBefore));
+
+    // Tracking provisioner: record what the migration tries to overlay.
+    const overlayCalls: { alias: string; argv: string[] }[] = [];
+    const result = await migrateStateAgentArgv({
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+      provisionOverlays: async (entries) => { overlayCalls.push(...entries); },
+    });
+
+    // (a) xacpx config.json: no `agents.kimi.argv` written — global
+    // bare-driver resolution is preserved for new sessions, so they
+    // continue to honor `.acpxrc.json` project and `~/.acpx/config.json`
+    // global user overrides.
+    const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    const agentAfter = (configAfter.agents as Record<string, Record<string, unknown>>).kimi!;
+    expect(agentAfter.argv).toBeUndefined();
+    expect(agentAfter.command).toBeUndefined();
+    expect(configAfter).toEqual(configBefore);
+
+    // (b) The historical session got a session-local structured argv
+    // (alias + argv). It sticks to the alias via resolveLaunchSpec step 2.
+    expect(result.configUpdates).toEqual([]);
+    expect(result.migrated).toEqual([
+      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
+    ]);
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_acpx_agent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
+    expect(sessionAfter.transport_agent_argv).toEqual(["kimi", "acp"]);
+
+    // (c) The session overlay was provisioned into acpx's config (the
+    // content-hashed `xacpx-managed-kimi-...` alias for the session's argv).
+    expect(overlayCalls).toEqual([
+      { alias: deriveAgentAlias("kimi", ["kimi", "acp"]), argv: ["kimi", "acp"] },
+    ]);
+
+    // (d) The `.acpxrc.json` would affect NEW bare kimi sessions (not the
+    // migrated historical one, which is pinned to its alias). The migration
+    // never reads or writes acpx's config (no `acpxConfigPath` dep, no
+    // project scan) — it ONLY provisions the session overlay — so the
+    // user's project override remains authoritative for new sessions.
+    // (We do not simulate the full acpx resolution here; the absence of
+    // any global config write is the structural guarantee.)
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

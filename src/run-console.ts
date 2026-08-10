@@ -153,6 +153,17 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     if (deps.afterConsumerLockAcquired) {
       await deps.afterConsumerLockAcquired(runtime);
     }
+    // Auto-migrate recorded raw commands to structured argv NOW that the
+    // runtime ownership lock is held. buildApp loads config/state before the
+    // lock (and SessionService is constructed there), so running the migration
+    // inline during buildApp would race a concurrent `xacpx migrate argv` and
+    // boot with a stale in-memory copy. Here we are the only writer; the
+    // migration reloads config and state in place, which every reference
+    // holder (SessionService, transports, ...) observes. Must run before
+    // reconciliation / orphan sweeping / onboarding touch sessions.
+    if (runtime.autoMigrateArgv) {
+      await runtime.autoMigrateArgv();
+    }
 
     // Drain any tasks that were queued at shutdown and close stale ephemeral
     // worker sessions left over from a previous run. This must happen only
