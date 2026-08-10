@@ -1314,3 +1314,95 @@ test("command refresh preserves recorded structured launch fields", async () => 
   expect(after?.acpxAgent).toBe("xacpx-managed-custom-aaaabbbbcccc");
   expect(after?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
 });
+
+// ── immutable logical_session_id ─────────────────────────────────────────────
+
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+test("createSession assigns a fresh UUIDv4 logical_session_id and persists it", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.createSession("api-fix", "codex", "backend");
+
+  const id = state.sessions["api-fix"]?.logical_session_id;
+  expect(id).toMatch(UUID_V4_PATTERN);
+  expect(store.savedStates.at(-1)?.sessions["api-fix"]?.logical_session_id).toBe(id);
+});
+
+test("attach and attach-native paths each assign a fresh logical_session_id", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.attachSession("ext", "codex", "backend", "backend:ext");
+  await service.attachNativeSession({
+    alias: "native",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "backend:native",
+    agentSessionId: "thread-1",
+  });
+
+  const extId = state.sessions.ext?.logical_session_id;
+  const nativeId = state.sessions.native?.logical_session_id;
+  expect(extId).toMatch(UUID_V4_PATTERN);
+  expect(nativeId).toMatch(UUID_V4_PATTERN);
+  expect(extId).not.toBe(nativeId);
+});
+
+test("two aliases sharing one transport session get different logical_session_id values", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.attachSession("one", "codex", "backend", "shared-transport");
+  await service.attachSession("two", "codex", "backend", "shared-transport");
+
+  const first = state.sessions.one?.logical_session_id;
+  const second = state.sessions.two?.logical_session_id;
+  expect(first).toMatch(UUID_V4_PATTERN);
+  expect(second).toMatch(UUID_V4_PATTERN);
+  expect(first).not.toBe(second);
+});
+
+test("deleting an alias and re-creating it yields a different logical_session_id", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.createSession("api-fix", "codex", "backend");
+  const originalId = state.sessions["api-fix"]?.logical_session_id;
+  expect(originalId).toMatch(UUID_V4_PATTERN);
+
+  await service.removeSession("api-fix");
+  await service.createSession("api-fix", "codex", "backend");
+
+  const recreatedId = state.sessions["api-fix"]?.logical_session_id;
+  expect(recreatedId).toMatch(UUID_V4_PATTERN);
+  expect(recreatedId).not.toBe(originalId);
+});
+
+test("ordinary updates to an existing session keep its logical_session_id", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.createSession("api-fix", "codex", "backend");
+  const id = state.sessions["api-fix"]?.logical_session_id;
+  expect(id).toBeDefined();
+
+  await service.setDisplayName("api-fix", "API fix");
+  await service.setSessionModel("api-fix", "gpt-5.2");
+  await service.setSessionEffort("api-fix", "high");
+  await service.setSessionTransportAgentCommand("api-fix", "custom-acp-adapter");
+  await service.useSession("wx:user", "api-fix");
+  await service.setArchived("api-fix", true);
+  await service.setArchived("api-fix", false);
+
+  expect(state.sessions["api-fix"]?.logical_session_id).toBe(id);
+  for (const saved of store.savedStates) {
+    expect(saved.sessions["api-fix"]?.logical_session_id).toBe(id);
+  }
+});

@@ -607,6 +607,11 @@ function warnStateLoadReport(
   if (report.backupError) {
     writeStderr(`[xacpx] state.quarantine_backup_failed ${report.backupError}\n`);
   }
+  for (const record of report.migrated ?? []) {
+    writeStderr(
+      `[xacpx] state.session_id_migrated section=${record.section}${record.key ? ` key=${record.key}` : ""} reason=${record.reason}\n`,
+    );
+  }
 }
 
 async function runOnboardingBeforeStart(input: {

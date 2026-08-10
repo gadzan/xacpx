@@ -1,5 +1,5 @@
 import { expect, mock, test, beforeEach, afterAll } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join, normalize } from "node:path";
 import { homedir, tmpdir } from "node:os";
 
@@ -2846,3 +2846,98 @@ test("config hot reload provisions overlays for newly added agents", async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── legacy logical_session_id startup migration ──────────────────────────────
+
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function legacyStateJson() {
+  return JSON.stringify({
+    sessions: {
+      legacy: {
+        alias: "legacy",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:legacy",
+        created_at: "2026-08-01T00:00:00.000Z",
+        last_used_at: "2026-08-01T00:00:00.000Z",
+      },
+    },
+    chat_contexts: {},
+  });
+}
+
+// buildApp boots the full runtime; under full-suite parallel load the default
+// 5s test timeout is not enough headroom even though the migration itself is
+// a single atomic write (isolated runs finish in ~30ms).
+test("buildApp durably migrates legacy sessions missing logical_session_id before serving", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-main-migrate-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await writeFile(statePath, legacyStateJson());
+
+    const runtime = await buildApp({ configPath, statePath });
+
+    // the id is already durable by the time buildApp resolves
+    const onDisk = JSON.parse(await readFile(statePath, "utf8")) as {
+      sessions: Record<string, { logical_session_id?: string }>;
+    };
+    const migratedId = onDisk.sessions.legacy?.logical_session_id;
+    expect(migratedId).toMatch(UUID_V4_PATTERN);
+    await runtime.dispose();
+
+    // a second startup keeps the same id
+    const second = await buildApp({ configPath, statePath });
+    const onDiskAgain = JSON.parse(await readFile(statePath, "utf8")) as {
+      sessions: Record<string, { logical_session_id?: string }>;
+    };
+    expect(onDiskAgain.sessions.legacy?.logical_session_id).toBe(migratedId);
+    await second.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);
+
+// chmod-based read-only directories are a Unix-only seam: Windows ACLs do not
+// map onto mode bits, so the migration save would succeed there.
+const itUnix = process.platform === "win32" ? test.skip : test;
+
+// The lockfile writer retries EACCES with backoff (~8s) before surfacing the
+// failure, so this test needs a generous timeout.
+itUnix("buildApp fails and publishes no temporary ids when the migration save cannot be persisted", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-main-migrate-fail-"));
+  const stateDir = join(dir, "readonly-state");
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(stateDir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await mkdir(stateDir, { recursive: true });
+    const raw = legacyStateJson();
+    await writeFile(statePath, raw);
+    await chmod(stateDir, 0o555);
+
+    // startup must fail closed: no state (and therefore no channel/plugin)
+    // may run on an in-memory-only logical_session_id
+    await expect(buildApp({ configPath, statePath })).rejects.toThrow();
+    expect(await readFile(statePath, "utf8")).toBe(raw);
+  } finally {
+    await chmod(stateDir, 0o755).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import {
@@ -165,6 +165,9 @@ export class SessionService {
       agent,
       workspace,
       transport_session: transportSession,
+      // Transient (never persisted by this method): carry the live session's id
+      // when one exists; the placeholder is discarded on the next real create.
+      logical_session_id: existing?.logical_session_id ?? randomUUID(),
       transport_agent_command: sameAgentExisting?.transport_agent_command,
       transport_acpx_agent: sameAgentExisting?.transport_acpx_agent,
       transport_agent_argv: sameAgentExisting?.transport_agent_argv,
@@ -1048,6 +1051,10 @@ export class SessionService {
         agent,
         workspace,
         transport_session: transportSession,
+        // Fresh immutable identity for every create/attach. Deliberately NOT
+        // carried over from an existing same-alias record: a deleted/recreated
+        // alias is a new logical session and must get a new id.
+        logical_session_id: randomUUID(),
         source: native?.source,
         agent_session_id: native?.agentSessionId,
         agent_session_title: native?.title ?? undefined,

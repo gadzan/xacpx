@@ -385,6 +385,19 @@ function applyStateInspectionReport(
     return result;
   }
 
+  const migrated = report.migrated ?? [];
+  const migrationDetails = migrated.map((record) =>
+    `legacy session record ${record.section}["${record.key}"]: ${record.reason} (applied automatically at next daemon startup)`,
+  );
+  if (report.dropped.length === 0) {
+    // Migration-only: nothing is corrupt, so no quarantine warning and no fix —
+    // just make the pending automatic id migration visible.
+    return {
+      ...result,
+      details: [...(result.details ?? []), `state path: ${statePath}`, ...migrationDetails],
+    };
+  }
+
   const fileCorrupt = report.dropped.some((record) => record.section === "file");
   const details = [
     ...(result.details ?? []),
@@ -394,6 +407,7 @@ function applyStateInspectionReport(
         ? `state.json is unreadable: ${record.reason}`
         : `invalid state record ${record.section}["${record.key}"]: ${record.reason}`,
     ),
+    ...migrationDetails,
   ];
 
   return {
@@ -448,9 +462,11 @@ function createStateQuarantineFix(
         return { ok: true, message: `state.json was unreadable; renamed to ${report.corruptPath} and reset` };
       }
       const backup = report.quarantinePath ? ` (original backed up to ${report.quarantinePath})` : "";
+      const migratedCount = report.migrated?.length ?? 0;
+      const migration = migratedCount > 0 ? `; assigned logical_session_id to ${migratedCount} legacy session record(s)` : "";
       return {
         ok: true,
-        message: `quarantined ${report.dropped.length} invalid state.json record(s)${backup}`,
+        message: `quarantined ${report.dropped.length} invalid state.json record(s)${backup}${migration}`,
       };
     },
   };

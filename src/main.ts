@@ -287,6 +287,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         message: stateLoadReport.backupError,
       });
     }
+    for (const record of stateLoadReport.migrated ?? []) {
+      await logger.info("state.session_id_migrated", "assigned a new logical_session_id to a legacy session record", {
+        statePath: paths.statePath,
+        section: record.section,
+        key: record.key,
+        reason: record.reason,
+      });
+    }
   }
   const stateMutex = new AsyncMutex();
   const debouncedStateStore = new DebouncedStateStore({

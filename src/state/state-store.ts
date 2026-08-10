@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 
 import { writePrivateFileAtomic } from "../util/private-file.js";
-import { createEmptyState, type AppState } from "./types";
+import { createEmptyState, type AppState, type LogicalSession } from "./types";
 import type { ScheduledTaskRecord, ScheduledTaskStatus } from "../scheduled/scheduled-types";
 import {
   createEmptyOrchestrationState,
@@ -43,6 +44,12 @@ export interface StateLoadDroppedRecord {
 
 export interface StateLoadReport {
   dropped: StateLoadDroppedRecord[];
+  /**
+   * Legacy session records that were assigned a fresh logical_session_id
+   * during load. Kept separate from {@link dropped}: a migrated record is
+   * healthy and survives, a dropped record is corrupt and was removed.
+   */
+  migrated?: StateLoadDroppedRecord[];
   /** Backup copy of the original file, written because records were dropped. */
   quarantinePath?: string;
   /** Unreadable original renamed aside (whole-file JSON corruption). */
@@ -514,11 +521,26 @@ function isReplyMode(value: unknown): value is AppState["sessions"][string]["rep
   return value === "stream" || value === "final" || value === "verbose";
 }
 
+/**
+ * A logical_session_id is always a UUIDv4 (randomUUID). Present-but-invalid
+ * values are treated as corruption and quarantined with the record; only a
+ * genuinely MISSING field (legacy record) enters the load-time migration.
+ */
+export function isLogicalSessionId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
 function isSessionSource(value: unknown): value is AppState["sessions"][string]["source"] {
   return value === undefined || value === "weacpx" || value === "xacpx" || value === "agent-side";
 }
 
-function isSessionRecord(value: unknown): value is AppState["sessions"][string] {
+/** A parsed session record: legacy files may genuinely lack logical_session_id. */
+type MaybeLegacySession = Omit<LogicalSession, "logical_session_id"> & { logical_session_id?: string };
+
+function isSessionRecord(value: unknown): value is MaybeLegacySession {
   if (!isRecord(value)) {
     return false;
   }
@@ -528,6 +550,7 @@ function isSessionRecord(value: unknown): value is AppState["sessions"][string] 
     isString(value.agent) &&
     isString(value.workspace) &&
     isString(value.transport_session) &&
+    (value.logical_session_id === undefined || isLogicalSessionId(value.logical_session_id)) &&
     isSessionSource(value.source) &&
     isOptionalString(value.agent_session_id) &&
     isOptionalString(value.agent_session_title) &&
@@ -547,6 +570,7 @@ function isSessionRecord(value: unknown): value is AppState["sessions"][string] 
 function parseSessions(
   raw: Record<string, unknown>,
   dropped: StateLoadDroppedRecord[],
+  migrated: StateLoadDroppedRecord[],
 ): AppState["sessions"] {
   const sessions: AppState["sessions"] = {};
   for (const [alias, value] of Object.entries(raw)) {
@@ -554,7 +578,22 @@ function parseSessions(
       dropped.push({ section: "sessions", key: alias, reason: "malformed session record" });
       continue;
     }
-    sessions[alias] = value;
+    if (value.logical_session_id === undefined) {
+      // Legacy record from before logical_session_id existed: assign a fresh
+      // UUIDv4 exactly once. StateStore.load() persists this synchronously
+      // before returning (failing closed when the save fails); inspect() keeps
+      // it in-memory only. Reports list this under `migrated`, never under
+      // `dropped` — a migration is not a quarantined corrupt record.
+      migrated.push({
+        section: "sessions",
+        key: alias,
+        reason: "legacy record missing logical_session_id; assigned a new UUIDv4",
+      });
+    }
+    sessions[alias] = {
+      ...value,
+      logical_session_id: value.logical_session_id ?? randomUUID(),
+    };
   }
   return sessions;
 }
@@ -695,12 +734,13 @@ export function parseState(
   raw: unknown,
   path: string,
   dropped: StateLoadDroppedRecord[] = [],
+  migrated: StateLoadDroppedRecord[] = [],
 ): AppState {
   if (!isRecord(raw)) {
     throw new Error(`state file "${path}" must contain a JSON object`);
   }
 
-  const parsedSessions = parseSessions(sectionRecord(raw.sessions, "sessions", dropped), dropped);
+  const parsedSessions = parseSessions(sectionRecord(raw.sessions, "sessions", dropped), dropped, migrated);
   const orchestration = parseOrchestrationState(raw.orchestration, dropped);
   repairExternalCoordinatorIdentityCollisions(parsedSessions, orchestration, dropped);
 
@@ -774,6 +814,11 @@ export interface StateStoreOptions {
    * writer suffix-retries instead of overwriting an existing backup).
    */
   writeBackup?: (targetPath: string, content: string) => Promise<string | void>;
+  /**
+   * Injectable durable writer for the legacy logical_session_id migration
+   * (tests simulate write failures). Defaults to the regular atomic save.
+   */
+  writeMigration?: (state: AppState) => Promise<void>;
 }
 
 /** Result of a side-effect-free {@link StateStore.inspect}. */
@@ -786,7 +831,13 @@ export interface StateLoadInspection {
 type ParsedStateFile =
   | { kind: "absent" }
   | { kind: "corrupt"; reason: string }
-  | { kind: "parsed"; state: AppState; dropped: StateLoadDroppedRecord[]; content: string };
+  | {
+      kind: "parsed";
+      state: AppState;
+      dropped: StateLoadDroppedRecord[];
+      migrated: StateLoadDroppedRecord[];
+      content: string;
+    };
 
 export class StateStore {
   private loadReport: StateLoadReport | null = null;
@@ -815,32 +866,52 @@ export class StateStore {
     if (read.kind === "corrupt") {
       return await this.recoverFromCorruptFile(read.reason);
     }
-    if (read.dropped.length === 0) {
+    if (read.dropped.length === 0 && read.migrated.length === 0) {
       // Happy path: no report, no backup I/O.
       return read.state;
     }
 
-    // Something was dropped/repaired. Back up the ORIGINAL bytes before
-    // returning: debounced saves fire shortly after load and would otherwise
-    // overwrite the only copy of the quarantined records.
     const report: StateLoadReport = { dropped: read.dropped };
-    const quarantinePath = `${this.path}.quarantine-${this.fileTimestamp()}`;
-    try {
-      const written = await (this.options.writeBackup ?? defaultWriteBackup)(quarantinePath, read.content);
-      report.quarantinePath = typeof written === "string" ? written : quarantinePath;
-    } catch (error) {
-      // Best-effort: losing the backup must not re-introduce the startup brick.
-      report.backupError = error instanceof Error ? error.message : String(error);
+    if (read.migrated.length > 0) {
+      report.migrated = read.migrated;
     }
+
+    if (read.dropped.length > 0) {
+      // Something was dropped/repaired. Back up the ORIGINAL bytes before
+      // returning: debounced saves fire shortly after load and would otherwise
+      // overwrite the only copy of the quarantined records.
+      const quarantinePath = `${this.path}.quarantine-${this.fileTimestamp()}`;
+      try {
+        const written = await (this.options.writeBackup ?? defaultWriteBackup)(quarantinePath, read.content);
+        report.quarantinePath = typeof written === "string" ? written : quarantinePath;
+      } catch (error) {
+        // Best-effort: losing the backup must not re-introduce the startup brick.
+        report.backupError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    if (read.migrated.length > 0) {
+      // Durable, fail-closed migration: newly assigned logical_session_id
+      // values must reach disk BEFORE any caller sees the state. If this save
+      // fails, load() rejects (buildApp then fails and no channel/plugin
+      // starts) rather than publishing in-memory-only temporary ids.
+      await this.persistMigration(read.state);
+    }
+
     this.loadReport = report;
     return read.state;
   }
 
+  /** Synchronous (awaited) atomic write of a migrated state, via the private-file writer. */
+  private async persistMigration(state: AppState): Promise<void> {
+    await (this.options.writeMigration ?? ((next: AppState) => this.save(next)))(state);
+  }
+
   /**
    * Side-effect-free variant of load() for diagnostic callers (doctor): parses
-   * and reports exactly what load() would drop/repair, but never writes a
-   * quarantine backup, never renames a corrupt file, and does not touch
-   * {@link lastLoadReport}.
+   * and reports exactly what load() would drop/repair/migrate, but never writes
+   * a quarantine backup, never renames a corrupt file, never persists pending
+   * logical_session_id migrations, and does not touch {@link lastLoadReport}.
    */
   async inspect(): Promise<StateLoadInspection> {
     const read = await this.readAndParse();
@@ -855,7 +926,13 @@ export class StateStore {
     }
     return {
       state: read.state,
-      report: read.dropped.length > 0 ? { dropped: read.dropped } : null,
+      report:
+        read.dropped.length > 0 || read.migrated.length > 0
+          ? {
+              dropped: read.dropped,
+              ...(read.migrated.length > 0 ? { migrated: read.migrated } : {}),
+            }
+          : null,
     };
   }
 
@@ -887,7 +964,8 @@ export class StateStore {
     }
 
     const dropped: StateLoadDroppedRecord[] = [];
-    return { kind: "parsed", state: parseState(parsed, this.path, dropped), dropped, content };
+    const migrated: StateLoadDroppedRecord[] = [];
+    return { kind: "parsed", state: parseState(parsed, this.path, dropped, migrated), dropped, migrated, content };
   }
 
   async save(state: AppState): Promise<void> {
