@@ -44,7 +44,10 @@ export class SessionControlService {
    * ensure acpx named session → verify → bind logical session → refresh agent
    * command), with no chat reply/progress. Used by the relay control surface so a
    * dashboard-created session is immediately promptable, exactly like `/ss new`.
-   * `internalAlias` must already be channel-scoped (e.g. "relay:demo").
+   * `internalAlias` must already be channel-scoped (e.g. "relay:demo"). When the
+   * desired alias is already taken (by an active OR archived session), a numeric
+   * suffix (`-2`, `-3`, …) is automatically appended; the caller can inspect the
+   * returned session's `alias` field to find the final choice.
    */
   async createSessionWithTransport(
     internalAlias: string,
@@ -52,18 +55,16 @@ export class SessionControlService {
     workspace: string,
     model?: string,
   ): Promise<ResolvedSession> {
-    // Refuse to overwrite an existing alias: silently re-pointing it would either
-    // reuse the old transport session (stale history) or orphan it, and a native
-    // session's agent_session_id would be silently dropped. Mirrors handleSessionNew.
-    const releaseAliasReservation = this.sessions.tryReserveNewSessionAlias(internalAlias);
-    if (!releaseAliasReservation) {
-      throw new Error(`session "${internalAlias}" already exists`);
+    const reserved = this.sessions.tryReserveFreeSessionAlias(internalAlias);
+    if (!reserved) {
+      throw new Error(`session "${internalAlias}" already exists and could not derive a free alias`);
     }
+    const { alias: finalInternalAlias, release: releaseAliasReservation } = reserved;
 
     try {
-      const stableTransportSession = `${workspace}:${internalAlias}`;
+      const stableTransportSession = `${workspace}:${finalInternalAlias}`;
       const session = this.sessions.resolveSession(
-        internalAlias,
+        finalInternalAlias,
         agent,
         workspace,
         this.sessions.buildFreshTransportSession(stableTransportSession),
@@ -86,7 +87,7 @@ export class SessionControlService {
           throw new Error(`transport session "${session.transportSession}" could not be verified`);
         }
         await this.sessions.attachSession(
-          internalAlias,
+          finalInternalAlias,
           agent,
           workspace,
           session.transportSession,
@@ -95,16 +96,16 @@ export class SessionControlService {
           session.agentArgv,
         );
         if (normalizedModel) {
-          await this.sessions.setSessionModel(internalAlias, normalizedModel);
+          await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
         }
         // Best-effort: a transient refresh failure must not fail a create that has
         // already succeeded, bound, and verified. Mirrors the chat paths' use of
         // refreshSessionTransportAgentCommandBestEffort.
         try {
-          await this.invoker.refreshSessionTransportAgentCommand(internalAlias);
+          await this.invoker.refreshSessionTransportAgentCommand(finalInternalAlias);
         } catch (error) {
           await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
-            alias: internalAlias,
+            alias: finalInternalAlias,
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -279,6 +280,9 @@ export class SessionControlService {
    * web counterpart of `/ssn` → select. Mirrors createSessionWithTransport but resumes
    * the given agentSessionId and records the binding as a native ("agent-side")
    * attachment. `internalAlias` must already be channel-scoped (e.g. "relay:demo").
+   * When the desired alias is already taken (by an active OR archived session), a
+   * numeric suffix is automatically appended; inspect the returned session's `alias`
+   * to see the final name.
    */
   async attachNativeSessionWithTransport(
     internalAlias: string,
@@ -290,16 +294,17 @@ export class SessionControlService {
     if (!this.transport.resumeAgentSession) {
       throw new Error("the active transport does not support native sessions");
     }
-    const releaseAliasReservation = this.sessions.tryReserveNewSessionAlias(internalAlias);
-    if (!releaseAliasReservation) {
-      throw new Error(`session "${internalAlias}" already exists`);
+    const reserved = this.sessions.tryReserveFreeSessionAlias(internalAlias);
+    if (!reserved) {
+      throw new Error(`session "${internalAlias}" already exists and could not derive a free alias`);
     }
+    const { alias: finalInternalAlias, release: releaseAliasReservation } = reserved;
     try {
       const session = this.sessions.resolveSession(
-        internalAlias,
+        finalInternalAlias,
         agent,
         workspace,
-        `${workspace}:${internalAlias}`,
+        `${workspace}:${finalInternalAlias}`,
       );
       const release = await this.reserveLogicalTransportSession(session.transportSession);
       try {
@@ -309,7 +314,7 @@ export class SessionControlService {
           throw new Error(`transport session "${session.transportSession}" could not be verified`);
         }
         await this.sessions.attachNativeSession({
-          alias: internalAlias,
+          alias: finalInternalAlias,
           agent,
           workspace,
           transportSession: session.transportSession,
@@ -323,10 +328,10 @@ export class SessionControlService {
         // Best-effort: a transient refresh failure must not fail an attach that already
         // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
         try {
-          await this.invoker.refreshSessionTransportAgentCommand(internalAlias);
+          await this.invoker.refreshSessionTransportAgentCommand(finalInternalAlias);
         } catch (error) {
           await this.logger.error("session.native.agent_command_refresh_failed", "failed to refresh native session agent command", {
-            alias: internalAlias,
+            alias: finalInternalAlias,
             error: error instanceof Error ? error.message : String(error),
           });
         }

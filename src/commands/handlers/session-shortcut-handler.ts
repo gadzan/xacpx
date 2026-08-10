@@ -45,34 +45,41 @@ export async function handleSessionShortcutCommand(
   const baseAlias = `${workspace.name}:${agent}`;
   const channelId = getChannelIdFromChatKey(chatKey);
   const scopedBase = scopeDisplayAliasToInternal(channelId, baseAlias);
-  const alias = createNew ? await allocateUniqueSessionAlias(context, scopedBase, chatKey) : scopedBase;
-  const display = toDisplaySessionAlias(alias);
+  // `allocateUniqueSessionAlias` used to do suffix derivation before alias reservation
+  // landed. Now `tryReserveFreeSessionAlias` (below) is the single source of truth for
+  // unique suffix derivation — it sees every alias including archived ones and has
+  // atomic reservation. Skip the pre-derivation on the create-new path to avoid the
+  // redundant (and in edge cases compounding) double suffix.
+  const desiredAlias = scopedBase;
+  const desiredDisplay = toDisplaySessionAlias(desiredAlias);
 
-  if (!createNew && (await hasLogicalSession(context, alias, chatKey))) {
-    await context.sessions.useSession(chatKey, alias);
+  if (!createNew && (await hasLogicalSession(context, desiredAlias, chatKey))) {
+    await context.sessions.useSession(chatKey, desiredAlias);
     await context.logger.info("session.shortcut.reused", "reused existing logical session", {
-      alias,
+      alias: desiredAlias,
       workspace: workspace.name,
       agent,
     });
     return {
       text: [
-        t().shortcut.reuseHeader(display),
+        t().shortcut.reuseHeader(desiredDisplay),
         t().shortcut.reuseWorkspace(workspace.name),
-        t().shortcut.reuseSession(display),
+        t().shortcut.reuseSession(desiredDisplay),
       ].join("\n"),
     };
   }
 
-  const releaseAliasReservation = context.sessions.tryReserveNewSessionAlias(alias);
-  if (!releaseAliasReservation) {
-    return renderShortcutSessionCreationError(workspace, display);
+  const reserved = context.sessions.tryReserveFreeSessionAlias(desiredAlias);
+  if (!reserved) {
+    return renderShortcutSessionCreationError(workspace, desiredDisplay);
   }
+  const { alias: finalAlias, release: releaseAliasReservation } = reserved;
+  const finalDisplay = toDisplaySessionAlias(finalAlias);
 
   try {
-    const stableTransportSession = channelId === "weixin" ? alias : context.sessions.buildDefaultTransportSessionForChat(chatKey, display);
+    const stableTransportSession = channelId === "weixin" ? finalAlias : context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplay);
     const session = ops.resolveSession(
-      alias,
+      finalAlias,
       agent,
       workspace.name,
       context.sessions.buildFreshTransportSession(stableTransportSession),
@@ -83,15 +90,15 @@ export async function handleSessionShortcutCommand(
         await ops.ensureTransportSession(session);
         const exists = await ops.checkTransportSession(session);
         if (!exists) {
-          return renderShortcutSessionCreationError(workspace, display);
+          return renderShortcutSessionCreationError(workspace, finalDisplay);
         }
       } catch (err) {
         if (err instanceof AutoInstallFailedError) throw err;
-        return renderShortcutSessionCreationError(workspace, display);
+        return renderShortcutSessionCreationError(workspace, finalDisplay);
       }
 
       await context.sessions.attachSession(
-        alias,
+        finalAlias,
         agent,
         workspace.name,
         session.transportSession,
@@ -99,17 +106,17 @@ export async function handleSessionShortcutCommand(
         session.acpxAgent,
         session.agentArgv,
       );
-      await context.sessions.useSession(chatKey, alias);
+      await context.sessions.useSession(chatKey, finalAlias);
       try {
-        await ops.refreshSessionTransportAgentCommand(alias);
+        await ops.refreshSessionTransportAgentCommand(finalAlias);
       } catch (error) {
         await context.logger.error("session.shortcut.agent_command_refresh_failed", "failed to refresh session agent command", {
-          alias,
+          alias: finalAlias,
           error: error instanceof Error ? error.message : String(error),
         });
       }
       await context.logger.info("session.shortcut.created", "created new logical session from shortcut", {
-        alias,
+        alias: finalAlias,
         workspace: workspace.name,
         agent,
         workspaceReused: workspace.reused,
@@ -117,11 +124,11 @@ export async function handleSessionShortcutCommand(
 
       return {
         text: [
-          t().shortcut.createdHeader(display),
+          t().shortcut.createdHeader(finalDisplay),
           workspace.reused
             ? t().shortcut.createdReusedWorkspace(workspace.name)
             : t().shortcut.createdNewWorkspace(workspace.name, workspace.cwd),
-          t().shortcut.createdNewSession(display),
+          t().shortcut.createdNewSession(finalDisplay),
         ].join("\n"),
       };
     } finally {

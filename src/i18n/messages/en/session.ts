@@ -22,6 +22,8 @@ export const session: SessionMessages = {
       `Session "${alias}" already exists (${agent} @ ${workspace}).`,
       `Switch to it with /use ${alias}, or remove it first with /session rm ${alias}.`,
     ].join("\n"),
+  sessionAliasCollided: (desiredAlias, finalAlias) =>
+    `The requested name "${desiredAlias}" is already in use (by an archived session). Creating the new session as "${finalAlias}" instead.`,
   sessionAttachNotFound: (alias, agent, workspace) =>
     [
       "No existing session found to attach.",

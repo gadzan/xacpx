@@ -207,12 +207,57 @@ async function attachNativeSession(
     };
   }
 
+  const channelId = getChannelIdFromChatKey(chatKey);
   const requestedAlias = alias?.trim() || buildDefaultNativeAlias(nativeTarget.agent, session.sessionId);
-  const displayAlias = await allocateUniqueNativeAlias(context, chatKey, requestedAlias);
-  const internalAlias = scopeDisplayAliasToInternal(getChannelIdFromChatKey(chatKey), displayAlias);
-  const transportSession = context.sessions.buildDefaultTransportSessionForChat(chatKey, displayAlias);
-  const resolvedSession = context.lifecycle.resolveSession(internalAlias, nativeTarget.agent, nativeTarget.workspace, transportSession);
-  const releaseReservation = await context.lifecycle.reserveTransportSession(resolvedSession.transportSession);
+
+  // `allocateUniqueNativeAlias` already checks both logical alias visibility AND the
+  // transport-session non-sharing constraint that native attaches require, but it
+  // has no atomic reservation step. To close the TOCTOU gap between allocation and
+  // the alias being claimed, re-run derivation bounded times and fall back to the
+  // generic logical-only reserve on the last attempt (the transport uniqueness
+  // check is best-effort, never a correctness contract — colliding transport
+  // sessions are just a perf footgun, not a data-loss bug).
+  let reserved: { alias: string; release: () => void } | null = null;
+  let finalDisplayAlias = requestedAlias;
+  // Each iteration re-runs allocateUniqueNativeAlias to pick a fresh transport-unique
+  // display name (it handles its own suffix derivation internally). The retry exists
+  // because between its `listSessions`-based check and our atomic alias reserve,
+  // another concurrent attach could have claimed the slot — on the next attempt
+  // allocateUniqueNativeAlias will see the newly-claimed row and move the suffix on
+  // its own. We must NOT manually prepend `-N` to the requested alias here, or the
+  // two suffix-derivation layers would compound (`xxx-2-2` style).
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidateDisplay = await allocateUniqueNativeAlias(context, chatKey, requestedAlias);
+    const candidateInternal = scopeDisplayAliasToInternal(channelId, candidateDisplay);
+    const release = context.sessions.tryReserveNewSessionAlias(candidateInternal);
+    if (release) {
+      reserved = { alias: candidateInternal, release };
+      finalDisplayAlias = candidateDisplay;
+      break;
+    }
+  }
+  // Fallback: the transport-unique derivation above kept losing the TOCTOU race.
+  // Drop to a logical-only free reservation (the transport uniqueness constraint is
+  // advisory for native attach, never a correctness barrier).
+  let finalInternalAlias: string;
+  let releaseAliasReservation: () => void;
+  if (reserved) {
+    finalInternalAlias = reserved.alias;
+    releaseAliasReservation = reserved.release;
+  } else {
+    const desiredInternal = scopeDisplayAliasToInternal(channelId, finalDisplayAlias);
+    const free = context.sessions.tryReserveFreeSessionAlias(desiredInternal);
+    if (!free) {
+      return { text: t().session.sessionAlreadyExists(finalDisplayAlias, nativeTarget.agent, nativeTarget.workspace) };
+    }
+    finalInternalAlias = free.alias;
+    releaseAliasReservation = free.release;
+    finalDisplayAlias = toDisplaySessionAlias(finalInternalAlias);
+  }
+
+  const transportSession = context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplayAlias);
+  const resolvedSession = context.lifecycle.resolveSession(finalInternalAlias, nativeTarget.agent, nativeTarget.workspace, transportSession);
+  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(resolvedSession.transportSession);
 
   try {
     try {
@@ -226,7 +271,7 @@ async function attachNativeSession(
     }
 
     await context.sessions.attachNativeSession({
-      alias: internalAlias,
+      alias: finalInternalAlias,
       agent: nativeTarget.agent,
       workspace: nativeTarget.workspace,
       transportSession,
@@ -237,14 +282,18 @@ async function attachNativeSession(
       title: session.title,
       updatedAt: session.updatedAt,
     });
-    await context.sessions.useSession(chatKey, internalAlias);
-    await refreshAgentCommandBestEffort(context, internalAlias);
+    await context.sessions.useSession(chatKey, finalInternalAlias);
+    await refreshAgentCommandBestEffort(context, finalInternalAlias);
 
     return {
-      text: t().nativeSession.attachedAndSwitched(target.agentDisplayName, toDisplaySessionAlias(internalAlias)),
+      text: t().nativeSession.attachedAndSwitched(target.agentDisplayName, toDisplaySessionAlias(finalInternalAlias)),
     };
   } finally {
-    await releaseReservation();
+    try {
+      await releaseTransportReservation();
+    } finally {
+      releaseAliasReservation();
+    }
   }
 }
 
