@@ -4,11 +4,9 @@ import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/re
 import {
   classifyRecordedPreinstalledAdapterCommand,
   isManagedAdapterCommand,
-  isManagedAdapterId,
-  MANAGED_ADAPTERS,
 } from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
-import { renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
+import { isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
@@ -1157,38 +1155,4 @@ export class SessionService {
       throw new Error(t().misc.agentNotRegistered(agent));
     }
   }
-}
-
-/** Derived argv (managed adapter pin, hermes shim, local fallback) is recomputed
- * from the current config on restart; only custom argv survives in state. */
-function isDerivedAgentArgv(
-  driver: string,
-  argv: string[] | undefined,
-  runtimeRoot: string,
-  platform: NodeJS.Platform,
-): boolean {
-  if (!argv || argv.length === 0) {
-    return false;
-  }
-  if (isManagedAdapterId(driver)) {
-    const spec = MANAGED_ADAPTERS[driver];
-    return (
-      (
-        argv[0] === "npx" &&
-        argv[1] === "-y" &&
-        argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
-      ) ||
-      classifyRecordedPreinstalledAdapterCommand(renderAgentArgvIdentity(argv), {
-        runtimeRoot,
-        platform,
-      }) === driver
-    );
-  }
-  if (driver === "hermes") {
-    return argv[1]?.includes("hermes-acp-shim.") === true;
-  }
-  if (driver === "opencode" || driver === "kilocode") {
-    return argv.length === 2 && argv[0] === driver && argv[1] === "acp";
-  }
-  return false;
 }

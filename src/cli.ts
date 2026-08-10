@@ -458,6 +458,19 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
       // mcp-stdio runs as an acpx-spawned child: prefer the parent-injected XACPX_LANG over config.
       setLocale(resolveLocale({ configLanguage: process.env.XACPX_LANG }));
       return await (deps.mcpStdio ?? ((subArgs) => defaultMcpStdio(subArgs, { stderr: deps.stderr })))(args.slice(1));
+    case "migrate": {
+      const result = await handleMigrateCli(args.slice(1), {
+        print,
+        stderr: deps.stderr ?? ((text: string) => process.stderr.write(text)),
+      });
+      if (result === null) {
+        for (const line of t().cli.helpLines) {
+          print(line);
+        }
+        return 1;
+      }
+      return result;
+    }
     case "start": {
       const controller = deps.controller ?? createDefaultController(deps);
       try {
@@ -1131,6 +1144,72 @@ async function rollbackFirstRunConfig(
 async function defaultDoctor(options: DoctorRunOptions): Promise<number> {
   const { main } = await import("./doctor/index");
   return await main(options);
+}
+
+async function handleMigrateCli(
+  args: string[],
+  deps: {
+    print: (line: string) => void;
+    stderr: (text: string) => void;
+  },
+): Promise<number | null> {
+  const subcommand = args[0];
+  if (subcommand !== "argv") {
+    return null;
+  }
+  let dryRun = false;
+  for (const token of args.slice(1)) {
+    if (token === "--dry-run") {
+      if (dryRun) return null;
+      dryRun = true;
+      continue;
+    }
+    return null;
+  }
+  return await migrateArgvCli({ print: deps.print, stderr: deps.stderr, dryRun });
+}
+
+async function migrateArgvCli(deps: {
+  print: (line: string) => void;
+  stderr: (text: string) => void;
+  dryRun: boolean;
+}): Promise<number> {
+  const configPath = resolveConfigPathForCurrentEnv();
+  const statePath = (await import("./main")).resolveRuntimePaths().statePath;
+  const { createNoopAppLogger } = await import("./logging/app-logger");
+  // No daemon app-logger on the CLI path; surface migration results directly
+  // to the operator so they aren't lost in a log file they may not check.
+  const logger = createNoopAppLogger();
+  const { migrateStateAgentArgv } = await import("./state/auto-migrate-agent-argv");
+  const result = await migrateStateAgentArgv({
+    statePath,
+    configPath,
+    logger,
+    dryRun: deps.dryRun,
+  });
+  if (deps.dryRun) {
+    deps.print(`[dry-run] would migrate ${result.migrated.length} session(s), update ${result.configUpdates.length} agent(s); ${result.skipped.length} skipped; ${result.errors.length} error(s)`);
+  } else {
+    deps.print(`migrated ${result.migrated.length} session(s), updated ${result.configUpdates.length} agent(s); ${result.skipped.length} skipped; ${result.errors.length} error(s)`);
+  }
+  for (const m of result.migrated) {
+    deps.print(`  + ${m.alias} (agent=${m.agent}, argv=${JSON.stringify(m.argv)})`);
+  }
+  for (const update of result.configUpdates) {
+    deps.print(`  config: ${update.agent}.argv = ${JSON.stringify(update.argv)}`);
+  }
+  for (const skip of result.skipped) {
+    deps.print(`  skip ${skip.alias}: ${skip.reason}`);
+  }
+  // Errors are the operator's main signal that something real went wrong
+  // (config patch failed, state write failed, etc). Daemon mode swallows them
+  // into the app log; here we want them on stderr and a non-zero exit so
+  // automation never silently hides a partial migration.
+  for (const err of result.errors) {
+    deps.stderr(`error: ${err}`);
+  }
+  const exitCode = result.errors.length > 0 || result.skipped.length > 0 ? 1 : 0;
+  return exitCode;
 }
 
 async function defaultManualOrphanKill() {

@@ -454,6 +454,35 @@ xacpx channel add <channel-type>
 
 单 token 命令（无空格，如 `"myagent.exe"`）会自动转换为 `["myagent.exe"]`。
 
+##### 启动时自动迁移
+
+以上是手动迁移的形态。实际触发坏状态的链路对用户不可见：acpx 内置默认值为多 token 的 agent（`kimi acp`、`qwen acp`、`gemini acp`、`cursor-agent acp` 等）在首次启动后都会通过 `refreshSessionTransportAgentCommand` 把 `transport_agent_command: "<driver> acp"` 写进 `state.json`。然后在 Windows 上 daemon 重启就会撞到 fail-closed 的 throw。
+
+为了让迁移真自动，每次 daemon 启动时都会在 `state.json` 加载之后、`SessionService` 构造之前跑一遍 `migrateStateAgentArgv`（[`src/state/auto-migrate-agent-argv.ts`](../../src/state/auto-migrate-agent-argv.ts)）：
+
+1. **per-agent all-or-nothing 不变量**：safety set 覆盖同一 agent 下所有**非 sticky** 的 session。三类规则：
+   - **sticky**（与 `resolveLaunchSpec` step 2 共用 `isDerivedAgentArgv` 判定）→ 免疫 config argv，排除在 safety set 之外
+   - **非 sticky + known identity == target** → 安全
+   - **非 sticky + known identity != target** → abort（冲突）
+   - **非 sticky + unknown identity** → abort（无法证明安全）
+
+   session 的 argv 视为 **derived**（即 NOT 真正 sticky）的情形：托管 adapter npx pin、hermes shim、opencode/kilocode 本地 fallback `[driver, "acp"]` 形式 —— `resolveLaunchSpec` 在 step 2 之前会把这些的 `recordedArgv` 重置为 undefined，所以 step 3 仍可能把它们 re-key。migration 与 `SessionService` 共享同一个 `isDerivedAgentArgv`（现在从 `src/config/agent-launch.ts` 导出），safety set 与 step 3 触达集严格相等。
+
+   session **unknown identity** 是指既没有 `transport_agent_argv` 也没有 `transport_agent_command` 的状态。这种 session 当前走 `resolveLaunchSpec` step 5（default launch），写 `agents.<name>.argv` 会让它的行为切到 step 3，所以整个 agent 都会被 reject —— 我们无法证明新 argv 与 session 原本在做的事相同。
+
+   同时还要求 bucket 内 known identity 一致，且至少一条能 backfill 出来证明 argv。若 bucket 全部 noop 就是稳态（不需要写）。
+2. **锁内事务式 apply**：apply 阶段在 `withPrivateFileLock(statePath, …)` 内执行：
+   - 锁内重新读 `state.json`：(a) 对每条计划中的 session 更新做 fresh 校验（alias 仍存在、agent 一致、`transport_agent_command` identity 一致、未被覆写 `argv`），(b) 对 fresh state 再跑一次 per-agent 安全校验以捕捉 planning 与拿锁之间新出现的同 agent session。**任意一条不通过则整个 migration abort —— 不写 config、不写 state**。
+   - 接着尝试 config patch（`ConfigStore` 自己短暂拿 config 锁）。mutator 对每个 agent 跟踪三种结局：`written`（写入了 argv）、`matched`（argv 已存在且 identity 匹配）、`conflicted`（agent 被删、有 raw command、argv identity 不一致）。**任意一个 `conflicted` 触发整个 migration abort**。`result.configUpdates` 只有在 `patchConfig` resolve 之后才提交，所以 patch 失败不会留下假的"已更新"记录。
+   - 只有 fresh 校验干净 + config patch 干净才写 state，且只动 `sessions` 子树，其余顶层 key 原样保留。
+3. **错误透明暴露给运维**：任何 I/O 失败（state 读、config 读、config patch、state 写、acpx record 读、acpx index 损坏）都会 push 到 `result.errors` **并**通过 app logger 写日志。daemon 路径 best-effort（日志 + 继续），CLI 路径把所有错误打到 stderr 并退出码非零，operator 工具永远不会静默吞掉真实故障。"transaction failed" 消息会显式说明 config 是否已经在 state 写失败前被提交，**以及** state.json 可能未改或部分写入（`writePrivateFileAtomic` 的 temp+rename 在 POSIX 上原子，但 Windows 的直接写 fallback 可能留半文件），让 operator 在 partial failure 后能正确核对两边文件。
+
+迁移按设计是 fail-closed，分三层：per-agent identity 一致（planning）、fresh-state per-agent 复检（lock）、fresh-state per-session 复检（lock）。任何不一致都会 abort 整个 transaction，不写任何文件。给 `config.json` 加 `agents.<name>.argv` 永远不会把 session 静默 re-key 到错的 acpx record。
+
+注意：这不是真正的两文件 transaction。state 和 config 用的是各自独立的锁，state 写失败时 config 侧已经提交。错误消息把这种不对称显式化，让 operator 在 partial failure 后能核对两边文件。
+
+CLI 命令 `xacpx migrate argv [--dry-run]` 把同一份 evaluate 暴露成独立的运维入口（打印计划，若有 skipped 或 error 则退出码非零）。
+
 #### xacpx 托管的 acpx agent alias
 
 结构化启动（托管 Codex/Claude pin、hermes shim、本地 fallback、用户 `argv`）通过内容寻址位置参数 alias（`xacpx-managed-<driver>-<sha256-prefix>`）暴露给 acpx。启动时 xacpx 在 proper-lockfile 保护下把 `{ "argv": [...] }` 安全合并进 `~/.acpx/config.json` 的 `agents` 节点，保留其它所有 key 与用户 agent 条目。绝不写 `.acpxrc.json`；已存在但 argv 不同的 alias 拒绝覆盖（fail closed）；不自动清理旧 alias（旧 session/旧 pin 可能仍引用）。升级不会删除或 close 任何已有 session；旧 session record 缺少 `agent_argv` 时，仅当 record 的 `agent_command` 与目标 argv 的 canonical identity 完全一致才回填，并复用同一 record id 恢复。

@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 
+import {
+  classifyRecordedPreinstalledAdapterCommand,
+  isManagedAdapterId,
+  MANAGED_ADAPTERS,
+} from "../adapters/adapter-catalog";
+
 /**
  * Structured description of how to launch an ACP agent through acpx.
  *
@@ -48,4 +54,44 @@ export function deriveAgentAlias(driver: string, argv: readonly string[]): strin
   const identity = renderAgentArgvIdentity(argv);
   const hash = createHash("sha256").update(identity).digest("hex").slice(0, 12);
   return `xacpx-managed-${driver}-${hash}`;
+}
+
+/** Detects an argv shape that `resolveLaunchSpec` treats as derived state
+ * (managed adapter pin, hermes shim, or local fallback for opencode /
+ * kilocode). A session with such argv has `recordedArgv` reset to undefined
+ * before step 2 in `resolveLaunchSpec`, so the sticky bypass does NOT
+ * apply — the session is actually vulnerable to a config argv step 3
+ * override.
+ *
+ * This is the single source of truth for the derived/custom classification
+ * used by both `SessionService.resolveLaunchSpec` and the argv
+ * auto-migration safety check. */
+export function isDerivedAgentArgv(
+  driver: string,
+  argv: string[] | undefined,
+  runtimeRoot: string,
+  platform: NodeJS.Platform,
+): boolean {
+  if (!argv || argv.length === 0) {
+    return false;
+  }
+  if (isManagedAdapterId(driver)) {
+    const spec = MANAGED_ADAPTERS[driver];
+    return (
+      (argv[0] === "npx" &&
+        argv[1] === "-y" &&
+        argv.some((entry) => entry.startsWith(`${spec.packageName}@`))) ||
+      classifyRecordedPreinstalledAdapterCommand(renderAgentArgvIdentity(argv), {
+        runtimeRoot,
+        platform,
+      }) === driver
+    );
+  }
+  if (driver === "hermes") {
+    return argv[1]?.includes("hermes-acp-shim.") === true;
+  }
+  if (driver === "opencode" || driver === "kilocode") {
+    return argv.length === 2 && argv[0] === driver && argv[1] === "acp";
+  }
+  return false;
 }

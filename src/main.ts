@@ -61,6 +61,7 @@ import { startConfigWatcher } from "./config/config-watcher";
 import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
+import { migrateStateAgentArgv } from "./state/auto-migrate-agent-argv";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
@@ -257,6 +258,53 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const acpxCommand = resolveAcpxCommand({ configuredCommand: config.transport.command });
   const stateStore = new StateStore(paths.statePath);
   const state = await stateStore.load();
+  // Auto-migrate any state.json session whose recorded raw command contains
+  // whitespace (the Windows fail-closed trigger) to the structured argv form.
+  // Idempotent and best-effort: errors are logged, never block startup. After
+  // the patch we reload state so downstream services see the new argv fields.
+  const argvMigration = await migrateStateAgentArgv({
+    statePath: paths.statePath,
+    configPath: paths.configPath,
+    logger,
+  });
+  for (const m of argvMigration.migrated) {
+    await logger.info("state.argv_auto_migrated", "backfilled session to structured argv", {
+      alias: m.alias,
+      agent: m.agent,
+      argv: JSON.stringify(m.argv),
+    });
+  }
+  for (const update of argvMigration.configUpdates) {
+    await logger.info("config.argv_added", "added argv to agent config", {
+      agent: update.agent,
+      argv: JSON.stringify(update.argv),
+    });
+  }
+  for (const skip of argvMigration.skipped) {
+    await logger.warn("state.argv_migration_skipped", "session argv migration skipped", {
+      alias: skip.alias,
+      reason: skip.reason,
+    });
+  }
+  if (argvMigration.migrated.length > 0 || argvMigration.configUpdates.length > 0) {
+    // Reload state so the in-memory copy carries any freshly-written
+    // transport_agent_argv. Done unconditionally (regardless of which side
+    // changed) because both lists are derived from the same planning pass.
+    const updatedState = await stateStore.load();
+    replaceRuntimeState(state, updatedState);
+    if (argvMigration.configUpdates.length > 0) {
+      // `reloadRuntimeConfig` provisions acpx agent overlays under the fresh
+      // config and replaces the runtime config in place. Critical for
+      // `acpx-cli` transport: without re-provisioning, the new
+      // `xacpx-managed-<driver>-<hash>` alias acpx-cli will launch as a
+      // positional has no entry in `~/.acpx/config.json` and falls back to
+      // the bare driver (which is the exact identity we just migrated away
+      // from). Bridge happens to self-provision via
+      // `spawnAcpxBridgeClient({ agentOverlays: computeAgentOverlayEntries(...) })`
+      // so the bug was invisible there.
+      await reloadRuntimeConfig();
+    }
+  }
   const stateLoadReport = stateStore.lastLoadReport;
   if (stateLoadReport) {
     // Loud by design: a quarantined record means data was dropped to keep the

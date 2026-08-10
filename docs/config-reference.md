@@ -496,6 +496,99 @@ the agent to structured argv:
 A single-token command (no whitespace, e.g. `"myagent.exe"`) is converted to
 `["myagent.exe"]` automatically.
 
+##### Auto-migration at daemon startup
+
+The above is the manual shape. In practice, the failure mode that creates the bad
+state is invisible to the user: every agent whose acpx built-in default is
+multi-token (`kimi acp`, `qwen acp`, `gemini acp`, `cursor-agent acp`, etc.)
+writes `transport_agent_command: "<driver> acp"` into `state.json` after the
+first launch via `refreshSessionTransportAgentCommand`. The next daemon restart
+on Windows then hits the fail-closed throw.
+
+To make the migration automatic, every daemon startup runs
+`migrateStateAgentArgv` ([`src/state/auto-migrate-agent-argv.ts`](../src/state/auto-migrate-agent-argv.ts))
+**after `state.json` is loaded and before `SessionService` is constructed**:
+
+1. **Per-agent invariant (all-or-nothing)**: the safety set covers
+   EVERY non-sticky session for the agent. The three-case rule:
+   - **sticky** (per the shared `isDerivedAgentArgv` classification,
+     matching `resolveLaunchSpec` step 2 exactly) → immune to config
+     argv override, excluded from the safety set
+   - **non-sticky + known identity == target** → safe
+   - **non-sticky + known identity != target** → abort (conflict)
+   - **non-sticky + unknown identity** → abort (cannot prove safety)
+
+   A session's argv is **derived** (and therefore NOT truly sticky) if
+   it is a managed adapter npx pin, the hermes shim, or the opencode /
+   kilocode local-fallback `[driver, "acp"]` shape — `resolveLaunchSpec`
+   resets `recordedArgv` to undefined for these before step 2, so step 3
+   can still re-key them. The migration uses the same `isDerivedAgentArgv`
+   function as `SessionService` (now exported from
+   `src/config/agent-launch.ts`); the safety set is exactly the set of
+   sessions that step 3 cannot reach after we write
+   `agents.<name>.argv`.
+
+   A session has **unknown identity** when it has neither
+   `transport_agent_argv` nor `transport_agent_command`. Such a session
+   currently resolves via `resolveLaunchSpec` step 5 (default launch);
+   writing `agents.<name>.argv` would change its behavior to step 3,
+   so the whole agent is rejected — we cannot prove the new argv
+   matches what the session was doing.
+
+   The function also requires unanimous known identity across the bucket
+   and at least one backfillable session to anchor argv. A bucket that
+   is unanimous-and-all-noop is steady state (no writes needed).
+2. **Locked transactional apply**: the apply phase runs inside
+   `withPrivateFileLock(statePath, …)`:
+   - Re-read `state.json` fresh inside the lock and (a) validate every
+     planned session update against the fresh record (alias still
+     exists, same `agent`, same `transport_agent_command` identity, no
+     clobbering `argv`), and (b) re-run the per-agent safety invariant
+     against the fresh state to catch NEW sessions for a planned
+     agent that appeared between planning and lock acquire. Either
+     failure aborts the whole migration — no config write, no state
+     write.
+   - Then attempt the config patch (ConfigStore acquires its own lock
+     briefly). The mutator tracks three outcomes per agent: `written`
+     (we set argv), `matched` (argv was already present with the same
+     identity), `conflicted` (agent removed, raw command present, or argv
+     identity mismatch). Any `conflicted` aborts the entire migration.
+     `result.configUpdates` is committed only after `patchConfig`
+     resolves, so a patch failure does not leave a stale "updated"
+     report.
+   - Only on a clean validation AND a clean config patch is state
+     written, with every other top-level key from the fresh snapshot
+     preserved verbatim.
+3. **Errors surface to the operator**: any I/O failure (state read, config
+   read, config patch, state write, acpx record read, corrupt acpx
+   index) is appended to `result.errors` AND logged via the app logger.
+   The daemon path is best-effort (logs and continues); the CLI path
+   prints each error to stderr and exits non-zero so operator tooling
+   never silently hides a real failure. The "transaction failed"
+   message explicitly states when config may have been patched before
+   the state write failed, AND that state.json may be unchanged OR
+   partially written (the temp+rename in `writePrivateFileAtomic` is
+   atomic on POSIX but the Windows direct-write fallback can leave a
+   partial file), so the operator doesn't assume "no writes applied"
+   when in fact the config side is committed.
+
+The migration is fail-closed by design at three layers: per-agent
+identity consensus (planning), fresh-state per-agent recheck (lock),
+and fresh-state per-session recheck (lock). Any disagreement aborts
+the whole transaction without writing either file. Adding
+`agents.<name>.argv` to `config.json` never silently re-keys a
+session onto the wrong acpx record.
+
+Note: this is NOT a true two-file transaction. The state and config
+files have independent locks, and a state write failure after a
+successful config patch leaves the config side committed. The error
+message makes this asymmetry explicit so the operator can verify both
+files after a partial failure.
+
+The CLI command `xacpx migrate argv [--dry-run]` exposes the same evaluation as
+a standalone operator surface (it prints the planned migrations and exits
+non-zero when anything was skipped or errored).
+
 #### xacpx-managed acpx agent aliases
 
 Structured launches (managed Codex/Claude pins, the hermes shim, local fallbacks,
