@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.3-beta.1] - 2026-08-10
+
+### Fixed
+
+- Sessions: auto-derive a unique alias when the desired session name collides with an archived session, and exclude archived sessions from the web UI alias pre-check.
+
+## [relay 0.11.3-beta.2] - 2026-08-10
+
+### Fixed
+
+- Relay-web: baseline the composer stack on the message card top so status/plan layers don't overlap the card edge.
+
 ## [relay 0.11.3-beta.1] - 2026-08-10
 
 ### Fixed
