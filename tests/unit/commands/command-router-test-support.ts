@@ -62,6 +62,10 @@ export function createConfig(): AppConfig {
 
 export class MemoryStateStore implements Pick<StateStore, "save"> {
   async save(_state: AppState): Promise<void> {}
+
+  // Durability-gated lifecycle transitions (archive/restore/remove) write
+  // through saveNow; in tests it is equally immediate and equally in-memory.
+  async saveNow(_state: AppState): Promise<void> {}
 }
 
 export class MemoryConfigStore

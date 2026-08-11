@@ -313,9 +313,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
   // Generic catalog over logical session resources (immutable id, aliases,
   // authoritative workspace cwd, archived flag). Structured channels consume
-  // it via ChannelStartInput.sessionResources; lifecycle event emission at
-  // archive/restore/remove is wired in a follow-up change.
+  // it via ChannelStartInput.sessionResources. Archive/restore/remove
+  // transitions publish their lifecycle events through it; SessionService
+  // gates each emission on the transition being durably persisted first.
   const sessionResources = new CoreSessionResourceCatalog({ sessions, config, logger });
+  sessions.setSessionResourceLifecyclePublisher((transition) =>
+    sessionResources.publishLifecycleEvent(transition),
+  );
   const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
     platform: process.platform,
     runtimeRoot,

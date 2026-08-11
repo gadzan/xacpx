@@ -21,6 +21,7 @@ function makeDeps() {
       removeSession: async (_alias: string) => ({ wasActive: true }),
       useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws/backend" }),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
+      getSession: async (_alias: string) => session,
     },
     removeSessionWithTransport: async (_internalAlias: string) => ({ wasActive: true }),
     archiveSessionWithTransport: async (_internalAlias: string) => {},
@@ -219,4 +220,63 @@ test("removeSession delegates and emits sessions-changed", async () => {
   const result = await control.removeSession("relay:acct", "backend");
   expect(result.wasActive).toBe(true);
   expect(seen).toContainEqual({ type: "sessions-changed" });
+});
+
+// The control surface must funnel every archive/restore/remove request into
+// exactly ONE call of the shared lifecycle entry points (wired in main.ts to
+// SessionControlService → SessionService). Exactly one funnel call per logical
+// operation is what guarantees exactly one resource lifecycle event downstream.
+
+test("removeSession calls the shared remove funnel exactly once", async () => {
+  const { deps } = makeDeps();
+  let calls = 0;
+  deps.removeSessionWithTransport = async (_internalAlias: string) => {
+    calls += 1;
+    return { wasActive: true };
+  };
+  const control = new ControlService(deps as never);
+
+  await control.removeSession("relay:acct", "backend");
+
+  expect(calls).toBe(1);
+});
+
+test("archiveSession calls the shared archive funnel exactly once and emits sessions-changed", async () => {
+  const { deps, seen } = makeDeps();
+  const calls: string[] = [];
+  deps.archiveSessionWithTransport = async (internalAlias: string) => {
+    calls.push(internalAlias);
+  };
+  const control = new ControlService(deps as never);
+
+  await control.archiveSession("relay:acct", "backend");
+
+  expect(calls).toEqual(["backend"]);
+  expect(seen).toContainEqual({ type: "sessions-changed" });
+});
+
+test("unarchiveSession calls the shared unarchive funnel exactly once and emits sessions-changed", async () => {
+  const { deps, seen } = makeDeps();
+  const calls: string[] = [];
+  deps.unarchiveSession = async (internalAlias: string) => {
+    calls.push(internalAlias);
+  };
+  const control = new ControlService(deps as never);
+
+  await control.unarchiveSession("relay:acct", "backend");
+
+  expect(calls).toEqual(["backend"]);
+  expect(seen).toContainEqual({ type: "sessions-changed" });
+});
+
+test("a failed archive funnel call emits no sessions-changed", async () => {
+  const { deps, seen } = makeDeps();
+  deps.archiveSessionWithTransport = async (_internalAlias: string) => {
+    throw new Error("disk full");
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(control.archiveSession("relay:acct", "backend")).rejects.toThrow("disk full");
+
+  expect(seen).not.toContainEqual({ type: "sessions-changed" });
 });

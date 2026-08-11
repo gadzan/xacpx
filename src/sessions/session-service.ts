@@ -17,6 +17,7 @@ import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestrati
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState, BackgroundResult, ChatContextState, LogicalSession } from "../state/types";
+import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
 import {
   buildDefaultTransportSession,
@@ -99,6 +100,7 @@ export class SessionService {
   private readonly platform: NodeJS.Platform;
   private readonly runtimeRoot: string;
   private readonly pendingSessionAliasOperations = new Set<string>();
+  private lifecyclePublisher: ((input: SessionResourceLifecyclePublishInput) => void) | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -300,35 +302,54 @@ export class SessionService {
         throw new Error(`session "${alias}" does not exist`);
       }
 
-      const prevCtx = this.state.chat_contexts[chatKey];
-      const previousCurrent = prevCtx?.current_session;
-      const carriedPrevious =
-        previousCurrent && previousCurrent !== internalAlias ? previousCurrent : prevCtx?.previous_session;
-
-      session.last_used_at = new Date().toISOString();
-      // Sending a message to (or selecting) an archived session restores it.
+      // Automatic restore is a durability-gated lifecycle transition: apply the
+      // whole mutation copy-on-write, publish it only after saveNow succeeds,
+      // then emit exactly one `restored` event. A plain switch (nothing to
+      // restore) keeps the cheap debounced in-place persist and emits nothing.
       if (session.archived) {
-        delete session.archived;
-        delete session.archived_at;
+        const nextState = structuredClone(this.state);
+        const result = this.applyUseSession(nextState, chatKey, internalAlias);
+        await this.commitLifecycleTransition(nextState);
+        this.publishLifecycleEvent("restored", nextState.sessions[internalAlias]!);
+        return result;
       }
-      // Spread the previous context so unread background_results (and any other
-      // per-chat state) survive the switch; only current/previous change.
-      const nextCtx: ChatContextState = { ...prevCtx, current_session: internalAlias };
-      if (carriedPrevious) {
-        nextCtx.previous_session = carriedPrevious;
-      } else {
-        delete nextCtx.previous_session;
-      }
-      this.state.chat_contexts[chatKey] = nextCtx;
-      await this.persist();
 
-      return {
-        alias: toDisplaySessionAlias(session.alias),
-        agent: session.agent,
-        workspace: session.workspace,
-        previousAlias: carriedPrevious ? toDisplaySessionAlias(carriedPrevious) : undefined,
-      };
+      const result = this.applyUseSession(this.state, chatKey, internalAlias);
+      await this.persist();
+      return result;
     });
+  }
+
+  /** Apply the use-session mutation (switch, plus restore when archived). */
+  private applyUseSession(state: AppState, chatKey: string, internalAlias: string): SessionSwitchResult {
+    const session = state.sessions[internalAlias]!;
+    const prevCtx = state.chat_contexts[chatKey];
+    const previousCurrent = prevCtx?.current_session;
+    const carriedPrevious =
+      previousCurrent && previousCurrent !== internalAlias ? previousCurrent : prevCtx?.previous_session;
+
+    session.last_used_at = new Date().toISOString();
+    // Sending a message to (or selecting) an archived session restores it.
+    if (session.archived) {
+      delete session.archived;
+      delete session.archived_at;
+    }
+    // Spread the previous context so unread background_results (and any other
+    // per-chat state) survive the switch; only current/previous change.
+    const nextCtx: ChatContextState = { ...prevCtx, current_session: internalAlias };
+    if (carriedPrevious) {
+      nextCtx.previous_session = carriedPrevious;
+    } else {
+      delete nextCtx.previous_session;
+    }
+    state.chat_contexts[chatKey] = nextCtx;
+
+    return {
+      alias: toDisplaySessionAlias(session.alias),
+      agent: session.agent,
+      workspace: session.workspace,
+      previousAlias: carriedPrevious ? toDisplaySessionAlias(carriedPrevious) : undefined,
+    };
   }
 
   async usePreviousSession(chatKey: string): Promise<SessionSwitchResult | null> {
@@ -605,20 +626,56 @@ export class SessionService {
     return count;
   }
 
+  /**
+   * Wire the sink for resource lifecycle events (production: the core
+   * SessionResourceCatalog; the runtime calls this once after constructing
+   * the catalog). Archive/restore/remove transitions report through it only
+   * AFTER their state has been durably persisted — never before.
+   */
+  setSessionResourceLifecyclePublisher(publish: (input: SessionResourceLifecyclePublishInput) => void): void {
+    this.lifecyclePublisher = publish;
+  }
+
+  private publishLifecycleEvent(type: SessionResourceLifecyclePublishInput["type"], record: LogicalSession): void {
+    this.lifecyclePublisher?.({ type, record });
+  }
+
+  /**
+   * Durability gate for lifecycle transitions: persist the copy-on-write
+   * snapshot first (saveNow rejects on write failure, so the live state, chat
+   * contexts and event stream all stay untouched), then publish the persisted
+   * snapshot to the runtime state. Only after this resolves may the lifecycle
+   * event be emitted.
+   */
+  private async commitLifecycleTransition(nextState: AppState): Promise<void> {
+    await this.stateStore.saveNow(nextState);
+    replaceRuntimeState(this.state, nextState);
+  }
+
   async setArchived(alias: string, archived: boolean): Promise<void> {
     await this.mutate(async () => {
       const session = this.state.sessions[alias];
       if (!session) {
         throw new Error(`session "${alias}" does not exist`);
       }
-      if (archived) {
-        session.archived = true;
-        session.archived_at = new Date(this.now()).toISOString();
-      } else {
-        delete session.archived;
-        delete session.archived_at;
+      // Only a genuine transition persists durably and publishes: re-archiving
+      // an archived session (or unarchiving an active one) is a no-op, so each
+      // logical operation produces at most one lifecycle event.
+      const wasArchived = session.archived === true;
+      if (wasArchived === archived) {
+        return;
       }
-      await this.persist();
+      const nextState = structuredClone(this.state);
+      const nextSession = nextState.sessions[alias]!;
+      if (archived) {
+        nextSession.archived = true;
+        nextSession.archived_at = new Date(this.now()).toISOString();
+      } else {
+        delete nextSession.archived;
+        delete nextSession.archived_at;
+      }
+      await this.commitLifecycleTransition(nextState);
+      this.publishLifecycleEvent(archived ? "archived" : "restored", nextSession);
     });
   }
 
@@ -628,14 +685,19 @@ export class SessionService {
       if (!session) {
         throw new Error(`session "${alias}" does not exist`);
       }
+      // Pre-delete snapshot: the `removed` event must carry the session's
+      // descriptor as it existed BEFORE deletion, so capture the record before
+      // the copy-on-write transition drops it.
+      const snapshot = structuredClone(session);
 
-      const wasActive = Object.values(this.state.chat_contexts).some(
+      const nextState = structuredClone(this.state);
+      const wasActive = Object.values(nextState.chat_contexts).some(
         (ctx) => ctx.current_session === alias,
       );
 
-      delete this.state.sessions[alias];
+      delete nextState.sessions[alias];
 
-      for (const [chatKey, ctx] of Object.entries(this.state.chat_contexts)) {
+      for (const [chatKey, ctx] of Object.entries(nextState.chat_contexts)) {
         // Prune only references to the removed alias; keep the rest of the
         // chat context (other aliases' background_results, previous_session).
         if (ctx.previous_session === alias) {
@@ -656,11 +718,12 @@ export class SessionService {
           }
         }
         if (!ctx.current_session && !ctx.previous_session && !ctx.background_results) {
-          delete this.state.chat_contexts[chatKey];
+          delete nextState.chat_contexts[chatKey];
         }
       }
 
-      await this.persist();
+      await this.commitLifecycleTransition(nextState);
+      this.publishLifecycleEvent("removed", snapshot);
       return { wasActive };
     });
   }

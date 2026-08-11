@@ -32,6 +32,18 @@ export type SessionResourceLifecycleEvent =
   | { type: "removed"; session: SessionResourceDescriptor };
 
 /**
+ * Write-side seam handed to SessionService: after a lifecycle transition has
+ * been durably persisted (never before), the service reports the transition
+ * type plus the persisted record; the catalog maps the record to a descriptor
+ * and publishes the event to subscribers. For `removed` the record is the
+ * pre-delete snapshot, so the event carries the session's final identity.
+ */
+export interface SessionResourceLifecyclePublishInput {
+  type: SessionResourceLifecycleEvent["type"];
+  record: LogicalSession;
+}
+
+/**
  * Generic, channel-agnostic catalog over logical session resources. Contains
  * no channel- or consumer-specific vocabulary; structured channels (and their
  * plugins) use it to enumerate and resolve the sessions they own.
@@ -116,10 +128,22 @@ export class CoreSessionResourceCatalog implements SessionResourceCatalog {
   }
 
   /**
-   * Task 6 wires the real archive/restore/remove transitions (with durable
-   * ordering: persist first, then publish) to this hook. Until then it is
-   * private and only exercised by the subscribe-mechanics tests.
+   * Publish one durably-persisted lifecycle transition. SessionService calls
+   * this (via the publisher it was handed at runtime wiring) strictly AFTER
+   * saveNow succeeded and the runtime state was published; the catalog itself
+   * never persists anything. Records whose workspace is no longer registered
+   * produce no event: such sessions are invisible in resolve()/list(), so
+   * consumers never tracked a resource for them.
    */
+  publishLifecycleEvent(input: SessionResourceLifecyclePublishInput): void {
+    const descriptor = this.toDescriptor(input.record);
+    if (!descriptor) {
+      return;
+    }
+    this.emit({ type: input.type, session: descriptor });
+  }
+
+  /** Fan an event out to all subscribers; listener throws are isolated. */
   private emit(event: SessionResourceLifecycleEvent): void {
     for (const listener of [...this.listeners]) {
       try {

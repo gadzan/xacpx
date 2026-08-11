@@ -92,14 +92,19 @@ function createCatalog(
   config: AppConfig,
   state: AppState,
   logger?: AppLogger,
-): { catalog: CoreSessionResourceCatalog; sessions: SessionService } {
-  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  store?: MemoryStateStore,
+): { catalog: CoreSessionResourceCatalog; sessions: SessionService; store: MemoryStateStore } {
+  const stateStore = store ?? new MemoryStateStore();
+  const sessions = new SessionService(config, stateStore, state);
   const catalog = new CoreSessionResourceCatalog({
     sessions,
     config,
     logger: logger ?? createCapturingLogger().logger,
   });
-  return { catalog, sessions };
+  // Mirror the production wiring (main.ts): lifecycle transitions publish
+  // through the catalog only after they are durably persisted.
+  sessions.setSessionResourceLifecyclePublisher((transition) => catalog.publishLifecycleEvent(transition));
+  return { catalog, sessions, store: stateStore };
 }
 
 // Task 5 only tests subscribe mechanics; the private emit hook is the seam Task 6
@@ -275,4 +280,165 @@ test("descriptor snapshots are not live views of the session record", async () =
   // The previously returned descriptor is unchanged; a fresh resolve reflects state.
   expect(before.archived).toBe(false);
   expect((await catalog.resolve("relay:acc-1", "demo"))?.archived).toBe(true);
+});
+
+test("archive transition publishes exactly one 'archived' event with the descriptor", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:demo");
+  const { catalog, sessions } = createCatalog(createConfig(), state);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe((event) => received.push(event));
+
+  await sessions.setArchived("relay:demo", true);
+
+  expect(received).toEqual([
+    {
+      type: "archived",
+      session: {
+        logicalSessionId: "uuid-for-relay:demo",
+        channelId: "relay",
+        internalAlias: "relay:demo",
+        displayAlias: "demo",
+        workspace: "backend",
+        cwd: "/tmp/backend",
+        archived: true,
+      },
+    },
+  ]);
+});
+
+test("explicit unarchive publishes exactly one 'restored' event", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:demo", { archived: true, archived_at: "2026-01-02T00:00:00.000Z" });
+  const { catalog, sessions } = createCatalog(createConfig(), state);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe((event) => received.push(event));
+
+  await sessions.setArchived("relay:demo", false);
+
+  expect(received).toHaveLength(1);
+  expect(received[0]?.type).toBe("restored");
+  expect(received[0]?.session.internalAlias).toBe("relay:demo");
+  expect(received[0]?.session.logicalSessionId).toBe("uuid-for-relay:demo");
+  expect(received[0]?.session.archived).toBe(false);
+});
+
+test("useSession automatic restore publishes exactly one 'restored' event", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:demo", { archived: true, archived_at: "2026-01-02T00:00:00.000Z" });
+  const { catalog, sessions } = createCatalog(createConfig(), state);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe((event) => received.push(event));
+
+  await sessions.useSession("relay:acc-1", "relay:demo");
+
+  expect(received).toHaveLength(1);
+  expect(received[0]?.type).toBe("restored");
+  expect(received[0]?.session.internalAlias).toBe("relay:demo");
+});
+
+test("remove publishes one 'removed' event carrying the pre-delete descriptor snapshot", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:demo", { archived: true, archived_at: "2026-01-02T00:00:00.000Z" });
+  const { catalog, sessions } = createCatalog(createConfig(), state);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe((event) => received.push(event));
+
+  await sessions.removeSession("relay:demo");
+
+  // The removed event carries the session's state as it was BEFORE deletion —
+  // including the archived flag — even though the record is gone from state.
+  expect(received).toEqual([
+    {
+      type: "removed",
+      session: {
+        logicalSessionId: "uuid-for-relay:demo",
+        channelId: "relay",
+        internalAlias: "relay:demo",
+        displayAlias: "demo",
+        workspace: "backend",
+        cwd: "/tmp/backend",
+        archived: true,
+      },
+    },
+  ]);
+  expect(state.sessions["relay:demo"]).toBeUndefined();
+  expect(await catalog.resolve("relay:acc-1", "demo")).toBeNull();
+});
+
+test("a throwing listener does not roll back the persisted operation", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:demo");
+  const { logger, errors } = createCapturingLogger();
+  const { catalog, sessions, store } = createCatalog(createConfig(), state, logger);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe(() => {
+    throw new Error("listener boom");
+  });
+  catalog.subscribe((event) => received.push(event));
+
+  await sessions.setArchived("relay:demo", true);
+
+  // The archive persisted durably despite the listener failure…
+  expect(state.sessions["relay:demo"]?.archived).toBe(true);
+  expect(store.savedStates.at(-1)?.sessions["relay:demo"]?.archived).toBe(true);
+  // …the remaining listener still received the event…
+  expect(received.map((event) => event.type)).toEqual(["archived"]);
+  // …and the failure was reported to the app log.
+  expect(errors.some((entry) => entry.event === "sessions.resource_catalog.listener_failed")).toBe(true);
+});
+
+test("lifecycle events publish only after the durable save settles", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:demo");
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const durableWrites: AppState[] = [];
+  const saveNow = async (snapshot: AppState) => {
+    await saveGate;
+    durableWrites.push(structuredClone(snapshot));
+  };
+  const { catalog, sessions } = createCatalog(createConfig(), state, undefined, {
+    save: async () => {},
+    saveNow,
+  } as MemoryStateStore);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe((event) => received.push(event));
+
+  const pending = sessions.setArchived("relay:demo", true);
+  await Promise.resolve();
+  // While the durable write is in flight, neither the runtime state nor the
+  // event stream may show the transition.
+  expect(state.sessions["relay:demo"]?.archived).toBeUndefined();
+  expect(received).toHaveLength(0);
+
+  releaseSave();
+  await pending;
+  expect(durableWrites.at(-1)?.sessions["relay:demo"]?.archived).toBe(true);
+  expect(state.sessions["relay:demo"]?.archived).toBe(true);
+  expect(received.map((event) => event.type)).toEqual(["archived"]);
+});
+
+test("restore of a session whose workspace is gone publishes nothing", async () => {
+  const state = createEmptyState();
+  seedSession(state, "relay:ghost", { workspace: "gone", archived: true, archived_at: "2026-01-02T00:00:00.000Z" });
+  const { catalog, sessions } = createCatalog(createConfig(), state);
+
+  const received: SessionResourceLifecycleEvent[] = [];
+  catalog.subscribe((event) => received.push(event));
+
+  // The transition itself applies (durable), but the session was never visible
+  // to catalog consumers (list/resolve skip de-registered workspaces), so no
+  // resource event exists to publish.
+  await sessions.setArchived("relay:ghost", false);
+  expect(state.sessions["relay:ghost"]?.archived).toBeUndefined();
+  expect(received).toHaveLength(0);
 });
