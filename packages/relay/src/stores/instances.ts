@@ -8,6 +8,8 @@ export interface InstanceRow {
   accountId: string;
   name: string;
   coreVersion: string | null;
+  /** Last known connector capabilities; never null (missing DB value → []). */
+  capabilities: string[];
   lastSeenAt: string | null;
   createdAt: string;
 }
@@ -79,38 +81,60 @@ export class InstanceStore {
   }
 
   verifyCredential(instanceId: string, credential: string): InstanceRow | null {
-    const row = this.db.get<{
-      id: string; account_id: string; name: string; credential_hash: string;
-      core_version: string | null; last_seen_at: string | null; created_at: string;
-    }>("SELECT * FROM instances WHERE id = ?", [instanceId]);
+    const row = this.db.get<DbInstanceRow>("SELECT * FROM instances WHERE id = ?", [instanceId]);
     if (!row || !hashEquals(row.credential_hash, hashToken(credential))) return null;
     return toInstanceRow(row);
   }
 
-  touch(instanceId: string, coreVersion?: string): void {
+  /**
+   * Update last_seen_at (and optional coreVersion / capabilities).
+   * When `capabilities` is provided (including `[]`), replace the stored set.
+   * When omitted, leave capabilities_json unchanged (e.g. non-handshake touches).
+   */
+  touch(instanceId: string, coreVersion?: string, capabilities?: string[]): void {
+    const nowIso = this.now().toISOString();
+    if (capabilities !== undefined && coreVersion !== undefined) {
+      this.db.run(
+        "UPDATE instances SET last_seen_at = ?, core_version = ?, capabilities_json = ? WHERE id = ?",
+        [nowIso, coreVersion, JSON.stringify(capabilities), instanceId],
+      );
+      return;
+    }
+    if (capabilities !== undefined) {
+      this.db.run(
+        "UPDATE instances SET last_seen_at = ?, capabilities_json = ? WHERE id = ?",
+        [nowIso, JSON.stringify(capabilities), instanceId],
+      );
+      return;
+    }
     if (coreVersion !== undefined) {
       this.db.run("UPDATE instances SET last_seen_at = ?, core_version = ? WHERE id = ?", [
-        this.now().toISOString(), coreVersion, instanceId,
+        nowIso, coreVersion, instanceId,
       ]);
       return;
     }
-    this.db.run("UPDATE instances SET last_seen_at = ? WHERE id = ?", [this.now().toISOString(), instanceId]);
+    this.db.run("UPDATE instances SET last_seen_at = ? WHERE id = ?", [nowIso, instanceId]);
+  }
+
+  /** Replace the durable capability snapshot for an instance (auth/register path). */
+  setCapabilities(instanceId: string, capabilities: string[]): void {
+    this.db.run("UPDATE instances SET capabilities_json = ? WHERE id = ?", [
+      JSON.stringify(capabilities),
+      instanceId,
+    ]);
   }
 
   listByAccount(accountId: string): InstanceRow[] {
     return this.db
-      .all<{
-        id: string; account_id: string; name: string; credential_hash: string;
-        core_version: string | null; last_seen_at: string | null; created_at: string;
-      }>("SELECT * FROM instances WHERE account_id = ? ORDER BY created_at", [accountId])
+      .all<DbInstanceRow>("SELECT * FROM instances WHERE account_id = ? ORDER BY created_at", [accountId])
       .map(toInstanceRow);
   }
 
   getOwned(instanceId: string, accountId: string): InstanceRow | null {
-    const row = this.db.get<{
-      id: string; account_id: string; name: string; credential_hash: string;
-      core_version: string | null; last_seen_at: string | null; created_at: string;
-    }>("SELECT * FROM instances WHERE id = ? AND account_id = ?", [instanceId, accountId]);
+    const row = this.db.get<DbInstanceRow>(
+      "SELECT * FROM instances WHERE id = ? AND account_id = ?",
+      [instanceId, accountId],
+    );
     return row ? toInstanceRow(row) : null;
   }
 
@@ -135,15 +159,36 @@ export class InstanceStore {
   }
 }
 
-function toInstanceRow(row: {
-  id: string; account_id: string; name: string;
-  core_version: string | null; last_seen_at: string | null; created_at: string;
-}): InstanceRow {
+interface DbInstanceRow {
+  id: string;
+  account_id: string;
+  name: string;
+  credential_hash: string;
+  core_version: string | null;
+  capabilities_json?: string | null;
+  last_seen_at: string | null;
+  created_at: string;
+}
+
+function parseCapabilitiesJson(raw: string | null | undefined): string[] {
+  if (raw == null || raw === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function toInstanceRow(row: DbInstanceRow): InstanceRow {
   return {
     id: row.id,
     accountId: row.account_id,
     name: row.name,
     coreVersion: row.core_version,
+    capabilities: parseCapabilitiesJson(row.capabilities_json),
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
   };

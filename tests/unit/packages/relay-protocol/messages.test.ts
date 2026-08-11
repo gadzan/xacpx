@@ -2,8 +2,14 @@ import { expect, test } from "bun:test";
 
 import {
   MSG,
+  MAX_CAPABILITIES,
+  MAX_CAPABILITY_LENGTH,
+  RELAY_CAPABILITIES,
   errorPayload,
   isErrorPayload,
+  normalizeCapabilities,
+  type InstanceAuthPayload,
+  type InstanceRegisterPayload,
 } from "../../../../packages/relay-protocol/src/messages";
 import type { AgentCatalogEntryDto } from "../../../../packages/relay-protocol/src/dtos";
 
@@ -48,4 +54,42 @@ test("recoverable terminal message types use the instance.terminal namespace", (
 test("AgentCatalogEntryDto shape compiles", () => {
   const e: AgentCatalogEntryDto = { driver: "gemini", configured: false, installed: "unknown" };
   expect(e.driver).toBe("gemini");
+});
+
+test("normalizeCapabilities returns empty for missing/invalid input", () => {
+  expect(normalizeCapabilities(undefined)).toEqual([]);
+  expect(normalizeCapabilities(null)).toEqual([]);
+  expect(normalizeCapabilities("x")).toEqual([]);
+  expect(normalizeCapabilities([1, null, {}, ""])).toEqual([]);
+});
+
+test("normalizeCapabilities dedupes, drops overlong, and caps count", () => {
+  const long = "c".repeat(MAX_CAPABILITY_LENGTH + 1);
+  expect(normalizeCapabilities([
+    RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
+    RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
+    "future.cap.v9",
+    long,
+    RELAY_CAPABILITIES.terminalMultiViewV1,
+  ])).toEqual([
+    RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
+    "future.cap.v9",
+    RELAY_CAPABILITIES.terminalMultiViewV1,
+  ]);
+  const many = Array.from({ length: MAX_CAPABILITIES + 5 }, (_, i) => `cap.${i}`);
+  expect(normalizeCapabilities(many)).toHaveLength(MAX_CAPABILITIES);
+});
+
+test("InstanceRegisterPayload and InstanceAuthPayload accept optional capabilities", () => {
+  const reg: InstanceRegisterPayload = {
+    pairingToken: "t",
+    capabilities: ["terminal.rmux.recovery.v1"],
+  };
+  const auth: InstanceAuthPayload = {
+    instanceId: "i1",
+    credential: "c",
+    capabilities: [],
+  };
+  expect(reg.capabilities).toHaveLength(1);
+  expect(auth.capabilities).toEqual([]);
 });

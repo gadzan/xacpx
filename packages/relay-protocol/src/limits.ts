@@ -43,6 +43,11 @@ export const TERMINAL_RPC_TIMEOUT_MS = 10_000;
 /** RMUX kill confirmation wait inside terminate. */
 export const TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5_000;
 
+/** Max capability strings accepted on instance register/auth. */
+export const MAX_CAPABILITIES = 32;
+/** Max length of a single capability string. */
+export const MAX_CAPABILITY_LENGTH = 128;
+
 /** Max base64 wire length that can decode to `maxDecodedBytes` (with padding). */
 export function maxBase64EncodedLength(maxDecodedBytes: number): number {
   return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);

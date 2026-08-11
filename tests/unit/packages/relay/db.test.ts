@@ -154,3 +154,30 @@ test("initSchema migrates a pre-origin_queue_item_id messages table without fail
   expect(idx).toBeDefined();
   db.close();
 });
+
+test("fresh DB: instances has capabilities_json column", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const cols = db.all<{ name: string }>("PRAGMA table_info(instances)").map((c) => c.name);
+  expect(cols).toContain("capabilities_json");
+  db.close();
+});
+
+test("initSchema migrates a pre-capabilities_json instances table without failing", async () => {
+  const db = await createSqlDriver(":memory:");
+  db.exec(`
+    CREATE TABLE instances (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      credential_hash TEXT NOT NULL,
+      core_version TEXT,
+      last_seen_at TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+  initSchema(db);
+  const cols = db.all<{ name: string }>("PRAGMA table_info(instances)").map((c) => c.name);
+  expect(cols).toContain("capabilities_json");
+  db.close();
+});

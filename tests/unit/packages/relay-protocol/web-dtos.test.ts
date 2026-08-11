@@ -14,6 +14,7 @@ import {
   type FsSearchHitDto,
   type FsSearchPayload,
   type FsSearchResult,
+  type InstanceSummaryDto,
   type WebServerEvent,
 } from "../../../../packages/relay-protocol/src/index";
 
@@ -367,4 +368,22 @@ test("parseWebClientMessage still round-trips terminal-input (regression)", () =
   const decoded = decodeEnvelope(wire);
   if (!decoded.ok) throw new Error("decode failed");
   expect(parseWebClientMessage(decoded.envelope)).toEqual({ kind: "terminal-input", instanceId: "i1", terminalId: "t1", data: "ls\n" });
+});
+
+test("InstanceSummaryDto includes optional capabilities (missing → treat as empty)", () => {
+  const withCaps: InstanceSummaryDto = {
+    id: "i1",
+    name: "pc",
+    online: true,
+    lastSeenAt: null,
+    capabilities: ["terminal.rmux.recovery.v1", "terminal.multi-view.v1"],
+  };
+  const legacy: InstanceSummaryDto = {
+    id: "i2",
+    name: "old",
+    online: false,
+    lastSeenAt: null,
+  };
+  expect(withCaps.capabilities).toHaveLength(2);
+  expect(legacy.capabilities ?? []).toEqual([]);
 });

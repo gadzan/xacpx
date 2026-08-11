@@ -66,6 +66,8 @@ var MAX_TERMINAL_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
 var MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES = 2 * 1024 * 1024;
 var TERMINAL_RPC_TIMEOUT_MS = 1e4;
 var TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
+var MAX_CAPABILITIES = 32;
+var MAX_CAPABILITY_LENGTH = 128;
 function maxBase64EncodedLength(maxDecodedBytes) {
   return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);
 }
@@ -153,6 +155,23 @@ function isErrorPayload(payload) {
     return false;
   const error = candidate;
   return typeof error.code === "string" && typeof error.message === "string";
+}
+function normalizeCapabilities(raw) {
+  if (!Array.isArray(raw))
+    return [];
+  const out = [];
+  const seen = new Set;
+  for (const item of raw) {
+    if (typeof item !== "string" || item.length === 0 || item.length > MAX_CAPABILITY_LENGTH)
+      continue;
+    if (seen.has(item))
+      continue;
+    seen.add(item);
+    out.push(item);
+    if (out.length >= MAX_CAPABILITIES)
+      break;
+  }
+  return out;
 }
 var RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
@@ -894,6 +913,7 @@ export {
   optStr,
   optNum,
   optBool,
+  normalizeCapabilities,
   maxBase64EncodedLength,
   isStr,
   isObj,
@@ -934,5 +954,7 @@ export {
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+  MAX_CAPABILITIES,
   CONTROL_PAYLOAD_VALIDATORS
 };

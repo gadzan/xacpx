@@ -106,6 +106,17 @@ export interface InstanceStateSnapshotDto {
   commands: SessionCommandsSnapshotDto[];
 }
 
+/** Dashboard instance row (HTTP `/api/instances` and web store seed). */
+export interface InstanceSummaryDto {
+  id: string;
+  name: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  coreVersion?: string | null;
+  /** Last known connector capabilities; missing/undefined → treat as []. */
+  capabilities?: string[];
+}
+
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent =
   | { kind: "instance-status"; instanceId: string; online: boolean }

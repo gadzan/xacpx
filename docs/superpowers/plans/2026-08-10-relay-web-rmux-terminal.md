@@ -267,13 +267,13 @@
 - Test: `tests/unit/packages/relay/gateway/instance-gateway-status.test.ts`
 - Test: `packages/relay-web/src/__tests__/instances.test.ts`
 
-- [ ] `InstanceRegisterPayload`、`InstanceAuthPayload` 和 instance dashboard DTO 增加 `capabilities?: string[]`；旧 payload 缺失时归一化为空数组。
-- [ ] DB 增加 additive `capabilities_json` migration；每次 auth 用 connector 当前完整集合替换旧值，断线后保留最后已知集合供诊断，但 web 同时检查 `online`。
-- [ ] 只接受已知、去重、有数量/长度上限的 capability；未知值可保留用于前向兼容，但不能被本版本解释为 terminal 支持。
-- [ ] RelayClient handshake 在构造时接收已确认的 capability snapshot；runtime 未 ready 时不得先连 hub 再补报。
-- [ ] web helper `supportsRmuxTerminal(instance)` 要求 online + 两个 capability，所有入口共用该 helper。
-- [ ] Run focused protocol/hub/web tests and affected typechecks.
-- [ ] Commit: `feat(relay): propagate connector capabilities`
+- [x] `InstanceRegisterPayload`、`InstanceAuthPayload` 和 instance dashboard DTO 增加 `capabilities?: string[]`；旧 payload 缺失时归一化为空数组。
+- [x] DB 增加 additive `capabilities_json` migration；每次 auth 用 connector 当前完整集合替换旧值，断线后保留最后已知集合供诊断，但 web 同时检查 `online`。
+- [x] 只接受已知、去重、有数量/长度上限的 capability；未知值可保留用于前向兼容，但不能被本版本解释为 terminal 支持。
+- [x] RelayClient handshake 在构造时接收已确认的 capability snapshot；runtime 未 ready 时不得先连 hub 再补报。
+- [x] web helper `supportsRmuxTerminal(instance)` 要求 online + 两个 capability，所有入口共用该 helper。
+- [x] Run focused protocol/hub/web tests and affected typechecks.
+- [x] Commit: `feat(relay): propagate connector capabilities`
 
 ---
 

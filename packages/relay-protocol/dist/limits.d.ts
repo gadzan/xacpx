@@ -35,5 +35,9 @@ export declare const MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES: number;
 export declare const TERMINAL_RPC_TIMEOUT_MS = 10000;
 /** RMUX kill confirmation wait inside terminate. */
 export declare const TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
+/** Max capability strings accepted on instance register/auth. */
+export declare const MAX_CAPABILITIES = 32;
+/** Max length of a single capability string. */
+export declare const MAX_CAPABILITY_LENGTH = 128;
 /** Max base64 wire length that can decode to `maxDecodedBytes` (with padding). */
 export declare function maxBase64EncodedLength(maxDecodedBytes: number): number;

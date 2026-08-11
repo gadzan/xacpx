@@ -92,6 +92,8 @@ export interface InstanceRegisterPayload {
     pairingToken: string;
     name?: string;
     coreVersion?: string;
+    /** Confirmed connector capability snapshot; omit/undefined → hub normalizes to []. */
+    capabilities?: string[];
 }
 export interface InstanceRegisterResult {
     instanceId: string;
@@ -101,10 +103,19 @@ export interface InstanceAuthPayload {
     instanceId: string;
     credential: string;
     coreVersion?: string;
+    /** Confirmed connector capability snapshot; omit/undefined → hub normalizes to []. */
+    capabilities?: string[];
 }
 export interface InstanceAuthResult {
     ok: true;
 }
+export { MAX_CAPABILITIES, MAX_CAPABILITY_LENGTH } from "./limits.js";
+/**
+ * Normalize a connector-advertised capability list for persistence and dashboard DTO.
+ * Missing/invalid → []; drops empty/overlong; dedupes (order-preserving); caps count.
+ * Unknown strings are retained for forward-compat but are not interpreted by this version.
+ */
+export declare function normalizeCapabilities(raw: unknown): string[];
 export interface InstanceEventPayload {
     event: ControlEventDto;
 }

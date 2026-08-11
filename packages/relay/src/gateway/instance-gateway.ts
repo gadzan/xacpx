@@ -4,6 +4,7 @@ import {
   decodeEnvelope,
   encodeEnvelope,
   errorPayload,
+  normalizeCapabilities,
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
   type RelayEnvelope,
@@ -226,7 +227,7 @@ export class InstanceGateway {
         result = redeemed;
       }
       respond({ instanceId: result.instanceId, credential: result.credential });
-      this.deps.instances.touch(result.instanceId);
+      this.deps.instances.touch(result.instanceId, payload?.coreVersion, normalizeCapabilities(payload?.capabilities));
       return { instanceId: result.instanceId, accountId: result.accountId };
     }
     if (envelope.type === MSG.instanceAuth) {
@@ -239,7 +240,7 @@ export class InstanceGateway {
         return null;
       }
       respond({ ok: true });
-      this.deps.instances.touch(instance.id, payload?.coreVersion);
+      this.deps.instances.touch(instance.id, payload?.coreVersion, normalizeCapabilities(payload?.capabilities));
       return { instanceId: instance.id, accountId: instance.accountId };
     }
     this.logger.info("relay.instance.handshake_failed", "handshake rejected", { reason: "unknown-message-type" });

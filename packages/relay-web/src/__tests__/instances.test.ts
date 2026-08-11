@@ -1,6 +1,7 @@
 import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { useInstancesStore } from "../stores/instances";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
+import { supportsRmuxTerminal, useInstancesStore } from "../stores/instances";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -11,6 +12,38 @@ test("loadInstances populates the list with online flags", async () => {
   const store = useInstancesStore();
   await store.loadInstances();
   expect(store.instances[0]).toMatchObject({ id: "i1", name: "pc", online: true });
+});
+
+test("loadInstances keeps capabilities from the dashboard DTO (missing → empty)", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    instances: [
+      {
+        id: "i1",
+        name: "pc",
+        online: true,
+        lastSeenAt: null,
+        capabilities: [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1],
+      },
+      { id: "i2", name: "old", online: true, lastSeenAt: null },
+    ],
+  }), { status: 200 })));
+  const store = useInstancesStore();
+  await store.loadInstances();
+  expect(store.instances[0]?.capabilities).toEqual([
+    RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
+    RELAY_CAPABILITIES.terminalMultiViewV1,
+  ]);
+  expect(store.instances[1]?.capabilities ?? []).toEqual([]);
+});
+
+test("supportsRmuxTerminal requires online and both RMUX capabilities", () => {
+  const both = [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1];
+  expect(supportsRmuxTerminal({ online: true, capabilities: both })).toBe(true);
+  expect(supportsRmuxTerminal({ online: false, capabilities: both })).toBe(false);
+  expect(supportsRmuxTerminal({ online: true, capabilities: [RELAY_CAPABILITIES.terminalRmuxRecoveryV1] })).toBe(false);
+  expect(supportsRmuxTerminal({ online: true, capabilities: ["future.cap.v9", ...both] })).toBe(true);
+  expect(supportsRmuxTerminal({ online: true, capabilities: null })).toBe(false);
+  expect(supportsRmuxTerminal({ online: true })).toBe(false);
 });
 
 test("applyEvent instance-status toggles online without refetch", () => {

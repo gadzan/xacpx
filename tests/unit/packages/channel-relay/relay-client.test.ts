@@ -57,6 +57,72 @@ test("registers with pairing token, saves credential, reports ready", async () =
   wss.close();
 });
 
+test("handshake sends constructor capabilities snapshot on register and auth", async () => {
+  const caps = ["terminal.rmux.recovery.v1", "terminal.multi-view.v1"];
+  let registerPayload: Record<string, unknown> | undefined;
+  const { wss, url } = await makeFakeRelay((envelope, reply) => {
+    if (envelope.type === MSG.instanceRegister) {
+      registerPayload = envelope.payload as Record<string, unknown>;
+      reply(res(envelope, { instanceId: "i-1", credential: "cred-1" }));
+    }
+  });
+  const store = new MemoryCredentialStore();
+  const controller = new AbortController();
+  await new Promise<void>((resolve) => {
+    const client = new RelayClient({
+      url, credentialStore: store, pairingToken: "pair-1", coreVersion: "0.11.0",
+      capabilities: caps,
+      onRequest: () => {}, onReady: resolve, reconnectDelaysMs: [0],
+    });
+    client.start(controller.signal);
+  });
+  expect(registerPayload?.capabilities).toEqual(caps);
+  controller.abort();
+  wss.close();
+
+  let authPayload: Record<string, unknown> | undefined;
+  const { wss: wss2, url: url2 } = await makeFakeRelay((envelope, reply) => {
+    if (envelope.type === MSG.instanceAuth) {
+      authPayload = envelope.payload as Record<string, unknown>;
+      reply(res(envelope, { ok: true }));
+    }
+  });
+  const store2 = new MemoryCredentialStore({ instanceId: "i-1", credential: "cred-1", relayUrl: url2 });
+  const controller2 = new AbortController();
+  await new Promise<void>((resolve) => {
+    const client = new RelayClient({
+      url: url2, credentialStore: store2, capabilities: caps,
+      onRequest: () => {}, onReady: resolve, reconnectDelaysMs: [0],
+    });
+    client.start(controller2.signal);
+  });
+  expect(authPayload?.capabilities).toEqual(caps);
+  controller2.abort();
+  wss2.close();
+});
+
+test("handshake omits backfill: missing capabilities option sends empty array", async () => {
+  let registerPayload: Record<string, unknown> | undefined;
+  const { wss, url } = await makeFakeRelay((envelope, reply) => {
+    if (envelope.type === MSG.instanceRegister) {
+      registerPayload = envelope.payload as Record<string, unknown>;
+      reply(res(envelope, { instanceId: "i-1", credential: "cred-1" }));
+    }
+  });
+  const store = new MemoryCredentialStore();
+  const controller = new AbortController();
+  await new Promise<void>((resolve) => {
+    const client = new RelayClient({
+      url, credentialStore: store, pairingToken: "pair-1",
+      onRequest: () => {}, onReady: resolve, reconnectDelaysMs: [0],
+    });
+    client.start(controller.signal);
+  });
+  expect(registerPayload?.capabilities).toEqual([]);
+  controller.abort();
+  wss.close();
+});
+
 test("auths with stored credential, dispatches incoming req to onRequest, sends events", async () => {
   const seen: RelayEnvelope[] = [];
   let instanceSocketSend: ((env: RelayEnvelope) => void) | undefined;

@@ -96,8 +96,38 @@ test("touch updates last_seen; listByAccount scopes; remove enforces ownership",
   const listed = instances.listByAccount(account.id);
   expect(listed).toHaveLength(1);
   expect(listed[0]?.lastSeenAt).toBe("2026-06-13T10:05:00.000Z");
+  expect(listed[0]?.capabilities).toEqual([]);
   expect(instances.listByAccount("other-account")).toEqual([]);
   expect(instances.remove(redeemed.instanceId, "other-account")).toBe(false);
   expect(instances.remove(redeemed.instanceId, account.id)).toBe(true);
   expect(instances.listByAccount(account.id)).toEqual([]);
+});
+
+test("setCapabilities replaces the full set; missing column/null reads as empty", async () => {
+  const { instances, account } = await makeStores();
+  const created = instances.registerInstanceForAccount(account.id, "pc");
+  expect(instances.getOwned(created.instanceId, account.id)?.capabilities).toEqual([]);
+
+  instances.setCapabilities(created.instanceId, [
+    "terminal.rmux.recovery.v1",
+    "terminal.multi-view.v1",
+    "future.cap.v9",
+  ]);
+  expect(instances.getOwned(created.instanceId, account.id)?.capabilities).toEqual([
+    "terminal.rmux.recovery.v1",
+    "terminal.multi-view.v1",
+    "future.cap.v9",
+  ]);
+
+  instances.setCapabilities(created.instanceId, ["terminal.multi-view.v1"]);
+  expect(instances.listByAccount(account.id)[0]?.capabilities).toEqual(["terminal.multi-view.v1"]);
+});
+
+test("touch with capabilities writes capabilities_json on auth-style updates", async () => {
+  const { instances, account } = await makeStores();
+  const created = instances.registerInstanceForAccount(account.id, "pc");
+  instances.touch(created.instanceId, "0.12.0", ["terminal.rmux.recovery.v1"]);
+  const row = instances.verifyCredential(created.instanceId, created.credential);
+  expect(row?.coreVersion).toBe("0.12.0");
+  expect(row?.capabilities).toEqual(["terminal.rmux.recovery.v1"]);
 });

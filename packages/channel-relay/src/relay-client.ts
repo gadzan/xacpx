@@ -19,6 +19,11 @@ export interface RelayClientOptions {
   pairingToken?: string;
   instanceName?: string;
   coreVersion?: string;
+  /**
+   * Confirmed capability snapshot at construction time. Handshake sends this
+   * set as-is (missing → []); do not connect first and backfill later.
+   */
+  capabilities?: string[];
   onRequest: (envelope: RelayEnvelope, respond: (payload: unknown) => void) => void;
   onEvent?: (envelope: RelayEnvelope) => void;
   onReady?: () => void;
@@ -141,6 +146,7 @@ export class RelayClient {
   }
 
   private sendHandshake(socket: WebSocket): void {
+    const capabilities = this.options.capabilities ?? [];
     const credential = this.options.credentialStore.load();
     if (credential) {
       socket.send(
@@ -153,6 +159,7 @@ export class RelayClient {
             instanceId: credential.instanceId,
             credential: credential.credential,
             coreVersion: this.options.coreVersion,
+            capabilities,
           },
         }),
       );
@@ -169,6 +176,7 @@ export class RelayClient {
             pairingToken: this.options.pairingToken,
             name: this.options.instanceName,
             coreVersion: this.options.coreVersion,
+            capabilities,
           },
         }),
       );
