@@ -20,12 +20,14 @@ This handoff points at, but does not duplicate, the authoritative design and pla
 ## Current state of `main`
 
 ```
+2c6bea30 feat(channels): add reasoned asynchronous shutdown
+a931f4bb docs(superpowers): add RMUX terminal spec, plan, and handoff for next agent
 7ca16867 feat(sessions): publish durable resource lifecycle events
 57acb1bd feat(plugin-api): expose session resource catalog
 52179bd8 feat(sessions): persist immutable logical session ids
 ```
 
-Working tree is clean. Untracked in this repo (still the previous agent's spec/plan + this handoff):
+Working tree is clean. Untracked in this repo:
 
 ```
 docs/superpowers/plans/2026-08-10-relay-web-rmux-terminal.md
@@ -41,7 +43,7 @@ docs/superpowers/handoff-2026-08-11-relay-web-rmux-terminal.md   ← you are her
 | Phase B / Task 4 | ✅ committed (`52179bd8`) |
 | Phase B / Task 5 | ✅ committed (`57acb1bd`) |
 | Phase B / Task 6 | ✅ committed (`7ca16867`) |
-| Phase B / Task 7 | **not started.** Subagent was cancelled mid-flight by user; no commits, no working tree changes. |
+| Phase B / Task 7 | ✅ committed (`2c6bea30`) |
 | Phase C (Tasks 8–9) | not started |
 | Phase D (Tasks 10–14) | not started |
 | Phase E (Tasks 15–17) | blocked on Phase A publish |
@@ -50,7 +52,7 @@ docs/superpowers/handoff-2026-08-11-relay-web-rmux-terminal.md   ← you are her
 
 ## Recommended next step
 
-Land **Task 7** (`feat(channels): add reasoned asynchronous shutdown`) to finish Phase B. Then proceed with Phase C (Tasks 8–9), Phase D (Tasks 10–14, can run entirely with the in-memory driver), and finally the in-memory-compatible parts of Phase F (Tasks 19, 20, 21, 22, 23). Phase E and the parts of Phase F/Phase G that depend on a real RMUX daemon stay parked until RMUX upstream publishes the new contract.
+**Phase B is now complete.** Proceed with Phase C (Tasks 8–9: relay protocol DTOs, messages, capability contract), then Phase D (Tasks 10–14: in-memory terminal driver, registry, attachments, runtime reconciliation). These can run entirely without waiting for Phase A's RMUX upstream publish. After Phase D lands, the in-memory-compatible parts of Phase F (Tasks 19–23: hub wiring, web recovery reducer, controller/spectator UI) can be implemented. Phase E and the parts of Phase F/Phase G that depend on a real RMUX daemon stay parked until RMUX upstream publishes the new contract.
 
 ## Key seams the next agent should know about
 
@@ -58,6 +60,8 @@ Land **Task 7** (`feat(channels): add reasoned asynchronous shutdown`) to finish
 - **`CoreSessionResourceCatalog`** (`src/sessions/session-resource-catalog.ts`) is the channel-agnostic seam. `emit()` is now real: archive/unarchive/restore/remove all flow through `SessionService.commitLifecycleTransition` → `replaceRuntimeState` → publisher → `emit()`. `removed` carries the pre-delete snapshot. Listener throws are caught in the catalog and logged, never rolled back. Workspace-deregistered records publish nothing.
 - **`SessionService.commitLifecycleTransition`** (`src/sessions/session-service.ts:644`) is the durability gate: `saveNow` → swap runtime state → publish event. Every archive/unarchive/remove/useSession-restore funnels through this. `setArchived()` has a no-op guard for already-matching state.
 - **`saveNow`** on the debounced state store is the immediate durable-write seam. Use it; do not bypass it for lifecycle transitions.
+- **`ChannelStopReason`** (`src/channels/types.ts`) is now part of the public channel contract. `MessageChannelRuntime.stop(reason?)` receives one of `"shutdown" | "disabled" | "removed" | "logout"`. `MessageChannelRegistry.stopAll(reason = "shutdown")` passes the reason through. All `logout()` calls are now properly awaited.
+- **`ChannelCliDeps.retireChannel`** (`src/channels/cli/channel-cli.ts`) is the async retirement hook for channel disable/remove paths. Invoked before config save with the original config and reason. Failures are logged but do not block the config mutation. Relay will use this for terminal registry cleanup.
 
 ## Environment quirks (not regressions — don't chase them)
 
