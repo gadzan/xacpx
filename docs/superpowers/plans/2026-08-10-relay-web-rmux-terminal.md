@@ -520,15 +520,15 @@
 - Modify: `packages/relay-web/src/lib/terminal-adapter.ts`
 - Test: `packages/relay-web/src/__tests__/terminal-adapter.test.ts`
 
-- [ ] interface 增加 `ready()` 和 `resetAndReplay(Uint8Array, cols, rows)`；`write` 接受 `Uint8Array`，不得 UTF-8 round-trip。
-- [ ] factory ready 前的必要 write/resize/theme/replay 排队或 await，不再 silent no-op。
-- [ ] rebase 先 reset emulator/grid/scrollback，再 resize，再写 keyframe；不能在旧 screen 上 append。
-- [ ] reset/replay 串行；其间 live bytes 按 sequence 暂存，完成后顺序 flush。
-- [ ] dispose 可安全取消 pending ready/replay/flush，无 unhandled rejection、double dispose 或 late canvas mutation。
-- [ ] 用真实异步 fake factory 测 ready-before/after-dispose、rebase during live write、alternate screen 和二进制 bytes。
-- [ ] Run: `cd packages/relay-web && npx vitest run src/__tests__/terminal-adapter.test.ts`
-- [ ] Run: `cd packages/relay-web && npx vue-tsc --noEmit`
-- [ ] Commit: `fix(relay-web): make terminal replay reset-safe`
+- [x] interface 增加 `ready()` 和 `resetAndReplay(Uint8Array, cols, rows)`；`write` 接受 `Uint8Array`，不得 UTF-8 round-trip。
+- [x] factory ready 前的必要 write/resize/theme/replay 排队或 await，不再 silent no-op。
+- [x] rebase 先 reset emulator/grid/scrollback，再 resize，再写 keyframe；不能在旧 screen 上 append。
+- [x] reset/replay 串行；其间 live bytes 按 sequence 暂存，完成后顺序 flush。
+- [x] dispose 可安全取消 pending ready/replay/flush，无 unhandled rejection、double dispose 或 late canvas mutation。
+- [x] 用真实异步 fake factory 测 ready-before/after-dispose、rebase during live write、alternate screen 和二进制 bytes。
+- [x] Run: `cd packages/relay-web && npx vitest run src/__tests__/terminal-adapter.test.ts`
+- [x] Run: `cd packages/relay-web && npx vue-tsc --noEmit`
+- [x] Commit: `fix(relay-web): make terminal replay reset-safe`
 
 ### Task 22: 实现 web request client 与 recovery reducer/store
 
