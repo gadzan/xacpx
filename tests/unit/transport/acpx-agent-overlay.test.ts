@@ -12,7 +12,7 @@ import {
   mergeAcpxAgentOverlayEntry,
   parseAgentOverlayEntries,
 } from "../../../src/transport/acpx-agent-overlay";
-import { deriveAgentAlias } from "../../../src/config/agent-launch";
+import { deriveAgentAlias, isCanonicalManagedAliasForArgv } from "../../../src/config/agent-launch";
 import { withPrivateFileLock } from "../../../src/util/private-file";
 import { parseConfig } from "../../../src/config/load-config";
 import type { AppState, LogicalSession } from "../../../src/state/types";
@@ -113,7 +113,7 @@ function sessionFixture(partial: {
   };
 }
 
-test("computeSessionOverlayEntries only replays owned xacpx-managed aliases", () => {
+test("computeSessionOverlayEntries only replays self-proving xacpx-managed aliases", () => {
   const kimiArgv = ["kimi", "acp"];
   const canonical = deriveAgentAlias("kimi", kimiArgv);
   const state: AppState = {
@@ -150,22 +150,26 @@ test("computeSessionOverlayEntries only replays owned xacpx-managed aliases", ()
     scheduled_tasks: {},
   };
 
-  const entries = computeSessionOverlayEntries(state, {
-    resolveDriver: () => "kimi",
-  });
+  const entries = computeSessionOverlayEntries(state);
   expect(entries).toEqual([{ alias: canonical, argv: kimiArgv }]);
 });
 
-test("computeSessionOverlayEntries skips when resolveDriver cannot prove ownership", () => {
+test("computeSessionOverlayEntries replays historical alias after config driver changes", () => {
+  // Path A sticky: session was migrated under driver=kimi. User later
+  // changes agents.foo.driver to qwen. Restart replay must still restore
+  // the kimi-encoded alias from argv self-proof — not require current driver.
   const argv = ["kimi", "acp"];
-  const canonical = deriveAgentAlias("kimi", argv);
+  const historical = deriveAgentAlias("kimi", argv);
+  expect(isCanonicalManagedAliasForArgv(historical, argv)).toBe(true);
+  expect(deriveAgentAlias("qwen", argv)).not.toBe(historical);
+
   const state: AppState = {
     version: 1,
     sessions: {
       demo: sessionFixture({
         alias: "demo",
-        agent: "kimi",
-        transport_acpx_agent: canonical,
+        agent: "foo",
+        transport_acpx_agent: historical,
         transport_agent_argv: argv,
       }),
     },
@@ -174,8 +178,16 @@ test("computeSessionOverlayEntries skips when resolveDriver cannot prove ownersh
     orchestration: { tasks: {}, workerBindings: {}, groups: {} },
     scheduled_tasks: {},
   };
-  // Missing driver → cannot prove alias ownership → skip (fail closed).
-  expect(computeSessionOverlayEntries(state, { resolveDriver: () => undefined })).toEqual([]);
+  expect(computeSessionOverlayEntries(state)).toEqual([
+    { alias: historical, argv },
+  ]);
+});
+
+test("isCanonicalManagedAliasForArgv rejects bare and tampered aliases", () => {
+  const argv = ["kimi", "acp"];
+  expect(isCanonicalManagedAliasForArgv("kimi", argv)).toBe(false);
+  expect(isCanonicalManagedAliasForArgv("xacpx-managed-kimi-ffffffffffff", argv)).toBe(false);
+  expect(isCanonicalManagedAliasForArgv(deriveAgentAlias("kimi", argv), argv)).toBe(true);
 });
 
 test("parseAgentOverlayEntries validates the bridge env payload", () => {

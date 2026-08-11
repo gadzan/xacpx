@@ -56,6 +56,32 @@ export function deriveAgentAlias(driver: string, argv: readonly string[]): strin
   return `xacpx-managed-${driver}-${hash}`;
 }
 
+/**
+ * True when `alias` is a self-proving `xacpx-managed-<driver>-<hash>` for
+ * `argv`: the trailing 12 hex digits match the argv identity hash, the
+ * driver segment is non-empty, and re-deriving with that driver yields the
+ * same alias. Used by session overlay restart replay so ownership does not
+ * depend on the mutable current config driver (historical sticky sessions
+ * keep the driver encoded at migration time).
+ */
+export function isCanonicalManagedAliasForArgv(
+  alias: string,
+  argv: readonly string[],
+): boolean {
+  if (typeof alias !== "string" || !alias.startsWith("xacpx-managed-")) {
+    return false;
+  }
+  if (!Array.isArray(argv) || argv.length === 0) {
+    return false;
+  }
+  const rest = alias.slice("xacpx-managed-".length);
+  const match = /^(.*)-([0-9a-f]{12})$/u.exec(rest);
+  if (!match) return false;
+  const driver = match[1]!;
+  if (driver.length === 0) return false;
+  return deriveAgentAlias(driver, argv) === alias;
+}
+
 /** Detects an argv shape that `resolveLaunchSpec` treats as derived state
  * (managed adapter pin, hermes shim, or local fallback for opencode /
  * kilocode). A session with such argv has `recordedArgv` reset to undefined

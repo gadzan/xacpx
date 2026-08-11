@@ -8,7 +8,7 @@ import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
 import type { AppState } from "../state/types";
-import { deriveAgentAlias } from "../config/agent-launch";
+import { isCanonicalManagedAliasForArgv } from "../config/agent-launch";
 
 export const ACPX_MANAGED_ALIAS_PREFIX = "xacpx-managed-";
 
@@ -71,21 +71,18 @@ export function computeAgentOverlayEntries(config: AppConfig): AcpxAgentOverlayE
  * session-local structured migration, or already-present in state) needs the
  * matching `xacpx-managed-<driver>-<hash>` alias present in
  * `~/.acpx/config.json` so acpx can resolve `--agent <alias>` to the exact
- * argv. Deduped by alias (content-hash on argv → identical argv shares an
+ * argv. Deduped by alias (content-hashed on argv → identical argv shares an
  * alias → one overlay entry per unique argv across all sessions).
  *
- * Ownership gate: only rebuild aliases that (1) use the `xacpx-managed-`
- * prefix and (2) equal `deriveAgentAlias(driver, argv)`. Bare names like
- * `kimi` or stale non-canonical aliases are skipped so restart replay cannot
- * write a global acpx `agents.<name>` override.
+ * Ownership gate: the persisted alias must self-prove against argv via
+ * `isCanonicalManagedAliasForArgv` (prefix + hash + re-derive). Do NOT bind
+ * ownership to the mutable current config driver — Path A sticky sessions
+ * keep the driver encoded at migration time, and restart replay must restore
+ * that alias even after `agents.<name>.driver` changes. Bare names like
+ * `kimi` and tampered hashes are skipped so replay cannot write a global
+ * acpx `agents.<name>` override.
  */
-export function computeSessionOverlayEntries(
-  state: AppState,
-  options?: {
-    /** Resolve the agent driver for ownership checks. Defaults to the session's agent name. */
-    resolveDriver?: (agentName: string) => string | undefined;
-  },
-): AcpxAgentOverlayEntry[] {
+export function computeSessionOverlayEntries(state: AppState): AcpxAgentOverlayEntry[] {
   const entries: AcpxAgentOverlayEntry[] = [];
   const seen = new Set<string>();
   for (const session of Object.values(state.sessions)) {
@@ -94,14 +91,7 @@ export function computeSessionOverlayEntries(
     if (typeof acpxAgent !== "string" || acpxAgent.length === 0) continue;
     if (!acpxAgent.startsWith(ACPX_MANAGED_ALIAS_PREFIX)) continue;
     if (!Array.isArray(argv) || argv.length === 0 || !argv.every((e) => typeof e === "string")) continue;
-    const agentName = typeof session.agent === "string" ? session.agent : "";
-    // When resolveDriver is supplied, undefined means "cannot prove ownership"
-    // (do not fall back to the agent name — that would replay aliases for
-    // agents removed from config). Without resolveDriver, default to agentName.
-    const driver = options?.resolveDriver
-      ? options.resolveDriver(agentName)
-      : (agentName || undefined);
-    if (!driver || deriveAgentAlias(driver, argv as string[]) !== acpxAgent) continue;
+    if (!isCanonicalManagedAliasForArgv(acpxAgent, argv as string[])) continue;
     if (seen.has(acpxAgent)) continue;
     seen.add(acpxAgent);
     entries.push({ alias: acpxAgent, argv: argv as string[] });

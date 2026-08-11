@@ -1929,3 +1929,88 @@ test("issue 1 v8 (HIGH): .acpxrc.json project override is honored — migration 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("High: fresh-config fence skips when explicit argv B lands between planning and commit", async () => {
+  // Planning sees default A=["kimi","acp"]. Concurrent edit sets
+  // agents.kimi.argv=B=["kimi","--new"] before the lock-side fence.
+  // Elevating A into sticky step 2 would permanently shadow B — skip.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transport = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transport, "kimi acp", ["kimi", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "kimi", workspace: "demo",
+          transport_session: transport,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+
+    const configA = {
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    };
+    const configB = {
+      ...configA,
+      agents: { kimi: { driver: "kimi", argv: ["kimi", "--new"] } },
+    };
+    await writeFile(configPath, JSON.stringify(configA));
+
+    let configReads = 0;
+    const customReadFile = async (path: string): Promise<string> => {
+      if (path === configPath) {
+        configReads += 1;
+        // Planning: readConfigAgentsMap + readFullConfig (2 reads) see A.
+        // Apply fence: later reads see B.
+        return JSON.stringify(configReads <= 2 ? configA : configB);
+      }
+      return await readFile(path, "utf8");
+    };
+
+    const overlayCalls: Array<{ alias: string; argv: string[] }> = [];
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async (entries) => {
+        for (const e of entries) overlayCalls.push(e);
+      },
+      statePath,
+      configPath,
+      acpxSessionsDir: acpxDir,
+      readFile: customReadFile,
+      logger: createNoopAppLogger(),
+      resolveDefaultArgv: (agentName, fullConfig) => {
+        const agents = (fullConfig.agents ?? {}) as Record<string, { argv?: string[] }>;
+        const agent = agents[agentName];
+        if (Array.isArray(agent?.argv) && agent.argv.length > 0) {
+          return { argv: [...agent.argv], source: "explicit-config" as const };
+        }
+        return defaultArgvResolver(agentName);
+      },
+    });
+
+    expect(result.migrated).toEqual([]);
+    expect(overlayCalls).toEqual([]);
+    expect(result.skipped.some((s) => s.alias === "relay:demo")).toBe(true);
+    expect(result.skipped.find((s) => s.alias === "relay:demo")?.reason).toMatch(
+      /fresh config|does not match the current driver's default/,
+    );
+
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_agent_argv).toBeUndefined();
+    expect(sessionAfter.transport_acpx_agent).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

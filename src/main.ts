@@ -329,13 +329,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     //
     // Fail closed: a conflicting on-disk alias (different argv) means acpx
     // would launch the wrong command. Swallowing that and continuing to
-    // serve would hide a launch-safety failure. Only owned
-    // `xacpx-managed-*` aliases that match deriveAgentAlias(driver, argv)
-    // are replayed — never bare names like `kimi`.
+    // serve would hide a launch-safety failure. Only self-proving
+    // `xacpx-managed-*` aliases (canonical hash for the persisted argv) are
+    // replayed — never bare names like `kimi`, and independent of the
+    // mutable current config driver so historical sticky sessions survive
+    // driver renames.
     await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
-    const sessionEntries = computeSessionOverlayEntries(state, {
-      resolveDriver: (agentName) => config.agents[agentName]?.driver ?? agentName,
-    });
+    const sessionEntries = computeSessionOverlayEntries(state);
     if (sessionEntries.length > 0) {
       await ensureAgentOverlays(sessionEntries);
     }

@@ -517,7 +517,7 @@ if (sessionUpdates.length > 0) {
       // sessions still proceed. Aborting the whole batch is no longer required
       // because we never write a global `agents.<name>.argv` that could re-key
       // siblings.
-      const validated: typeof sessionUpdates = [];
+      const stateValidated: typeof sessionUpdates = [];
       for (const update of sessionUpdates) {
         const fresh = freshSessions[update.alias];
         if (!isRecord(fresh)) {
@@ -591,6 +591,42 @@ if (sessionUpdates.length > 0) {
             continue;
           }
           // argv matches but alias missing/wrong → repair below.
+        }
+        stateValidated.push(update);
+      }
+      if (stateValidated.length === 0) {
+        return;
+      }
+
+      // (2b) Fresh-config fence: Path A does not write global argv, but
+      // elevating a session from raw step 4 to sticky step 2 still changes
+      // precedence. A concurrent config edit that lands an explicit argv B
+      // between planning and commit would otherwise be permanently shadowed
+      // by a stale sticky A. Re-read xacpx config and re-check each update
+      // against the live default before overlay provision / state write.
+      const freshConfigRaw = await readFullConfig(
+        readFile,
+        deps.configPath,
+        result,
+        deps.logger,
+      );
+      const freshConfig = freshConfigRaw ?? { agents: {} };
+      const validated: typeof sessionUpdates = [];
+      for (const update of stateValidated) {
+        const fence = evaluatePathAFreshConfigFence(
+          update,
+          freshConfig,
+          resolveDefaultArgvNormalized,
+          platform,
+          runtimeRoot,
+        );
+        if (!fence.ok) {
+          result.skipped.push({
+            alias: update.alias,
+            agent: update.agent,
+            reason: fence.reason,
+          });
+          continue;
         }
         validated.push(update);
       }
@@ -686,6 +722,10 @@ return result;
  * Sibling sessions of the same agent no longer gate each other: Path A never
  * writes global `agents.<name>.argv`, so one session's alias cannot re-key
  * another. Overlay entries are deduped later by alias/hash.
+ *
+ * Apply still re-checks the live xacpx config under the state lock via
+ * `evaluatePathAFreshConfigFence` so a concurrent explicit-argv edit cannot
+ * be permanently shadowed by elevating a stale default into sticky step 2.
  */
 function planSessionUpdates(
   plan: StateArgvMigrationPlanEntry[],
@@ -722,26 +762,18 @@ function planSessionUpdates(
     const driver = isRecord(agentConfigRaw) && typeof agentConfigRaw.driver === "string"
       ? agentConfigRaw.driver
       : agent;
-    const defaultResolution = resolveDefaultArgv(agent, fullConfig, platform, runtimeRoot);
-    const defaultArgv = defaultResolution?.argv;
-    const matchesDefault =
-      defaultArgv !== undefined &&
-      defaultArgv.length === argv.length &&
-      defaultArgv.every((token, index) => token === argv[index]);
-
-    if (matchesDefault && defaultResolution!.source === "derived") {
+    const fence = evaluatePathAFreshConfigFence(
+      { alias: entry.alias, agent, driver, argv },
+      fullConfig,
+      resolveDefaultArgv,
+      platform,
+      runtimeRoot,
+    );
+    if (!fence.ok) {
       result.skipped.push({
         alias: entry.alias,
         agent,
-        reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) matches a derived launch (managed pin / hermes shim / local fallback); session-local alias would freeze a launch that should stay recomputed on restart — left untouched (migrate manually if needed)`,
-      });
-      continue;
-    }
-    if (!matchesDefault) {
-      result.skipped.push({
-        alias: entry.alias,
-        agent,
-        reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) does not match the current driver's default launch (${defaultArgv === undefined ? "unknown" : renderAgentArgvIdentity(defaultArgv)}); refusing to write a session-local argv that the daemon would launch but that does not match the current launch — migrate this agent manually`,
+        reason: fence.reason,
       });
       continue;
     }
@@ -756,6 +788,63 @@ function planSessionUpdates(
   }
 
   return { sessionUpdates };
+}
+
+/**
+ * Re-validate a planned Path A session update against a config snapshot.
+ * Used at planning time and again under the state lock (fresh config fence)
+ * so elevating step 4 → sticky step 2 cannot shadow a concurrent explicit
+ * config argv that landed after the planning snapshot.
+ */
+export function evaluatePathAFreshConfigFence(
+  update: { alias: string; agent: string; driver: string; argv: string[] },
+  fullConfig: Record<string, unknown>,
+  resolveDefaultArgv: (
+    agentName: string,
+    fullConfig: Record<string, unknown>,
+    platform: NodeJS.Platform,
+    runtimeRoot: string,
+  ) => DefaultArgvResolution | undefined,
+  platform: NodeJS.Platform,
+  runtimeRoot: string,
+): { ok: true } | { ok: false; reason: string } {
+  const agent = update.agent;
+  const argv = update.argv;
+  const agents = isRecord(fullConfig.agents) ? (fullConfig.agents as Record<string, unknown>) : {};
+  const agentConfigRaw = agents[agent];
+  if (!isRecord(agentConfigRaw)) {
+    return {
+      ok: false,
+      reason: `fresh config: agent "${agent}" is no longer configured; refusing to elevate session "${update.alias}" to sticky argv`,
+    };
+  }
+  const freshDriver = typeof agentConfigRaw.driver === "string" ? agentConfigRaw.driver : agent;
+  if (freshDriver !== update.driver) {
+    return {
+      ok: false,
+      reason: `fresh config: agent "${agent}" driver changed from "${update.driver}" to "${freshDriver}"; refusing to elevate session "${update.alias}" with a stale planned alias`,
+    };
+  }
+  const defaultResolution = resolveDefaultArgv(agent, fullConfig, platform, runtimeRoot);
+  const defaultArgv = defaultResolution?.argv;
+  const matchesDefault =
+    defaultArgv !== undefined &&
+    defaultArgv.length === argv.length &&
+    defaultArgv.every((token, index) => token === argv[index]);
+
+  if (matchesDefault && defaultResolution!.source === "derived") {
+    return {
+      ok: false,
+      reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) matches a derived launch (managed pin / hermes shim / local fallback); session-local alias would freeze a launch that should stay recomputed on restart — left untouched (migrate manually if needed)`,
+    };
+  }
+  if (!matchesDefault) {
+    return {
+      ok: false,
+      reason: `fresh config: agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) does not match the current driver's default launch (${defaultArgv === undefined ? "unknown" : renderAgentArgvIdentity(defaultArgv)}); refusing to elevate a stale launch into sticky step 2 that would shadow the live default — migrate this agent manually`,
+    };
+  }
+  return { ok: true };
 }
 
 async function readConfigAgentsMap(

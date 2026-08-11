@@ -578,15 +578,20 @@ transports, ... — observes the migrated values) closes that window:
      top-level key from the fresh snapshot. Queue `migrated` entries
      locally and commit to `result.migrated` only AFTER `writeLocked`
      resolves successfully.
+   - **Fresh-config fence**: before overlay provision / state write,
+     re-read xacpx `config.json` and re-check each validated update
+     (agent still exists, driver unchanged, effective default argv still
+     equals the planned argv, provenance still allows Path A). A
+     concurrent explicit `agents.<name>.argv` edit must not be shadowed
+     by elevating a stale default into sticky `resolveLaunchSpec` step 2.
    - **Restart robustness**: on every startup `autoMigrateArgv`
      re-provisions session overlays from the LIVE state via
-     `computeSessionOverlayEntries(state, { resolveDriver })`. Ownership
-     gate: only aliases with the `xacpx-managed-` prefix that equal
-     `deriveAgentAlias(driver, argv)` are replayed — bare names like
-     `kimi` or stale non-canonical aliases are skipped so restart cannot
-     write a global acpx `agents.<name>` override. Overlay replay is
-     fail-closed (provision errors propagate). Content-hashed on argv →
-     idempotent.
+     `computeSessionOverlayEntries(state)`. Ownership is self-proving:
+     only aliases where `isCanonicalManagedAliasForArgv(alias, argv)`
+     holds are replayed (prefix + hash + re-derive with the driver
+     encoded in the alias). Bare names / tampered hashes are skipped;
+     historical sticky aliases survive `agents.<name>.driver` changes.
+     Overlay replay is fail-closed. Content-hashed on argv → idempotent.
 3. **Errors surface to the operator**: any I/O failure (state read, config
    read, state write, acpx record read, corrupt acpx index, overlay
    provision) is appended to `result.errors` AND logged via the app logger.
