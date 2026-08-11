@@ -240,6 +240,13 @@ export interface MigrateStateAgentArgvDeps {
    * avoid touching the real acpx home.
    */
   provisionOverlays?: (entries: AcpxAgentOverlayEntry[]) => Promise<void>;
+  /**
+   * Test seam: invoked after the fresh-config fence passes and while BOTH
+   * the state lock and the xacpx `config.json` lock are held, before overlay
+   * provision / state write. Used to prove concurrent `ConfigStore.patchRaw`
+   * writers block until the elevate commits. Production never sets this.
+   */
+  afterFreshConfigFence?: () => Promise<void>;
   logger: AppLogger;
   /** When true, every write is skipped and only the plan is returned. */
   dryRun?: boolean;
@@ -288,7 +295,11 @@ function toDefaultArgvResolution(
  *   planning read and the lock acquire cannot silently clobber unrelated
  *   state (`chat_contexts`, `orchestration`, `scheduled_tasks`) because only
  *   the targeted `sessions` subtree is touched in the new document.
- * - xacpx `config.json` is never mutated (Path A is session-local).
+ * - The fresh-config fence through state commit holds the xacpx
+ *   `config.json` proper-lock (`ConfigStore.patchRaw`'s lock) nested under
+ *   the state lock (order: state → xacpx config). Cooperative config writers
+ *   cannot insert an explicit argv between fence and elevate.
+ * - xacpx `config.json` is never mutated by Path A (session-local only).
  *
  * Fail-soft in the daemon path: any I/O error is collected in `result.errors`
  * AND logged via the logger; the daemon continues to start so a transient
@@ -455,31 +466,23 @@ export async function migrateStateAgentArgv(
 
   // === Apply phase ===
 //
-// All writes happen inside the same `withPrivateFileLock` acquisition on
-// the state file. Ordering:
-//   1. Re-read state fresh inside the lock.
-//   2. Validate every planned session update against the fresh record.
-//      Any session that no longer matches (deleted, retargeted, command
-//      changed, argv changed) is reported as a skip; if any update fails
-//      validation, we abort the WHOLE migration — no state write, no
-//      overlay write — so the existing state and acpx config stay in sync.
-//   3. Provision the new session overlays (`xacpx-managed-<driver>-<hash>`
-//      entries) into `~/.acpx/config.json` so acpx can resolve
-//      `--agent <alias>` to the exact argv. If provisioning throws, abort
-//      the whole transaction — we never write state pointing at an alias
-//      acpx cannot resolve.
-//   4. Write state with the validated sessions (including
-//      `transport_acpx_agent` + `transport_agent_argv`); preserve every
-//      other top-level key from the fresh snapshot. No `config.json`
-//      write happens — the migration is purely session-local so future
-//      sessions of the same driver continue to honor acpx global /
-//      `.acpxrc.json` project overrides.
+// All writes happen inside `withPrivateFileLock` on the state file, with the
+// xacpx config lock nested for the elevate critical section. Ordering:
+//   1. Re-read state fresh inside the state lock.
+//   2. Validate every planned session update against the fresh record
+//      (per-session skip).
+//   3. Acquire xacpx `config.json` lock (same lock as ConfigStore.patchRaw).
+//      Lock order is always state → config; no other path nests config →
+//      state, so this cannot deadlock with cooperative CLI writers.
+//   4. Fresh-read config under that lock and run the Path A fence. A
+//      concurrent explicit argv cannot land between fence and commit.
+//   5. Provision session overlays into `~/.acpx/config.json` (separate
+//      acpx-config lock). If provisioning throws, abort (no state write).
+//   6. Write state with validated sessions. Release config lock, then
+//      state lock.
 //
-// The state lock prevents concurrent daemon `state.json` writes from
-// interleaving between any of the steps. The overlay provision acquires
-// acpx config's own proper-lockfile (`withPrivateFileLock` inside
-// `ensureAgentOverlays`); the lock order is state → acpx config, held
-// one at a time — no deadlock.
+// Path A never mutates xacpx `config.json`; the config lock is held only
+// to freeze the fence snapshot through the sticky elevate.
 
 if (sessionUpdates.length > 0) {
   try {
@@ -598,109 +601,105 @@ if (sessionUpdates.length > 0) {
         return;
       }
 
-      // (2b) Fresh-config fence: Path A does not write global argv, but
-      // elevating a session from raw step 4 to sticky step 2 still changes
-      // precedence. A concurrent config edit that lands an explicit argv B
-      // between planning and commit would otherwise be permanently shadowed
-      // by a stale sticky A. Re-read xacpx config and re-check each update
-      // against the live default before overlay provision / state write.
-      const freshConfigRaw = await readFullConfig(
-        readFile,
-        deps.configPath,
-        result,
-        deps.logger,
-      );
-      const freshConfig = freshConfigRaw ?? { agents: {} };
-      const validated: typeof sessionUpdates = [];
-      for (const update of stateValidated) {
-        const fence = evaluatePathAFreshConfigFence(
-          update,
-          freshConfig,
-          resolveDefaultArgvNormalized,
-          platform,
-          runtimeRoot,
+      // (3–6) Hold xacpx config lock for fence → overlay → state write so a
+      // concurrent ConfigStore.patchRaw cannot insert explicit argv B after
+      // the fence snapshot and before sticky elevate.
+      const runElevateUnderConfigLock = async (): Promise<void> => {
+        const freshConfigRaw = await readFullConfig(
+          readFile,
+          deps.configPath,
+          result,
+          deps.logger,
         );
-        if (!fence.ok) {
-          result.skipped.push({
-            alias: update.alias,
-            agent: update.agent,
-            reason: fence.reason,
-          });
-          continue;
+        const freshConfig = freshConfigRaw ?? { agents: {} };
+        const validated: typeof sessionUpdates = [];
+        for (const update of stateValidated) {
+          const fence = evaluatePathAFreshConfigFence(
+            update,
+            freshConfig,
+            resolveDefaultArgvNormalized,
+            platform,
+            runtimeRoot,
+          );
+          if (!fence.ok) {
+            result.skipped.push({
+              alias: update.alias,
+              agent: update.agent,
+              reason: fence.reason,
+            });
+            continue;
+          }
+          validated.push(update);
         }
-        validated.push(update);
-      }
-      if (validated.length === 0) {
-        return;
-      }
-
-      // (3) Provision the new session overlays into `~/.acpx/config.json` so
-      // acpx can resolve `--agent <alias>` to the exact argv. Deduped by
-      // alias (content-hash on argv). MUST run before the state write — a
-      // state session that points at a non-existent alias would fail to
-      // launch on Windows. If provisioning throws, abort the whole
-      // transaction (no state write).
-      const newOverlayEntries: AcpxAgentOverlayEntry[] = [];
-      const overlaySeen = new Set<string>();
-      for (const update of validated) {
-        if (overlaySeen.has(update.acpxAgent)) continue;
-        overlaySeen.add(update.acpxAgent);
-        newOverlayEntries.push({ alias: update.acpxAgent, argv: update.argv });
-      }
-      if (newOverlayEntries.length > 0) {
-        try {
-          await provisionOverlays(newOverlayEntries);
-        } catch (error) {
-          pushError(result, deps.logger, "state.argv_migration.overlay_provision_failed",
-            "failed to provision session-local acpx overlays; argv migration aborted (no state write)",
-            { error: errorMessage(error) }, error);
+        if (validated.length === 0) {
           return;
         }
-      }
 
-      // (4) Write state with the validated sessions. Persist BOTH
-      // `transport_acpx_agent` AND `transport_agent_argv` so
-      // `resolveLaunchSpec` step 2 (recorded argv sticky) launches the
-      // session via the overlay alias — fixing the Windows fail-closed
-      // throw. Preserve every other top-level key from the fresh
-      // snapshot. Queue `migrated` entries locally and commit to
-      // `result.migrated` only AFTER writeLocked resolves successfully.
-      const queuedMigrated: Array<{ alias: string; agent: string; argv: string[]; acpxAgent: string }> = [];
-      const nextSessions: Record<string, unknown> = { ...freshSessions };
-      for (const update of validated) {
-        const fresh = nextSessions[update.alias];
-        if (!isRecord(fresh)) continue; // defensive
-        nextSessions[update.alias] = {
-          ...fresh,
-          transport_acpx_agent: update.acpxAgent,
-          transport_agent_argv: [...update.argv],
-        };
-        queuedMigrated.push(update);
-      }
-      const next: Record<string, unknown> = { ...freshParsed, sessions: nextSessions };
-      const serialized = `${JSON.stringify(next, null, 2)}\n`;
-      await writeLocked(serialized);
-      // State write succeeded. Commit queued migrated entries to result.
-      for (const update of queuedMigrated) {
-        result.migrated.push({
-          alias: update.alias,
-          agent: update.agent,
-          argv: update.argv,
-          acpxAgent: update.acpxAgent,
+        if (deps.afterFreshConfigFence) {
+          await deps.afterFreshConfigFence();
+        }
+
+        // Provision overlays into `~/.acpx/config.json` so acpx can resolve
+        // `--agent <alias>`. Deduped by alias. MUST run before the state
+        // write. If provisioning throws, abort (no state write).
+        const newOverlayEntries: AcpxAgentOverlayEntry[] = [];
+        const overlaySeen = new Set<string>();
+        for (const update of validated) {
+          if (overlaySeen.has(update.acpxAgent)) continue;
+          overlaySeen.add(update.acpxAgent);
+          newOverlayEntries.push({ alias: update.acpxAgent, argv: update.argv });
+        }
+        if (newOverlayEntries.length > 0) {
+          try {
+            await provisionOverlays(newOverlayEntries);
+          } catch (error) {
+            pushError(result, deps.logger, "state.argv_migration.overlay_provision_failed",
+              "failed to provision session-local acpx overlays; argv migration aborted (no state write)",
+              { error: errorMessage(error) }, error);
+            return;
+          }
+        }
+
+        const queuedMigrated: Array<{ alias: string; agent: string; argv: string[]; acpxAgent: string }> = [];
+        const nextSessions: Record<string, unknown> = { ...freshSessions };
+        for (const update of validated) {
+          const fresh = nextSessions[update.alias];
+          if (!isRecord(fresh)) continue; // defensive
+          nextSessions[update.alias] = {
+            ...fresh,
+            transport_acpx_agent: update.acpxAgent,
+            transport_agent_argv: [...update.argv],
+          };
+          queuedMigrated.push(update);
+        }
+        const next: Record<string, unknown> = { ...freshParsed, sessions: nextSessions };
+        const serialized = `${JSON.stringify(next, null, 2)}\n`;
+        await writeLocked(serialized);
+        for (const update of queuedMigrated) {
+          result.migrated.push({
+            alias: update.alias,
+            agent: update.agent,
+            argv: update.argv,
+            acpxAgent: update.acpxAgent,
+          });
+        }
+      };
+
+      if (typeof deps.configPath === "string" && deps.configPath.length > 0) {
+        await withPrivateFileLock(deps.configPath, async () => {
+          await runElevateUnderConfigLock();
         });
+      } else {
+        await runElevateUnderConfigLock();
       }
     });
   } catch (error) {
-    // The state lock acquire, fresh re-read, or final writeLocked threw
-    // after the config patch had already been committed. By the time we
-    // land here, config.json may have been written (and result.configUpdates
-    // populated). State.json may be unchanged OR partially written —
-    // `writePrivateFileAtomic` does temp+rename which is atomic on POSIX
-    // and best-effort on Windows where the fallback direct write can
-    // leave a partial file. State did NOT complete successfully; the
-    // operator must verify state.json, not assume "no writes applied".
+    // State lock / nested config lock / fresh re-read / writeLocked failed.
+    // Path A does not mutate xacpx config.json; an acpx overlay may have
+    // been provisioned without a matching state write. State.json may be
+    // unchanged OR partially written (Windows direct-write fallback).
     pushError(result, deps.logger, "state.argv_migration.write_failed",
-      "argv migration failed during the state write step; state.json write did not complete successfully and may be unchanged or partially written. A new acpx overlay may have been provisioned and is now referenced only by sessions that did not get persisted.",
+      "argv migration failed during the locked elevate step; state.json write did not complete successfully and may be unchanged or partially written. A new acpx overlay may have been provisioned and is now referenced only by sessions that did not get persisted.",
       { statePath: deps.statePath }, error);
   }
 }

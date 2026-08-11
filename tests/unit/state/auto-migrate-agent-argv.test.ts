@@ -2014,3 +2014,99 @@ test("High: fresh-config fence skips when explicit argv B lands between planning
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("High: config lock freezes fence→commit against concurrent ConfigStore.patchRaw", async () => {
+  // After fence passes under the config lock, a concurrent ConfigStore
+  // writer must block until elevate commits — it cannot insert argv B in
+  // the fence→commit window.
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transport = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transport, "kimi acp", ["kimi", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "kimi", workspace: "demo",
+          transport_session: transport,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    let resolveFenceHeld!: () => void;
+    const fenceHeld = new Promise<void>((resolve) => { resolveFenceHeld = resolve; });
+    let resolveAllowCommit!: () => void;
+    const allowCommit = new Promise<void>((resolve) => { resolveAllowCommit = resolve; });
+
+    let patchCompleted = false;
+    const migrationPromise = migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath,
+      configPath,
+      acpxSessionsDir: acpxDir,
+      logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+      afterFreshConfigFence: async () => {
+        resolveFenceHeld();
+        await allowCommit;
+      },
+    });
+
+    await fenceHeld;
+
+    const { ConfigStore } = await import("../../../src/config/config-store");
+    const store = new ConfigStore(configPath);
+    const patchPromise = store.patchRaw((raw) => {
+      const agents = (raw.agents ?? {}) as Record<string, Record<string, unknown>>;
+      const kimi = { ...(agents.kimi ?? { driver: "kimi" }), argv: ["kimi", "--new"] };
+      agents.kimi = kimi;
+      raw.agents = agents;
+    }).then((cfg) => {
+      patchCompleted = true;
+      return cfg;
+    });
+
+    // While migration still holds the config lock, patchRaw must not finish.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(patchCompleted).toBe(false);
+
+    resolveAllowCommit();
+    const result = await migrationPromise;
+    expect(result.migrated).toEqual([
+      {
+        alias: "relay:demo",
+        agent: "kimi",
+        argv: ["kimi", "acp"],
+        acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
+      },
+    ]);
+
+    await patchPromise;
+    expect(patchCompleted).toBe(true);
+
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_agent_argv).toEqual(["kimi", "acp"]);
+    expect(sessionAfter.transport_acpx_agent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
+
+    const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    expect((configAfter.agents as Record<string, Record<string, unknown>>).kimi!.argv)
+      .toEqual(["kimi", "--new"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

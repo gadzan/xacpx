@@ -578,12 +578,14 @@ transports, ... — observes the migrated values) closes that window:
      top-level key from the fresh snapshot. Queue `migrated` entries
      locally and commit to `result.migrated` only AFTER `writeLocked`
      resolves successfully.
-   - **Fresh-config fence**: before overlay provision / state write,
-     re-read xacpx `config.json` and re-check each validated update
-     (agent still exists, driver unchanged, effective default argv still
-     equals the planned argv, provenance still allows Path A). A
-     concurrent explicit `agents.<name>.argv` edit must not be shadowed
-     by elevating a stale default into sticky `resolveLaunchSpec` step 2.
+   - **Fresh-config fence (under config lock)**: nested under the state
+     lock, acquire the same xacpx `config.json` proper-lock used by
+     `ConfigStore.patchRaw` (order: state → config). Fresh-read config
+     and re-check each validated update (agent still exists, driver
+     unchanged, effective default argv still equals the planned argv,
+     provenance still allows Path A). Hold that lock through overlay
+     provision and the state write so a concurrent CLI config writer
+     cannot insert an explicit argv between fence and sticky elevate.
    - **Restart robustness**: on every startup `autoMigrateArgv`
      re-provisions session overlays from the LIVE state via
      `computeSessionOverlayEntries(state)`. Ownership is self-proving:
