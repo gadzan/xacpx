@@ -323,15 +323,15 @@
 - Test: `tests/unit/packages/channel-relay/rmux-driver.test.ts`
 - Test: `tests/unit/packages/channel-relay/terminal-attachments.test.ts`
 
-- [ ] `RmuxTerminalDriver` 只暴露 create/adopt/list/kill/input/resize/recover/stopRenewing/diagnostics；driver DTO 保留 stable session/pane ID、tags、raw bytes、epoch/sequence。
-- [ ] fake driver 可注入每个 operation 的 delay/failure/crash、lease lost、natural exit、lag/rebase 和 inventory；测试只通过 public runtime observable behavior 操作它。
-- [ ] attachment 绑定 `(viewerId, terminalId, generation)`；ID 随机不可预测；viewer/controller/recovery cursor 只在内存。
-- [ ] first viewer 自动 controller；后续 spectator；takeControl 原子降级旧 controller；spectator input/resize 在 registry 层拒绝。
-- [ ] attach/detach/takeControl/TTL expiry 都重新计算 viewerCount，并向受影响 attachments 发 role-changed；controller 离开后保持“无 controller”，不暗中随机提升 spectator。
-- [ ] TTL、heartbeat、detach、max viewers、socket disconnect bulk detach 都不 kill terminal，也不刷新 resource idle。
-- [ ] per-attachment outbound queue 以 bytes 硬限；溢出关闭该 stream并要求 resync，不阻塞其他 viewer。
-- [ ] Run focused tests and channel-relay typecheck.
-- [ ] Commit: `feat(channel-relay): model rmux drivers and terminal viewers`
+- [x] `RmuxTerminalDriver` 只暴露 create/adopt/list/kill/input/resize/recover/stopRenewing/diagnostics；driver DTO 保留 stable session/pane ID、tags、raw bytes、epoch/sequence。
+- [x] fake driver 可注入每个 operation 的 delay/failure/crash、lease lost、natural exit、lag/rebase 和 inventory；测试只通过 public runtime observable behavior 操作它。
+- [x] attachment 绑定 `(viewerId, terminalId, generation)`；ID 随机不可预测；viewer/controller/recovery cursor 只在内存。
+- [x] first viewer 自动 controller；后续 spectator；takeControl 原子降级旧 controller；spectator input/resize 在 registry 层拒绝。
+- [x] attach/detach/takeControl/TTL expiry 都重新计算 viewerCount，并向受影响 attachments 发 role-changed；controller 离开后保持“无 controller”，不暗中随机提升 spectator。
+- [x] TTL、heartbeat、detach、max viewers、socket disconnect bulk detach 都不 kill terminal，也不刷新 resource idle。
+- [x] per-attachment outbound queue 以 bytes 硬限；溢出关闭该 stream并要求 resync，不阻塞其他 viewer。
+- [x] Run focused tests and channel-relay typecheck.
+- [x] Commit: `feat(channel-relay): model rmux drivers and terminal viewers`
 
 ### Task 13: 实现 `RelayTerminalRuntime` 创建、恢复与终止事务
 
