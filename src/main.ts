@@ -326,16 +326,18 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     // restarts after acpx-config churn) ensure those aliases are present in
     // `~/.acpx/config.json` so acpx can resolve `--agent <alias>`. Idempotent
     // and content-hashed, so the same argv maps to the same alias.
+    //
+    // Fail closed: a conflicting on-disk alias (different argv) means acpx
+    // would launch the wrong command. Swallowing that and continuing to
+    // serve would hide a launch-safety failure. Only owned
+    // `xacpx-managed-*` aliases that match deriveAgentAlias(driver, argv)
+    // are replayed — never bare names like `kimi`.
     await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
-    const sessionEntries = computeSessionOverlayEntries(state);
+    const sessionEntries = computeSessionOverlayEntries(state, {
+      resolveDriver: (agentName) => config.agents[agentName]?.driver ?? agentName,
+    });
     if (sessionEntries.length > 0) {
-      try {
-        await ensureAgentOverlays(sessionEntries);
-      } catch (error) {
-        await logger.error("state.session_overlay_provision_failed",
-          "failed to re-provision session overlays from live state; sessions with transport_acpx_agent may fail to launch",
-          { error: error instanceof Error ? error.message : String(error) }).catch(() => {});
-      }
+      await ensureAgentOverlays(sessionEntries);
     }
   };
   const stateLoadReport = stateStore.lastLoadReport;

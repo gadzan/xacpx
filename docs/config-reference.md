@@ -520,55 +520,18 @@ Running it under the lock and then reloading config/state **in place** (the
 migration always re-reads both, so every reference holder — `SessionService`,
 transports, ... — observes the migrated values) closes that window:
 
-1. **Per-agent invariant (all-or-nothing)**: the safety set covers
-   EVERY non-sticky session for the agent. The three-case rule:
-   - **sticky** (per the shared `isDerivedAgentArgv` classification,
-     matching `resolveLaunchSpec` step 2 exactly) → immune to config
-     argv override, excluded from the safety set
-   - **non-sticky + known identity == target** → safe
-   - **non-sticky + known identity != target** → abort (conflict)
-   - **non-sticky + unknown identity** → abort (cannot prove safety)
+1. **Per-session planning (Path A; no global argv write)**: each session is
+   evaluated independently. Sibling sessions of the same agent no longer gate
+   each other — Path A never writes `agents.<name>.argv`, so one session's
+   alias cannot re-key another.
 
-   A session's argv is **derived** (and therefore NOT truly sticky) if
-   it is a managed adapter npx pin, the hermes shim, or the opencode /
-   kilocode local-fallback `[driver, "acp"]` shape — `resolveLaunchSpec`
-   resets `recordedArgv` to undefined for these before step 2, so step 3
-   can still re-key them. The migration uses the same `isDerivedAgentArgv`
-   function as `SessionService` (now exported from
-   `src/config/agent-launch.ts`); the safety set is exactly the set of
-   sessions that step 3 cannot reach after we write
-   `agents.<name>.argv`.
+   A session is **fully migrated (noop)** only when it already has both
+   `transport_agent_argv` and a canonical `transport_acpx_agent` matching
+   `deriveAgentAlias(driver, argv)`. `resolveLaunchSpec` step 2 needs both;
+   **argv-only is treated as a repair backfill**, not as done.
 
-   A session has **unknown identity** when it has neither
-   `transport_agent_argv` nor `transport_agent_command`. Such a session
-   currently resolves via `resolveLaunchSpec` step 5 (default launch);
-   writing `agents.<name>.argv` would change its behavior to step 3,
-   so the whole agent is rejected — we cannot prove the new argv
-   matches what the session was doing.
-
-   **Planned-driver binding**: the planning phase captures the agent's
-   `driver` from `agents.<name>.driver` in the config snapshot. The
-   fresh-state per-agent recheck inside the lock uses this PLANNED
-   driver (not a fresh-read of the config, which a concurrent writer
-   may have changed) to call `isDerivedAgentArgv`. Without this, a
-   fresh session with a `["opencode","acp"]` argv could be misclassified
-   as "custom" if the migration fell back to the agent name `foo`
-   instead of the driver `opencode`.
-
-   **Config driver fence**: the lock-acquired `patchConfig` mutator
-   compares the on-disk `agents.<name>.driver` against
-   `plannedDriverByAgent.get(name)`. Any mismatch aborts the whole
-   transaction — a concurrent writer who changed the driver between
-   planning and lock could have flipped the derived/custom
-   classification of existing argvs, and writing the planned argv
-   would then re-key sessions the planning-time gate considered safe.
-
-   The function also requires unanimous known identity across the bucket
-   and at least one backfillable session to anchor argv. A bucket that
-   is unanimous-and-all-noop is steady state (no writes needed).
-
-   **Session-local structured migration (provenance-aware, no global write)**:
-   a planned argv is persisted as a **session-local structured launch** via a
+   **Session-local structured migration (provenance-aware)**: a planned argv
+   is persisted as a **session-local structured launch** via a
    `xacpx-managed-<driver>-<hash>` alias — the historical session sticks to
    it via `resolveLaunchSpec` step 2 (`transport_acpx_agent` +
    `transport_agent_argv`). **`agents.<name>.argv` is NEVER written** — the
@@ -587,26 +550,28 @@ transports, ... — observes the migrated values) closes that window:
      (the same `xacpx-managed-*` alias is derived from the same argv;
      config-side overlay provisioning has already created the entry).
 
-   Failures skip the entire agent:
+   Per-session skip reasons (siblings unaffected):
    - **historical custom argv that does not match the current default**:
      elevating the registry argv into a session-local alias would shadow
      the current launch — skip (user must migrate manually).
-   - **all non-sticky sessions for the agent must agree on identity**, and
-     at least one must be backfilled; otherwise skip the whole agent.
+   - **unknown / unprovable identity**: no recorded command and no argv,
+     or identity cannot be proven from config argv / acpx record — skip
+     that session only.
+   - Sessions that already match the current non-derived default but lack
+     the canonical alias are **repaired** (write `transport_acpx_agent`).
 2. **Locked transactional apply**: the apply phase runs inside
    `withPrivateFileLock(statePath, …)`:
-   - Re-read `state.json` fresh inside the lock and validate every
-     planned session update against the fresh record (alias still exists,
-     same `agent`, same `transport_agent_command` identity, no
-     clobbering `transport_agent_argv` / `transport_acpx_agent`). A
-     validation failure aborts the whole transaction — no overlay
-     provision, no state write.
+   - Re-read `state.json` fresh inside the lock and validate each planned
+     session update against the fresh record (alias still exists, same
+     `agent`, same identity, argv match or repair). Path A is per-session:
+     an invalid session is skipped individually; other planned sessions
+     still proceed.
    - Provision the new session overlays (`xacpx-managed-<driver>-<hash>`
      entries) into `~/.acpx/config.json` via `ensureAgentOverlays` so
      acpx can resolve `--agent <alias>` to the exact argv. Must run
      BEFORE the state write — a state session that points at a
      non-existent alias would fail to launch on Windows. If provisioning
-     throws, abort the whole transaction.
+     throws, abort the whole transaction (no state write).
    - Write state with the validated sessions: persist
      `transport_acpx_agent` (the alias) and `transport_agent_argv`. No
      `config.json` (xacpx config) write happens. Preserve every other
@@ -614,33 +579,36 @@ transports, ... — observes the migrated values) closes that window:
      locally and commit to `result.migrated` only AFTER `writeLocked`
      resolves successfully.
    - **Restart robustness**: on every startup `autoMigrateArgv`
-     re-provisions session overlays from the LIVE state (via
-     `computeSessionOverlayEntries(state)`) so the aliases survive
-     `~/.acpx/config.json` cleanup or churn. Content-hashed on argv →
+     re-provisions session overlays from the LIVE state via
+     `computeSessionOverlayEntries(state, { resolveDriver })`. Ownership
+     gate: only aliases with the `xacpx-managed-` prefix that equal
+     `deriveAgentAlias(driver, argv)` are replayed — bare names like
+     `kimi` or stale non-canonical aliases are skipped so restart cannot
+     write a global acpx `agents.<name>` override. Overlay replay is
+     fail-closed (provision errors propagate). Content-hashed on argv →
      idempotent.
 3. **Errors surface to the operator**: any I/O failure (state read, config
-   read, config patch, state write, acpx record read, corrupt acpx
-   index) is appended to `result.errors` AND logged via the app logger.
+   read, state write, acpx record read, corrupt acpx index, overlay
+   provision) is appended to `result.errors` AND logged via the app logger.
    The daemon path is best-effort (logs and continues); the CLI path
    prints each error to stderr and exits non-zero so operator tooling
    never silently hides a real failure. The "transaction failed"
-   message explicitly states when config may have been patched before
+   message explicitly states when overlays may have been provisioned before
    the state write failed, AND that state.json may be unchanged OR
    partially written (the temp+rename in `writePrivateFileAtomic` is
    atomic on POSIX but the Windows direct-write fallback can leave a
    partial file), so the operator doesn't assume "no writes applied"
-   when in fact the config side is committed.
+   when in fact the acpx-config side is committed.
 
-The migration is fail-closed by design at three layers: per-agent
-identity consensus (planning), fresh-state per-agent recheck (lock),
-and fresh-state per-session recheck (lock). Any disagreement aborts
-the whole transaction without writing either file. Adding
-`agents.<name>.argv` to `config.json` never silently re-keys a
-session onto the wrong acpx record.
+The migration is fail-closed by design: per-session provenance/identity
+gates (planning), fresh-state per-session recheck (lock), and overlay
+provision before state write. Adding `agents.<name>.argv` to `config.json`
+is never performed by this migration and therefore never silently re-keys
+a session onto the wrong acpx record.
 
-Note: this is NOT a true two-file transaction. The state and config
+Note: this is NOT a true two-file transaction. The state and acpx config
 files have independent locks, and a state write failure after a
-successful config patch leaves the config side committed. The error
+successful overlay provision leaves the acpx-config side committed. The error
 message makes this asymmetry explicit so the operator can verify both
 files after a partial failure.
 

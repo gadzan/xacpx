@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   acpxConfigPath,
   computeAgentOverlayEntries,
+  computeSessionOverlayEntries,
   ensureAgentOverlays,
   mergeAcpxAgentOverlayEntry,
   parseAgentOverlayEntries,
@@ -14,6 +15,7 @@ import {
 import { deriveAgentAlias } from "../../../src/config/agent-launch";
 import { withPrivateFileLock } from "../../../src/util/private-file";
 import { parseConfig } from "../../../src/config/load-config";
+import type { AppState, LogicalSession } from "../../../src/state/types";
 
 const codexAlias = deriveAgentAlias("codex", [
   "npx",
@@ -87,6 +89,93 @@ test("computeAgentOverlayEntries covers managed, hermes and user argv but skips 
   expect(aliases).toContain(codexAlias);
   expect(aliases).toContain(deriveAgentAlias("custom", ["C:\\Program Files\\agent.exe", "--acp"]));
   expect(new Set(aliases).size).toBe(aliases.length);
+});
+
+function sessionFixture(partial: {
+  alias: string;
+  agent: string;
+  transport_acpx_agent?: string;
+  transport_agent_argv?: string[];
+}): LogicalSession {
+  return {
+    alias: partial.alias,
+    agent: partial.agent,
+    workspace: "demo",
+    transport_session: `demo:${partial.alias}:reset-1`,
+    created_at: "2026-08-10T09:00:00.000Z",
+    last_used_at: "2026-08-10T09:00:00.000Z",
+    ...(partial.transport_acpx_agent !== undefined
+      ? { transport_acpx_agent: partial.transport_acpx_agent }
+      : {}),
+    ...(partial.transport_agent_argv !== undefined
+      ? { transport_agent_argv: partial.transport_agent_argv }
+      : {}),
+  };
+}
+
+test("computeSessionOverlayEntries only replays owned xacpx-managed aliases", () => {
+  const kimiArgv = ["kimi", "acp"];
+  const canonical = deriveAgentAlias("kimi", kimiArgv);
+  const state: AppState = {
+    version: 1,
+    sessions: {
+      owned: sessionFixture({
+        alias: "owned",
+        agent: "kimi",
+        transport_acpx_agent: canonical,
+        transport_agent_argv: kimiArgv,
+      }),
+      bare: sessionFixture({
+        alias: "bare",
+        agent: "kimi",
+        // Must never write global acpx agents.kimi on restart replay.
+        transport_acpx_agent: "kimi",
+        transport_agent_argv: kimiArgv,
+      }),
+      stale: sessionFixture({
+        alias: "stale",
+        agent: "kimi",
+        transport_acpx_agent: "xacpx-managed-kimi-deadbeefdead",
+        transport_agent_argv: kimiArgv,
+      }),
+      argvOnly: sessionFixture({
+        alias: "argvOnly",
+        agent: "kimi",
+        transport_agent_argv: kimiArgv,
+      }),
+    },
+    chat_contexts: {},
+    native_session_lists: {},
+    orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+    scheduled_tasks: {},
+  };
+
+  const entries = computeSessionOverlayEntries(state, {
+    resolveDriver: () => "kimi",
+  });
+  expect(entries).toEqual([{ alias: canonical, argv: kimiArgv }]);
+});
+
+test("computeSessionOverlayEntries skips when resolveDriver cannot prove ownership", () => {
+  const argv = ["kimi", "acp"];
+  const canonical = deriveAgentAlias("kimi", argv);
+  const state: AppState = {
+    version: 1,
+    sessions: {
+      demo: sessionFixture({
+        alias: "demo",
+        agent: "kimi",
+        transport_acpx_agent: canonical,
+        transport_agent_argv: argv,
+      }),
+    },
+    chat_contexts: {},
+    native_session_lists: {},
+    orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+    scheduled_tasks: {},
+  };
+  // Missing driver → cannot prove alias ownership → skip (fail closed).
+  expect(computeSessionOverlayEntries(state, { resolveDriver: () => undefined })).toEqual([]);
 });
 
 test("parseAgentOverlayEntries validates the bridge env payload", () => {

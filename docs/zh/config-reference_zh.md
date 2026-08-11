@@ -460,40 +460,29 @@ xacpx channel add <channel-type>
 
 为了让迁移真自动，console 生命周期会在**取得 runtime consumer lock 之后**（任何服务接触 config/state 之前）跑一遍 `migrateStateAgentArgv`（[`src/state/auto-migrate-agent-argv.ts`](../../src/state/auto-migrate-agent-argv.ts)）。这个顺序很关键：`buildApp` 在拿锁之前就加载了共享 config/state，如果 migration 内联在 buildApp 里跑，会与并发的 `xacpx migrate argv` 竞争——daemon 会把 CLI 的改动看成"已迁移"而跳过，然后拿着旧的内存快照启动。在锁内跑并在之后**原地 reload** config/state（migration 无条件重读两个文件，所有持有引用的服务——`SessionService`、transport——都会看到迁移后的值）可以关掉这个窗口：
 
-1. **per-agent all-or-nothing 不变量**：safety set 覆盖同一 agent 下所有**非 sticky** 的 session。三类规则：
-   - **sticky**（与 `resolveLaunchSpec` step 2 共用 `isDerivedAgentArgv` 判定）→ 免疫 config argv，排除在 safety set 之外
-   - **非 sticky + known identity == target** → 安全
-   - **非 sticky + known identity != target** → abort（冲突）
-   - **非 sticky + unknown identity** → abort（无法证明安全）
+1. **per-session planning（Path A；不写全局 argv）**：每条 session 独立评估。同一 agent 下的 sibling 不再互相卡死——Path A 永不写入 `agents.<name>.argv`，所以一条 session 的 alias 不会 re-key 另一条。
 
-   session 的 argv 视为 **derived**（即 NOT 真正 sticky）的情形：托管 adapter npx pin、hermes shim、opencode/kilocode 本地 fallback `[driver, "acp"]` 形式 —— `resolveLaunchSpec` 在 step 2 之前会把这些的 `recordedArgv` 重置为 undefined，所以 step 3 仍可能把它们 re-key。migration 与 `SessionService` 共享同一个 `isDerivedAgentArgv`（现在从 `src/config/agent-launch.ts` 导出），safety set 与 step 3 触达集严格相等。
+   session **完全迁移（noop）** 仅当同时具备 `transport_agent_argv` 与匹配 `deriveAgentAlias(driver, argv)` 的 canonical `transport_acpx_agent`。`resolveLaunchSpec` step 2 需要两者；**仅有 argv 视为 repair backfill**，不是已完成。
 
-   session **unknown identity** 是指既没有 `transport_agent_argv` 也没有 `transport_agent_command` 的状态。这种 session 当前走 `resolveLaunchSpec` step 5（default launch），写 `agents.<name>.argv` 会让它的行为切到 step 3，所以整个 agent 都会被 reject —— 我们无法证明新 argv 与 session 原本在做的事相同。
-
-   **planned-driver 绑定**：planning 阶段把 `agents.<name>.driver` 记到 `plannedDriverByAgent` 里。锁内 fresh-state per-agent 复检用这个**planned** driver（不是 fresh config 读出来的 driver，因为可能被另一个 writer 改过）调 `isDerivedAgentArgv`。否则一个 `["opencode","acp"]` 的 fresh session 在 agent name = `foo` 时可能被误判成 custom（driver 实际是 `opencode`）。
-
-   **config driver 围栏**：锁内 `patchConfig` mutator 把盘上 `agents.<name>.driver` 跟 `plannedDriverByAgent.get(name)` 比对。任何不一致就 abort 整个 transaction —— 如果另一个 writer 在 planning 与 lock 之间把 driver 改了，已有 argv 的 derived/custom 分类可能已经翻转，写下 planned argv 就会 re-key 那些 planning 阶段认为 safe 的 session。
-
-   同时还要求 bucket 内 known identity 一致，且至少一条能 backfill 出来证明 argv。若 bucket 全部 noop 就是稳态（不需要写）。
-
-   **session-local 结构化迁移（provenance-aware，不再写全局 argv）**：planned argv 会作为 **session-local 结构化启动** 通过 `xacpx-managed-<driver>-<hash>` alias 落到 session 本身——历史 session 凭借 `resolveLaunchSpec` step 2（`transport_acpx_agent` + `transport_agent_argv`）永久绑定到该 alias。**`agents.<name>.argv` 永远不写**——migration 是纯 session-local 的，未来同一 driver 的新 bare session 继续走 acpx 解析，**始终尊重 `~/.acpx/config.json` 全局 override 和 `<cwd>/.acpxrc.json` 项目级 override**。三种 provenance 决定是否给 session 派生 alias：
+   **session-local 结构化迁移（provenance-aware）**：planned argv 会作为 **session-local 结构化启动** 通过 `xacpx-managed-<driver>-<hash>` alias 落到 session 本身——历史 session 凭借 `resolveLaunchSpec` step 2（`transport_acpx_agent` + `transport_agent_argv`）永久绑定到该 alias。**`agents.<name>.argv` 永远不写**——migration 是纯 session-local 的，未来同一 driver 的新 bare session 继续走 acpx 解析，**始终尊重 `~/.acpx/config.json` 全局 override 和 `<cwd>/.acpxrc.json` 项目级 override**。三种 provenance 决定是否给 session 派生 alias：
    - `derived`（托管 adapter npx pin、hermes shim、opencode/kilocode 本地 fallback）→ **skip**。derived 启动会随当前 pin/config 重算，固化成 session-local alias 就废掉了重算语义。session 保持 fail-closed 直到手动迁移。
    - `bare-acpx-registry`（kimi / qwen / gemini ...）→ **provision**。
    - `explicit-config`（config 已经带 argv）→ **provision**（同一个 argv 派生出同一个 alias，config 端 overlay provisioning 已建好条目）。
 
-   失败则整个 agent skip：
+   单条 session skip（不影响 sibling）：
    - **不匹配当前默认的历史 custom argv**：把 registry 默认提升为 session-local alias 会遮蔽当前启动——skip（用户须手动迁移）。
-   - **同一 agent 的非 sticky session 必须 identity 一致、且至少一条能 backfill**；否则整个 agent skip。
+   - **unknown / 无法证明的 identity**：既无 recorded command 也无 argv，或无法从 config argv / acpx record 证明 identity——只 skip 该 session。
+   - 已匹配当前非 derived 默认但缺 canonical alias 的 session 会 **repair**（写 `transport_acpx_agent`）。
 2. **锁内事务式 apply**：apply 阶段在 `withPrivateFileLock(statePath, …)` 内执行：
-   - 锁内重新读 `state.json`，对每条计划中的 session 更新做 fresh 校验（alias 仍存在、agent 一致、`transport_agent_command` identity 一致、未被覆写 `transport_agent_argv` / `transport_acpx_agent`）。**任意一条不通过则整个 migration abort —— 不 provision overlay、不写 state**。
-   - 通过 `ensureAgentOverlays` 把新 session 的 overlay（`xacpx-managed-<driver>-<hash>` 条目）**写到 `~/.acpx/config.json`**——必须先于 state 写完成，state 里的 session 才能通过 acpx 解析到该 alias；若 provisioning 抛错，abort 整个事务。
+   - 锁内重新读 `state.json`，对每条计划中的 session 更新做 fresh 校验（alias 仍存在、agent 一致、identity 一致、argv 匹配或需 repair）。Path A 是 per-session：校验失败的 session 单独 skip，其它仍继续。
+   - 通过 `ensureAgentOverlays` 把新 session 的 overlay（`xacpx-managed-<driver>-<hash>` 条目）**写到 `~/.acpx/config.json`**——必须先于 state 写完成；若 provisioning 抛错，abort 整个事务（不写 state）。
    - 写 state：持久化 `transport_acpx_agent`（alias）+ `transport_agent_argv`。**不写 xacpx config**。其余顶层 key 原样保留。`migrated` 在 `writeLocked` resolve 后才提交到 `result.migrated`。
-   - **重启鲁棒性**：每次启动 `autoMigrateArgv` 都会按 live state 重新 provision session overlay（`computeSessionOverlayEntries(state)`），让 alias 在 `~/.acpx/config.json` 被清掉或变动后能恢复；按 argv 内容哈希，幂等。
-3. **错误透明暴露给运维**：任何 I/O 失败（state 读、config 读、config patch、state 写、acpx record 读、acpx index 损坏）都会 push 到 `result.errors` **并**通过 app logger 写日志。daemon 路径 best-effort（日志 + 继续），CLI 路径把所有错误打到 stderr 并退出码非零，operator 工具永远不会静默吞掉真实故障。"transaction failed" 消息会显式说明 config 是否已经在 state 写失败前被提交，**以及** state.json 可能未改或部分写入（`writePrivateFileAtomic` 的 temp+rename 在 POSIX 上原子，但 Windows 的直接写 fallback 可能留半文件），让 operator 在 partial failure 后能正确核对两边文件。
+   - **重启鲁棒性**：每次启动 `autoMigrateArgv` 都会按 live state 重新 provision session overlay（`computeSessionOverlayEntries(state, { resolveDriver })`）。所有权门控：只 replay 带 `xacpx-managed-` 前缀且等于 `deriveAgentAlias(driver, argv)` 的 alias——裸名（如 `kimi`）或 stale 非 canonical alias 一律跳过，避免重启往全局 acpx `agents.<name>` 写覆盖。overlay replay fail-closed（provision 错误向上抛）。按 argv 内容哈希，幂等。
+3. **错误透明暴露给运维**：任何 I/O 失败（state 读、config 读、state 写、acpx record 读、acpx index 损坏、overlay provision）都会 push 到 `result.errors` **并**通过 app logger 写日志。daemon 路径 best-effort（日志 + 继续），CLI 路径把所有错误打到 stderr 并退出码非零，operator 工具永远不会静默吞掉真实故障。"transaction failed" 消息会显式说明 overlay 是否已经在 state 写失败前被提交，**以及** state.json 可能未改或部分写入（`writePrivateFileAtomic` 的 temp+rename 在 POSIX 上原子，但 Windows 的直接写 fallback 可能留半文件），让 operator 在 partial failure 后能正确核对两边文件。
 
-迁移按设计是 fail-closed，分三层：per-agent identity 一致（planning）、fresh-state per-agent 复检（lock）、fresh-state per-session 复检（lock）。任何不一致都会 abort 整个 transaction，不写任何文件。给 `config.json` 加 `agents.<name>.argv` 永远不会把 session 静默 re-key 到错的 acpx record。
+迁移按设计是 fail-closed：per-session provenance/identity 门控（planning）、fresh-state per-session 复检（lock）、以及 state 写之前的 overlay provision。本迁移**永不**给 `config.json` 加 `agents.<name>.argv`，因此不会把 session 静默 re-key 到错的 acpx record。
 
-注意：这不是真正的两文件 transaction。state 和 config 用的是各自独立的锁，state 写失败时 config 侧已经提交。错误消息把这种不对称显式化，让 operator 在 partial failure 后能核对两边文件。
+注意：这不是真正的两文件 transaction。state 和 acpx config 用的是各自独立的锁，state 写失败时 acpx-config 侧可能已经提交。错误消息把这种不对称显式化，让 operator 在 partial failure 后能核对两边文件。
 
 CLI 命令 `xacpx migrate argv [--dry-run]` 把同一份 evaluate 暴露成独立的运维入口（打印计划，若有 skipped 或 error 则退出码非零）。**变更路径会获取并全程持有与 runtime 相同的 consumer lock**（后台 daemon 和前台 `xacpx run` 都持同一把锁）——daemon-status 观察只是更友好的报错，不是正确性围栏。锁忙（daemon 在跑、前台 runtime、或 daemon 正在启动）时直接拒绝并以非零退出。`--dry-run` 不拿锁，但快照可能 stale。
 

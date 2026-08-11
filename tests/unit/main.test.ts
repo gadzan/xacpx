@@ -2924,9 +2924,10 @@ test("autoMigrateArgv runs post-build and reloads config/state in place (no stal
     await runtime.autoMigrateArgv!();
 
     const afterMigrate = JSON.parse(await readFile(statePath, "utf8")) as {
-      sessions: Record<string, { transport_agent_argv?: string[] }>;
+      sessions: Record<string, { transport_agent_argv?: string[]; transport_acpx_agent?: string }>;
     };
     expect(afterMigrate.sessions["relay:demo"]!.transport_agent_argv).toEqual(["kimi", "acp"]);
+    expect(afterMigrate.sessions["relay:demo"]!.transport_acpx_agent).toMatch(/^xacpx-managed-kimi-/);
 
     // In-place reload: the SAME SessionService instance now resolves via the
     // structured launch (config argv present in memory).

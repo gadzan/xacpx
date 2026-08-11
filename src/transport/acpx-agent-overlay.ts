@@ -73,15 +73,35 @@ export function computeAgentOverlayEntries(config: AppConfig): AcpxAgentOverlayE
  * `~/.acpx/config.json` so acpx can resolve `--agent <alias>` to the exact
  * argv. Deduped by alias (content-hash on argv → identical argv shares an
  * alias → one overlay entry per unique argv across all sessions).
+ *
+ * Ownership gate: only rebuild aliases that (1) use the `xacpx-managed-`
+ * prefix and (2) equal `deriveAgentAlias(driver, argv)`. Bare names like
+ * `kimi` or stale non-canonical aliases are skipped so restart replay cannot
+ * write a global acpx `agents.<name>` override.
  */
-export function computeSessionOverlayEntries(state: AppState): AcpxAgentOverlayEntry[] {
+export function computeSessionOverlayEntries(
+  state: AppState,
+  options?: {
+    /** Resolve the agent driver for ownership checks. Defaults to the session's agent name. */
+    resolveDriver?: (agentName: string) => string | undefined;
+  },
+): AcpxAgentOverlayEntry[] {
   const entries: AcpxAgentOverlayEntry[] = [];
   const seen = new Set<string>();
   for (const session of Object.values(state.sessions)) {
     const acpxAgent = session.transport_acpx_agent;
     const argv = session.transport_agent_argv;
     if (typeof acpxAgent !== "string" || acpxAgent.length === 0) continue;
+    if (!acpxAgent.startsWith(ACPX_MANAGED_ALIAS_PREFIX)) continue;
     if (!Array.isArray(argv) || argv.length === 0 || !argv.every((e) => typeof e === "string")) continue;
+    const agentName = typeof session.agent === "string" ? session.agent : "";
+    // When resolveDriver is supplied, undefined means "cannot prove ownership"
+    // (do not fall back to the agent name — that would replay aliases for
+    // agents removed from config). Without resolveDriver, default to agentName.
+    const driver = options?.resolveDriver
+      ? options.resolveDriver(agentName)
+      : (agentName || undefined);
+    if (!driver || deriveAgentAlias(driver, argv as string[]) !== acpxAgent) continue;
     if (seen.has(acpxAgent)) continue;
     seen.add(acpxAgent);
     entries.push({ alias: acpxAgent, argv: argv as string[] });

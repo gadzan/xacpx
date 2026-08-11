@@ -6,7 +6,6 @@ import {
   renderAgentArgvIdentity,
   deriveAgentAlias,
 } from "../config/agent-launch";
-import { resolveConfigPathForCurrentEnv } from "../config/config-path";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AgentConfig, TransportConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
@@ -36,7 +35,8 @@ export interface StateArgvMigrationEvaluation {
  * - it has a recorded raw `transport_agent_command` (the Windows fail-closed
  *   trigger) that is either a single token whose canonical identity round-trips
  *   losslessly (`[command]` re-renders to `command`), OR a multi-token command,
- * - `transport_agent_argv` is not already set,
+ * - `transport_agent_argv` is not already set (or is set but the session is
+ *   missing the canonical `transport_acpx_agent` — that is a repair case),
  * - and at least one of the two identity-proving sources is available:
  *     a. `agents[session.agent]` already has an `argv` whose canonical identity
  *        equals the recorded command (config source), OR
@@ -46,6 +46,10 @@ export interface StateArgvMigrationEvaluation {
  *        `agent_command` (rejects corrupt/inconsistent records where the two
  *        fields disagree).
  *
+ * Full Path A sticky state requires BOTH `transport_agent_argv` AND the
+ * canonical `transport_acpx_agent` (`deriveAgentAlias(driver, argv)`).
+ * `resolveLaunchSpec` step 2 needs both; argv-only is NOT done.
+ *
  * Anything else is rejected: silently rewriting argv on a record we cannot
  * prove is the same launch would key acpx onto a different session file and
  * orphan the existing record's history.
@@ -54,12 +58,31 @@ export function evaluateStateSessionArgvMigration(
   session: LogicalSession,
   agentConfig: AgentConfig | undefined,
   acpxRecordArgv: string[] | undefined,
+  options?: { canonicalAcpxAgent?: string },
 ): StateArgvMigrationEvaluation {
   if (
     Array.isArray(session.transport_agent_argv) &&
-    session.transport_agent_argv.length > 0
+    session.transport_agent_argv.length > 0 &&
+    session.transport_agent_argv.every((entry) => typeof entry === "string")
   ) {
-    return { status: "noop" };
+    const existingArgv = session.transport_agent_argv as string[];
+    const existingAcpx =
+      typeof session.transport_acpx_agent === "string" && session.transport_acpx_agent.length > 0
+        ? session.transport_acpx_agent
+        : undefined;
+    const canonical = options?.canonicalAcpxAgent;
+    // Fully migrated only when argv is present AND the sticky alias matches
+    // the canonical content-hash (or no canonical was supplied — treat any
+    // non-empty alias as complete for callers that don't compute one).
+    if (
+      existingAcpx !== undefined &&
+      (canonical === undefined || existingAcpx === canonical)
+    ) {
+      return { status: "noop" };
+    }
+    // argv-only, or alias missing / non-canonical → repair by re-persisting
+    // the existing argv so the apply phase can write the canonical alias.
+    return { status: "backfilled", targetArgv: [...existingArgv] };
   }
   const command = session.transport_agent_command;
   if (typeof command !== "string" || command.length === 0) {
@@ -254,23 +277,25 @@ function toDefaultArgvResolution(
 
 /**
  * I/O seam over `evaluateStateSessionArgvMigration`. Reads `state.json` and
- * `config.json`, plans the migration, writes config first then state.
+ * `config.json`, plans a per-session Path A migration, provisions session-local
+ * `xacpx-managed-*` overlays into `~/.acpx/config.json`, then writes state.
  *
  * Atomicity:
- * - Config writes go through `ConfigStore.patchRaw` which acquires the config
- *   proper-lockfile and re-reads inside the lock.
+ * - Overlay writes go through `ensureAgentOverlays` (acpx config lock).
  * - State writes are wrapped in `withPrivateFileLock`; inside the lock the
  *   state file is re-read fresh and every planned session patch is re-validated
  *   against the on-disk record. A concurrent daemon write between the initial
  *   planning read and the lock acquire cannot silently clobber unrelated
  *   state (`chat_contexts`, `orchestration`, `scheduled_tasks`) because only
  *   the targeted `sessions` subtree is touched in the new document.
+ * - xacpx `config.json` is never mutated (Path A is session-local).
  *
  * Fail-soft in the daemon path: any I/O error is collected in `result.errors`
  * AND logged via the logger; the daemon continues to start so a transient
  * disk issue does not break boot. The CLI path surfaces the same `errors`
  * list on stderr and exits non-zero so operator tooling never silently hides
- * a real failure.
+ * a real failure. (Session overlay *replay* at startup is fail-closed
+ * separately in `autoMigrateArgv`.)
  */
 export async function migrateStateAgentArgv(
   deps: MigrateStateAgentArgvDeps,
@@ -347,43 +372,37 @@ export async function migrateStateAgentArgv(
       result.errors,
       deps.logger,
     );
-    const evaluation = evaluateStateSessionArgvMigration(
-      session,
-      normalizeAgentConfig(agentConfigRaw),
-      acpxRecordArgv,
-    );
-
-    // Per-agent safety fields. A session is STICKY (immune to config argv
-    // step 3 override) iff:
-    //   1. it has both transport_acpx_agent and transport_agent_argv, AND
-    //   2. its argv is NOT derived (not a managed pin, hermes shim, or
-    //      opencode/kilocode local fallback — those argvs reset to
-    //      undefined in resolveLaunchSpec step 2 and fall through to
-    //      step 3).
-    // `isDerivedAgentArgv` is the SAME function SessionService uses, so
-    // the safety set is exactly the set of sessions that step 3 cannot
-    // reach after we write agents.<name>.argv. The classification
-    // keys on the AGENT DRIVER, not the agent name.
     const existingArgv =
       Array.isArray(session.transport_agent_argv) &&
       session.transport_agent_argv.length > 0 &&
       session.transport_agent_argv.every((e) => typeof e === "string")
         ? (session.transport_agent_argv as string[])
         : undefined;
-    const isStickyByRecorded =
-      typeof session.transport_acpx_agent === "string" &&
-      session.transport_acpx_agent.length > 0 &&
-      existingArgv !== undefined;
     const driverFromConfig =
       isRecord(agentConfigRaw) && typeof agentConfigRaw.driver === "string"
         ? agentConfigRaw.driver
         : undefined;
     const driverForDerived = driverFromConfig ?? agentName;
+    // Path A sticky bypass still uses the shared derived/custom split so a
+    // managed-pin argv is never treated as a finished migration.
+    const isStickyByRecorded =
+      typeof session.transport_acpx_agent === "string" &&
+      session.transport_acpx_agent.length > 0 &&
+      existingArgv !== undefined;
     const isSticky = isStickyByRecorded && !isDerivedAgentArgv(
       driverForDerived,
       existingArgv,
       runtimeRoot,
       platform,
+    );
+    const canonicalAcpxAgent = existingArgv
+      ? deriveAgentAlias(driverForDerived, existingArgv)
+      : undefined;
+    const evaluation = evaluateStateSessionArgvMigration(
+      session,
+      normalizeAgentConfig(agentConfigRaw),
+      acpxRecordArgv,
+      canonicalAcpxAgent !== undefined ? { canonicalAcpxAgent } : undefined,
     );
     let argvIdentity: string | undefined;
     if (existingArgv) {
@@ -406,7 +425,7 @@ export async function migrateStateAgentArgv(
     ((agentName: string, raw: Record<string, unknown>, plat: NodeJS.Platform, root: string) =>
       computeDefaultAgentArgv(agentName, raw, plat, root));
   // Normalize the seam return (tests may pass bare arrays) into a resolution
-  // carrying provenance, which `aggregatePerAgent` uses to decide elevation.
+  // carrying provenance, which per-session planning uses to decide elevation.
   const resolveDefaultArgvNormalized = (
     agentName: string,
     raw: Record<string, unknown>,
@@ -414,7 +433,7 @@ export async function migrateStateAgentArgv(
     root: string,
   ): DefaultArgvResolution | undefined =>
     toDefaultArgvResolution(resolveDefaultArgv(agentName, raw, plat, root));
-  const { sessionUpdates } = aggregatePerAgent(
+  const { sessionUpdates } = planSessionUpdates(
     plan,
     result,
     fullConfig,
@@ -493,12 +512,12 @@ if (sessionUpdates.length > 0) {
         return;
       }
 
-      // (2) Validate every planned update against the fresh record. If any
-      // session fails validation, ABORT — no config write, no state write.
-      // This prevents the half-state where config has argv but state has no
-      // matching session.
+      // (2) Validate every planned update against the fresh record. Path A is
+      // per-session: an invalid session is skipped individually; other planned
+      // sessions still proceed. Aborting the whole batch is no longer required
+      // because we never write a global `agents.<name>.argv` that could re-key
+      // siblings.
       const validated: typeof sessionUpdates = [];
-      let anyInvalid = false;
       for (const update of sessionUpdates) {
         const fresh = freshSessions[update.alias];
         if (!isRecord(fresh)) {
@@ -507,7 +526,6 @@ if (sessionUpdates.length > 0) {
             agent: update.agent,
             reason: `fresh state: session alias "${update.alias}" no longer exists`,
           });
-          anyInvalid = true;
           continue;
         }
         const freshAgent = typeof fresh.agent === "string" ? fresh.agent : undefined;
@@ -517,45 +535,66 @@ if (sessionUpdates.length > 0) {
             agent: update.agent,
             reason: `fresh state: session "${update.alias}" agent changed from "${update.agent}" to "${freshAgent}"`,
           });
-          anyInvalid = true;
           continue;
         }
         const expectedIdentity = renderAgentArgvIdentity(update.argv);
         const cmd = typeof fresh.transport_agent_command === "string"
           ? fresh.transport_agent_command
           : undefined;
-        if (cmd !== expectedIdentity) {
+        const existingArgv = fresh.transport_agent_argv;
+        const existingArgvOk =
+          Array.isArray(existingArgv) &&
+          existingArgv.length > 0 &&
+          renderAgentArgvIdentity(existingArgv as string[]) === expectedIdentity;
+        // Command must still match when present. When the session is an
+        // argv-only repair candidate, allow unset command if argv already
+        // proves the identity.
+        if (cmd !== undefined && cmd !== expectedIdentity) {
           result.skipped.push({
             alias: update.alias,
             agent: update.agent,
-            reason: `fresh state: session "${update.alias}" recorded command changed (was "${expectedIdentity}", now "${cmd ?? "(unset)"}")`,
+            reason: `fresh state: session "${update.alias}" recorded command changed (was "${expectedIdentity}", now "${cmd}")`,
           });
-          anyInvalid = true;
           continue;
         }
-        const existingArgv = fresh.transport_agent_argv;
+        if (cmd === undefined && !existingArgvOk) {
+          result.skipped.push({
+            alias: update.alias,
+            agent: update.agent,
+            reason: `fresh state: session "${update.alias}" recorded command changed (was "${expectedIdentity}", now "(unset)")`,
+          });
+          continue;
+        }
         if (Array.isArray(existingArgv) && existingArgv.length > 0) {
           const existingIdentity = renderAgentArgvIdentity(existingArgv as string[]);
-          if (existingIdentity === expectedIdentity) {
-            // Already migrated (concurrent run). Don't double-write; count
-            // as a successful migration for the caller's reporting.
-            result.migrated.push(update);
-          } else {
+          if (existingIdentity !== expectedIdentity) {
             result.skipped.push({
               alias: update.alias,
               agent: update.agent,
               reason: `fresh state: session "${update.alias}" argv changed from target ${JSON.stringify(update.argv)} to ${JSON.stringify(existingArgv)}`,
             });
-            anyInvalid = true;
+            continue;
           }
-          continue;
+          const existingAcpxAgent = fresh.transport_acpx_agent;
+          if (
+            typeof existingAcpxAgent === "string" &&
+            existingAcpxAgent === update.acpxAgent
+          ) {
+            // Fully migrated (argv + canonical alias). Count as success;
+            // no state rewrite needed for this session.
+            result.migrated.push({
+              alias: update.alias,
+              agent: update.agent,
+              argv: update.argv,
+              acpxAgent: update.acpxAgent,
+            });
+            continue;
+          }
+          // argv matches but alias missing/wrong → repair below.
         }
         validated.push(update);
       }
-      if (anyInvalid) {
-        pushError(result, deps.logger, "state.argv_migration.fresh_state_aborted",
-          "fresh-state validation failed for one or more sessions; argv migration aborted (no writes applied)",
-          { statePath: deps.statePath }, undefined);
+      if (validated.length === 0) {
         return;
       }
 
@@ -567,7 +606,7 @@ if (sessionUpdates.length > 0) {
       // transaction (no state write).
       const newOverlayEntries: AcpxAgentOverlayEntry[] = [];
       const overlaySeen = new Set<string>();
-      for (const update of sessionUpdates) {
+      for (const update of validated) {
         if (overlaySeen.has(update.acpxAgent)) continue;
         overlaySeen.add(update.acpxAgent);
         newOverlayEntries.push({ alias: update.acpxAgent, argv: update.argv });
@@ -634,34 +673,21 @@ return result;
 }
 
 /**
- * Per-agent all-or-nothing for session-local structured migration. The
- * safety bucket covers EVERY non-sticky session for the agent:
+ * Path A per-session planning. Each session is decided independently:
  *
- *   - sticky (per `isDerivedAgentArgv`-aware check; matches
- *     `resolveLaunchSpec` step 2)        => immune to step 3 / overlay arg
- *   - non-sticky + known identity matches the current driver's default =>
- *     session-local structured migration (derive xacpx-managed alias from
- *     the argv, provision the overlay so acpx resolves `--agent <alias>`
- *     to the exact argv, persist `transport_acpx_agent` +
- *     `transport_agent_argv` on the session). NEVER writes
- *     `agents.<name>.argv` — future sessions of this driver still resolve
- *     bare and continue to honor acpx global / `.acpxrc.json` project
- *     overrides, while the migrated historical session sticks to the
- *     alias via `resolveLaunchSpec` step 2.
- *   - non-sticky + known identity matches a DERIVED default (managed
- *     adapter npx pin, hermes shim, opencode / kilocode local fallback)
- *     => skip. Derived launches must stay re-derivable on restart so the
- *     session identity follows the current pin / config.
- *   - non-sticky + known identity != current default => skip (fail closed):
- *     historical custom argv that does not match is left untouched.
- *   - non-sticky + unknown identity (no `transport_agent_argv` and no
- *     `transport_agent_command`) => abort the whole agent (cannot prove
- *     the new argv would not silently re-key it).
+ *   - noop (already has argv + canonical alias) => nothing
+ *   - rejected (cannot prove identity) => skip that session only
+ *   - backfilled / repair, argv matches current non-derived default =>
+ *     session-local structured migration (`deriveAgentAlias` + overlay +
+ *     persist `transport_acpx_agent` + `transport_agent_argv`)
+ *   - backfilled but derived default => skip (stay re-derivable)
+ *   - backfilled but argv != current default => skip (fail closed)
  *
- * The function also requires unanimous known identity across the bucket
- * and at least one backfillable session to anchor argv.
+ * Sibling sessions of the same agent no longer gate each other: Path A never
+ * writes global `agents.<name>.argv`, so one session's alias cannot re-key
+ * another. Overlay entries are deduped later by alias/hash.
  */
-function aggregatePerAgent(
+function planSessionUpdates(
   plan: StateArgvMigrationPlanEntry[],
   result: StateArgvMigrationResult,
   fullConfig: Record<string, unknown>,
@@ -673,75 +699,26 @@ function aggregatePerAgent(
 } {
   const sessionUpdates: Array<{ alias: string; agent: string; driver: string; argv: string[]; acpxAgent: string }> = [];
 
-  // Bucket every non-sticky session for the agent — including those
-  // without a target identity. Unknown-identity sessions go in as a
-  // sentinel: they are at risk and the safety check below aborts on
-  // them when config argv would be written.
-  const byAgent = new Map<string, StateArgvMigrationPlanEntry[]>();
   for (const entry of plan) {
-    if (entry.isSticky) continue;
-    const list = byAgent.get(entry.agent) ?? [];
-    list.push(entry);
-    byAgent.set(entry.agent, list);
-  }
+    if (entry.evaluation.status === "noop") {
+      continue;
+    }
+    if (entry.evaluation.status !== "backfilled" || !entry.evaluation.targetArgv) {
+      result.skipped.push({
+        alias: entry.alias,
+        agent: entry.agent,
+        reason:
+          entry.evaluation.reason ??
+          `cannot prove argv identity for session "${entry.alias}"`,
+      });
+      continue;
+    }
 
-  for (const [agent, entries] of byAgent) {
-    const knownIdentities = new Set(
-      entries.filter((e) => e.argvIdentity !== undefined).map((e) => e.argvIdentity!),
-    );
-    const unknown = entries.filter((e) => e.argvIdentity === undefined);
-    if (knownIdentities.size > 1) {
-      const list = [...knownIdentities].join(", ");
-      for (const e of entries) {
-        result.skipped.push({
-          alias: e.alias,
-          agent,
-          reason: `agent "${agent}" has ${knownIdentities.size} different argv identities (${list}); writing session-local argv would silently re-key the others`,
-        });
-      }
-      continue;
-    }
-    // Single known identity (or none). Find a backfilled session to
-    // anchor argv.
-    const backfilled = entries.find(
-      (e) => e.evaluation.status === "backfilled" && e.evaluation.targetArgv,
-    );
-    if (!backfilled) {
-      const allNoop = entries.every((e) => e.evaluation.status === "noop");
-      if (allNoop) {
-        // Steady state — no writes needed.
-        continue;
-      }
-      for (const e of entries) {
-        result.skipped.push({
-          alias: e.alias,
-          agent,
-          reason:
-            e.evaluation.reason ??
-            `cannot prove argv identity for agent "${agent}"`,
-        });
-      }
-      continue;
-    }
-    if (unknown.length > 0) {
-      // Unknown-identity sessions for this agent: cannot prove they
-      // would not be silently re-keyed by the new session-local argv.
-      // Abort the whole agent.
-      for (const e of unknown) {
-        result.skipped.push({
-          alias: e.alias,
-          agent,
-          reason: `agent "${agent}" has session "${e.alias}" with no recorded identity; writing session-local argv would silently re-key it (cannot prove safety)`,
-        });
-      }
-      continue;
-    }
-    // All non-sticky sessions for the agent agree on argv identity and
-    // at least one is backfilled. Resolve the driver (agent config's
-    // driver, or the agent name as fallback) and check the default's
-    // provenance.
-    const argv = [...backfilled.evaluation.targetArgv!];
-    const agentConfigRaw = isRecord(fullConfig.agents) ? (fullConfig.agents as Record<string, unknown>)[agent] : undefined;
+    const agent = entry.agent;
+    const argv = [...entry.evaluation.targetArgv];
+    const agentConfigRaw = isRecord(fullConfig.agents)
+      ? (fullConfig.agents as Record<string, unknown>)[agent]
+      : undefined;
     const driver = isRecord(agentConfigRaw) && typeof agentConfigRaw.driver === "string"
       ? agentConfigRaw.driver
       : agent;
@@ -750,56 +727,32 @@ function aggregatePerAgent(
     const matchesDefault =
       defaultArgv !== undefined &&
       defaultArgv.length === argv.length &&
-      defaultArgv.every((entry, index) => entry === argv[index]);
+      defaultArgv.every((token, index) => token === argv[index]);
+
     if (matchesDefault && defaultResolution!.source === "derived") {
-      // Derived launches (managed adapter npx pin, hermes shim, opencode /
-      // kilocode local fallback) are recomputed on restart from the CURRENT
-      // pin/config so the session identity follows them. Even though the
-      // planned argv matches the derived default RIGHT NOW, freezing that
-      // argv into a session-local alias would still leave the session
-      // pinned to a specific pin forever. Leave the session untouched
-      // (Windows: fail-closed on its raw command) so it stays re-derivable.
-      for (const e of entries) {
-        result.skipped.push({
-          alias: e.alias,
-          agent,
-          reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) matches a derived launch (managed pin / hermes shim / local fallback); session-local alias would freeze a launch that should stay recomputed on restart — left untouched (migrate manually if needed)`,
-        });
-      }
+      result.skipped.push({
+        alias: entry.alias,
+        agent,
+        reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) matches a derived launch (managed pin / hermes shim / local fallback); session-local alias would freeze a launch that should stay recomputed on restart — left untouched (migrate manually if needed)`,
+      });
       continue;
     }
     if (!matchesDefault) {
-      // argv is custom / historical / stale relative to the current driver
-      // default. Fail closed: we do NOT write a session-local argv for it.
-      // The session stays fail-closed on its raw command (Windows) until the
-      // user migrates the agent manually via `agents.<name>.argv`.
-      for (const e of entries) {
-        result.skipped.push({
-          alias: e.alias,
-          agent,
-          reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) does not match the current driver's default launch (${defaultArgv === undefined ? "unknown" : renderAgentArgvIdentity(defaultArgv)}); refusing to write a session-local argv that the daemon would launch but that does not match the current launch — migrate this agent manually`,
-        });
-      }
+      result.skipped.push({
+        alias: entry.alias,
+        agent,
+        reason: `agent "${agent}" planned argv identity (${renderAgentArgvIdentity(argv)}) does not match the current driver's default launch (${defaultArgv === undefined ? "unknown" : renderAgentArgvIdentity(defaultArgv)}); refusing to write a session-local argv that the daemon would launch but that does not match the current launch — migrate this agent manually`,
+      });
       continue;
     }
-    // Match (bare-registry or explicit-config): session-local structured
-    // migration. Derive a content-hashed xacpx-managed alias for this
-    // argv, provision the overlay so acpx can resolve `--agent <alias>`
-    // to the exact argv, and persist the alias + argv on the session.
-    // No `agents.<name>.argv` is ever written — future sessions of this
-    // driver still resolve bare (honoring acpx global / `.acpxrc.json`
-    // project overrides), while the migrated historical session stays
-    // pinned to the alias via `resolveLaunchSpec` step 2.
-    const acpxAgent = deriveAgentAlias(driver, argv);
-    for (const e of entries) {
-      sessionUpdates.push({
-        alias: e.alias,
-        agent,
-        driver,
-        argv: [...argv],
-        acpxAgent,
-      });
-    }
+
+    sessionUpdates.push({
+      alias: entry.alias,
+      agent,
+      driver,
+      argv: [...argv],
+      acpxAgent: deriveAgentAlias(driver, argv),
+    });
   }
 
   return { sessionUpdates };

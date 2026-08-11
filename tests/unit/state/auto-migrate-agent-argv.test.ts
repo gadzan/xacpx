@@ -29,13 +29,46 @@ function sessionFixture(overrides: Partial<LogicalSession> = {}): LogicalSession
   };
 }
 
-test("pure: noop when transport_agent_argv already present", () => {
+test("pure: noop when transport_agent_argv + canonical acpx alias already present", () => {
+  const argv = ["kimi", "acp"] as string[];
+  const canonical = deriveAgentAlias("kimi", argv);
   const result = evaluateStateSessionArgvMigration(
-    sessionFixture({ transport_agent_argv: ["kimi", "acp"] }),
+    sessionFixture({
+      transport_agent_argv: argv,
+      transport_acpx_agent: canonical,
+    }),
     { driver: "kimi" },
-    ["kimi", "acp"],
+    argv,
+    { canonicalAcpxAgent: canonical },
   );
   expect(result.status).toBe("noop");
+});
+
+test("pure: argv-only session is a repair backfill (not noop)", () => {
+  const argv = ["kimi", "acp"] as string[];
+  const result = evaluateStateSessionArgvMigration(
+    sessionFixture({ transport_agent_argv: argv }),
+    { driver: "kimi" },
+    argv,
+    { canonicalAcpxAgent: deriveAgentAlias("kimi", argv) },
+  );
+  expect(result.status).toBe("backfilled");
+  expect(result.targetArgv).toEqual(argv);
+});
+
+test("pure: wrong/non-canonical alias is a repair backfill", () => {
+  const argv = ["kimi", "acp"] as string[];
+  const result = evaluateStateSessionArgvMigration(
+    sessionFixture({
+      transport_agent_argv: argv,
+      transport_acpx_agent: "kimi", // bare name — not owned
+    }),
+    { driver: "kimi" },
+    argv,
+    { canonicalAcpxAgent: deriveAgentAlias("kimi", argv) },
+  );
+  expect(result.status).toBe("backfilled");
+  expect(result.targetArgv).toEqual(argv);
 });
 
 test("pure: single-token command is backfillable as [command]", () => {
@@ -540,11 +573,11 @@ test("io: skips session when acpx record exists but agent_command mismatches", a
 // Reviewer-driven regression tests (see PR #264 review notes)
 // ============================================================================
 
-test("issue 1: per-agent all-or-nothing when sessions have conflicting target identities", async () => {
+test("issue 1: Path A migrates matching session independently of a conflicting sibling", async () => {
   // Two sessions for the same driver (`kimi`) with DIFFERENT recorded commands.
-  // Each is individually backfillable from its own acpx record, but the per-agent
-  // target identities disagree. The migration must NOT silently pick one and
-  // re-key the other onto it; both must be rejected and the config untouched.
+  // Under Path A each session is planned independently: the default-matching
+  // "kimi acp" session is migrated; the custom "kimi --other" session is
+  // skipped. Neither blocks the other, and xacpx config stays untouched.
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportA = "demo:relay:demo-a:reset-1";
@@ -586,23 +619,29 @@ test("issue 1: per-agent all-or-nothing when sessions have conflicting target id
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-    expect(result.migrated).toEqual([]);
+    expect(result.migrated).toEqual([
+      {
+        alias: "relay:demo-a",
+        agent: "kimi",
+        argv: ["kimi", "acp"],
+        acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
+      },
+    ]);
     expect(result.configUpdates).toEqual([]);
-    expect(result.skipped).toHaveLength(2);
-    const aliases = result.skipped.map((s) => s.alias).sort();
-    expect(aliases).toEqual(["relay:demo-a", "relay:demo-b"]);
-    for (const s of result.skipped) {
-      expect(s.reason).toMatch(/conflicting (recorded commands|target identities|argv identities)|refusing to pick one|different argv identities/);
-    }
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]!.alias).toBe("relay:demo-b");
+    expect(result.skipped[0]!.reason).toMatch(/does not match the current driver's default launch/);
     expect(result.errors).toEqual([]);
 
-    // Config and state should be unchanged.
     const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
     const agentAfter = (configAfter.agents as Record<string, Record<string, unknown>>).kimi!;
     expect(agentAfter.argv).toBeUndefined();
     const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
     const sessionsAfter = stateAfter.sessions as Record<string, Record<string, unknown>>;
-    expect(sessionsAfter["relay:demo-a"]!.transport_agent_argv).toBeUndefined();
+    expect(sessionsAfter["relay:demo-a"]!.transport_agent_argv).toEqual(["kimi", "acp"]);
+    expect(sessionsAfter["relay:demo-a"]!.transport_acpx_agent).toBe(
+      deriveAgentAlias("kimi", ["kimi", "acp"]),
+    );
     expect(sessionsAfter["relay:demo-b"]!.transport_agent_argv).toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -692,8 +731,8 @@ test("issue 2: state read-modify-write re-reads fresh under lock; concurrent wri
           alias: "relay:demo", agent: "kimi", workspace: "demo",
           transport_session: transportSession,
           transport_agent_command: "kimi acp",
-          // Concurrently written argv on disk — migration sees this on re-read
-          // and treats A as already migrated.
+          // Concurrently written argv on disk WITHOUT acpx alias — Path A
+          // must repair by writing the canonical transport_acpx_agent.
           transport_agent_argv: ["kimi", "acp"],
           created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
         },
@@ -739,9 +778,9 @@ test("issue 2: state read-modify-write re-reads fresh under lock; concurrent wri
       logger: createNoopAppLogger(),
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-    // A was already migrated in the fresh snapshot; we count it as migrated.
+    // Fresh snapshot had argv-only; repair writes the canonical alias.
     expect(result.migrated).toEqual([
-      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]), driver: "kimi" },
+      { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
     ]);
     expect(result.skipped).toEqual([]);
     expect(result.errors).toEqual([]);
@@ -751,8 +790,9 @@ test("issue 2: state read-modify-write re-reads fresh under lock; concurrent wri
     expect(stateAfter.chat_contexts).toEqual({
       "weixin:user": { current_session: "relay:demo" },
     });
-    // Config argv is still written — the plan was valid against the planning
-    // snapshot, and the re-read only confirmed A didn't need re-migration.
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_agent_argv).toEqual(["kimi", "acp"]);
+    expect(sessionAfter.transport_acpx_agent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
     const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
     // Under path A the migration never writes the xacpx config — the
     // historical session is pinned to a session-local overlay alias in
@@ -1168,12 +1208,12 @@ test("issue 1 v3: sticky session is excluded from the safety bucket", async () =
   }
 });
 
-test("issue 1 v3: bucket of all noop sessions is steady state, not a skip", async () => {
-  // Both sessions for the agent already have argv matching the planned
-  // identity. Per-agent bucket is unanimous and all entries are noop;
-  // result should be a noop, not a reject.
+test("issue 1 v3: bucket of fully-migrated sessions is steady state, not a skip", async () => {
+  // Both sessions already have argv + canonical alias. Result should be a
+  // noop, not a reject or a re-migration.
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
+    const alias = deriveAgentAlias("kimi", ["kimi", "acp"]);
     await writeFile(statePath, JSON.stringify({
       version: 1,
       sessions: {
@@ -1182,6 +1222,7 @@ test("issue 1 v3: bucket of all noop sessions is steady state, not a skip", asyn
           transport_session: "demo:relay:demo-a:reset-1",
           transport_agent_command: "kimi acp",
           transport_agent_argv: ["kimi", "acp"],
+          transport_acpx_agent: alias,
           created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
         },
         "relay:demo-b": {
@@ -1189,6 +1230,7 @@ test("issue 1 v3: bucket of all noop sessions is steady state, not a skip", asyn
           transport_session: "demo:relay:demo-b:reset-2",
           transport_agent_command: "kimi acp",
           transport_agent_argv: ["kimi", "acp"],
+          transport_acpx_agent: alias,
           created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
         },
       },
@@ -1215,6 +1257,55 @@ test("issue 1 v3: bucket of all noop sessions is steady state, not a skip", asyn
     expect(result.configUpdates).toEqual([]);
     expect(result.migrated).toEqual([]);
     expect(result.errors).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("issue 1 v3: argv-only sessions are repaired with canonical alias", async () => {
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo-a": {
+          alias: "relay:demo-a", agent: "kimi", workspace: "demo",
+          transport_session: "demo:relay:demo-a:reset-1",
+          transport_agent_command: "kimi acp",
+          transport_agent_argv: ["kimi", "acp"],
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+    });
+    expect(result.migrated).toEqual([
+      {
+        alias: "relay:demo-a",
+        agent: "kimi",
+        argv: ["kimi", "acp"],
+        acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
+      },
+    ]);
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo-a"]!;
+    expect(sessionAfter.transport_acpx_agent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1282,7 +1373,9 @@ test("issue 1 v4: derived-argv session (opencode [driver, acp]) is NOT sticky ev
     const skippedAliases = result.skipped.map((s) => s.alias).sort();
     expect(skippedAliases).toEqual(["relay:demo-a", "relay:demo-b"]);
     for (const s of result.skipped) {
-      expect(s.reason).toMatch(/different argv identities/);
+      expect(s.reason).toMatch(
+        /does not match the current driver's default launch|matches a derived launch/,
+      );
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1342,12 +1435,10 @@ test("issue 1 v4: truly-sticky session (custom argv + transport_acpx_agent) is e
   }
 });
 
-test("issue 2 v4: non-sticky session with no recorded identity aborts the whole agent", async () => {
+test("issue 2 v4: Path A migrates a safe session even when a sibling has unknown identity", async () => {
   // A is backfillable with "kimi acp". B has no recorded command and no
-  // argv — currently resolves via step 5 (default launch). The migration
-  // would write kimi.argv = ["kimi", "acp"] and silently re-key B via
-  // step 3. The whole agent must be rejected because B's identity is
-  // unknown and we cannot prove safety.
+  // argv. Under Path A (session-local), B cannot be re-keyed by A's alias,
+  // so A migrates and B is left alone (noop — nothing to migrate).
   const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
   try {
     const transportA = "demo:relay:demo-a:reset-1";
@@ -1387,12 +1478,23 @@ test("issue 2 v4: non-sticky session with no recorded identity aborts the whole 
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-    expect(result.migrated).toEqual([]);
+    expect(result.migrated).toEqual([
+      {
+        alias: "relay:demo-a",
+        agent: "kimi",
+        argv: ["kimi", "acp"],
+        acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
+      },
+    ]);
     expect(result.configUpdates).toEqual([]);
-    expect(result.skipped.some((s) => s.alias === "relay:demo-b")).toBe(true);
-    expect(result.skipped.find((s) => s.alias === "relay:demo-b")?.reason).toMatch(
-      /no recorded identity/,
+    expect(result.skipped.some((s) => s.alias === "relay:demo-b")).toBe(false);
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionsAfter = stateAfter.sessions as Record<string, Record<string, unknown>>;
+    expect(sessionsAfter["relay:demo-a"]!.transport_acpx_agent).toBe(
+      deriveAgentAlias("kimi", ["kimi", "acp"]),
     );
+    expect(sessionsAfter["relay:demo-b"]!.transport_agent_argv).toBeUndefined();
+    expect(sessionsAfter["relay:demo-b"]!.transport_acpx_agent).toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

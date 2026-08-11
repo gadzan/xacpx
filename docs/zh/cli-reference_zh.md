@@ -32,7 +32,7 @@
 | `xacpx workspace rm <name>` | 删除 workspace |
 | `xacpx later list` / `xacpx lt list` | 在终端查看本机待执行定时任务 |
 | `xacpx later cancel <id>` / `xacpx lt cancel <id>` | 在终端取消本机待执行定时任务 |
-| `xacpx migrate argv [--dry-run]` | 把 `state.json` 里记录的 raw command 含空格（Windows fail-closed 触发条件）的会话回填为结构化 `argv`，并把对应 `agents.<name>.argv` 写进 config。每次 daemon 启动都会自动跑；本命令用于显式触发和排障。若有 skipped，退出码非零。详见 [config-reference.md](./config-reference.md#windows-raw-command-迁移) |
+| `xacpx migrate argv [--dry-run]` | 把 `state.json` 里记录的 raw command 含空格（Windows fail-closed 触发条件）的会话回填为结构化 `argv`，写成 session-local 的 `xacpx-managed-<driver>-<hash>` alias（`transport_acpx_agent` + `transport_agent_argv`）。**永不写入**全局 `agents.<name>.argv`。每次 daemon 启动都会自动跑；本命令用于显式触发和排障。若有 skipped，退出码非零。详见 [config-reference.md](./config-reference.md#windows-raw-command-迁移) |
 
 首次运行 `xacpx start` 或 `xacpx run` 时，如果没有会话、workspace 和插件，CLI 会询问是否把当前目录创建为 workspace，并选择一个内置 agent 模板；服务启动后会通过正常会话创建流程创建初始 acpx 会话。
 
