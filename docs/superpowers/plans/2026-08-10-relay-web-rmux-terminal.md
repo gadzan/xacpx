@@ -240,15 +240,15 @@
 - Test: `tests/unit/packages/relay-protocol/terminal-dtos.test.ts`
 - Test: `tests/unit/packages/relay-protocol/payload-validators.test.ts`
 
-- [ ] 增加 spec §14.2–14.4 的 browser↔hub、hub↔connector request/event union 和 `TerminalOpenResult/RoleResult/TerminateResult`。
-- [ ] 定义 capability 常量、稳定 error-code union、ID/cols/rows/input/rebase/queue 上限；decoded rebase chunk 固定 48 KiB，total rebase 最大 2 MiB，input 最大 64 KiB。
-- [ ] 错误码至少固定为：`terminal-disabled`、`terminal-rmux-unavailable`、`terminal-session-not-found`、`terminal-session-archived`、`terminal-capacity-exceeded`、`terminal-viewer-capacity-exceeded`、`terminal-terminating`、`terminal-attachment-not-found`、`terminal-generation-mismatch`、`terminal-not-controller`、`terminal-recovery-too-large`、`terminal-protocol-error`、`terminal-timeout`、`instance-offline`。
-- [ ] canonical base64 validator 必须先做 encoded length bound，再 decode，再 round-trip 校验，避免大 payload/非 canonical 等价字符串。
-- [ ] `instance.terminal.open/take-control/resync/terminate` 是 req/res；`stream-start/input/resize/heartbeat/detach` 是 event；viewer/resource event 方向不可混用。
-- [ ] validators 拒绝 browser 自报 viewerId/cwd、unknown fields（按当前协议严格度）、invalid generation/size/index/count/sequence。
-- [ ] 协议保持 additive；legacy terminal DTO 暂留但新 capability 路径不使用。
-- [ ] Run focused tests, `bun run build:relay-protocol`, and `bun run assert:relay-protocol`.
-- [ ] Commit: `feat(relay-protocol): define recoverable terminal wire contract`
+- [x] 增加 spec §14.2–14.4 的 browser↔hub、hub↔connector request/event union 和 `TerminalOpenResult/RoleResult/TerminateResult`。
+- [x] 定义 capability 常量、稳定 error-code union、ID/cols/rows/input/rebase/queue 上限；decoded rebase chunk 固定 48 KiB，total rebase 最大 2 MiB，input 最大 64 KiB。
+- [x] 错误码至少固定为：`terminal-disabled`、`terminal-rmux-unavailable`、`terminal-session-not-found`、`terminal-session-archived`、`terminal-capacity-exceeded`、`terminal-viewer-capacity-exceeded`、`terminal-terminating`、`terminal-attachment-not-found`、`terminal-generation-mismatch`、`terminal-not-controller`、`terminal-recovery-too-large`、`terminal-protocol-error`、`terminal-timeout`、`instance-offline`。
+- [x] canonical base64 validator 必须先做 encoded length bound，再 decode，再 round-trip 校验，避免大 payload/非 canonical 等价字符串。
+- [x] `instance.terminal.open/take-control/resync/terminate` 是 req/res；`stream-start/input/resize/heartbeat/detach` 是 event；viewer/resource event 方向不可混用。
+- [x] validators 拒绝 browser 自报 viewerId/cwd、unknown fields（按当前协议严格度）、invalid generation/size/index/count/sequence。
+- [x] 协议保持 additive；legacy terminal DTO 暂留但新 capability 路径不使用。
+- [x] Run focused tests, `bun run build:relay-protocol`, and `bun run assert:relay-protocol`.
+- [x] Commit: `feat(relay-protocol): define recoverable terminal wire contract`
 
 ### Task 9: 在 instance handshake 和 dashboard DTO 中传播 capability
 

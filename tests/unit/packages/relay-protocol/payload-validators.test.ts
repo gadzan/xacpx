@@ -1,6 +1,11 @@
 // tests/unit/packages/relay-protocol/payload-validators.test.ts
 import { expect, test } from "bun:test";
-import { MSG, parseControlPayload, CONTROL_PAYLOAD_VALIDATORS } from "../../../../packages/relay-protocol/src/index";
+import {
+  MSG,
+  parseControlPayload,
+  parseTerminalEventPayload,
+  CONTROL_PAYLOAD_VALIDATORS,
+} from "../../../../packages/relay-protocol/src/index";
 
 test("parseControlPayload accepts a well-formed fsWrite payload", () => {
   const ok = parseControlPayload(MSG.fsWrite, {
@@ -92,6 +97,65 @@ test("every registered validator returns null for a non-object payload", () => {
     expect(CONTROL_PAYLOAD_VALIDATORS[type](null)).toBeNull();
     expect(CONTROL_PAYLOAD_VALIDATORS[type](42)).toBeNull();
   }
+});
+
+test("recoverable terminal RPC payloads require hub-stamped viewerId and reject browser cwd", () => {
+  expect(parseControlPayload(MSG.terminalOpen, {
+    chatKey: "relay:a1", sessionAlias: "demo", viewerId: "v1", cols: 80, rows: 24,
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.terminalOpen, {
+    chatKey: "relay:a1", sessionAlias: "demo", cols: 80, rows: 24,
+  })).toBeNull();
+  expect(parseControlPayload(MSG.terminalOpen, {
+    chatKey: "relay:a1", sessionAlias: "demo", viewerId: "v1", cols: 80, rows: 24, cwd: "/tmp",
+  } as never)).toBeNull();
+  expect(parseControlPayload(MSG.terminalTakeControl, {
+    attachmentId: "a1", generation: "g1", viewerId: "v1",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.terminalResync, {
+    attachmentId: "a1", generation: "g1", viewerId: "v1",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.terminalTerminate, {
+    terminalId: "t1", generation: "g1",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.terminalTerminate, {
+    terminalId: "t1",
+  })).toBeNull();
+});
+
+test("recoverable terminal event payloads validate attachment-scoped hub stamps", () => {
+  expect(parseTerminalEventPayload(MSG.terminalStreamStart, {
+    attachmentId: "a1", viewerId: "v1",
+  })).not.toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalInput, {
+    attachmentId: "a1", generation: "g1", viewerId: "v1", dataBase64: Buffer.from("x").toString("base64"),
+  })).not.toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalInput, {
+    terminalId: "t1", data: "legacy",
+  })).toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalResize, {
+    attachmentId: "a1", generation: "g1", viewerId: "v1", cols: 80, rows: 24,
+  })).not.toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalHeartbeat, {
+    attachmentId: "a1", viewerId: "v1",
+  })).not.toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalDetach, {
+    attachmentId: "a1", viewerId: "v1",
+  })).not.toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalViewerEvent, {
+    viewerId: "v1",
+    attachmentId: "a1",
+    event: {
+      kind: "terminal-bytes",
+      generation: "g1",
+      epoch: 1,
+      sequence: 1,
+      dataBase64: Buffer.from("x").toString("base64"),
+    },
+  })).not.toBeNull();
+  expect(parseTerminalEventPayload(MSG.terminalResourceExit, {
+    terminalId: "t1", generation: "g1", reason: "explicit-close", code: 0,
+  })).not.toBeNull();
 });
 
 // The type-level `PayloadFor<T>` bindings are asserted in payload-validators.ts itself,

@@ -51,11 +51,48 @@ import {
   type SessionsUnarchivePayload,
   type TerminalAttachPayload,
   type TerminalCreatePayload,
+  type TerminalDetachPayload,
+  type TerminalHeartbeatPayload,
+  type TerminalInputPayload,
+  type TerminalOpenPayload,
+  type TerminalResyncPayload,
+  type TerminalResizePayload,
+  type TerminalResourceExitPayload,
+  type TerminalStreamStartPayload,
+  type TerminalTakeControlPayload,
+  type TerminalTerminatePayload,
+  type TerminalViewerEventInner,
+  type TerminalViewerEventPayload,
   type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
 } from "./messages.js";
-import { isObj, isStr, optStr, optNum, optBool } from "./validate-primitives.js";
+import {
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+} from "./limits.js";
+import {
+  isBoundedStr,
+  isIntInRange,
+  isNonNegInt,
+  isObj,
+  isStr,
+  optStr,
+  optNum,
+  optBool,
+  parseCanonicalBase64,
+} from "./validate-primitives.js";
 
 export type Validator<T> = (payload: unknown) => T | null;
 
@@ -273,6 +310,44 @@ const validateTerminalAttach: Validator<TerminalAttachPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.terminalId) ? (o as unknown as TerminalAttachPayload) : null;
 };
+const validateTerminalOpen: Validator<TerminalOpenPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isStr(o.chatKey)
+    && isBoundedStr(o.sessionAlias, MAX_TERMINAL_SESSION_ALIAS_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    && isIntInRange(o.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+    && isIntInRange(o.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+    && o.cwd === undefined
+    ? (o as unknown as TerminalOpenPayload)
+    : null;
+};
+const validateTerminalTakeControl: Validator<TerminalTakeControlPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    ? (o as unknown as TerminalTakeControlPayload)
+    : null;
+};
+const validateTerminalResync: Validator<TerminalResyncPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    ? (o as unknown as TerminalResyncPayload)
+    : null;
+};
+const validateTerminalTerminate: Validator<TerminalTerminatePayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH)
+    && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    ? (o as unknown as TerminalTerminatePayload)
+    : null;
+};
 const validateUpload: Validator<UploadPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? (o as unknown as UploadPayload) : null;
@@ -281,8 +356,10 @@ const validateUpload: Validator<UploadPayload> = (p) => {
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),
- *  terminal I/O events (terminalInput/Resize/Close — validated by parseWebClientMessage),
- *  and the four no-payload list RPCs (agentsList/workspacesList/agentsCatalog/orchestrationList). */
+ *  terminal I/O events (legacy terminalInput/Resize/Close and recoverable terminal
+ *  stream/input/resize/heartbeat/detach/viewer-event/resource-exit — see
+ *  parseTerminalEventPayload), and the four no-payload list RPCs
+ *  (agentsList/workspacesList/agentsCatalog/orchestrationList). */
 export type ControlRpcType =
   | typeof MSG.sessionsList | typeof MSG.sessionsCreate | typeof MSG.sessionsNativeList
   | typeof MSG.sessionsRemove | typeof MSG.sessionsArchive | typeof MSG.sessionsUnarchive
@@ -299,7 +376,10 @@ export type ControlRpcType =
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
   | typeof MSG.gitFetch | typeof MSG.gitPull | typeof MSG.gitPush | typeof MSG.gitCheckout
   | typeof MSG.gitWorktreeCreate
-  | typeof MSG.terminalCreate | typeof MSG.terminalAttach | typeof MSG.upload;
+  | typeof MSG.terminalCreate | typeof MSG.terminalAttach
+  | typeof MSG.terminalOpen | typeof MSG.terminalTakeControl
+  | typeof MSG.terminalResync | typeof MSG.terminalTerminate
+  | typeof MSG.upload;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -352,6 +432,10 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionEffortSet]: validateSessionEffortSet,
   [MSG.terminalCreate]: validateTerminalCreate,
   [MSG.terminalAttach]: validateTerminalAttach,
+  [MSG.terminalOpen]: validateTerminalOpen,
+  [MSG.terminalTakeControl]: validateTerminalTakeControl,
+  [MSG.terminalResync]: validateTerminalResync,
+  [MSG.terminalTerminate]: validateTerminalTerminate,
   [MSG.upload]: validateUpload,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 
@@ -363,6 +447,152 @@ export type PayloadFor<T extends ControlRpcType> =
  *  payload type or null. */
 export function parseControlPayload<T extends ControlRpcType>(type: T, payload: unknown): PayloadFor<T> | null {
   const validate = CONTROL_PAYLOAD_VALIDATORS[type] as unknown as Validator<PayloadFor<T>>;
+  return validate(payload);
+}
+
+function expectedRebaseChunkCount(totalBytes: number): number {
+  return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
+}
+
+function validTerminalViewerEventInner(event: unknown): event is TerminalViewerEventInner {
+  if (!isObj(event) || typeof event.kind !== "string") return false;
+  switch (event.kind) {
+    case "terminal-rebase-start":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(event.epoch)
+        && isNonNegInt(event.nextSequence)
+        && isIntInRange(event.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+        && isIntInRange(event.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+        && typeof event.alternate === "boolean"
+        && isIntInRange(event.totalBytes, 0, MAX_TERMINAL_REBASE_TOTAL_BYTES)
+        && isNonNegInt(event.chunkCount)
+        && event.chunkCount === expectedRebaseChunkCount(event.totalBytes);
+    case "terminal-rebase-chunk":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(event.epoch)
+        && isNonNegInt(event.index)
+        && parseCanonicalBase64(event.dataBase64, TERMINAL_REBASE_CHUNK_BYTES) !== null;
+    case "terminal-rebase-end":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(event.epoch);
+    case "terminal-bytes":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(event.epoch)
+        && isNonNegInt(event.sequence)
+        && parseCanonicalBase64(event.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null;
+    case "terminal-role-changed":
+      return isBoundedStr(event.terminalId, MAX_TERMINAL_ID_LENGTH)
+        && (event.role === "controller" || event.role === "spectator")
+        && isNonNegInt(event.viewerCount);
+    case "terminal-request-failed":
+      return optStr(event.requestId)
+        && (event.requestId === undefined || isBoundedStr(event.requestId, 128))
+        && isBoundedStr(event.code, 128)
+        && typeof event.message === "string"
+        && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    default:
+      return false;
+  }
+}
+
+const validateTerminalStreamStart: Validator<TerminalStreamStartPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    ? (o as unknown as TerminalStreamStartPayload)
+    : null;
+};
+const validateTerminalInputEvent: Validator<TerminalInputPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    && parseCanonicalBase64(o.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null
+    && o.terminalId === undefined
+    && o.data === undefined
+    ? (o as unknown as TerminalInputPayload)
+    : null;
+};
+const validateTerminalResizeEvent: Validator<TerminalResizePayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    && isIntInRange(o.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+    && isIntInRange(o.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+    && o.terminalId === undefined
+    ? (o as unknown as TerminalResizePayload)
+    : null;
+};
+const validateTerminalHeartbeat: Validator<TerminalHeartbeatPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    ? (o as unknown as TerminalHeartbeatPayload)
+    : null;
+};
+const validateTerminalDetach: Validator<TerminalDetachPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    ? (o as unknown as TerminalDetachPayload)
+    : null;
+};
+const validateTerminalViewerEvent: Validator<TerminalViewerEventPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH)
+    && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && validTerminalViewerEventInner(o.event)
+    ? (o as unknown as TerminalViewerEventPayload)
+    : null;
+};
+const validateTerminalResourceExit: Validator<TerminalResourceExitPayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH)
+    && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && isBoundedStr(o.reason, 128)
+    && optNum(o.code)
+    && (o.code === undefined || Number.isInteger(o.code))
+    ? (o as unknown as TerminalResourceExitPayload)
+    : null;
+};
+
+/** Recoverable terminal event message types (hub↔connector fire-and-forget / targeted push). */
+export type TerminalEventType =
+  | typeof MSG.terminalStreamStart
+  | typeof MSG.terminalInput
+  | typeof MSG.terminalResize
+  | typeof MSG.terminalHeartbeat
+  | typeof MSG.terminalDetach
+  | typeof MSG.terminalViewerEvent
+  | typeof MSG.terminalResourceExit;
+
+export const TERMINAL_EVENT_PAYLOAD_VALIDATORS = {
+  [MSG.terminalStreamStart]: validateTerminalStreamStart,
+  [MSG.terminalInput]: validateTerminalInputEvent,
+  [MSG.terminalResize]: validateTerminalResizeEvent,
+  [MSG.terminalHeartbeat]: validateTerminalHeartbeat,
+  [MSG.terminalDetach]: validateTerminalDetach,
+  [MSG.terminalViewerEvent]: validateTerminalViewerEvent,
+  [MSG.terminalResourceExit]: validateTerminalResourceExit,
+} satisfies Record<TerminalEventType, Validator<unknown>>;
+
+export type TerminalEventPayloadFor<T extends TerminalEventType> =
+  NonNullable<ReturnType<(typeof TERMINAL_EVENT_PAYLOAD_VALIDATORS)[T]>>;
+
+/** Validate a recoverable terminal event payload (not the legacy live-PTY shapes). */
+export function parseTerminalEventPayload<T extends TerminalEventType>(
+  type: T,
+  payload: unknown,
+): TerminalEventPayloadFor<T> | null {
+  const validate = TERMINAL_EVENT_PAYLOAD_VALIDATORS[type] as unknown as Validator<TerminalEventPayloadFor<T>>;
   return validate(payload);
 }
 
@@ -387,3 +617,6 @@ type _gitCheckoutBound = Expect<Equal<PayloadFor<typeof MSG.gitCheckout>, GitChe
 type _gitWorktreeCreateBound = Expect<Equal<PayloadFor<typeof MSG.gitWorktreeCreate>, GitWorktreeCreatePayload>>;
 type _gitUntrackBound = Expect<Equal<PayloadFor<typeof MSG.gitUntrack>, GitPathsPayload>>;
 type _gitDiscardBound = Expect<Equal<PayloadFor<typeof MSG.gitDiscard>, GitPathsPayload>>;
+type _terminalOpenBound = Expect<Equal<PayloadFor<typeof MSG.terminalOpen>, TerminalOpenPayload>>;
+type _terminalTerminateBound = Expect<Equal<PayloadFor<typeof MSG.terminalTerminate>, TerminalTerminatePayload>>;
+type _terminalInputEventBound = Expect<Equal<TerminalEventPayloadFor<typeof MSG.terminalInput>, TerminalInputPayload>>;

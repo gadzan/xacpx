@@ -1,6 +1,6 @@
 import { type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
-import type { InstanceNoticePayload } from "./messages.js";
+import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
 export type MessageDirection = "in" | "out";
@@ -98,6 +98,69 @@ export type WebServerEvent = {
     kind: "notice";
     instanceId: string;
     notice: InstanceNoticePayload;
+} | {
+    kind: "terminal-opened";
+    requestId: string;
+    instanceId: string;
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: TerminalRole;
+    viewerCount: number;
+} | {
+    kind: "terminal-request-failed";
+    requestId: string;
+    instanceId: string;
+    code: string;
+    message: string;
+} | {
+    kind: "terminal-rebase-start";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    epoch: number;
+    nextSequence: number;
+    cols: number;
+    rows: number;
+    alternate: boolean;
+    totalBytes: number;
+    chunkCount: number;
+} | {
+    kind: "terminal-rebase-chunk";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    epoch: number;
+    index: number;
+    dataBase64: string;
+} | {
+    kind: "terminal-rebase-end";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    epoch: number;
+} | {
+    kind: "terminal-bytes";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    epoch: number;
+    sequence: number;
+    dataBase64: string;
+} | {
+    kind: "terminal-role-changed";
+    instanceId: string;
+    attachmentId: string;
+    terminalId: string;
+    role: TerminalRole;
+    viewerCount: number;
+} | {
+    kind: "terminal-exit";
+    instanceId: string;
+    terminalId: string;
+    generation: string;
+    reason: string;
+    code?: number;
 };
 /** Wrap a server→web push event in a relay envelope. */
 export declare function webEventEnvelope(event: WebServerEvent): RelayEnvelope;
@@ -129,6 +192,57 @@ export type WebClientMessage = {
     kind: "terminal-close";
     instanceId: string;
     terminalId: string;
+} | {
+    kind: "terminal-open";
+    requestId: string;
+    instanceId: string;
+    sessionAlias: string;
+    cols: number;
+    rows: number;
+} | {
+    kind: "terminal-stream-start";
+    requestId: string;
+    instanceId: string;
+    attachmentId: string;
+} | {
+    kind: "terminal-input";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    dataBase64: string;
+} | {
+    kind: "terminal-resize";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    cols: number;
+    rows: number;
+} | {
+    kind: "terminal-heartbeat";
+    instanceId: string;
+    attachmentId: string;
+} | {
+    kind: "terminal-take-control";
+    requestId: string;
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+} | {
+    kind: "terminal-resync";
+    requestId: string;
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+} | {
+    kind: "terminal-terminate";
+    requestId: string;
+    instanceId: string;
+    terminalId: string;
+    generation: string;
+} | {
+    kind: "terminal-detach";
+    instanceId: string;
+    attachmentId: string;
 } | {
     kind: "subscribe";
     instanceIds: string[];
