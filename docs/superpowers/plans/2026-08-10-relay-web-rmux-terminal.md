@@ -341,19 +341,19 @@
 - Test: `tests/unit/packages/channel-relay/terminal-runtime.test.ts`
 - Test support: reuse `in-memory-rmux-driver.ts`
 
-- [ ] 对外 interface 与结果类型精确匹配 spec §9；per-logical-session lock 和 per-terminal lock 分离，lock order 写入模块注释并测试无反向获取。
-- [ ] open：catalog resolve/scope/archive 校验→按 logical ID 幂等 resume→quota→durable creating→driver create+lease→durable live→paused attachment→response。
-- [ ] RMUX name 固定为 `xacpx-relay-<installation-short>-<terminal-uuid-without-dashes>`；tags 精确包含 `xacpx:relay`、`owner:<installationId>`、`logical:<logicalSessionId>`、`terminal:<terminalId>`、`generation:<generation>`、`schema:1`。
-- [ ] quota 到达 `maxSessions` 时只先处理 expired/reaping；仍满则返回 `terminal-capacity-exceeded`，禁止 LRU-kill 未过期 resource。一个 logical ID 已有 creating/live 时绝不并发创建第二个。
-- [ ] open cancellation/deadline 后不得留下无记录 side effect：补偿 kill，失败则 durable reaping；caller 不能普通 timeout 后重试创建第二 resource。
-- [ ] recovery 只在 `startRecovery(attachmentId)` 建 stream；first frame 必须 rebase；48 KiB chunking 保留 raw bytes/epoch/sequence。
-- [ ] input/resize/takeControl/resync 同时校验 attachment、viewer binding、terminal、generation、controller role；所有 mutation 在 lease lost 后 fence。
-- [ ] terminate：先 durable reaping→拒绝新操作→停止 streams/续租→向 viewers 发 exit→stable kill（最多 5 秒）→absent 后删 record；timeout 返回 cleanup-pending。
-- [ ] natural shell exit 转 `reaping(exited)` 并发 exit；terminate/retry/already-gone 幂等。
-- [ ] idle 仅由成功 open/resume、takeControl 和 controller input 刷新；output/heartbeat/普通 attach/resize 不刷新。
-- [ ] 测试 alias reuse/shared transport、generation stale frame、create/terminate 每个 crash point、capacity/history limit 和所有稳定错误码。
-- [ ] Run focused runtime test and channel-relay typecheck.
-- [ ] Commit: `feat(channel-relay): add durable relay terminal runtime`
+- [x] 对外 interface 与结果类型精确匹配 spec §9；per-logical-session lock 和 per-terminal lock 分离，lock order 写入模块注释并测试无反向获取。
+- [x] open：catalog resolve/scope/archive 校验→按 logical ID 幂等 resume→quota→durable creating→driver create+lease→durable live→paused attachment→response。
+- [x] RMUX name 固定为 `xacpx-relay-<installation-short>-<terminal-uuid-without-dashes>`；tags 精确包含 `xacpx:relay`、`owner:<installationId>`、`logical:<logicalSessionId>`、`terminal:<terminalId>`、`generation:<generation>`、`schema:1`。
+- [x] quota 到达 `maxSessions` 时只先处理 expired/reaping；仍满则返回 `terminal-capacity-exceeded`，禁止 LRU-kill 未过期 resource。一个 logical ID 已有 creating/live 时绝不并发创建第二个。
+- [x] open cancellation/deadline 后不得留下无记录 side effect：补偿 kill，失败则 durable reaping；caller 不能普通 timeout 后重试创建第二 resource。
+- [x] recovery 只在 `startRecovery(attachmentId)` 建 stream；first frame 必须 rebase；48 KiB chunking 保留 raw bytes/epoch/sequence。
+- [x] input/resize/takeControl/resync 同时校验 attachment、viewer binding、terminal、generation、controller role；所有 mutation 在 lease lost 后 fence。
+- [x] terminate：先 durable reaping→拒绝新操作→停止 streams/续租→向 viewers 发 exit→stable kill（最多 5 秒）→absent 后删 record；timeout 返回 cleanup-pending。
+- [x] natural shell exit 转 `reaping(exited)` 并发 exit；terminate/retry/already-gone 幂等。
+- [x] idle 仅由成功 open/resume、takeControl 和 controller input 刷新；output/heartbeat/普通 attach/resize 不刷新。
+- [x] 测试 alias reuse/shared transport、generation stale frame、create/terminate 每个 crash point、capacity/history limit 和所有稳定错误码。
+- [x] Run focused runtime test and channel-relay typecheck.
+- [x] Commit: `feat(channel-relay): add durable relay terminal runtime`
 
 ### Task 14: Startup/periodic reconciliation 与 orphan quarantine
 

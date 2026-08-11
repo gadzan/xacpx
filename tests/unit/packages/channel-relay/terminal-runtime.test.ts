@@ -1,0 +1,518 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type {
+  SessionResourceCatalog,
+  SessionResourceDescriptor,
+  SessionResourceLifecycleEvent,
+} from "xacpx/plugin-api";
+
+import type { RelayTerminalConfig } from "../../../../packages/channel-relay/src/config";
+import { InMemoryRmuxDriver } from "../../../../packages/channel-relay/src/terminal/in-memory-rmux-driver";
+import { TerminalRegistryStore } from "../../../../packages/channel-relay/src/terminal/terminal-registry-store";
+import {
+  DefaultRelayTerminalRuntime,
+  TerminalRuntimeError,
+  type TerminalViewerEvent,
+} from "../../../../packages/channel-relay/src/terminal/terminal-runtime";
+import { TERMINAL_REBASE_CHUNK_BYTES } from "@ganglion/xacpx-relay-protocol";
+
+const dirs: string[] = [];
+
+afterEach(() => {
+  while (dirs.length > 0) {
+    const dir = dirs.pop();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function freshDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "term-runtime-"));
+  dirs.push(dir);
+  return dir;
+}
+
+function baseConfig(overrides: Partial<RelayTerminalConfig> = {}): RelayTerminalConfig {
+  return {
+    enabled: true,
+    backend: "rmux",
+    idleTimeoutSeconds: 900,
+    ownerLeaseTtlSeconds: 90,
+    reconcileIntervalSeconds: 30,
+    orphanGraceSeconds: 120,
+    attachmentTtlSeconds: 45,
+    maxSessions: 16,
+    maxViewersPerTerminal: 4,
+    historyLimit: 10000,
+    ...overrides,
+  };
+}
+
+function descriptor(
+  overrides: Partial<SessionResourceDescriptor> = {},
+): SessionResourceDescriptor {
+  return {
+    logicalSessionId: "11111111-1111-4111-8111-111111111111",
+    channelId: "relay",
+    internalAlias: "demo",
+    displayAlias: "demo",
+    workspace: "ws",
+    cwd: "/tmp/ws",
+    archived: false,
+    ...overrides,
+  };
+}
+
+class FakeCatalog implements SessionResourceCatalog {
+  private readonly byAlias = new Map<string, SessionResourceDescriptor>();
+
+  constructor(initial: SessionResourceDescriptor[] = []) {
+    for (const d of initial) this.byAlias.set(d.displayAlias, d);
+  }
+
+  set(d: SessionResourceDescriptor): void {
+    this.byAlias.set(d.displayAlias, d);
+  }
+
+  async resolve(_chatKey: string, alias: string): Promise<SessionResourceDescriptor | null> {
+    return this.byAlias.get(alias) ?? null;
+  }
+
+  async list(channelId: string): Promise<SessionResourceDescriptor[]> {
+    return [...this.byAlias.values()].filter((d) => d.channelId === channelId);
+  }
+
+  subscribe(_listener: (event: SessionResourceLifecycleEvent) => void): () => void {
+    return () => {};
+  }
+}
+
+interface Harness {
+  runtime: DefaultRelayTerminalRuntime;
+  driver: InMemoryRmuxDriver;
+  registry: TerminalRegistryStore;
+  catalog: FakeCatalog;
+  events: TerminalViewerEvent[];
+  clock: { nowMs: number; now: () => number };
+}
+
+async function makeHarness(
+  opts: {
+    config?: Partial<RelayTerminalConfig>;
+    descriptors?: SessionResourceDescriptor[];
+    killTimeoutMs?: number;
+  } = {},
+): Promise<Harness> {
+  const dir = freshDir();
+  const registry = new TerminalRegistryStore({ dir });
+  const driver = new InMemoryRmuxDriver();
+  const catalog = new FakeCatalog(opts.descriptors ?? [descriptor()]);
+  const events: TerminalViewerEvent[] = [];
+  const clock = { nowMs: 1_000_000, now: () => clock.nowMs };
+  const runtime = new DefaultRelayTerminalRuntime({
+    registry,
+    driver,
+    catalog,
+    config: baseConfig(opts.config),
+    onViewerEvent: (e) => events.push(e),
+    clock,
+    killTimeoutMs: opts.killTimeoutMs ?? 50,
+    lastInputCheckpointMinIntervalMs: 30_000,
+  });
+  await runtime.start();
+  return { runtime, driver, registry, catalog, events, clock };
+}
+
+test("openOrResume creates durable live resource with exact name/tags and controller attachment", async () => {
+  const { runtime, driver, registry } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "viewer-a",
+    cols: 80,
+    rows: 24,
+  });
+
+  expect(opened.role).toBe("controller");
+  expect(opened.viewerCount).toBe(1);
+
+  const snap = registry.getSnapshot();
+  const rec = snap.terminals[opened.terminalId];
+  expect(rec?.state).toBe("live");
+  expect(rec?.logicalSessionId).toBe(descriptor().logicalSessionId);
+  expect(rec?.rmuxSessionName).toBe(
+    `xacpx-relay-${snap.installationId.slice(0, 8)}-${opened.terminalId.replaceAll("-", "")}`,
+  );
+
+  const inventory = await driver.list();
+  expect(inventory).toHaveLength(1);
+  expect(inventory[0]?.tags).toEqual([
+    "xacpx:relay",
+    `owner:${snap.installationId}`,
+    `logical:${descriptor().logicalSessionId}`,
+    `terminal:${opened.terminalId}`,
+    `generation:${opened.generation}`,
+    "schema:1",
+  ]);
+});
+
+test("openOrResume is idempotent by logicalSessionId (alias reuse shares one resource)", async () => {
+  const sharedLogical = descriptor({
+    displayAlias: "a",
+    internalAlias: "a",
+  });
+  const aliasB = descriptor({
+    displayAlias: "b",
+    internalAlias: "b",
+    // Same logical id — alias rename / shared transport case
+    logicalSessionId: sharedLogical.logicalSessionId,
+  });
+  const { runtime, driver } = await makeHarness({
+    descriptors: [sharedLogical, aliasB],
+  });
+
+  const first = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "a",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  const second = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "b",
+    viewerId: "v2",
+    cols: 100,
+    rows: 30,
+  });
+
+  expect(second.terminalId).toBe(first.terminalId);
+  expect(second.generation).toBe(first.generation);
+  expect(second.role).toBe("spectator");
+  expect(second.viewerCount).toBe(2);
+  expect(await driver.list()).toHaveLength(1);
+});
+
+test("concurrent openOrResume for one logical id only creates one RMUX session", async () => {
+  const { runtime, driver } = await makeHarness();
+  const results = await Promise.all([
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "demo",
+      viewerId: "v1",
+      cols: 80,
+      rows: 24,
+    }),
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "demo",
+      viewerId: "v2",
+      cols: 80,
+      rows: 24,
+    }),
+  ]);
+  expect(results[0]?.terminalId).toBe(results[1]?.terminalId);
+  expect(await driver.list()).toHaveLength(1);
+});
+
+test("catalog miss / archived / wrong channel map to stable error codes", async () => {
+  const { runtime, catalog } = await makeHarness();
+  await expect(
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "missing",
+      viewerId: "v",
+      cols: 80,
+      rows: 24,
+    }),
+  ).rejects.toMatchObject({ code: "terminal-session-not-found" });
+
+  catalog.set(descriptor({ displayAlias: "arch", archived: true }));
+  await expect(
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "arch",
+      viewerId: "v",
+      cols: 80,
+      rows: 24,
+    }),
+  ).rejects.toMatchObject({ code: "terminal-session-archived" });
+
+  catalog.set(descriptor({ displayAlias: "wx", channelId: "weixin" }));
+  await expect(
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "wx",
+      viewerId: "v",
+      cols: 80,
+      rows: 24,
+    }),
+  ).rejects.toMatchObject({ code: "terminal-session-not-found" });
+});
+
+test("quota rejects with terminal-capacity-exceeded after reaping only expired/reaping", async () => {
+  const { runtime, catalog, clock, registry } = await makeHarness({
+    config: { maxSessions: 1, idleTimeoutSeconds: 60 },
+  });
+
+  const first = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+
+  catalog.set(
+    descriptor({
+      displayAlias: "other",
+      logicalSessionId: "22222222-2222-4222-8222-222222222222",
+    }),
+  );
+  await expect(
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "other",
+      viewerId: "v2",
+      cols: 80,
+      rows: 24,
+    }),
+  ).rejects.toMatchObject({ code: "terminal-capacity-exceeded" });
+
+  // Still one live — no LRU kill of the non-expired resource.
+  expect(registry.getSnapshot().terminals[first.terminalId]?.state).toBe("live");
+
+  clock.nowMs += 61_000;
+  const second = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "other",
+    viewerId: "v2",
+    cols: 80,
+    rows: 24,
+  });
+  expect(second.terminalId).not.toBe(first.terminalId);
+  expect(registry.getSnapshot().terminals[first.terminalId]).toBeUndefined();
+});
+
+test("create failure leaves reaping/cleanup and does not return success", async () => {
+  const { runtime, driver, registry } = await makeHarness();
+  driver.configureFailure("create", new Error("boom"), 1);
+
+  await expect(
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "demo",
+      viewerId: "v",
+      cols: 80,
+      rows: 24,
+    }),
+  ).rejects.toMatchObject({ code: "terminal-rmux-unavailable" });
+
+  const terminals = Object.values(registry.getSnapshot().terminals);
+  // Either removed after compensate or left as reaping tombstone — never live.
+  expect(terminals.every((t) => t.state !== "live")).toBe(true);
+});
+
+test("startRecovery emits rebase first with 48KiB chunking; input/resize require controller", async () => {
+  const { runtime, driver, events } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "controller",
+    cols: 80,
+    rows: 24,
+  });
+  const spectator = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "spectator",
+    cols: 80,
+    rows: 24,
+  });
+
+  const sessions = await driver.list();
+  const sessionId = sessions[0]!.sessionId;
+  const big = new Uint8Array(TERMINAL_REBASE_CHUNK_BYTES + 10);
+  big.fill(7);
+  driver.triggerRebase(sessionId, { keyframe: big });
+
+  // Default recover already pushes a rebase; triggerRebase before subscribe
+  // only affects next recover's initial keyframe via session.keyframe — set via
+  // inject path: create empty, then after startRecovery the first event is rebase.
+  events.length = 0;
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(20);
+
+  const rebaseStart = events.find((e) => e.type === "rebase-start");
+  expect(rebaseStart).toBeDefined();
+  expect(events[0]?.type).toBe("rebase-start");
+
+  await expect(
+    runtime.input(spectator.attachmentId, spectator.generation, new Uint8Array([1])),
+  ).rejects.toMatchObject({ code: "terminal-not-controller" });
+
+  await runtime.input(opened.attachmentId, opened.generation, new Uint8Array([1]));
+  await expect(
+    runtime.input(opened.attachmentId, "stale-gen", new Uint8Array([1])),
+  ).rejects.toMatchObject({ code: "terminal-generation-mismatch" });
+});
+
+test("idle is refreshed by open/takeControl/input but not heartbeat/resize", async () => {
+  const { runtime, registry, clock } = await makeHarness({
+    config: { idleTimeoutSeconds: 100 },
+  });
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  const t0 = registry.getSnapshot().terminals[opened.terminalId]!.lastInputAt;
+
+  clock.nowMs += 10_000;
+  runtime.heartbeat(opened.attachmentId);
+  await runtime.resize(opened.attachmentId, opened.generation, 90, 30);
+  expect(registry.getSnapshot().terminals[opened.terminalId]!.lastInputAt).toBe(t0);
+
+  clock.nowMs += 30_000; // cross checkpoint interval
+  await runtime.input(opened.attachmentId, opened.generation, new Uint8Array([9]));
+  const afterInput = registry.getSnapshot().terminals[opened.terminalId]!.lastInputAt;
+  expect(afterInput).not.toBe(t0);
+
+  const spectator = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v2",
+    cols: 80,
+    rows: 24,
+  });
+  clock.nowMs += 5_000;
+  await runtime.takeControl(spectator.attachmentId, spectator.generation);
+  const afterTake = registry.getSnapshot().terminals[opened.terminalId]!.lastInputAt;
+  expect(afterTake).not.toBe(afterInput);
+});
+
+test("terminate durable-reaps then kills; kill timeout yields cleanup-pending", async () => {
+  const { runtime, driver, registry, events } = await makeHarness({ killTimeoutMs: 20 });
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+
+  events.length = 0;
+  const ok = await runtime.terminate({
+    terminalId: opened.terminalId,
+    generation: opened.generation,
+    reason: "explicit-close",
+  });
+  expect(ok).toEqual({ status: "terminated" });
+  expect(registry.getSnapshot().terminals[opened.terminalId]).toBeUndefined();
+  expect(events.some((e) => e.type === "exit")).toBe(true);
+
+  // already-gone is success
+  expect(
+    await runtime.terminate({
+      terminalId: opened.terminalId,
+      generation: opened.generation,
+      reason: "explicit-close",
+    }),
+  ).toEqual({ status: "terminated" });
+
+  const again = await makeHarness({ killTimeoutMs: 15 });
+  const opened2 = await again.runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  again.driver.configureDelay("kill", 200);
+  const pending = await again.runtime.terminate({
+    terminalId: opened2.terminalId,
+    generation: opened2.generation,
+    reason: "explicit-close",
+  });
+  expect(pending).toEqual({ status: "cleanup-pending" });
+  expect(again.registry.getSnapshot().terminals[opened2.terminalId]?.state).toBe("reaping");
+  // silence unused
+  expect(driver).toBeDefined();
+});
+
+test("natural shell exit marks reaping(exited) and fans out exit", async () => {
+  const { runtime, driver, registry, events } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+
+  const sessionId = (await driver.list())[0]!.sessionId;
+  events.length = 0;
+  driver.exitSession(sessionId, 0);
+  await Bun.sleep(30);
+
+  expect(events.some((e) => e.type === "exit" && e.reason === "exited")).toBe(true);
+  // finishReap should have removed once kill/absent completes; exitSession leaves
+  // session dead but still in map until kill — finishReap calls kill which removes.
+  expect(registry.getSnapshot().terminals[opened.terminalId]).toBeUndefined();
+});
+
+test("lease lost fences further input", async () => {
+  const { runtime, driver } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+  const sessionId = (await driver.list())[0]!.sessionId;
+  driver.loseLease(sessionId);
+  await Bun.sleep(10);
+
+  await expect(
+    runtime.input(opened.attachmentId, opened.generation, new Uint8Array([1])),
+  ).rejects.toBeInstanceOf(TerminalRuntimeError);
+});
+
+test("stop aborts recovery streams but does not kill live sessions", async () => {
+  const { runtime, driver } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+  await runtime.stop();
+  expect(await driver.list()).toHaveLength(1);
+  const sessionId = (await driver.list())[0]!.sessionId;
+  expect(driver.isRenewingStopped(sessionId)).toBe(false);
+});
+
+test("disabled config rejects open", async () => {
+  const { runtime } = await makeHarness({ config: { enabled: false } });
+  await expect(
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "demo",
+      viewerId: "v",
+      cols: 80,
+      rows: 24,
+    }),
+  ).rejects.toMatchObject({ code: "terminal-disabled" });
+});

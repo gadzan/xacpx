@@ -116,7 +116,9 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
         });
       },
       return: async (): Promise<IteratorResult<T>> => {
-        this.closed = true;
+        // Wake any pending next() waiters so consumers that break/abort the
+        // for-await loop (runtime stop/resync) do not hang forever.
+        this.close();
         return { value: undefined as never, done: true };
       },
     };
