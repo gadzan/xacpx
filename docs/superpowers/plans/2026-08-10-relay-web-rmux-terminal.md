@@ -303,15 +303,15 @@
 - Create: `packages/channel-relay/src/terminal/terminal-types.ts`
 - Test: `tests/unit/packages/channel-relay/terminal-registry-store.test.ts`
 
-- [ ] 精确实现 spec §10.1 schema：owner file、revision、`creating/live/reaping`、stable IDs、reason；viewer/controller/cursor 不持久化。
-- [ ] owner `installationId` 一次生成、mode 0600、与 hub instanceId 解耦；并发启动不能各自生成不同 owner。
-- [ ] owner file missing 只在 fresh install 创建；owner file 损坏/丢失但 registry 非空时 terminal runtime fail closed，不生成新 namespace 覆盖 cleanup evidence。registry 为空时可生成新 owner，旧 namespace只能等待原 lease TTL。
-- [ ] mutation 串行、copy-on-write、同目录唯一 temp、file flush/fsync、atomic rename、rename 后发布内存 snapshot；写失败内存不变。
-- [ ] whole-file corruption best-effort rename `.corrupt-*`，进入 `inventoryUncertain` 状态；不得把空文件当作“可安全删除全部”。
-- [ ] 提供 revision-fenced mutation/API，不让 reconciler 直接写内部 map。
-- [ ] fault tests 覆盖每个 write/flush/rename crash point、并发 mutation、revision monotonic、permissions、corrupt backup failure。
-- [ ] Run focused test and channel-relay typecheck.
-- [ ] Commit: `feat(channel-relay): add durable terminal registry`
+- [x] 精确实现 spec §10.1 schema：owner file、revision、`creating/live/reaping`、stable IDs、reason；viewer/controller/cursor 不持久化。
+- [x] owner `installationId` 一次生成、mode 0600、与 hub instanceId 解耦；并发启动不能各自生成不同 owner。
+- [x] owner file missing 只在 fresh install 创建；owner file 损坏/丢失但 registry 非空时 terminal runtime fail closed，不生成新 namespace 覆盖 cleanup evidence。registry 为空时可生成新 owner，旧 namespace只能等待原 lease TTL。
+- [x] mutation 串行、copy-on-write、同目录唯一 temp、file flush/fsync、atomic rename、rename 后发布内存 snapshot；写失败内存不变。
+- [x] whole-file corruption best-effort rename `.corrupt-*`，进入 `inventoryUncertain` 状态；不得把空文件当作“可安全删除全部”。
+- [x] 提供 revision-fenced mutation/API，不让 reconciler 直接写内部 map。
+- [x] fault tests 覆盖每个 write/flush/rename crash point、并发 mutation、revision monotonic、permissions、corrupt backup failure。
+- [x] Run focused test and channel-relay typecheck.
+- [x] Commit: `feat(channel-relay): add durable terminal registry`
 
 ### Task 12: 定义 driver seam、fake driver 与 attachment registry
 
