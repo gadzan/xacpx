@@ -288,12 +288,12 @@
 - Test: `tests/unit/packages/channel-relay/config.test.ts`
 - Test: `tests/unit/packages/channel-relay/provider.test.ts`
 
-- [ ] 实现 spec §8.1 全部默认值、范围和交叉约束；`enabled` 默认 false，backend 只允许 `rmux`。
-- [ ] `orphanGraceSeconds >= ownerLeaseTtlSeconds`；bridge/rmux command 只接受非空绝对路径或明确的 command policy，不通过 shell 拼接。
-- [ ] CLI summary 隐去敏感值，显示 terminal backend/enabled/TTL/quota；add flow 不默认启用 terminal。
-- [ ] config 对象 immutable/normalized，后续 runtime 不再读取 raw options。
-- [ ] Run focused tests and `npx tsc -p packages/channel-relay/tsconfig.json --noEmit`.
-- [ ] Commit: `feat(channel-relay): parse rmux terminal configuration`
+- [x] 实现 spec §8.1 全部默认值、范围和交叉约束；`enabled` 默认 false，backend 只允许 `rmux`。
+- [x] `orphanGraceSeconds >= ownerLeaseTtlSeconds`；bridge/rmux command 只接受非空绝对路径或明确的 command policy，不通过 shell 拼接。
+- [x] CLI summary 隐去敏感值，显示 terminal backend/enabled/TTL/quota；add flow 不默认启用 terminal。
+- [x] config 对象 immutable/normalized，后续 runtime 不再读取 raw options。
+- [x] Run focused tests and `npx tsc -p packages/channel-relay/tsconfig.json --noEmit`.
+- [x] Commit: `feat(channel-relay): parse rmux terminal configuration`
 
 ### Task 11: 实现 durable terminal owner 与 registry store
 
