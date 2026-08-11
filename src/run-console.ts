@@ -17,7 +17,7 @@ interface DaemonLifecycle {
 
 interface ChannelRegistry {
   startAll(input: ChannelStartInput): Promise<void>;
-  stopAll?(): void | Promise<void>;
+  stopAll?(reason?: "shutdown" | "disabled" | "removed" | "logout"): void | Promise<void>;
 }
 
 type ChannelStartupPolicy = "require-one" | "best-effort";

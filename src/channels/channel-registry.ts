@@ -50,15 +50,17 @@ export class MessageChannelRegistry {
    * Like startAll, channels are isolated from each other: one throwing
    * channel must not skip teardown of the rest. The first error is rethrown
    * afterwards so the run-console cleanup sequence still records it.
+   *
+   * @param reason - The reason for stopping (defaults to "shutdown")
    */
-  async stopAll(): Promise<void> {
+  async stopAll(reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown"): Promise<void> {
     let firstError: unknown;
     for (const channel of this.channels.values()) {
       try {
         if (channel.stop) {
-          await channel.stop();
+          await channel.stop(reason);
         } else {
-          channel.logout();
+          await channel.logout();
         }
       } catch (error) {
         firstError ??= error;

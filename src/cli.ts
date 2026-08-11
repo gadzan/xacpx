@@ -990,7 +990,7 @@ async function defaultLogin(): Promise<void> {
 
 async function defaultLogout(): Promise<void> {
   const channel = await resolveLoginChannelForCli();
-  channel.logout();
+  await channel.logout();
 }
 
 async function defaultLoadConfiguredPluginsForChannelCli(): Promise<void> {
@@ -1283,7 +1283,7 @@ async function createChannelCliDeps(input: {
       // credential; weixin clears its login). Plugins are already loaded for the
       // channel CLI path, so the factory resolves.
       const { createMessageChannel } = await import("./channels/create-channel.js");
-      createMessageChannel(channel.type, channel).logout();
+      await createMessageChannel(channel.type, channel).logout();
     },
   };
   return { ...base, ...input.overrides };

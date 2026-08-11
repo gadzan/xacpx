@@ -146,6 +146,8 @@ export interface ConsumerLockOptions {
   ) => void | Promise<void>;
 }
 
+export type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
+
 export interface MessageChannelRuntime {
   id: string;
 
@@ -155,7 +157,7 @@ export interface MessageChannelRuntime {
    * Destructive credential removal. Reached only via the explicit
    * `xacpx logout` CLI path — never as part of a normal shutdown.
    */
-  logout(): void;
+  logout(): void | Promise<void>;
 
   start(input: ChannelStartInput): Promise<void>;
 
@@ -164,8 +166,14 @@ export interface MessageChannelRuntime {
    * stored credentials. Optional for compatibility with already-published
    * plugin channels; when absent, the registry falls back to `logout()`
    * (which for those plugins is a benign client stop).
+   *
+   * @param reason - The reason for stopping:
+   *   - "shutdown": normal signal/startup-error cleanup
+   *   - "disabled": channel disabled via CLI
+   *   - "removed": channel removed via CLI
+   *   - "logout": explicit logout command
    */
-  stop?(): void | Promise<void>;
+  stop?(reason?: ChannelStopReason): void | Promise<void>;
 
   createConsumerLock?(options?: ConsumerLockOptions): ConsumerLock;
 
