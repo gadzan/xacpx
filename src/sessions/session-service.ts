@@ -497,6 +497,21 @@ export class SessionService {
     return Object.keys(this.state.sessions);
   }
 
+  /**
+   * Read-only access to the persisted logical session record by internal alias.
+   * Returns the LIVE record — callers must treat it as immutable. Exists for
+   * consumers (the session resource catalog) that need fields ResolvedSession
+   * does not carry (immutable logical_session_id, archived flag).
+   */
+  getLogicalSessionRecord(alias: string): LogicalSession | null {
+    return this.state.sessions[alias] ?? null;
+  }
+
+  /** Read-only view of every persisted logical session record, across all channels. */
+  listLogicalSessionRecords(): LogicalSession[] {
+    return Object.values(this.state.sessions);
+  }
+
   async setCurrentSessionMode(chatKey: string, modeId: string | undefined): Promise<void> {
     await this.mutate(async () => {
       const currentAlias = this.state.chat_contexts[chatKey]?.current_session;

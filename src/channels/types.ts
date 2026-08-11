@@ -5,6 +5,7 @@ import type { AppLogger } from "../logging/app-logger.js";
 import type { PendingFinalChunk } from "../weixin/messaging/quota-manager.js";
 import type { PerfTracer } from "../perf/perf-tracer.js";
 import type { SessionService } from "../sessions/session-service.js";
+import type { SessionResourceCatalog } from "../sessions/session-resource-catalog.js";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { Locale } from "../i18n/index.js";
 import type { ControlService } from "../control/control-service.js";
@@ -90,6 +91,12 @@ export interface ChannelStartInput {
    * channels ignore it.
    */
   control?: ControlService;
+  /**
+   * Generic catalog of logical-session resources: immutable logical session
+   * IDs, internal/display aliases, authoritative workspace cwd, archived flag,
+   * and a lifecycle-event subscription. Optional: text-only channels ignore it.
+   */
+  sessionResources?: SessionResourceCatalog;
 }
 
 export interface OrchestrationDeliveryCallbacks {

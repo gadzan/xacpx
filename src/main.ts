@@ -31,6 +31,8 @@ import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
 import { createScheduledTaskFromRoute } from "./scheduled/scheduled-route-create";
 import { cancelScheduledTaskFromRoute, listScheduledTasksFromRoute } from "./scheduled/scheduled-route-manage";
 import { SessionService, type SessionLockedTransaction } from "./sessions/session-service";
+import { CoreSessionResourceCatalog } from "./sessions/session-resource-catalog";
+import type { SessionResourceCatalog } from "./sessions/session-resource-catalog";
 import { createActiveTurnRegistry, type ActiveTurnRegistry } from "./sessions/active-turn-registry";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
@@ -96,6 +98,7 @@ export interface AppRuntime {
   agent: ConsoleAgent;
   router: CommandRouter;
   sessions: SessionService;
+  sessionResources: SessionResourceCatalog;
   activeTurns: ActiveTurnRegistry;
   stateStore: StateStore;
   configStore: ConfigStore;
@@ -308,6 +311,11 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   });
   const runtimeRoot = dirname(paths.configPath);
   const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
+  // Generic catalog over logical session resources (immutable id, aliases,
+  // authoritative workspace cwd, archived flag). Structured channels consume
+  // it via ChannelStartInput.sessionResources; lifecycle event emission at
+  // archive/restore/remove is wired in a follow-up change.
+  const sessionResources = new CoreSessionResourceCatalog({ sessions, config, logger });
   const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
     platform: process.platform,
     runtimeRoot,
@@ -1129,6 +1137,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     agent,
     router,
     sessions,
+    sessionResources,
     activeTurns,
     stateStore,
     configStore,
