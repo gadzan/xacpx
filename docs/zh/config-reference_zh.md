@@ -428,7 +428,7 @@ xacpx channel add <channel-type>
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `driver` | `string` | 是 | agent 驱动类型，传递给 acpx 的第一位置参数 |
-| `command` | `string` | 否 | 显式指定自定义 agent 的原始命令。与 `argv` 互斥；Windows 上 raw command 无法无损启动（acpx 拒绝），请改用 `argv`（见下） |
+| `command` | `string` | 否 | 显式指定自定义 agent 的原始命令。与 `argv` 互斥；Windows 上新建多 token `command` 无法无损启动，请改用 `argv`（见下）。历史 session 的 `transport_agent_command` 会原样作为 acpx `--agent` selector 传递；acpx 0.13 从旧 record 回填 built-in argv，不支持的 custom raw 仍由 acpx fail closed |
 | `argv` | `string[]` | 否 | 精确的可执行文件 + 参数边界（如 `["C:\\Program Files\\agent.exe", "--acp", ...]`）。首元素必须是非空可执行文件；每个元素原样传给 acpx（空格、反斜杠、空字符串均保留）。与 `command` 互斥；这是 Windows 上唯一无损的启动形式。修改 `argv` 会产生新的 acpx session identity（内容寻址 alias）；旧 session 保留其记录的 identity |
 
 说明：
@@ -439,7 +439,9 @@ xacpx channel add <channel-type>
 
 #### Windows raw command 迁移
 
-含空格的旧 Unix `command` 在 Windows 上无法启动（acpx 拒绝 raw `--agent`，猜测引号切分会破坏边界）。xacpx 会 fail closed 并给出迁移错误，而不是猜测。请改为结构化 argv：
+新建多 token 的 `agents.<name>.command` 在 Windows 上仍会被拒绝（xacpx 不做猜测式切分，请改成 `argv`）。已有 session 的历史 `transport_agent_command` 不同：xacpx 会原样作为 `acpx --agent` **selector** 传递，不拆分；acpx 0.13 查找旧 session record 并为 built-in 回填 `agentArgv`（例如 `"kimi acp"` → `["kimi", "acp"]`）；不支持的 custom raw 仍由 acpx 自己 fail closed。
+
+Windows 上新建自定义 agent 请使用结构化 argv：
 
 ```json
 {
@@ -452,40 +454,7 @@ xacpx channel add <channel-type>
 }
 ```
 
-单 token 命令（无空格，如 `"myagent.exe"`）只有**无损**时才会自动转换为 `["myagent.exe"]` —— 单个元素必须能用 canonical identity renderer 精确还原为原始命令。identity-safe charset 之外的 token（带反斜杠的 Windows 路径、引号等）会渲染成 JSON-quoted，写下去会 re-key acpx record，所以这类 session 会被 skip 并保持 fail-closed，直到用户手动迁移。
-
-##### 启动时自动迁移
-
-以上是手动迁移的形态。实际触发坏状态的链路对用户不可见：acpx 内置默认值为多 token 的 agent（`kimi acp`、`qwen acp`、`gemini acp`、`cursor-agent acp` 等）在首次启动后都会通过 `refreshSessionTransportAgentCommand` 把 `transport_agent_command: "<driver> acp"` 写进 `state.json`。然后在 Windows 上 daemon 重启就会撞到 fail-closed 的 throw。
-
-为了让迁移真自动，console 生命周期会在**取得 runtime consumer lock 之后**（任何服务接触 config/state 之前）跑一遍 `migrateStateAgentArgv`（[`src/state/auto-migrate-agent-argv.ts`](../../src/state/auto-migrate-agent-argv.ts)）。这个顺序很关键：`buildApp` 在拿锁之前就加载了共享 config/state，如果 migration 内联在 buildApp 里跑，会与并发的 `xacpx migrate argv` 竞争——daemon 会把 CLI 的改动看成"已迁移"而跳过，然后拿着旧的内存快照启动。在锁内跑并在之后**原地 reload** config/state（migration 无条件重读两个文件，所有持有引用的服务——`SessionService`、transport——都会看到迁移后的值）可以关掉这个窗口：
-
-1. **per-session planning（Path A；不写全局 argv）**：每条 session 独立评估。同一 agent 下的 sibling 不再互相卡死——Path A 永不写入 `agents.<name>.argv`，所以一条 session 的 alias 不会 re-key 另一条。
-
-   session **完全迁移（noop）** 仅当同时具备 `transport_agent_argv` 与匹配 `deriveAgentAlias(driver, argv)` 的 canonical `transport_acpx_agent`。`resolveLaunchSpec` step 2 需要两者；**仅有 argv 视为 repair backfill**，不是已完成。
-
-   **session-local 结构化迁移（provenance-aware）**：planned argv 会作为 **session-local 结构化启动** 通过 `xacpx-managed-<driver>-<hash>` alias 落到 session 本身——历史 session 凭借 `resolveLaunchSpec` step 2（`transport_acpx_agent` + `transport_agent_argv`）永久绑定到该 alias。**`agents.<name>.argv` 永远不写**——migration 是纯 session-local 的，未来同一 driver 的新 bare session 继续走 acpx 解析，**始终尊重 `~/.acpx/config.json` 全局 override 和 `<cwd>/.acpxrc.json` 项目级 override**。三种 provenance 决定是否给 session 派生 alias：
-   - `derived`（托管 adapter npx pin、hermes shim、opencode/kilocode 本地 fallback）→ **skip**。derived 启动会随当前 pin/config 重算，固化成 session-local alias 就废掉了重算语义。session 保持 fail-closed 直到手动迁移。
-   - `bare-acpx-registry`（kimi / qwen / gemini ...）→ **provision**。
-   - `explicit-config`（config 已经带 argv）→ **provision**（同一个 argv 派生出同一个 alias，config 端 overlay provisioning 已建好条目）。
-
-   单条 session skip（不影响 sibling）：
-   - **不匹配当前默认的历史 custom argv**：把 registry 默认提升为 session-local alias 会遮蔽当前启动——skip（用户须手动迁移）。
-   - **unknown / 无法证明的 identity**：既无 recorded command 也无 argv，或无法从 config argv / acpx record 证明 identity——只 skip 该 session。
-   - 已匹配当前非 derived 默认但缺 canonical alias 的 session 会 **repair**（写 `transport_acpx_agent`）。
-2. **锁内事务式 apply**：apply 阶段在 `withPrivateFileLock(statePath, …)` 内执行：
-   - 锁内重新读 `state.json`，对每条计划中的 session 更新做 fresh 校验（alias 仍存在、agent 一致、identity 一致、argv 匹配或需 repair）。Path A 是 per-session：校验失败的 session 单独 skip，其它仍继续。
-   - 通过 `ensureAgentOverlays` 把新 session 的 overlay（`xacpx-managed-<driver>-<hash>` 条目）**写到 `~/.acpx/config.json`**——必须先于 state 写完成；若 provisioning 抛错，abort 整个事务（不写 state）。
-   - 写 state：持久化 `transport_acpx_agent`（alias）+ `transport_agent_argv`。**不写 xacpx config**。其余顶层 key 原样保留。`migrated` 在 `writeLocked` resolve 后才提交到 `result.migrated`。
-   - **fresh-config 围栏（持有 config lock）**：在 state lock 内再拿与 `ConfigStore.patchRaw` 相同的 xacpx `config.json` proper-lock（顺序：state → config）。fresh-read config 并对每条 validated update 复检（agent 仍存在、driver 未变、effective default argv 仍等于 planned argv、provenance 仍允许 Path A）。该锁一直持有到 overlay provision 与 state 写完成，避免并发 CLI config writer 插进 fence→sticky elevate 窗口。
-   - **重启鲁棒性**：每次启动 `autoMigrateArgv` 都会按 live state 重新 provision session overlay（`computeSessionOverlayEntries(state)`）。所有权自证：仅当 `isCanonicalManagedAliasForArgv(alias, argv)` 成立才 replay（前缀 + hash + 用 alias 内嵌 driver 重算）。裸名 / 篡改 hash 跳过；历史 sticky alias 在 `agents.<name>.driver` 变更后仍能恢复。overlay replay fail-closed。按 argv 内容哈希，幂等。
-3. **错误透明暴露给运维**：任何 I/O 失败（state 读、config 读、state 写、acpx record 读、acpx index 损坏、overlay provision）都会 push 到 `result.errors` **并**通过 app logger 写日志。daemon 路径 best-effort（日志 + 继续），CLI 路径把所有错误打到 stderr 并退出码非零，operator 工具永远不会静默吞掉真实故障。"transaction failed" 消息会显式说明 overlay 是否已经在 state 写失败前被提交，**以及** state.json 可能未改或部分写入（`writePrivateFileAtomic` 的 temp+rename 在 POSIX 上原子，但 Windows 的直接写 fallback 可能留半文件），让 operator 在 partial failure 后能正确核对两边文件。
-
-迁移按设计是 fail-closed：per-session provenance/identity 门控（planning）、fresh-state per-session 复检（lock）、以及 state 写之前的 overlay provision。本迁移**永不**给 `config.json` 加 `agents.<name>.argv`，因此不会把 session 静默 re-key 到错的 acpx record。
-
-注意：这不是真正的两文件 transaction。state 和 acpx config 用的是各自独立的锁，state 写失败时 acpx-config 侧可能已经提交。错误消息把这种不对称显式化，让 operator 在 partial failure 后能核对两边文件。
-
-CLI 命令 `xacpx migrate argv [--dry-run]` 把同一份 evaluate 暴露成独立的运维入口（打印计划，若有 skipped 或 error 则退出码非零）。**变更路径会获取并全程持有与 runtime 相同的 consumer lock**（后台 daemon 和前台 `xacpx run` 都持同一把锁）——daemon-status 观察只是更友好的报错，不是正确性围栏。锁忙（daemon 在跑、前台 runtime、或 daemon 正在启动）时直接拒绝并以非零退出。`--dry-run` 不拿锁，但快照可能 stale。
+单 token 的配置 `command`（无空格，如 `"myagent.exe"`）只有**无损**时才会自动转换为 `["myagent.exe"]` —— 单个元素必须能用 canonical identity renderer 精确还原为原始命令。identity-safe charset 之外的 token（带反斜杠的 Windows 路径、引号等）会渲染成 JSON-quoted，写下去会 re-key acpx record，所以这类配置会被拒绝，直到改成 `argv`。
 
 #### xacpx 托管的 acpx agent alias
 

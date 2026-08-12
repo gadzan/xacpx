@@ -1110,7 +1110,9 @@ test("resolves bare built-in drivers positionally", async () => {
 test("explicit unix command resolves to a raw override with identity", async () => {
   const config = createConfig();
   config.agents.codex = { driver: "codex", command: "custom-codex --acp" };
-  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState(), {
+    platform: "linux",
+  });
   const session = await service.createSession("raw-run", "codex", "backend");
 
   expect(session.rawCommand).toBe("custom-codex --acp");
@@ -1223,26 +1225,31 @@ test("custom recorded argv containing a managed-looking release path stays stick
   ]);
 });
 
-test("windows rejects a custom recorded command containing a managed-looking release path", async () => {
+test("windows passes a custom recorded command containing a managed-looking path as raw selector", async () => {
   const config = createConfig();
   const state = createEmptyState();
+  const recorded =
+    '"C:\\usr\\bin\\node.exe" "C:\\srv\\adapters\\codex\\releases\\custom\\agent.js"';
   state.sessions.review = {
     alias: "review",
     agent: "codex",
     workspace: "backend",
     transport_session: "backend:review",
-    transport_agent_command:
-      '"C:\\usr\\bin\\node.exe" "C:\\srv\\adapters\\codex\\releases\\custom\\agent.js"',
+    transport_agent_command: recorded,
   };
 
   const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  const session = await service.getSession("review");
 
-  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+  expect(session?.rawCommand).toBe(recorded);
+  expect(session?.agentCommand).toBe(recorded);
+  expect(session?.agentArgv).toBeUndefined();
+  expect(session?.acpxAgent).toBe("codex");
 });
 
-// ── windows recorded raw command guard ───────────────────────────────────────
+// ── windows recorded raw command selector ────────────────────────────────────
 
-test("windows rejects a recorded multi-token raw command instead of resurrecting it", async () => {
+test("windows passes a recorded multi-token raw command through as acpx selector (no split)", async () => {
   const config = createConfig();
   config.agents.custom = { driver: "custom" };
   const state = createEmptyState();
@@ -1254,10 +1261,13 @@ test("windows rejects a recorded multi-token raw command instead of resurrecting
     transport_agent_command: "node C:/path with space/agent.js --acp",
   };
   const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
-  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+  const session = await service.getSession("review");
+  expect(session?.rawCommand).toBe("node C:/path with space/agent.js --acp");
+  expect(session?.agentCommand).toBe("node C:/path with space/agent.js --acp");
+  expect(session?.agentArgv).toBeUndefined();
 });
 
-test("windows rejects a recorded single-token command too (no overlay alias exists for it)", async () => {
+test("windows passes a recorded single-token command through as acpx selector", async () => {
   const config = createConfig();
   config.agents.custom = { driver: "custom" };
   const state = createEmptyState();
@@ -1269,7 +1279,29 @@ test("windows rejects a recorded single-token command too (no overlay alias exis
     transport_agent_command: "myagent.exe",
   };
   const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
-  await expect(service.getSession("review")).rejects.toThrow(/Migrate the agent to an argv array/);
+  const session = await service.getSession("review");
+  expect(session?.rawCommand).toBe("myagent.exe");
+  expect(session?.agentCommand).toBe("myagent.exe");
+  expect(session?.agentArgv).toBeUndefined();
+});
+
+test("windows built-in legacy raw selector (kimi acp) is not rejected by xacpx", async () => {
+  const config = createConfig();
+  config.agents.kimi = { driver: "kimi" };
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "kimi",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "kimi acp",
+  };
+  const service = new SessionService(config, new MemoryStateStore(), state, { platform: "win32" });
+  const session = await service.getSession("review");
+  expect(session?.rawCommand).toBe("kimi acp");
+  expect(session?.agentCommand).toBe("kimi acp");
+  expect(session?.agentArgv).toBeUndefined();
+  expect(session?.acpxAgent).toBe("kimi");
 });
 
 test("recorded custom argv stays sticky even when the config argv changes", async () => {

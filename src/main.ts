@@ -61,7 +61,6 @@ import { startConfigWatcher } from "./config/config-watcher";
 import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
-import { migrateStateAgentArgv, type MigrateStateAgentArgvDeps } from "./state/auto-migrate-agent-argv";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
@@ -72,8 +71,6 @@ import {
   computeAgentOverlayEntries,
   ensureAgentOverlays,
   type EnsureAgentOverlaysResult,
-  computeSessionOverlayEntries,
-  type AcpxAgentOverlayEntry,
 } from "./transport/acpx-agent-overlay";
 
 async function defaultProvisionAgentOverlays(
@@ -126,15 +123,6 @@ export interface AppRuntime {
    * any owners yet, so every owner recorded for a known session is stale. Best-effort.
    */
   reapStaleQueueOwners: () => Promise<void>;
-  /**
-   * Run the state.json raw-command → structured-argv auto-migration. Must be
-   * invoked by the console lifecycle AFTER the runtime ownership lock is held
-   * and before any service uses config/state: buildApp loads the shared
-   * config/state before the lock, so executing the migration inline there
-   * would race a concurrently-running `xacpx migrate argv` and could boot
-   * with a stale in-memory copy. Reloads config and state in place.
-   */
-  autoMigrateArgv?: () => Promise<void>;
   reconcileOrphans?: () => Promise<void>;
   dispose: () => Promise<void>;
 }
@@ -168,19 +156,6 @@ interface RuntimeDeps {
     config: AppConfig,
     logger: AppLogger,
   ) => Promise<EnsureAgentOverlaysResult>;
-  /**
-   * Provision session-local `xacpx-managed-*` overlays (migration apply +
-   * startup replay). Injectable so unit tests never touch the real
-   * `~/.acpx/config.json`. Defaults to `ensureAgentOverlays`.
-   */
-  provisionSessionOverlays?: (entries: AcpxAgentOverlayEntry[]) => Promise<void>;
-  /**
-   * Extra deps forwarded to `migrateStateAgentArgv` (tests inject lock /
-   * provision seams). Production leaves this undefined.
-   */
-  migrateStateAgentArgvDeps?: Partial<
-    Omit<MigrateStateAgentArgvDeps, "statePath" | "configPath" | "logger">
-  >;
 }
 
 function startProgressHeartbeat(
@@ -282,98 +257,6 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const acpxCommand = resolveAcpxCommand({ configuredCommand: config.transport.command });
   const stateStore = new StateStore(paths.statePath);
   const state = await stateStore.load();
-  // Auto-migrate any state.json session whose recorded raw command contains
-  // whitespace (the Windows fail-closed trigger) to the structured argv form.
-  // Idempotent. Per-session proof failures are fail-soft (logged); locked
-  // state-write failures and session-overlay conflicts fail closed.
-  //
-  // Deliberately NOT executed here. buildApp runs BEFORE the runtime consumer
-  // lock is acquired (see run-console.ts), and this function reads AND writes
-  // the shared config/state files. If it ran inline, a concurrently-running
-  // `xacpx migrate argv` CLI could migrate the disk between our load and our
-  // own migration — our planning pass would then see "already migrated" and
-  // skip, but our in-memory config/state (and SessionService, constructed
-  // below) would keep the STALE pre-migration values, booting a daemon that
-  // does not see the migrated argv. The console lifecycle calls
-  // `autoMigrateArgv()` AFTER acquiring the runtime ownership lock and before
-  // any service uses config/state; it then reloads config and state IN PLACE
-  // so every holder of the references (SessionService, transports, ...)
-  // observes the migrated values.
-  const provisionSessionOverlays = deps.provisionSessionOverlays
-    ?? (async (entries: AcpxAgentOverlayEntry[]): Promise<void> => {
-      await ensureAgentOverlays(entries);
-    });
-
-  const autoMigrateArgv = async (): Promise<void> => {
-    const argvMigration = await migrateStateAgentArgv({
-      statePath: paths.statePath,
-      configPath: paths.configPath,
-      logger,
-      ...deps.migrateStateAgentArgvDeps,
-      // Prefer an explicit test provisioner; otherwise share the session
-      // overlay DI boundary (never fall through to the real home default
-      // when tests inject provisionSessionOverlays only).
-      provisionOverlays:
-        deps.migrateStateAgentArgvDeps?.provisionOverlays ?? provisionSessionOverlays,
-    });
-    for (const m of argvMigration.migrated) {
-      await logger.info("state.argv_auto_migrated", "backfilled session to structured argv (session-local alias)", {
-        alias: m.alias,
-        agent: m.agent,
-        argv: JSON.stringify(m.argv),
-        acpxAgent: m.acpxAgent,
-      });
-    }
-    for (const skip of argvMigration.skipped) {
-      await logger.warn("state.argv_migration_skipped", "session argv migration skipped", {
-        alias: skip.alias,
-        reason: skip.reason,
-      });
-    }
-    // Locked elevate may have partially overwritten state.json (Windows
-    // direct-write fallback). Do NOT load/quarantine into empty runtime —
-    // fail closed before channels start.
-    if (argvMigration.stateWriteFailed) {
-      throw new Error(
-        `argv auto-migration failed during locked state write; refusing to continue startup with a potentially partial state.json (${paths.statePath}): ${argvMigration.errors.join("; ") || "unknown write failure"}`,
-      );
-    }
-    // Always reload BOTH config and state: even when OUR planning pass saw
-    // everything already-migrated (noop) — e.g. a concurrent CLI
-    // migration landed between our pre-lock load and this post-lock run — the
-    // disk may be newer than the in-memory snapshot buildApp loaded. Reloading
-    // unconditionally makes this run the authoritative read of the shared
-    // files. `reloadRuntimeConfig` re-provisions acpx agent overlays for any
-    // new `xacpx-managed-*` alias before swapping the runtime config in place.
-    const updatedState = await stateStore.load();
-    const postMigrateLoadReport = stateStore.lastLoadReport;
-    if (postMigrateLoadReport?.corruptPath) {
-      throw new Error(
-        `argv auto-migration left state.json unreadable (quarantined to ${postMigrateLoadReport.corruptPath}); refusing to boot with empty runtime state`,
-      );
-    }
-    replaceRuntimeState(state, updatedState);
-    await reloadRuntimeConfig();
-    // Re-provision session-derived overlays. Under path A the migration is
-    // session-local: each migrated session sticks to a `xacpx-managed-*`
-    // alias via `transport_acpx_agent`. On every startup (including noop
-    // restarts after acpx-config churn) ensure those aliases are present in
-    // `~/.acpx/config.json` so acpx can resolve `--agent <alias>`. Idempotent
-    // and content-hashed, so the same argv maps to the same alias.
-    //
-    // Fail closed: a conflicting on-disk alias (different argv) means acpx
-    // would launch the wrong command. Swallowing that and continuing to
-    // serve would hide a launch-safety failure. Only self-proving
-    // `xacpx-managed-*` aliases (canonical hash for the persisted argv) are
-    // replayed — never bare names like `kimi`, and independent of the
-    // mutable current config driver so historical sticky sessions survive
-    // driver renames.
-    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
-    const sessionEntries = computeSessionOverlayEntries(state);
-    if (sessionEntries.length > 0) {
-      await provisionSessionOverlays(sessionEntries);
-    }
-  };
   const stateLoadReport = stateStore.lastLoadReport;
   if (stateLoadReport) {
     // Loud by design: a quarantined record means data was dropped to keep the
@@ -1259,7 +1142,6 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
     control,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
-    autoMigrateArgv,
     ...(deps.orphanRegistry && deps.daemonIdentity
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
       : {}),

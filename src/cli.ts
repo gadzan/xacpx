@@ -65,12 +65,6 @@ import { handlePluginCli, type PluginCliDeps } from "./plugins/plugin-cli";
 import { createStartupWaitUi } from "./cli/startup-wait-ui";
 import type { DaemonStartupWait } from "./daemon/daemon-controller";
 import { setLocale, resolveLocale, getLocale, t } from "./i18n";
-import { ActiveConsumerLockError, type ConsumerLock, type ConsumerLockMetadata } from "./channels/types";
-import type {
-  MigrateStateAgentArgvDeps,
-  StateArgvMigrationResult,
-} from "./state/auto-migrate-agent-argv";
-
 
 export interface PrepareMcpCoordinatorStartupInput {
   coordinatorSession: string;
@@ -283,20 +277,6 @@ interface CliDeps {
   promptText?: (message: string) => Promise<string>;
   promptSecret?: (message: string) => Promise<string>;
   isProcessRunning?: (pid: number) => boolean;
-  migrateCliDeps?: Partial<MigrateCliDeps>;
-}
-
-/** Test seams for `xacpx migrate argv` (mirrors the channelCliDeps pattern). */
-export interface MigrateCliDeps {
-  controller?: CliController;
-  configPath?: string;
-  statePath?: string;
-  /** Production default: `createRuntimeConsumerLock` over the runtime dir. */
-  createRuntimeLock?: (lockFilePath: string) => ConsumerLock;
-  /** Production default: `migrateStateAgentArgv`. */
-  migrate?: (deps: MigrateStateAgentArgvDeps) => Promise<StateArgvMigrationResult>;
-  pid?: number;
-  now?: () => string;
 }
 
 export function getUsageText(): string {
@@ -477,20 +457,6 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
       // mcp-stdio runs as an acpx-spawned child: prefer the parent-injected XACPX_LANG over config.
       setLocale(resolveLocale({ configLanguage: process.env.XACPX_LANG }));
       return await (deps.mcpStdio ?? ((subArgs) => defaultMcpStdio(subArgs, { stderr: deps.stderr })))(args.slice(1));
-    case "migrate": {
-      const result = await handleMigrateCli(args.slice(1), {
-        print,
-        stderr: deps.stderr ?? ((text: string) => process.stderr.write(text)),
-        ...deps.migrateCliDeps,
-      });
-      if (result === null) {
-        for (const line of t().cli.helpLines) {
-          print(line);
-        }
-        return 1;
-      }
-      return result;
-    }
     case "start": {
       const controller = deps.controller ?? createDefaultController(deps);
       try {
@@ -1164,135 +1130,6 @@ async function rollbackFirstRunConfig(
 async function defaultDoctor(options: DoctorRunOptions): Promise<number> {
   const { main } = await import("./doctor/index");
   return await main(options);
-}
-
-async function handleMigrateCli(
-  args: string[],
-  deps: {
-    print: (line: string) => void;
-    stderr: (text: string) => void;
-  } & Partial<MigrateCliDeps>,
-): Promise<number | null> {
-  const subcommand = args[0];
-  if (subcommand !== "argv") {
-    return null;
-  }
-  let dryRun = false;
-  for (const token of args.slice(1)) {
-    if (token === "--dry-run") {
-      if (dryRun) return null;
-      dryRun = true;
-      continue;
-    }
-    return null;
-  }
-  return await migrateArgvCli({
-    print: deps.print,
-    stderr: deps.stderr,
-    dryRun,
-    controller: deps.controller,
-    configPath: deps.configPath,
-    statePath: deps.statePath,
-    createRuntimeLock: deps.createRuntimeLock,
-    migrate: deps.migrate,
-    pid: deps.pid,
-    now: deps.now,
-  });
-}
-
-async function migrateArgvCli(deps: {
-  print: (line: string) => void;
-  stderr: (text: string) => void;
-  dryRun: boolean;
-} & Partial<MigrateCliDeps>): Promise<number> {
-  const configPath = deps.configPath ?? resolveConfigPathForCurrentEnv();
-  const statePath = deps.statePath ?? (await import("./main")).resolveRuntimePaths().statePath;
-  const { createNoopAppLogger } = await import("./logging/app-logger");
-  // No daemon app-logger on the CLI path; surface migration results directly
-  // to the operator so they aren't lost in a log file they may not check.
-  const logger = createNoopAppLogger();
-  const { migrateStateAgentArgv } = await import("./state/auto-migrate-agent-argv");
-  const migrate = deps.migrate ?? migrateStateAgentArgv;
-
-  // The mutating path writes to state.json and config.json, so it must hold
-  // the same runtime ownership lock every console instance (background daemon
-  // OR foreground `xacpx run`) holds while serving. The daemon-status check
-  // below is only a friendlier message for the common case; it is NOT the
-  // fence — a foreground runtime, a daemon still starting up (buildApp runs
-  // before its lock acquire), and the check-then-act window all slip past a
-  // status observation. Acquiring the lock and holding it for the whole
-  // migration excludes every one of them: a live runtime holds the lock, so
-  // acquire fails and we refuse to mutate its files. A runtime that starts
-  // after we take the lock will fail its own acquire (busy) instead of racing
-  // our write. --dry-run is allowed without the lock, but its planning
-  // snapshot may be stale.
-  let runtimeLock: ConsumerLock | null = null;
-  if (!deps.dryRun) {
-    const controller = deps.controller ?? createDefaultController();
-    const status = await controller.getStatus();
-    if (status.state === "running" || status.state === "indeterminate") {
-      deps.stderr(`xacpx daemon is running (pid ${status.state === "running" ? status.pid : (status as { pid: number }).pid}). Stop it first with \`xacpx stop\` before running \`xacpx migrate argv\`.\n`);
-      return 1;
-    }
-    const lockFilePath = resolveRuntimeConsumerLockPath(resolveRuntimeDirFromConfigPath(configPath));
-    const coreLock = (deps.createRuntimeLock ?? ((file: string) => createRuntimeConsumerLock({ lockFilePath: file })))(lockFilePath);
-    const metadata: ConsumerLockMetadata = {
-      pid: deps.pid ?? process.pid,
-      mode: "foreground",
-      startedAt: (deps.now ?? (() => new Date().toISOString()))(),
-      configPath,
-      statePath,
-      hostname: "",
-    };
-    try {
-      await coreLock.acquire(metadata);
-      runtimeLock = coreLock;
-    } catch (error) {
-      if (error instanceof ActiveConsumerLockError) {
-        deps.stderr(`xacpx runtime is already running (pid ${error.existing.pid}, mode ${error.existing.mode}). Stop the daemon with \`xacpx stop\` or exit the foreground console before running \`xacpx migrate argv\`.\n`);
-      } else {
-        deps.stderr(`failed to acquire the runtime ownership lock before migrating: ${error instanceof Error ? error.message : String(error)}\n`);
-      }
-      return 1;
-    }
-  }
-
-  try {
-    const result = await migrate({
-      statePath,
-      configPath,
-      logger,
-      dryRun: deps.dryRun,
-    });
-    if (deps.dryRun) {
-      deps.print(`[dry-run] would migrate ${result.migrated.length} session(s); ${result.skipped.length} skipped; ${result.errors.length} error(s). Note: the snapshot may be stale if a runtime is active.\n`);
-    } else {
-      deps.print(`migrated ${result.migrated.length} session(s); ${result.skipped.length} skipped; ${result.errors.length} error(s)`);
-    }
-    for (const m of result.migrated) {
-      deps.print(`  + ${m.alias} (agent=${m.agent}, acpxAgent=${m.acpxAgent}, argv=${JSON.stringify(m.argv)})`);
-    }
-    for (const skip of result.skipped) {
-      deps.print(`  skip ${skip.alias}: ${skip.reason}`);
-    }
-    // Errors are the operator's main signal that something real went wrong
-    // (state write failed, corrupt acpx index, etc). Daemon mode logs them;
-    // here we want them on stderr and a non-zero exit so automation never
-    // silently hides a partial migration.
-    for (const err of result.errors) {
-      deps.stderr(`error: ${err}\n`);
-    }
-    const exitCode = result.errors.length > 0 || result.skipped.length > 0 ? 1 : 0;
-    return exitCode;
-  } finally {
-    // The state/config file locks only serialize the writes; the runtime lock
-    // is what guarantees no live runtime holds in-memory state over our
-    // snapshot. Release it as soon as the migration finishes so a subsequent
-    // `xacpx start` is not blocked longer than necessary.
-    if (runtimeLock) {
-      await runtimeLock.release().catch(() => {});
-    }
-  }
 }
 
 async function defaultManualOrphanKill() {

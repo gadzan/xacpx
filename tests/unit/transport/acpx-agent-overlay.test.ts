@@ -7,15 +7,13 @@ import { join } from "node:path";
 import {
   acpxConfigPath,
   computeAgentOverlayEntries,
-  computeSessionOverlayEntries,
   ensureAgentOverlays,
   mergeAcpxAgentOverlayEntry,
   parseAgentOverlayEntries,
 } from "../../../src/transport/acpx-agent-overlay";
-import { deriveAgentAlias, isCanonicalManagedAliasForArgv } from "../../../src/config/agent-launch";
+import { deriveAgentAlias } from "../../../src/config/agent-launch";
 import { withPrivateFileLock } from "../../../src/util/private-file";
 import { parseConfig } from "../../../src/config/load-config";
-import type { AppState, LogicalSession } from "../../../src/state/types";
 
 const codexAlias = deriveAgentAlias("codex", [
   "npx",
@@ -89,105 +87,6 @@ test("computeAgentOverlayEntries covers managed, hermes and user argv but skips 
   expect(aliases).toContain(codexAlias);
   expect(aliases).toContain(deriveAgentAlias("custom", ["C:\\Program Files\\agent.exe", "--acp"]));
   expect(new Set(aliases).size).toBe(aliases.length);
-});
-
-function sessionFixture(partial: {
-  alias: string;
-  agent: string;
-  transport_acpx_agent?: string;
-  transport_agent_argv?: string[];
-}): LogicalSession {
-  return {
-    alias: partial.alias,
-    agent: partial.agent,
-    workspace: "demo",
-    transport_session: `demo:${partial.alias}:reset-1`,
-    created_at: "2026-08-10T09:00:00.000Z",
-    last_used_at: "2026-08-10T09:00:00.000Z",
-    ...(partial.transport_acpx_agent !== undefined
-      ? { transport_acpx_agent: partial.transport_acpx_agent }
-      : {}),
-    ...(partial.transport_agent_argv !== undefined
-      ? { transport_agent_argv: partial.transport_agent_argv }
-      : {}),
-  };
-}
-
-test("computeSessionOverlayEntries only replays self-proving xacpx-managed aliases", () => {
-  const kimiArgv = ["kimi", "acp"];
-  const canonical = deriveAgentAlias("kimi", kimiArgv);
-  const state: AppState = {
-    version: 1,
-    sessions: {
-      owned: sessionFixture({
-        alias: "owned",
-        agent: "kimi",
-        transport_acpx_agent: canonical,
-        transport_agent_argv: kimiArgv,
-      }),
-      bare: sessionFixture({
-        alias: "bare",
-        agent: "kimi",
-        // Must never write global acpx agents.kimi on restart replay.
-        transport_acpx_agent: "kimi",
-        transport_agent_argv: kimiArgv,
-      }),
-      stale: sessionFixture({
-        alias: "stale",
-        agent: "kimi",
-        transport_acpx_agent: "xacpx-managed-kimi-deadbeefdead",
-        transport_agent_argv: kimiArgv,
-      }),
-      argvOnly: sessionFixture({
-        alias: "argvOnly",
-        agent: "kimi",
-        transport_agent_argv: kimiArgv,
-      }),
-    },
-    chat_contexts: {},
-    native_session_lists: {},
-    orchestration: { tasks: {}, workerBindings: {}, groups: {} },
-    scheduled_tasks: {},
-  };
-
-  const entries = computeSessionOverlayEntries(state);
-  expect(entries).toEqual([{ alias: canonical, argv: kimiArgv }]);
-});
-
-test("computeSessionOverlayEntries replays historical alias after config driver changes", () => {
-  // Path A sticky: session was migrated under driver=kimi. User later
-  // changes agents.foo.driver to qwen. Restart replay must still restore
-  // the kimi-encoded alias from argv self-proof — not require current driver.
-  const argv = ["kimi", "acp"];
-  const historical = deriveAgentAlias("kimi", argv);
-  expect(isCanonicalManagedAliasForArgv(historical, argv)).toBe(true);
-  expect(deriveAgentAlias("qwen", argv)).not.toBe(historical);
-
-  const state: AppState = {
-    version: 1,
-    sessions: {
-      demo: sessionFixture({
-        alias: "demo",
-        agent: "foo",
-        transport_acpx_agent: historical,
-        transport_agent_argv: argv,
-      }),
-    },
-    chat_contexts: {},
-    native_session_lists: {},
-    orchestration: { tasks: {}, workerBindings: {}, groups: {} },
-    scheduled_tasks: {},
-  };
-  expect(computeSessionOverlayEntries(state)).toEqual([
-    { alias: historical, argv },
-  ]);
-});
-
-test("isCanonicalManagedAliasForArgv rejects bare and tampered aliases", () => {
-  const argv = ["kimi", "acp"];
-  expect(isCanonicalManagedAliasForArgv("kimi", argv)).toBe(false);
-  expect(isCanonicalManagedAliasForArgv("xacpx-managed-kimi-ffffffffffff", argv)).toBe(false);
-  expect(isCanonicalManagedAliasForArgv(deriveAgentAlias("kimi", argv), argv)).toBe(true);
 });
 
 test("parseAgentOverlayEntries validates the bridge env payload", () => {
@@ -340,7 +239,14 @@ test("ensureAgentOverlays preserves the mode of an existing config and uses 0600
     await writeFile(configPath, "{}", { flag: "wx" });
     await chmod(configPath, 0o644);
     await ensureAgentOverlays([codexEntry], { home: dir });
-    expect(statSync(configPath).mode & 0o777).toBe(0o644);
+    // Windows may not preserve Unix mode bits exactly; assert the provision
+    // still succeeded and the mode stayed world-readable-ish when supported.
+    const mode = statSync(configPath).mode & 0o777;
+    if (process.platform === "win32") {
+      expect(mode === 0o644 || mode === 0o666).toBe(true);
+    } else {
+      expect(mode).toBe(0o644);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -374,5 +280,5 @@ test("ensureAgentOverlays retries transient Windows write errors", async () => {
 });
 
 test("acpxConfigPath points at the user acpx config", () => {
-  expect(acpxConfigPath("/home/alice")).toBe("/home/alice/.acpx/config.json");
+  expect(acpxConfigPath("/home/alice")).toBe(join("/home/alice", ".acpx", "config.json"));
 });

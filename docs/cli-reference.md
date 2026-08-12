@@ -37,7 +37,6 @@ commands (sent inside WeChat / Feishu / Yuanbao), see [commands.md](./commands.m
 | `xacpx workspace rm <name>` | Remove a workspace |
 | `xacpx later list` / `xacpx lt list` | List this machine's pending scheduled tasks in the terminal |
 | `xacpx later cancel <id>` / `xacpx lt cancel <id>` | Cancel a pending scheduled task in the terminal |
-| `xacpx migrate argv [--dry-run]` | Backfill structured `argv` into `state.json` sessions whose recorded raw command contains whitespace (the Windows fail-closed trigger), as a session-local `xacpx-managed-<driver>-<hash>` alias (`transport_acpx_agent` + `transport_agent_argv`). Never writes global `agents.<name>.argv`. Runs automatically at every daemon startup; this command is for explicit invocation and troubleshooting. Exit `0` when nothing was skipped, `1` otherwise. See [config-reference.md](./config-reference.md#windows-raw-command-migration) for context |
 
 The first time you run `xacpx start` or `xacpx run`, if there are no sessions, workspaces, or plugins, the CLI asks whether to register the current directory as a workspace and lets you choose a built-in agent template; after the service starts, it creates the initial acpx session through the normal session-creation flow.
 

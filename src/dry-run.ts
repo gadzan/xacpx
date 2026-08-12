@@ -80,12 +80,6 @@ async function main(): Promise<void> {
     throw new Error('Usage: bun run dry-run --chat-key <id> "/session new ..." "hello" [--chat-key <other-id> "/status"]');
   }
 
-  // The runtime argv auto-migration is deliberately NOT invoked here: it
-  // mutates the shared config/state and its contract requires the runtime
-  // ownership lock (see AppRuntime.autoMigrateArgv), which dry-run does not
-  // acquire. Running it would reintroduce the live-runtime mutation race the
-  // lock was added to close. dry-run creates its own session and leaves the
-  // on-disk migration to the real runtime startup / `xacpx migrate argv`.
   const runtime = await buildApp(resolveRuntimePaths());
   const transcript = await executeDryRun(runtime, options);
 

@@ -7,8 +7,6 @@ import { resolveAcpxHomeDir } from "./acpx-session-files";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import { retryTransientWriteErrors, withPrivateFileLock } from "../util/private-file";
-import type { AppState } from "../state/types";
-import { isCanonicalManagedAliasForArgv } from "../config/agent-launch";
 
 export const ACPX_MANAGED_ALIAS_PREFIX = "xacpx-managed-";
 
@@ -61,40 +59,6 @@ export function computeAgentOverlayEntries(config: AppConfig): AcpxAgentOverlayE
     if (seen.has(spec.acpxAgent)) continue;
     seen.add(spec.acpxAgent);
     entries.push({ alias: spec.acpxAgent, argv: spec.agentArgv });
-  }
-  return entries;
-}
-
-/**
- * Overlay entries required by session-local argv persistence. Each session
- * whose `transport_acpx_agent` + `transport_agent_argv` is set (via the
- * session-local structured migration, or already-present in state) needs the
- * matching `xacpx-managed-<driver>-<hash>` alias present in
- * `~/.acpx/config.json` so acpx can resolve `--agent <alias>` to the exact
- * argv. Deduped by alias (content-hashed on argv → identical argv shares an
- * alias → one overlay entry per unique argv across all sessions).
- *
- * Ownership gate: the persisted alias must self-prove against argv via
- * `isCanonicalManagedAliasForArgv` (prefix + hash + re-derive). Do NOT bind
- * ownership to the mutable current config driver — Path A sticky sessions
- * keep the driver encoded at migration time, and restart replay must restore
- * that alias even after `agents.<name>.driver` changes. Bare names like
- * `kimi` and tampered hashes are skipped so replay cannot write a global
- * acpx `agents.<name>` override.
- */
-export function computeSessionOverlayEntries(state: AppState): AcpxAgentOverlayEntry[] {
-  const entries: AcpxAgentOverlayEntry[] = [];
-  const seen = new Set<string>();
-  for (const session of Object.values(state.sessions)) {
-    const acpxAgent = session.transport_acpx_agent;
-    const argv = session.transport_agent_argv;
-    if (typeof acpxAgent !== "string" || acpxAgent.length === 0) continue;
-    if (!acpxAgent.startsWith(ACPX_MANAGED_ALIAS_PREFIX)) continue;
-    if (!Array.isArray(argv) || argv.length === 0 || !argv.every((e) => typeof e === "string")) continue;
-    if (!isCanonicalManagedAliasForArgv(acpxAgent, argv as string[])) continue;
-    if (seen.has(acpxAgent)) continue;
-    seen.add(acpxAgent);
-    entries.push({ alias: acpxAgent, argv: argv as string[] });
   }
   return entries;
 }

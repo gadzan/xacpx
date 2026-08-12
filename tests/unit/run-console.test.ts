@@ -150,41 +150,6 @@ test("reaps stale queue owners at startup after the consumer lock, before channe
   expect(events).toEqual(["lock:acquire", "reap", "channel:start", "lock:release"]);
 });
 
-test("runs the argv auto-migration AFTER the runtime lock, before reaping or channels", async () => {
-  // buildApp loads shared config/state BEFORE the consumer lock; the argv
-  // auto-migration (which reads AND writes config/state) must therefore run
-  // after lock acquisition — otherwise a concurrent `xacpx migrate argv`
-  // could land between the daemon's load and its own migration, and the
-  // daemon would boot with a stale in-memory copy. Assert the ordering:
-  // lock:acquire → autoMigrateArgv → reap → channel:start → lock:release.
-  const events: string[] = [];
-
-  await runConsole({ configPath: "/cfg", statePath: "/state" }, {
-    buildApp: async () => ({
-      ...createRuntime(),
-      autoMigrateArgv: async () => { events.push("autoMigrateArgv"); },
-      reapStaleQueueOwners: async () => { events.push("reap"); },
-    }),
-    consumerLock: {
-      acquire: async () => { events.push("lock:acquire"); },
-      release: async () => { events.push("lock:release"); },
-    } as never,
-    channels: {
-      startAll: async () => { events.push("channel:start"); },
-    },
-    addProcessListener: () => {},
-    removeProcessListener: () => {},
-  });
-
-  expect(events).toEqual([
-    "lock:acquire",
-    "autoMigrateArgv",
-    "reap",
-    "channel:start",
-    "lock:release",
-  ]);
-});
-
 test("reports daemon ready before the queue-owner sweep finishes, and channels wait for it", async () => {
   const events: string[] = [];
   let releaseReap!: () => void;

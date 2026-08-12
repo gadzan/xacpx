@@ -16,7 +16,7 @@ import {
  * - Structured launches carry `agentArgv` (exact boundaries, Windows-safe) and
  *   `agentCommand` (the stable canonical identity acpx persists and keys its
  *   session records by).
- * - `rawCommand` is the Unix-only legacy escape hatch passed as acpx `--agent`.
+ * - `rawCommand` is the legacy escape hatch / historical selector for acpx `--agent`.
  */
 export interface AgentLaunchSpec {
   /** acpx positional agent: bare driver or xacpx-managed alias. */
@@ -25,7 +25,7 @@ export interface AgentLaunchSpec {
   agentCommand?: string;
   /** Exact executable and argument boundaries for overlay/migration. */
   agentArgv?: string[];
-  /** Unix-only legacy raw override. */
+  /** Legacy raw override / historical session selector. */
   rawCommand?: string;
 }
 
@@ -56,42 +56,11 @@ export function deriveAgentAlias(driver: string, argv: readonly string[]): strin
   return `xacpx-managed-${driver}-${hash}`;
 }
 
-/**
- * True when `alias` is a self-proving `xacpx-managed-<driver>-<hash>` for
- * `argv`: the trailing 12 hex digits match the argv identity hash, the
- * driver segment is non-empty, and re-deriving with that driver yields the
- * same alias. Used by session overlay restart replay so ownership does not
- * depend on the mutable current config driver (historical sticky sessions
- * keep the driver encoded at migration time).
- */
-export function isCanonicalManagedAliasForArgv(
-  alias: string,
-  argv: readonly string[],
-): boolean {
-  if (typeof alias !== "string" || !alias.startsWith("xacpx-managed-")) {
-    return false;
-  }
-  if (!Array.isArray(argv) || argv.length === 0) {
-    return false;
-  }
-  const rest = alias.slice("xacpx-managed-".length);
-  const match = /^(.*)-([0-9a-f]{12})$/u.exec(rest);
-  if (!match) return false;
-  const driver = match[1]!;
-  if (driver.length === 0) return false;
-  return deriveAgentAlias(driver, argv) === alias;
-}
-
 /** Detects an argv shape that `resolveLaunchSpec` treats as derived state
  * (managed adapter pin, hermes shim, or local fallback for opencode /
  * kilocode). A session with such argv has `recordedArgv` reset to undefined
  * before step 2 in `resolveLaunchSpec`, so the sticky bypass does NOT
- * apply — the session is actually vulnerable to a config argv step 3
- * override.
- *
- * This is the single source of truth for the derived/custom classification
- * used by both `SessionService.resolveLaunchSpec` and the argv
- * auto-migration safety check. */
+ * apply — the session follows the current config / derived launch instead. */
 export function isDerivedAgentArgv(
   driver: string,
   argv: string[] | undefined,
