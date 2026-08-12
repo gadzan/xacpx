@@ -5,6 +5,7 @@ import {
   isDerivedAgentArgv,
   renderAgentArgvIdentity,
   deriveAgentAlias,
+  isCanonicalManagedAliasForArgv,
 } from "../config/agent-launch";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AgentConfig, TransportConfig } from "../config/types";
@@ -35,9 +36,8 @@ export interface StateArgvMigrationEvaluation {
  * - it has a recorded raw `transport_agent_command` (the Windows fail-closed
  *   trigger) that is either a single token whose canonical identity round-trips
  *   losslessly (`[command]` re-renders to `command`), OR a multi-token command,
- * - `transport_agent_argv` is not already set (or is set but the session is
- *   missing the canonical `transport_acpx_agent` — that is a repair case),
- * - and at least one of the two identity-proving sources is available:
+ * - `transport_agent_argv` is not already a complete Path A sticky pair, and
+ * - at least one of the two identity-proving sources is available:
  *     a. `agents[session.agent]` already has an `argv` whose canonical identity
  *        equals the recorded command (config source), OR
  *     b. the on-disk acpx session record indexed by `transport_session` has
@@ -46,9 +46,10 @@ export interface StateArgvMigrationEvaluation {
  *        `agent_command` (rejects corrupt/inconsistent records where the two
  *        fields disagree).
  *
- * Full Path A sticky state requires BOTH `transport_agent_argv` AND the
- * canonical `transport_acpx_agent` (`deriveAgentAlias(driver, argv)`).
- * `resolveLaunchSpec` step 2 needs both; argv-only is NOT done.
+ * Fully migrated (noop) when argv is present AND `transport_acpx_agent` is a
+ * self-proving `xacpx-managed-*` alias for that argv
+ * (`isCanonicalManagedAliasForArgv`). Argv-only or a bare/tampered alias is a
+ * repair backfill — `resolveLaunchSpec` step 2 needs both fields.
  *
  * Anything else is rejected: silently rewriting argv on a record we cannot
  * prove is the same launch would key acpx onto a different session file and
@@ -58,7 +59,7 @@ export function evaluateStateSessionArgvMigration(
   session: LogicalSession,
   agentConfig: AgentConfig | undefined,
   acpxRecordArgv: string[] | undefined,
-  options?: { canonicalAcpxAgent?: string },
+  _options?: { canonicalAcpxAgent?: string },
 ): StateArgvMigrationEvaluation {
   if (
     Array.isArray(session.transport_agent_argv) &&
@@ -70,18 +71,14 @@ export function evaluateStateSessionArgvMigration(
       typeof session.transport_acpx_agent === "string" && session.transport_acpx_agent.length > 0
         ? session.transport_acpx_agent
         : undefined;
-    const canonical = options?.canonicalAcpxAgent;
-    // Fully migrated only when argv is present AND the sticky alias matches
-    // the canonical content-hash (or no canonical was supplied — treat any
-    // non-empty alias as complete for callers that don't compute one).
-    if (
-      existingAcpx !== undefined &&
-      (canonical === undefined || existingAcpx === canonical)
-    ) {
+    // Self-proof against argv — independent of the mutable current config
+    // driver, so a historical `xacpx-managed-kimi-*` pair stays noop after
+    // `agents.<name>.driver` is renamed to qwen.
+    if (existingAcpx !== undefined && isCanonicalManagedAliasForArgv(existingAcpx, existingArgv)) {
       return { status: "noop" };
     }
     // argv-only, or alias missing / non-canonical → repair by re-persisting
-    // the existing argv so the apply phase can write the canonical alias.
+    // the existing argv so the apply phase can write a canonical alias.
     return { status: "backfilled", targetArgv: [...existingArgv] };
   }
   const command = session.transport_agent_command;
@@ -222,6 +219,13 @@ export interface StateArgvMigrationResult {
    * exits non-zero so operator tooling never silently hides a real failure.
    */
   errors: string[];
+  /**
+   * True when the locked elevate's state write failed. On Windows the public
+   * writer may have already partially overwritten `state.json` before
+   * throwing; the daemon MUST NOT `stateStore.load()` afterward (invalid JSON
+   * would be quarantined and replaced with empty state). Fail closed instead.
+   */
+  stateWriteFailed: boolean;
 }
 
 export interface MigrateStateAgentArgvDeps {
@@ -247,6 +251,12 @@ export interface MigrateStateAgentArgvDeps {
    * writers block until the elevate commits. Production never sets this.
    */
   afterFreshConfigFence?: () => Promise<void>;
+  /**
+   * Test seam: wraps `withPrivateFileLock` for the state file. Production
+   * uses the real helper. Tests inject a wrapper that can simulate a
+   * Windows direct-write partial failure after truncating the target.
+   */
+  withStateFileLock?: typeof withPrivateFileLock;
   logger: AppLogger;
   /** When true, every write is skipped and only the plan is returned. */
   dryRun?: boolean;
@@ -301,12 +311,12 @@ function toDefaultArgvResolution(
  *   cannot insert an explicit argv between fence and elevate.
  * - xacpx `config.json` is never mutated by Path A (session-local only).
  *
- * Fail-soft in the daemon path: any I/O error is collected in `result.errors`
- * AND logged via the logger; the daemon continues to start so a transient
- * disk issue does not break boot. The CLI path surfaces the same `errors`
- * list on stderr and exits non-zero so operator tooling never silently hides
- * a real failure. (Session overlay *replay* at startup is fail-closed
- * separately in `autoMigrateArgv`.)
+ * Fail-soft for per-session proof / planning I/O: those errors land in
+ * `result.errors` and the daemon continues. Fail-closed for locked state
+ * apply/write (`result.stateWriteFailed`): Windows direct-write fallback can
+ * leave a partial `state.json`, and reloading that would quarantine the file
+ * into empty runtime state. (Session overlay *replay* at startup is also
+ * fail-closed separately in `autoMigrateArgv`.)
  */
 export async function migrateStateAgentArgv(
   deps: MigrateStateAgentArgvDeps,
@@ -316,6 +326,7 @@ export async function migrateStateAgentArgv(
     skipped: [],
     configUpdates: [],
     errors: [],
+    stateWriteFailed: false,
   };
 
   const sessionsDir =
@@ -328,6 +339,7 @@ export async function migrateStateAgentArgv(
   const provisionOverlays = deps.provisionOverlays ?? (async (entries: AcpxAgentOverlayEntry[]): Promise<void> => {
     await ensureAgentOverlays(entries);
   });
+  const withStateFileLock = deps.withStateFileLock ?? withPrivateFileLock;
   // Shared classification inputs (used both in the planning bucket's
   // isSticky check and the fresh-state per-agent recheck). Must agree
   // with `SessionService.resolveLaunchSpec`'s derived/custom split
@@ -406,14 +418,13 @@ export async function migrateStateAgentArgv(
       runtimeRoot,
       platform,
     );
-    const canonicalAcpxAgent = existingArgv
-      ? deriveAgentAlias(driverForDerived, existingArgv)
-      : undefined;
+    // Fully-migrated / repair uses alias self-proof inside evaluate — not
+    // deriveAgentAlias(currentDriver, argv), which would false-repair
+    // historical sticky pairs after a driver rename.
     const evaluation = evaluateStateSessionArgvMigration(
       session,
       normalizeAgentConfig(agentConfigRaw),
       acpxRecordArgv,
-      canonicalAcpxAgent !== undefined ? { canonicalAcpxAgent } : undefined,
     );
     let argvIdentity: string | undefined;
     if (existingArgv) {
@@ -486,7 +497,7 @@ export async function migrateStateAgentArgv(
 
 if (sessionUpdates.length > 0) {
   try {
-    await withPrivateFileLock(deps.statePath, async (writeLocked) => {
+    await withStateFileLock(deps.statePath, async (writeLocked) => {
       const freshRaw = await safeReadText(
         readFile,
         deps.statePath,
@@ -581,15 +592,19 @@ if (sessionUpdates.length > 0) {
           const existingAcpxAgent = fresh.transport_acpx_agent;
           if (
             typeof existingAcpxAgent === "string" &&
-            existingAcpxAgent === update.acpxAgent
+            (
+              existingAcpxAgent === update.acpxAgent ||
+              isCanonicalManagedAliasForArgv(existingAcpxAgent, existingArgv as string[])
+            )
           ) {
-            // Fully migrated (argv + canonical alias). Count as success;
-            // no state rewrite needed for this session.
+            // Fully migrated (argv + self-proving or planned alias). A
+            // concurrent writer may have restored a historical
+            // `xacpx-managed-<old-driver>-*` pair; do not rewrite it.
             result.migrated.push({
               alias: update.alias,
               agent: update.agent,
-              argv: update.argv,
-              acpxAgent: update.acpxAgent,
+              argv: [...(existingArgv as string[])],
+              acpxAgent: existingAcpxAgent,
             });
             continue;
           }
@@ -698,6 +713,8 @@ if (sessionUpdates.length > 0) {
     // Path A does not mutate xacpx config.json; an acpx overlay may have
     // been provisioned without a matching state write. State.json may be
     // unchanged OR partially written (Windows direct-write fallback).
+    // Mark fatal so autoMigrateArgv must NOT load/quarantine into empty state.
+    result.stateWriteFailed = true;
     pushError(result, deps.logger, "state.argv_migration.write_failed",
       "argv migration failed during the locked elevate step; state.json write did not complete successfully and may be unchanged or partially written. A new acpx overlay may have been provisioned and is now referenced only by sessions that did not get persisted.",
       { statePath: deps.statePath }, error);
@@ -1177,19 +1194,54 @@ function defaultReadAcpxRecord(sessionsDir: string): AcpxRecordReader {
     const candidates = await loadIndex();
     const list = candidates.get(transportSession) ?? [];
     if (list.length === 0) return null;
-    // Disambiguate by expectedCommand when available; otherwise we can
-    // only safely pick a candidate when there is exactly one.
-    const matches = expectedCommand !== undefined
-      ? list.filter((c) => c.agentCommand === expectedCommand)
-      : list;
-    if (matches.length !== 1) {
-      // Ambiguous (or zero) — fail closed rather than picking arbitrarily.
-      return null;
+
+    const readRecordFile = async (file: string): Promise<Record<string, unknown> | null> => {
+      const raw = await readFile(join(sessionsDir, file), "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      return isRecord(parsed) ? parsed : null;
+    };
+
+    const pickByReadingRecords = async (
+      rows: Array<{ file: string; agentCommand?: string }>,
+      command: string,
+    ): Promise<Record<string, unknown> | null> => {
+      const matched: Record<string, unknown>[] = [];
+      for (const row of rows) {
+        const record = await readRecordFile(row.file);
+        if (!record) continue;
+        const recordCommand = typeof record.agent_command === "string"
+          ? record.agent_command
+          : undefined;
+        if (recordCommand === command) matched.push(record);
+      }
+      // Authoritative proof is the record body; fail closed on ambiguity.
+      return matched.length === 1 ? matched[0]! : null;
+    };
+
+    if (expectedCommand === undefined) {
+      if (list.length !== 1) return null;
+      return await readRecordFile(list[0]!.file);
     }
-    const file = matches[0]!.file;
-    const raw = await readFile(join(sessionsDir, file), "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
+
+    const expected = expectedCommand.trim();
+    const indexCommandMatches = list.filter((c) =>
+      typeof c.agentCommand === "string" && c.agentCommand.trim() === expected,
+    );
+    if (indexCommandMatches.length === 1) {
+      return await readRecordFile(indexCommandMatches[0]!.file);
+    }
+    if (indexCommandMatches.length > 1) {
+      // Index metadata alone is ambiguous — read records to disambiguate.
+      return await pickByReadingRecords(indexCommandMatches, expectedCommand);
+    }
+    // Zero index-command matches. A unique row with missing/empty
+    // agentCommand is still readable: record self-proof happens upstream.
+    if (list.length === 1) {
+      return await readRecordFile(list[0]!.file);
+    }
+    // Multiple rows without usable index command metadata — read candidates
+    // and filter by authoritative record.agent_command.
+    return await pickByReadingRecords(list, expectedCommand);
   };
 }
 

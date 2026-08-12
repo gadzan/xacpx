@@ -61,7 +61,7 @@ import { startConfigWatcher } from "./config/config-watcher";
 import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
-import { migrateStateAgentArgv } from "./state/auto-migrate-agent-argv";
+import { migrateStateAgentArgv, type MigrateStateAgentArgvDeps } from "./state/auto-migrate-agent-argv";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
@@ -73,6 +73,7 @@ import {
   ensureAgentOverlays,
   type EnsureAgentOverlaysResult,
   computeSessionOverlayEntries,
+  type AcpxAgentOverlayEntry,
 } from "./transport/acpx-agent-overlay";
 
 async function defaultProvisionAgentOverlays(
@@ -167,6 +168,19 @@ interface RuntimeDeps {
     config: AppConfig,
     logger: AppLogger,
   ) => Promise<EnsureAgentOverlaysResult>;
+  /**
+   * Provision session-local `xacpx-managed-*` overlays (migration apply +
+   * startup replay). Injectable so unit tests never touch the real
+   * `~/.acpx/config.json`. Defaults to `ensureAgentOverlays`.
+   */
+  provisionSessionOverlays?: (entries: AcpxAgentOverlayEntry[]) => Promise<void>;
+  /**
+   * Extra deps forwarded to `migrateStateAgentArgv` (tests inject lock /
+   * provision seams). Production leaves this undefined.
+   */
+  migrateStateAgentArgvDeps?: Partial<
+    Omit<MigrateStateAgentArgvDeps, "statePath" | "configPath" | "logger">
+  >;
 }
 
 function startProgressHeartbeat(
@@ -284,11 +298,22 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // any service uses config/state; it then reloads config and state IN PLACE
   // so every holder of the references (SessionService, transports, ...)
   // observes the migrated values.
+  const provisionSessionOverlays = deps.provisionSessionOverlays
+    ?? (async (entries: AcpxAgentOverlayEntry[]): Promise<void> => {
+      await ensureAgentOverlays(entries);
+    });
+
   const autoMigrateArgv = async (): Promise<void> => {
     const argvMigration = await migrateStateAgentArgv({
       statePath: paths.statePath,
       configPath: paths.configPath,
       logger,
+      ...deps.migrateStateAgentArgvDeps,
+      // Prefer an explicit test provisioner; otherwise share the session
+      // overlay DI boundary (never fall through to the real home default
+      // when tests inject provisionSessionOverlays only).
+      provisionOverlays:
+        deps.migrateStateAgentArgvDeps?.provisionOverlays ?? provisionSessionOverlays,
     });
     for (const m of argvMigration.migrated) {
       await logger.info("state.argv_auto_migrated", "backfilled session to structured argv (session-local alias)", {
@@ -310,6 +335,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         reason: skip.reason,
       });
     }
+    // Locked elevate may have partially overwritten state.json (Windows
+    // direct-write fallback). Do NOT load/quarantine into empty runtime —
+    // fail closed before channels start.
+    if (argvMigration.stateWriteFailed) {
+      throw new Error(
+        `argv auto-migration failed during locked state write; refusing to continue startup with a potentially partial state.json (${paths.statePath}): ${argvMigration.errors.join("; ") || "unknown write failure"}`,
+      );
+    }
     // Always reload BOTH config and state: even when OUR planning pass saw
     // everything already-migrated (noop) — e.g. a concurrent CLI
     // migration landed between our pre-lock load and this post-lock run — the
@@ -318,6 +351,12 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     // files. `reloadRuntimeConfig` re-provisions acpx agent overlays for any
     // new `xacpx-managed-*` alias before swapping the runtime config in place.
     const updatedState = await stateStore.load();
+    const postMigrateLoadReport = stateStore.lastLoadReport;
+    if (postMigrateLoadReport?.corruptPath) {
+      throw new Error(
+        `argv auto-migration left state.json unreadable (quarantined to ${postMigrateLoadReport.corruptPath}); refusing to boot with empty runtime state`,
+      );
+    }
     replaceRuntimeState(state, updatedState);
     await reloadRuntimeConfig();
     // Re-provision session-derived overlays. Under path A the migration is
@@ -337,7 +376,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
     const sessionEntries = computeSessionOverlayEntries(state);
     if (sessionEntries.length > 0) {
-      await ensureAgentOverlays(sessionEntries);
+      await provisionSessionOverlays(sessionEntries);
     }
   };
   const stateLoadReport = stateStore.lastLoadReport;

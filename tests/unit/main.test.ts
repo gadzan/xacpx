@@ -13,12 +13,13 @@ beforeEach(() => { setLocale("zh"); });
 afterAll(() => { setLocale("en"); });
 
 type BuildAppArgs = Parameters<typeof buildAppRaw>;
-// Never touch the real ~/.acpx/config.json from unit tests: the overlay
-// provisioner runs against the real home dir by design.
+// Never touch the real ~/.acpx/config.json from unit tests: config-derived
+// AND session-local overlay provisioners run against the real home by default.
 const buildApp = (paths: BuildAppArgs[0], deps: BuildAppArgs[1] = {}): ReturnType<typeof buildAppRaw> =>
   buildAppRaw(paths, {
     stateSaveDebounceMs: 0,
     provisionAgentOverlays: async () => ({ outcomes: {}, raced: false }),
+    provisionSessionOverlays: async () => {},
     ...deps,
   });
 
@@ -2934,6 +2935,128 @@ test("autoMigrateArgv runs post-build and reloads config/state in place (no stal
     const afterSession = runtime.sessions.listAllResolvedSessions().find((s) => s.alias === "relay:demo")!;
     expect(afterSession.agentArgv).toEqual(["kimi", "acp"]);
     expect(afterSession.rawCommand).toBeUndefined();
+  } finally {
+    await runtime.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("autoMigrateArgv fail-closes on stateWriteFailed and does not quarantine into empty state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: { kimi: { driver: "kimi", argv: ["kimi", "acp"] } },
+      workspaces: { demo: { cwd: "/tmp/demo" } },
+    }),
+  );
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo",
+          agent: "kimi",
+          workspace: "demo",
+          transport_session: "demo:relay:demo:reset-1",
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z",
+          last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }),
+  );
+
+  const runtime = await buildApp(
+    { configPath, statePath },
+    {
+      migrateStateAgentArgvDeps: {
+        resolveDefaultArgv: () => ({ argv: ["kimi", "acp"], source: "explicit-config" as const }),
+        withStateFileLock: async (path, fn) => {
+          const { withPrivateFileLock } = await import("../../src/util/private-file");
+          return withPrivateFileLock(path, async () =>
+            fn(async () => {
+              await writeFile(path, "{partial");
+              throw new Error("simulated windows direct-write failure");
+            }),
+          );
+        },
+      },
+    },
+  );
+  try {
+    await expect(runtime.autoMigrateArgv!()).rejects.toThrow(/locked state write|partial/i);
+    // Windows-style partial target left on disk; startup must not have
+    // loaded/quarantined it into empty runtime state.
+    expect(await readFile(statePath, "utf8")).toBe("{partial");
+    const { readdir } = await import("node:fs/promises");
+    const files = await readdir(dir);
+    expect(files.some((name) => name.includes(".corrupt-"))).toBe(false);
+    expect(runtime.stateStore.lastLoadReport?.corruptPath).toBeUndefined();
+  } finally {
+    await runtime.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("autoMigrateArgv routes session overlays through provisionSessionOverlays DI", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  const argv = ["kimi", "acp"];
+  const { deriveAgentAlias } = await import("../../src/config/agent-launch");
+  const alias = deriveAgentAlias("kimi", argv);
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: { kimi: { driver: "kimi", argv } },
+      workspaces: { demo: { cwd: "/tmp/demo" } },
+    }),
+  );
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo",
+          agent: "kimi",
+          workspace: "demo",
+          transport_session: "demo:relay:demo:reset-1",
+          transport_agent_command: "kimi acp",
+          transport_agent_argv: argv,
+          transport_acpx_agent: alias,
+          created_at: "2026-08-10T09:00:00.000Z",
+          last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }),
+  );
+
+  const captured: Array<Array<{ alias: string; argv: string[] }>> = [];
+  const runtime = await buildApp(
+    { configPath, statePath },
+    {
+      provisionSessionOverlays: async (entries) => {
+        captured.push(entries.map((e) => ({ alias: e.alias, argv: [...e.argv] })));
+      },
+    },
+  );
+  try {
+    await runtime.autoMigrateArgv!();
+    expect(captured.length).toBeGreaterThanOrEqual(1);
+    expect(captured.some((batch) => batch.some((e) => e.alias === alias))).toBe(true);
   } finally {
     await runtime.dispose();
     await rm(dir, { recursive: true, force: true });

@@ -1924,7 +1924,7 @@ test("adapter registry CLI persists and resets only transport.adapterRegistry", 
 });
 
 function fakeMigrateResult(overrides: Partial<StateArgvMigrationResult> = {}): StateArgvMigrationResult {
-  return { migrated: [], skipped: [], configUpdates: [], errors: [], ...overrides };
+  return { migrated: [], skipped: [], configUpdates: [], errors: [], stateWriteFailed: false, ...overrides };
 }
 
 function stoppedController() {

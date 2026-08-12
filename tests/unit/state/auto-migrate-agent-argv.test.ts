@@ -39,7 +39,6 @@ test("pure: noop when transport_agent_argv + canonical acpx alias already presen
     }),
     { driver: "kimi" },
     argv,
-    { canonicalAcpxAgent: canonical },
   );
   expect(result.status).toBe("noop");
 });
@@ -50,7 +49,6 @@ test("pure: argv-only session is a repair backfill (not noop)", () => {
     sessionFixture({ transport_agent_argv: argv }),
     { driver: "kimi" },
     argv,
-    { canonicalAcpxAgent: deriveAgentAlias("kimi", argv) },
   );
   expect(result.status).toBe("backfilled");
   expect(result.targetArgv).toEqual(argv);
@@ -65,10 +63,26 @@ test("pure: wrong/non-canonical alias is a repair backfill", () => {
     }),
     { driver: "kimi" },
     argv,
-    { canonicalAcpxAgent: deriveAgentAlias("kimi", argv) },
   );
   expect(result.status).toBe("backfilled");
   expect(result.targetArgv).toEqual(argv);
+});
+
+test("pure: historical self-proving alias stays noop after current driver rename", () => {
+  // Session migrated under driver=kimi; config later says driver=qwen.
+  // Self-proof must not false-repair using the new driver.
+  const argv = ["kimi", "acp"] as string[];
+  const historical = deriveAgentAlias("kimi", argv);
+  const result = evaluateStateSessionArgvMigration(
+    sessionFixture({
+      agent: "foo",
+      transport_agent_argv: argv,
+      transport_acpx_agent: historical,
+    }),
+    { driver: "qwen" },
+    undefined,
+  );
+  expect(result.status).toBe("noop");
 });
 
 test("pure: single-token command is backfillable as [command]", () => {
@@ -473,7 +487,7 @@ test("io: returns empty result when state.json is missing", async () => {
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-    expect(result).toEqual({ migrated: [], skipped: [], configUpdates: [], errors: [] });
+    expect(result).toEqual({ migrated: [], skipped: [], configUpdates: [], errors: [], stateWriteFailed: false });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2106,6 +2120,172 @@ test("High: config lock freezes fence→commit against concurrent ConfigStore.pa
     const configAfter = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
     expect((configAfter.agents as Record<string, Record<string, unknown>>).kimi!.argv)
       .toEqual(["kimi", "--new"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Medium: historical self-proving pair is steady after driver rename (no skip)", async () => {
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const argv = ["kimi", "acp"];
+    const historical = deriveAgentAlias("kimi", argv);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "foo", workspace: "demo",
+          transport_session: "demo:relay:demo:reset-1",
+          transport_agent_command: "kimi acp",
+          transport_agent_argv: argv,
+          transport_acpx_agent: historical,
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    // Config driver renamed after the original kimi migration.
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { foo: { driver: "qwen" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => (n === "foo" ? ["qwen", "acp"] : defaultArgvResolver(n)),
+    });
+    expect(result.migrated).toEqual([]);
+    expect(result.skipped).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(result.stateWriteFailed).toBe(false);
+
+    const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const sessionAfter = (stateAfter.sessions as Record<string, Record<string, unknown>>)["relay:demo"]!;
+    expect(sessionAfter.transport_acpx_agent).toBe(historical);
+    expect(sessionAfter.transport_agent_argv).toEqual(argv);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Medium: unique index row without agentCommand still migrates via record self-proof", async () => {
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transport = "demo:relay:demo:reset-1";
+    const fileName = `${encodeURIComponent(transport)}.json`;
+    await writeFile(join(acpxDir, fileName), JSON.stringify({
+      schema: "acpx.session.v1",
+      name: transport,
+      agent_command: "kimi acp",
+      agent_argv: ["kimi", "acp"],
+      cwd: "C:\\demo",
+    }));
+    // Index metadata omits agentCommand (optional in acpx contract).
+    await writeFile(join(acpxDir, "index.json"), JSON.stringify({
+      schema: "acpx.session-index.v1",
+      files: [fileName],
+      entries: [{ file: fileName, name: transport, cwd: "C:\\demo", closed: false }],
+    }));
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "kimi", workspace: "demo",
+          transport_session: transport,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+    });
+    expect(result.migrated).toEqual([
+      {
+        alias: "relay:demo",
+        agent: "kimi",
+        argv: ["kimi", "acp"],
+        acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
+      },
+    ]);
+    expect(result.skipped).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("High: partial state write failure sets stateWriteFailed and leaves partial file", async () => {
+  const { dir, statePath, configPath, acpxDir } = await setupFixtureDir();
+  try {
+    const transport = "demo:relay:demo:reset-1";
+    await writeAcpxRecord(acpxDir, transport, "kimi acp", ["kimi", "acp"]);
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      sessions: {
+        "relay:demo": {
+          alias: "relay:demo", agent: "kimi", workspace: "demo",
+          transport_session: transport,
+          transport_agent_command: "kimi acp",
+          created_at: "2026-08-10T09:00:00.000Z", last_used_at: "2026-08-10T09:00:00.000Z",
+        },
+      },
+      chat_contexts: {},
+      orchestration: { tasks: {}, workerBindings: {}, groups: {} },
+      scheduled_tasks: {},
+    }));
+    await writeFile(configPath, JSON.stringify({
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1, maxFiles: 1, retentionDays: 1, perf: { enabled: false, maxSizeBytes: 1, maxFiles: 0, retentionDays: 1 } },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [], plugins: [],
+      agents: { kimi: { driver: "kimi" } },
+      workspaces: { demo: { cwd: "C:\\demo" } },
+      later: { defaultMode: "temp" },
+    }));
+
+    const { withPrivateFileLock } = await import("../../../src/util/private-file");
+    const result = await migrateStateAgentArgv({
+      provisionOverlays: async () => {},
+      statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
+      resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
+      withStateFileLock: async (path, fn) =>
+        withPrivateFileLock(path, async () =>
+          fn(async () => {
+            // Simulate Windows direct-write fallback that truncates then fails.
+            await writeFile(path, "{partial");
+            throw new Error("simulated windows direct-write failure");
+          }),
+        ),
+    });
+
+    expect(result.stateWriteFailed).toBe(true);
+    expect(result.errors.some((e) => /partial|write|elevate/i.test(e))).toBe(true);
+    expect(result.migrated).toEqual([]);
+    const raw = await readFile(statePath, "utf8");
+    expect(raw).toBe("{partial");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
