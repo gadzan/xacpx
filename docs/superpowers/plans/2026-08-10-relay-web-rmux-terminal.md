@@ -459,16 +459,16 @@
 - Test: `tests/unit/packages/channel-relay/control-bridge.test.ts`
 - Test: `tests/unit/packages/channel-relay/channel-relay-plugin.test.ts`
 
-- [ ] `start()` 要求 `sessionResources`，按 owner/registry→sidecar handshake→catalog/inventory reconcile→RelayClient connect 顺序启动。
-- [ ] 只有 runtime ready 后 handshake 声明两个 terminal capability；terminal disabled/unavailable 时 relay 的其余聊天/控制能力仍可启动。
-- [ ] 新 terminal request/event 路由到 runtime；不再在 RMUX capability path 调用 core `createTerminal/attachTerminal/writeTerminal/...`。
-- [ ] connector outbound viewer event 携带 hub-stamped viewerId + attachmentId；resource exit 携带 terminalId + generation。
-- [ ] hub WebSocket disconnect 回调 bulk detach 当前 connection 的 attachments，但保持 owner lease、idle 和 reconciler。
-- [ ] catalog archived/removed event 调 `retireLogicalSession`；restored 只更新 catalog view，不创建/复活 terminal。
-- [ ] `stop("shutdown")` abandon；disabled/removed/logout durable terminateAll；one-shot maintenance cleanup 可在未连接 hub 时工作。
-- [ ] bump plugin `minXacpxVersion` 到含 catalog/stop reason 的首个 core 版本；package 依赖不向 core 泄漏 RMUX。
-- [ ] Run focused tests, `bun run build:channel-relay`, and root typecheck.
-- [ ] Commit: `feat(channel-relay): own relay rmux terminal lifecycle`
+- [x] `start()` 要求 `sessionResources`，按 owner/registry→sidecar handshake→catalog/inventory reconcile→RelayClient connect 顺序启动。
+- [x] 只有 runtime ready 后 handshake 声明两个 terminal capability；terminal disabled/unavailable 时 relay 的其余聊天/控制能力仍可启动。
+- [x] 新 terminal request/event 路由到 runtime；不再在 RMUX capability path 调用 core `createTerminal/attachTerminal/writeTerminal/...`。
+- [x] connector outbound viewer event 携带 hub-stamped viewerId + attachmentId；resource exit 携带 terminalId + generation。
+- [x] hub WebSocket disconnect 回调 bulk detach 当前 connection 的 attachments，但保持 owner lease、idle 和 reconciler。
+- [x] catalog archived/removed event 调 `retireLogicalSession`；restored 只更新 catalog view，不创建/复活 terminal。
+- [x] `stop("shutdown")` abandon；disabled/removed/logout durable terminateAll；one-shot maintenance cleanup 可在未连接 hub 时工作。
+- [x] bump plugin `minXacpxVersion` 到含 catalog/stop reason 的首个 core 版本；package 依赖不向 core 泄漏 RMUX。
+- [x] Run focused tests, `bun run build:channel-relay`, and root typecheck.
+- [x] Commit: `feat(channel-relay): own relay rmux terminal lifecycle`
 
 ### Task 19: Hub viewer identity、attachment maps 与定向 fanout
 

@@ -5,6 +5,7 @@ export type {
   ConsumerLock,
   ConsumerLockMetadata,
   ConsumerLockOptions,
+  ChannelStopReason,
   CoordinatorMessageInput,
   MessageChannelRuntime,
   ScheduledChannelMessageInput,

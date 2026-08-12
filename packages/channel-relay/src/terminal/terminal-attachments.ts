@@ -241,6 +241,15 @@ export class TerminalAttachmentRegistry {
     return out;
   }
 
+  /** Snapshot of every live attachment (hub disconnect bulk-detach). */
+  listAll(): TerminalAttachment[] {
+    const out: TerminalAttachment[] = [];
+    for (const attachment of this.attachments.values()) {
+      out.push({ ...attachment });
+    }
+    return out;
+  }
+
   getViewerCount(terminalId: string): number {
     return this.byTerminal.get(terminalId)?.size ?? 0;
   }

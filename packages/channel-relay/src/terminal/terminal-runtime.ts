@@ -139,6 +139,13 @@ export interface RelayTerminalRuntime {
   }): Promise<TerminalOpenResult>;
   startRecovery(attachmentId: string): Promise<void>;
   detach(attachmentId: string): void;
+  detachAllAttachments(): void;
+  peekAttachment(attachmentId: string): {
+    viewerId: string;
+    terminalId: string;
+    generation: string;
+    role: "controller" | "spectator";
+  } | undefined;
   heartbeat(attachmentId: string): void;
   input(attachmentId: string, generation: string, data: Uint8Array): Promise<void>;
   resize(attachmentId: string, generation: string, cols: number, rows: number): Promise<void>;
@@ -499,6 +506,30 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   detach(attachmentId: string): void {
     void this.stopRecovery(attachmentId);
     this.attachments.detach(attachmentId);
+  }
+
+  /** Clear all viewer attachments (and their recovery streams) without touching
+   *  RMUX owner leases — used when the hub WebSocket drops (spec §12.2). */
+  detachAllAttachments(): void {
+    const ids = this.attachments.listAll().map((a) => a.attachmentId);
+    for (const id of ids) void this.stopRecovery(id, { wait: false });
+    this.attachments.detachMany(ids);
+  }
+
+  peekAttachment(attachmentId: string): {
+    viewerId: string;
+    terminalId: string;
+    generation: string;
+    role: "controller" | "spectator";
+  } | undefined {
+    const a = this.attachments.getAttachment(attachmentId);
+    if (!a) return undefined;
+    return {
+      viewerId: a.viewerId,
+      terminalId: a.terminalId,
+      generation: a.generation,
+      role: a.role,
+    };
   }
 
   heartbeat(attachmentId: string): void {
