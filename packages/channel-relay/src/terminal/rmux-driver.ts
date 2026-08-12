@@ -1,39 +1,38 @@
-// RMUX driver seam — spec §9/§15.3
-// (docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md).
+// RMUX driver seam — process-owned terminal backend.
 //
-// This module defines ONLY the internal contract between `RelayTerminalRuntime`
-// and an RMUX backend. It intentionally exposes nothing beyond
-// create/adopt/list/kill/input/resize/recover/stopRenewing/diagnostics — every
-// higher-level concept (registry state machine, viewer/controller roles,
-// generations bound to `terminalId`) lives in other modules and must not leak
-// into this seam.
+// Internal contract between `RelayTerminalRuntime` and an RMUX backend.
+// Process-owned mode (no rmux source patches) exposes only:
+//   create / list / kill / input / resize / recover / diagnostics
 //
-// Two implementations exist against this interface:
-//   - `InMemoryRmuxDriver` (in-memory-rmux-driver.ts) — fully fake, used by
-//     every unit test in this package.
-//   - a future Rust-sidecar-backed driver (Task 17) — the real adapter.
+// Cross-process adopt / stopRenewing / fencing are intentionally absent:
+// shutdown kills sessions; hard crash relies on daemon KillOnOwnerExit TTL.
 //
-// DTOs deliberately keep RMUX's own stable identifiers (`sessionId`, `paneId`),
-// opaque `tags`, and raw `Uint8Array` bytes with `epoch`/`sequence` — the driver
-// must never re-interpret or transcode terminal bytes.
+// Implementations:
+//   - `InMemoryRmuxDriver` — fake for unit/E2E tests
+//   - Rust sidecar driver — real adapter over rmux-sdk 0.10.0
+//
+// DTOs keep RMUX stable identifiers (`sessionId`, `paneId`), opaque `tags`
+// (best-effort; public OwnedSession create may not persist tags), and raw
+// `Uint8Array` recovery bytes. Input is UTF-8 text at the bridge boundary.
 
-/** Input to `create()`. `tags` are opaque strings written verbatim to the RMUX
- *  session (spec §10.3, e.g. `"xacpx:relay"`, `"owner:<installationId>"`). */
+/** Input to `create()`. `tags` are advisory metadata (registry + best-effort
+ *  RMUX labeling). `ownerLeaseTtlSeconds` is the crash-cleanup TTL for
+ *  KillOnOwnerExit, not a restart-adoption window. */
 export interface RmuxCreateSessionInput {
-  /** Unreusable RMUX session name (spec §10.3 naming scheme). */
+  /** Globally unique RMUX session name — never reused (naming scheme in runtime). */
   name: string;
   cwd: string;
   cols: number;
   rows: number;
-  /** RMUX `history-limit` — scrollback line cap for the default pane. */
+  /** RMUX `history-limit` — scrollback line cap for the work pane. */
   historyLimit: number;
   tags: readonly string[];
-  /** Daemon-side owner lease TTL requested at creation time. */
+  /** Daemon-side owner lease TTL for hard-crash cleanup. */
   ownerLeaseTtlSeconds: number;
 }
 
-/** Handle returned by `create()`/`adopt()` — the only stable identity the rest
- *  of the runtime is allowed to persist or compare against. */
+/** Handle returned by `create()` — the only stable identity the rest of the
+ *  runtime persists or compares against within this process. */
 export interface RmuxSessionHandle {
   sessionId: string;
   paneId: string;
@@ -41,8 +40,7 @@ export interface RmuxSessionHandle {
   tags: readonly string[];
 }
 
-/** One entry from `list()` — raw daemon inventory, independent of this
- *  installation's own registry bookkeeping. */
+/** One entry from `list()` — raw daemon inventory. */
 export interface RmuxInventoryEntry {
   sessionId: string;
   paneId: string;
@@ -50,19 +48,11 @@ export interface RmuxInventoryEntry {
   tags: readonly string[];
 }
 
-/** Identity accepted by `adopt()`. Reconciliation may only know a name (from
- *  tags/registry) or a stable `sessionId` (from a previous registry record);
- *  both must resolve to the exact same live session, never a fuzzy match. */
-export type RmuxSessionIdentity = { sessionId: string } | { name: string };
-
 /** Recovery events yielded by `recover()`, in strict order.
  *
- * The FIRST event for any subscription must be a `rebase`: it carries a
- * keyframe capable of resetting and rebuilding a compatible terminal emulator
- * (spec §14.6), plus the `epoch`/`nextSequence` that subsequent `bytes` events
- * must continue from. A later `rebase` (resize, clear-history, lag, process
- * generation change) invalidates the previous epoch and restarts the
- * contract — never a lone `bytes` event out of an unseen epoch. */
+ * The FIRST event for any subscription must be a `rebase`. A later `rebase`
+ * invalidates the previous epoch. Process-owned mode does not emit
+ * `lease-lost` (no cross-owner adopt fencing). */
 export type RmuxRecoveryEvent =
   | {
     type: "rebase";
@@ -75,56 +65,37 @@ export type RmuxRecoveryEvent =
     reason?: string;
   }
   | { type: "bytes"; epoch: number; sequence: number; data: Uint8Array }
-  | { type: "lease-lost" }
   | { type: "exit"; code?: number };
 
-/** Version/capability stub — real driver reports bridge + RMUX wire version and
- *  negotiated capabilities (spec §15.3 handshake); fake driver returns a fixed
- *  stub so runtime capability gating can be exercised without a real sidecar. */
+/** Version/capability stub — real driver reports bridge + RMUX wire version. */
 export interface RmuxDiagnostics {
   bridgeVersion: string;
   rmuxWireVersion: string;
   capabilities: readonly string[];
 }
 
-/** The only surface `RelayTerminalRuntime` may call. No other RMUX-shaped
- *  method may be added here — anything about registry state, viewer roles or
- *  wire DTOs belongs in a different module. */
+/** The only surface `RelayTerminalRuntime` may call. */
 export interface RmuxTerminalDriver {
-  /** Create a new detached session with an owner lease. Rejects if a session
-   *  with `input.name` already exists — names are never reused across
-   *  terminals (spec §10.3). */
+  /** Create a new detached process-owned session. Rejects if `input.name`
+   *  already exists — names are never reused. */
   create(input: RmuxCreateSessionInput): Promise<RmuxSessionHandle>;
 
-  /** Adopt an existing live session by its exact stable identity. Never
-   *  creates a new session and never resolves to a same-named-but-different
-   *  session (rename/reuse safety, spec §15.2). */
-  adopt(identity: RmuxSessionIdentity): Promise<RmuxSessionHandle>;
-
-  /** Raw daemon-side inventory for this installation's owner namespace. Used
-   *  by reconciliation to discover both expected and orphaned sessions. */
+  /** Raw daemon-side inventory for reconciliation / orphan kill. */
   list(): Promise<RmuxInventoryEntry[]>;
 
-  /** Idempotent: killing an already-gone/unknown session resolves without
-   *  error. */
+  /** Idempotent: killing an already-gone/unknown session resolves without error.
+   *  Prefer killing by the registry's unique session name when available; the
+   *  `sessionId` argument remains the driver-key used within this process. */
   kill(sessionId: string): Promise<void>;
 
-  /** Send raw input bytes to a pane. Rejects once the owning session's lease
-   *  has been fenced (`RmuxLeaseLostError`). */
+  /** Send UTF-8 text bytes to a pane. Non-UTF-8 is rejected at the real
+   *  sidecar; the fake accepts any bytes for test injectability. */
   input(paneId: string, bytes: Uint8Array): Promise<void>;
 
   resize(paneId: string, cols: number, rows: number): Promise<void>;
 
-  /** Recovery stream for a pane. See `RmuxRecoveryEvent` for the ordering
-   *  contract. Consumers must stop iterating (return/break) to release the
-   *  underlying subscription; no separate unsubscribe call exists. */
+  /** Recovery stream for a pane. Consumers must stop iterating to release. */
   recover(paneId: string): AsyncIterable<RmuxRecoveryEvent>;
-
-  /** Abandon-to-expiry (spec §12.2): stop renewing the owner lease without
-   *  releasing or killing the session. A future `adopt()` (by this or another
-   *  process) can still fence and take over within the daemon TTL. Idempotent
-   *  on an unknown session. */
-  stopRenewing(sessionId: string): Promise<void>;
 
   diagnostics(): Promise<RmuxDiagnostics>;
 }
@@ -150,13 +121,11 @@ export class RmuxSessionNameConflictError extends Error {
   }
 }
 
-/** Thrown by mutating driver calls (`input`/`resize`) once the owner lease for
- *  that session has been fenced by another owner (spec §12.2). The caller
- *  (runtime) must treat this as an immediate stop-all-mutation signal. */
-export class RmuxLeaseLostError extends Error {
-  constructor(sessionId: string) {
-    super(`rmux owner lease lost: ${sessionId}`);
-    this.name = "RmuxLeaseLostError";
+/** Thrown when input bytes are not valid UTF-8 (process-owned bridge contract). */
+export class RmuxInvalidUtf8InputError extends Error {
+  constructor() {
+    super("rmux input must be valid UTF-8");
+    this.name = "RmuxInvalidUtf8InputError";
   }
 }
 

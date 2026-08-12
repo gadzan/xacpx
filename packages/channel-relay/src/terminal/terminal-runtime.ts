@@ -16,7 +16,6 @@ import { TerminalReconciler as TerminalReconcilerImpl } from "./terminal-reconci
 import type { TerminalRecordV1, TerminalReapReason } from "./terminal-types.js";
 import type { TerminalRegistryStore } from "./terminal-registry-store.js";
 import {
-  RmuxLeaseLostError,
   type RmuxRecoveryEvent,
   type RmuxTerminalDriver,
 } from "./rmux-driver.js";
@@ -329,13 +328,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         config: this.config,
         clock: this.clock,
         withTerminalLock: (terminalId, fn) => this.withTerminalLock(terminalId, fn),
-        onAdopted: (rec, paneId, sessionId) => {
-          this.installHandle(
-            { ...rec, rmuxSessionId: sessionId, state: "live" },
-            paneId,
-            this.clock.now(),
-          );
-        },
+        hasLiveHandle: (terminalId) => this.handles.has(terminalId),
         onResourceAbsent: (terminalId, generation, reason) => {
           this.handles.delete(terminalId);
           this.paneByTerminal.delete(terminalId);
@@ -358,7 +351,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   async start(): Promise<void> {
     if (this.started) return;
     await this.registry.load();
-    // Spec §12.4: reconcile (adopt/reap/quarantine) before hub connect.
+    // Spec §12.4 process-owned: reap leftover registry records before hub connect.
     await this.reconciler.runOnce();
     this.started = true;
     this.reconciler.startPeriodic();
@@ -662,13 +655,20 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   }
 
   async stop(): Promise<void> {
+    // Process-owned: normal shutdown kills all sessions (no cross-process adopt).
+    if (!this.stopped && this.started) {
+      try {
+        await this.terminateAll("disabled");
+      } catch {
+        // leave reaping tombstones for the next process startup cleanup
+      }
+    }
     this.stopped = true;
     await this.reconciler.stop();
     const loops = [...this.recoveries.values()];
     for (const loop of loops) loop.abort.abort();
     await Promise.allSettled(loops.map((l) => l.done));
     this.recoveries.clear();
-    // Do NOT kill or stopRenewing — leave owner lease for adopt within TTL.
   }
 
   // --- private ------------------------------------------------------------
@@ -776,9 +776,8 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   }
 
   private handleDriverMutationError(handle: LiveHandle, err: unknown): never {
-    if (err instanceof RmuxLeaseLostError) {
-      handle.leaseLost = true;
-      throw new TerminalRuntimeError("terminal-rmux-unavailable", err.message);
+    if (handle.leaseLost) {
+      throw new TerminalRuntimeError("terminal-rmux-unavailable", "terminal fenced");
     }
     throw new TerminalRuntimeError(
       "terminal-rmux-unavailable",
@@ -886,16 +885,6 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     // (a concurrent natural-exit handler would otherwise deadlock).
     await this.stopAllRecoveriesForTerminal(terminalId, { wait: false });
     this.emitExitToViewers(terminalId, generation, reason);
-
-    const handle = this.handles.get(terminalId);
-    const sessionId = handle?.rmuxSessionId ?? rec.rmuxSessionId;
-    if (sessionId) {
-      try {
-        await this.driver.stopRenewing(sessionId);
-      } catch {
-        // ignore
-      }
-    }
 
     return this.finishReap({ ...rec, state: "reaping", reapReason: reason });
   }
@@ -1011,10 +1000,13 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         if (step.value.done) break;
         const event = step.value.value;
         await this.dispatchRecoveryEvent(attachmentId, terminalId, generation, event);
-        if (event.type === "exit" || event.type === "lease-lost") break;
+        if (event.type === "exit") break;
       }
     } catch {
-      // stream aborted / driver crash — caller decides next action
+      // Sidecar/driver crash: fan out exit and durable-reap (never adopt).
+      queueMicrotask(() => {
+        void this.handleNaturalExit(terminalId, generation);
+      });
     } finally {
       signal.removeEventListener("abort", cancel);
       // Do not await return() — some driver iterators may not wake a pending
@@ -1092,12 +1084,6 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         sequence: event.sequence,
         dataBase64: bytesToBase64(event.data),
       });
-      return;
-    }
-
-    if (event.type === "lease-lost") {
-      const handle = this.handles.get(terminalId);
-      if (handle) handle.leaseLost = true;
       return;
     }
 

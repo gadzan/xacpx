@@ -1,15 +1,9 @@
-// Fake `RmuxTerminalDriver` for tests — spec §22.2 requires exercising
-// `RelayTerminalRuntime` only through observable driver behavior, never by
-// reaching into a real RMUX daemon. This driver models exactly the surface in
-// `rmux-driver.ts`, plus a set of test-only control methods
-// (`injectOutput`/`loseLease`/`exitSession`/`triggerRebase`/`setInventory`/
-// `configureFailure`/`configureDelay`/`crashDriver`) that let tests simulate
-// every fault this design must survive without touching a real RMUX process.
+// Fake `RmuxTerminalDriver` for tests — process-owned mode (no adopt/abandon).
+// Models create/list/kill/input/resize/recover/diagnostics plus test controls.
 import { randomUUID } from "node:crypto";
 
 import {
   RmuxDriverCrashedError,
-  RmuxLeaseLostError,
   RmuxPaneNotFoundError,
   RmuxSessionNameConflictError,
   RmuxSessionNotFoundError,
@@ -18,19 +12,16 @@ import {
   type RmuxInventoryEntry,
   type RmuxRecoveryEvent,
   type RmuxSessionHandle,
-  type RmuxSessionIdentity,
   type RmuxTerminalDriver,
 } from "./rmux-driver.js";
 
 type RmuxDriverOp =
   | "create"
-  | "adopt"
   | "list"
   | "kill"
   | "input"
   | "resize"
   | "recover"
-  | "stopRenewing"
   | "diagnostics";
 
 interface InternalSession {
@@ -42,12 +33,8 @@ interface InternalSession {
   rows: number;
   alternate: boolean;
   alive: boolean;
-  leaseLost: boolean;
-  renewingStopped: boolean;
   epoch: number;
-  /** Next sequence number to assign to the next `bytes` event within `epoch`. */
   nextSequence: number;
-  /** Bounded accumulation of output used to build the next rebase keyframe. */
   keyframe: Uint8Array;
   historyLimitBytes: number;
   subscribers: Set<AsyncEventQueue<RmuxRecoveryEvent>>;
@@ -60,13 +47,9 @@ interface FailureConfig {
 
 export interface InMemoryRmuxDriverDeps {
   randomUUID?: () => string;
-  /** Injectable so `configureDelay` tests never perform a real sleep. */
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Minimal controllable async pull-queue used to model each `recover()`
- *  subscription. `close(err)` ends the stream; iterating with `for await`
- *  naturally releases the subscription via the generator's `finally`. */
 class AsyncEventQueue<T> implements AsyncIterable<T> {
   private buffer: T[] = [];
   private waiters: Array<(result: IteratorResult<T>) => void> = [];
@@ -116,8 +99,6 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
         });
       },
       return: async (): Promise<IteratorResult<T>> => {
-        // Wake any pending next() waiters so consumers that break/abort the
-        // for-await loop (runtime stop/resync) do not hang forever.
         this.close();
         return { value: undefined as never, done: true };
       },
@@ -135,8 +116,6 @@ function concatCapped(existing: Uint8Array, addition: Uint8Array, capBytes: numb
     out.set(addition, existing.length);
     return out;
   }
-  // Keep only the most recent `capBytes` — mirrors RMUX scrollback eviction
-  // (oldest content dropped first), not a correctness requirement of the fake.
   const keepFromAddition = Math.min(addition.length, capBytes);
   const keepFromExisting = capBytes - keepFromAddition;
   const out = new Uint8Array(capBytes);
@@ -168,8 +147,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     };
   }
 
-  // --- RmuxTerminalDriver -----------------------------------------------
-
   async create(input: RmuxCreateSessionInput): Promise<RmuxSessionHandle> {
     await this.gate("create");
     if (this.sessionsByName.has(input.name)) {
@@ -186,8 +163,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
       rows: input.rows,
       alternate: false,
       alive: true,
-      leaseLost: false,
-      renewingStopped: false,
       epoch: 1,
       nextSequence: 0,
       keyframe: new Uint8Array(0),
@@ -198,48 +173,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     this.sessionsByPane.set(paneId, sessionId);
     this.sessionsByName.set(input.name, sessionId);
     return this.toHandle(session);
-  }
-
-  async adopt(identity: RmuxSessionIdentity): Promise<RmuxSessionHandle> {
-    await this.gate("adopt");
-    const existing = this.findSession(identity);
-    if (existing) {
-      // A successful adopt fences the previous owner and restores mutability.
-      existing.leaseLost = false;
-      existing.renewingStopped = false;
-      return this.toHandle(existing);
-    }
-
-    // Reconciliation may need to adopt a session this driver instance never
-    // `create()`d (e.g. after a simulated restart where only `list()`/
-    // inventory evidence survives). Materialize it from the override entry so
-    // subsequent input/resize/recover calls behave consistently.
-    const fromInventory = this.inventoryOverride?.find((entry) => this.matchesIdentity(entry, identity));
-    if (fromInventory) {
-      const session: InternalSession = {
-        sessionId: fromInventory.sessionId,
-        paneId: fromInventory.paneId,
-        name: fromInventory.name,
-        tags: [...fromInventory.tags],
-        cols: 80,
-        rows: 24,
-        alternate: false,
-        alive: true,
-        leaseLost: false,
-        renewingStopped: false,
-        epoch: 1,
-        nextSequence: 0,
-        keyframe: new Uint8Array(0),
-        historyLimitBytes: DEFAULT_KEYFRAME_CAP_BYTES,
-        subscribers: new Set(),
-      };
-      this.sessionsById.set(session.sessionId, session);
-      this.sessionsByPane.set(session.paneId, session.sessionId);
-      this.sessionsByName.set(session.name, session.sessionId);
-      return this.toHandle(session);
-    }
-
-    throw new RmuxSessionNotFoundError(identityLabel(identity));
   }
 
   async list(): Promise<RmuxInventoryEntry[]> {
@@ -271,19 +204,18 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     if (this.inventoryOverride) {
       this.inventoryOverride = this.inventoryOverride.filter((entry) => entry.sessionId !== sessionId);
     }
-    // Idempotent: unknown sessionId is not an error.
   }
 
   async input(paneId: string, _bytes: Uint8Array): Promise<void> {
     await this.gate("input");
     const session = this.requireSessionByPane(paneId);
-    this.assertMutable(session);
+    if (!session.alive) throw new RmuxPaneNotFoundError(paneId);
   }
 
   async resize(paneId: string, cols: number, rows: number): Promise<void> {
     await this.gate("resize");
     const session = this.requireSessionByPane(paneId);
-    this.assertMutable(session);
+    if (!session.alive) throw new RmuxPaneNotFoundError(paneId);
     session.cols = cols;
     session.rows = rows;
   }
@@ -295,7 +227,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     const queue = new AsyncEventQueue<RmuxRecoveryEvent>();
     session.subscribers.add(queue);
     queue.push(this.buildRebaseEvent(session));
-    if (session.leaseLost) queue.push({ type: "lease-lost" });
     if (!session.alive) queue.push({ type: "exit" });
 
     try {
@@ -307,22 +238,11 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     }
   }
 
-  async stopRenewing(sessionId: string): Promise<void> {
-    await this.gate("stopRenewing");
-    const session = this.sessionsById.get(sessionId);
-    if (session) session.renewingStopped = true;
-    // Idempotent on unknown session, matching `kill()`.
-  }
-
   async diagnostics(): Promise<RmuxDiagnostics> {
     await this.gate("diagnostics");
     return { ...this.diagnosticsValue, capabilities: [...this.diagnosticsValue.capabilities] };
   }
 
-  // --- Test-only controls --------------------------------------------------
-
-  /** Push raw output bytes to a live pane's active recovery subscribers, with
-   *  strictly increasing `sequence` within the current `epoch`. */
   injectOutput(paneId: string, bytes: Uint8Array): void {
     const session = this.requireSessionByPane(paneId);
     session.keyframe = concatCapped(session.keyframe, bytes, session.historyLimitBytes);
@@ -332,9 +252,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     for (const queue of session.subscribers) queue.push(event);
   }
 
-  /** Force a new rebase (resize/clear-history/lag/process-generation-change
-   *  analogue). Bumps `epoch`, resets sequence numbering, and invalidates any
-   *  bytes events from the previous epoch. */
   triggerRebase(
     sessionId: string,
     overrides: { cols?: number; rows?: number; alternate?: boolean; keyframe?: Uint8Array; reason?: string } = {},
@@ -350,16 +267,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     for (const queue of session.subscribers) queue.push(event);
   }
 
-  /** Simulate the daemon fencing this owner's lease (a competing owner adopted
-   *  the same stable session). Subsequent `input`/`resize` reject with
-   *  `RmuxLeaseLostError`; `kill`/`list` are unaffected. */
-  loseLease(sessionId: string): void {
-    const session = this.requireSessionById(sessionId);
-    session.leaseLost = true;
-    for (const queue of session.subscribers) queue.push({ type: "lease-lost" });
-  }
-
-  /** Simulate the shell process exiting on its own (not an explicit kill). */
   exitSession(sessionId: string, code?: number): void {
     const session = this.requireSessionById(sessionId);
     session.alive = false;
@@ -370,9 +277,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     session.subscribers.clear();
   }
 
-  /** Override `list()` output entirely, independent of internally tracked
-   *  sessions. Pass `null` to revert to reflecting real internal state. Used
-   *  to simulate orphaned/untracked daemon inventory for reconciler tests. */
   setInventory(entries: RmuxInventoryEntry[] | null): void {
     this.inventoryOverride = entries ? entries.map((entry) => ({ ...entry, tags: [...entry.tags] })) : null;
   }
@@ -381,8 +285,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     this.diagnosticsValue = { ...this.diagnosticsValue, ...value };
   }
 
-  /** Make the given operation fail `times` times (default: forever) with
-   *  `error`. Each failing call consumes one occurrence. */
   configureFailure(op: RmuxDriverOp, error: Error, times = Number.POSITIVE_INFINITY): void {
     this.failures.set(op, { error, remaining: times });
   }
@@ -391,8 +293,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     this.failures.delete(op);
   }
 
-  /** Add an artificial delay (via the injectable `sleep` dep) before the given
-   *  operation resolves/rejects. */
   configureDelay(op: RmuxDriverOp, ms: number): void {
     this.delays.set(op, ms);
   }
@@ -401,27 +301,24 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     this.delays.delete(op);
   }
 
-  /** Simulate the whole driver/sidecar process crashing: every future call
-   *  rejects, and every active recovery subscription is torn down with the
-   *  same error. */
   crashDriver(error?: Error): void {
     this.crashed = true;
     if (error) this.crashError = error;
-    for (const session of this.sessionsById.values()) {
-      for (const queue of session.subscribers) queue.close(this.crashError);
+    for (const session of [...this.sessionsById.values()]) {
+      session.alive = false;
+      for (const queue of session.subscribers) {
+        // Prefer a clean exit event so viewers/reconciler match process-owned
+        // sidecar death (recover stream ends with exit, inventory goes empty).
+        queue.push({ type: "exit" });
+        queue.close();
+      }
       session.subscribers.clear();
+      this.sessionsByPane.delete(session.paneId);
+      this.sessionsByName.delete(session.name);
     }
+    this.sessionsById.clear();
+    this.inventoryOverride = [];
   }
-
-  isRenewingStopped(sessionId: string): boolean {
-    return this.requireSessionById(sessionId).renewingStopped;
-  }
-
-  isLeaseLost(sessionId: string): boolean {
-    return this.requireSessionById(sessionId).leaseLost;
-  }
-
-  // --- internals -------------------------------------------------------
 
   private async gate(op: RmuxDriverOp): Promise<void> {
     const delay = this.delays.get(op);
@@ -439,17 +336,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     return { sessionId: session.sessionId, paneId: session.paneId, name: session.name, tags: [...session.tags] };
   }
 
-  private findSession(identity: RmuxSessionIdentity): InternalSession | undefined {
-    if ("sessionId" in identity) return this.sessionsById.get(identity.sessionId);
-    const id = this.sessionsByName.get(identity.name);
-    return id ? this.sessionsById.get(id) : undefined;
-  }
-
-  private matchesIdentity(entry: RmuxInventoryEntry, identity: RmuxSessionIdentity): boolean {
-    if ("sessionId" in identity) return entry.sessionId === identity.sessionId;
-    return entry.name === identity.name;
-  }
-
   private requireSessionByPane(paneId: string): InternalSession {
     const sessionId = this.sessionsByPane.get(paneId);
     const session = sessionId ? this.sessionsById.get(sessionId) : undefined;
@@ -461,11 +347,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     const session = this.sessionsById.get(sessionId);
     if (!session) throw new RmuxSessionNotFoundError(sessionId);
     return session;
-  }
-
-  private assertMutable(session: InternalSession): void {
-    if (session.leaseLost) throw new RmuxLeaseLostError(session.sessionId);
-    if (!session.alive) throw new RmuxPaneNotFoundError(session.paneId);
   }
 
   private buildRebaseEvent(session: InternalSession, reason?: string): RmuxRecoveryEvent {
@@ -480,8 +361,4 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
       ...(reason !== undefined ? { reason } : {}),
     };
   }
-}
-
-function identityLabel(identity: RmuxSessionIdentity): string {
-  return "sessionId" in identity ? identity.sessionId : identity.name;
 }

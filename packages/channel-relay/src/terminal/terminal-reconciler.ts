@@ -1,9 +1,9 @@
-// Startup / periodic terminal reconciliation — spec §12.4.
+// Startup / periodic terminal reconciliation — process-owned mode.
 //
-// Mark-and-sweep over (registry × catalog × RMUX inventory). Destructive GC
-// (orphan kill, absent-record delete) is fail-closed when any of the three
-// sources is incomplete. Quarantine of inventory-only sessions reuses durable
-// `creating` (createdAt = first-seen) — never a fourth resource state.
+// Mark-and-sweep over (registry × catalog × RMUX inventory). Never adopts
+// across process boundaries: leftover creating/live records are reaped/killed;
+// inventory-only orphans are quarantined then killed after grace.
+// Fail-closed when catalog/inventory/registry is incomplete.
 import type {
   SessionResourceCatalog,
   SessionResourceDescriptor,
@@ -25,7 +25,7 @@ export type ReconcileDiagnostic =
   | { type: "stable-id-mismatch"; terminalId: string; expected?: string; actual: string }
   | { type: "orphan-quarantined"; terminalId: string; sessionId: string }
   | { type: "orphan-killed"; sessionId: string }
-  | { type: "adopted"; terminalId: string; sessionId: string }
+  | { type: "stale-reaped"; terminalId: string; sessionId?: string }
   | { type: "removed-absent"; terminalId: string }
   | { type: "reaping"; terminalId: string; reason: TerminalReapReason };
 
@@ -44,8 +44,8 @@ export interface TerminalReconcileHost {
   config: RelayTerminalConfig;
   clock: TerminalRuntimeClock;
   withTerminalLock<T>(terminalId: string, fn: () => Promise<T>): Promise<T>;
-  /** Install/replace the in-memory live handle after a successful adopt. */
-  onAdopted(rec: TerminalRecordV1, paneId: string, sessionId: string): void;
+  /** True when this process already owns a live in-memory handle for the terminal. */
+  hasLiveHandle(terminalId: string): boolean;
   /** Drop in-memory handle and fan out exit to current attachments. */
   onResourceAbsent(terminalId: string, generation: string, reason: string): void;
   /** Fence mutations after observing the resource should no longer be live. */
@@ -56,16 +56,13 @@ export interface TerminalReconcileHost {
 export interface TerminalReconcilerOptions {
   host: TerminalReconcileHost;
   onDiagnostic?: (d: ReconcileDiagnostic) => void;
-  /** Injectable timer for periodic passes; defaults to global setInterval. */
   setIntervalFn?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearIntervalFn?: (id: ReturnType<typeof setInterval>) => void;
 }
 
 const NAME_PREFIX = "xacpx-relay-";
 
-/** Parse RMUX tags written at create time (spec §10.3). Returns null if the
- *  required relay vocabulary is incomplete — caller must not forge a record
- *  and must not kill based on incomplete tags. */
+/** Parse RMUX tags written at create time. Incomplete tags → do not forge or kill. */
 export function parseRelayTerminalTags(
   tags: readonly string[],
 ): ParsedRelayTags | null {
@@ -104,7 +101,6 @@ export class TerminalReconciler {
   private readonly clearIntervalFn: (id: ReturnType<typeof setInterval>) => void;
 
   private pass = 0;
-  /** sessionId → pass indices where an inventory-only orphan was observed. */
   private readonly orphanPasses = new Map<string, { first: number; last: number }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
@@ -118,7 +114,6 @@ export class TerminalReconciler {
       options.clearIntervalFn ?? ((id) => clearInterval(id));
   }
 
-  /** One mark-and-sweep pass. Safe to call from startup before hub connect. */
   async runOnce(): Promise<void> {
     if (this.running) {
       await this.running;
@@ -136,7 +131,6 @@ export class TerminalReconciler {
     const timer = this.setIntervalFn(() => {
       void this.runOnce();
     }, ms);
-    // Node: avoid keeping the process alive solely for reconcile.
     if (typeof timer === "object" && timer && "unref" in timer) {
       (timer as NodeJS.Timeout).unref?.();
     }
@@ -157,8 +151,6 @@ export class TerminalReconciler {
     const snap = this.host.registry.getSnapshot();
     if (snap.inventoryUncertain) {
       this.onDiagnostic({ type: "inventory-uncertain" });
-      // Fail closed: no destructive GC this round.
-      await this.adoptKnownCreatingOnly(snap.installationId, null, new Map());
       return;
     }
 
@@ -189,10 +181,8 @@ export class TerminalReconciler {
     const inventoryByName = new Map(inventory.map((e) => [e.name, e]));
     const matchedSessionIds = new Set<string>();
 
-    // --- Registry-driven matrix ------------------------------------------------
     for (const rec of Object.values(snap.terminals)) {
       await this.host.withTerminalLock(rec.terminalId, async () => {
-        // Re-read under lock (spec §12.4): scan results are not delete authority.
         const currentSnap = this.host.registry.getSnapshot();
         const current = currentSnap.terminals[rec.terminalId];
         if (!current) return;
@@ -223,7 +213,7 @@ export class TerminalReconciler {
           Number.isFinite(lastInput) && this.host.clock.now() - lastInput >= idleMs;
 
         if (current.state === "creating") {
-          await this.handleCreating(current, inv, logical);
+          await this.handleCreating(current, inv);
           return;
         }
 
@@ -238,46 +228,19 @@ export class TerminalReconciler {
       });
     }
 
-    // --- Inventory-only orphans (quarantine) ---------------------------------
     for (const entry of inventory) {
       if (matchedSessionIds.has(entry.sessionId)) continue;
       await this.handleInventoryOnly(entry, snap.installationId, catalogByLogical);
     }
   }
 
-  private async adoptKnownCreatingOnly(
-    installationId: string,
-    inventory: RmuxInventoryEntry[] | null,
-    catalogByLogical: Map<string, SessionResourceDescriptor>,
-  ): Promise<void> {
-    // Non-destructive: only try to promote creating→live when inventory is known.
-    if (!inventory) return;
-    const byName = new Map(inventory.map((e) => [e.name, e]));
-    const snap = this.host.registry.getSnapshot();
-    for (const rec of Object.values(snap.terminals)) {
-      if (rec.state !== "creating") continue;
-      const inv = byName.get(rec.rmuxSessionName);
-      const logical = catalogByLogical.get(rec.logicalSessionId);
-      if (inv && logical && !logical.archived) {
-        await this.host.withTerminalLock(rec.terminalId, async () => {
-          await this.promoteCreatingToLive(rec, inv);
-        });
-      }
-      void installationId;
-    }
-  }
-
   private async handleCreating(
     rec: TerminalRecordV1,
     inv: RmuxInventoryEntry | undefined,
-    logical: SessionResourceDescriptor | undefined,
   ): Promise<void> {
-    if (inv && logical && !logical.archived) {
-      await this.promoteCreatingToLive(rec, inv);
-      return;
-    }
+    // Process-owned: never promote creating→live. Crash-window / previous-process
+    // creating records and inventory quarantine share this state — age then kill.
     if (!inv) {
-      // Stale create intent — safe delete (no RMUX side effect).
       const snap = this.host.registry.getSnapshot();
       if (snap.terminals[rec.terminalId]?.state === "creating") {
         await this.host.registry.remove(snap.revision, rec.terminalId);
@@ -285,11 +248,8 @@ export class TerminalReconciler {
       }
       return;
     }
-    // RMUX exists but logical missing/archived — quarantine aging toward reap.
-    if (!logical || logical.archived) {
-      this.touchOrphan(inv.sessionId);
-      await this.maybeKillQuarantine(rec, inv);
-    }
+    this.touchOrphan(inv.sessionId);
+    await this.maybeKillQuarantine(rec, inv);
   }
 
   private async handleLive(
@@ -299,7 +259,6 @@ export class TerminalReconciler {
     idleExpired: boolean,
   ): Promise<void> {
     if (!inv) {
-      // Registry live but RMUX gone — exit + delete.
       this.host.onResourceAbsent(rec.terminalId, rec.generation, "absent");
       const snap = this.host.registry.getSnapshot();
       if (snap.terminals[rec.terminalId]) {
@@ -316,7 +275,6 @@ export class TerminalReconciler {
         expected: rec.rmuxSessionId,
         actual: inv.sessionId,
       });
-      // Do not guess-kill.
       return;
     }
 
@@ -328,13 +286,16 @@ export class TerminalReconciler {
       });
     }
 
-    // Ensure lease via adopt (idempotent for already-owned).
-    try {
-      const handle = await this.host.driver.adopt({ sessionId: inv.sessionId });
-      this.host.onAdopted(rec, handle.paneId, handle.sessionId);
-      this.onDiagnostic({ type: "adopted", terminalId: rec.terminalId, sessionId: handle.sessionId });
-    } catch {
-      // Leave for next pass / owner TTL.
+    // No in-process handle ⇒ leftover from a previous process / sidecar crash.
+    // Process-owned policy: kill, never adopt.
+    if (!this.host.hasLiveHandle(rec.terminalId)) {
+      await this.beginReap(rec, inv, "orphan");
+      this.onDiagnostic({
+        type: "stale-reaped",
+        terminalId: rec.terminalId,
+        sessionId: inv.sessionId,
+      });
+      return;
     }
 
     if (!logical || logical.archived || idleExpired) {
@@ -343,24 +304,33 @@ export class TerminalReconciler {
         : logical?.archived
           ? "archive"
           : "orphan";
-      const snap = this.host.registry.getSnapshot();
-      const current = snap.terminals[rec.terminalId];
-      if (!current || current.state !== "live") return;
-      await this.host.registry.markReaping(snap.revision, rec.terminalId, reason);
-      this.host.onFence(rec.terminalId);
-      this.onDiagnostic({ type: "reaping", terminalId: rec.terminalId, reason });
-      await this.handleReaping(
-        { ...current, state: "reaping", reapReason: reason },
-        inv,
-      );
+      await this.beginReap(rec, inv, reason);
     }
+  }
+
+  private async beginReap(
+    rec: TerminalRecordV1,
+    inv: RmuxInventoryEntry | undefined,
+    reason: TerminalReapReason,
+  ): Promise<void> {
+    const snap = this.host.registry.getSnapshot();
+    const current = snap.terminals[rec.terminalId];
+    if (!current) return;
+    if (current.state !== "reaping") {
+      await this.host.registry.markReaping(snap.revision, rec.terminalId, reason);
+    }
+    this.host.onFence(rec.terminalId);
+    this.onDiagnostic({ type: "reaping", terminalId: rec.terminalId, reason });
+    await this.handleReaping(
+      { ...current, state: "reaping", reapReason: reason },
+      inv,
+    );
   }
 
   private async handleReaping(
     rec: TerminalRecordV1,
     inv: RmuxInventoryEntry | undefined,
   ): Promise<void> {
-    // Re-check under lock that we are still reaping with same generation/ids.
     const snap = this.host.registry.getSnapshot();
     const current = snap.terminals[rec.terminalId];
     if (!current || current.state !== "reaping") return;
@@ -392,7 +362,7 @@ export class TerminalReconciler {
 
     const sessionId = current.rmuxSessionId ?? inv.sessionId;
     const killed = await this.host.killWithTimeout(sessionId);
-    if (!killed) return; // cleanup-pending; retry next pass
+    if (!killed) return;
 
     const after = this.host.registry.getSnapshot();
     if (after.terminals[rec.terminalId]?.state === "reaping") {
@@ -417,107 +387,68 @@ export class TerminalReconciler {
     }
 
     const parsed = parseRelayTerminalTags(entry.tags);
-    if (!parsed) {
-      this.onDiagnostic({
-        type: "malformed-tags",
-        sessionId: entry.sessionId,
-        reason: "incomplete relay tags",
-      });
-      return;
-    }
-    if (parsed.ownerId !== installationId) {
-      // Not our installation — ignore.
+    // Without complete tags we still may kill by name prefix + owner short id
+    // embedded in the name when aged — but only when name matches our install.
+    const expectedPrefix = `${NAME_PREFIX}${installationId.slice(0, 8)}-`;
+    if (!entry.name.startsWith(expectedPrefix)) {
       return;
     }
 
     this.touchOrphan(entry.sessionId);
 
-    const existing = this.host.registry.getSnapshot().terminals[parsed.terminalId];
-    if (existing) {
-      // Registry already knows this terminal — matrix handler owns it.
-      return;
-    }
+    if (parsed) {
+      if (parsed.ownerId !== installationId) return;
+      const existing = this.host.registry.getSnapshot().terminals[parsed.terminalId];
+      if (existing) return;
 
-    // Ambiguous: another registry record claims same logical with different terminal?
-    const snap = this.host.registry.getSnapshot();
-    const conflict = Object.values(snap.terminals).find(
-      (t) =>
-        t.logicalSessionId === parsed.logicalSessionId &&
-        t.terminalId !== parsed.terminalId,
-    );
-    if (conflict) {
+      const snap = this.host.registry.getSnapshot();
+      const conflict = Object.values(snap.terminals).find(
+        (t) =>
+          t.logicalSessionId === parsed.logicalSessionId &&
+          t.terminalId !== parsed.terminalId,
+      );
+      if (conflict) {
+        this.onDiagnostic({
+          type: "ambiguous-tags",
+          sessionId: entry.sessionId,
+          reason: `logical ${parsed.logicalSessionId} already bound to ${conflict.terminalId}`,
+        });
+        return;
+      }
+
+      const logical = catalogByLogical.get(parsed.logicalSessionId);
+      const firstSeenIso = new Date(this.host.clock.now()).toISOString();
+      await this.host.registry.upsertCreating(snap.revision, {
+        terminalId: parsed.terminalId,
+        logicalSessionId: parsed.logicalSessionId,
+        internalAliasSnapshot: logical?.internalAlias ?? parsed.logicalSessionId,
+        rmuxSessionName: entry.name,
+        generation: parsed.generation,
+        createdAt: firstSeenIso,
+        lastInputAt: firstSeenIso,
+      });
       this.onDiagnostic({
-        type: "ambiguous-tags",
+        type: "orphan-quarantined",
+        terminalId: parsed.terminalId,
         sessionId: entry.sessionId,
-        reason: `logical ${parsed.logicalSessionId} already bound to ${conflict.terminalId}`,
       });
-      return;
-    }
 
-    const logical = catalogByLogical.get(parsed.logicalSessionId);
-    const firstSeenIso = new Date(this.host.clock.now()).toISOString();
-
-    // Quarantine = durable creating with createdAt as first-seen (spec §12.4).
-    const { revision } = await this.host.registry.upsertCreating(snap.revision, {
-      terminalId: parsed.terminalId,
-      logicalSessionId: parsed.logicalSessionId,
-      internalAliasSnapshot: logical?.internalAlias ?? parsed.logicalSessionId,
-      rmuxSessionName: entry.name,
-      generation: parsed.generation,
-      createdAt: firstSeenIso,
-      lastInputAt: firstSeenIso,
-    });
-    void revision;
-    this.onDiagnostic({
-      type: "orphan-quarantined",
-      terminalId: parsed.terminalId,
-      sessionId: entry.sessionId,
-    });
-
-    const quarantined = this.host.registry.getSnapshot().terminals[parsed.terminalId];
-    if (!quarantined) return;
-
-    if (logical && !logical.archived) {
+      const quarantined = this.host.registry.getSnapshot().terminals[parsed.terminalId];
+      if (!quarantined) return;
       await this.host.withTerminalLock(parsed.terminalId, async () => {
-        await this.promoteCreatingToLive(quarantined, entry);
+        await this.maybeKillQuarantine(quarantined, entry);
       });
       return;
     }
 
-    await this.host.withTerminalLock(parsed.terminalId, async () => {
-      await this.maybeKillQuarantine(quarantined, entry);
-    });
+    // Name matches our install but tags incomplete — age then kill by sessionId.
+    await this.maybeKillNamelessOrphan(entry);
   }
 
   private touchOrphan(sessionId: string): void {
     const seen = this.orphanPasses.get(sessionId);
     if (seen) seen.last = this.pass;
     else this.orphanPasses.set(sessionId, { first: this.pass, last: this.pass });
-  }
-
-  private async promoteCreatingToLive(
-    rec: TerminalRecordV1,
-    inv: RmuxInventoryEntry,
-  ): Promise<void> {
-    try {
-      const handle = await this.host.driver.adopt({ sessionId: inv.sessionId });
-      const snap = this.host.registry.getSnapshot();
-      const current = snap.terminals[rec.terminalId];
-      if (!current || current.state !== "creating") return;
-      if (current.generation !== rec.generation) return;
-      await this.host.registry.markLive(snap.revision, rec.terminalId, {
-        rmuxSessionId: handle.sessionId,
-      });
-      const live = this.host.registry.getSnapshot().terminals[rec.terminalId];
-      if (live) this.host.onAdopted(live, handle.paneId, handle.sessionId);
-      this.onDiagnostic({
-        type: "adopted",
-        terminalId: rec.terminalId,
-        sessionId: handle.sessionId,
-      });
-    } catch {
-      // adopt failed — leave creating for next pass or grace kill
-    }
   }
 
   private async maybeKillQuarantine(
@@ -536,12 +467,11 @@ export class TerminalReconciler {
     const snap = this.host.registry.getSnapshot();
     const current = snap.terminals[rec.terminalId];
     if (!current) return;
-    if (current.state === "live") return; // adopted meanwhile
+    if (current.state === "live" && this.host.hasLiveHandle(rec.terminalId)) return;
     if (current.state !== "reaping") {
       await this.host.registry.markReaping(snap.revision, rec.terminalId, "orphan");
     }
 
-    // Re-check under the already-held terminal lock before kill.
     const after = this.host.registry.getSnapshot();
     const still = after.terminals[rec.terminalId];
     if (!still || still.state !== "reaping" || still.generation !== rec.generation) return;
@@ -554,6 +484,30 @@ export class TerminalReconciler {
     }
     this.orphanPasses.delete(inv.sessionId);
     this.onDiagnostic({ type: "orphan-killed", sessionId: inv.sessionId });
+  }
+
+  private async maybeKillNamelessOrphan(entry: RmuxInventoryEntry): Promise<void> {
+    const seen = this.orphanPasses.get(entry.sessionId);
+    const rounds = seen ? seen.last - seen.first + 1 : 1;
+    const graceMs = this.host.config.orphanGraceSeconds * 1000;
+    // Without a registry first-seen timestamp, require ≥2 passes and use
+    // reconcile interval * rounds as a coarse age proxy.
+    const aged =
+      rounds >= 2 &&
+      rounds * this.host.config.reconcileIntervalSeconds * 1000 >= graceMs;
+    if (!aged) {
+      this.onDiagnostic({
+        type: "malformed-tags",
+        sessionId: entry.sessionId,
+        reason: "incomplete relay tags; waiting orphan grace before kill",
+      });
+      return;
+    }
+    const killed = await this.host.killWithTimeout(entry.sessionId);
+    if (killed) {
+      this.orphanPasses.delete(entry.sessionId);
+      this.onDiagnostic({ type: "orphan-killed", sessionId: entry.sessionId });
+    }
   }
 }
 

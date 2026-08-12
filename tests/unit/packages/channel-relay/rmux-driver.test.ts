@@ -3,10 +3,8 @@ import { expect, test } from "bun:test";
 import { InMemoryRmuxDriver } from "../../../../packages/channel-relay/src/terminal/in-memory-rmux-driver";
 import {
   RmuxDriverCrashedError,
-  RmuxLeaseLostError,
   RmuxPaneNotFoundError,
   RmuxSessionNameConflictError,
-  RmuxSessionNotFoundError,
   type RmuxRecoveryEvent,
 } from "../../../../packages/channel-relay/src/terminal/rmux-driver";
 
@@ -32,10 +30,6 @@ async function collect<T>(iterable: AsyncIterable<T>, count: number): Promise<T[
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// create / adopt / list / kill
-// ---------------------------------------------------------------------------
-
 test("create returns stable session/pane identity and tags", async () => {
   const driver = new InMemoryRmuxDriver();
   const handle = await driver.create(baseCreateInput());
@@ -57,36 +51,6 @@ test("create rejects a reused session name", async () => {
   const driver = new InMemoryRmuxDriver();
   await driver.create(baseCreateInput());
   await expect(driver.create(baseCreateInput())).rejects.toBeInstanceOf(RmuxSessionNameConflictError);
-});
-
-test("adopt resolves an existing session by sessionId or by name", async () => {
-  const driver = new InMemoryRmuxDriver();
-  const handle = await driver.create(baseCreateInput());
-
-  const byId = await driver.adopt({ sessionId: handle.sessionId });
-  expect(byId).toEqual(handle);
-
-  const byName = await driver.adopt({ name: handle.name });
-  expect(byName).toEqual(handle);
-});
-
-test("adopt rejects an unknown identity", async () => {
-  const driver = new InMemoryRmuxDriver();
-  await expect(driver.adopt({ sessionId: "does-not-exist" })).rejects.toBeInstanceOf(RmuxSessionNotFoundError);
-});
-
-test("adopt can materialize a session known only from inventory (reconciler use-case)", async () => {
-  const driver = new InMemoryRmuxDriver();
-  driver.setInventory([
-    { sessionId: "orphan-sid", paneId: "orphan-pane", name: "xacpx-relay-abc123-orphan", tags: ["xacpx:relay"] },
-  ]);
-
-  const handle = await driver.adopt({ name: "xacpx-relay-abc123-orphan" });
-  expect(handle.sessionId).toBe("orphan-sid");
-  expect(handle.paneId).toBe("orphan-pane");
-
-  // Now mutable like any other adopted session.
-  await driver.input(handle.paneId, new TextEncoder().encode("echo hi\n"));
 });
 
 test("list reflects created sessions and setInventory overrides/reverts it", async () => {
@@ -114,8 +78,6 @@ test("kill is idempotent for an unknown session and removes a known one from lis
   const handle = await driver.create(baseCreateInput());
   await driver.kill(handle.sessionId);
   expect(await driver.list()).toHaveLength(0);
-
-  // Second kill of the same (now-gone) session is still not an error.
   await expect(driver.kill(handle.sessionId)).resolves.toBeUndefined();
 });
 
@@ -136,10 +98,6 @@ test("kill ends an active recovery stream for that session", async () => {
   expect(events[0]?.type).toBe("rebase");
 });
 
-// ---------------------------------------------------------------------------
-// input / resize / lease fencing
-// ---------------------------------------------------------------------------
-
 test("input and resize succeed against a live pane", async () => {
   const driver = new InMemoryRmuxDriver();
   const handle = await driver.create(baseCreateInput());
@@ -153,34 +111,6 @@ test("unknown pane rejects input/resize/recover with RmuxPaneNotFoundError", asy
   await expect(driver.resize("nope", 80, 24)).rejects.toBeInstanceOf(RmuxPaneNotFoundError);
   await expect(collect(driver.recover("nope"), 1)).rejects.toBeInstanceOf(RmuxPaneNotFoundError);
 });
-
-test("loseLease fences input/resize but does not remove the session from list", async () => {
-  const driver = new InMemoryRmuxDriver();
-  const handle = await driver.create(baseCreateInput());
-
-  driver.loseLease(handle.sessionId);
-
-  await expect(driver.input(handle.paneId, new Uint8Array())).rejects.toBeInstanceOf(RmuxLeaseLostError);
-  await expect(driver.resize(handle.paneId, 80, 24)).rejects.toBeInstanceOf(RmuxLeaseLostError);
-  expect(await driver.list()).toHaveLength(1);
-});
-
-test("stopRenewing is idempotent and observable via isRenewingStopped", async () => {
-  const driver = new InMemoryRmuxDriver();
-  const handle = await driver.create(baseCreateInput());
-  expect(driver.isRenewingStopped(handle.sessionId)).toBe(false);
-
-  await driver.stopRenewing(handle.sessionId);
-  expect(driver.isRenewingStopped(handle.sessionId)).toBe(true);
-
-  // stopRenewing does not kill or fence mutation.
-  await expect(driver.input(handle.paneId, new Uint8Array())).resolves.toBeUndefined();
-  await expect(driver.stopRenewing("unknown-session")).resolves.toBeUndefined();
-});
-
-// ---------------------------------------------------------------------------
-// recovery ordering: rebase first, then bytes, then a fresh rebase
-// ---------------------------------------------------------------------------
 
 test("recover yields a rebase first, then bytes with increasing sequence in the same epoch", async () => {
   const driver = new InMemoryRmuxDriver();
@@ -221,10 +151,10 @@ test("triggerRebase bumps the epoch and restarts sequence numbering", async () =
   const handle = await driver.create(baseCreateInput());
 
   const iterator = driver.recover(handle.paneId)[Symbol.asyncIterator]();
-  await iterator.next(); // initial rebase
+  await iterator.next();
 
   driver.injectOutput(handle.paneId, new TextEncoder().encode("a"));
-  await iterator.next(); // bytes epoch=1 seq=0
+  await iterator.next();
 
   driver.triggerRebase(handle.sessionId, { cols: 100, rows: 40, alternate: true, reason: "resize" });
   const rebased = (await iterator.next()).value as RmuxRecoveryEvent;
@@ -233,20 +163,6 @@ test("triggerRebase bumps the epoch and restarts sequence numbering", async () =
   driver.injectOutput(handle.paneId, new TextEncoder().encode("b"));
   const bytesAfterRebase = (await iterator.next()).value as RmuxRecoveryEvent;
   expect(bytesAfterRebase).toMatchObject({ type: "bytes", epoch: 2, sequence: 0 });
-
-  await iterator.return?.();
-});
-
-test("loseLease delivers a lease-lost event to an active recovery stream", async () => {
-  const driver = new InMemoryRmuxDriver();
-  const handle = await driver.create(baseCreateInput());
-
-  const iterator = driver.recover(handle.paneId)[Symbol.asyncIterator]();
-  await iterator.next(); // rebase
-
-  driver.loseLease(handle.sessionId);
-  const event = (await iterator.next()).value as RmuxRecoveryEvent;
-  expect(event.type).toBe("lease-lost");
 
   await iterator.return?.();
 });
@@ -274,10 +190,6 @@ test("a new recover() subscription after natural exit observes the exit immediat
   const events = await collect(driver.recover(handle.paneId), 2);
   expect(events.map((e) => e.type)).toEqual(["rebase", "exit"]);
 });
-
-// ---------------------------------------------------------------------------
-// failure / delay / crash injection
-// ---------------------------------------------------------------------------
 
 test("configureFailure makes an operation reject a bounded number of times", async () => {
   const driver = new InMemoryRmuxDriver();
@@ -330,22 +242,17 @@ test("crashDriver rejects future calls and tears down active recovery streams", 
     }
   })();
 
-  // Let the recovery generator register its subscription before crashing.
   await Promise.resolve();
   await Promise.resolve();
 
   driver.crashDriver();
   await drain;
 
-  expect(events.map((e) => e.type)).toEqual(["rebase"]);
-  expect(sawError).toBeInstanceOf(RmuxDriverCrashedError);
+  expect(events.map((e) => e.type)).toEqual(["rebase", "exit"]);
+  expect(sawError).toBeUndefined();
   await expect(driver.input(handle.paneId, new Uint8Array())).rejects.toBeInstanceOf(RmuxDriverCrashedError);
   await expect(driver.list()).rejects.toBeInstanceOf(RmuxDriverCrashedError);
 });
-
-// ---------------------------------------------------------------------------
-// diagnostics
-// ---------------------------------------------------------------------------
 
 test("diagnostics reports a version/capability stub and is overridable", async () => {
   const driver = new InMemoryRmuxDriver();

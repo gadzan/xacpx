@@ -95,7 +95,7 @@ interface Harness {
   catalog: FakeCatalog;
   diagnostics: ReconcileDiagnostic[];
   clock: { nowMs: number; now: () => number };
-  adopted: Array<{ terminalId: string; sessionId: string; paneId: string }>;
+  liveHandles: Set<string>;
   absent: Array<{ terminalId: string; generation: string; reason: string }>;
   fenced: string[];
   installationId: string;
@@ -114,7 +114,7 @@ async function makeHarness(
   const catalog = opts.catalog ?? new FakeCatalog();
   const diagnostics: ReconcileDiagnostic[] = [];
   const clock = { nowMs: 1_000_000, now: () => clock.nowMs };
-  const adopted: Harness["adopted"] = [];
+  const liveHandles = new Set<string>();
   const absent: Harness["absent"] = [];
   const fenced: string[] = [];
   const config = baseConfig(opts.config);
@@ -126,10 +126,9 @@ async function makeHarness(
     config,
     clock,
     withTerminalLock: async (_id, fn) => fn(),
-    onAdopted: (rec, paneId, sessionId) => {
-      adopted.push({ terminalId: rec.terminalId, sessionId, paneId });
-    },
+    hasLiveHandle: (terminalId) => liveHandles.has(terminalId),
     onResourceAbsent: (terminalId, generation, reason) => {
+      liveHandles.delete(terminalId);
       absent.push({ terminalId, generation, reason });
     },
     onFence: (terminalId) => {
@@ -157,7 +156,7 @@ async function makeHarness(
     catalog,
     diagnostics,
     clock,
-    adopted,
+    liveHandles,
     absent,
     fenced,
     installationId: registry.getSnapshot().installationId,
@@ -204,12 +203,12 @@ test("parseRelayTerminalTags requires the full relay vocabulary", () => {
   expect(parseRelayTerminalTags(["xacpx:relay", "owner:o"])).toBeNull();
 });
 
-test("creating + RMUX present + active logical promotes to live via adopt", async () => {
-  const h = await makeHarness();
+test("creating + RMUX present waits orphan grace then kills (never adopt)", async () => {
+  const h = await makeHarness({ config: { orphanGraceSeconds: 60 } });
   const terminalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const generation = "gen-1";
   const name = rmuxName(h.installationId, terminalId);
-  const created = await h.driver.create({
+  await h.driver.create({
     name,
     cwd: "/tmp/ws",
     cols: 80,
@@ -219,6 +218,7 @@ test("creating + RMUX present + active logical promotes to live via adopt", asyn
     ownerLeaseTtlSeconds: 90,
   });
 
+  const past = new Date(h.clock.nowMs - 61_000).toISOString();
   const snap = h.registry.getSnapshot();
   await h.registry.upsertCreating(snap.revision, {
     terminalId,
@@ -226,14 +226,16 @@ test("creating + RMUX present + active logical promotes to live via adopt", asyn
     internalAliasSnapshot: "demo",
     rmuxSessionName: name,
     generation,
+    createdAt: past,
+    lastInputAt: past,
   });
 
   await h.reconciler.runOnce();
-
-  const rec = h.registry.getSnapshot().terminals[terminalId];
-  expect(rec?.state).toBe("live");
-  expect(rec?.rmuxSessionId).toBe(created.sessionId);
-  expect(h.adopted.some((a) => a.terminalId === terminalId)).toBe(true);
+  expect(await h.driver.list()).toHaveLength(1);
+  await h.reconciler.runOnce();
+  expect(h.registry.getSnapshot().terminals[terminalId]).toBeUndefined();
+  expect(await h.driver.list()).toHaveLength(0);
+  expect(h.diagnostics.some((d) => d.type === "orphan-killed")).toBe(true);
 });
 
 test("creating + RMUX absent deletes stale intent", async () => {
@@ -253,8 +255,8 @@ test("creating + RMUX absent deletes stale intent", async () => {
   expect(h.diagnostics.some((d) => d.type === "removed-absent")).toBe(true);
 });
 
-test("live + missing logical session is reaped and killed", async () => {
-  const h = await makeHarness({ catalog: new FakeCatalog([]) });
+test("live without in-process handle is stale-reaped (no adopt)", async () => {
+  const h = await makeHarness();
   const terminalId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const generation = "gen-2";
   const name = rmuxName(h.installationId, terminalId);
@@ -278,6 +280,42 @@ test("live + missing logical session is reaped and killed", async () => {
   });
   snap = h.registry.getSnapshot();
   await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+
+  // No liveHandles entry → previous-process leftover.
+  await h.reconciler.runOnce();
+
+  expect(h.registry.getSnapshot().terminals[terminalId]).toBeUndefined();
+  expect(await h.driver.list()).toHaveLength(0);
+  expect(h.diagnostics.some((d) => d.type === "stale-reaped")).toBe(true);
+  expect(h.fenced).toContain(terminalId);
+});
+
+test("live with in-process handle + missing logical is reaped and killed", async () => {
+  const h = await makeHarness({ catalog: new FakeCatalog([]) });
+  const terminalId = "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1";
+  const generation = "gen-2b";
+  const name = rmuxName(h.installationId, terminalId);
+  const created = await h.driver.create({
+    name,
+    cwd: "/tmp",
+    cols: 80,
+    rows: 24,
+    historyLimit: 100,
+    tags: tagsFor(h.installationId, descriptor().logicalSessionId, terminalId, generation),
+    ownerLeaseTtlSeconds: 90,
+  });
+
+  let snap = h.registry.getSnapshot();
+  await h.registry.upsertCreating(snap.revision, {
+    terminalId,
+    logicalSessionId: descriptor().logicalSessionId,
+    internalAliasSnapshot: "demo",
+    rmuxSessionName: name,
+    generation,
+  });
+  snap = h.registry.getSnapshot();
+  await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  h.liveHandles.add(terminalId);
 
   await h.reconciler.runOnce();
 
@@ -308,8 +346,10 @@ test("live + RMUX absent emits exit and removes record", async () => {
   expect(h.absent.some((a) => a.terminalId === terminalId)).toBe(true);
 });
 
-test("inventory-only complete tags quarantine as creating then adopt when logical active", async () => {
-  const h = await makeHarness();
+test("inventory-only complete tags quarantine then kill after grace (never adopt)", async () => {
+  const h = await makeHarness({
+    config: { orphanGraceSeconds: 60 },
+  });
   const terminalId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const generation = "gen-4";
   const name = rmuxName(h.installationId, terminalId);
@@ -324,12 +364,20 @@ test("inventory-only complete tags quarantine as creating then adopt when logica
   });
 
   await h.reconciler.runOnce();
-
-  const rec = h.registry.getSnapshot().terminals[terminalId];
-  expect(rec?.state).toBe("live");
-  expect(rec?.rmuxSessionId).toBe(created.sessionId);
+  expect(h.registry.getSnapshot().terminals[terminalId]?.state).toBe("creating");
   expect(h.diagnostics.some((d) => d.type === "orphan-quarantined")).toBe(true);
-  expect(h.diagnostics.some((d) => d.type === "adopted")).toBe(true);
+  expect(await h.driver.list()).toHaveLength(1);
+
+  await h.reconciler.runOnce();
+  expect(await h.driver.list()).toHaveLength(1);
+
+  h.clock.nowMs += 61_000;
+  await h.reconciler.runOnce();
+  expect(await h.driver.list()).toHaveLength(0);
+  expect(h.registry.getSnapshot().terminals[terminalId]).toBeUndefined();
+  expect(h.diagnostics.some((d) => d.type === "orphan-killed" && d.sessionId === created.sessionId)).toBe(
+    true,
+  );
 });
 
 test("inventory-only orphan without active logical waits two rounds + grace before kill", async () => {
@@ -414,6 +462,9 @@ test("catalog failure fail-closes destructive GC", async () => {
   });
   snap = h.registry.getSnapshot();
   await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  // Keep an in-process handle so fail-closed catalog path is what we exercise
+  // (without a handle, process-owned would stale-reap instead).
+  h.liveHandles.add(terminalId);
 
   await h.reconciler.runOnce();
   expect(h.diagnostics.some((d) => d.type === "catalog-unavailable")).toBe(true);
@@ -475,7 +526,7 @@ test("corrupt registry inventoryUncertain skips destructive orphan kill", async 
       config: baseConfig({ orphanGraceSeconds: 0 }),
       clock,
       withTerminalLock: async (_id, fn) => fn(),
-      onAdopted: () => {},
+      hasLiveHandle: () => false,
       onResourceAbsent: () => {},
       onFence: () => {},
       killWithTimeout: async (sessionId) => {
@@ -532,7 +583,7 @@ test("reaping retries kill after earlier timeout (cleanup-pending → later succ
       config: baseConfig(),
       clock: h.clock,
       withTerminalLock: async (_id, fn) => fn(),
-      onAdopted: () => {},
+      hasLiveHandle: () => false,
       onResourceAbsent: (terminalId, generation, reason) => {
         h.absent.push({ terminalId, generation, reason });
       },
@@ -573,7 +624,7 @@ test("periodic reconcile is re-entrant safe and stop waits for active pass", asy
       config: baseConfig({ reconcileIntervalSeconds: 1 }),
       clock: h.clock,
       withTerminalLock: async (_id, fn) => fn(),
-      onAdopted: () => {},
+      hasLiveHandle: () => false,
       onResourceAbsent: () => {},
       onFence: () => {},
       killWithTimeout: async () => true,
@@ -630,6 +681,7 @@ test("live idle-expired resources are reaped by reconcile", async () => {
   });
   snap = h.registry.getSnapshot();
   await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  h.liveHandles.add(terminalId);
 
   await h.reconciler.runOnce();
   expect(h.registry.getSnapshot().terminals[terminalId]).toBeUndefined();
