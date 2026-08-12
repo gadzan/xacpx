@@ -22,11 +22,16 @@ import {
 
 import {
   TerminalRuntimeError,
+  toTerminalOpenWireResult,
   type DefaultRelayTerminalRuntime,
   type TerminalViewerEvent,
 } from "./terminal/terminal-runtime.js";
 
-export type TerminalSendEvent = (type: string, payload: unknown) => void;
+export type TerminalSendEvent = (
+  type: string,
+  payload: unknown,
+  onFlush?: (error?: Error) => void,
+) => void;
 
 const TERMINAL_REQ_TYPES = new Set<string>([
   MSG.terminalOpen,
@@ -54,12 +59,18 @@ export function isTerminalEventType(type: string): boolean {
 export function createTerminalViewerPublisher(
   runtime: DefaultRelayTerminalRuntime,
   sendEvent: TerminalSendEvent,
-): (event: TerminalViewerEvent) => void {
+): (
+  event: TerminalViewerEvent,
+  onFlush?: (error?: Error) => void,
+) => void {
   const exited = new Set<string>();
-  return (event) => {
+  return (event, onFlush) => {
     if (event.type === "exit") {
       const key = `${event.terminalId}:${event.generation}`;
-      if (exited.has(key)) return;
+      if (exited.has(key)) {
+        onFlush?.();
+        return;
+      }
       exited.add(key);
       const payload: TerminalResourceExitPayload = {
         terminalId: event.terminalId,
@@ -67,20 +78,26 @@ export function createTerminalViewerPublisher(
         reason: event.reason,
         ...(event.code !== undefined ? { code: event.code } : {}),
       };
-      sendEvent(MSG.terminalResourceExit, payload);
+      sendEvent(MSG.terminalResourceExit, payload, onFlush);
       return;
     }
 
     const meta = runtime.peekAttachment(event.attachmentId);
-    if (!meta) return;
+    if (!meta) {
+      onFlush?.(new Error("attachment-gone"));
+      return;
+    }
     const inner = toViewerInner(event);
-    if (!inner) return;
+    if (!inner) {
+      onFlush?.();
+      return;
+    }
     const payload: TerminalViewerEventPayload = {
       viewerId: meta.viewerId,
       attachmentId: event.attachmentId,
       event: inner,
     };
-    sendEvent(MSG.terminalViewerEvent, payload);
+    sendEvent(MSG.terminalViewerEvent, payload, onFlush);
   };
 }
 
@@ -226,15 +243,10 @@ export async function handleTerminalRequest(
           rows: p.rows,
         });
         if (timedOut) {
-          // Hub/connector already answered timeout: compensate-kill the ghost.
-          void runtime.terminate({
-            terminalId: result.terminalId,
-            generation: result.generation,
-            reason: "explicit-close",
-          }).catch(() => {});
+          void runtime.compensateTimedOutOpen(result).catch(() => {});
           return true;
         }
-        respondOnce(result);
+        respondOnce(toTerminalOpenWireResult(result));
         return true;
       }
       case MSG.terminalTakeControl: {

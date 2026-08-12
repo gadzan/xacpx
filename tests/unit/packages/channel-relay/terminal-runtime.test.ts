@@ -116,7 +116,12 @@ async function makeHarness(
     driver,
     catalog,
     config: baseConfig(opts.config),
-    onViewerEvent: (e) => events.push(e),
+    onViewerEvent: (e, onFlush) => {
+      events.push(e);
+      // Default harness simulates a fast socket: flush immediately so pending
+      // outbound bytes release and healthy streams are not lifetime-capped.
+      onFlush?.();
+    },
     clock,
     killTimeoutMs: opts.killTimeoutMs ?? 50,
     lastInputCheckpointMinIntervalMs: 30_000,
@@ -585,11 +590,12 @@ test("healthy recovery past 2MiB cumulative output does not self-deadlock", asyn
     cols: 80,
     rows: 24,
   });
+  expect(opened.openKind).toBe("created");
   await runtime.startRecovery(opened.attachmentId);
   await Bun.sleep(10);
   const sessions = await driver.list();
   const paneId = sessions[0]!.paneId;
-  // Push >2MiB through the recovery path; release after emit must keep the loop alive.
+  // Push >2MiB through the recovery path; instant flush releases pending bytes.
   const chunk = new Uint8Array(256 * 1024).fill(0x61);
   for (let i = 0; i < 10; i++) {
     driver.injectOutput(paneId, chunk);
@@ -597,4 +603,90 @@ test("healthy recovery past 2MiB cumulative output does not self-deadlock", asyn
   await Bun.sleep(50);
   expect(runtime.peekAttachment(opened.attachmentId)).toBeTruthy();
   await runtime.input(opened.attachmentId, opened.generation, new TextEncoder().encode("x"));
+});
+
+test("stalled flush keeps pending outbound and overflows at 2MiB", async () => {
+  const dir = freshDir();
+  const registry = new TerminalRegistryStore({ dir });
+  const driver = new InMemoryRmuxDriver();
+  const catalog = new FakeCatalog([descriptor()]);
+  const events: TerminalViewerEvent[] = [];
+  const clock = { nowMs: 1_000_000, now: () => clock.nowMs };
+  const runtime = new DefaultRelayTerminalRuntime({
+    registry,
+    driver,
+    catalog,
+    config: baseConfig(),
+    onViewerEvent: (e, _onFlush) => {
+      events.push(e);
+      // Never flush — simulates a stalled Hub websocket send buffer.
+    },
+    clock,
+    randomUUID: (() => {
+      let n = 0;
+      return () => {
+        n += 1;
+        return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      };
+    })(),
+  });
+  await runtime.start();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+  const paneId = (await driver.list())[0]!.paneId;
+  const chunk = new Uint8Array(256 * 1024).fill(0x62);
+  for (let i = 0; i < 10; i++) {
+    driver.injectOutput(paneId, chunk);
+  }
+  await Bun.sleep(80);
+  expect(events.some((e) => e.type === "queue-overflow")).toBe(true);
+});
+
+test("timed-out resume detaches only; does not terminate shared shell", async () => {
+  const { runtime, driver } = await makeHarness();
+  const first = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  expect(first.openKind).toBe("created");
+
+  const second = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v2",
+    cols: 80,
+    rows: 24,
+  });
+  expect(second.openKind).toBe("resumed");
+  expect(second.terminalId).toBe(first.terminalId);
+
+  await runtime.compensateTimedOutOpen(second);
+  expect(runtime.peekAttachment(second.attachmentId)).toBeUndefined();
+  expect(runtime.peekAttachment(first.attachmentId)).toBeTruthy();
+  expect(await driver.list()).toHaveLength(1);
+});
+
+test("timed-out create terminates when no other viewers remain", async () => {
+  const { runtime, driver } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  expect(opened.openKind).toBe("created");
+  await runtime.compensateTimedOutOpen(opened);
+  expect(runtime.peekAttachment(opened.attachmentId)).toBeUndefined();
+  expect(await driver.list()).toHaveLength(0);
 });

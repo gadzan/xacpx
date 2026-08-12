@@ -191,8 +191,8 @@ export class RelayChannel implements MessageChannelRuntime {
 
     if (this.terminal) {
       // Rebind publisher now that client exists.
-      const publish = createTerminalViewerPublisher(this.terminal, (type, payload) => {
-        client.sendEvent(type, payload);
+      const publish = createTerminalViewerPublisher(this.terminal, (type, payload, onFlush) => {
+        client.sendEvent(type, payload, onFlush);
       });
       // Runtime was constructed with a no-op publisher; replace via fresh wiring
       // is awkward — instead emit through a mutable slot set below.
@@ -219,7 +219,10 @@ export class RelayChannel implements MessageChannelRuntime {
   }
 
   /** Mutable slot filled after client construction so runtime events reach the hub. */
-  private viewerPublish: ((event: import("./terminal/terminal-runtime.js").TerminalViewerEvent) => void) | null = null;
+  private viewerPublish: ((
+    event: import("./terminal/terminal-runtime.js").TerminalViewerEvent,
+    onFlush?: (error?: Error) => void,
+  ) => void) | null = null;
 
   async stop(reason: ChannelStopReason = "shutdown"): Promise<void> {
     this.unsubscribe?.();
@@ -334,8 +337,8 @@ export class RelayChannel implements MessageChannelRuntime {
         driver,
         catalog,
         config: this.config.terminal,
-        onViewerEvent: (event) => {
-          this.viewerPublish?.(event);
+        onViewerEvent: (event, onFlush) => {
+          this.viewerPublish?.(event, onFlush);
         },
       });
       await runtime.start();
@@ -346,8 +349,12 @@ export class RelayChannel implements MessageChannelRuntime {
         maxSessions: this.config.terminal.maxSessions,
         maxViewersPerTerminal: this.config.terminal.maxViewersPerTerminal,
       });
-      this.viewerPublish = createTerminalViewerPublisher(runtime, (type, payload) => {
-        this.client?.sendEvent(type, payload);
+      this.viewerPublish = createTerminalViewerPublisher(runtime, (type, payload, onFlush) => {
+        if (!this.client) {
+          onFlush?.(new Error("not-ready"));
+          return;
+        }
+        this.client.sendEvent(type, payload, onFlush);
       });
 
       this.catalogUnsub = catalog.subscribe((event) => {

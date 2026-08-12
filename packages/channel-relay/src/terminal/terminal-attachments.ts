@@ -285,8 +285,9 @@ export class TerminalAttachmentRegistry {
    *  may have detached in the same tick a byte was in flight.
    *
    *  Bytes count **pending** outbound only. Callers must `releaseOutbound`
-   *  after a successful handoff to the hub/socket so healthy streams do not
-   *  trip the cap on lifetime cumulative output. */
+   *  after the underlying websocket flush succeeds so healthy streams do not
+   *  trip the cap on lifetime cumulative output, while stalled sockets still
+   *  hit the 2 MiB pending limit. */
   enqueueOutbound(attachmentId: string, bytes: Uint8Array): boolean {
     const queue = this.queues.get(attachmentId);
     if (!queue || queue.closed) return false;
@@ -309,6 +310,12 @@ export class TerminalAttachmentRegistry {
     const queue = this.queues.get(attachmentId);
     if (!queue || queue.closed) return;
     queue.bytes = Math.max(0, queue.bytes - Math.max(0, byteLength));
+  }
+
+  /** Close the outbound queue (flush/transport failure) without emitting overflow. */
+  closeOutboundQueue(attachmentId: string): void {
+    const queue = this.queues.get(attachmentId);
+    if (queue) queue.closed = true;
   }
 
   isOutboundQueueClosed(attachmentId: string): boolean {

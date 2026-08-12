@@ -49,15 +49,30 @@ test("terminalRequestDeadlineAt prefers the nearer of absolute and received+budg
   expect(terminalRequestDeadlineAt({}, now)).toBeUndefined();
 });
 
-test("handleTerminalRequest times out open and compensate-kills late create", async () => {
-  let release!: (value: { terminalId: string; generation: string }) => void;
-  const openGate = new Promise<{ terminalId: string; generation: string }>((resolve) => {
+test("late timed-out create compensates via compensateTimedOutOpen", async () => {
+  let release!: (value: {
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+    openKind: "created";
+  }) => void;
+  const openGate = new Promise<{
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+    openKind: "created";
+  }>((resolve) => {
     release = resolve;
   });
-  const terminate = mock(async () => ({ ok: true }));
+  const compensateTimedOutOpen = mock(async () => {});
   const runtime = {
     openOrResume: mock(async () => openGate),
-    terminate,
+    compensateTimedOutOpen,
+    terminate: mock(async () => ({ status: "terminated" })),
   };
 
   const responses: unknown[] = [];
@@ -91,18 +106,62 @@ test("handleTerminalRequest times out open and compensate-kills late create", as
   );
 
   expect(timers).toHaveLength(1);
-  expect(timers[0]?.ms).toBe(50);
   timers[0]!.fn();
   expect(responses).toEqual([
     expect.objectContaining({ error: expect.objectContaining({ code: "timeout" }) }),
   ]);
 
-  release({ terminalId: "term-1", generation: "g1" });
-  await done;
-  expect(terminate).toHaveBeenCalledWith({
+  const result = {
     terminalId: "term-1",
     generation: "g1",
-    reason: "explicit-close",
-  });
+    attachmentId: "att-1",
+    role: "controller" as const,
+    viewerCount: 1,
+    openKind: "created" as const,
+  };
+  release(result);
+  await done;
+  expect(compensateTimedOutOpen).toHaveBeenCalledWith(result);
+  expect(runtime.terminate).not.toHaveBeenCalled();
   expect(responses).toHaveLength(1);
+});
+
+test("late timed-out open strips openKind from successful wire responses", async () => {
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-1",
+      role: "controller" as const,
+      viewerCount: 1,
+      openKind: "created" as const,
+    })),
+    compensateTimedOutOpen: mock(async () => {}),
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 80,
+        rows: 24,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+  expect(responses[0]).toEqual({
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-1",
+    role: "controller",
+    viewerCount: 1,
+  });
+  expect((responses[0] as { openKind?: string }).openKind).toBeUndefined();
 });

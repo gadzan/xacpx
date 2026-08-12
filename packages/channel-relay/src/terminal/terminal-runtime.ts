@@ -47,12 +47,34 @@ const DEFAULT_LAST_INPUT_CHECKPOINT_MS = 30_000;
 // Public result types (spec §9)
 // ---------------------------------------------------------------------------
 
+/** Whether this open created the RMUX session or attached to an existing one.
+ *  Connector-local only — never forwarded on the Hub wire response. */
+export type TerminalOpenKind = "created" | "resumed";
+
 export interface TerminalOpenResult {
   terminalId: string;
   generation: string;
   attachmentId: string;
   role: "controller" | "spectator";
   viewerCount: number;
+  openKind: TerminalOpenKind;
+}
+
+/** Strip connector-local fields before responding to the Hub. */
+export function toTerminalOpenWireResult(result: TerminalOpenResult): {
+  terminalId: string;
+  generation: string;
+  attachmentId: string;
+  role: "controller" | "spectator";
+  viewerCount: number;
+} {
+  return {
+    terminalId: result.terminalId,
+    generation: result.generation,
+    attachmentId: result.attachmentId,
+    role: result.role,
+    viewerCount: result.viewerCount,
+  };
 }
 
 export interface TerminalRoleResult {
@@ -136,6 +158,8 @@ export interface RelayTerminalRuntime {
     cols: number;
     rows: number;
   }): Promise<TerminalOpenResult>;
+  /** Late Hub timeout: detach resume; terminate create only when still sole owner. */
+  compensateTimedOutOpen(result: TerminalOpenResult): Promise<void>;
   startRecovery(attachmentId: string): Promise<void>;
   detach(attachmentId: string): void;
   detachAllAttachments(): void;
@@ -179,7 +203,15 @@ export interface TerminalRuntimeOptions {
   driver: RmuxTerminalDriver;
   catalog: SessionResourceCatalog;
   config: RelayTerminalConfig;
-  onViewerEvent: (event: TerminalViewerEvent) => void;
+  /**
+   * Deliver a viewer event toward the Hub. When `onFlush` is provided (byte-
+   * carrying frames), call it after the underlying websocket flush/error so
+   * outbound backpressure can track pending — not lifetime — bytes.
+   */
+  onViewerEvent: (
+    event: TerminalViewerEvent,
+    onFlush?: (error?: Error) => void,
+  ) => void;
   clock?: TerminalRuntimeClock;
   killTimeoutMs?: number;
   lastInputCheckpointMinIntervalMs?: number;
@@ -282,7 +314,10 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   private readonly driver: RmuxTerminalDriver;
   private readonly catalog: SessionResourceCatalog;
   private readonly config: RelayTerminalConfig;
-  private readonly onViewerEvent: (event: TerminalViewerEvent) => void;
+  private readonly onViewerEvent: (
+    event: TerminalViewerEvent,
+    onFlush?: (error?: Error) => void,
+  ) => void;
   private readonly clock: TerminalRuntimeClock;
   private readonly killTimeoutMs: number;
   private readonly checkpointIntervalMs: number;
@@ -404,7 +439,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       if (existing?.state === "live") {
         return this.withTerminalLock(existing.terminalId, async () => {
           await this.refreshIdle(existing.terminalId, true);
-          return this.attachViewer(existing, input.viewerId);
+          return this.attachViewer(existing, input.viewerId, "resumed");
         });
       }
 
@@ -480,7 +515,37 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       }
 
       this.installHandle(live, paneId, this.clock.now());
-      return this.withTerminalLock(terminalId, async () => this.attachViewer(live, input.viewerId));
+      return this.withTerminalLock(terminalId, async () => this.attachViewer(live, input.viewerId, "created"));
+    });
+  }
+
+  /**
+   * Hub/connector already answered timeout for this open. Late success must not
+   * kill a shared shell: resume → detach only; create → terminate only when this
+   * generation is still live and no other viewers remain after our detach.
+   */
+  async compensateTimedOutOpen(result: TerminalOpenResult): Promise<void> {
+    this.assertStarted();
+    if (result.openKind === "resumed") {
+      void this.stopRecovery(result.attachmentId, { wait: false });
+      this.detach(result.attachmentId);
+      return;
+    }
+
+    await this.withTerminalLock(result.terminalId, async () => {
+      const snap = this.registry.getSnapshot().terminals[result.terminalId];
+      if (!snap || snap.generation !== result.generation) {
+        void this.stopRecovery(result.attachmentId, { wait: false });
+        this.detach(result.attachmentId);
+        return;
+      }
+      void this.stopRecovery(result.attachmentId, { wait: false });
+      this.detach(result.attachmentId);
+      if (this.attachments.listByTerminal(result.terminalId).length > 0) {
+        // Another viewer attached after our create; keep the shared shell.
+        return;
+      }
+      await this.terminateUnlocked(result.terminalId, result.generation, "explicit-close");
     });
   }
 
@@ -738,7 +803,11 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     return descriptor;
   }
 
-  private attachViewer(rec: TerminalRecordV1, viewerId: string): TerminalOpenResult {
+  private attachViewer(
+    rec: TerminalRecordV1,
+    viewerId: string,
+    openKind: TerminalOpenKind,
+  ): TerminalOpenResult {
     let attached;
     try {
       attached = this.attachments.attach({
@@ -755,6 +824,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       attachmentId: attached.attachmentId,
       role: attached.role,
       viewerCount: attached.viewerCount,
+      openKind,
     };
   }
 
@@ -1066,16 +1136,20 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
           await this.stopRecovery(attachmentId, { wait: false });
           return;
         }
-        this.onViewerEvent({
-          type: "rebase-chunk",
+        this.publishOutbound(
           attachmentId,
           terminalId,
-          generation,
-          epoch: event.epoch,
-          index,
-          dataBase64: bytesToBase64(chunk),
-        });
-        this.attachments.releaseOutbound(attachmentId, chunk.byteLength);
+          chunk.byteLength,
+          {
+            type: "rebase-chunk",
+            attachmentId,
+            terminalId,
+            generation,
+            epoch: event.epoch,
+            index,
+            dataBase64: bytesToBase64(chunk),
+          },
+        );
       }
       this.onViewerEvent({
         type: "rebase-end",
@@ -1092,16 +1166,20 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         await this.stopRecovery(attachmentId, { wait: false });
         return;
       }
-      this.onViewerEvent({
-        type: "bytes",
+      this.publishOutbound(
         attachmentId,
         terminalId,
-        generation,
-        epoch: event.epoch,
-        sequence: event.sequence,
-        dataBase64: bytesToBase64(event.data),
-      });
-      this.attachments.releaseOutbound(attachmentId, event.data.byteLength);
+        event.data.byteLength,
+        {
+          type: "bytes",
+          attachmentId,
+          terminalId,
+          generation,
+          epoch: event.epoch,
+          sequence: event.sequence,
+          dataBase64: bytesToBase64(event.data),
+        },
+      );
       return;
     }
 
@@ -1112,6 +1190,27 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         void this.handleNaturalExit(terminalId, generation, event.code);
       });
     }
+  }
+
+  /** Enqueue already counted; release only after websocket flush succeeds. */
+  private publishOutbound(
+    attachmentId: string,
+    terminalId: string,
+    byteLength: number,
+    event: TerminalViewerEvent,
+  ): void {
+    let settled = false;
+    this.onViewerEvent(event, (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        this.attachments.closeOutboundQueue(attachmentId);
+        this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId });
+        void this.stopRecovery(attachmentId, { wait: false });
+        return;
+      }
+      this.attachments.releaseOutbound(attachmentId, byteLength);
+    });
   }
 
   private async handleNaturalExit(
