@@ -1,0 +1,10 @@
+{
+  "package": "@ganglion/xacpx-rmux-bridge-darwin-x64",
+  "version": "0.5.0-beta.0",
+  "bridgeVersion": "0.1.0",
+  "rmuxSdk": "0.10.0",
+  "platform": "darwin-x64",
+  "artifact": "bin/xacpx-rmux-bridge",
+  "sha256": "1877e619953b7503f8f01f7c02f8e5d19edd1c89d963ae047068f1c966e915ca",
+  "packedAt": "2026-08-12T07:54:42.864Z"
+}

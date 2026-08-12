@@ -1,0 +1,10 @@
+{
+  "package": "@ganglion/xacpx-rmux-bridge-linux-arm64",
+  "version": "0.5.0-beta.0",
+  "bridgeVersion": "0.1.0",
+  "rmuxSdk": "0.10.0",
+  "platform": "linux-arm64",
+  "artifact": "bin/xacpx-rmux-bridge",
+  "sha256": null,
+  "note": "Filled by scripts/pack-rmux-bridge-platform.mjs after a release build."
+}

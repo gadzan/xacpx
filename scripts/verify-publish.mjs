@@ -119,6 +119,32 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
     await verifyRootRuntimeBundle(packageRoot, failures);
   }
 
+  if (pkg.id === "channel-relay") {
+    const expected = [
+      "@ganglion/xacpx-rmux-bridge-darwin-arm64",
+      "@ganglion/xacpx-rmux-bridge-darwin-x64",
+      "@ganglion/xacpx-rmux-bridge-linux-arm64",
+      "@ganglion/xacpx-rmux-bridge-linux-x64",
+      "@ganglion/xacpx-rmux-bridge-win32-x64",
+    ];
+    const optional = packageJson.optionalDependencies ?? {};
+    for (const name of expected) {
+      if (!(name in optional)) {
+        failures.push(`channel-relay: optionalDependencies must include ${name}`);
+      }
+    }
+    const cargoToml = join(repoRoot, "packages/channel-relay/native/rmux-bridge/Cargo.toml");
+    if (existsSync(cargoToml)) {
+      const cargo = await readFile(cargoToml, "utf8");
+      if (/rmux-sdk\s*=\s*\{[^}]*path\s*=/.test(cargo) || cargo.includes("../rmux")) {
+        failures.push("channel-relay: rmux-bridge Cargo.toml must not path-depend on ../rmux");
+      }
+      if (!cargo.includes('rmux-sdk = "=0.10.0"')) {
+        failures.push('channel-relay: rmux-bridge must pin rmux-sdk = "=0.10.0"');
+      }
+    }
+  }
+
   for (const file of pkg.requiredFiles) {
     if (!existsSync(join(packageRoot, file))) {
       failures.push(`${pkg.id}: missing required publish file ${file}`);

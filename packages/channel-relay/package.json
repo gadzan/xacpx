@@ -41,5 +41,12 @@
   "dependencies": {
     "@ganglion/xacpx-relay-protocol": "^0.3.0-beta.0",
     "ws": "^8.20.0"
+  },
+  "optionalDependencies": {
+    "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.5.0-beta.0",
+    "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.5.0-beta.0",
+    "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.5.0-beta.0",
+    "@ganglion/xacpx-rmux-bridge-linux-x64": "0.5.0-beta.0",
+    "@ganglion/xacpx-rmux-bridge-win32-x64": "0.5.0-beta.0"
   }
 }
