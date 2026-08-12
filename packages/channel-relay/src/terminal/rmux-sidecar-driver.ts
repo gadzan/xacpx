@@ -19,6 +19,18 @@ import {
 const MAX_LINE_BYTES = 96 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+/** Cap for bytes buffered after the last rebase for late multi-viewer joins.
+ *  Matches the recovery size budget; overflow folds bytes into a synthetic rebase. */
+const MAX_BYTES_SINCE_REBASE = 2 * 1024 * 1024;
+
+type RebaseEvent = Extract<RmuxRecoveryEvent, { type: "rebase" }>;
+type BytesEvent = Extract<RmuxRecoveryEvent, { type: "bytes" }>;
+
+type PaneRecoveryCache = {
+  rebase: RebaseEvent;
+  bytes: BytesEvent[];
+  bytesTotal: number;
+};
 
 export interface SidecarStdio {
   stdin: NodeJS.WritableStream;
@@ -50,8 +62,13 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private handshaken = false;
   private diagnosticsCache: RmuxDiagnostics | null = null;
   private readonly requestTimeoutMs: number;
-  /** Last rebase per pane — late multi-viewer subscribers need a keyframe. */
-  private readonly lastRebase = new Map<string, RmuxRecoveryEvent>();
+  /**
+   * Per-pane recovery snapshot for late multi-viewer subscribers: last rebase
+   * plus every bytes event since that rebase. A second `recover` against the
+   * Rust actor would abort the first stream, so late joiners must catch up
+   * from this cache before joining the live fan-out.
+   */
+  private readonly recoveryCache = new Map<string, PaneRecoveryCache>();
 
   constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
     this.child = child;
@@ -186,15 +203,17 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       push: (e) => queue.push(e),
       close: (err) => queue.close(err),
     };
-    set.add(sub);
     try {
       // One sidecar recover stream per pane; fan out to all Node subscribers.
       // A second recover request would abort the first in the Rust actor.
       if (isFirst) {
+        set.add(sub);
         await this.request({ type: "recover", pane_id: paneId });
       } else {
-        const cached = this.lastRebase.get(paneId);
-        if (cached) queue.push(cached);
+        // Catch up BEFORE joining live fan-out so buffered bytes are not
+        // interleaved after a live event that arrived during subscribe.
+        this.pushCatchUp(paneId, sub);
+        set.add(sub);
       }
       for await (const event of queue) {
         yield event;
@@ -204,11 +223,20 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       set.delete(sub);
       if (set.size === 0) {
         this.recoveries.delete(paneId);
-        this.lastRebase.delete(paneId);
+        this.recoveryCache.delete(paneId);
         // Best-effort unsubscribe — never block stream teardown on a hung sidecar.
         void this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
       }
     }
+  }
+
+  /** Replay cached rebase (+ post-rebase bytes) so a late viewer starts at the
+   *  same live sequence cursor as existing subscribers. */
+  private pushCatchUp(paneId: string, sub: RecoverSubscriber): void {
+    const cache = this.recoveryCache.get(paneId);
+    if (!cache) return;
+    sub.push(cloneRecoveryEvent(cache.rebase));
+    for (const bytes of cache.bytes) sub.push(cloneRecoveryEvent(bytes));
   }
 
   async diagnostics(): Promise<RmuxDiagnostics> {
@@ -312,7 +340,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       const paneId = String(msg.pane_id ?? "");
       const event = mapEvent(msg.event as Record<string, unknown>);
       if (!event) return;
-      if (event.type === "rebase") this.lastRebase.set(paneId, event);
+      this.rememberRecoveryEvent(paneId, event);
       const set = this.recoveries.get(paneId);
       if (!set) return;
       for (const sub of set) sub.push(event);
@@ -338,6 +366,33 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     pending.resolve(msg);
   }
 
+  private rememberRecoveryEvent(paneId: string, event: RmuxRecoveryEvent): void {
+    if (event.type === "rebase") {
+      this.recoveryCache.set(paneId, {
+        rebase: cloneRecoveryEvent(event),
+        bytes: [],
+        bytesTotal: 0,
+      });
+      return;
+    }
+    if (event.type !== "bytes") return;
+    const cache = this.recoveryCache.get(paneId);
+    if (!cache) return;
+    const nextTotal = cache.bytesTotal + event.data.byteLength;
+    if (nextTotal > MAX_BYTES_SINCE_REBASE) {
+      // Fold buffered + current bytes into a synthetic rebase so late joiners
+      // still land on a contiguous nextSequence without an unbounded buffer.
+      this.recoveryCache.set(paneId, {
+        rebase: foldBytesIntoRebase(cache.rebase, [...cache.bytes, event]),
+        bytes: [],
+        bytesTotal: 0,
+      });
+      return;
+    }
+    cache.bytes.push(cloneRecoveryEvent(event));
+    cache.bytesTotal = nextTotal;
+  }
+
   private crash(err: Error): void {
     if (this.crashed) return;
     this.crashed = true;
@@ -350,7 +405,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       for (const sub of set) sub.close(err);
     }
     this.recoveries.clear();
-    this.lastRebase.clear();
+    this.recoveryCache.clear();
     this.emitter.emit("crash", err);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {
@@ -409,6 +464,47 @@ function mapEvent(raw: Record<string, unknown> | undefined): RmuxRecoveryEvent |
     };
   }
   return null;
+}
+
+function cloneRecoveryEvent<T extends RmuxRecoveryEvent>(event: T): T {
+  if (event.type === "rebase") {
+    return {
+      ...event,
+      keyframe: event.keyframe.slice(),
+    };
+  }
+  if (event.type === "bytes") {
+    return {
+      ...event,
+      data: event.data.slice(),
+    };
+  }
+  return { ...event };
+}
+
+/** Merge post-rebase bytes into the keyframe and advance nextSequence. */
+function foldBytesIntoRebase(rebase: RebaseEvent, bytes: BytesEvent[]): RebaseEvent {
+  if (bytes.length === 0) return cloneRecoveryEvent(rebase);
+  let total = rebase.keyframe.byteLength;
+  for (const item of bytes) total += item.data.byteLength;
+  const keyframe = new Uint8Array(total);
+  keyframe.set(rebase.keyframe, 0);
+  let offset = rebase.keyframe.byteLength;
+  for (const item of bytes) {
+    keyframe.set(item.data, offset);
+    offset += item.data.byteLength;
+  }
+  const last = bytes[bytes.length - 1]!;
+  return {
+    type: "rebase",
+    epoch: rebase.epoch,
+    nextSequence: last.sequence + 1,
+    cols: rebase.cols,
+    rows: rebase.rows,
+    alternate: rebase.alternate,
+    keyframe,
+    ...(rebase.reason !== undefined ? { reason: rebase.reason } : {}),
+  };
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {

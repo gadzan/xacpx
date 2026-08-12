@@ -260,3 +260,104 @@ test("sidecar driver fans out recover to a late second subscriber without restar
   await Promise.all([aP, bP]);
   expect(aEvents.map((e) => e.type)).toContain("rebase");
 });
+
+test("late subscriber receives post-rebase bytes so live sequence does not gap", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      aEvents.push(ev);
+      if (ev.type === "exit") break;
+    }
+  })();
+  await Promise.resolve();
+  const recoverReq = JSON.parse(
+    fake.written.find((w) => w.includes('"recover"'))!.trim(),
+  ) as { id: string };
+  fake.reply({ type: "ok", id: recoverReq.id });
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "rebase",
+        epoch: 1,
+        next_sequence: 0,
+        cols: 80,
+        rows: 24,
+        alternate: false,
+        keyframe_base64: Buffer.from("base").toString("base64"),
+      },
+    })}\n`,
+  );
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence: 0,
+        data_base64: Buffer.from("one").toString("base64"),
+      },
+    })}\n`,
+  );
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence: 1,
+        data_base64: Buffer.from("two").toString("base64"),
+      },
+    })}\n`,
+  );
+  await Bun.sleep(15);
+  expect(aEvents.map((e) => e.type)).toEqual(["rebase", "bytes", "bytes"]);
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "exit") break;
+    }
+  })();
+  await Bun.sleep(15);
+
+  // Catch-up must include both post-rebase bytes before any later live event.
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes", "bytes"]);
+  expect(bEvents[0]).toMatchObject({ type: "rebase", nextSequence: 0 });
+  expect(bEvents[1]).toMatchObject({ type: "bytes", sequence: 0 });
+  expect(bEvents[2]).toMatchObject({ type: "bytes", sequence: 1 });
+  expect(fake.written.filter((w) => w.includes('"recover"')).length).toBe(1);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence: 2,
+        data_base64: Buffer.from("three").toString("base64"),
+      },
+    })}\n`,
+  );
+  await Bun.sleep(15);
+  expect(bEvents[3]).toMatchObject({ type: "bytes", sequence: 2 });
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: { type: "exit", code: 0 },
+    })}\n`,
+  );
+  await Promise.all([aDone, bDone]);
+});
