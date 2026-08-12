@@ -1,39 +1,25 @@
-/** Per-session terminal-id persistence. A live PTY survives a browser reload (the backend keeps
- *  it until idle-timeout); persisting its terminalId lets the reloaded tab re-attach (replay
- *  scrollback + reconnect) instead of spawning a fresh shell. sessionStorage (tab-scoped) keyed
- *  by `${instanceId}::${alias}`. */
+/** @deprecated Legacy per-session PTY id map. RMUX terminals do not persist terminalId. */
 const KEY = "xacpx.terminal-ids.v1";
-type Ids = Record<string, string>;
 
-function read(): Ids {
+/** One-shot best-effort migration: drop leftover PTY ids from pre-RMUX builds. */
+export function migrateAwayFromLegacyTerminalIds(): void {
   try {
-    const raw = sessionStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Ids) : {};
+    sessionStorage.removeItem(KEY);
   } catch {
-    return {};
-  }
-}
-function write(ids: Ids): void {
-  try {
-    sessionStorage.setItem(KEY, JSON.stringify(ids));
-  } catch {
-    /* storage full / disabled — best-effort */
+    /* storage disabled — ignore */
   }
 }
 
-export function saveTerminalId(sessionKey: string, id: string): void {
-  if (!sessionKey || !id) return;
-  const ids = read();
-  ids[sessionKey] = id;
-  write(ids);
+// Call once at module load so any import path clears the legacy map.
+migrateAwayFromLegacyTerminalIds();
+
+/** @deprecated No-op — RMUX identity is server-side; local tabs only persist layout. */
+export function saveTerminalId(_sessionKey: string, _id: string): void {}
+
+/** @deprecated Always null after migration. */
+export function loadTerminalId(_sessionKey: string): string | null {
+  return null;
 }
-export function loadTerminalId(sessionKey: string): string | null {
-  if (!sessionKey) return null;
-  return read()[sessionKey] ?? null;
-}
-export function clearTerminalId(sessionKey: string): void {
-  if (!sessionKey) return;
-  const ids = read();
-  delete ids[sessionKey];
-  write(ids);
-}
+
+/** @deprecated No-op after migration. */
+export function clearTerminalId(_sessionKey: string): void {}

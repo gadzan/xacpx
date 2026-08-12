@@ -24,24 +24,21 @@ Authoritative docs:
 | Phase C (Tasks 8–9) | ✅ |
 | Phase D (Tasks 10–14) | ✅ |
 | Phase E (Tasks 15–17) | **Blocked** on Phase A |
-| Phase F Task 18 | ✅ channel-relay owns runtime (in-memory driver) |
-| Phase F Tasks 19–20 | ✅ hub viewer maps + two-phase open/RPC |
-| Phase F Task 21 | ✅ ghostty adapter |
-| Phase F Tasks 22–23 | **next** — web recovery store + TerminalTab UX |
-| Phase G | partial later; real RMUX smoke still blocked |
+| Phase F Tasks 18–23 | ✅ (in-memory driver / fake path; no real RMUX sidecar) |
+| Phase G Task 24+ | **next** where doable without real RMUX; Task 26 still blocked |
 
 ## Recent commits (local `main`, do not push)
 
 ```
-feat(relay): coordinate terminal attachment requests
-feat(relay): route terminal streams to attached viewers
-feat(channel-relay): own relay rmux terminal lifecycle
-feat(channel-relay): reconcile rmux terminal ownership
-feat(channel-relay): add durable relay terminal runtime
+feat(relay-web): add shared terminal control and global close   # Task 23
+feat(relay-web): recover rmux terminal attachments              # Task 22
+feat(relay): coordinate terminal attachment requests            # Task 20
+feat(relay): route terminal streams to attached viewers         # Task 19
+feat(channel-relay): own relay rmux terminal lifecycle          # Task 18
 ```
 
 ## Next step
 
-**Task 22** — `packages/relay-web` request client + recovery reducer/store (`feat(relay-web): recover rmux terminal attachments`), then Task 23 UI.
+**Phase G** — start with Task 24 (`feat(channel-relay): retire terminals on destructive channel actions`) and Task 25 fake E2E where possible. Skip / park Task 26 until RMUX publish.
 
-Use in-memory path end-to-end; real sidecar stays parked until RMUX publish.
+Blocked forever until RMUX publish: Phase A Tasks 1–3, Phase E Tasks 15–17, Task 26 smoke.

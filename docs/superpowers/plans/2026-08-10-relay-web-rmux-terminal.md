@@ -570,17 +570,17 @@
 - Test: `packages/relay-web/src/__tests__/session-terminal.test.ts`
 - Test: `packages/relay-web/src/__tests__/i18n-parity.test.ts`
 
-- [ ] capability 缺失/instance offline 时隐藏或禁用 Terminal 入口，不调用 legacy create/attach。
-- [ ] 恢复的本地 terminal Tab 自动 openOrResume；删除 `autostart:false` 的 legacy PTY占位语义和 RMUX backend 对 `xacpx.terminal-ids.v1` 的身份依赖。
-- [ ] UI 显示 controller/spectator、viewerCount 和 take-control；spectator 禁用键盘、paste、shortcut input 和 backend resize。
-- [ ] close 单 viewer 可直接确认动作；`viewerCount > 1` 必须明确提示“会终止所有设备上的共享终端”。取消不发请求。
-- [ ] close pending 时 Tab 不消失且防 double submit；terminated 关闭 Tab；cleanup-pending 关闭 Tab并 toast；offline/timeout保留 Tab并允许重试。
-- [ ] session switch/unmount/refresh/pagehide/network close 只 detach；删除 Dashboard archive/delete 前的 browser-side kill，改由 core lifecycle→channel-relay retirement 单一路径。
-- [ ] 收到其他设备触发的 resource exit，当前 view 标 exited/清 attachment，不自动创建替代 shell。
-- [ ] local tab persistence仍只保存布局；同一终端是否在另一台机器打开不自动同步 UI。
-- [ ] 清理旧 `xacpx.terminal-ids.v1` 条目作为一次性 best-effort migration；legacy core PTY attach 失败不猜测 alias 迁移。
-- [ ] Run focused Vitest files, full relay-web test suite, and vue typecheck.
-- [ ] Commit: `feat(relay-web): add shared terminal control and global close`
+- [x] capability 缺失/instance offline 时隐藏或禁用 Terminal 入口，不调用 legacy create/attach。
+- [x] 恢复的本地 terminal Tab 自动 openOrResume；删除 `autostart:false` 的 legacy PTY占位语义和 RMUX backend 对 `xacpx.terminal-ids.v1` 的身份依赖。
+- [x] UI 显示 controller/spectator、viewerCount 和 take-control；spectator 禁用键盘、paste、shortcut input 和 backend resize。
+- [x] close 单 viewer 可直接确认动作；`viewerCount > 1` 必须明确提示“会终止所有设备上的共享终端”。取消不发请求。
+- [x] close pending 时 Tab 不消失且防 double submit；terminated 关闭 Tab；cleanup-pending 关闭 Tab并 toast；offline/timeout保留 Tab并允许重试。
+- [x] session switch/unmount/refresh/pagehide/network close 只 detach；删除 Dashboard archive/delete 前的 browser-side kill，改由 core lifecycle→channel-relay retirement 单一路径。
+- [x] 收到其他设备触发的 resource exit，当前 view 标 exited/清 attachment，不自动创建替代 shell。
+- [x] local tab persistence仍只保存布局；同一终端是否在另一台机器打开不自动同步 UI。
+- [x] 清理旧 `xacpx.terminal-ids.v1` 条目作为一次性 best-effort migration；legacy core PTY attach 失败不猜测 alias 迁移。
+- [x] Run focused Vitest files, full relay-web test suite, and vue typecheck.
+- [x] Commit: `feat(relay-web): add shared terminal control and global close`
 
 ---
 

@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { connectEvents, sendSubscribe } from "../api/events";
-import { useInstancesStore } from "../stores/instances";
+import { connectEvents, sendSubscribe, TerminalRequestError } from "../api/events";
+import { useInstancesStore, supportsRmuxTerminal } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
-import { useTerminalStore } from "../stores/terminal";
-import { killSessionTerminal } from "../lib/session-terminal";
+import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
+import { detachSessionTerminal } from "../lib/session-terminal";
+import { pushToast } from "../lib/use-toasts";
+import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -145,10 +147,45 @@ function keyWorkspace(key: string): string {
 
 // Route every tab close (file/diff/terminal) through the dirty-aware guard: a clean tab
 // closes immediately, a dirty file tab asks first (native confirm — the store can't show UI).
+// Terminal close is a global terminate of the shared RMUX resource (with multi-viewer warning).
+let terminalCloseInFlight = false;
+async function requestCloseTerminal(key: string): Promise<void> {
+  if (terminalCloseInFlight) return;
+  const instanceId = keyInstance(key);
+  const alias = keyAlias(key);
+  const localKey = terminalLocalKey(instanceId, alias);
+  const view = terminals.get(localKey);
+  if (view?.terminatePending) return;
+  const viewerCount = view?.viewerCount ?? 1;
+  const ok = window.confirm(
+    viewerCount > 1 ? t("terminal.closeSharedConfirm") : t("terminal.closeConfirm"),
+  );
+  if (!ok) return;
+  terminalCloseInFlight = true;
+  try {
+    const result = await terminals.terminate(localKey);
+    centerTabs.closeTab(key, "terminal");
+    if (result.status === "cleanup-pending") {
+      pushToast("info", "terminal.cleanupPendingToast");
+    }
+  } catch (err) {
+    const code = err instanceof TerminalRequestError ? err.code : "terminal-protocol-error";
+    if (code === "terminal-timeout" || code === "instance-offline") {
+      pushToast("error", "terminal.closeRetryToast");
+      return;
+    }
+    pushToast("error", "terminal.error");
+  } finally {
+    terminalCloseInFlight = false;
+  }
+}
+
 function requestCloseTab(key: string, id: string) {
-  // Explicit close of a terminal tab kills its PTY and forgets the id (a refresh does NOT reach here).
   const tab = centerTabs.tabsFor(key).find((t) => t.id === id);
-  if (tab?.kind === "terminal") killSessionTerminal(key, keyInstance(key), terminals);
+  if (tab?.kind === "terminal") {
+    void requestCloseTerminal(key);
+    return;
+  }
   centerTabs.closeTabGuarded(key, id, () => window.confirm(t("files.unsavedConfirm")));
 }
 
@@ -156,17 +193,15 @@ function requestCloseTab(key: string, id: string) {
 // WeChat / another browser tab). `InstanceTree` prunes on local archive/delete, but a
 // server-driven removal only reloads `instances` (via applyEvent → loadSessions) — nothing
 // else tells centerTabs, so that session's FileViewer/TerminalTab panes above would stay
-// mounted (and any PTY alive) forever. Only consider an instance's session list authoritative
-// once it has loaded completely (`sessionsLoaded && !sessionsHasMore`): while a fetch is still
-// paginated, a key that isn't in `sessions` yet hasn't necessarily been removed, it just hasn't arrived —
-// pruning then would race the load and drop a still-valid tab.
+// mounted forever. Only consider an instance's session list authoritative once it has loaded
+// completely (`sessionsLoaded && !sessionsHasMore`): while a fetch is still paginated, a key
+// that isn't in `sessions` yet hasn't necessarily been removed — pruning then would race the
+// load and drop a still-valid tab. Browser does not terminate RMUX resources here.
 const validSessionKeys = computed(() => {
   const keys = new Set<string>();
   for (const inst of instances.instances) {
     if (!inst.sessionsLoaded || inst.sessionsHasMore) continue;
     for (const s of inst.sessions) keys.add(sessionKey(inst.id, s.alias));
-    // Grouped sleeping pages live outside `sessions`; count their loaded rows as valid
-    // too or an open sleeping session's tabs get pruned here.
     for (const state of Object.values(inst.groupArchived ?? {})) {
       for (const s of state.sessions) keys.add(sessionKey(inst.id, s.alias));
     }
@@ -179,13 +214,21 @@ function reconcileCenterTabs() {
   for (const key of openKeys) {
     const inst = instances.byId(keyInstance(key));
     if (inst?.sessionsLoaded && !inst.sessionsHasMore && !valid.has(key)) {
-      const hasTerminal = centerTabs.tabsFor(key).some((t) => t.kind === "terminal");
-      if (hasTerminal) killSessionTerminal(key, keyInstance(key), terminals);
+      // Unmount detaches; channel-relay owns resource retirement for deleted sessions.
+      const alias = keyAlias(key);
+      detachSessionTerminal(key, keyInstance(key), alias, terminals);
       centerTabs.clearSession(key);
     }
   }
 }
 watch(() => instances.instances, reconcileCenterTabs, { deep: true });
+
+const terminalCapable = computed(() => {
+  const id = chat.instanceId;
+  if (!id) return false;
+  const inst = instances.byId(id);
+  return !!inst && supportsRmuxTerminal(inst);
+});
 
 // A file/diff/terminal tab opened for the current session takes over the center column.
 // On mobile, opening one also closes the right drawer so the pane is actually visible.
@@ -239,6 +282,7 @@ watch(
 );
 
 onMounted(async () => {
+  migrateAwayFromLegacyTerminalIds();
   window.addEventListener("keydown", onGlobalKey);
   if (typeof window.matchMedia === "function") {
     desktopMql = window.matchMedia("(min-width: 1024px)");
@@ -314,11 +358,11 @@ onUnmounted(() => {
         <button
           data-test="toggle-terminal"
           :aria-label='$t("terminal.title")'
-          :title='$t("terminal.title")'
-          :disabled="!chat.sessionAlias"
+          :title='terminalCapable ? $t("terminal.title") : $t("terminal.unavailable")'
+          :disabled="!chat.sessionAlias || !terminalCapable"
           class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
           :class="currentKey && centerTabs.activeFor(currentKey) === 'terminal' ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
-          @click="currentKey && centerTabs.openTerminal(currentKey)"
+          @click="currentKey && terminalCapable && centerTabs.openTerminal(currentKey)"
         >
           <SquareTerminal :size="15" />
         </button>
@@ -431,7 +475,6 @@ onUnmounted(() => {
             <TerminalTab v-else-if="tab.kind === 'terminal'" class="absolute inset-0 z-20"
                          v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
                          :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"
-                         :autostart="tab.autostart ?? false"
                          @close="requestCloseTab(key, tab.id)" />
           </template>
         </div>

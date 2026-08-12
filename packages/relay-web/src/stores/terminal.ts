@@ -1,11 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import {
-  isErrorPayload,
-  type WebServerEvent,
-  type TerminalAttachResult,
-} from "@ganglion/xacpx-relay-protocol";
-import { api } from "../api/client";
+import type { WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import {
   nextTerminalRequestId,
   requestTerminal,
@@ -18,9 +13,6 @@ import {
   reduceRecovery,
   type RecoveryState,
 } from "../lib/terminal-recovery";
-
-type OutputCb = (terminalId: string, data: string, seq: number) => void;
-type ExitCb = (terminalId: string, code: number) => void;
 
 export type TerminalRole = "controller" | "spectator";
 
@@ -57,11 +49,6 @@ export function terminalLocalKey(instanceId: string, sessionAlias: string): stri
   return `${instanceId}\0${sessionAlias}`;
 }
 
-function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
-  if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
-  return result;
-}
-
 function utf8ToCanonicalBase64(text: string): string {
   const bytes = new TextEncoder().encode(text);
   if (typeof Buffer !== "undefined") {
@@ -74,10 +61,6 @@ function utf8ToCanonicalBase64(text: string): string {
 
 export const useTerminalStore = defineStore("terminal", () => {
   const attachments = ref(new Map<string, TerminalAttachmentView>());
-
-  // Legacy PTY callbacks (Task 23 migrates TerminalTab off these).
-  const outputCbs = new Set<OutputCb>();
-  const exitCbs = new Set<ExitCb>();
 
   const rebaseCbs = new Set<RebaseCb>();
   const bytesCbs = new Set<BytesCb>();
@@ -374,15 +357,6 @@ export const useTerminalStore = defineStore("terminal", () => {
     });
   }
 
-  // Legacy PTY frames (Task 23 removes callers).
-  function input(instanceId: string, terminalId: string, data: string): void {
-    sendWebClientMessage({ kind: "terminal-input", instanceId, terminalId, data });
-  }
-
-  function resize(instanceId: string, terminalId: string, cols: number, rows: number): void {
-    sendWebClientMessage({ kind: "terminal-resize", instanceId, terminalId, cols, rows });
-  }
-
   async function takeControl(localKey: string): Promise<TerminalAttachmentView> {
     const view = get(localKey);
     if (!view?.attachmentId || !view.generation) {
@@ -427,32 +401,6 @@ export const useTerminalStore = defineStore("terminal", () => {
     return () => attachmentExitCbs.delete(cb);
   }
 
-  // —— Legacy PTY surface (kept for TerminalTab until Task 23) ——
-
-  async function create(instanceId: string, sessionAlias: string, cols: number, rows: number): Promise<string> {
-    const result = await api.rpc<{ terminalId: string }>(instanceId, "control.terminal.create", { sessionAlias, cols, rows });
-    return unwrap(result).terminalId;
-  }
-
-  async function attach(instanceId: string, terminalId: string): Promise<TerminalAttachResult> {
-    const result = await api.rpc<TerminalAttachResult>(instanceId, "control.terminal.attach", { terminalId });
-    return unwrap(result);
-  }
-
-  function close(instanceId: string, terminalId: string): void {
-    sendWebClientMessage({ kind: "terminal-close", instanceId, terminalId });
-  }
-
-  function onOutput(cb: OutputCb): () => void {
-    outputCbs.add(cb);
-    return () => outputCbs.delete(cb);
-  }
-
-  function onExit(cb: ExitCb): () => void {
-    exitCbs.add(cb);
-    return () => exitCbs.delete(cb);
-  }
-
   function findByAttachmentId(attachmentId: string): TerminalAttachmentView | undefined {
     for (const v of attachments.value.values()) {
       if (v.attachmentId === attachmentId) return v;
@@ -468,17 +416,6 @@ export const useTerminalStore = defineStore("terminal", () => {
   }
 
   async function applyEvent(event: WebServerEvent): Promise<void> {
-    // Legacy control-event fanout.
-    if (event.kind === "control-event") {
-      const e = event.event;
-      if (e.type === "terminal-output") {
-        for (const cb of outputCbs) cb(e.terminalId, e.data, e.seq);
-      } else if (e.type === "terminal-exit") {
-        for (const cb of exitCbs) cb(e.terminalId, e.code);
-      }
-      return;
-    }
-
     if (event.kind === "terminal-role-changed") {
       const view = findByAttachmentId(event.attachmentId);
       if (!view) return;
@@ -569,19 +506,11 @@ export const useTerminalStore = defineStore("terminal", () => {
     takeControl,
     sendInput,
     sendResize,
-    input,
-    resize,
     onRebase,
     onBytes,
     onMeta,
     onAttachmentExit,
     reopenActiveAttachments,
-    // legacy
-    create,
-    attach,
-    close,
-    onOutput,
-    onExit,
     applyEvent,
   };
 });

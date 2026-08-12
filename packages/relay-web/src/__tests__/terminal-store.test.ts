@@ -1,14 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { encodeEnvelope, webEventEnvelope } from "@ganglion/xacpx-relay-protocol";
-
-vi.mock("../api/client", () => ({ api: { rpc: vi.fn(async () => ({ terminalId: "t1" })) } }));
-
-import { api } from "../api/client";
+import { encodeEnvelope, webEventEnvelope, decodeEnvelope, parseWebClientMessage } from "@ganglion/xacpx-relay-protocol";
 import {
   connectEvents,
-  nextTerminalRequestId,
-  sendWebClientMessage,
   _resetTerminalRequestStateForTests,
 } from "../api/events";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
@@ -29,12 +23,32 @@ function pushEvent(ws: FakeWS, event: Parameters<typeof webEventEnvelope>[0]): v
   ws.onmessage?.({ data: encodeEnvelope(webEventEnvelope(event)) });
 }
 
-function lastClientMsg(ws: FakeWS): unknown {
-  const raw = ws.send.mock.calls.at(-1)?.[0] as string;
-  const { decodeEnvelope, parseWebClientMessage } = require("@ganglion/xacpx-relay-protocol") as typeof import("@ganglion/xacpx-relay-protocol");
-  const decoded = decodeEnvelope(raw);
-  if (!decoded.ok) throw new Error("bad envelope");
-  return parseWebClientMessage(decoded.envelope);
+async function openAttached(
+  store: ReturnType<typeof useTerminalStore>,
+  key: string,
+  ws: FakeWS,
+  overrides?: Partial<{ terminalId: string; generation: string; attachmentId: string; role: "controller" | "spectator"; viewerCount: number }>,
+) {
+  const openPromise = store.openOrResume(key, {
+    instanceId: "i1",
+    sessionAlias: "demo",
+    cols: 80,
+    rows: 24,
+  });
+  const openDecoded = decodeEnvelope(ws.send.mock.calls.at(-1)![0] as string);
+  if (!openDecoded.ok) throw new Error("decode");
+  const openMsg = parseWebClientMessage(openDecoded.envelope) as { requestId: string };
+  pushEvent(ws, {
+    kind: "terminal-opened",
+    requestId: openMsg.requestId,
+    instanceId: "i1",
+    terminalId: overrides?.terminalId ?? "t1",
+    generation: overrides?.generation ?? "g1",
+    attachmentId: overrides?.attachmentId ?? "a1",
+    role: overrides?.role ?? "controller",
+    viewerCount: overrides?.viewerCount ?? 1,
+  });
+  return openPromise;
 }
 
 describe("terminal store", () => {
@@ -45,8 +59,6 @@ describe("terminal store", () => {
     _resetTerminalRequestStateForTests();
     vi.stubGlobal("WebSocket", FakeWS as never);
     vi.stubGlobal("location", { protocol: "http:", host: "x" } as never);
-    vi.mocked(api.rpc).mockReset();
-    vi.mocked(api.rpc).mockResolvedValue({ terminalId: "t1" } as never);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -61,48 +73,18 @@ describe("terminal store", () => {
 
     const store = useTerminalStore();
     const key = terminalLocalKey("i1", "demo");
-    const openPromise = store.openOrResume(key, {
-      instanceId: "i1",
-      sessionAlias: "demo",
-      cols: 80,
-      rows: 24,
-    });
-
-    // Find the open requestId from the wire.
-    const { decodeEnvelope, parseWebClientMessage } = await import("@ganglion/xacpx-relay-protocol");
-    const openRaw = ws.send.mock.calls[0][0] as string;
-    const openDecoded = decodeEnvelope(openRaw);
-    if (!openDecoded.ok) throw new Error("decode");
-    const openMsg = parseWebClientMessage(openDecoded.envelope) as { requestId: string };
-    pushEvent(ws, {
-      kind: "terminal-opened",
-      requestId: openMsg.requestId,
-      instanceId: "i1",
-      terminalId: "term-1",
-      generation: "gen-1",
-      attachmentId: "att-1",
-      role: "controller",
-      viewerCount: 1,
-    });
-
-    const view = await openPromise;
+    const view = await openAttached(store, key, ws, { terminalId: "term-1", attachmentId: "att-1" });
     expect(view.localKey).toBe(key);
     expect(view.terminalId).toBe("term-1");
     expect(view.attachmentId).toBe("att-1");
     expect(view.role).toBe("controller");
 
-    const streamMsg = parseWebClientMessage(
-      (decodeEnvelope(ws.send.mock.calls[1][0] as string) as { ok: true; envelope: unknown }).envelope as never,
-    );
-    // Fix: decode properly
     const streamDecoded = decodeEnvelope(ws.send.mock.calls[1][0] as string);
     if (!streamDecoded.ok) throw new Error("decode stream");
     expect(parseWebClientMessage(streamDecoded.envelope)).toMatchObject({
       kind: "terminal-stream-start",
       attachmentId: "att-1",
     });
-
-    // Same local key, different terminalId still addresses the same tab entry.
     expect(store.get(key)?.terminalId).toBe("term-1");
   });
 
@@ -111,28 +93,7 @@ describe("terminal store", () => {
     FakeWS.instances[0].onopen?.();
     const store = useTerminalStore();
     const key = terminalLocalKey("i1", "demo");
-
-    const openPromise = store.openOrResume(key, {
-      instanceId: "i1",
-      sessionAlias: "demo",
-      cols: 80,
-      rows: 24,
-    });
-    const { decodeEnvelope, parseWebClientMessage } = await import("@ganglion/xacpx-relay-protocol");
-    const openDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls[0][0] as string);
-    if (!openDecoded.ok) throw new Error("decode");
-    const openMsg = parseWebClientMessage(openDecoded.envelope) as { requestId: string };
-    pushEvent(FakeWS.instances[0], {
-      kind: "terminal-opened",
-      requestId: openMsg.requestId,
-      instanceId: "i1",
-      terminalId: "t1",
-      generation: "g1",
-      attachmentId: "a1",
-      role: "spectator",
-      viewerCount: 2,
-    });
-    await openPromise;
+    await openAttached(store, key, FakeWS.instances[0], { role: "spectator", viewerCount: 2 });
 
     const before = FakeWS.instances[0].send.mock.calls.length;
     store.sendInput(key, "x");
@@ -168,27 +129,7 @@ describe("terminal store", () => {
     store.onRebase((_k, kf) => { rebases.push(kf); });
     store.onBytes((_k, d) => { bytes.push(d); });
 
-    const openPromise = store.openOrResume(key, {
-      instanceId: "i1",
-      sessionAlias: "demo",
-      cols: 80,
-      rows: 24,
-    });
-    const { decodeEnvelope, parseWebClientMessage } = await import("@ganglion/xacpx-relay-protocol");
-    const openDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls[0][0] as string);
-    if (!openDecoded.ok) throw new Error("decode");
-    const openMsg = parseWebClientMessage(openDecoded.envelope) as { requestId: string };
-    pushEvent(FakeWS.instances[0], {
-      kind: "terminal-opened",
-      requestId: openMsg.requestId,
-      instanceId: "i1",
-      terminalId: "t1",
-      generation: "g1",
-      attachmentId: "a1",
-      role: "controller",
-      viewerCount: 1,
-    });
-    await openPromise;
+    await openAttached(store, key, FakeWS.instances[0]);
     FakeWS.instances[0].send.mockClear();
 
     await store.applyEvent({
@@ -248,27 +189,7 @@ describe("terminal store", () => {
     FakeWS.instances[0].onopen?.();
     const store = useTerminalStore();
     const key = terminalLocalKey("i1", "demo");
-    const openPromise = store.openOrResume(key, {
-      instanceId: "i1",
-      sessionAlias: "demo",
-      cols: 80,
-      rows: 24,
-    });
-    const { decodeEnvelope, parseWebClientMessage } = await import("@ganglion/xacpx-relay-protocol");
-    const openDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls[0][0] as string);
-    if (!openDecoded.ok) throw new Error("decode");
-    const openMsg = parseWebClientMessage(openDecoded.envelope) as { requestId: string };
-    pushEvent(FakeWS.instances[0], {
-      kind: "terminal-opened",
-      requestId: openMsg.requestId,
-      instanceId: "i1",
-      terminalId: "t1",
-      generation: "g1",
-      attachmentId: "a1",
-      role: "controller",
-      viewerCount: 1,
-    });
-    await openPromise;
+    await openAttached(store, key, FakeWS.instances[0]);
 
     const termPromise = store.terminate(key);
     const termDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls.at(-1)![0] as string);
@@ -285,28 +206,7 @@ describe("terminal store", () => {
     expect(store.get(key)?.active).toBe(false);
     expect(store.get(key)?.recovery.phase).toBe("exited");
 
-    // Re-open then simulate offline terminate.
-    const open2 = store.openOrResume(key, {
-      instanceId: "i1",
-      sessionAlias: "demo",
-      cols: 80,
-      rows: 24,
-    });
-    const open2Decoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls.at(-1)![0] as string);
-    if (!open2Decoded.ok) throw new Error("decode");
-    const open2Msg = parseWebClientMessage(open2Decoded.envelope) as { requestId: string };
-    pushEvent(FakeWS.instances[0], {
-      kind: "terminal-opened",
-      requestId: open2Msg.requestId,
-      instanceId: "i1",
-      terminalId: "t1",
-      generation: "g2",
-      attachmentId: "a2",
-      role: "controller",
-      viewerCount: 1,
-    });
-    await open2;
-
+    await openAttached(store, key, FakeWS.instances[0], { generation: "g2", attachmentId: "a2" });
     const offlineTerm = store.terminate(key);
     FakeWS.instances[0].onclose?.();
     await expect(offlineTerm).rejects.toMatchObject({ code: "instance-offline" });
@@ -319,27 +219,7 @@ describe("terminal store", () => {
     FakeWS.instances[0].onopen?.();
     const store = useTerminalStore();
     const key = terminalLocalKey("i1", "demo");
-    const openPromise = store.openOrResume(key, {
-      instanceId: "i1",
-      sessionAlias: "demo",
-      cols: 80,
-      rows: 24,
-    });
-    const { decodeEnvelope, parseWebClientMessage } = await import("@ganglion/xacpx-relay-protocol");
-    const openDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls[0][0] as string);
-    if (!openDecoded.ok) throw new Error("decode");
-    const openMsg = parseWebClientMessage(openDecoded.envelope) as { requestId: string };
-    pushEvent(FakeWS.instances[0], {
-      kind: "terminal-opened",
-      requestId: openMsg.requestId,
-      instanceId: "i1",
-      terminalId: "t1",
-      generation: "g1",
-      attachmentId: "a1",
-      role: "controller",
-      viewerCount: 1,
-    });
-    await openPromise;
+    await openAttached(store, key, FakeWS.instances[0]);
     FakeWS.instances[0].send.mockClear();
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -359,47 +239,5 @@ describe("terminal store", () => {
       kind: "terminal-detach",
       attachmentId: "a1",
     });
-  });
-
-  // Legacy surface still used by TerminalTab until Task 23.
-  it("legacy create/attach/input/resize/close still work", async () => {
-    const { sendWebClientMessage: send } = await import("../api/events");
-    const spy = vi.spyOn(await import("../api/events"), "sendWebClientMessage");
-    // Use real send through store after connecting.
-    connectEvents(() => {});
-    FakeWS.instances[0].onopen?.();
-    const s = useTerminalStore();
-    const id = await s.create("i1", "demo", 100, 30);
-    expect(id).toBe("t1");
-    expect(api.rpc).toHaveBeenCalledWith("i1", "control.terminal.create", { sessionAlias: "demo", cols: 100, rows: 30 });
-
-    vi.mocked(api.rpc).mockResolvedValueOnce({ ok: true, buffer: "scroll", lastSeq: 7 } as never);
-    await expect(s.attach("i1", "term-x")).resolves.toEqual({ ok: true, buffer: "scroll", lastSeq: 7 });
-
-    s.input("i1", "t1", "ls\n");
-    s.resize("i1", "t1", 90, 20);
-    s.close("i1", "t1");
-    const { decodeEnvelope, parseWebClientMessage } = await import("@ganglion/xacpx-relay-protocol");
-    const kinds = FakeWS.instances[0].send.mock.calls.map((c) => {
-      const d = decodeEnvelope(c[0] as string);
-      if (!d.ok) return null;
-      return (parseWebClientMessage(d.envelope) as { kind: string }).kind;
-    });
-    expect(kinds).toContain("terminal-input");
-    expect(kinds).toContain("terminal-resize");
-    expect(kinds).toContain("terminal-close");
-    void send; void spy;
-  });
-
-  it("legacy applyEvent forwards terminal-output to onOutput subscribers", async () => {
-    const s = useTerminalStore();
-    const out = vi.fn();
-    const exit = vi.fn();
-    s.onOutput(out);
-    s.onExit(exit);
-    await s.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "t1", seq: 0, data: "hi" } } as never);
-    await s.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-exit", terminalId: "t1", code: 0 } } as never);
-    expect(out).toHaveBeenCalledWith("t1", "hi", 0);
-    expect(exit).toHaveBeenCalledWith("t1", 0);
   });
 });

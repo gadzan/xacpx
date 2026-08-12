@@ -3,12 +3,18 @@ import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
-// Stub the WS client so jsdom needs no real socket. sendWebClientMessage is exercised
-// indirectly: terminals.close() (spied on, not mocked away) calls through to it.
+// Stub the WS client so jsdom needs no real socket.
 vi.mock("../api/events", () => ({
   connectEvents: () => vi.fn(),
   sendWebClientMessage: vi.fn(),
   sendSubscribe: vi.fn(),
+  TerminalRequestError: class extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.code = code;
+    }
+  },
 }));
 // DashboardView uses useRouter()/<router-link>; mock to avoid a real router.
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -19,8 +25,9 @@ import FileViewer from "../components/FileViewer.vue";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useInstancesStore, type InstanceView } from "../stores/instances";
-import { useTerminalStore } from "../stores/terminal";
-import { saveTerminalId, loadTerminalId } from "../lib/terminal-sessions";
+import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
+import { initialRecoveryState } from "../lib/terminal-recovery";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 
 const stubs = {
   ChatPane: { template: '<div data-test="stub-chat"/>' },
@@ -101,15 +108,27 @@ test("opening a terminal via center-tabs mounts a TerminalTab pane", async () =>
 });
 
 test("the header terminal button opens/focuses the current session's terminal tab", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    instances: [{
+      id: "i1",
+      name: "pc",
+      online: true,
+      lastSeenAt: null,
+      capabilities: [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1],
+    }],
+  }), { status: 200 })));
   const wrapper = mountDash();
   await flushPromises();
   const key = selectSession();
   await flushPromises();
 
+  const btn = wrapper.find('[data-test="toggle-terminal"]');
+  expect(btn.attributes("disabled")).toBeUndefined();
+
   const centerTabs = useCenterTabsStore();
   const spy = vi.spyOn(centerTabs, "openTerminal");
 
-  await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
+  await btn.trigger("click");
   await flushPromises();
 
   expect(spy).toHaveBeenCalledWith(key);
@@ -171,12 +190,11 @@ test("out-of-band session removal prunes that session's center-tabs, but leaves 
   centerTabs.openTerminal(goneKey);
   centerTabs.openFile(keepKey, "b.ts");
   centerTabs.openFile(loadingKey, "c.ts");
-  saveTerminalId(goneKey, "tid-prune"); // the pruned session has a live, persisted terminal
   await flushPromises();
   expect(centerTabs.tabsFor(goneKey).length).toBe(2);
 
   const terminals = useTerminalStore();
-  const closeSpy = vi.spyOn(terminals, "close");
+  const detachSpy = vi.spyOn(terminals, "detach");
 
   // Simulate a SERVER-driven removal (deleted from the CLI / WeChat / another browser):
   // the session vanishes from i1's list, but sessionsLoaded stays true — exactly what a
@@ -187,17 +205,12 @@ test("out-of-band session removal prunes that session's center-tabs, but leaves 
   expect(centerTabs.tabsFor(goneKey)).toEqual([]); // reconciled away
   expect(centerTabs.tabsFor(keepKey).length).toBe(1); // untouched — still a valid session
   expect(centerTabs.tabsFor(loadingKey).length).toBe(1); // guarded — instance still loading
-  // The pruned session's live terminal PTY must be killed and its persisted id forgotten —
-  // otherwise the process leaks and a later re-attach would resurrect a dead id.
-  expect(closeSpy).toHaveBeenCalledWith("i1", "tid-prune");
-  expect(loadTerminalId(goneKey)).toBeNull();
+  // Browser detaches only; channel-relay owns resource retirement.
+  expect(detachSpy).toHaveBeenCalledWith(terminalLocalKey("i1", "demo"));
 });
 
-// The two tests below drive `requestCloseTab` via the pane's `@close` emit — the same idiom
-// dashboard-responsive.test.ts uses for FileViewer's close test. TerminalTab is stubbed
-// elsewhere in this file (`stub-term`, no real close control), so a close-emitting stub is
-// substituted for just these two tests.
-test("closing a terminal tab kills its PTY and clears the persisted id", async () => {
+// Terminal close is a confirmed global terminate — cancel leaves the tab; confirm terminates.
+test("closing a terminal tab confirms then terminates the shared resource", async () => {
   const termStub = { name: "TerminalTab", template: '<div data-test="stub-term" />', emits: ["close"] };
   const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
   await flushPromises();
@@ -205,19 +218,57 @@ test("closing a terminal tab kills its PTY and clears the persisted id", async (
   await flushPromises();
   const centerTabs = useCenterTabsStore();
   centerTabs.openTerminal(key);
-  saveTerminalId(key, "tid-1");
   await flushPromises();
   const terminals = useTerminalStore();
-  const closeSpy = vi.spyOn(terminals, "close");
+  const localKey = terminalLocalKey("i1", "demo");
+  // Seed an attachment so terminate has identity to send.
+  terminals.attachments.set(localKey, {
+    localKey,
+    instanceId: "i1",
+    sessionAlias: "demo",
+    cols: 80,
+    rows: 24,
+    terminalId: "t1",
+    generation: "g1",
+    attachmentId: "a1",
+    role: "controller",
+    viewerCount: 1,
+    recovery: initialRecoveryState("g1"),
+    active: true,
+    terminatePending: false,
+    terminateRetryable: false,
+  });
+  const terminateSpy = vi.spyOn(terminals, "terminate").mockResolvedValue({ status: "terminated" });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
 
   wrapper.findComponent(TerminalTab).vm.$emit("close");
   await flushPromises();
 
-  expect(closeSpy).toHaveBeenCalledWith(expect.any(String), "tid-1");
-  expect(loadTerminalId(key)).toBeNull();
+  expect(terminateSpy).toHaveBeenCalledWith(localKey);
+  expect(centerTabs.tabsFor(key).some((t) => t.kind === "terminal")).toBe(false);
 });
 
-test("closing a FILE tab does not kill any terminal PTY", async () => {
+test("canceling terminal close confirm does not terminate", async () => {
+  const termStub = { name: "TerminalTab", template: '<div data-test="stub-term" />', emits: ["close"] };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
+  await flushPromises();
+  const key = selectSession();
+  await flushPromises();
+  const centerTabs = useCenterTabsStore();
+  centerTabs.openTerminal(key);
+  await flushPromises();
+  const terminals = useTerminalStore();
+  const terminateSpy = vi.spyOn(terminals, "terminate");
+  vi.spyOn(window, "confirm").mockReturnValue(false);
+
+  wrapper.findComponent(TerminalTab).vm.$emit("close");
+  await flushPromises();
+
+  expect(terminateSpy).not.toHaveBeenCalled();
+  expect(centerTabs.tabsFor(key).some((t) => t.kind === "terminal")).toBe(true);
+});
+
+test("closing a FILE tab does not terminate any terminal", async () => {
   const fileStub = { name: "FileViewer", template: '<div data-test="stub-file" />', emits: ["close", "dirty-change"] };
   const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, FileViewer: fileStub } } });
   await flushPromises();
@@ -227,21 +278,17 @@ test("closing a FILE tab does not kill any terminal PTY", async () => {
   centerTabs.openFile(key, "a.ts");
   await flushPromises();
   const terminals = useTerminalStore();
-  const closeSpy = vi.spyOn(terminals, "close");
+  const terminateSpy = vi.spyOn(terminals, "terminate");
 
   wrapper.findComponent(FileViewer).vm.$emit("close");
   await flushPromises();
 
-  expect(closeSpy).not.toHaveBeenCalled();
+  expect(terminateSpy).not.toHaveBeenCalled();
   expect(centerTabs.tabsFor(key)).toEqual([]);
 });
 
-// Regression for the tab-strip close bypass: CenterTabStrip's own X button used to call
-// store.closeTabGuarded() directly, skipping requestCloseTab's terminal-PTY-kill logic
-// entirely. This test mounts the REAL CenterTabStrip (excluded from the shared `stubs` map
-// below) so its actual `data-test="tab-close"` button is clickable, unlike the tests above
-// which drive requestCloseTab via a stubbed pane's `@close` emit.
-test("clicking the tab strip's own X button kills the terminal's PTY and clears the persisted id", async () => {
+// Regression: CenterTabStrip X must route through requestCloseTerminal (confirm + terminate).
+test("clicking the tab strip's own X button terminates after confirm", async () => {
   const { CenterTabStrip: _stubbedStrip, ...stubsWithoutStrip } = stubs;
   const wrapper = mount(DashboardView, { global: { stubs: stubsWithoutStrip } });
   await flushPromises();
@@ -249,19 +296,32 @@ test("clicking the tab strip's own X button kills the terminal's PTY and clears 
   await flushPromises();
   const centerTabs = useCenterTabsStore();
   centerTabs.openTerminal(key);
-  saveTerminalId(key, "tid-2");
   await flushPromises();
   const terminals = useTerminalStore();
-  const closeSpy = vi.spyOn(terminals, "close");
+  const localKey = terminalLocalKey("i1", "demo");
+  terminals.attachments.set(localKey, {
+    localKey,
+    instanceId: "i1",
+    sessionAlias: "demo",
+    cols: 80,
+    rows: 24,
+    terminalId: "t1",
+    generation: "g1",
+    attachmentId: "a1",
+    role: "controller",
+    viewerCount: 1,
+    recovery: initialRecoveryState("g1"),
+    active: true,
+    terminatePending: false,
+    terminateRetryable: false,
+  });
+  const terminateSpy = vi.spyOn(terminals, "terminate").mockResolvedValue({ status: "terminated" });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
 
-  // Both the mobile (bare) and desktop standalone strips are mounted in jsdom (media
-  // queries aren't evaluated), so more than one real "tab-close" button may exist for the
-  // same terminal tab — any one of them must route through requestCloseTab.
   const closeButtons = wrapper.findAll('[data-test="tab-close"]');
   expect(closeButtons.length).toBeGreaterThan(0);
   await closeButtons[0].trigger("click");
   await flushPromises();
 
-  expect(closeSpy).toHaveBeenCalledWith("i1", "tid-2");
-  expect(loadTerminalId(key)).toBeNull();
+  expect(terminateSpy).toHaveBeenCalledWith(localKey);
 });

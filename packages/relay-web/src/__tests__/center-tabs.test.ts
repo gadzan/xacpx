@@ -149,11 +149,11 @@ describe("center-tabs store", () => {
     expect(s.tabsFor(sessionKey("x", "y"))).toEqual([]);
   });
 
-  it("openTerminal marks the tab autostart:true (fresh user action spawns)", () => {
+  it("openTerminal adds a terminal tab without autostart metadata", () => {
     const s = useCenterTabsStore();
     s.openTerminal(K);
     const term = s.tabsFor(K).find((t) => t.kind === "terminal");
-    expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(true);
+    expect(term).toEqual({ kind: "terminal", id: "terminal" });
   });
 
   it("persists tab state to sessionStorage after the debounce window", async () => {
@@ -223,14 +223,14 @@ describe("center-tabs store", () => {
     expect(s.activeFor(K)).toBe("file:a.ts");
   });
 
-  it("forces restored terminal tabs to autostart:false", () => {
+  it("strips legacy autostart from restored terminal tabs", () => {
     sessionStorage.setItem(
       "xacpx.center-tabs.v1",
       JSON.stringify({ [K]: { tabs: [{ kind: "terminal", id: "terminal", autostart: true }], activeId: "terminal" } }),
     );
     const s = useCenterTabsStore();
     const term = s.tabsFor(K).find((t) => t.kind === "terminal");
-    expect(term && term.kind === "terminal" ? term.autostart : undefined).toBe(false);
+    expect(term).toEqual({ kind: "terminal", id: "terminal" });
   });
 
   it("discards corrupt storage and bad session entries without throwing", () => {

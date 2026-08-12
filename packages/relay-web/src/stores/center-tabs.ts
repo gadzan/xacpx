@@ -8,7 +8,7 @@ export type CenterTab =
   // bumped on every openFile so re-opening the SAME file at the same line still re-scrolls.
   | { kind: "file"; id: string; path: string; targetLine?: number; targetRev?: number; dirty?: boolean }
   | { kind: "diff"; id: string; path: string }
-  | { kind: "terminal"; id: string; autostart?: boolean };
+  | { kind: "terminal"; id: string };
 
 interface SessionTabs {
   tabs: CenterTab[];
@@ -26,10 +26,9 @@ export const TAB_DROP_END = "__end__";
 
 const STORAGE_KEY = "xacpx.center-tabs.v1";
 
-/** Read persisted tab sets from sessionStorage. Restored terminal tabs can't reconnect to
- *  their old PTY, so force `autostart:false` — they render a lazy "start" placeholder instead
- *  of spawning a fresh shell on mount. Corrupt data or malformed session entries are dropped
- *  (bad entry skipped, good entries kept) so one broken record can't blank the whole view. */
+/** Read persisted tab sets from sessionStorage. Terminal tabs restore as layout-only —
+ *  openOrResume re-attaches to the durable RMUX resource. Corrupt data or malformed
+ *  session entries are dropped (bad entry skipped, good entries kept). */
 function hydrate(): Record<string, SessionTabs> {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
@@ -40,9 +39,11 @@ function hydrate(): Record<string, SessionTabs> {
     for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
       const v = val as { tabs?: unknown; activeId?: unknown };
       if (!Array.isArray(v.tabs) || typeof v.activeId !== "string") continue;
-      const tabs = (v.tabs as CenterTab[]).map((t) =>
-        t && t.kind === "terminal" ? { ...t, autostart: false } : t,
-      );
+      // Strip legacy autostart field if present.
+      const tabs = (v.tabs as CenterTab[]).map((t) => {
+        if (!t || t.kind !== "terminal") return t;
+        return { kind: "terminal" as const, id: t.id };
+      });
       out[key] = { tabs, activeId: v.activeId };
     }
     return out;
@@ -109,7 +110,7 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
   }
 
   function openTerminal(key: string): void {
-    upsertAndActivate(key, { kind: "terminal", id: "terminal", autostart: true });
+    upsertAndActivate(key, { kind: "terminal", id: "terminal" });
   }
 
   function setActive(key: string, id: string): void {
