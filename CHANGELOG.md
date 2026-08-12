@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.20.3] - 2026-08-12
+
+### Added
+
+- Windows: auto-migrate raw-command sessions to structured `acpx` argv, reusing acpx 0.13 structured argv recovery for legacy sessions and failing closed on Path A state writes.
+
+### Fixed
+
+- Sessions: auto-derive a unique alias when the desired session name collides with an archived session, and exclude archived sessions from the web UI alias pre-check.
+
+## [relay 0.11.3] - 2026-08-12
+
+### Fixed
+
+- Relay-web: baseline the composer stack on the message card top so status/plan layers don't overlap the card edge.
+
 ## [0.20.3-beta.1] - 2026-08-10
 
 ### Fixed
