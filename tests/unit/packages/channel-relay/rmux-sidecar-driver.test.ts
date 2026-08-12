@@ -6,7 +6,10 @@ import {
   RmuxDriverCrashedError,
   RmuxInvalidUtf8InputError,
 } from "../../../../packages/channel-relay/src/terminal/rmux-driver";
-import { RmuxSidecarDriver } from "../../../../packages/channel-relay/src/terminal/rmux-sidecar-driver";
+import {
+  RmuxSidecarDriver,
+  type RmuxRecoveryEvent,
+} from "../../../../packages/channel-relay/src/terminal/rmux-sidecar-driver";
 
 function makeFakeChild() {
   const stdin = new PassThrough();
