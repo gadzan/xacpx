@@ -284,7 +284,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const state = await stateStore.load();
   // Auto-migrate any state.json session whose recorded raw command contains
   // whitespace (the Windows fail-closed trigger) to the structured argv form.
-  // Idempotent and best-effort: errors are logged, never block startup.
+  // Idempotent. Per-session proof failures are fail-soft (logged); locked
+  // state-write failures and session-overlay conflicts fail closed.
   //
   // Deliberately NOT executed here. buildApp runs BEFORE the runtime consumer
   // lock is acquired (see run-console.ts), and this function reads AND writes
@@ -321,12 +322,6 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         agent: m.agent,
         argv: JSON.stringify(m.argv),
         acpxAgent: m.acpxAgent,
-      });
-    }
-    for (const update of argvMigration.configUpdates) {
-      await logger.info("config.argv_added", "added argv to agent config", {
-        agent: update.agent,
-        argv: JSON.stringify(update.argv),
       });
     }
     for (const skip of argvMigration.skipped) {

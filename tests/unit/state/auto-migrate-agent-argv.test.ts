@@ -278,7 +278,6 @@ test("io: migrates state to session-local structured argv via overlay alias", as
     expect(result.migrated).toEqual([
       { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
     ]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toEqual([]);
 
     const stateAfter = await readJson(statePath);
@@ -331,7 +330,6 @@ test("io: backfills only state when config already has matching argv", async () 
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toHaveLength(1);
-    expect(result.configUpdates).toEqual([]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -370,7 +368,6 @@ test("io: skips session when acpx record is missing", async () => {
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.alias).toBe("relay:demo");
     expect(result.skipped[0]!.reason).toMatch(/cannot prove identity/);
@@ -415,7 +412,6 @@ test("io: idempotent on second run (session-local alias is content-stable)", asy
     });
     expect(first.migrated).toHaveLength(1);
     expect(first.migrated[0]?.acpxAgent).toBe(deriveAgentAlias("kimi", ["kimi", "acp"]));
-    expect(first.configUpdates).toHaveLength(0);
     expect(first.skipped).toHaveLength(0);
 
     const second = await migrateStateAgentArgv({
@@ -424,7 +420,6 @@ test("io: idempotent on second run (session-local alias is content-stable)", asy
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(second.migrated).toEqual([]);
-    expect(second.configUpdates).toEqual([]);
     expect(second.skipped).toEqual([]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -470,7 +465,6 @@ test("io: dry-run reports session-local plan without writing", async () => {
       dryRun: true,
     });
     expect(result.migrated).toEqual([{ alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) }]);
-    expect(result.configUpdates).toEqual([]);
 
     expect(await readFile(statePath, "utf8")).toBe(stateRaw);
     expect(await readFile(configPath, "utf8")).toBe(configRaw);
@@ -487,7 +481,7 @@ test("io: returns empty result when state.json is missing", async () => {
       statePath, configPath, acpxSessionsDir: acpxDir, logger: createNoopAppLogger(),
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
-    expect(result).toEqual({ migrated: [], skipped: [], configUpdates: [], errors: [], stateWriteFailed: false });
+    expect(result).toEqual({ migrated: [], skipped: [], errors: [], stateWriteFailed: false });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -641,7 +635,6 @@ test("issue 1: Path A migrates matching session independently of a conflicting s
         acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
       },
     ]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.alias).toBe("relay:demo-b");
     expect(result.skipped[0]!.reason).toMatch(/does not match the current driver's default launch/);
@@ -707,7 +700,6 @@ test("issue 1: agents with unanimous argv identity get a shared session-local al
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toHaveLength(2);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toEqual([]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -954,7 +946,6 @@ test("io: rejects acpx record with mismatched argv identity at the I/O seam", as
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/cannot prove identity/);
   } finally {
@@ -986,7 +977,6 @@ test("issue 5: surfaces I/O errors in result.errors and skips writes", async () 
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toEqual([]);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toMatch(/state\.json.*simulated EIO/);
@@ -1050,7 +1040,6 @@ test("issue 2 v2: fresh-state re-read failure aborts the migration", async () =>
     });
 
     // Neither file is touched.
-    expect(result.configUpdates).toEqual([]);
     expect(result.migrated).toEqual([]);
     expect(result.errors.some((e) => e.includes("simulated EIO re-reading state.json"))).toBe(true);
     expect(await readFile(configPath, "utf8")).toBe(configBefore);
@@ -1101,7 +1090,6 @@ test("issue 3 v2: acpx record read failure populates errors", async () => {
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/cannot prove identity/);
     // The EIO is now in errors (issue 3 v2).
@@ -1268,7 +1256,6 @@ test("issue 1 v3: bucket of fully-migrated sessions is steady state, not a skip"
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.skipped).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.migrated).toEqual([]);
     expect(result.errors).toEqual([]);
   } finally {
@@ -1335,7 +1322,7 @@ test("issue 1 v3: argv-only sessions are repaired with canonical alias", async (
 test("issue 1 v4: derived-argv session (opencode [driver, acp]) is NOT sticky even with transport_acpx_agent set", async () => {
   // A is backfillable with a custom argv (NOT derived). B has the opencode
   // default argv ["opencode", "acp"] which `isDerivedAgentArgv("opencode", ...)`
-  // returns true for. The naive isSticky (transport_acpx_agent + argv) would
+  // returns true for. A naive "has transport_acpx_agent + argv" check would
   // have excluded B from the safety bucket, letting the migration write
   // foo.argv = ["opencode", "--custom-acp"] and silently re-key B via
   // step 3. v4 uses the same `isDerivedAgentArgv` as SessionService.
@@ -1382,7 +1369,6 @@ test("issue 1 v4: derived-argv session (opencode [driver, acp]) is NOT sticky ev
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(2);
     const skippedAliases = result.skipped.map((s) => s.alias).sort();
     expect(skippedAliases).toEqual(["relay:demo-a", "relay:demo-b"]);
@@ -1500,7 +1486,6 @@ test("issue 2 v4: Path A migrates a safe session even when a sibling has unknown
         acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]),
       },
     ]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped.some((s) => s.alias === "relay:demo-b")).toBe(false);
     const stateAfter = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
     const sessionsAfter = stateAfter.sessions as Record<string, Record<string, unknown>>;
@@ -1565,7 +1550,6 @@ test("production: acpx builtin default argv (kimi) becomes a session-local overl
     expect(result.migrated).toEqual([
       { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
     ]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toEqual([]);
     const configAfter = await readJson(configPath);
     // No global config write under path A: the historical session sticks to
@@ -1630,7 +1614,6 @@ test("issue 1 v5: historical custom argv is left untouched (no global write, no 
       resolveDefaultArgv: (n: string) => defaultArgvResolver(n),
     });
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.alias).toBe("relay:demo");
     expect(result.skipped[0]!.reason).toMatch(/does not match the current driver's default launch/);
@@ -1718,7 +1701,6 @@ test("io: single-token non-lossless command consults the acpx record (no whitesp
     });
     expect(recordCalls).toBe(1);
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/cannot prove identity/);
   } finally {
@@ -1776,7 +1758,6 @@ test("issue 1 v7: derived-launch default (resolver source=derived) is never elev
     });
 
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/derived launch/);
     expect(await readFile(configPath, "utf8")).toBe(configBefore);
@@ -1830,7 +1811,6 @@ test("issue 1 v7: production managed codex pin (derived) is NOT elevated, no ove
     });
 
     expect(result.migrated).toEqual([]);
-    expect(result.configUpdates).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]!.reason).toMatch(/derived launch/);
     expect(await readFile(configPath, "utf8")).toBe(configBefore);
@@ -1917,7 +1897,6 @@ test("issue 1 v8 (HIGH): .acpxrc.json project override is honored — migration 
 
     // (b) The historical session got a session-local structured argv
     // (alias + argv). It sticks to the alias via resolveLaunchSpec step 2.
-    expect(result.configUpdates).toEqual([]);
     expect(result.migrated).toEqual([
       { alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: deriveAgentAlias("kimi", ["kimi", "acp"]) },
     ]);

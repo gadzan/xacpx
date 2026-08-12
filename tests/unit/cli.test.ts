@@ -1924,7 +1924,7 @@ test("adapter registry CLI persists and resets only transport.adapterRegistry", 
 });
 
 function fakeMigrateResult(overrides: Partial<StateArgvMigrationResult> = {}): StateArgvMigrationResult {
-  return { migrated: [], skipped: [], configUpdates: [], errors: [], stateWriteFailed: false, ...overrides };
+  return { migrated: [], skipped: [], errors: [], stateWriteFailed: false, ...overrides };
 }
 
 function stoppedController() {
@@ -2047,8 +2047,7 @@ test("migrate argv --dry-run plans without acquiring the runtime lock", async ()
         release: async () => {},
       }),
       migrate: async () => fakeMigrateResult({
-        migrated: [{ alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"] }],
-        configUpdates: [{ agent: "kimi", argv: ["kimi", "acp"] }],
+        migrated: [{ alias: "relay:demo", agent: "kimi", argv: ["kimi", "acp"], acpxAgent: "xacpx-managed-kimi-test" }],
       }),
     },
     print: () => {},

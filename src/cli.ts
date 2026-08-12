@@ -1265,23 +1265,20 @@ async function migrateArgvCli(deps: {
       dryRun: deps.dryRun,
     });
     if (deps.dryRun) {
-      deps.print(`[dry-run] would migrate ${result.migrated.length} session(s), update ${result.configUpdates.length} agent(s); ${result.skipped.length} skipped; ${result.errors.length} error(s). Note: the snapshot may be stale if a runtime is active.\n`);
+      deps.print(`[dry-run] would migrate ${result.migrated.length} session(s); ${result.skipped.length} skipped; ${result.errors.length} error(s). Note: the snapshot may be stale if a runtime is active.\n`);
     } else {
-      deps.print(`migrated ${result.migrated.length} session(s), updated ${result.configUpdates.length} agent(s); ${result.skipped.length} skipped; ${result.errors.length} error(s)`);
+      deps.print(`migrated ${result.migrated.length} session(s); ${result.skipped.length} skipped; ${result.errors.length} error(s)`);
     }
     for (const m of result.migrated) {
       deps.print(`  + ${m.alias} (agent=${m.agent}, acpxAgent=${m.acpxAgent}, argv=${JSON.stringify(m.argv)})`);
-    }
-    for (const update of result.configUpdates) {
-      deps.print(`  config: ${update.agent}.argv = ${JSON.stringify(update.argv)}`);
     }
     for (const skip of result.skipped) {
       deps.print(`  skip ${skip.alias}: ${skip.reason}`);
     }
     // Errors are the operator's main signal that something real went wrong
-    // (config patch failed, state write failed, etc). Daemon mode swallows them
-    // into the app log; here we want them on stderr and a non-zero exit so
-    // automation never silently hides a partial migration.
+    // (state write failed, corrupt acpx index, etc). Daemon mode logs them;
+    // here we want them on stderr and a non-zero exit so automation never
+    // silently hides a partial migration.
     for (const err of result.errors) {
       deps.stderr(`error: ${err}\n`);
     }

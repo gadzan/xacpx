@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-  isDerivedAgentArgv,
   renderAgentArgvIdentity,
   deriveAgentAlias,
   isCanonicalManagedAliasForArgv,
@@ -153,24 +152,18 @@ export type AcpxRecordReader = (
   expectedCommand?: string,
 ) => Promise<Record<string, unknown> | null>;
 
-export interface StateArgvMigrationConfigUpdate {
-  agent: string;
-  argv: string[];
-}
-
 /**
  * Where a driver's effective default argv came from. Provenance decides
- * whether the migration may elevate that argv into explicit
- * `agents.<name>.argv`:
+ * whether Path A may provision a session-local `xacpx-managed-*` alias:
  *
  * - `bare-acpx-registry`: acpx's builtin registry default (kimi →
  *   `["kimi","acp"]`). Stable across pin bumps — safe to elevate.
  * - `explicit-config`: the agent already carries its own `argv` in config.
- *   Elevating just mirrors what is already there (state backfill).
+ *   Session backfill mirrors that identity into a session-local alias.
  * - `derived`: managed adapter npx pin, hermes shim, or opencode/kilocode
  *   local fallback. `SessionService` deliberately recomputes these on
  *   restart so the session identity follows the CURRENT pin/config —
- *   freezing one into explicit argv would make future adapter-version or
+ *   freezing one into a sticky alias would make future adapter-version or
  *   `preferLocalAgents` changes silently ineffective. NEVER elevated.
  */
 export type DefaultArgvSource = "explicit-config" | "bare-acpx-registry" | "derived";
@@ -183,28 +176,6 @@ export interface DefaultArgvResolution {
 export interface StateArgvMigrationPlanEntry {
   alias: string;
   agent: string;
-  /**
-   * Canonical argv identity for the per-agent safety check. This is
-   * `renderAgentArgvIdentity(argv)` if the session already has
-   * `transport_agent_argv`, otherwise the recorded raw `transport_agent_command`
-   * itself (which is also the single-token raw form). Undefined only
-   * for sessions that have neither argv nor a recorded command.
-   *
-   * The check exists because `resolveLaunchSpec` step 3 (config argv)
-   * beats step 4 (recorded raw command) — writing `agents.<name>.argv`
-   * would silently re-key any non-sticky session whose identity does
-   * not match. So every non-sticky session with a target identity for
-   * the same agent must agree on it.
-   */
-  argvIdentity?: string;
-  /**
-   * True iff the session is sticky (has both `transport_agent_argv` and
-   * `transport_acpx_agent`, and its argv is not derived from a managed
-   * pin). Sticky sessions bypass config argv via `resolveLaunchSpec`
-   * step 2 and are not affected by writing `agents.<name>.argv` — so
-   * they are excluded from the per-agent safety check.
-   */
-  isSticky: boolean;
   /** The pure-decision evaluation: backfill / reject / noop. */
   evaluation: StateArgvMigrationEvaluation;
 }
@@ -212,11 +183,11 @@ export interface StateArgvMigrationPlanEntry {
 export interface StateArgvMigrationResult {
   migrated: Array<{ alias: string; agent: string; argv: string[]; acpxAgent: string }>;
   skipped: Array<{ alias: string; agent?: string; reason: string }>;
-  configUpdates: StateArgvMigrationConfigUpdate[];
   /**
-   * Non-fatal I/O issues that prevented part of the migration. The daemon path
-   * logs each one and continues; the CLI path surfaces them on stderr and
-   * exits non-zero so operator tooling never silently hides a real failure.
+   * Non-fatal I/O issues that prevented part of the migration. Per-session
+   * proof failures stay fail-soft (logged; daemon continues). Locked state
+   * apply/write failures set `stateWriteFailed` and must fail closed.
+   * The CLI path surfaces `errors` on stderr and exits non-zero.
    */
   errors: string[];
   /**
@@ -260,11 +231,10 @@ export interface MigrateStateAgentArgvDeps {
   logger: AppLogger;
   /** When true, every write is skipped and only the plan is returned. */
   dryRun?: boolean;
-  /** Runtime root for the `isDerivedAgentArgv` shared classification
-   * (managed adapter pin detection, preinstalled-adapter identity check).
+  /** Runtime root for default-launch resolution (managed pin detection).
    * Defaults to `dirname(configPath)`. */
   runtimeRoot?: string;
-  /** Platform for the same classification. Defaults to `process.platform`. */
+  /** Platform for the same resolution. Defaults to `process.platform`. */
   platform?: NodeJS.Platform;
   /**
    * Compute the argv a brand-new session of this agent would launch with,
@@ -324,7 +294,6 @@ export async function migrateStateAgentArgv(
   const result: StateArgvMigrationResult = {
     migrated: [],
     skipped: [],
-    configUpdates: [],
     errors: [],
     stateWriteFailed: false,
   };
@@ -340,10 +309,6 @@ export async function migrateStateAgentArgv(
     await ensureAgentOverlays(entries);
   });
   const withStateFileLock = deps.withStateFileLock ?? withPrivateFileLock;
-  // Shared classification inputs (used both in the planning bucket's
-  // isSticky check and the fresh-state per-agent recheck). Must agree
-  // with `SessionService.resolveLaunchSpec`'s derived/custom split
-  // or the safety set is a strict superset of step 3's reach.
   const runtimeRoot = deps.runtimeRoot ?? join(deps.configPath, "..");
   const platform = deps.platform ?? process.platform;
 
@@ -395,29 +360,6 @@ export async function migrateStateAgentArgv(
       result.errors,
       deps.logger,
     );
-    const existingArgv =
-      Array.isArray(session.transport_agent_argv) &&
-      session.transport_agent_argv.length > 0 &&
-      session.transport_agent_argv.every((e) => typeof e === "string")
-        ? (session.transport_agent_argv as string[])
-        : undefined;
-    const driverFromConfig =
-      isRecord(agentConfigRaw) && typeof agentConfigRaw.driver === "string"
-        ? agentConfigRaw.driver
-        : undefined;
-    const driverForDerived = driverFromConfig ?? agentName;
-    // Path A sticky bypass still uses the shared derived/custom split so a
-    // managed-pin argv is never treated as a finished migration.
-    const isStickyByRecorded =
-      typeof session.transport_acpx_agent === "string" &&
-      session.transport_acpx_agent.length > 0 &&
-      existingArgv !== undefined;
-    const isSticky = isStickyByRecorded && !isDerivedAgentArgv(
-      driverForDerived,
-      existingArgv,
-      runtimeRoot,
-      platform,
-    );
     // Fully-migrated / repair uses alias self-proof inside evaluate — not
     // deriveAgentAlias(currentDriver, argv), which would false-repair
     // historical sticky pairs after a driver rename.
@@ -426,18 +368,10 @@ export async function migrateStateAgentArgv(
       normalizeAgentConfig(agentConfigRaw),
       acpxRecordArgv,
     );
-    let argvIdentity: string | undefined;
-    if (existingArgv) {
-      argvIdentity = renderAgentArgvIdentity(existingArgv);
-    } else if (typeof command === "string" && command.length > 0) {
-      argvIdentity = command;
-    }
 
     plan.push({
       alias,
       agent: agentName,
-      ...(argvIdentity !== undefined ? { argvIdentity } : {}),
-      isSticky,
       evaluation,
     });
   }
