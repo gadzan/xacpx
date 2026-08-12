@@ -23,7 +23,7 @@ export interface AgentLaunchSpec {
   acpxAgent: string;
   /** Stable acpx session identity for explicit launches. */
   agentCommand?: string;
-  /** Exact executable and argument boundaries for overlay/migration. */
+  /** Exact executable and argument boundaries for structured / overlay launches. */
   agentArgv?: string[];
   /** Legacy raw override / historical session selector. */
   rawCommand?: string;

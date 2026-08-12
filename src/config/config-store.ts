@@ -138,11 +138,7 @@ export class ConfigStore {
   // The whole read→patch→write span runs under ONE file lock: locking only
   // the write (the old shape) let two concurrent mutations read the same
   // snapshot, so the last writer silently erased the other's change.
-  // Public so legitimate same-file consumers (e.g. the argv auto-migration
-  // pass) can apply conditional patches without racing with the typed helpers
-  // above. Prefer the typed helpers when possible — they preserve the per-key
-  // shape guarantees documented on each method.
-  async patchRaw(mutate: (raw: RawConfig) => void): Promise<AppConfig> {
+  private async patchRaw(mutate: (raw: RawConfig) => void): Promise<AppConfig> {
     return await withPrivateFileLock(this.path, async (writeLocked) => {
       const { raw, existed } = await this.readRaw();
       // For a brand-new file, seed the required sections into the WRITTEN doc so
