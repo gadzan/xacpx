@@ -716,3 +716,54 @@ test("timed-out create keeps shell when another viewer attached after create", a
   expect(runtime.peekAttachment(other.attachmentId)).toBeTruthy();
   expect(await driver.list()).toHaveLength(1);
 });
+
+test("pending resume waiting on terminal lock fails after compensate terminates", async () => {
+  const { runtime, driver } = await makeHarness();
+  const created = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v-late",
+    cols: 80,
+    rows: 24,
+  });
+
+  // Hold the terminal lock so we can queue compensate ahead of a resume that
+  // has already observed live under the logical lock.
+  type Lockable = {
+    withTerminalLock: <T>(terminalId: string, fn: () => Promise<T>) => Promise<T>;
+  };
+  let releaseHold!: () => void;
+  const hold = new Promise<void>((resolve) => {
+    releaseHold = resolve;
+  });
+  const holding = (runtime as unknown as Lockable).withTerminalLock(
+    created.terminalId,
+    async () => {
+      await hold;
+    },
+  );
+  await Promise.resolve();
+
+  const compensateP = runtime.compensateTimedOutOpen(created);
+  await Promise.resolve();
+
+  const resumeP = runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v-pending",
+    cols: 80,
+    rows: 24,
+  });
+  await Promise.resolve();
+
+  releaseHold();
+  await holding;
+  await compensateP;
+  await expect(resumeP).rejects.toBeInstanceOf(TerminalRuntimeError);
+  await expect(resumeP).rejects.toMatchObject({
+    code: expect.stringMatching(/terminal-(terminating|rmux-unavailable)/),
+  });
+
+  expect(runtime.peekAttachment(created.attachmentId)).toBeUndefined();
+  expect(await driver.list()).toHaveLength(0);
+});

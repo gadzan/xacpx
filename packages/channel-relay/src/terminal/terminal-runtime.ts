@@ -438,8 +438,18 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
       if (existing?.state === "live") {
         return this.withTerminalLock(existing.terminalId, async () => {
+          // Revalidate under terminal lock: timed-out create compensation may
+          // have terminated between the logical-lock live read and here.
+          const handle = this.requireLiveHandle(existing.terminalId);
+          if (handle.generation !== existing.generation) {
+            throw new TerminalRuntimeError("terminal-generation-mismatch");
+          }
+          const fresh = this.registry.getSnapshot().terminals[existing.terminalId];
+          if (!fresh || fresh.state !== "live" || fresh.generation !== existing.generation) {
+            throw new TerminalRuntimeError("terminal-terminating");
+          }
           await this.refreshIdle(existing.terminalId, true);
-          return this.attachViewer(existing, input.viewerId, "resumed");
+          return this.attachViewer(fresh, input.viewerId, "resumed");
         });
       }
 
