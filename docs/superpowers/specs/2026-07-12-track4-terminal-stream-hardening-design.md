@@ -1,5 +1,9 @@
 # Track 4 · Sub-project A — Terminal Stream Hardening (Design Spec)
 
+> **兼容背景（非权威）**：output coalescing / slow-socket backpressure 对 legacy live-PTY
+> 仍有效；RMUX backend 改用 per-attachment targeted stream + recovery resync，见
+> [`2026-08-10-relay-web-rmux-terminal-design.md`](./2026-08-10-relay-web-rmux-terminal-design.md)。
+
 Date: 2026-07-12
 Branch: `feat/track4-terminal-stream-hardening`
 Track: 2026-07 architecture audit → Track 4 (runtime robustness), block A of 3.

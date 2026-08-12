@@ -33,12 +33,28 @@
 
 ## 发布顺序
 
+完整能力（含 RMUX 终端）上线时的固定顺序：
+
+1. **RMUX SDK / daemon**（上游；本仓库不内嵌 SDK 源码）
+2. **Sidecar platform packages**（checksum manifest；Task 27）
+3. **core `@ganglion/xacpx`** —— `SessionResourceCatalog` / plugin-api；channel-relay `minXacpxVersion` / peer
+4. **`@ganglion/xacpx-relay-protocol`**
+5. **`@ganglion/xacpx-relay`（含内嵌 relay-web）**
+6. **`@ganglion/xacpx-channel-relay`**（最后发）
+
+当前 tag 触发的 npm 发布顺序仍是：
+
 1. **core `@ganglion/xacpx` 0.17.0-beta.6** —— channel-relay 声明
    `peerDependencies.xacpx >= 0.17.0-beta.6`，必须先发布含 deadline-aware `setSessionModel` 的 core。
 2. **`@ganglion/xacpx-relay-protocol`** —— relay 和 channel-relay 都依赖它（`^0.1.0`）。
 3. **`@ganglion/xacpx-relay` + `@ganglion/xacpx-channel-relay`** —— 两者都依赖已发布的 protocol。
 
-`bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。
+`bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。半截升级时旧 hub/connector/web 组合会安全隐藏终端 UI（缺 capability），属预期。
+
+### RMUX terminal smoke（opt-in）
+
+真实 RMUX daemon + sidecar 验收**不**进入默认 `npm test`。platform packages 就绪后按 design spec §22.6
+与后续 smoke harness 执行；orphan 消失时间须 ≤ `ownerLeaseTtl` + bounded retry/grace。
 
 ## 发布前自检（必跑）
 

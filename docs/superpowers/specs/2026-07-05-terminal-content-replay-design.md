@@ -1,5 +1,9 @@
 # 终端内容 replay(第 3 层)设计
 
+> **兼容背景（非权威）**：对 RMUX backend，raw ring-buffer replay 已被
+> [`2026-08-10-relay-web-rmux-terminal-design.md`](./2026-08-10-relay-web-rmux-terminal-design.md)
+> 的 recovery rebase 取代。本文「显式 close 才 kill、unmount 不 kill」的用户动作区分仍适用。
+
 > 状态:待实现。四包改动(relay-protocol / core / channel-relay / relay-web)。目标:web 刷新后恢复终端 scrollback 并接回同一个 live shell。
 
 ## 目标

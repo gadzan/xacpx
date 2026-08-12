@@ -695,14 +695,14 @@
 - Modify: `packages/channel-relay/README.md`
 - Modify last: `AGENTS.md`
 
-- [ ] 先更新模块文档，再给 AGENTS 增加稳定导航；AGENTS 不复制协议/state machine细节。
-- [ ] 用户文档明确：Tab `X` 是全局终止；关闭浏览器/断网不终止；多设备共享 shell但不共享 Tab 布局；controller/spectator和 take control。
-- [ ] 配置文档列出全部默认值/范围、terminal 默认关闭、安全含义、idle/lease/attachment三种 TTL 区别。
-- [ ] 运维文档说明 registry/owner路径、cleanup-pending、restart within TTL、超过 TTL 的预期丢失和 doctor输出。
-- [ ] release 顺序固定：RMUX SDK/daemon→sidecar platform packages→xacpx core→relay-protocol→relay hub（含 web）→channel-relay；记录 min core/protocol版本。
-- [ ] 把历史 legacy terminal/replay/hardening spec 标成兼容背景，不删除；本文成为 RMUX backend权威设计。
-- [ ] 检查 user-facing 文案使用“睡眠/唤醒”，代码/API 文档可注明 archive legacy spelling。
-- [ ] Commit: `docs: document relay rmux terminal operations`
+- [x] 先更新模块文档，再给 AGENTS 增加稳定导航；AGENTS 不复制协议/state machine细节。
+- [x] 用户文档明确：Tab `X` 是全局终止；关闭浏览器/断网不终止；多设备共享 shell但不共享 Tab 布局；controller/spectator和 take control。
+- [x] 配置文档列出全部默认值/范围、terminal 默认关闭、安全含义、idle/lease/attachment三种 TTL 区别。
+- [x] 运维文档说明 registry/owner路径、cleanup-pending、restart within TTL、超过 TTL 的预期丢失和 doctor输出。
+- [x] release 顺序固定：RMUX SDK/daemon→sidecar platform packages→xacpx core→relay-protocol→relay hub（含 web）→channel-relay；记录 min core/protocol版本。
+- [x] 把历史 legacy terminal/replay/hardening spec 标成兼容背景，不删除；本文成为 RMUX backend权威设计。
+- [x] 检查 user-facing 文案使用“睡眠/唤醒”，代码/API 文档可注明 archive legacy spelling。
+- [x] Commit: `docs: document relay rmux terminal operations`
 
 ### Task 30: 灰度开关、production readiness 与 legacy 切流
 

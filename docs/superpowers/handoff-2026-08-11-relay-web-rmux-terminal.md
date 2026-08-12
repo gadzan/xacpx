@@ -20,27 +20,28 @@ Authoritative docs:
 | Plan range | Status |
 |---|---|
 | Phase A (Tasks 1–3) | **Blocked** — needs published `rmux-sdk 0.10.x` with adopt/fence/abandon |
-| Phase B (Tasks 4–7) | ✅ |
-| Phase C (Tasks 8–9) | ✅ |
-| Phase D (Tasks 10–14) | ✅ |
+| Phase B–D | ✅ |
 | Phase E (Tasks 15–17) | **Blocked** on Phase A |
-| Phase F Tasks 18–23 | ✅ (in-memory driver / fake path; no real RMUX sidecar) |
-| Phase G Task 24 | ✅ |
-| Phase G Task 25 | ✅ (fake connector↔hub↔browser E2E; no real RMUX) |
-| Phase G Task 26+ | **Blocked / park** until RMUX publish (smoke, packaging, doctor) |
+| Phase F Tasks 18–23 | ✅ |
+| Phase G Tasks 24–25, 28–29 | ✅ |
+| Phase G Tasks 26–27 | **Blocked** on RMUX publish / sidecar artifacts |
+| Phase G Task 30+ | Park / product decision / deferred legacy removal |
 
 ## Recent commits (local `main`, do not push)
 
 ```
+docs: document relay rmux terminal operations                         # Task 29
+feat(doctor): report relay rmux terminal health                       # Task 28
 test(relay): cover rmux terminal fault recovery                       # Task 25
 feat(channel-relay): retire terminals on destructive channel actions  # Task 24
-feat(relay-web): add shared terminal control and global close         # Task 23
-feat(relay-web): recover rmux terminal attachments                    # Task 22
 ```
 
 ## Next step
 
-**Park Phase G Tasks 26–28** until published RMUX + sidecar artifacts exist.
-Optional doable-without-RMUX follow-ups only if explicitly requested (docs polish, doctor stubs).
+Everything doable without real RMUX is done. Remaining:
 
-Blocked forever until RMUX publish: Phase A Tasks 1–3, Phase E Tasks 15–17, Task 26 smoke, Task 27 packaging.
+- **Task 26–27**: real smoke + platform binary packaging (blocked)
+- **Task 30**: production readiness / enablement (product decision; keep `terminal.enabled` default false)
+- **Task 31**: delete legacy core terminal (deferred separate PR)
+
+Do **not** push; do **not** flip the terminal default on.
