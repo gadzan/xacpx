@@ -1,47 +1,38 @@
-# Handoff: Relay Web RMUX Terminal Implementation
+# Handoff: Relay Web RMUX Terminal (process-owned, no rmux patches)
 
 > **Date:** 2026-08-12
 > **Read first if you are the next agent picking this up.**
 
 Authoritative docs:
 
-- Spec: `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md` (wins on conflict)
-- Plan: `docs/superpowers/plans/2026-08-10-relay-web-rmux-terminal.md`
+- **Process-owned design (active):** `docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`
+- Spec (original, lease-adopt oriented): `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`
+- Plan (original): `docs/superpowers/plans/2026-08-10-relay-web-rmux-terminal.md`
 
 ## Scope rules
 
 - Do **not** edit `../rmux` or `../acpx`
-- One commit per task; exact plan messages; **do not push**
-- TDD; Bun for core/channel-relay/relay tests; Vitest for relay-web
-- Do **not** run `npm run test:smoke`
+- Pin sidecar to crates.io `rmux-sdk = "=0.10.0"`
+- **do not push** unless asked
+- Do **not** run full `npm run test:smoke` unless asked
+- Keep `terminal.enabled` default **false**
 
-## Phase status
+## Done
 
-| Plan range | Status |
-|---|---|
-| Phase A (Tasks 1–3) | **Blocked** — needs published `rmux-sdk 0.10.x` with adopt/fence/abandon |
-| Phase B–D | ✅ |
-| Phase E (Tasks 15–17) | **Blocked** on Phase A |
-| Phase F Tasks 18–23 | ✅ |
-| Phase G Tasks 24–25, 28–29 | ✅ |
-| Phase G Tasks 26–27 | **Blocked** on RMUX publish / sidecar artifacts |
-| Phase G Task 30+ | Park / product decision / deferred legacy removal |
+- Process-owned runtime (no adopt/abandon)
+- Rust sidecar + Node driver/supervisor/resolver
+- Platform package stubs + `pack:rmux-bridge` + publish matrix (build all OS → Linux smoke → publish platforms → publish channel-relay)
+- Smoke matrix: UTF-8, shutdown kill, resize, vim/top, multi-viewer fanout
+- Multi-viewer fix: one sidecar recover stream + cached rebase for late subscribers
 
-## Recent commits (local `main`, do not push)
+## Local tools
 
+```bash
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+bash scripts/install-rmux-release.sh
+export RMUX_SDK_DAEMON_BINARY="$HOME/.local/libexec/rmux/rmux"
+cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+export XACPX_RMUX_BRIDGE="$PWD/packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
+export XACPX_RMUX_INTEGRATION=1
+bun test tests/smoke/relay-rmux-terminal.test.ts
 ```
-docs: document relay rmux terminal operations                         # Task 29
-feat(doctor): report relay rmux terminal health                       # Task 28
-test(relay): cover rmux terminal fault recovery                       # Task 25
-feat(channel-relay): retire terminals on destructive channel actions  # Task 24
-```
-
-## Next step
-
-Everything doable without real RMUX is done. Remaining:
-
-- **Task 26–27**: real smoke + platform binary packaging (blocked)
-- **Task 30**: production readiness / enablement (product decision; keep `terminal.enabled` default false)
-- **Task 31**: delete legacy core terminal (deferred separate PR)
-
-Do **not** push; do **not** flip the terminal default on.

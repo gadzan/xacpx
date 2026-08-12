@@ -375,14 +375,14 @@ Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mo
 | `enabled` | `boolean` | `false` | Master switch. When `false`, capabilities are omitted and leftover registry records are still retired on bootstrap / channel disable-remove. |
 | `backend` | `"rmux"` | `"rmux"` | Only `"rmux"` is accepted. |
 | `idleTimeoutSeconds` | `number` | `900` | `60..86400`. No viewer input for this long → durable reaping. Independent of owner lease / attachment TTL. |
-| `ownerLeaseTtlSeconds` | `number` | `90` | `15..600`. RMUX daemon owner-lease bound: after connector death, orphans disappear by this TTL even without an explicit kill. |
+| `ownerLeaseTtlSeconds` | `number` | `90` | `15..600`. Hard-crash cleanup TTL for RMUX `KillOnOwnerExit` orphans after connector/sidecar death. **Not** a restart-adoption window — graceful stop kills sessions; a new process never adopts. |
 | `reconcileIntervalSeconds` | `number` | `30` | `5..300`. Periodic mark-and-sweep interval. |
 | `orphanGraceSeconds` | `number` | `max(120, ownerLeaseTtlSeconds)` | `ownerLeaseTtlSeconds..3600`. Inventory-only quarantine aging before kill. |
 | `attachmentTtlSeconds` | `number` | `45` | `15..300`. Hub/browser attachment liveness (heartbeat); expiry detaches viewers, does **not** kill the shell. |
 | `maxSessions` | `number` | `16` | `1..128` concurrent live/creating terminal resources. |
 | `maxViewersPerTerminal` | `number` | `4` | `1..16` attachments per shared terminal. |
 | `historyLimit` | `number` | `10000` | `0..100000` RMUX scrollback / recovery keyframe budget (lines). |
-| `bridgeCommand` / `rmuxCommand` | absolute path | unset | Optional explicit binaries. When set, paths must exist (`xacpx doctor` fails otherwise). Production resolution (platform optional packages) lands with the sidecar packaging task. |
+| `bridgeCommand` / `rmuxCommand` | absolute path | unset | Optional explicit binaries. When unset, bridge resolves via `@ganglion/xacpx-rmux-bridge-<os>-<arch>` optional packages then `PATH`; RMUX daemon via `rmuxCommand`, `~/.local/libexec/rmux/rmux`, or `PATH`. |
 
 **Security:** enabling terminal is equivalent to granting every hub account that can open the instance an interactive shell in that workspace. Terminal bytes are never written to the messages DB or app logs (IDs / sizes / error class only).
 

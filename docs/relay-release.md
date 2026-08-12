@@ -53,8 +53,21 @@
 
 ### RMUX terminal smoke（opt-in）
 
-真实 RMUX daemon + sidecar 验收**不**进入默认 `npm test`。platform packages 就绪后按 design spec §22.6
-与后续 smoke harness 执行；orphan 消失时间须 ≤ `ownerLeaseTtl` + bounded retry/grace。
+真实 RMUX daemon + process-owned sidecar 验收**不**进入默认 `npm test`。
+
+```bash
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+bash scripts/install-rmux-release.sh   # pins RMUX 0.10.0 into ~/.local
+export RMUX_SDK_DAEMON_BINARY="$HOME/.local/libexec/rmux/rmux"
+cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+export XACPX_RMUX_BRIDGE="$PWD/packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
+export XACPX_RMUX_INTEGRATION=1
+bun test tests/smoke/relay-rmux-terminal.test.ts
+```
+
+覆盖矩阵（driver 级）：UTF-8 input / invalid UTF-8、shutdown kill、resize、`vim`/`top`（本机有命令时）、多 viewer recover fanout。
+
+语义提醒：`ownerLeaseTtlSeconds` 只约束硬崩溃孤儿回收，**不是**跨进程 adopt 窗口。发布 workflow（`publish-channel-relay.yml`）会按 OS 矩阵构建 `@ganglion/xacpx-rmux-bridge-*`，跑 Linux smoke，**先发 platform 包再发** `@ganglion/xacpx-channel-relay`。权威说明：`docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`。
 
 ## 发布前自检（必跑）
 
