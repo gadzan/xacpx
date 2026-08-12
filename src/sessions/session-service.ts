@@ -1,14 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
-import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import { isLegacyCodexCommand, resolveAgentCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import {
   classifyRecordedPreinstalledAdapterCommand,
   isManagedAdapterCommand,
-  isManagedAdapterId,
-  MANAGED_ADAPTERS,
 } from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
-import { renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
+import { isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
@@ -844,8 +842,11 @@ export class SessionService {
       platform,
       runtimeRoot: this.runtimeRoot,
     });
-    // 1. Explicit config `command` (Unix raw override) wins over any recording.
-    if (current.rawCommand) {
+    // 1. Explicit config `command` wins over any recording. On Unix this is a
+    // raw `--agent` override; on Windows a single-token command is synthesized
+    // into argv — either way the CURRENT config command must beat sticky
+    // recorded history so operators can intentionally rebind an agent.
+    if (current.rawCommand || resolveAgentCommand(agentConfig.driver, agentConfig.command)) {
       return current;
     }
     // 2. Recorded custom argv stays sticky (like recorded raw commands): a
@@ -889,19 +890,10 @@ export class SessionService {
     );
     const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
     if (recordedCommand) {
-      if (platform === "win32") {
-        // Fails closed for EVERY recorded raw command on Windows: acpx rejects
-        // raw `--agent` strings there, and a synthetic single-token argv would
-        // key an alias the overlay never provisions (overlay entries come from
-        // the CURRENT config), so the selector would fall back to the bare
-        // driver and never find the legacy record. Require an explicit config
-        // migration instead.
-        throw new Error(
-          `session "${session.alias}" was created with a raw command that cannot be launched ` +
-            "on Windows. Migrate the agent to an argv array in config: " +
-            'agents.<name>.argv = ["agent.exe", "--acp", ...]',
-        );
-      }
+      // Pass the historical raw string through as an acpx `--agent` selector on
+      // every platform. Do NOT split or guess argv here: acpx 0.13 looks up the
+      // old session by agent_command, backfills built-in agentArgv from the
+      // record parser, and fail-closes custom raw history that cannot spawn.
       return { acpxAgent: agentConfig.driver, rawCommand: recordedCommand, agentCommand: recordedCommand };
     }
     // 5. Derived current resolution (managed pin, hermes shim, local fallback, bare driver).
@@ -1157,38 +1149,4 @@ export class SessionService {
       throw new Error(t().misc.agentNotRegistered(agent));
     }
   }
-}
-
-/** Derived argv (managed adapter pin, hermes shim, local fallback) is recomputed
- * from the current config on restart; only custom argv survives in state. */
-function isDerivedAgentArgv(
-  driver: string,
-  argv: string[] | undefined,
-  runtimeRoot: string,
-  platform: NodeJS.Platform,
-): boolean {
-  if (!argv || argv.length === 0) {
-    return false;
-  }
-  if (isManagedAdapterId(driver)) {
-    const spec = MANAGED_ADAPTERS[driver];
-    return (
-      (
-        argv[0] === "npx" &&
-        argv[1] === "-y" &&
-        argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
-      ) ||
-      classifyRecordedPreinstalledAdapterCommand(renderAgentArgvIdentity(argv), {
-        runtimeRoot,
-        platform,
-      }) === driver
-    );
-  }
-  if (driver === "hermes") {
-    return argv[1]?.includes("hermes-acp-shim.") === true;
-  }
-  if (driver === "opencode" || driver === "kilocode") {
-    return argv.length === 2 && argv[0] === driver && argv[1] === "acp";
-  }
-  return false;
 }

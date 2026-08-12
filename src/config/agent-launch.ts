@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
 
+import {
+  classifyRecordedPreinstalledAdapterCommand,
+  isManagedAdapterId,
+  MANAGED_ADAPTERS,
+} from "../adapters/adapter-catalog";
+
 /**
  * Structured description of how to launch an ACP agent through acpx.
  *
@@ -10,16 +16,16 @@ import { createHash } from "node:crypto";
  * - Structured launches carry `agentArgv` (exact boundaries, Windows-safe) and
  *   `agentCommand` (the stable canonical identity acpx persists and keys its
  *   session records by).
- * - `rawCommand` is the Unix-only legacy escape hatch passed as acpx `--agent`.
+ * - `rawCommand` is the legacy escape hatch / historical selector for acpx `--agent`.
  */
 export interface AgentLaunchSpec {
   /** acpx positional agent: bare driver or xacpx-managed alias. */
   acpxAgent: string;
   /** Stable acpx session identity for explicit launches. */
   agentCommand?: string;
-  /** Exact executable and argument boundaries for overlay/migration. */
+  /** Exact executable and argument boundaries for structured / overlay launches. */
   agentArgv?: string[];
-  /** Unix-only legacy raw override. */
+  /** Legacy raw override / historical session selector. */
   rawCommand?: string;
 }
 
@@ -48,4 +54,39 @@ export function deriveAgentAlias(driver: string, argv: readonly string[]): strin
   const identity = renderAgentArgvIdentity(argv);
   const hash = createHash("sha256").update(identity).digest("hex").slice(0, 12);
   return `xacpx-managed-${driver}-${hash}`;
+}
+
+/** Detects an argv shape that `resolveLaunchSpec` treats as derived state
+ * (managed adapter pin, hermes shim, or local fallback for opencode /
+ * kilocode). A session with such argv has `recordedArgv` reset to undefined
+ * before step 2 in `resolveLaunchSpec`, so the sticky bypass does NOT
+ * apply — the session follows the current config / derived launch instead. */
+export function isDerivedAgentArgv(
+  driver: string,
+  argv: string[] | undefined,
+  runtimeRoot: string,
+  platform: NodeJS.Platform,
+): boolean {
+  if (!argv || argv.length === 0) {
+    return false;
+  }
+  if (isManagedAdapterId(driver)) {
+    const spec = MANAGED_ADAPTERS[driver];
+    return (
+      (argv[0] === "npx" &&
+        argv[1] === "-y" &&
+        argv.some((entry) => entry.startsWith(`${spec.packageName}@`))) ||
+      classifyRecordedPreinstalledAdapterCommand(renderAgentArgvIdentity(argv), {
+        runtimeRoot,
+        platform,
+      }) === driver
+    );
+  }
+  if (driver === "hermes") {
+    return argv[1]?.includes("hermes-acp-shim.") === true;
+  }
+  if (driver === "opencode" || driver === "kilocode") {
+    return argv.length === 2 && argv[0] === driver && argv[1] === "acp";
+  }
+  return false;
 }

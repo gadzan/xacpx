@@ -71,7 +71,7 @@ export interface ResolvedSession {
    * alias provisioned in ~/.acpx/config.json; bare drivers pass through.
    */
   acpxAgent?: string;
-  /** Unix-only legacy raw override passed as acpx `--agent`. */
+  /** Legacy raw override / historical session selector passed as acpx `--agent`. */
   rawCommand?: string;
   /** Exact executable + argument boundaries for overlay/migration. */
   agentArgv?: string[];
@@ -133,7 +133,7 @@ export interface AgentSessionListQuery {
   agentCommand?: string;
   /** Positional acpx agent for list/show queries (overlay alias or bare driver). */
   acpxAgent?: string;
-  /** Unix-only legacy raw override; the shared builder prefers it over acpxAgent. */
+  /** Legacy raw override / historical selector; the shared builder prefers it over acpxAgent. */
   rawCommand?: string;
   /** Resolved acpx driver for `agent` (e.g. a custom `my-codex` agent has driver `codex`). Used to gate driver-specific list filtering. */
   driver?: string;

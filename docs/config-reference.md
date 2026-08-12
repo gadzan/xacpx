@@ -470,17 +470,16 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `driver` | `string` | Yes | Agent driver type, passed as the first positional argument to acpx |
-| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins. **Mutually exclusive with `argv`**. On Windows a raw command cannot be launched losslessly (acpx rejects it); migrate to `argv` instead (see below) |
+| `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins. **Mutually exclusive with `argv`**. On Windows, new multi-token `command` values cannot be launched losslessly — use `argv` instead (see below). Historical session `transport_agent_command` values are passed through as an acpx `--agent` selector; acpx 0.13 backfills built-in argv from the session record and fail-closes unsupported custom raw history |
 | `argv` | `string[]` | No | Exact executable + argument boundaries (`["C:\\Program Files\\agent.exe", "--acp", ...]`). First element must be a non-empty executable; every element is passed to acpx verbatim (spaces, backslashes, empty strings preserved). **Mutually exclusive with `command`**. This is the only lossless launch form on Windows. Mutating `argv` creates a NEW acpx session identity (content-addressed alias); old sessions keep their recorded identity |
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
 | `settingsPolicy` | `"provider-only"` \| `"isolated"` \| `"full-user"` | No | Claude user-settings policy. The implicit default is `"provider-only"`; other drivers ignore this field. See below |
 
 #### Windows raw command migration
 
-An old Unix-style `command` that contains whitespace cannot be launched on Windows
-(acpx rejects raw `--agent` strings there, and guessing a quote split would corrupt
-boundaries). xacpx fails closed with a migration error instead of guessing. Convert
-the agent to structured argv:
+New multi-token `agents.<name>.command` values still cannot be configured on
+Windows (xacpx refuses them at config resolution so new sessions always get
+structured `argv`). Convert those agents to structured argv:
 
 ```json
 {
@@ -494,7 +493,18 @@ the agent to structured argv:
 ```
 
 A single-token command (no whitespace, e.g. `"myagent.exe"`) is converted to
-`["myagent.exe"]` automatically.
+`["myagent.exe"]` automatically **only when the conversion is lossless** — the
+single element must re-render to exactly the original command via the canonical
+identity renderer. Tokens outside the identity-safe charset (Windows paths with
+backslashes, quotes, ...) render JSON-quoted and would re-key the acpx record,
+so those configs are rejected until rewritten as `argv`.
+
+Historical sessions that already recorded a raw `transport_agent_command` are
+different: xacpx passes that string through as an acpx `--agent` selector (no
+split, no guessed argv). acpx 0.13 finds the old session record, backfills
+built-in `agent_argv` when the command is in its migration table, and
+fail-closes custom raw history that cannot spawn. No `xacpx-managed-*` overlay
+or startup state migration is required for that path.
 
 #### xacpx-managed acpx agent aliases
 

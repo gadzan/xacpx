@@ -13,8 +13,8 @@ beforeEach(() => { setLocale("zh"); });
 afterAll(() => { setLocale("en"); });
 
 type BuildAppArgs = Parameters<typeof buildAppRaw>;
-// Never touch the real ~/.acpx/config.json from unit tests: the overlay
-// provisioner runs against the real home dir by design.
+// Never touch the real ~/.acpx/config.json from unit tests: config-derived
+// AND session-local overlay provisioners run against the real home by default.
 const buildApp = (paths: BuildAppArgs[0], deps: BuildAppArgs[1] = {}): ReturnType<typeof buildAppRaw> =>
   buildAppRaw(paths, {
     stateSaveDebounceMs: 0,
