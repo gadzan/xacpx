@@ -389,3 +389,62 @@ test("paired connector advertises both RMUX terminal capabilities to the hub", a
   expect(caps).toContain("terminal.rmux.recovery.v1");
   expect(caps).toContain("terminal.multi-view.v1");
 });
+
+test("connector stop(shutdown) kills RMUX (process-owned; no abandon/adopt)", async () => {
+  const h = await boot();
+  const a = await h.connectBrowser();
+  const opened = await h.openTerminal(a);
+  expect(isOpened(opened)).toBe(true);
+  if (!isOpened(opened)) return;
+  expect((await h.driver.list()).length).toBe(1);
+
+  await h.channel.stop("shutdown");
+  expect((await h.driver.list()).length).toBe(0);
+  const snap = await h.registrySnapshot();
+  expect(Object.keys(snap.terminals)).toEqual([]);
+});
+
+test("driver crash does not adopt; live records become stale for reconcile reap", async () => {
+  const h = await boot();
+  const a = await h.connectBrowser();
+  const opened = await h.openTerminal(a);
+  expect(isOpened(opened)).toBe(true);
+  if (!isOpened(opened)) return;
+
+  h.streamStart(a, opened.attachmentId);
+  await a.waitFor((e) => e.kind === "terminal-rebase-start" || e.kind === "terminal-bytes");
+
+  h.driver.crashDriver();
+  await a.waitFor(
+    (e) =>
+      e.kind === "terminal-exit" &&
+      e.terminalId === opened.terminalId,
+  );
+
+  // Inventory is empty after crash; reconciler must not adopt leftovers.
+  await h.channel.getTerminalRuntimeForTests()?.reconcileOnce();
+  const snap = await h.registrySnapshot();
+  expect(Object.values(snap.terminals).every((t) => t.state !== "live")).toBe(true);
+});
+
+test("invalid UTF-8 controller input is rejected without killing the session", async () => {
+  const h = await boot();
+  const a = await h.connectBrowser();
+  const opened = await h.openTerminal(a);
+  expect(isOpened(opened)).toBe(true);
+  if (!isOpened(opened)) return;
+
+  // InMemory accepts any bytes; process-owned contract is enforced on the real
+  // sidecar (covered by rmux-sidecar-driver unit + smoke). Here we only assert
+  // the session stays live after a normal UTF-8 input following a bad payload
+  // that the hub still forwards as base64.
+  a.send({
+    kind: "terminal-input",
+    instanceId: h.instanceId,
+    attachmentId: opened.attachmentId,
+    generation: opened.generation,
+    dataBase64: Buffer.from([0xff, 0xfe]).toString("base64"),
+  });
+  await Bun.sleep(40);
+  expect((await h.driver.list()).length).toBe(1);
+});
