@@ -617,14 +617,14 @@
 - Extend: relay-web terminal tests
 - Add test helpers only under `tests/helpers/` or package-local `__tests__/support`
 
-- [ ] 建一个不需要真实 RMUX 的 connector↔hub↔browser harness，真实走 protocol envelopes、request correlation和 targeted events，driver 只替换为 in-memory fake。
-- [ ] 自动覆盖：刷新、断网重连、两设备共享、take control、全局 close、浏览器窗口 close、睡眠/delete、kill timeout、create/terminate crash window、alias reuse、stale generation。
-- [ ] 自动覆盖 slow viewer、output flood、queue cap、max sessions/viewers、history limit和 connector/hub mixed capabilities。
-- [ ] 每个 fault 后断言 registry/inventory/attachments 最终状态，不只断言 UI 文本；孤儿要么被 adopt，要么在 tombstone/reconcile/lease TTL 内消失。
-- [ ] 测试 terminal frames 未写入 messages DB、turn state或 account-wide broadcast。
-- [ ] 使用 fake monotonic clock推进 TTL，不在单测 sleep。
-- [ ] Run all new focused files and affected package builds.
-- [ ] Commit: `test(relay): cover rmux terminal fault recovery`
+- [x] 建一个不需要真实 RMUX 的 connector↔hub↔browser harness，真实走 protocol envelopes、request correlation和 targeted events，driver 只替换为 in-memory fake。
+- [x] 自动覆盖：刷新、断网重连、两设备共享、take control、全局 close、浏览器窗口 close、睡眠/delete、kill timeout、create/terminate crash window、alias reuse、stale generation。
+- [x] 自动覆盖 slow viewer、output flood、queue cap、max sessions/viewers、history limit和 connector/hub mixed capabilities。
+- [x] 每个 fault 后断言 registry/inventory/attachments 最终状态，不只断言 UI 文本；孤儿要么被 adopt，要么在 tombstone/reconcile/lease TTL 内消失。
+- [x] 测试 terminal frames 未写入 messages DB、turn state或 account-wide broadcast。
+- [x] 使用 fake monotonic clock推进 TTL，不在单测 sleep。
+- [x] Run all new focused files and affected package builds.
+- [x] Commit: `test(relay): cover rmux terminal fault recovery`
 
 ### Task 26: 真实 RMUX smoke 与高风险场景验收
 
