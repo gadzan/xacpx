@@ -36,6 +36,8 @@ export type {
   ChannelCliParseResult,
   ChannelCliProvider,
   ChannelCliValidationIssue,
+  ChannelDoctorFinding,
+  ChannelDoctorFindingLevel,
 } from "./channels/cli/provider.js";
 export type { ChannelRuntimeConfig } from "./config/types.js";
 export type { CommandHint } from "./commands/command-hints.js";

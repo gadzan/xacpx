@@ -4,9 +4,11 @@ import type {
   ChannelCliParseResult,
   ChannelCliProvider,
   ChannelCliValidationIssue,
+  ChannelDoctorFinding,
   ChannelRuntimeConfig,
 } from "xacpx/plugin-api";
 import { normalizeRelayUrl, parseRelayTerminalConfig } from "./config.js";
+import { diagnoseRelayTerminal } from "./terminal/terminal-diagnostics.js";
 
 function stringField(input: ChannelCliInput, key: string): string | undefined {
   const value = input[key];
@@ -104,5 +106,11 @@ export const relayCliProvider: ChannelCliProvider = {
       if (value) completed.token = value;
     }
     return completed;
+  },
+
+  async diagnose(config: ChannelRuntimeConfig): Promise<ChannelDoctorFinding[]> {
+    return diagnoseRelayTerminal({
+      options: (config.options ?? {}) as Record<string, unknown>,
+    });
   },
 };

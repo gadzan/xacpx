@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { AppConfig } from "../config/types.js";
 import { listKnownChannelIds } from "../channels/channel-scope.js";
+import type { ChannelCliProvider, ChannelDoctorFinding } from "../channels/cli/provider.js";
 import { importPluginFromHome } from "./plugin-loader.js";
 import { validateWeacpxPlugin } from "./validate-plugin.js";
 import { findKnownPluginByChannel } from "./known-plugins.js";
@@ -111,6 +112,20 @@ export async function inspectPlugins(input: InspectPluginsInput): Promise<Plugin
           : `plugin is installed and valid but disabled; run xacpx plugin enable ${configPlugin.name}`,
         ...(configPlugin.enabled ? {} : { suggestion: `xacpx plugin enable ${configPlugin.name}` }),
       });
+
+      // Optional per-channel diagnose hooks (core stays RMUX-agnostic).
+      if (configPlugin.enabled) {
+        for (const finding of await collectChannelDiagnoseFindings(plugin.channels ?? [], input.config)) {
+          pushIfRelevant({
+            level: finding.level === "skip" ? "ok" : finding.level,
+            plugin: configPlugin.name,
+            message: finding.level === "skip"
+              ? `${finding.code}: ${finding.message}`
+              : `${finding.code}: ${finding.message}`,
+            ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
+          });
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       pushIfRelevant({ level: "error", plugin: configPlugin.name, message });
@@ -144,4 +159,31 @@ export async function inspectPlugins(input: InspectPluginsInput): Promise<Plugin
   }
 
   return issues;
+}
+
+async function collectChannelDiagnoseFindings(
+  channelDefs: Array<{ type: string; cliProvider?: ChannelCliProvider }>,
+  config: AppConfig,
+): Promise<ChannelDoctorFinding[]> {
+  const findings: ChannelDoctorFinding[] = [];
+  for (const def of channelDefs) {
+    const diagnose = def.cliProvider?.diagnose;
+    if (!diagnose) continue;
+    const runtimeChannels = (config.channels ?? []).filter(
+      (channel) => channel.type === def.type && channel.enabled !== false,
+    );
+    for (const channel of runtimeChannels) {
+      try {
+        const result = await diagnose(channel);
+        findings.push(...result);
+      } catch (error) {
+        findings.push({
+          level: "error",
+          code: "channel-diagnose-failed",
+          message: `channel ${channel.type} diagnose hook failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+  }
+  return findings;
 }

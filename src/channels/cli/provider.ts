@@ -18,6 +18,20 @@ export interface ChannelCliIo {
   promptSecret: (message: string) => Promise<string>;
 }
 
+/**
+ * Structured doctor finding from an optional channel/plugin diagnostic hook.
+ * Core renders these verbatim and must not interpret RMUX-specific codes.
+ */
+export type ChannelDoctorFindingLevel = "ok" | "warn" | "error" | "skip";
+
+export interface ChannelDoctorFinding {
+  level: ChannelDoctorFindingLevel;
+  code: string;
+  message: string;
+  suggestion?: string;
+  details?: Record<string, string | number | boolean | null>;
+}
+
 export interface ChannelCliProvider {
   type: string;
   displayName: string;
@@ -27,6 +41,12 @@ export interface ChannelCliProvider {
   validateConfig(config: ChannelRuntimeConfig): ChannelCliValidationIssue[];
   renderSummary(config: ChannelRuntimeConfig): string[];
   promptForMissingFields(input: ChannelCliInput, io: ChannelCliIo): Promise<ChannelCliInput>;
+
+  /**
+   * Optional read-only health probe for `xacpx doctor` / `xacpx plugin doctor`.
+   * Must not mutate registry, credentials, or kill resources.
+   */
+  diagnose?(config: ChannelRuntimeConfig): Promise<ChannelDoctorFinding[]> | ChannelDoctorFinding[];
 
   /**
    * Optional: declares this plugin supports the `xacpx channel ... --account <id>`

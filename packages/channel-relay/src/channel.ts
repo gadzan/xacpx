@@ -41,6 +41,7 @@ import {
   isTerminalRequestType,
 } from "./terminal-bridge.js";
 import { retireRelayTerminals } from "./terminal/retire-terminals.js";
+import { logTerminalEvent } from "./terminal/terminal-log.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -327,6 +328,11 @@ export class RelayChannel implements MessageChannelRuntime {
       await runtime.start();
       this.terminal = runtime;
       this.terminalReady = true;
+      void logTerminalEvent(input.logger, "relay.terminal.runtime_ready", {
+        capabilityCount: 2,
+        maxSessions: this.config.terminal.maxSessions,
+        maxViewersPerTerminal: this.config.terminal.maxViewersPerTerminal,
+      });
       this.viewerPublish = createTerminalViewerPublisher(runtime, (type, payload) => {
         this.client?.sendEvent(type, payload);
       });
@@ -346,6 +352,9 @@ export class RelayChannel implements MessageChannelRuntime {
         RELAY_CAPABILITIES.terminalMultiViewV1,
       ];
     } catch (err) {
+      void logTerminalEvent(input.logger, "relay.terminal.runtime_unavailable", {
+        errorClass: err instanceof Error ? err.name : "Error",
+      });
       void input.logger?.error(
         "relay.terminal_bootstrap_failed",
         `RMUX terminal runtime failed to start; continuing without terminal capabilities: ${err instanceof Error ? err.message : String(err)}`,

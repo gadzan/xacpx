@@ -279,3 +279,67 @@ test("doctor still flags an enabled channel with no provider as error (Bug C reg
     await rm(pluginHome, { recursive: true, force: true });
   }
 });
+
+test("doctor surfaces optional channel diagnose findings without core RMUX knowledge", async () => {
+  const pluginHome = await createPluginHome({ "demo-relay": "1.0.0" });
+  try {
+    const issues = await inspectPlugins({
+      pluginHome,
+      currentXacpxVersion: "0.17.0",
+      config: baseConfig({
+        plugins: [{ name: "demo-relay", enabled: true }],
+        channels: [
+          { id: "weixin", type: "weixin", enabled: true },
+          {
+            id: "relay",
+            type: "relay",
+            enabled: true,
+            options: { url: "ws://h:1", pairingToken: "t", terminal: { enabled: true } },
+          },
+        ],
+      }),
+      importPlugin: async () => ({
+        default: {
+          apiVersion: 1,
+          minXacpxVersion: "0.17.0",
+          channels: [
+            {
+              type: "relay",
+              factory: () => ({}),
+              cliProvider: {
+                type: "relay",
+                displayName: "Relay",
+                supportsLogin: false,
+                parseAddArgs: () => ({ ok: true, input: {} }),
+                buildDefaultConfig: () => ({ id: "relay", type: "relay", enabled: true }),
+                validateConfig: () => [],
+                renderSummary: () => [],
+                promptForMissingFields: async (input: unknown) => input,
+                diagnose: async () => [
+                  {
+                    level: "warn" as const,
+                    code: "terminal-cleanup-pending",
+                    message: "1 terminal resource(s) are in durable reaping",
+                    suggestion: "leave registry/owner identity intact",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        plugin: "demo-relay",
+        message: expect.stringContaining("terminal-cleanup-pending"),
+        suggestion: "leave registry/owner identity intact",
+      }),
+    );
+    expect(JSON.stringify(issues)).not.toContain("pairingToken");
+  } finally {
+    await rm(pluginHome, { recursive: true, force: true });
+  }
+});

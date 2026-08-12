@@ -673,14 +673,14 @@
 - Test: `tests/unit/plugins/plugin-doctor.test.ts`
 - Test: `tests/unit/doctor/checks/plugin-check.test.ts`
 
-- [ ] 用通用可选 plugin diagnostic hook 接入 `xacpx doctor`；core只呈现结构化结果，不理解 RMUX。
-- [ ] 输出 bridge/RMUX version、capability、registry counts、viewer/controller counts、oldest input age、lease state、last reconcile和 cleanup-pending；不输出 terminal bytes、env、credential或完整路径中的敏感部分。
-- [ ] 实现 spec §19 的结构化日志事件；ID可以记录，payload sizes/counts/error class可记录，内容不可记录。
-- [ ] doctor 在 terminal disabled 时 skip；artifact missing/version mismatch fail；corrupt registry/lease lost/cleanup pending warn/fail并给出明确操作建议。
-- [ ] doctor保持 read-only，不提供猜测性 orphan kill；修复依赖正常 reconciler/lease。
-- [ ] 加日志 redaction test，注入 canary terminal bytes/credential/path token后断言从所有 logs/doctor输出消失。
-- [ ] Run focused tests, root typecheck, and plugin-api build.
-- [ ] Commit: `feat(doctor): report relay rmux terminal health`
+- [x] 用通用可选 plugin diagnostic hook 接入 `xacpx doctor`；core只呈现结构化结果，不理解 RMUX。
+- [x] 输出 bridge/RMUX version、capability、registry counts、viewer/controller counts、oldest input age、lease state、last reconcile和 cleanup-pending；不输出 terminal bytes、env、credential或完整路径中的敏感部分。
+- [x] 实现 spec §19 的结构化日志事件；ID可以记录，payload sizes/counts/error class可记录，内容不可记录。
+- [x] doctor 在 terminal disabled 时 skip；artifact missing/version mismatch fail；corrupt registry/lease lost/cleanup pending warn/fail并给出明确操作建议。
+- [x] doctor保持 read-only，不提供猜测性 orphan kill；修复依赖正常 reconciler/lease。
+- [x] 加日志 redaction test，注入 canary terminal bytes/credential/path token后断言从所有 logs/doctor输出消失。
+- [x] Run focused tests, root typecheck, and plugin-api build.
+- [x] Commit: `feat(doctor): report relay rmux terminal health`
 
 ### Task 29: 模块文档、配置参考和 release order
 

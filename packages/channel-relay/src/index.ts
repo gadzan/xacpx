@@ -11,6 +11,20 @@ export {
   type RetireRelayTerminalsInput,
   type RetireRelayTerminalsResult,
 } from "./terminal/retire-terminals.js";
+export {
+  diagnoseRelayTerminal,
+  redactPathForDoctor,
+  type ChannelDoctorFinding,
+  type ChannelDoctorFindingLevel,
+  type DiagnoseRelayTerminalInput,
+} from "./terminal/terminal-diagnostics.js";
+export {
+  logTerminalEvent,
+  sanitizeTerminalLogFields,
+  TERMINAL_LOG_EVENTS,
+  type TerminalLogEvent,
+  type TerminalLogFields,
+} from "./terminal/terminal-log.js";
 
 const plugin: XacpxPlugin = {
   apiVersion: 1,
