@@ -148,7 +148,7 @@ impl BridgeState {
 
     pub async fn list(&self) -> Vec<InventoryEntryDto> {
         let sessions = self.sessions.lock().await;
-        sessions
+        let mut entries: Vec<InventoryEntryDto> = sessions
             .values()
             .map(|s| InventoryEntryDto {
                 session_id: s.session_id.clone(),
@@ -156,20 +156,64 @@ impl BridgeState {
                 name: s.name.clone(),
                 tags: s.tags.clone(),
             })
-            .collect()
+            .collect();
+        drop(sessions);
+
+        // Also surface daemon-wide xacpx-relay-* names so a maintenance
+        // sidecar can reconcile leftovers owned by another process.
+        if let Ok(names) = self.rmux.list_sessions().await {
+            let known: std::collections::HashSet<String> =
+                entries.iter().map(|e| e.session_id.clone()).collect();
+            for name in names {
+                let name_str = name.as_str().to_owned();
+                if !name_str.starts_with("xacpx-relay-") || known.contains(&name_str) {
+                    continue;
+                }
+                entries.push(InventoryEntryDto {
+                    session_id: name_str.clone(),
+                    pane_id: String::new(),
+                    name: name_str,
+                    tags: Vec::new(),
+                });
+            }
+        }
+        entries
     }
 
     pub async fn kill(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().await;
-        let Some(mut actor) = sessions.remove(session_id) else {
+        if let Some(mut actor) = sessions.remove(session_id) {
+            if let Some(handle) = actor.recover_abort.take() {
+                handle.abort();
+            }
+            self.panes.lock().await.remove(&actor.pane_id);
+            let _ = actor.owned.cleanup().await;
             return Ok(());
-        };
-        if let Some(handle) = actor.recover_abort.take() {
-            handle.abort();
         }
-        self.panes.lock().await.remove(&actor.pane_id);
-        let _ = actor.owned.cleanup().await;
-        Ok(())
+        drop(sessions);
+
+        // Temporary/maintenance sidecars do not hold the daemon process's
+        // OwnedSession map. Still force-kill by durable name (we store the
+        // unique RMUX session name as session_id) so disable/remove cannot
+        // leave a live shell behind after a false inventory miss.
+        let name = SessionName::new(session_id)
+            .map_err(|e| format!("invalid session name for kill: {e}"))?;
+        match self.rmux.has_session(name.clone()).await {
+            Ok(false) => Ok(()), // already gone — idempotent
+            Ok(true) => {
+                let session = self
+                    .rmux
+                    .session(name)
+                    .await
+                    .map_err(|e| format!("session lookup for kill failed: {e}"))?;
+                let _ = session
+                    .kill()
+                    .await
+                    .map_err(|e| format!("foreign session kill failed: {e}"))?;
+                Ok(())
+            }
+            Err(e) => Err(format!("has_session failed: {e}")),
+        }
     }
 
     pub async fn input(&self, pane_id: &str, bytes: &[u8]) -> Result<(), String> {

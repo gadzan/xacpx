@@ -259,6 +259,13 @@ export class TerminalReconciler {
     idleExpired: boolean,
   ): Promise<void> {
     if (!inv) {
+      // Process-local sidecar inventory can miss sessions owned by another
+      // process (CLI maintenance sidecar vs daemon). Never clear the registry
+      // without attempting a durable kill by stored session id/name.
+      if (rec.rmuxSessionId || rec.rmuxSessionName) {
+        await this.beginReap(rec, undefined, "orphan");
+        return;
+      }
       this.host.onResourceAbsent(rec.terminalId, rec.generation, "absent");
       const snap = this.host.registry.getSnapshot();
       if (snap.terminals[rec.terminalId]) {
@@ -344,6 +351,13 @@ export class TerminalReconciler {
     }
 
     if (!inv) {
+      // Prefer durable session id; fall back to the unique RMUX name we store
+      // as the process-owned session_id on the wire.
+      const sessionId = current.rmuxSessionId ?? current.rmuxSessionName;
+      if (sessionId) {
+        const killed = await this.host.killWithTimeout(sessionId);
+        if (!killed) return;
+      }
       await this.host.registry.remove(rec.terminalId);
       this.host.onResourceAbsent(rec.terminalId, rec.generation, current.reapReason ?? "reaping");
       this.onDiagnostic({ type: "removed-absent", terminalId: rec.terminalId });

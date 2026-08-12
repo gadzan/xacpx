@@ -324,6 +324,39 @@ test("live with in-process handle + missing logical is reaped and killed", async
   expect(h.fenced).toContain(terminalId);
 });
 
+test("live + empty inventory still kills durable session before clearing registry", async () => {
+  const h = await makeHarness();
+  const terminalId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const generation = "gen-empty-inv";
+  const name = rmuxName(h.installationId, terminalId);
+  const created = await h.driver.create({
+    name,
+    cwd: "/tmp",
+    cols: 80,
+    rows: 24,
+    historyLimit: 100,
+    tags: tagsFor(h.installationId, descriptor().logicalSessionId, terminalId, generation),
+    ownerLeaseTtlSeconds: 90,
+  });
+
+  await h.registry.upsertCreating({
+    terminalId,
+    logicalSessionId: descriptor().logicalSessionId,
+    internalAliasSnapshot: "demo",
+    rmuxSessionName: name,
+    generation,
+  });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
+  // Maintenance sidecar: process-local inventory empty, but kill must still land.
+  h.driver.setInventory([]);
+
+  await h.reconciler.runOnce();
+  h.driver.setInventory(null);
+  expect(h.registry.getSnapshot().terminals[terminalId]).toBeUndefined();
+  expect(await h.driver.list()).toHaveLength(0);
+  expect(h.fenced).toContain(terminalId);
+});
+
 test("live + RMUX absent emits exit and removes record", async () => {
   const h = await makeHarness();
   const terminalId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";

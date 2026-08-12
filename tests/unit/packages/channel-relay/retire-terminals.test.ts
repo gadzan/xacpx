@@ -133,6 +133,31 @@ test("retireRelayTerminals is idempotent after a successful cleanup", async () =
   expect(again).toEqual({ status: "idle" });
 });
 
+test("retire with empty process-local inventory still kills via durable session id", async () => {
+  // Mirrors CLI disable/remove: temporary sidecar list() cannot see the
+  // daemon-owned sessions, but kill must still reach them by durable id.
+  const dir = mkdtempSync(join(tmpdir(), "retire-empty-inv-"));
+  dirs.push(dir);
+  const driver = new InMemoryRmuxDriver();
+  const seeded = await seedLiveTerminal(dir, driver);
+  expect((await driver.list()).length).toBe(1);
+  driver.setInventory([]);
+
+  const result = await retireRelayTerminals({
+    registryDir: dir,
+    createDriver: () => driver,
+  });
+  expect(result.status).toBe("terminated");
+
+  driver.setInventory(null);
+  expect((await driver.list()).length).toBe(0);
+
+  const registry = new TerminalRegistryStore({ dir });
+  await registry.load();
+  expect(Object.keys(registry.getSnapshot().terminals)).toEqual([]);
+  void seeded;
+});
+
 function makeStartInput(overrides: Record<string, unknown> = {}) {
   return {
     agent: { chat: async () => ({ text: "" }) },
