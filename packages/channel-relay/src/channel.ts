@@ -26,7 +26,10 @@ import { CredentialStore, defaultCredentialPath, type RelayCredential } from "./
 import { createControlBridge, subscribeControlEvents, dispatchControlEvent } from "./control-bridge.js";
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
 import { createStateMirror } from "./state-mirror.js";
-import { InMemoryRmuxDriver } from "./terminal/in-memory-rmux-driver.js";
+import {
+  createProductionTerminalDriver,
+  type RmuxSidecarSupervisor,
+} from "./terminal/rmux-sidecar-supervisor.js";
 import type { RmuxTerminalDriver } from "./terminal/rmux-driver.js";
 import { TerminalRegistryStore } from "./terminal/terminal-registry-store.js";
 import {
@@ -67,8 +70,8 @@ export interface RelayChannelDeps {
   /** Override terminal registry directory (tests). Default: ~/.xacpx/relay */
   terminalRegistryDir?: string;
   /**
-   * Driver factory. Production currently uses the in-memory fake until the
-   * Rust sidecar (Tasks 15–17) lands; tests inject their own driver.
+   * Driver factory for tests. Production resolves the Rust sidecar via
+   * `createProductionTerminalDriver` — never falls back to InMemory.
    */
   createTerminalDriver?: () => RmuxTerminalDriver;
 }
@@ -85,6 +88,7 @@ export class RelayChannel implements MessageChannelRuntime {
   private control: ControlService | null = null;
   private terminal: DefaultRelayTerminalRuntime | null = null;
   private terminalReady = false;
+  private terminalSupervisor: RmuxSidecarSupervisor | null = null;
 
   constructor(options: Record<string, unknown> | undefined, private readonly deps: RelayChannelDeps = {}) {
     this.config = parseRelayChannelConfig(options);
@@ -116,6 +120,7 @@ export class RelayChannel implements MessageChannelRuntime {
       this.terminal = null;
       this.terminalReady = false;
     }
+    await this.stopTerminalSupervisor();
     this.credentials.clear();
   }
 
@@ -223,24 +228,28 @@ export class RelayChannel implements MessageChannelRuntime {
     this.catalogUnsub = null;
 
     if (this.terminal) {
-      if (reason === "shutdown") {
-        await this.terminal.stop();
-      } else {
-        try {
-          await this.terminal.terminateAll(reason === "logout" ? "logout" : "disabled");
-        } catch {
-          // leave reaping tombstones
-        }
-        await this.terminal.stop();
-      }
+      // Process-owned: Runtime.stop() durable-terminates all sessions.
+      // Hub/browser disconnect still only detachAllAttachments (not stop).
+      await this.terminal.stop();
       this.terminal = null;
       this.terminalReady = false;
       this.viewerPublish = null;
     }
+    await this.stopTerminalSupervisor();
 
     this.client?.stop();
     this.client = null;
     this.control = null;
+  }
+
+  private async stopTerminalSupervisor(): Promise<void> {
+    if (!this.terminalSupervisor) return;
+    try {
+      await this.terminalSupervisor.stop();
+    } catch {
+      // ignore
+    }
+    this.terminalSupervisor = null;
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
@@ -311,10 +320,14 @@ export class RelayChannel implements MessageChannelRuntime {
 
     try {
       const registry = new TerminalRegistryStore({ dir: registryDir });
-      const driver =
-        this.deps.createTerminalDriver?.() ??
-        // Tasks 15–17 replace this with the Rust sidecar driver.
-        new InMemoryRmuxDriver();
+      let driver: RmuxTerminalDriver;
+      if (this.deps.createTerminalDriver) {
+        driver = this.deps.createTerminalDriver();
+      } else {
+        const prod = await createProductionTerminalDriver(this.config.terminal);
+        this.terminalSupervisor = prod.supervisor;
+        driver = prod.driver;
+      }
 
       const runtime = new DefaultRelayTerminalRuntime({
         registry,
@@ -362,6 +375,7 @@ export class RelayChannel implements MessageChannelRuntime {
       );
       this.terminal = null;
       this.terminalReady = false;
+      await this.stopTerminalSupervisor();
       return [];
     }
   }

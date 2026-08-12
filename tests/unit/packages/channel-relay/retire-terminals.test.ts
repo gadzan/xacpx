@@ -7,9 +7,7 @@ import { RelayChannel } from "../../../../packages/channel-relay/src/channel";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 import { InMemoryRmuxDriver } from "../../../../packages/channel-relay/src/terminal/in-memory-rmux-driver";
 import { TerminalRegistryStore } from "../../../../packages/channel-relay/src/terminal/terminal-registry-store";
-import { DefaultRelayTerminalRuntime } from "../../../../packages/channel-relay/src/terminal/terminal-runtime";
 import { retireRelayTerminals } from "../../../../packages/channel-relay/src/terminal/retire-terminals";
-import { parseRelayTerminalConfig } from "../../../../packages/channel-relay/src/config";
 import type {
   SessionResourceCatalog,
   SessionResourceDescriptor,
@@ -56,25 +54,45 @@ function descriptor(): SessionResourceDescriptor {
   };
 }
 
-async function seedLiveTerminal(dir: string, driver: InMemoryRmuxDriver): Promise<void> {
+async function seedLiveTerminal(dir: string, driver: InMemoryRmuxDriver): Promise<{
+  terminalId: string;
+  sessionId: string;
+}> {
+  // Simulate a previous process that left durable live + an RMUX session.
+  // Process-owned stop() would kill, so we seed registry/driver directly.
   const registry = new TerminalRegistryStore({ dir });
-  const runtime = new DefaultRelayTerminalRuntime({
-    registry,
-    driver,
-    catalog: new FakeCatalog([descriptor()]),
-    config: { ...parseRelayTerminalConfig({ enabled: true }) },
-    onViewerEvent: () => {},
-  });
-  await runtime.start();
-  await runtime.openOrResume({
-    chatKey: "relay:u1",
-    sessionAlias: "demo",
-    viewerId: "v1",
+  await registry.load();
+  const installationId = registry.getSnapshot().installationId;
+  const terminalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const generation = "gen-seed";
+  const name = `xacpx-relay-${installationId.slice(0, 8)}-${terminalId.replaceAll("-", "")}`;
+  const created = await driver.create({
+    name,
+    cwd: "/tmp/ws",
     cols: 80,
     rows: 24,
+    historyLimit: 1000,
+    tags: [
+      "xacpx:relay",
+      `owner:${installationId}`,
+      "logical:11111111-1111-4111-8111-111111111111",
+      `terminal:${terminalId}`,
+      `generation:${generation}`,
+      "schema:1",
+    ],
+    ownerLeaseTtlSeconds: 90,
   });
-  // Abandon — leave durable live record + RMUX session for the next owner/retire.
-  await runtime.stop();
+  let snap = registry.getSnapshot();
+  await registry.upsertCreating(snap.revision, {
+    terminalId,
+    logicalSessionId: "11111111-1111-4111-8111-111111111111",
+    internalAliasSnapshot: "demo",
+    rmuxSessionName: name,
+    generation,
+  });
+  snap = registry.getSnapshot();
+  await registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  return { terminalId, sessionId: created.sessionId };
 }
 
 test("retireRelayTerminals is idle when registry is empty", async () => {

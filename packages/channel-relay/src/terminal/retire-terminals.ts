@@ -3,8 +3,8 @@
 // config has terminal.enabled=false, durable-marks records reaping, then kills.
 import type { SessionResourceCatalog } from "xacpx/plugin-api";
 import { parseRelayTerminalConfig, type RelayTerminalConfig } from "../config.js";
-import { InMemoryRmuxDriver } from "./in-memory-rmux-driver.js";
 import type { RmuxTerminalDriver } from "./rmux-driver.js";
+import { createProductionTerminalDriver } from "./rmux-sidecar-supervisor.js";
 import { TerminalRegistryStore } from "./terminal-registry-store.js";
 import { DefaultRelayTerminalRuntime } from "./terminal-runtime.js";
 
@@ -57,7 +57,31 @@ export async function retireRelayTerminals(
   // Maintenance runtime must accept terminateAll regardless of the surviving
   // channel config's enabled flag.
   const config: RelayTerminalConfig = Object.freeze({ ...base, enabled: true });
-  const driver = input.createDriver?.() ?? new InMemoryRmuxDriver();
+
+  let driver: RmuxTerminalDriver;
+  let dispose: (() => Promise<void>) | undefined;
+  if (input.createDriver) {
+    driver = input.createDriver();
+  } else {
+    try {
+      const prod = await createProductionTerminalDriver(config);
+      driver = prod.driver;
+      dispose = () => prod.supervisor.stop();
+    } catch {
+      // Durable-mark reaping so the next healthy sidecar pass can finish kill,
+      // but do not clear the registry with a fake InMemory driver.
+      for (const rec of Object.values(registry.getSnapshot().terminals)) {
+        if (rec.state === "reaping") continue;
+        const snap = registry.getSnapshot();
+        try {
+          await registry.markReaping(snap.revision, rec.terminalId, "disabled");
+        } catch {
+          // revision race — leave for next pass
+        }
+      }
+      return { status: "cleanup-pending" };
+    }
+  }
 
   const runtime = new DefaultRelayTerminalRuntime({
     registry,
@@ -73,9 +97,15 @@ export async function retireRelayTerminals(
     // Drain anything left in reaping (prior crash window / kill timeout).
     await runtime.reconcileOnce();
   } finally {
-    // stop() abandons — does not wipe owner identity or remaining reaping
-    // tombstones when kill could not confirm.
+    // stop() also terminates in process-owned mode; already-reaped records are fine.
     await runtime.stop();
+    if (dispose) {
+      try {
+        await dispose();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   const after = registry.getSnapshot();

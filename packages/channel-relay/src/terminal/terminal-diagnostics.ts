@@ -1,6 +1,6 @@
 /**
  * Read-only RMUX terminal diagnostics for `xacpx doctor` (spec §19).
- * Never kills, adopts, or mutates registry/owner identity.
+ * Never kills or mutates registry/owner identity.
  */
 import { accessSync, constants } from "node:fs";
 
@@ -11,8 +11,9 @@ import { coreHomeDir } from "xacpx/plugin-api";
 
 import type { RelayTerminalConfig } from "../config.js";
 import { parseRelayTerminalConfig } from "../config.js";
-import { InMemoryRmuxDriver } from "./in-memory-rmux-driver.js";
 import type { RmuxTerminalDriver } from "./rmux-driver.js";
+import { resolveRmuxBinaries, RmuxBinaryUnavailableError } from "./resolve-rmux-binaries.js";
+import { createProductionTerminalDriver } from "./rmux-sidecar-supervisor.js";
 import { TerminalRegistryStore } from "./terminal-registry-store.js";
 
 function defaultRegistryDir(): string {
@@ -37,7 +38,7 @@ export interface DiagnoseRelayTerminalInput {
   options?: Record<string, unknown>;
   /** Override registry dir (tests). Default: ~/.xacpx/relay */
   registryDir?: string;
-  /** Override driver factory (tests). Default: InMemoryRmuxDriver. */
+  /** Override driver factory (tests). Default: production sidecar. */
   createDriver?: () => RmuxTerminalDriver;
   now?: () => number;
 }
@@ -91,8 +92,7 @@ export async function diagnoseRelayTerminal(
     ];
   }
 
-  // Explicit binary paths must exist when configured (Task 27 packages fill the
-  // default resolver; until then missing paths fail closed).
+  // Explicit binary paths must exist when configured.
   for (const [key, value] of [
     ["bridgeCommand", terminal.bridgeCommand],
     ["rmuxCommand", terminal.rmuxCommand],
@@ -105,6 +105,38 @@ export async function diagnoseRelayTerminal(
         suggestion: `install the matching platform binary or unset terminal.${key}`,
         details: { key, path: redactPathForDoctor(value) },
       });
+    }
+  }
+
+  if (!input.createDriver) {
+    try {
+      const resolved = resolveRmuxBinaries({
+        bridgeCommand: terminal.bridgeCommand,
+        rmuxCommand: terminal.rmuxCommand,
+      });
+      findings.push({
+        level: "ok",
+        code: "terminal-binaries-resolved",
+        message: "RMUX bridge binary resolved",
+        details: {
+          bridgeSource: resolved.source.bridge,
+          ...(resolved.source.rmux ? { rmuxSource: resolved.source.rmux } : {}),
+          bridgePath: redactPathForDoctor(resolved.bridgeCommand),
+          ...(resolved.rmuxCommand
+            ? { rmuxPath: redactPathForDoctor(resolved.rmuxCommand) }
+            : {}),
+        },
+      });
+    } catch (err) {
+      if (err instanceof RmuxBinaryUnavailableError) {
+        findings.push({
+          level: "error",
+          code: "terminal-artifact-missing",
+          message: err.message,
+          suggestion:
+            "install channel-relay platform optional packages or set absolute terminal.bridgeCommand/rmuxCommand",
+        });
+      }
     }
   }
 
@@ -146,7 +178,7 @@ export async function diagnoseRelayTerminal(
       code: "terminal-inventory-uncertain",
       message:
         "terminal owner/registry evidence is inconsistent; reconciler stays fail-closed until the next healthy pass",
-      suggestion: "restart the daemon within ownerLeaseTtlSeconds so adopt/reap can finish; do not hand-delete registry files",
+      suggestion: "restart xacpx so reconciler can reap leftover names; ownerLeaseTtlSeconds bounds hard-crash orphan lifetime (not a restart-adoption window)",
       details: {
         installationIdPresent: snap.installationId.length > 0,
         live,
@@ -167,11 +199,19 @@ export async function diagnoseRelayTerminal(
     });
   }
 
-  const driver = input.createDriver?.() ?? new InMemoryRmuxDriver();
   let bridgeVersion: string | null = null;
   let rmuxWireVersion: string | null = null;
   let capabilities: string[] = [];
+  let dispose: (() => Promise<void>) | undefined;
   try {
+    let driver: RmuxTerminalDriver;
+    if (input.createDriver) {
+      driver = input.createDriver();
+    } else {
+      const prod = await createProductionTerminalDriver(terminal);
+      driver = prod.driver;
+      dispose = () => prod.supervisor.stop();
+    }
     const diag = await driver.diagnostics();
     bridgeVersion = diag.bridgeVersion;
     rmuxWireVersion = diag.rmuxWireVersion;
@@ -183,6 +223,14 @@ export async function diagnoseRelayTerminal(
       message: `RMUX driver diagnostics failed: ${err instanceof Error ? err.message : String(err)}`,
       suggestion: "verify bridge/RMUX binaries and platform packages, then restart the daemon",
     });
+  } finally {
+    if (dispose) {
+      try {
+        await dispose();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   if (bridgeVersion?.includes("fake") || rmuxWireVersion?.includes("fake")) {
@@ -192,7 +240,7 @@ export async function diagnoseRelayTerminal(
       message:
         "terminal backend is using the in-memory / unpackaged RMUX driver; real sidecar platform packages are not installed",
       suggestion:
-        "install channel-relay platform optional packages (Task 27) or set absolute terminal.bridgeCommand/rmuxCommand",
+        "install channel-relay platform optional packages or set absolute terminal.bridgeCommand/rmuxCommand",
       details: { bridgeVersion, rmuxWireVersion },
     });
   }

@@ -180,7 +180,7 @@ test("terminal open request routes to runtime and does not hit legacy control br
   await started;
 });
 
-test("hub disconnect bulk-detaches attachments but stop(shutdown) does not kill RMUX", async () => {
+test("hub disconnect bulk-detaches attachments; stop(shutdown) kills RMUX (process-owned)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-term-chan-"));
   dirs.push(dir);
   const driver = new InMemoryRmuxDriver();
@@ -241,8 +241,8 @@ test("hub disconnect bulk-detaches attachments but stop(shutdown) does not kill 
 
   controller.abort();
   await started;
-  // After shutdown stop: sessions still alive (abandon, not kill).
-  expect((await driver.list()).length).toBe(1);
+  // After shutdown stop: process-owned kills sessions.
+  expect((await driver.list()).length).toBe(0);
 });
 
 test("stop(disabled) terminates RMUX after durable reaping", async () => {
