@@ -690,3 +690,29 @@ test("timed-out create terminates when no other viewers remain", async () => {
   expect(runtime.peekAttachment(opened.attachmentId)).toBeUndefined();
   expect(await driver.list()).toHaveLength(0);
 });
+
+test("timed-out create keeps shell when another viewer attached after create", async () => {
+  const { runtime, driver } = await makeHarness();
+  const created = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v-late",
+    cols: 80,
+    rows: 24,
+  });
+  expect(created.openKind).toBe("created");
+
+  const other = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v-other",
+    cols: 80,
+    rows: 24,
+  });
+  expect(other.openKind).toBe("resumed");
+
+  await runtime.compensateTimedOutOpen(created);
+  expect(runtime.peekAttachment(created.attachmentId)).toBeUndefined();
+  expect(runtime.peekAttachment(other.attachmentId)).toBeTruthy();
+  expect(await driver.list()).toHaveLength(1);
+});
