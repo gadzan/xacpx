@@ -112,6 +112,18 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
   if (packageJson.name !== pkg.expectedName) {
     failures.push(`${pkg.id}: package.json name must be ${pkg.expectedName}, got ${String(packageJson.name)}`);
   }
+  if (pkg.id === "channel-relay") {
+    const version = String(packageJson.version ?? "");
+    const optional = packageJson.optionalDependencies ?? {};
+    for (const [name, pinned] of Object.entries(optional)) {
+      if (!name.startsWith("@ganglion/xacpx-rmux-bridge-")) continue;
+      if (pinned !== version) {
+        failures.push(
+          `${pkg.id}: optionalDependency ${name} is ${pinned}, must equal package version ${version} (run scripts/sync-rmux-bridge-versions.mjs)`,
+        );
+      }
+    }
+  }
   if (pkg.id === "root" && pkg.expectedName === "@ganglion/xacpx") {
     if (packageJson.optionalDependencies?.["fs-ext"] !== "2.1.1") {
       failures.push("root: optionalDependencies must include fs-ext@2.1.1 for the Unix flock helper");

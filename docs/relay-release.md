@@ -67,7 +67,7 @@ bun test tests/smoke/relay-rmux-terminal.test.ts
 
 覆盖矩阵（driver 级）：UTF-8 input / invalid UTF-8、shutdown kill、resize、`vim`/`top`（本机有命令时）、多 viewer recover fanout。
 
-语义提醒：`ownerLeaseTtlSeconds` 只约束硬崩溃孤儿回收，**不是**跨进程 adopt 窗口。发布 workflow（`publish-channel-relay.yml`）会按 OS 矩阵构建 `@ganglion/xacpx-rmux-bridge-*`，跑 Linux smoke，**先发 platform 包再发** `@ganglion/xacpx-channel-relay`。权威说明：`docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`。
+语义提醒：`ownerLeaseTtlSeconds` 只约束硬崩溃孤儿回收，**不是**跨进程 adopt 窗口。发布 workflow（`publish-channel-relay.yml`）会按 OS 矩阵构建 `@ganglion/xacpx-rmux-bridge-*`，跑 Linux smoke，**先发 platform 包再发** `@ganglion/xacpx-channel-relay`。发 connector 前必须把 `optionalDependencies` 同步到同一版本（`node ./scripts/sync-rmux-bridge-versions.mjs`；workflow 已强制 `--check`），否则会发布仍请求旧 bridge beta 的 channel-relay。权威说明：`docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`。
 
 ## 发布前自检（必跑）
 

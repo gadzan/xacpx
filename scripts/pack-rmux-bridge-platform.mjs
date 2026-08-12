@@ -58,6 +58,12 @@ const pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
 pkgJson.version = channelRelayVersion;
 writeFileSync(pkgJsonPath, `${JSON.stringify(pkgJson, null, 2)}\n`);
 
+// Keep channel-relay optionalDependencies on the same version the platform
+// package is about to publish. Without this, publish can ship channel-relay
+// still pinning an older bridge beta.
+const { syncRmuxBridgeVersions } = await import("./sync-rmux-bridge-versions.mjs");
+syncRmuxBridgeVersions(root);
+
 const checksums = {
   package: pkgJson.name,
   version: channelRelayVersion,

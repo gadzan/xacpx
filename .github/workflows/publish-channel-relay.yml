@@ -263,6 +263,12 @@ jobs:
       - name: Build channel-relay (and relay-protocol + plugin-api types)
         run: bun run build:channel-relay
 
+      - name: Sync rmux-bridge optionalDependencies to channel-relay version
+        run: node ./scripts/sync-rmux-bridge-versions.mjs
+
+      - name: Verify rmux-bridge versions match channel-relay
+        run: node ./scripts/sync-rmux-bridge-versions.mjs --check
+
       - name: Verify publishable artifacts
         run: bun run verify:publish
 
