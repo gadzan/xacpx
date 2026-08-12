@@ -279,13 +279,18 @@ export class InstanceGateway {
     }
   }
 
-  async sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown> {
+  async sendRequest(
+    instanceId: string,
+    type: string,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<unknown> {
     const connection = this.connections.get(instanceId);
     if (!connection) {
       throw new Error("instance-offline");
     }
     const id = `relay-${++this.seq}`;
-    const timeoutMs = this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const timeoutMs = options?.timeoutMs ?? this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const requestBudgetMs = Math.max(timeoutMs - REQUEST_RESPONSE_RESERVE_MS, 1);
     // This is the mutation work cutoff, not the Hub response timer. Keeping the
     // reserve in both representations prevents delivery latency from consuming it.
@@ -322,3 +327,6 @@ export class InstanceGateway {
     }
   }
 }
+
+/** Default timeout for recoverable terminal open/take-control/resync/terminate (spec §14). */
+export const TERMINAL_REQUEST_TIMEOUT_MS = 10_000;
