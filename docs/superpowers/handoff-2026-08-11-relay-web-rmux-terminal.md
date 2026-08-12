@@ -25,20 +25,21 @@ Authoritative docs:
 | Phase D (Tasks 10–14) | ✅ |
 | Phase E (Tasks 15–17) | **Blocked** on Phase A |
 | Phase F Tasks 18–23 | ✅ (in-memory driver / fake path; no real RMUX sidecar) |
-| Phase G Task 24+ | **next** where doable without real RMUX; Task 26 still blocked |
+| Phase G Task 24 | ✅ |
+| Phase G Task 25+ | **next** where doable without real RMUX; Task 26 still blocked |
 
 ## Recent commits (local `main`, do not push)
 
 ```
-feat(relay-web): add shared terminal control and global close   # Task 23
-feat(relay-web): recover rmux terminal attachments              # Task 22
-feat(relay): coordinate terminal attachment requests            # Task 20
-feat(relay): route terminal streams to attached viewers         # Task 19
-feat(channel-relay): own relay rmux terminal lifecycle          # Task 18
+feat(channel-relay): retire terminals on destructive channel actions  # Task 24
+feat(relay-web): add shared terminal control and global close         # Task 23
+feat(relay-web): recover rmux terminal attachments                    # Task 22
+feat(relay): coordinate terminal attachment requests                  # Task 20
+feat(relay): route terminal streams to attached viewers               # Task 19
 ```
 
 ## Next step
 
-**Phase G** — start with Task 24 (`feat(channel-relay): retire terminals on destructive channel actions`) and Task 25 fake E2E where possible. Skip / park Task 26 until RMUX publish.
+**Task 25** — fake connector↔hub↔browser E2E / fault matrix (`test(relay): cover rmux terminal fault recovery`). Skip / park Task 26 until RMUX publish.
 
 Blocked forever until RMUX publish: Phase A Tasks 1–3, Phase E Tasks 15–17, Task 26 smoke.

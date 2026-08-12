@@ -40,6 +40,7 @@ import {
   isTerminalEventType,
   isTerminalRequestType,
 } from "./terminal-bridge.js";
+import { retireRelayTerminals } from "./terminal/retire-terminals.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -277,11 +278,29 @@ export class RelayChannel implements MessageChannelRuntime {
   /**
    * Registry → driver → reconcile, then return the capability snapshot for
    * handshake. Terminal disabled / unavailable → empty caps; chat still works.
+   * When config flips enabled→disabled, still reads the existing registry and
+   * retires leftover resources before omitting capabilities.
    */
   private async bootstrapTerminal(input: ChannelStartInput): Promise<string[]> {
+    const registryDir = this.deps.terminalRegistryDir ?? defaultTerminalRegistryDir();
+
     if (!this.config.terminal.enabled) {
+      try {
+        await retireRelayTerminals({
+          registryDir,
+          terminalConfig: this.config.terminal,
+          createDriver: this.deps.createTerminalDriver,
+        });
+      } catch (err) {
+        void input.logger?.error(
+          "relay.terminal_retire_on_disabled",
+          `Failed to retire leftover terminals after terminal.enabled=false: ${err instanceof Error ? err.message : String(err)}`,
+          {},
+        );
+      }
       return [];
     }
+
     const catalog = input.sessionResources as SessionResourceCatalog | undefined;
     if (!catalog) {
       throw new Error(
@@ -290,7 +309,6 @@ export class RelayChannel implements MessageChannelRuntime {
     }
 
     try {
-      const registryDir = this.deps.terminalRegistryDir ?? defaultTerminalRegistryDir();
       const registry = new TerminalRegistryStore({ dir: registryDir });
       const driver =
         this.deps.createTerminalDriver?.() ??

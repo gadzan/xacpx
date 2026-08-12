@@ -598,14 +598,14 @@
 - Test: channel CLI tests for disable/remove
 - Test: `tests/unit/run-console.test.ts`
 
-- [ ] 在 running runtime 和 one-shot CLI runtime 两条路径验证 `shutdown` abandon，不 release、不 kill；新进程在 TTL 内 adopt。
-- [ ] disabled/removed/logout 先把所有 records durable 转 reaping，再 kill；RMUX unavailable 时返回 cleanup-pending并保留 registry/owner identity。
-- [ ] credential clear 必须在上述 durable transition 后；失败时打印可操作错误且不能删除唯一 cleanup evidence。
-- [ ] hub disconnect 只 bulk detach；不得复用 channel stop path。
-- [ ] 配置从 terminal enabled→disabled 时，即使新 config 已关闭，也要读取既有 registry完成 cleanup。
-- [ ] 测试重复命令、daemon concurrent owner 被 one-shot maintenance owner fence、kill timeout、process crash和后续 reconcile。
-- [ ] Run focused tests and root/channel-relay typechecks.
-- [ ] Commit: `feat(channel-relay): retire terminals on destructive channel actions`
+- [x] 在 running runtime 和 one-shot CLI runtime 两条路径验证 `shutdown` abandon，不 release、不 kill；新进程在 TTL 内 adopt。
+- [x] disabled/removed/logout 先把所有 records durable 转 reaping，再 kill；RMUX unavailable 时返回 cleanup-pending并保留 registry/owner identity。
+- [x] credential clear 必须在上述 durable transition 后；失败时打印可操作错误且不能删除唯一 cleanup evidence。
+- [x] hub disconnect 只 bulk detach；不得复用 channel stop path。
+- [x] 配置从 terminal enabled→disabled 时，即使新 config 已关闭，也要读取既有 registry完成 cleanup。
+- [x] 测试重复命令、daemon concurrent owner 被 one-shot maintenance owner fence、kill timeout、process crash和后续 reconcile。
+- [x] Run focused tests and root/channel-relay typechecks.
+- [x] Commit: `feat(channel-relay): retire terminals on destructive channel actions`
 
 ### Task 25: 跨包 fake E2E 与 fault matrix
 

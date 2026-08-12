@@ -109,7 +109,10 @@ test("terminal.enabled declares both capabilities after runtime reconcile", asyn
     sessionResources: new FakeCatalog(),
   });
   const started = channel.start(input as never);
-  await Bun.sleep(20);
+  const deadline = Date.now() + 2000;
+  while (capturedCaps === undefined && Date.now() < deadline) {
+    await Bun.sleep(5);
+  }
   expect(capturedCaps).toEqual([
     RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
     RELAY_CAPABILITIES.terminalMultiViewV1,
@@ -240,6 +243,45 @@ test("hub disconnect bulk-detaches attachments but stop(shutdown) does not kill 
   await started;
   // After shutdown stop: sessions still alive (abandon, not kill).
   expect((await driver.list()).length).toBe(1);
+});
+
+test("stop(disabled) terminates RMUX after durable reaping", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-term-chan-"));
+  dirs.push(dir);
+  const driver = new InMemoryRmuxDriver();
+  const channel = new RelayChannel(
+    { url: "ws://h:1", pairingToken: "t", terminal: { enabled: true } },
+    {
+      credentialStore: new MemoryCredentialStore(),
+      terminalRegistryDir: dir,
+      createTerminalDriver: () => driver,
+      createClient: () => ({ start: () => {}, stop: () => {}, sendEvent: () => {} }) as never,
+    },
+  );
+  const controller = new AbortController();
+  const { input } = makeStartInput({
+    abortSignal: controller.signal,
+    sessionResources: new FakeCatalog(),
+  });
+  const started = channel.start(input as never);
+  const deadline = Date.now() + 2000;
+  while (channel.getTerminalRuntimeForTests() === null && Date.now() < deadline) {
+    await Bun.sleep(5);
+  }
+  const runtime = channel.getTerminalRuntimeForTests()!;
+  await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  expect((await driver.list()).length).toBe(1);
+
+  await channel.stop("disabled");
+  expect((await driver.list()).length).toBe(0);
+  controller.abort();
+  await started;
 });
 
 test("terminal disabled omits capabilities and still starts chat client", async () => {
