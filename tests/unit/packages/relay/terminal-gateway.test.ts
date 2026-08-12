@@ -41,3 +41,8 @@ test("sendEvent to an offline instance returns false", () => {
   const { gw } = authedGateway();
   expect(gw.sendEvent("nope", MSG.terminalInput, {})).toBe(false);
 });
+
+test("sendRequest accepts a shorter terminal timeout and rejects when offline", async () => {
+  const { gw } = authedGateway();
+  await expect(gw.sendRequest("missing", MSG.terminalOpen, {}, { timeoutMs: 50 })).rejects.toThrow(/instance-offline/);
+});

@@ -481,15 +481,15 @@
 - Test: `tests/unit/packages/relay/terminal-gateway.test.ts`
 - Test: `tests/unit/packages/relay/web-ws-integration.test.ts`
 
-- [ ] 每个 authenticated browser socket 生成随机 viewerId；browser 自报字段不存在/被 validator 拒绝。
-- [ ] WebGateway 维护 socket→attachments、attachment→socket、terminal→attachments；bind/unbind API 在一个同步 critical section 内更新双向 map。
-- [ ] `sendToAttachment(viewerId, attachmentId, event)` 发送前重新验证二元组仍属于当前 socket；stale connector frame 丢弃。
-- [ ] resource-exit 只 fanout 当前 terminal attachments；新 terminal stream 不走 account broadcast/subscription path。
-- [ ] socket close 清 maps并 best-effort 给 connector 发 detach；漏发由 attachment TTL 兜底。
-- [ ] slow socket 超过 bufferedAmount 阈值只 evict 该 viewer并 detach，其他 viewer/resource 不受影响。
-- [ ] connector reconnect/supersede fencing 对 pending terminal RPC 与旧 viewer events 同样生效。
-- [ ] Run focused hub tests and `npx tsc -p packages/relay/tsconfig.json --noEmit`.
-- [ ] Commit: `feat(relay): route terminal streams to attached viewers`
+- [x] 每个 authenticated browser socket 生成随机 viewerId；browser 自报字段不存在/被 validator 拒绝。
+- [x] WebGateway 维护 socket→attachments、attachment→socket、terminal→attachments；bind/unbind API 在一个同步 critical section 内更新双向 map。
+- [x] `sendToAttachment(viewerId, attachmentId, event)` 发送前重新验证二元组仍属于当前 socket；stale connector frame 丢弃。
+- [x] resource-exit 只 fanout 当前 terminal attachments；新 terminal stream 不走 account broadcast/subscription path。
+- [x] socket close 清 maps并 best-effort 给 connector 发 detach；漏发由 attachment TTL 兜底。
+- [x] slow socket 超过 bufferedAmount 阈值只 evict 该 viewer并 detach，其他 viewer/resource 不受影响。
+- [x] connector reconnect/supersede fencing 对 pending terminal RPC 与旧 viewer events 同样生效。
+- [x] Run focused hub tests and `npx tsc -p packages/relay/tsconfig.json --noEmit`.
+- [x] Commit: `feat(relay): route terminal streams to attached viewers`
 
 ### Task 20: Hub 两阶段 open、低频 RPC 和 ownership gate
 
@@ -503,15 +503,15 @@
 - Test: `tests/unit/packages/relay/terminal-gateway.test.ts`
 - Test: `tests/unit/packages/relay/integration.test.ts`
 
-- [ ] browser open/take-control/resync/terminate 全部经过 account→instance ownership gate和 10 秒 req/res；instance offline 返回稳定 code。
-- [ ] open response 成功后，先 bind socket↔attachment，再发送 `terminal-opened`；只有 browser 后续 `stream-start` 才通知 connector recover。
-- [ ] 若发送 opened 失败，立即 unbind/detach；若 browser 不发 stream-start，attachment TTL 收尾。
-- [ ] input/resize/heartbeat/detach 必须验证 attachment 当前属于此 socket，再盖 viewerId转发；generation 保持原值。
-- [ ] requestId response exactly once；timeout/disconnect 清 pending。open timeout 的 connector 侧补偿/tombstone结果不得被 hub当普通成功重放。
-- [ ] terminate ack 的 `terminated/cleanup-pending` 都原样回 web；不能把 fire-and-forget close 当成功。
-- [ ] terminal frames 不进入 SQLite messages/state snapshot/turn accumulator。
-- [ ] Run focused tests, hub typecheck, and `bun run build:relay` after web tasks land.
-- [ ] Commit: `feat(relay): coordinate terminal attachment requests`
+- [x] browser open/take-control/resync/terminate 全部经过 account→instance ownership gate和 10 秒 req/res；instance offline 返回稳定 code。
+- [x] open response 成功后，先 bind socket↔attachment，再发送 `terminal-opened`；只有 browser 后续 `stream-start` 才通知 connector recover。
+- [x] 若发送 opened 失败，立即 unbind/detach；若 browser 不发 stream-start，attachment TTL 收尾。
+- [x] input/resize/heartbeat/detach 必须验证 attachment 当前属于此 socket，再盖 viewerId转发；generation 保持原值。
+- [x] requestId response exactly once；timeout/disconnect 清 pending。open timeout 的 connector 侧补偿/tombstone结果不得被 hub当普通成功重放。
+- [x] terminate ack 的 `terminated/cleanup-pending` 都原样回 web；不能把 fire-and-forget close 当成功。
+- [x] terminal frames 不进入 SQLite messages/state snapshot/turn accumulator。
+- [x] Run focused tests, hub typecheck, and `bun run build:relay` after web tasks land.
+- [x] Commit: `feat(relay): coordinate terminal attachment requests`
 
 ### Task 21: 修正 ghostty adapter readiness、reset 与 exact bytes
 
