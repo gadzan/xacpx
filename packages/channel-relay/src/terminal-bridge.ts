@@ -148,13 +148,72 @@ function runtimeErrorPayload(err: unknown): ReturnType<typeof errorPayload> {
   );
 }
 
+/**
+ * Hub publishes both absolute and relative cutoffs so delivery delay cannot
+ * eat the response reserve. Missing/partial deadlines are treated as absent
+ * (unit tests / legacy envelopes) rather than fail-closed-to-now.
+ */
+export function terminalRequestDeadlineAt(
+  envelope: Pick<RelayEnvelope, "requestDeadlineAt" | "requestBudgetMs">,
+  now: () => number = Date.now,
+): number | undefined {
+  const absolute = envelope.requestDeadlineAt;
+  const budget = envelope.requestBudgetMs;
+  if (
+    typeof absolute !== "number" || !Number.isFinite(absolute) || absolute <= 0
+    || typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0
+  ) {
+    return undefined;
+  }
+  const receivedAt = now();
+  return Math.min(absolute, receivedAt + budget);
+}
+
 /** Handle a terminal req/res envelope. Returns true if consumed. */
 export async function handleTerminalRequest(
   runtime: DefaultRelayTerminalRuntime,
   envelope: RelayEnvelope,
   respond: (payload: unknown) => void,
+  options?: {
+    now?: () => number;
+    setTimeoutFn?: (fn: () => void, ms: number) => unknown;
+    clearTimeoutFn?: (timer: unknown) => void;
+  },
 ): Promise<boolean> {
   if (!isTerminalRequestType(envelope.type)) return false;
+
+  const now = options?.now ?? Date.now;
+  const setTimeoutFn = options?.setTimeoutFn
+    ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearTimeoutFn = options?.clearTimeoutFn
+    ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>));
+
+  let settled = false;
+  let timedOut = false;
+  let timer: unknown;
+  const respondOnce = (payload: unknown) => {
+    if (settled) return;
+    settled = true;
+    if (timer !== undefined) {
+      clearTimeoutFn(timer);
+      timer = undefined;
+    }
+    respond(payload);
+  };
+
+  const deadlineAt = terminalRequestDeadlineAt(envelope, now);
+  if (deadlineAt !== undefined) {
+    const remaining = deadlineAt - now();
+    if (remaining <= 0) {
+      respondOnce(errorPayload("timeout", `rpc ${envelope.type} missed request deadline`));
+      return true;
+    }
+    timer = setTimeoutFn(() => {
+      timedOut = true;
+      respondOnce(errorPayload("timeout", `rpc ${envelope.type} exceeded request deadline`));
+    }, remaining);
+  }
+
   try {
     switch (envelope.type) {
       case MSG.terminalOpen: {
@@ -166,37 +225,56 @@ export async function handleTerminalRequest(
           cols: p.cols,
           rows: p.rows,
         });
-        respond(result);
+        if (timedOut) {
+          // Hub/connector already answered timeout: compensate-kill the ghost.
+          void runtime.terminate({
+            terminalId: result.terminalId,
+            generation: result.generation,
+            reason: "explicit-close",
+          }).catch(() => {});
+          return true;
+        }
+        respondOnce(result);
         return true;
       }
       case MSG.terminalTakeControl: {
         const p = envelope.payload as TerminalTakeControlPayload;
-        respond(await runtime.takeControl(p.attachmentId, p.generation));
+        const result = await runtime.takeControl(p.attachmentId, p.generation);
+        if (timedOut) return true;
+        respondOnce(result);
         return true;
       }
       case MSG.terminalResync: {
         const p = envelope.payload as TerminalResyncPayload;
         await runtime.resync(p.attachmentId, p.generation);
-        respond({ ok: true });
+        if (timedOut) return true;
+        respondOnce({ ok: true });
         return true;
       }
       case MSG.terminalTerminate: {
         const p = envelope.payload as TerminalTerminatePayload;
-        respond(
-          await runtime.terminate({
-            terminalId: p.terminalId,
-            generation: p.generation,
-            reason: "explicit-close",
-          }),
-        );
+        const result = await runtime.terminate({
+          terminalId: p.terminalId,
+          generation: p.generation,
+          reason: "explicit-close",
+        });
+        // Late terminate after Hub timeout is still useful cleanup; respond if
+        // the Hub is still waiting, otherwise leave the side effect alone.
+        if (timedOut) return true;
+        respondOnce(result);
         return true;
       }
       default:
         return false;
     }
   } catch (err) {
-    respond(runtimeErrorPayload(err));
+    if (!timedOut && !settled) respondOnce(runtimeErrorPayload(err));
     return true;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeoutFn(timer);
+      timer = undefined;
+    }
   }
 }
 

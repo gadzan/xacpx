@@ -122,6 +122,10 @@ export class RmuxSidecarSupervisor {
           source: { bridge: "config" },
         };
         const driver = await this.opts.createDriver(binaries);
+        driver.onCrash(() => {
+          // Injected drivers have no real child exit; fence immediately.
+          this.driver = null;
+        });
         await driver.handshake();
         this.driver = driver;
         return driver;
@@ -164,6 +168,12 @@ export class RmuxSidecarSupervisor {
         on: (event, listener) => {
           child.on(event, listener as never);
         },
+      });
+
+      // Protocol-fatal crash kills the child; exit handler restarts. Also
+      // null the driver immediately so callers fence before exit races.
+      driver.onCrash(() => {
+        this.driver = null;
       });
 
       child.on("exit", () => {

@@ -141,6 +141,29 @@ test("sidecar driver fences after child exit", async () => {
   await expect(driver.list()).rejects.toBeInstanceOf(RmuxDriverCrashedError);
 });
 
+test("protocol corruption kill child so supervisor can restart", async () => {
+  const fake = makeFakeChild();
+  let killed = false;
+  const child = {
+    ...fake.child,
+    kill: () => {
+      killed = true;
+      fake.life.emit("exit", 1);
+    },
+  };
+  const driver = new RmuxSidecarDriver(child);
+  await withHandshake(driver, fake);
+  let crashed = false;
+  driver.onCrash(() => {
+    crashed = true;
+  });
+  fake.stdout.write("this is not json\n");
+  await Bun.sleep(10);
+  expect(crashed).toBe(true);
+  expect(killed).toBe(true);
+  await expect(driver.list()).rejects.toBeInstanceOf(RmuxDriverCrashedError);
+});
+
 test("sidecar driver recover stream delivers rebase then exit", async () => {
   const fake = makeFakeChild();
   const driver = new RmuxSidecarDriver(fake.child);

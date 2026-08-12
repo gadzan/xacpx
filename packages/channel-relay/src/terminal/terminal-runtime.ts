@@ -299,6 +299,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   /** paneId lookup after adopt/create — keyed by terminalId. */
   private paneByTerminal = new Map<string, string>();
   private readonly reconciler: TerminalReconciler;
+  private attachmentSweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: TerminalRuntimeOptions) {
     this.registry = options.registry;
@@ -355,6 +356,21 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     await this.reconciler.runOnce();
     this.started = true;
     this.reconciler.startPeriodic();
+    const sweepMs = Math.max(1_000, Math.min(15_000, Math.floor(this.config.attachmentTtlSeconds * 250)));
+    this.attachmentSweepTimer = setInterval(() => {
+      this.sweepExpiredAttachments();
+    }, sweepMs);
+    this.attachmentSweepTimer.unref?.();
+  }
+
+  /** Detach attachments whose heartbeat TTL expired (best-effort Hub detach fallback). */
+  sweepExpiredAttachments(): string[] {
+    if (!this.started || this.stopped) return [];
+    const expired = this.attachments.expireStale(this.clock.now());
+    for (const attachmentId of expired) {
+      void this.stopRecovery(attachmentId, { wait: false });
+    }
+    return expired;
   }
 
   /** Test/ops seam: run one mark-and-sweep pass without waiting for the timer. */
@@ -420,8 +436,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       const nowIso = new Date(this.clock.now()).toISOString();
 
       // Durable creating BEFORE driver side effect (spec §10.4).
-      snap = this.registry.getSnapshot();
-      const { revision: afterCreating } = await this.registry.upsertCreating(snap.revision, {
+      await this.registry.upsertCreating({
         terminalId,
         logicalSessionId: descriptor.logicalSessionId,
         internalAliasSnapshot: descriptor.internalAlias,
@@ -446,7 +461,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         sessionId = created.sessionId;
         paneId = created.paneId;
 
-        await this.registry.markLive(afterCreating, terminalId, {
+        await this.registry.markLive(terminalId, {
           rmuxSessionId: created.sessionId,
         });
       } catch (err) {
@@ -656,6 +671,10 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
   async stop(): Promise<void> {
     // Process-owned: normal shutdown kills all sessions (no cross-process adopt).
+    if (this.attachmentSweepTimer) {
+      clearInterval(this.attachmentSweepTimer);
+      this.attachmentSweepTimer = null;
+    }
     if (!this.stopped && this.started) {
       try {
         await this.terminateAll("disabled");
@@ -799,11 +818,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       !handle ||
       now - handle.lastCheckpointAt >= this.checkpointIntervalMs
     ) {
-      await this.registry.checkpointLastInputAt(
-        snap.revision,
-        terminalId,
-        new Date(now).toISOString(),
-      );
+      await this.registry.checkpointLastInputAt(terminalId, new Date(now).toISOString());
       if (handle) handle.lastCheckpointAt = now;
     }
   }
@@ -848,13 +863,13 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     const rec = snap.terminals[terminalId];
     if (!rec) return;
     if (rec.state !== "reaping") {
-      await this.registry.markReaping(snap.revision, terminalId, "orphan");
+      await this.registry.markReaping(terminalId, "orphan");
     }
     // If kill succeeded / never created, try remove.
     if (sessionId) {
       const after = this.registry.getSnapshot();
       try {
-        await this.registry.remove(after.revision, terminalId);
+        await this.registry.remove(terminalId);
         this.handles.delete(terminalId);
       } catch {
         // leave tombstone
@@ -878,7 +893,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
     if (rec.state !== "reaping") {
       // Durable reaping FIRST (spec §10.5).
-      await this.registry.markReaping(snap.revision, terminalId, reason);
+      await this.registry.markReaping(terminalId, reason);
     }
 
     // Abort only — never await recovery loops while holding the terminal lock
@@ -900,7 +915,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
     const snap = this.registry.getSnapshot();
     if (snap.terminals[rec.terminalId]) {
-      await this.registry.remove(snap.revision, rec.terminalId);
+      await this.registry.remove(rec.terminalId);
     }
     this.handles.delete(rec.terminalId);
     this.paneByTerminal.delete(rec.terminalId);
@@ -1026,7 +1041,8 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       const totalBytes = event.keyframe.byteLength;
       if (totalBytes > 2 * 1024 * 1024) {
         this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId });
-        await this.stopRecovery(attachmentId);
+        // Never await our own recovery loop from inside it.
+        await this.stopRecovery(attachmentId, { wait: false });
         return;
       }
       const chunkCount = chunkCountFor(totalBytes);
@@ -1047,7 +1063,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         const start = index * TERMINAL_REBASE_CHUNK_BYTES;
         const chunk = event.keyframe.subarray(start, start + TERMINAL_REBASE_CHUNK_BYTES);
         if (!this.attachments.enqueueOutbound(attachmentId, chunk)) {
-          await this.stopRecovery(attachmentId);
+          await this.stopRecovery(attachmentId, { wait: false });
           return;
         }
         this.onViewerEvent({
@@ -1059,6 +1075,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
           index,
           dataBase64: bytesToBase64(chunk),
         });
+        this.attachments.releaseOutbound(attachmentId, chunk.byteLength);
       }
       this.onViewerEvent({
         type: "rebase-end",
@@ -1072,7 +1089,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
     if (event.type === "bytes") {
       if (!this.attachments.enqueueOutbound(attachmentId, event.data)) {
-        await this.stopRecovery(attachmentId);
+        await this.stopRecovery(attachmentId, { wait: false });
         return;
       }
       this.onViewerEvent({
@@ -1084,6 +1101,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         sequence: event.sequence,
         dataBase64: bytesToBase64(event.data),
       });
+      this.attachments.releaseOutbound(attachmentId, event.data.byteLength);
       return;
     }
 
@@ -1109,7 +1127,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         return;
       }
       if (rec.state !== "reaping") {
-        await this.registry.markReaping(snap.revision, terminalId, "exited");
+        await this.registry.markReaping(terminalId, "exited");
       }
       await this.stopAllRecoveriesForTerminal(terminalId, { wait: false });
       this.emitExitToViewers(terminalId, generation, "exited", code);

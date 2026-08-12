@@ -521,3 +521,80 @@ test("disabled config rejects open", async () => {
     }),
   ).rejects.toMatchObject({ code: "terminal-disabled" });
 });
+
+test("concurrent open for two logical sessions both mark live without revision CAS failure", async () => {
+  const { runtime, catalog, driver, registry } = await makeHarness();
+  catalog.set(
+    descriptor({
+      logicalSessionId: "22222222-2222-4222-8222-222222222222",
+      displayAlias: "other",
+      internalAlias: "other",
+    }),
+  );
+
+  // Interleave create with checkpoint on the other terminal.
+  const opens = Promise.all([
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "demo",
+      viewerId: "v1",
+      cols: 80,
+      rows: 24,
+    }),
+    runtime.openOrResume({
+      chatKey: "relay:u1",
+      sessionAlias: "other",
+      viewerId: "v2",
+      cols: 80,
+      rows: 24,
+    }),
+  ]);
+  const [a, b] = await opens;
+  expect(a.terminalId).not.toBe(b.terminalId);
+  expect(await driver.list()).toHaveLength(2);
+  const snap = registry.getSnapshot();
+  expect(Object.values(snap.terminals).filter((t) => t.state === "live")).toHaveLength(2);
+});
+
+test("attachment TTL sweep detaches stale viewers and aborts recovery", async () => {
+  const { runtime, clock } = await makeHarness({
+    config: { attachmentTtlSeconds: 5 },
+  });
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  expect(runtime.peekAttachment(opened.attachmentId)).toBeTruthy();
+
+  clock.nowMs += 6_000;
+  const expired = runtime.sweepExpiredAttachments();
+  expect(expired).toContain(opened.attachmentId);
+  expect(runtime.peekAttachment(opened.attachmentId)).toBeUndefined();
+});
+
+test("healthy recovery past 2MiB cumulative output does not self-deadlock", async () => {
+  const { runtime, driver } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+  const sessions = await driver.list();
+  const paneId = sessions[0]!.paneId;
+  // Push >2MiB through the recovery path; release after emit must keep the loop alive.
+  const chunk = new Uint8Array(256 * 1024).fill(0x61);
+  for (let i = 0; i < 10; i++) {
+    driver.injectOutput(paneId, chunk);
+  }
+  await Bun.sleep(50);
+  expect(runtime.peekAttachment(opened.attachmentId)).toBeTruthy();
+  await runtime.input(opened.attachmentId, opened.generation, new TextEncoder().encode("x"));
+});

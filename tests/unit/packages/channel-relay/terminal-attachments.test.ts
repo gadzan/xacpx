@@ -306,3 +306,16 @@ test("enqueueOutbound on an unknown/detached attachment returns false without th
   registry.detach(a.attachmentId);
   expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(1))).toBe(false);
 });
+
+test("releaseOutbound frees pending bytes so healthy streams do not trip lifetime caps", () => {
+  const registry = new TerminalAttachmentRegistry({
+    maxViewersPerTerminal: 4,
+    attachmentTtlMs: 45_000,
+    maxQueueBytes: 100,
+  });
+  const a = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
+  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(80))).toBe(true);
+  registry.releaseOutbound(a.attachmentId, 80);
+  expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(0);
+  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(80))).toBe(true);
+});

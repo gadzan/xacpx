@@ -111,3 +111,52 @@ test("supervisor does not start two drivers concurrently", async () => {
   expect(auto.getCreates()).toBe(1);
   await supervisor.stop();
 });
+
+test("protocol crash without child exit nulls the live driver so proxy fences", async () => {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const life = new EventEmitter();
+  stdin.on("data", (chunk: Buffer) => {
+    for (const raw of chunk.toString("utf8").split("\n")) {
+      if (!raw.trim()) continue;
+      const msg = JSON.parse(raw) as { type: string; id: string };
+      if (msg.type === "handshake") {
+        stdout.write(
+          `${JSON.stringify({
+            type: "handshake-ok",
+            id: msg.id,
+            bridge_version: "0.1.0",
+            protocol_version: 1,
+            rmux_wire_version: "0.10.0",
+            capabilities: ["create"],
+          })}\n`,
+        );
+      }
+    }
+  });
+  let killed = false;
+  const driver = new RmuxSidecarDriver({
+    stdin,
+    stdout,
+    kill: () => {
+      killed = true;
+      // Intentionally do NOT emit exit — protocol crash must fence before exit.
+    },
+    on: (event, listener) => {
+      life.on(event, listener);
+    },
+  });
+  const supervisor = new RmuxSidecarSupervisor({
+    config: parseRelayTerminalConfig({ enabled: true }),
+    createDriver: async () => driver,
+    maxRestarts: 0,
+  });
+  await supervisor.start();
+  const proxy = new SupervisedRmuxDriver(supervisor);
+
+  stdout.write("this is not json\n");
+  await Bun.sleep(20);
+  expect(killed).toBe(true);
+  await expect(proxy.diagnostics()).rejects.toBeInstanceOf(RmuxDriverCrashedError);
+  await supervisor.stop();
+});

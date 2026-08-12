@@ -243,7 +243,7 @@ export class TerminalReconciler {
     if (!inv) {
       const snap = this.host.registry.getSnapshot();
       if (snap.terminals[rec.terminalId]?.state === "creating") {
-        await this.host.registry.remove(snap.revision, rec.terminalId);
+        await this.host.registry.remove(rec.terminalId);
         this.onDiagnostic({ type: "removed-absent", terminalId: rec.terminalId });
       }
       return;
@@ -262,7 +262,7 @@ export class TerminalReconciler {
       this.host.onResourceAbsent(rec.terminalId, rec.generation, "absent");
       const snap = this.host.registry.getSnapshot();
       if (snap.terminals[rec.terminalId]) {
-        await this.host.registry.remove(snap.revision, rec.terminalId);
+        await this.host.registry.remove(rec.terminalId);
       }
       this.onDiagnostic({ type: "removed-absent", terminalId: rec.terminalId });
       return;
@@ -317,7 +317,7 @@ export class TerminalReconciler {
     const current = snap.terminals[rec.terminalId];
     if (!current) return;
     if (current.state !== "reaping") {
-      await this.host.registry.markReaping(snap.revision, rec.terminalId, reason);
+      await this.host.registry.markReaping(rec.terminalId, reason);
     }
     this.host.onFence(rec.terminalId);
     this.onDiagnostic({ type: "reaping", terminalId: rec.terminalId, reason });
@@ -344,7 +344,7 @@ export class TerminalReconciler {
     }
 
     if (!inv) {
-      await this.host.registry.remove(snap.revision, rec.terminalId);
+      await this.host.registry.remove(rec.terminalId);
       this.host.onResourceAbsent(rec.terminalId, rec.generation, current.reapReason ?? "reaping");
       this.onDiagnostic({ type: "removed-absent", terminalId: rec.terminalId });
       return;
@@ -366,7 +366,7 @@ export class TerminalReconciler {
 
     const after = this.host.registry.getSnapshot();
     if (after.terminals[rec.terminalId]?.state === "reaping") {
-      await this.host.registry.remove(after.revision, rec.terminalId);
+      await this.host.registry.remove(rec.terminalId);
       this.host.onResourceAbsent(rec.terminalId, rec.generation, current.reapReason ?? "reaping");
       this.onDiagnostic({ type: "removed-absent", terminalId: rec.terminalId });
     }
@@ -418,7 +418,7 @@ export class TerminalReconciler {
 
       const logical = catalogByLogical.get(parsed.logicalSessionId);
       const firstSeenIso = new Date(this.host.clock.now()).toISOString();
-      await this.host.registry.upsertCreating(snap.revision, {
+      await this.host.registry.upsertCreating({
         terminalId: parsed.terminalId,
         logicalSessionId: parsed.logicalSessionId,
         internalAliasSnapshot: logical?.internalAlias ?? parsed.logicalSessionId,
@@ -469,7 +469,7 @@ export class TerminalReconciler {
     if (!current) return;
     if (current.state === "live" && this.host.hasLiveHandle(rec.terminalId)) return;
     if (current.state !== "reaping") {
-      await this.host.registry.markReaping(snap.revision, rec.terminalId, "orphan");
+      await this.host.registry.markReaping(rec.terminalId, "orphan");
     }
 
     const after = this.host.registry.getSnapshot();
@@ -480,7 +480,7 @@ export class TerminalReconciler {
     if (!killed) return;
     const finalSnap = this.host.registry.getSnapshot();
     if (finalSnap.terminals[rec.terminalId]) {
-      await this.host.registry.remove(finalSnap.revision, rec.terminalId);
+      await this.host.registry.remove(rec.terminalId);
     }
     this.orphanPasses.delete(inv.sessionId);
     this.onDiagnostic({ type: "orphan-killed", sessionId: inv.sessionId });

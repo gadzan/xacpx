@@ -352,6 +352,17 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.recoveries.clear();
     this.lastRebase.clear();
     this.emitter.emit("crash", err);
+    // Fatal protocol corruption: kill the child so the supervisor can restart.
+    try {
+      this.child.kill?.("SIGTERM");
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Test/supervisor seam: notified after pending/recovery are fenced. */
+  onCrash(listener: (err: Error) => void): void {
+    this.emitter.on("crash", listener);
   }
 }
 

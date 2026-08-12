@@ -2,6 +2,7 @@ import {
   decodeEnvelope,
   isErrorPayload,
   MSG,
+  parseTerminalEventPayload,
   parseWebClientMessage,
   type InstanceStateSnapshotDto,
   type TerminalOpenResult,
@@ -392,7 +393,9 @@ export function handleConnectorTerminalEvent(
   payload: unknown,
 ): boolean {
   if (envelopeType === MSG.terminalViewerEvent) {
-    const p = payload as TerminalViewerEventPayload;
+    const parsed = parseTerminalEventPayload(MSG.terminalViewerEvent, payload);
+    if (!parsed) return true; // drop malformed/oversized at hub trust boundary
+    const p = parsed as TerminalViewerEventPayload;
     if (!p?.viewerId || !p?.attachmentId || !p?.event) return true;
     const inner = p.event;
     let event: WebServerEvent | null = null;
@@ -470,7 +473,9 @@ export function handleConnectorTerminalEvent(
   }
 
   if (envelopeType === MSG.terminalResourceExit) {
-    const p = payload as TerminalResourceExitPayload;
+    const parsed = parseTerminalEventPayload(MSG.terminalResourceExit, payload);
+    if (!parsed) return true;
+    const p = parsed as TerminalResourceExitPayload;
     if (!p?.terminalId || !p?.generation) return true;
     webGateway.fanoutTerminalExit(instanceId, p.terminalId, {
       kind: "terminal-exit",

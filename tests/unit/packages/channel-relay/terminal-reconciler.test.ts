@@ -220,7 +220,7 @@ test("creating + RMUX present waits orphan grace then kills (never adopt)", asyn
 
   const past = new Date(h.clock.nowMs - 61_000).toISOString();
   const snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -242,7 +242,7 @@ test("creating + RMUX absent deletes stale intent", async () => {
   const h = await makeHarness();
   const terminalId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -271,7 +271,7 @@ test("live without in-process handle is stale-reaped (no adopt)", async () => {
   });
 
   let snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -279,7 +279,7 @@ test("live without in-process handle is stale-reaped (no adopt)", async () => {
     generation,
   });
   snap = h.registry.getSnapshot();
-  await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
 
   // No liveHandles entry → previous-process leftover.
   await h.reconciler.runOnce();
@@ -306,7 +306,7 @@ test("live with in-process handle + missing logical is reaped and killed", async
   });
 
   let snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -314,7 +314,7 @@ test("live with in-process handle + missing logical is reaped and killed", async
     generation,
   });
   snap = h.registry.getSnapshot();
-  await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
   h.liveHandles.add(terminalId);
 
   await h.reconciler.runOnce();
@@ -329,7 +329,7 @@ test("live + RMUX absent emits exit and removes record", async () => {
   const terminalId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
   const generation = "gen-3";
   let snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -337,7 +337,7 @@ test("live + RMUX absent emits exit and removes record", async () => {
     generation,
   });
   snap = h.registry.getSnapshot();
-  await h.registry.markLive(snap.revision, terminalId, {
+  await h.registry.markLive(terminalId, {
     rmuxSessionId: "missing-session",
   });
 
@@ -453,7 +453,7 @@ test("catalog failure fail-closes destructive GC", async () => {
     ownerLeaseTtlSeconds: 90,
   });
   let snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -461,7 +461,7 @@ test("catalog failure fail-closes destructive GC", async () => {
     generation,
   });
   snap = h.registry.getSnapshot();
-  await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
   // Keep an in-process handle so fail-closed catalog path is what we exercise
   // (without a handle, process-owned would stale-reap instead).
   h.liveHandles.add(terminalId);
@@ -478,7 +478,7 @@ test("inventory failure fail-closes destructive GC", async () => {
 
   const terminalId = "34343434-3434-4343-8343-343434343434";
   let snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -561,7 +561,7 @@ test("reaping retries kill after earlier timeout (cleanup-pending → later succ
   });
 
   let snap = h.registry.getSnapshot();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -569,9 +569,9 @@ test("reaping retries kill after earlier timeout (cleanup-pending → later succ
     generation,
   });
   snap = h.registry.getSnapshot();
-  await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
   snap = h.registry.getSnapshot();
-  await h.registry.markReaping(snap.revision, terminalId, "explicit-close");
+  await h.registry.markReaping(terminalId, "explicit-close");
 
   const diagnostics: ReconcileDiagnostic[] = [];
   let attempts = 0;
@@ -670,7 +670,7 @@ test("live idle-expired resources are reaped by reconcile", async () => {
 
   let snap = h.registry.getSnapshot();
   const past = new Date(h.clock.nowMs - 60_000).toISOString();
-  await h.registry.upsertCreating(snap.revision, {
+  await h.registry.upsertCreating({
     terminalId,
     logicalSessionId: descriptor().logicalSessionId,
     internalAliasSnapshot: "demo",
@@ -680,7 +680,7 @@ test("live idle-expired resources are reaped by reconcile", async () => {
     lastInputAt: past,
   });
   snap = h.registry.getSnapshot();
-  await h.registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
   h.liveHandles.add(terminalId);
 
   await h.reconciler.runOnce();

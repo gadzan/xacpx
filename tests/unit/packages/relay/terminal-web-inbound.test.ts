@@ -213,6 +213,46 @@ test("sendToAttachment drops stale viewer/attachment pairs; resource-exit fans o
   expect(gw.getAttachmentBinding("att-b")).toBeUndefined();
 });
 
+test("connector terminal viewer events are validated before hub fanout", () => {
+  const gw = new WebGateway();
+  const sock = new FakeSocket();
+  const viewerId = gw.register("a1", sock as never);
+  gw.bindAttachment({
+    socket: sock as never,
+    attachmentId: "att-a",
+    terminalId: "term",
+    instanceId: "i1",
+  });
+
+  // Oversized / malformed payload must be dropped at the trust boundary.
+  const before = sock.sent.length;
+  handleConnectorTerminalEvent(gw, "i1", MSG.terminalViewerEvent, {
+    viewerId,
+    attachmentId: "att-a",
+    event: {
+      kind: "terminal-bytes",
+      generation: "g",
+      epoch: 1,
+      sequence: 0,
+      dataBase64: "!!!not-base64!!!",
+    },
+  });
+  expect(sock.sent.length).toBe(before);
+
+  handleConnectorTerminalEvent(gw, "i1", MSG.terminalViewerEvent, {
+    viewerId,
+    attachmentId: "att-a",
+    event: {
+      kind: "terminal-bytes",
+      generation: "g",
+      epoch: 1,
+      sequence: 0,
+      dataBase64: Buffer.from("ok").toString("base64"),
+    },
+  });
+  expect(sock.sent.length).toBeGreaterThan(before);
+});
+
 test("socket close clears attachments and notifies detach handler", () => {
   const detached: Array<{ attachmentId: string; viewerId: string }> = [];
   const gw = new WebGateway({

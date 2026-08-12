@@ -11,7 +11,10 @@ import {
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
 import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
-import { InstanceGateway } from "../../../../packages/relay/src/gateway/instance-gateway";
+import {
+  InstanceGateway,
+  TERMINAL_REQUEST_TIMEOUT_MS,
+} from "../../../../packages/relay/src/gateway/instance-gateway";
 
 async function makeGateway(requestTimeoutMs = 500) {
   const db = await createSqlDriver(":memory:");
@@ -134,6 +137,47 @@ test("sendRequest publishes an absolute work deadline that preserves the respons
   expect(forwardedRequest?.requestBudgetMs).toBe(30_000);
   expect(forwardedRequest?.requestDeadlineAt).toBeGreaterThanOrEqual(requestStartedAt + 30_000);
   expect(forwardedRequest?.requestDeadlineAt).toBeLessThan(requestStartedAt + 31_000);
+  socket.close();
+  wss.close();
+});
+
+test("terminal open publishes a request budget large enough for RMUX create", async () => {
+  const { gateway, instances, account, wss, url } = await makeGateway();
+  const redeemed = instances.redeemPairingToken(
+    instances.issuePairingToken(account.id, "pc", 600_000).token,
+  )!;
+  const socket = await connect(url);
+  socket.send(encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "hs-1",
+    type: MSG.instanceAuth, payload: { instanceId: redeemed.instanceId, credential: redeemed.credential },
+  }));
+  await nextMessage(socket);
+  let forwardedRequest: RelayEnvelope | undefined;
+  socket.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (!decoded.ok || decoded.envelope.kind !== "req") return;
+    forwardedRequest = decoded.envelope;
+    socket.send(encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res", id: decoded.envelope.id,
+      type: decoded.envelope.type, payload: { terminalId: "t1", generation: "g1" },
+    }));
+  });
+
+  const requestStartedAt = Date.now();
+  await gateway.sendRequest(redeemed.instanceId, MSG.terminalOpen, {
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  }, { timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS });
+
+  // Hub timeout − 15s response reserve ⇒ work budget large enough for RMUX create.
+  const expectedBudget = TERMINAL_REQUEST_TIMEOUT_MS - 15_000;
+  expect(forwardedRequest?.type).toBe(MSG.terminalOpen);
+  expect(forwardedRequest?.requestBudgetMs).toBe(expectedBudget);
+  expect(forwardedRequest?.requestDeadlineAt).toBeGreaterThanOrEqual(requestStartedAt + expectedBudget);
+  expect(forwardedRequest?.requestDeadlineAt).toBeLessThan(requestStartedAt + expectedBudget + 1_000);
   socket.close();
   wss.close();
 });

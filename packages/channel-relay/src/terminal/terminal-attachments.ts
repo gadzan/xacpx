@@ -282,7 +282,11 @@ export class TerminalAttachmentRegistry {
    *  closed) — the caller must close/resync that one recovery stream without
    *  touching any other attachment (spec §14.7). Unknown attachmentId is
    *  treated as an already-torn-down stream (`false`, no throw): the viewer
-   *  may have detached in the same tick a byte was in flight. */
+   *  may have detached in the same tick a byte was in flight.
+   *
+   *  Bytes count **pending** outbound only. Callers must `releaseOutbound`
+   *  after a successful handoff to the hub/socket so healthy streams do not
+   *  trip the cap on lifetime cumulative output. */
   enqueueOutbound(attachmentId: string, bytes: Uint8Array): boolean {
     const queue = this.queues.get(attachmentId);
     if (!queue || queue.closed) return false;
@@ -298,6 +302,13 @@ export class TerminalAttachmentRegistry {
       return false;
     }
     return true;
+  }
+
+  /** Decrement pending outbound bytes after a successful send/handoff. */
+  releaseOutbound(attachmentId: string, byteLength: number): void {
+    const queue = this.queues.get(attachmentId);
+    if (!queue || queue.closed) return;
+    queue.bytes = Math.max(0, queue.bytes - Math.max(0, byteLength));
   }
 
   isOutboundQueueClosed(attachmentId: string): boolean {

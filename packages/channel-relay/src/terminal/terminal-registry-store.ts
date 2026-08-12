@@ -225,12 +225,19 @@ export class TerminalRegistryStore {
     return this.enqueue(() => this.mutateUnlocked(expectedRevision, fn));
   }
 
-  async upsertCreating(
-    expectedRevision: number,
-    input: UpsertCreatingInput,
-  ): Promise<{ revision: number }> {
+  /**
+   * Apply a mutation against the latest in-memory revision inside the
+   * serialization queue. Preferred for runtime paths: per-terminal locks do
+   * not serialize the global registry revision, so callers must not CAS on a
+   * stale snapshot taken outside the queue.
+   */
+  async apply(fn: (draft: TerminalRegistryDraft) => void): Promise<{ revision: number }> {
+    return this.enqueue(() => this.applyUnlocked(fn));
+  }
+
+  async upsertCreating(input: UpsertCreatingInput): Promise<{ revision: number }> {
     const nowIso = this.deps.now().toISOString();
-    return this.mutate(expectedRevision, (draft) => {
+    return this.apply((draft) => {
       draft.terminals[input.terminalId] = {
         terminalId: input.terminalId,
         logicalSessionId: input.logicalSessionId,
@@ -245,13 +252,15 @@ export class TerminalRegistryStore {
   }
 
   async markLive(
-    expectedRevision: number,
     terminalId: string,
     extras?: { rmuxSessionId?: string },
   ): Promise<{ revision: number }> {
-    return this.mutate(expectedRevision, (draft) => {
+    return this.apply((draft) => {
       const rec = draft.terminals[terminalId];
       if (!rec) throw new Error(`unknown terminalId: ${terminalId}`);
+      if (rec.state === "reaping") {
+        throw new Error(`terminal already reaping: ${terminalId}`);
+      }
       draft.terminals[terminalId] = {
         ...rec,
         state: "live",
@@ -260,12 +269,8 @@ export class TerminalRegistryStore {
     });
   }
 
-  async markReaping(
-    expectedRevision: number,
-    terminalId: string,
-    reason: TerminalReapReason,
-  ): Promise<{ revision: number }> {
-    return this.mutate(expectedRevision, (draft) => {
+  async markReaping(terminalId: string, reason: TerminalReapReason): Promise<{ revision: number }> {
+    return this.apply((draft) => {
       const rec = draft.terminals[terminalId];
       if (!rec) throw new Error(`unknown terminalId: ${terminalId}`);
       draft.terminals[terminalId] = {
@@ -276,19 +281,18 @@ export class TerminalRegistryStore {
     });
   }
 
-  async remove(expectedRevision: number, terminalId: string): Promise<{ revision: number }> {
-    return this.mutate(expectedRevision, (draft) => {
+  async remove(terminalId: string): Promise<{ revision: number }> {
+    return this.apply((draft) => {
       delete draft.terminals[terminalId];
     });
   }
 
   async checkpointLastInputAt(
-    expectedRevision: number,
     terminalId: string,
     lastInputAt?: string,
   ): Promise<{ revision: number }> {
     const stamp = lastInputAt ?? this.deps.now().toISOString();
-    return this.mutate(expectedRevision, (draft) => {
+    return this.apply((draft) => {
       const rec = draft.terminals[terminalId];
       if (!rec) throw new Error(`unknown terminalId: ${terminalId}`);
       draft.terminals[terminalId] = { ...rec, lastInputAt: stamp };
@@ -424,6 +428,13 @@ export class TerminalRegistryStore {
     if (this.state.revision !== expectedRevision) {
       throw new TerminalRegistryRevisionMismatchError(expectedRevision, this.state.revision);
     }
+    return this.applyUnlocked(fn);
+  }
+
+  private async applyUnlocked(
+    fn: (draft: TerminalRegistryDraft) => void,
+  ): Promise<{ revision: number }> {
+    if (!this.state) throw new TerminalRegistryNotLoadedError();
 
     const draftTerminals = cloneTerminals(this.state.terminals);
     fn({ terminals: draftTerminals });

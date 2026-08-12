@@ -83,7 +83,7 @@ async function seedLiveTerminal(dir: string, driver: InMemoryRmuxDriver): Promis
     ownerLeaseTtlSeconds: 90,
   });
   let snap = registry.getSnapshot();
-  await registry.upsertCreating(snap.revision, {
+  await registry.upsertCreating({
     terminalId,
     logicalSessionId: "11111111-1111-4111-8111-111111111111",
     internalAliasSnapshot: "demo",
@@ -91,7 +91,7 @@ async function seedLiveTerminal(dir: string, driver: InMemoryRmuxDriver): Promis
     generation,
   });
   snap = registry.getSnapshot();
-  await registry.markLive(snap.revision, terminalId, { rmuxSessionId: created.sessionId });
+  await registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
   return { terminalId, sessionId: created.sessionId };
 }
 

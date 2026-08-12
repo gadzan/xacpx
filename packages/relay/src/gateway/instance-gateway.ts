@@ -328,5 +328,7 @@ export class InstanceGateway {
   }
 }
 
-/** Default timeout for recoverable terminal open/take-control/resync/terminate (spec §14). */
-export const TERMINAL_REQUEST_TIMEOUT_MS = 10_000;
+/** Default timeout for recoverable terminal open/take-control/resync/terminate.
+ *  Must exceed REQUEST_RESPONSE_RESERVE_MS so requestBudgetMs stays large enough
+ *  for RMUX create (~15s) without Hub timing out first and creating ghost terminals. */
+export const TERMINAL_REQUEST_TIMEOUT_MS = 45_000;

@@ -25,7 +25,7 @@ afterEach(() => {
   }
 });
 
-function baseRecordInput(overrides: Partial<Parameters<TerminalRegistryStore["upsertCreating"]>[1]> = {}) {
+function baseRecordInput(overrides: Partial<Parameters<TerminalRegistryStore["upsertCreating"]>[0]> = {}) {
   return {
     terminalId: "term-1",
     logicalSessionId: "logical-1",
@@ -47,25 +47,25 @@ test("schema round-trip: creating -> live -> reaping with reapReason and stable 
   expect(loaded.revision).toBe(0);
   expect(Object.keys(loaded.terminals)).toHaveLength(0);
 
-  const { revision: r1 } = await store.upsertCreating(loaded.revision, baseRecordInput());
+  const { revision: r1 } = await store.upsertCreating(baseRecordInput());
   expect(r1).toBe(1);
   let snap = store.getSnapshot();
   expect(snap.terminals["term-1"]?.state).toBe("creating");
   expect(snap.terminals["term-1"]?.terminalId).toBe("term-1");
 
-  const { revision: r2 } = await store.markLive(r1, "term-1", { rmuxSessionId: "rmux-sid-1" });
+  const { revision: r2 } = await store.markLive("term-1", { rmuxSessionId: "rmux-sid-1" });
   expect(r2).toBe(2);
   snap = store.getSnapshot();
   expect(snap.terminals["term-1"]?.state).toBe("live");
   expect(snap.terminals["term-1"]?.rmuxSessionId).toBe("rmux-sid-1");
 
-  const { revision: r3 } = await store.markReaping(r2, "term-1", "explicit-close");
+  const { revision: r3 } = await store.markReaping("term-1", "explicit-close");
   expect(r3).toBe(3);
   snap = store.getSnapshot();
   expect(snap.terminals["term-1"]?.state).toBe("reaping");
   expect(snap.terminals["term-1"]?.reapReason).toBe("explicit-close");
 
-  const { revision: r4 } = await store.remove(r3, "term-1");
+  const { revision: r4 } = await store.remove("term-1");
   expect(r4).toBe(4);
   snap = store.getSnapshot();
   expect(snap.terminals["term-1"]).toBeUndefined();
@@ -82,11 +82,11 @@ test("checkpointLastInputAt updates lastInputAt without touching state", async (
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
-  const { revision: r1 } = await store.upsertCreating(loaded.revision, baseRecordInput());
+  const { revision: r1 } = await store.upsertCreating(baseRecordInput());
   const before = store.getSnapshot().terminals["term-1"]?.lastInputAt;
 
   const later = new Date(Date.now() + 60_000);
-  const { revision: r2 } = await store.checkpointLastInputAt(r1, "term-1", later.toISOString());
+  const { revision: r2 } = await store.checkpointLastInputAt("term-1", later.toISOString());
   expect(r2).toBe(2);
   const rec = store.getSnapshot().terminals["term-1"];
   expect(rec?.lastInputAt).toBe(later.toISOString());
@@ -251,7 +251,7 @@ test("write failure during mutate leaves previous snapshot intact and rejects", 
     deps: { writeFile: async () => { throw new Error("disk full"); } },
   });
   const loaded = await store.load();
-  await expect(store.upsertCreating(loaded.revision, baseRecordInput())).rejects.toThrow("disk full");
+  await expect(store.upsertCreating(baseRecordInput())).rejects.toThrow("disk full");
   const snap = store.getSnapshot();
   expect(snap.revision).toBe(0);
   expect(Object.keys(snap.terminals)).toHaveLength(0);
@@ -264,7 +264,7 @@ test("fsync failure during mutate leaves previous snapshot intact and rejects", 
     deps: { fsync: async () => { throw new Error("fsync failed"); } },
   });
   const loaded = await store.load();
-  await expect(store.upsertCreating(loaded.revision, baseRecordInput())).rejects.toThrow("fsync failed");
+  await expect(store.upsertCreating(baseRecordInput())).rejects.toThrow("fsync failed");
   const snap = store.getSnapshot();
   expect(snap.revision).toBe(0);
 });
@@ -276,7 +276,7 @@ test("rename failure during mutate leaves previous snapshot intact and rejects",
     deps: { rename: async () => { throw new Error("rename failed"); } },
   });
   const loaded = await store.load();
-  await expect(store.upsertCreating(loaded.revision, baseRecordInput())).rejects.toThrow("rename failed");
+  await expect(store.upsertCreating(baseRecordInput())).rejects.toThrow("rename failed");
   const snap = store.getSnapshot();
   expect(snap.revision).toBe(0);
   expect(Object.keys(snap.terminals)).toHaveLength(0);
@@ -287,7 +287,7 @@ test("rename failure during mutate leaves previous snapshot intact and rejects",
   const store2 = new TerminalRegistryStore({ dir });
   const loaded2 = await store2.load();
   expect(loaded2.revision).toBe(0);
-  const { revision } = await store2.upsertCreating(0, baseRecordInput());
+  const { revision } = await store2.upsertCreating(baseRecordInput());
   expect(revision).toBe(1);
   void realDeps;
 });
@@ -307,7 +307,7 @@ test("a failed mutation does not leave a corrupted terminals.json for the next l
     },
   });
   const loaded = await store.load();
-  await expect(store.upsertCreating(loaded.revision, baseRecordInput())).rejects.toThrow("boom");
+  await expect(store.upsertCreating(baseRecordInput())).rejects.toThrow("boom");
 
   const store2 = new TerminalRegistryStore({ dir });
   const loaded2 = await store2.load();
@@ -319,30 +319,17 @@ test("a failed mutation does not leave a corrupted terminals.json for the next l
 // Concurrency & revision fencing
 // ---------------------------------------------------------------------------
 
-test("concurrent mutations serialize and revision increases monotonically by one", async () => {
+test("concurrent apply helpers serialize and revision increases monotonically", async () => {
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
 
-  // Each caller races on the same expectedRevision; only callers that retry
-  // with the freshest revision succeed serially. We simulate a well-behaved
-  // caller pattern: read snapshot, then mutate with that revision, retrying on
-  // mismatch — this proves serialization + monotonic revision under contention.
-  async function upsertWithRetry(terminalId: string): Promise<void> {
-    for (;;) {
-      const rev = store.getSnapshot().revision;
-      try {
-        await store.upsertCreating(rev, baseRecordInput({ terminalId, rmuxSessionName: `xacpx-relay-abc-${terminalId}` }));
-        return;
-      } catch (err) {
-        if (err instanceof TerminalRegistryRevisionMismatchError) continue;
-        throw err;
-      }
-    }
-  }
-
   await Promise.all(
-    Array.from({ length: 10 }, (_, i) => upsertWithRetry(`term-${i}`)),
+    Array.from({ length: 10 }, (_, i) =>
+      store.upsertCreating(
+        baseRecordInput({ terminalId: `term-${i}`, rmuxSessionName: `xacpx-relay-abc-term-${i}` }),
+      ),
+    ),
   );
 
   const snap = store.getSnapshot();
@@ -354,21 +341,51 @@ test("mutate rejects on stale expectedRevision and leaves state unchanged", asyn
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
-  await store.upsertCreating(loaded.revision, baseRecordInput());
+  await store.upsertCreating(baseRecordInput());
 
-  await expect(store.upsertCreating(loaded.revision, baseRecordInput({ terminalId: "term-2" })))
-    .rejects.toThrow(TerminalRegistryRevisionMismatchError);
+  await expect(
+    store.mutate(loaded.revision, (draft) => {
+      draft.terminals["term-2"] = {
+        ...baseRecordInput({ terminalId: "term-2" }),
+        state: "creating",
+        createdAt: new Date().toISOString(),
+        lastInputAt: new Date().toISOString(),
+      };
+    }),
+  ).rejects.toThrow(TerminalRegistryRevisionMismatchError);
 
   const snap = store.getSnapshot();
   expect(snap.revision).toBe(1);
   expect(Object.keys(snap.terminals)).toHaveLength(1);
 });
 
+test("apply helpers succeed across interleaved terminal mutations without CAS retry", async () => {
+  const dir = freshDir();
+  const store = new TerminalRegistryStore({ dir });
+  await store.load();
+
+  await store.upsertCreating(baseRecordInput({ terminalId: "term-a", rmuxSessionName: "name-a" }));
+  const createB = store.upsertCreating(
+    baseRecordInput({ terminalId: "term-b", logicalSessionId: "logical-b", rmuxSessionName: "name-b" }),
+  );
+  const liveA = store.markLive("term-a", { rmuxSessionId: "sid-a" });
+  const checkpointB = (async () => {
+    await createB;
+    await store.checkpointLastInputAt("term-b", new Date().toISOString());
+  })();
+  await Promise.all([liveA, checkpointB]);
+
+  const snap = store.getSnapshot();
+  expect(snap.terminals["term-a"]?.state).toBe("live");
+  expect(snap.terminals["term-b"]?.state).toBe("creating");
+  expect(snap.revision).toBe(4);
+});
+
 test("mutate() gives a copy-on-write draft; mutating draft.terminals cannot corrupt the published snapshot", async () => {
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
-  await store.upsertCreating(loaded.revision, baseRecordInput());
+  await store.upsertCreating(baseRecordInput());
   const before = store.getSnapshot();
 
   await store.mutate(1, (draft) => {
@@ -389,7 +406,7 @@ test("owner and registry files are written with 0600 permissions", async () => {
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
-  await store.upsertCreating(loaded.revision, baseRecordInput());
+  await store.upsertCreating(baseRecordInput());
 
   expect(statSync(join(dir, "terminal-owner.json")).mode & 0o777).toBe(0o600);
   expect(statSync(join(dir, "terminals.json")).mode & 0o777).toBe(0o600);
@@ -409,15 +426,15 @@ test("markLive/markReaping/checkpointLastInputAt throw for unknown terminalId", 
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
-  await expect(store.markLive(loaded.revision, "missing")).rejects.toThrow();
-  await expect(store.markReaping(loaded.revision, "missing", "idle")).rejects.toThrow();
-  await expect(store.checkpointLastInputAt(loaded.revision, "missing")).rejects.toThrow();
+  await expect(store.markLive("missing")).rejects.toThrow();
+  await expect(store.markReaping("missing", "idle")).rejects.toThrow();
+  await expect(store.checkpointLastInputAt("missing")).rejects.toThrow();
 });
 
 test("remove is idempotent for an already-absent terminalId", async () => {
   const dir = freshDir();
   const store = new TerminalRegistryStore({ dir });
   const loaded = await store.load();
-  const { revision } = await store.remove(loaded.revision, "never-existed");
+  const { revision } = await store.remove("never-existed");
   expect(revision).toBe(1);
 });

@@ -72,11 +72,10 @@ export async function retireRelayTerminals(
       // but do not clear the registry with a fake InMemory driver.
       for (const rec of Object.values(registry.getSnapshot().terminals)) {
         if (rec.state === "reaping") continue;
-        const snap = registry.getSnapshot();
         try {
-          await registry.markReaping(snap.revision, rec.terminalId, "disabled");
+          await registry.markReaping(rec.terminalId, "disabled");
         } catch {
-          // revision race — leave for next pass
+          // leave for next pass
         }
       }
       return { status: "cleanup-pending" };

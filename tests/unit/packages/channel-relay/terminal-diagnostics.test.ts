@@ -47,7 +47,7 @@ test("diagnose warns on cleanup-pending reaping records and keeps owner identity
   const registry = new TerminalRegistryStore({ dir });
   await registry.load();
   const snap = registry.getSnapshot();
-  await registry.upsertCreating(snap.revision, {
+  await registry.upsertCreating({
     terminalId: "11111111-1111-4111-8111-111111111111",
     logicalSessionId: "22222222-2222-4222-8222-222222222222",
     internalAliasSnapshot: "demo",
@@ -57,7 +57,7 @@ test("diagnose warns on cleanup-pending reaping records and keeps owner identity
     lastInputAt: new Date().toISOString(),
   });
   const after = registry.getSnapshot();
-  await registry.markReaping(after.revision, "11111111-1111-4111-8111-111111111111", "disabled");
+  await registry.markReaping("11111111-1111-4111-8111-111111111111", "disabled");
 
   const findings = await diagnoseRelayTerminal({
     options: { terminal: { enabled: true } },
