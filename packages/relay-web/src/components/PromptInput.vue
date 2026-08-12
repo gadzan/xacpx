@@ -292,22 +292,25 @@ function onInput() {
   <!-- No bottom padding on the form: the parent composer wrapper (ChatPane) owns the bottom
        spacing via max(1rem, env(safe-area-inset-bottom)), so the composer sits flush above the
        iOS home indicator (like native input bars) instead of leaving an extra gap below it. -->
-  <form class="relative border-t border-border px-0 pt-3 lg:pt-3" @submit.prevent="submit"
+  <!-- No form-level border-t / top padding: ChatPane stacks status/plan against this
+       form's top edge, which must be the message card's top border — not a resize-handle
+       gutter above it. Separation comes from the card border + ChatPane stack shadows. -->
+  <form class="relative px-0" @submit.prevent="submit"
         @drop.prevent="onDrop" @dragover.prevent>
-    <!-- Resize handle: a thin grab strip above the composer card (desktop only).
-         touch-none keeps a touch on it from scrolling; it's hidden < lg anyway.
-         Pointer-only enhancement over the rows="2" fallback, so it's aria-hidden
-         (no keyboard/value semantics to honor); the title gives a hover hint. -->
-    <div data-test="composer-resize" aria-hidden="true" :title='$t("chat.resizeComposer")'
-         class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none transition-colors lg:block"
-         :class="heightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
-         @pointerdown.prevent="heightResize.onPointerDown" />
     <!-- hidden file picker -->
     <input ref="fileInput" type="file" multiple class="hidden" data-test="attach-input" @change="onFilesPicked" />
     <!-- COMPOSER — single elevated card: textarea on top, controls row below.
          `relative` so the slash-command menu can float above the card (bottom-full)
          instead of pushing the textarea down. -->
     <div class="relative rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors">
+      <!-- Resize handle: thin grab strip on the card's top edge (desktop only). Anchored
+           inside the card so status/plan stack layers baseline to the real message-box
+           top, not a gutter/handle above it. touch-none keeps a touch from scrolling;
+           aria-hidden (pointer-only over rows="2"); title gives a hover hint. -->
+      <div data-test="composer-resize" aria-hidden="true" :title='$t("chat.resizeComposer")'
+           class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none rounded-t-lg transition-colors lg:block"
+           :class="heightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
+           @pointerdown.prevent="heightResize.onPointerDown" />
       <!-- Pending attachment chips -->
       <div v-if="composer.pending.length" class="flex flex-wrap gap-2 px-2.5 pt-2.5 pb-1">
         <div v-for="p in composer.pending" :key="p.id"

@@ -43,13 +43,16 @@ export async function verifyAcpInitialize(
   let stdoutBuffer = "";
   let settled = false;
   let timer: NodeJS.Timeout | undefined;
-  let windowsTarget: BatchTarget | undefined;
-  if (process.platform === "win32" && child.pid) {
+  // Probe concurrently with the initialize wait: awaiting it up front would
+  // delay listener registration past an early-exiting child's "close" event
+  // (and with it the E404 guidance path). probeWindowsProcessIdentity never
+  // rejects; the finally block awaits this before terminating.
+  const windowsProbe: Promise<BatchTarget | undefined> = (async () => {
+    if (process.platform !== "win32" || !child.pid) return undefined;
     const identity = await probeWindowsProcessIdentity(child.pid);
-    if (identity.status === "found") {
-      windowsTarget = { pid: child.pid, creationDate: identity.identity.creationDate, executablePath: identity.identity.executablePath };
-    }
-  }
+    if (identity.status !== "found") return undefined;
+    return { pid: child.pid, creationDate: identity.identity.creationDate, executablePath: identity.identity.executablePath };
+  })();
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -135,6 +138,7 @@ export async function verifyAcpInitialize(
     child.stdin.destroy();
     child.stdout.destroy();
     child.stderr.destroy();
+    const windowsTarget = await windowsProbe;
     if (process.platform !== "win32" || windowsTarget) {
       await terminateProcessTree(windowsTarget ?? child.pid ?? 0, { detachedProcessGroup: detached });
     }

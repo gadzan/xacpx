@@ -428,7 +428,7 @@ xacpx channel add <channel-type>
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `driver` | `string` | 是 | agent 驱动类型，传递给 acpx 的第一位置参数 |
-| `command` | `string` | 否 | 显式指定自定义 agent 的原始命令。与 `argv` 互斥；Windows 上 raw command 无法无损启动（acpx 拒绝），请改用 `argv`（见下） |
+| `command` | `string` | 否 | 显式指定自定义 agent 的原始命令。与 `argv` 互斥；Windows 上新建多 token `command` 无法无损启动，请改用 `argv`（见下）。历史 session 的 `transport_agent_command` 会原样作为 acpx `--agent` selector 传递；acpx 0.13 从旧 record 回填 built-in argv，不支持的 custom raw 仍由 acpx fail closed |
 | `argv` | `string[]` | 否 | 精确的可执行文件 + 参数边界（如 `["C:\\Program Files\\agent.exe", "--acp", ...]`）。首元素必须是非空可执行文件；每个元素原样传给 acpx（空格、反斜杠、空字符串均保留）。与 `command` 互斥；这是 Windows 上唯一无损的启动形式。修改 `argv` 会产生新的 acpx session identity（内容寻址 alias）；旧 session 保留其记录的 identity |
 
 说明：
@@ -439,7 +439,9 @@ xacpx channel add <channel-type>
 
 #### Windows raw command 迁移
 
-含空格的旧 Unix `command` 在 Windows 上无法启动（acpx 拒绝 raw `--agent`，猜测引号切分会破坏边界）。xacpx 会 fail closed 并给出迁移错误，而不是猜测。请改为结构化 argv：
+新建多 token 的 `agents.<name>.command` 在 Windows 上仍会被拒绝（xacpx 不做猜测式切分，请改成 `argv`）。已有 session 的历史 `transport_agent_command` 不同：xacpx 会原样作为 `acpx --agent` **selector** 传递，不拆分；acpx 0.13 查找旧 session record 并为 built-in 回填 `agentArgv`（例如 `"kimi acp"` → `["kimi", "acp"]`）；不支持的 custom raw 仍由 acpx 自己 fail closed。
+
+Windows 上新建自定义 agent 请使用结构化 argv：
 
 ```json
 {
@@ -452,7 +454,7 @@ xacpx channel add <channel-type>
 }
 ```
 
-单 token 命令（无空格，如 `"myagent.exe"`）会自动转换为 `["myagent.exe"]`。
+单 token 的配置 `command`（无空格，如 `"myagent.exe"`）只有**无损**时才会自动转换为 `["myagent.exe"]` —— 单个元素必须能用 canonical identity renderer 精确还原为原始命令。identity-safe charset 之外的 token（带反斜杠的 Windows 路径、引号等）会渲染成 JSON-quoted，写下去会 re-key acpx record，所以这类配置会被拒绝，直到改成 `argv`。
 
 #### xacpx 托管的 acpx agent alias
 

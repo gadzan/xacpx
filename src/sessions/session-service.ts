@@ -1,14 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import { isLegacyCodexCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import { isLegacyCodexCommand, resolveAgentCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import {
   classifyRecordedPreinstalledAdapterCommand,
   isManagedAdapterCommand,
-  isManagedAdapterId,
-  MANAGED_ADAPTERS,
 } from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
-import { renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
+import { isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
@@ -501,6 +499,59 @@ export class SessionService {
   }
 
   /**
+   * Derive a free internal alias for a new session. When `desiredAlias` is already
+   * taken (by an active OR archived session), append `-2`, `-3`, … until a free
+   * slot is found.
+   *
+   * The alias may carry a channel prefix (`relay:demo`, `weixin:chat123/demo`); the
+   * numeric suffix is always appended to the last path segment after the rightmost
+   * `:` so prefix semantics are preserved (e.g. `relay:demo-2`, never `relay-2:demo`).
+   */
+  deriveFreeAlias(desiredAlias: string): string {
+    const taken = Object.keys(this.state.sessions);
+    const takenSet = new Set(taken);
+    if (!takenSet.has(desiredAlias)) return desiredAlias;
+    const sep = desiredAlias.lastIndexOf(":");
+    const prefix = sep >= 0 ? desiredAlias.slice(0, sep + 1) : "";
+    const base = sep >= 0 ? desiredAlias.slice(sep + 1) : desiredAlias;
+    // If the base already carries a numeric suffix (e.g. "demo-2"), start
+    // incrementing from that suffix instead of stacking a new one ("demo-2-2").
+    const suffixMatch = /-(\d+)$/.exec(base);
+    let startN = 2;
+    let stem = base;
+    if (suffixMatch) {
+      startN = Number(suffixMatch[1]) + 1;
+      stem = base.slice(0, -suffixMatch[0].length);
+    }
+    for (let n = startN; n <= 9999; n += 1) {
+      const candidate = `${prefix}${stem}-${n}`;
+      if (!takenSet.has(candidate)) return candidate;
+    }
+    // Extremely defensive fallback — 9999 collisions would require an absurd number
+    // of sessions sharing the same base alias.
+    throw new Error(`could not derive a free alias for "${desiredAlias}" after 9999 attempts`);
+  }
+
+  /**
+   * Convenience: atomically derive a free alias (see `deriveFreeAlias`) AND
+   * reserve it via `tryReserveNewSessionAlias`. If the derived alias loses the
+   * race between the derive step and the reserve step (extremely rare because
+   * callers typically run this while holding the state mutex), retry up to a
+   * small, bounded number of times.
+   *
+   * Returns the chosen alias together with the reservation release callback, or
+   * `null` if no reservation could be obtained.
+   */
+  tryReserveFreeSessionAlias(desiredAlias: string): { alias: string; release: () => void } | null {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const alias = this.deriveFreeAlias(desiredAlias);
+      const release = this.tryReserveNewSessionAlias(alias);
+      if (release) return { alias, release };
+    }
+    return null;
+  }
+
+  /**
    * Allocate a fresh acpx transport incarnation while preserving a stable logical
    * coordinator identity. Explicit "new session" paths use this; archive/restore
    * deliberately keep the transport already stored on the logical session.
@@ -872,8 +923,11 @@ export class SessionService {
       platform,
       runtimeRoot: this.runtimeRoot,
     });
-    // 1. Explicit config `command` (Unix raw override) wins over any recording.
-    if (current.rawCommand) {
+    // 1. Explicit config `command` wins over any recording. On Unix this is a
+    // raw `--agent` override; on Windows a single-token command is synthesized
+    // into argv — either way the CURRENT config command must beat sticky
+    // recorded history so operators can intentionally rebind an agent.
+    if (current.rawCommand || resolveAgentCommand(agentConfig.driver, agentConfig.command)) {
       return current;
     }
     // 2. Recorded custom argv stays sticky (like recorded raw commands): a
@@ -917,19 +971,10 @@ export class SessionService {
     );
     const recordedCommand = recordedIsDerived ? undefined : session.transport_agent_command;
     if (recordedCommand) {
-      if (platform === "win32") {
-        // Fails closed for EVERY recorded raw command on Windows: acpx rejects
-        // raw `--agent` strings there, and a synthetic single-token argv would
-        // key an alias the overlay never provisions (overlay entries come from
-        // the CURRENT config), so the selector would fall back to the bare
-        // driver and never find the legacy record. Require an explicit config
-        // migration instead.
-        throw new Error(
-          `session "${session.alias}" was created with a raw command that cannot be launched ` +
-            "on Windows. Migrate the agent to an argv array in config: " +
-            'agents.<name>.argv = ["agent.exe", "--acp", ...]',
-        );
-      }
+      // Pass the historical raw string through as an acpx `--agent` selector on
+      // every platform. Do NOT split or guess argv here: acpx 0.13 looks up the
+      // old session by agent_command, backfills built-in agentArgv from the
+      // record parser, and fail-closes custom raw history that cannot spawn.
       return { acpxAgent: agentConfig.driver, rawCommand: recordedCommand, agentCommand: recordedCommand };
     }
     // 5. Derived current resolution (managed pin, hermes shim, local fallback, bare driver).
@@ -1189,38 +1234,4 @@ export class SessionService {
       throw new Error(t().misc.agentNotRegistered(agent));
     }
   }
-}
-
-/** Derived argv (managed adapter pin, hermes shim, local fallback) is recomputed
- * from the current config on restart; only custom argv survives in state. */
-function isDerivedAgentArgv(
-  driver: string,
-  argv: string[] | undefined,
-  runtimeRoot: string,
-  platform: NodeJS.Platform,
-): boolean {
-  if (!argv || argv.length === 0) {
-    return false;
-  }
-  if (isManagedAdapterId(driver)) {
-    const spec = MANAGED_ADAPTERS[driver];
-    return (
-      (
-        argv[0] === "npx" &&
-        argv[1] === "-y" &&
-        argv.some((entry) => entry.startsWith(`${spec.packageName}@`))
-      ) ||
-      classifyRecordedPreinstalledAdapterCommand(renderAgentArgvIdentity(argv), {
-        runtimeRoot,
-        platform,
-      }) === driver
-    );
-  }
-  if (driver === "hermes") {
-    return argv[1]?.includes("hermes-acp-shim.") === true;
-  }
-  if (driver === "opencode" || driver === "kilocode") {
-    return argv.length === 2 && argv[0] === driver && argv[1] === "acp";
-  }
-  return false;
 }

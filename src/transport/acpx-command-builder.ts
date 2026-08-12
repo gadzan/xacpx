@@ -36,7 +36,7 @@ export interface SessionArgsInput {
    * When set, the agent launches through acpx's native structured argv path.
    */
   acpxAgent?: string;
-  /** Unix-only legacy raw override: passed as acpx `--agent <rawCommand>`. */
+  /** Legacy raw override / historical session selector: `acpx --agent <rawCommand>`. */
   rawCommand?: string;
   cwd: string;
   model?: string;
@@ -45,7 +45,7 @@ export interface SessionArgsInput {
 
 // Agent selection — the ONLY place the launch selector lives. All transports and
 // management by-passes must route through this so they can never drift:
-// 1. `rawCommand` → `--agent <rawCommand>` (Unix legacy override).
+// 1. `rawCommand` → `--agent <rawCommand>` (legacy / historical selector).
 // 2. `acpxAgent` → positional agent (overlay alias or bare driver).
 // 3. legacy compat (old bridge clients): `agentCommand` → `--agent <cmd>`.
 // 4. bare positional `agent`.

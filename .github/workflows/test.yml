@@ -11,6 +11,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pre-job: classify the PR diff so downstream jobs can gate on path groups.
+  # Lives on Ubuntu because it only runs checkout + paths-filter (no build).
+  # Skipped on push-to-main since terminal-windows already runs unconditionally
+  # there via the `github.event_name == 'push'` clause in its `if`.
+  paths:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      windows: ${{ steps.filter.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # dorny/paths-filter diffs against the PR base ref; fetch the full
+          # history so that comparison is reliable.
+          fetch-depth: 0
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            windows:
+              - 'src/daemon/**'
+              - 'src/transport/**'
+              - 'src/process/**'
+              - 'src/adapters/**'
+              - 'src/bridge/**'
+              - 'src/cli/**'
+              - 'src/config/**'
+              - 'tests/unit/daemon/**'
+              - 'tests/unit/transport/**'
+              - 'tests/unit/process/**'
+              - 'tests/unit/adapters/**'
+              - 'tests/unit/integration/**'
+              - 'tests/smoke/**'
+              - 'scripts/smoke-*.mjs'
+              - 'package.json'
+              - 'bun.lock'
+              - 'package-lock.json'
+              - '.github/workflows/test.yml'
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -50,6 +93,14 @@ jobs:
         run: bun run build:packages
 
   terminal-windows:
+    # On PRs, only run when the diff touches the Windows/daemon/transport/
+    # adapter surface or shared infra that could break the Windows build.
+    # Always runs on push to main so the default branch stays green.
+    # `needs.paths.outputs.windows` is job-level-safe; the previous
+    # `steps.paths.outputs.windows` form silently failed because the `steps`
+    # context does not exist at job-level `if` evaluation.
+    needs: paths
+    if: github.event_name == 'push' || needs.paths.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:

@@ -239,7 +239,14 @@ test("ensureAgentOverlays preserves the mode of an existing config and uses 0600
     await writeFile(configPath, "{}", { flag: "wx" });
     await chmod(configPath, 0o644);
     await ensureAgentOverlays([codexEntry], { home: dir });
-    expect(statSync(configPath).mode & 0o777).toBe(0o644);
+    // Windows may not preserve Unix mode bits exactly; assert the provision
+    // still succeeded and the mode stayed world-readable-ish when supported.
+    const mode = statSync(configPath).mode & 0o777;
+    if (process.platform === "win32") {
+      expect(mode === 0o644 || mode === 0o666).toBe(true);
+    } else {
+      expect(mode).toBe(0o644);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -273,5 +280,5 @@ test("ensureAgentOverlays retries transient Windows write errors", async () => {
 });
 
 test("acpxConfigPath points at the user acpx config", () => {
-  expect(acpxConfigPath("/home/alice")).toBe("/home/alice/.acpx/config.json");
+  expect(acpxConfigPath("/home/alice")).toBe(join("/home/alice", ".acpx", "config.json"));
 });

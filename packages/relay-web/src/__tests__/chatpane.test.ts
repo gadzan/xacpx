@@ -76,6 +76,47 @@ it("shows a working HUD while a live turn is active", async () => {
   expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
 });
 
+it("stacks status, plan, and composer as document-flow layers (status → plan → input)", async () => {
+  seedInstance();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "plan", sessionAlias: "backend",
+    entries: [{ content: "a", status: "completed" }, { content: "b", status: "in_progress" }],
+  } } as never);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+
+  const area = w.find('[data-test="composer-area"]');
+  expect(area.exists()).toBe(true);
+  const stack = area.find('[data-test="composer-stack"]');
+  expect(stack.exists()).toBe(true);
+  expect(stack.classes()).toContain("composer-stack");
+  expect(stack.classes()).not.toContain("absolute");
+
+  const status = stack.find('[data-test="turn-hud"]');
+  const plan = stack.find('[data-test="plan-panel"]');
+  expect(status.exists()).toBe(true);
+  expect(plan.exists()).toBe(true);
+  expect(status.classes()).toContain("stack-layer--status");
+  expect(plan.classes()).toContain("stack-layer--plan");
+  expect(plan.classes()).toContain("stack-layer--pull");
+  expect(status.classes()).toContain("shadow-e2");
+  expect(status.classes()).toContain("backdrop-blur-md");
+
+  // DOM order: status (bottom layer) → plan (middle) → composer (top).
+  const stackEl = stack.element as HTMLElement;
+  const statusEl = status.element as HTMLElement;
+  const planEl = plan.element as HTMLElement;
+  const composerEl = stackEl.querySelector(".stack-layer--composer") as HTMLElement | null;
+  expect(composerEl).toBeTruthy();
+  expect(composerEl!.classList.contains("stack-layer--pull")).toBe(true);
+  const kids = [...stackEl.children] as HTMLElement[];
+  expect(kids.indexOf(statusEl)).toBeLessThan(kids.indexOf(planEl));
+  expect(kids.indexOf(planEl)).toBeLessThan(kids.indexOf(composerEl!));
+});
+
 it("localizes the empty-state prompt when locale is zh-CN", () => {
   i18n.global.locale.value = "zh-CN";
   const w = mount(ChatPane); // no session selected → empty state

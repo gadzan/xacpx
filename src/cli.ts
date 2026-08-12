@@ -66,7 +66,6 @@ import { createStartupWaitUi } from "./cli/startup-wait-ui";
 import type { DaemonStartupWait } from "./daemon/daemon-controller";
 import { setLocale, resolveLocale, getLocale, t } from "./i18n";
 
-
 export interface PrepareMcpCoordinatorStartupInput {
   coordinatorSession: string;
   workspace?: string | null;

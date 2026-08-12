@@ -218,12 +218,14 @@ export async function handleSessionNew(
   // either reuse the old transport session (stale history) or orphan it, and
   // a native session's agent_session_id would be silently dropped. Internal
   // repair paths (resolveSession) intentionally bypass this guard.
-  const existing = context.sessions.getResolvedSessionByInternalAlias(internalAlias);
-  if (existing) {
-    return { text: t().session.sessionAlreadyExists(alias, existing.agent, existing.workspace) };
-  }
-  const releaseAliasReservation = context.sessions.tryReserveNewSessionAlias(internalAlias);
-  if (!releaseAliasReservation) {
+  //
+  // When the desired alias collides with an existing session (active OR archived),
+  // instead of failing outright we derive a free alias by appending `-2`, `-3`, …
+  // The user is told in the reply text that the name was adjusted so the creation
+  // still succeeds transparently when the input came from a default/auto-generated
+  // source (the common archived-session collision case).
+  const reserved = context.sessions.tryReserveFreeSessionAlias(internalAlias);
+  if (!reserved) {
     const claimed = context.sessions.getResolvedSessionByInternalAlias(internalAlias);
     return {
       text: claimed
@@ -231,11 +233,14 @@ export async function handleSessionNew(
         : t().session.sessionAlreadyExists(alias, agent, workspace),
     };
   }
+  const { alias: finalInternalAlias, release: releaseAliasReservation } = reserved;
+  const finalDisplayAlias = toDisplaySessionAlias(finalInternalAlias);
+  const aliasWasAdjusted = finalInternalAlias !== internalAlias;
 
   try {
-    const stableTransportSession = `${workspace}:${internalAlias}`;
+    const stableTransportSession = `${workspace}:${finalInternalAlias}`;
     const session = context.lifecycle.resolveSession(
-      internalAlias,
+      finalInternalAlias,
       agent,
       workspace,
       context.sessions.buildFreshTransportSession(stableTransportSession),
@@ -260,7 +265,7 @@ export async function handleSessionNew(
       }
 
       await context.sessions.attachSession(
-        internalAlias,
+        finalInternalAlias,
         agent,
         workspace,
         session.transportSession,
@@ -269,16 +274,24 @@ export async function handleSessionNew(
         session.agentArgv,
       );
       if (normalizedModel) {
-        await context.sessions.setSessionModel(internalAlias, normalizedModel);
+        await context.sessions.setSessionModel(finalInternalAlias, normalizedModel);
       }
-      await context.sessions.useSession(chatKey, internalAlias);
-      await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.agent_command_refresh_failed");
+      await context.sessions.useSession(chatKey, finalInternalAlias);
+      await refreshSessionTransportAgentCommandBestEffort(context, finalInternalAlias, "session.agent_command_refresh_failed");
       await context.logger.info("session.created", "created and selected logical session", {
-        alias: internalAlias,
+        alias: finalInternalAlias,
         agent,
         workspace,
       });
-      return { text: t().session.sessionCreated(alias) };
+      if (aliasWasAdjusted) {
+        return {
+          text: [
+            t().session.sessionAliasCollided(alias, finalDisplayAlias),
+            t().session.sessionCreated(finalDisplayAlias),
+          ].join("\n"),
+        };
+      }
+      return { text: t().session.sessionCreated(finalDisplayAlias) };
     } finally {
       await releaseTransportReservation();
     }

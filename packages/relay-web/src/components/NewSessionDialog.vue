@@ -171,7 +171,13 @@ const aliasPlaceholder = computed(() =>
 // rollouts, so it requires a CONFIGURED agent and an EXISTING workspace.
 const agentIsConfigured = computed(() => configuredNames.value.has(agentValue.value));
 
+// Stale-response guard: switching agent/workspace fires a new list RPC while the
+// previous one may still be in flight; without a generation check, the slower
+// earlier response lands last and shows the previous selection's rollouts.
+let nativeReqSeq = 0;
+
 async function loadNativeSessions(): Promise<void> {
+  const seq = ++nativeReqSeq;
   nativeSel.value = "";
   nativeSessions.value = [];
   nativeError.value = "";
@@ -182,12 +188,15 @@ async function loadNativeSessions(): Promise<void> {
   }
   nativeLoading.value = true;
   try {
-    nativeSessions.value = await store.listNativeSessions(props.instanceId, agentValue.value, workspaceSel.value);
+    const sessions = await store.listNativeSessions(props.instanceId, agentValue.value, workspaceSel.value);
+    if (seq !== nativeReqSeq) return; // superseded by a newer selection
+    nativeSessions.value = sessions;
     nativeSel.value = nativeSessions.value[0]?.sessionId ?? "";
   } catch (e) {
+    if (seq !== nativeReqSeq) return;
     nativeError.value = e instanceof Error ? e.message : t("session.failedListNative");
   } finally {
-    nativeLoading.value = false;
+    if (seq === nativeReqSeq) nativeLoading.value = false;
   }
 }
 
@@ -204,10 +213,15 @@ watch([sessionSource, agentValue, workspaceSel], () => {
 // Best-effort: acpx can't enumerate an agent's models without a live session, so the
 // list is seeded from an existing same-agent+workspace session (empty otherwise). The
 // field stays a free-text input that defaults to "default", so [] is fine.
+// Same stale-response guard as loadNativeSessions: a slow earlier lookup must not
+// overwrite hints for the current selection.
+let modelSugSeq = 0;
 watch([agentValue, workspaceSel], async () => {
+  const seq = ++modelSugSeq;
   modelSuggestions.value = [];
   if (!agentValue.value || !workspaceSel.value) return;
-  modelSuggestions.value = await store.listModelSuggestions(props.instanceId, agentValue.value, workspaceSel.value);
+  const suggestions = await store.listModelSuggestions(props.instanceId, agentValue.value, workspaceSel.value);
+  if (seq === modelSugSeq) modelSuggestions.value = suggestions;
 });
 
 // Turn a raw backend error into a friendlier hint. Listing an agent's native sessions

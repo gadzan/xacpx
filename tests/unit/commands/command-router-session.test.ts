@@ -211,17 +211,18 @@ test("createSessionWithTransport applies a model override to the session and per
   expect(persisted?.model).toBe("gpt-5.2[high]");
 });
 
-test("createSessionWithTransport refuses to overwrite an existing logical alias", async () => {
+test("createSessionWithTransport auto-derives a free alias when the desired alias collides", async () => {
   const { router, transport, sessions, config } = buildRouter();
   config.workspaces.home = { cwd: "/tmp/home" };
   await sessions.attachSession("relay:demo", "codex", "home", "home:relay:demo");
-  const ensureCalls = (transport.ensureSession as ReturnType<typeof mock>).mock.calls.length;
 
-  await expect(router.createSessionWithTransport("relay:demo", "codex", "home")).rejects.toThrow(
-    /already exists/,
-  );
-  // The refused create must not touch the transport.
-  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls.length).toBe(ensureCalls);
+  // A colliding alias should NOT fail — the backend derives `relay:demo-2`.
+  const result = await router.createSessionWithTransport("relay:demo", "codex", "home");
+  expect(result.alias).toBe("relay:demo-2");
+  // The new session must be distinct from the original.
+  expect(await sessions.getSession("relay:demo-2")).toBeDefined();
+  // The original session must be untouched.
+  expect(await sessions.getSession("relay:demo")).toMatchObject({ agent: "codex", workspace: "home" });
 });
 
 test("concurrent same-alias creates claim the logical alias before transport side effects", async () => {
@@ -364,7 +365,7 @@ test("a remove cannot delete an alias while reset is replacing its transport", a
   expect(await sessions.getSession("main")).not.toBeNull();
 });
 
-test("/session new refuses an alias that already exists", async () => {
+test("/session new auto-derives a free alias when the desired alias already exists", async () => {
   const config = createConfig();
   config.agents.opencode = { driver: "opencode" };
   config.workspaces.frontend = { cwd: "/tmp/frontend" };
@@ -373,18 +374,21 @@ test("/session new refuses an alias that already exists", async () => {
   const router = new CommandRouter(sessions, transport, config);
 
   await router.handle("wx:user", "/session new api-fix --agent codex --ws backend");
-  const ensureCalls = (transport.ensureSession as ReturnType<typeof mock>).mock.calls.length;
 
+  // A colliding alias should auto-derive `api-fix-2` and succeed.
   const reply = await router.handle("wx:user", "/session new api-fix --agent opencode --ws frontend");
 
-  expect(reply.text).toBe(t().session.sessionAlreadyExists("api-fix", "codex", "backend"));
-  // The refused command must not touch the transport or the stored session.
-  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls.length).toBe(ensureCalls);
+  expect(reply.text).toBe(
+    [t().session.sessionAliasCollided("api-fix", "api-fix-2"), t().session.sessionCreated("api-fix-2")].join("\n"),
+  );
+  // The new session is switched to.
   await expect(sessions.getCurrentSession("wx:user")).resolves.toMatchObject({
-    alias: "api-fix",
-    agent: "codex",
-    workspace: "backend",
+    alias: "api-fix-2",
+    agent: "opencode",
+    workspace: "frontend",
   });
+  // The original session is untouched.
+  expect(await sessions.getSession("api-fix")).toMatchObject({ agent: "codex", workspace: "backend" });
 });
 
 test("/session attach still rebinds an existing alias", async () => {
@@ -1801,10 +1805,10 @@ test("attachNativeSessionWithTransport resumes the agent session and records a n
   expect(stored?.agentSessionId).toBe("ses_42");
 });
 
-test("attachNativeSessionWithTransport refuses to overwrite an existing alias", async () => {
+test("attachNativeSessionWithTransport auto-derives a free alias when the desired alias collides", async () => {
   const { router } = buildRouter();
   await router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_1");
-  await expect(
-    router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_2"),
-  ).rejects.toThrow(/already exists/);
+  // A colliding alias should NOT fail — the backend derives `relay:dup-2`.
+  const result = await router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_2");
+  expect(result.alias).toBe("relay:dup-2");
 });

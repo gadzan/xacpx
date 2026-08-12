@@ -677,7 +677,12 @@ export class ControlService {
       : await this.deps.createSessionWithTransport(internalAlias, agent, workspace, model);
     this.deps.events.emit({ type: "sessions-changed" });
     if (nativeHistory.length > 0) {
-      this.deps.events.emit({ type: "session-history", chatKey, sessionAlias: alias, messages: nativeHistory });
+      // The emitted alias must match the ACTUALLY-created session (which may have
+      // a `-2`/`-3` suffix derived from the original request when the desired alias
+      // collided with an archived session). Using the user-supplied `alias` here
+      // would drop the native history seed on a session that was never created.
+      const historyAlias = toDisplaySessionAlias(session.alias);
+      this.deps.events.emit({ type: "session-history", chatKey, sessionAlias: historyAlias, messages: nativeHistory });
     }
     return {
       alias: toDisplaySessionAlias(session.alias),

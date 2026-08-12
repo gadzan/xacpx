@@ -19,6 +19,8 @@ export interface StreamingPromptState {
   // accumulate the merged state per toolCallId so the structured event always
   // reflects the full call (rich title + diff), not just the last sparse frame.
   toolCalls: Map<string, MergedToolUpdate>;
+  /** Cursor's TodoWrite updates are incremental when `merge` is true. */
+  cursorPlanEntries: Map<string, PlanEntry>;
   toolEventMode: ToolEventMode;
   /** Resolved ACP driver used for provider-gated event normalization. */
   driver?: string;
@@ -54,6 +56,7 @@ interface StreamEvent {
       kind?: string;
       title?: string;
       toolCallId?: string;
+      parentToolCallId?: string;
       rawInput?: unknown;
       rawOutput?: unknown;
       entries?: unknown;
@@ -145,6 +148,7 @@ export function createStreamingPromptState(
     emittedToolCallIds: new Set(),
     positionedToolCallIds: new Set(),
     toolCalls: new Map(),
+    cursorPlanEntries: new Map(),
     toolEventMode,
     driver,
     rawStream,
@@ -217,21 +221,30 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
     const wantsStructured = state.toolEventMode === "structured" || state.toolEventMode === "both";
     const wantsText = (state.toolEventMode === "text" || state.toolEventMode === "both") && state.formatToolCalls;
 
-    // Defense-in-depth: if a transport set mode='structured' without wiring
-    // onToolEvent, drop the event silently rather than throwing or leaking
-    // it into text. The transport-level resolveToolEventMode normally prevents
-    // this state.
-    if (wantsStructured && state.onToolEvent) {
-      // Merge partial ACP updates per toolCallId so the terminal frame (which omits
-      // kind/title/content) doesn't erase the rich in-progress frame's title + diff.
-      const merged = update.toolCallId
-        ? mergeToolCallUpdate(state, update.toolCallId, update)
-        : update;
+    // Merge partial ACP updates per toolCallId so the terminal frame (which omits
+    // kind/title/content) doesn't erase the rich in-progress frame's title + diff.
+    // Keep doing this when only onPlan is wired: Cursor's TodoWrite is a tool call
+    // that must be normalized even if the channel has no structured tool callback.
+    const merged = update.toolCallId && (state.onToolEvent || state.onPlan)
+      ? mergeToolCallUpdate(state, update.toolCallId, update)
+      : update;
+    const cursorPlan = normalizeCursorPlanUpdate(state, merged);
+    const consumedAsPlan = cursorPlan !== undefined && state.onPlan !== undefined;
+    if (consumedAsPlan) {
+      // Cursor exposes its todo list as a tool call rather than an ACP `plan`
+      // notification. It is already represented by PlanPanel, so don't create
+      // a duplicate generic tool card for the same event.
+      void state.onPlan?.(cursorPlan);
+    } else if (wantsStructured && state.onToolEvent) {
+      // Defense-in-depth: if a transport set mode='structured' without wiring
+      // onToolEvent, drop the event silently rather than throwing or leaking
+      // it into text. The transport-level resolveToolEventMode normally prevents
+      // this state.
       const toolEvent = buildToolUseEvent(merged, state.driver);
       if (toolEvent) void state.onToolEvent(toolEvent);
     }
 
-    if (wantsText) {
+    if (wantsText && !consumedAsPlan) {
       const formatted = formatToolCallEvent(update, update.sessionUpdate);
       if (formatted) {
         const toolCallId = update.toolCallId;
@@ -252,7 +265,7 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
       ? update.entries.filter((x): x is PlanEntry =>
           !!x && typeof x === "object" && typeof (x as PlanEntry).content === "string" && typeof (x as PlanEntry).status === "string")
       : [];
-    if (entries.length > 0) void state.onPlan?.(entries);
+    if (Array.isArray(update.entries)) void state.onPlan?.(entries);
     return;
   }
 
@@ -426,7 +439,7 @@ function mergeToolCallUpdate(
 ): MergedToolUpdate {
   const prev = state.toolCalls.get(toolCallId) ?? ({ toolCallId } as MergedToolUpdate);
   const merged: MergedToolUpdate = { ...prev };
-  for (const key of ["kind", "title", "rawInput", "content", "rawOutput", "locations", "status"] as const) {
+  for (const key of ["kind", "title", "toolCallId", "parentToolCallId", "rawInput", "content", "rawOutput", "locations", "status"] as const) {
     const next = (update as Record<string, unknown>)[key];
     if (!isEmptyToolField(next)) (merged as Record<string, unknown>)[key] = next;
   }
@@ -467,13 +480,7 @@ function buildToolUseEvent(
   if (!update) return null;
   const toolCallId = update.toolCallId;
   if (!toolCallId) return null;
-  const kindRaw = update.kind ?? "";
-  const kind: ToolUseKind = ((): ToolUseKind => {
-    switch (kindRaw) {
-      case "read": case "search": case "execute": case "edit": case "think": return kindRaw;
-      default: return "other";
-    }
-  })();
+  const kind = normalizeToolKind(update, driver);
   const title = (update.title ?? "").trim();
   const toolName = title || "Tool";
   // Reuse the existing summarizer (it has the title-vs-summary dedup logic baked in).
@@ -510,11 +517,12 @@ function buildToolUseEvent(
   const content = update.content;
   const rawOutput = update.rawOutput ?? claudeToolResponse;
   const locations = update.locations;
-  const parentToolCallId = claudeMeta?.parentToolUseId?.trim();
+  const parentToolCallId = claudeMeta?.parentToolUseId?.trim() || update.parentToolCallId?.trim();
   const isSubagent = (claudeMeta?.toolName === "Agent")
     || (driver === "qoder" && update._meta?.qoder?.toolName === "Agent")
     || (driver === "kimi" && isKimiSubagentInput(rawInput))
-    || (driver === "codex" && isCodexSubagentMeta(update._meta?.codex?.subagent));
+    || (driver === "codex" && isCodexSubagentMeta(update._meta?.codex?.subagent))
+    || (driver === "cursor" && isCursorSubagentInput(rawInput, title));
   return {
     toolCallId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
@@ -528,6 +536,197 @@ function buildToolUseEvent(
     ...(locations !== undefined ? { locations } : {}),
     status,
   };
+}
+
+/** Internal marker cursor-agent injects into `rawInput` to name the tool. */
+export const CURSOR_TOOL_NAME_KEY = "_toolName";
+
+const CURSOR_PLAN_TOOL_NAMES = new Set([
+  "todowrite", "createplan", "updateplan", "plan", "updatetodos", "todoread",
+]);
+
+/** Convert Cursor's TodoWrite tool protocol into the provider-neutral ACP plan shape. */
+function normalizeCursorPlanUpdate(
+  state: StreamingPromptState,
+  update: MergedToolUpdate,
+): PlanEntry[] | undefined {
+  if (state.driver !== "cursor") return undefined;
+  if (!CURSOR_PLAN_TOOL_NAMES.has(cursorToolIdentity(update))) return undefined;
+
+  const input = cursorToolInput(update.rawInput);
+  const output = cursorToolInput(update.rawOutput);
+  // cursor-agent ≥2026.08 announces the todo tool but ships no entries with it
+  // (`rawInput` is just `{_toolName:"updateTodos"}`), so there is nothing to feed
+  // the plan panel. Leave it to the tool card rather than clearing a good plan.
+  // `todoRead` may also put the list only on `rawOutput`.
+  const todos = readCursorTodoList(input) ?? readCursorTodoList(output);
+  if (todos === undefined) return undefined;
+
+  const merge = input?.merge === true || output?.merge === true;
+  if (todos.length === 0) {
+    state.cursorPlanEntries.clear();
+    return [];
+  }
+
+  const patches = todos
+    .map((todo, index) => parseCursorPlanTodo(todo, index))
+    .filter((todo): todo is CursorPlanTodo => todo !== undefined);
+  // A non-empty but entirely malformed payload should not erase a good plan.
+  if (patches.length === 0) return undefined;
+  if (!merge) state.cursorPlanEntries.clear();
+
+  for (const patch of patches) {
+    const previous = state.cursorPlanEntries.get(patch.key);
+    const content = patch.content ?? previous?.content;
+    if (!content) continue;
+    const status = patch.status ?? previous?.status ?? "pending";
+    const priority = patch.priority ?? previous?.priority;
+    state.cursorPlanEntries.set(patch.key, {
+      content,
+      status,
+      ...(priority ? { priority } : {}),
+    });
+  }
+
+  return [...state.cursorPlanEntries.values()];
+}
+
+/** The todo array under the keys cursor-agent has used, or undefined when the
+ *  call carries no list at all (announcement-only frames). */
+function readCursorTodoList(input: Record<string, unknown> | undefined): unknown[] | undefined {
+  if (!input) return undefined;
+  for (const key of ["todos", "todoList"] as const) {
+    if (Array.isArray(input[key])) return input[key];
+  }
+  return undefined;
+}
+
+interface CursorPlanTodo {
+  key: string;
+  content?: string;
+  status?: PlanEntry["status"];
+  priority?: PlanEntry["priority"];
+}
+
+function parseCursorPlanTodo(value: unknown, index: number): CursorPlanTodo | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = readFirstString(value, ["id", "todoId", "taskId"]);
+  const content = readFirstString(value, ["content", "task", "description", "title", "text"]);
+  const key = id ? `id:${id}` : content ? `content:${content}` : `index:${index}`;
+  const status = normalizeCursorPlanStatus(value.status ?? value.state);
+  const priority = normalizePlanPriority(value.priority);
+  if (!content && !status && !priority && !id) return undefined;
+  return {
+    key,
+    ...(content ? { content } : {}),
+    ...(status ? { status } : {}),
+    ...(priority ? { priority } : {}),
+  };
+}
+
+function normalizeCursorPlanStatus(value: unknown): PlanEntry["status"] | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_").replace(/^todo_status_/, "");
+  switch (normalized) {
+    case "pending":
+    case "todo":
+    case "not_started":
+    case "notstarted":
+    case "incomplete":
+      return "pending";
+    case "in_progress":
+    case "inprogress":
+    case "active":
+    case "working":
+      return "in_progress";
+    case "completed":
+    case "complete":
+    case "done":
+    case "finished":
+      return "completed";
+    default:
+      return undefined;
+  }
+}
+
+function normalizePlanPriority(value: unknown): PlanEntry["priority"] | undefined {
+  if (value !== "high" && value !== "medium" && value !== "low") return undefined;
+  return value;
+}
+
+function cursorToolInput(rawInput: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(rawInput)) return undefined;
+  if (isRecord(rawInput.args)) return rawInput.args;
+  return rawInput;
+}
+
+function normalizeCursorToolName(title: string | undefined): string {
+  return (title ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+/** cursor-agent labels a call with a display `title` ("Update TODOs", "Read File")
+ *  and puts the machine name in `rawInput._toolName` ("updateTodos"). Match on the
+ *  machine name first — the display title is prose and varies between releases. */
+function cursorToolIdentity(update: { title?: string; rawInput?: unknown }): string {
+  const input = cursorToolInput(update.rawInput);
+  const declared = typeof input?.[CURSOR_TOOL_NAME_KEY] === "string"
+    ? (input[CURSOR_TOOL_NAME_KEY] as string)
+    : undefined;
+  return normalizeCursorToolName(declared ?? update.title);
+}
+
+const CURSOR_SUBAGENT_TOOL_NAMES = new Set(["task", "delegate", "runsubagent", "subagent"]);
+
+function normalizeToolKind(
+  update: NonNullable<StreamEvent["params"]>["update"],
+  driver?: string,
+): ToolUseKind {
+  const kindRaw = update?.kind?.trim().toLowerCase() ?? "";
+  switch (kindRaw) {
+    case "read": case "search": case "execute": case "edit": case "think": return kindRaw;
+  }
+  if (driver !== "cursor") return "other";
+  switch (cursorToolIdentity(update ?? {})) {
+    case "read":
+    case "readfile":
+      return "read";
+    case "grep":
+    case "glob":
+    case "find":
+    case "codebasesearch":
+    case "search":
+      return "search";
+    case "shell":
+    case "bash":
+    case "terminal":
+      return "execute";
+    case "strreplace":
+    case "replace":
+    case "edit":
+    case "write":
+    case "delete":
+      return "edit";
+    case "task":
+    case "delegate":
+    case "runsubagent":
+    case "switchmode":
+    case "todowrite":
+    case "updatetodos":
+    case "todoread":
+    case "createplan":
+    case "updateplan":
+    case "plan":
+      return "think";
+    default:
+      return "other";
+  }
+}
+
+function isCursorSubagentInput(rawInput: unknown, title: string): boolean {
+  if (!CURSOR_SUBAGENT_TOOL_NAMES.has(cursorToolIdentity({ title, rawInput }))) return false;
+  const input = cursorToolInput(rawInput);
+  return input !== undefined
+    && readFirstString(input, ["subagent_type", "subagentType", "agent", "agentType", "prompt", "instructions"]) !== undefined;
 }
 
 function isKimiSubagentInput(rawInput: unknown): boolean {
@@ -549,6 +748,12 @@ function summarizeToolInput(rawInput: unknown, title = ""): string | undefined {
     return String(rawInput);
   }
   if (!isRecord(rawInput)) return undefined;
+
+  const nestedInput = cursorToolInput(rawInput);
+  if (nestedInput !== rawInput) {
+    const nestedSummary = summarizeToolInput(nestedInput, title);
+    if (nestedSummary) return nestedSummary;
+  }
 
   const taskSummary = summarizeTaskInput(rawInput, title);
   if (taskSummary) return taskSummary;
@@ -572,6 +777,18 @@ function summarizeToolInput(rawInput: unknown, title = ""): string | undefined {
     }
   }
 
+  const globPattern = readFirstString(rawInput, ["glob_pattern"]);
+  if (globPattern) {
+    const targetDirectory = readFirstString(rawInput, ["target_directory"]);
+    return targetDirectory ? `${globPattern} in ${targetDirectory}` : globPattern;
+  }
+
+  const mode = readFirstString(rawInput, ["target_mode_id", "mode_id"]);
+  const explanation = readFirstString(rawInput, ["explanation"]);
+  if (mode || explanation) {
+    return mode && explanation ? `${mode}: ${explanation}` : mode ?? explanation;
+  }
+
   return readFirstString(rawInput, [
     "path",
     "file",
@@ -585,6 +802,7 @@ function summarizeToolInput(rawInput: unknown, title = ""): string | undefined {
     "pattern",
     "text",
     "search",
+    "working_directory",
     "name",
     "description",
   ]);

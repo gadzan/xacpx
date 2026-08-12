@@ -1,5 +1,151 @@
 # Changelog
 
+## [0.20.3] - 2026-08-12
+
+### Added
+
+- Windows: auto-migrate raw-command sessions to structured `acpx` argv, reusing acpx 0.13 structured argv recovery for legacy sessions and failing closed on Path A state writes.
+
+### Fixed
+
+- Sessions: auto-derive a unique alias when the desired session name collides with an archived session, and exclude archived sessions from the web UI alias pre-check.
+
+## [relay 0.11.3] - 2026-08-12
+
+### Fixed
+
+- Relay-web: baseline the composer stack on the message card top so status/plan layers don't overlap the card edge.
+
+## [0.20.3-beta.1] - 2026-08-10
+
+### Fixed
+
+- Sessions: auto-derive a unique alias when the desired session name collides with an archived session, and exclude archived sessions from the web UI alias pre-check.
+
+## [relay 0.11.3-beta.2] - 2026-08-10
+
+### Fixed
+
+- Relay-web: baseline the composer stack on the message card top so status/plan layers don't overlap the card edge.
+
+## [relay 0.11.3-beta.1] - 2026-08-10
+
+### Fixed
+
+- Relay-web: drop the composer form's full-width top border so it doesn't cut across the rounded elevated card edges when the composer sits under status/plan stack layers.
+
+## [0.20.3-beta.0] - 2026-08-09
+
+### Fixed
+
+- Transport: resolve Cursor tool identity from `rawInput._toolName`, recognize `updateTodos`/`todoRead`, keep announcement-only todo frames from clearing an existing plan, and read todo lists from `rawOutput` when needed.
+
+## [relay 0.11.3-beta.0] - 2026-08-09
+
+### Changed
+
+- Relay-web: stack the turn status bar, plan panel, and message input as a document-flow layered composer (peek-behind overlap with reserved padding; no absolute overlays).
+
+## [channel-relay 0.5.2] - 2026-08-12
+
+### Fixed
+
+- Tool presentation: show Cursor `rawOutput.content` for reads, summarize search count-only results, hide `_toolName`, and omit empty detail drawers.
+
+## [channel-relay 0.5.2-beta.0] - 2026-08-09
+
+### Fixed
+
+- Tool presentation: show Cursor `rawOutput.content` for reads, summarize search count-only results, hide `_toolName`, and omit empty detail drawers.
+
+## [0.20.2] - 2026-08-08
+
+### Fixed
+
+- Transport: normalize Cursor plan updates (TodoWrite tool calls) even when the channel has no structured tool callback; merge partial ACP updates per toolCallId so the terminal frame stays consistent.
+
+## [relay 0.11.2] - 2026-08-08
+
+### Fixed
+
+- Relay-web: fix Cursor tool and plan event rendering in the chat pane, message list, and plan panel.
+
+## [channel-relay 0.5.1] - 2026-08-08
+
+### Fixed
+
+- Tool presentation: handle tool `input` robustly (mode/explanation rendering) for Cursor plan events.
+
+## [0.20.1] - 2026-08-07
+
+### Fixed
+
+- Daemon: repair Windows process worker so `stop`/`restart` work again.
+
+## [relay 0.11.1] - 2026-08-07
+
+### Fixed
+
+- Relay-web: drop stale native-session and model-suggestion RPC responses.
+
+## [0.20.0] - 2026-08-07
+
+First stable release of the 0.20 line.
+
+### Added
+
+- Daemon: channel-independent runtime ownership with POSIX recovery and Windows daemon runtime support; recover after in-place upgrades.
+- Relay-web dashboard: auto-load sessions with per-group sleeping-session pagination (server-side paging, 5 per page with load-more).
+- `control.sessions.list` filter fields: `archivedOnly`, `workspace`, `agent`.
+
+### Changed
+
+- Control: extend `control.sessions.list` with `archivedOnly` / `workspace` / `agent` filters to back per-group session pages.
+- Channel-relay: dispatch `control.sessions.list` archived/workspace/agent filters to the hub.
+
+### Fixed
+
+- Daemon: close runtime-consumer-lock races, fail closed on unconfirmed flock cleanup, harden flock helper acquisition timeout.
+- Daemon: fix Bun runtime ownership lifecycle and runtime ownership locking on POSIX.
+- Relay-web: guard `parseGroupArchivedKey` against colon-less keys; unify group archived state writes; converge paginated session state safely.
+
+## [0.20.0-beta.1] - 2026-08-07
+
+### Added
+
+- Daemon: channel-independent runtime ownership with POSIX recovery and Windows daemon runtime support; recover after in-place upgrades.
+
+### Changed
+
+- Control: extend `control.sessions.list` with `archivedOnly` / `workspace` / `agent` filters to back per-group session pages.
+
+### Fixed
+
+- Daemon: close runtime-consumer-lock races, fail closed on unconfirmed flock cleanup, harden flock helper acquisition timeout.
+- Daemon: fix Bun runtime ownership lifecycle and runtime ownership locking on POSIX.
+
+## [relay 0.11.0-beta.1] - 2026-08-07
+
+### Added
+
+- Relay-web dashboard: auto-load sessions with per-group sleeping-session pagination (server-side paging, 5 per page with load-more).
+
+### Fixed
+
+- Relay-web: guard `parseGroupArchivedKey` against colon-less keys; unify group archived state writes; converge paginated session state safely.
+
+## [relay-protocol 0.3.0-beta.1] - 2026-08-07
+
+### Added
+
+- `control.sessions.list` filter fields: `archivedOnly`, `workspace`, `agent`.
+
+## [channel-relay 0.5.0-beta.1] - 2026-08-07
+
+### Changed
+
+- Dispatch `control.sessions.list` archived/workspace/agent filters to the hub.
+
 ## [0.20.0-beta.0] - 2026-08-06
 
 ### Added

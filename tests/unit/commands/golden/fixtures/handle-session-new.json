@@ -1,8 +1,7 @@
 {
   "record": [
     "logger.debug(command.parsed)",
-    "sessions.getResolvedSessionByInternalAlias(\"demo\")",
-    "sessions.tryReserveNewSessionAlias(\"demo\")",
+    "sessions.tryReserveFreeSessionAlias(\"demo\")",
     "sessions.buildFreshTransportSession(\"backend:demo\")",
     "sessions.resolveSession(\"demo\", \"codex\", \"backend\", \"backend:demo:reset-<n>\")",
     "orchestration.reserveLogicalTransportSession(\"backend:demo\")",

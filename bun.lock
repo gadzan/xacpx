@@ -42,9 +42,9 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.5.0-beta.0",
+      "version": "0.5.1",
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.2.0",
+        "@ganglion/xacpx-relay-protocol": "^0.3.0",
         "ws": "^8.20.0",
       },
       "peerDependencies": {
@@ -78,12 +78,12 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.11.0-beta.0",
+      "version": "0.11.3-beta.1",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.2.0",
+        "@ganglion/xacpx-relay-protocol": "^0.3.0",
         "@hono/node-server": "^1.13.0",
         "hono": "^4.6.0",
         "ws": "^8.20.0",
@@ -91,7 +91,7 @@
     },
     "packages/relay-protocol": {
       "name": "@ganglion/xacpx-relay-protocol",
-      "version": "0.3.0-beta.0",
+      "version": "0.3.0",
     },
     "packages/relay-web": {
       "name": "@ganglion/xacpx-relay-web",
@@ -114,7 +114,7 @@
         "@codemirror/view": "^6.0.0",
         "@fontsource/inter": "^5.2.8",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@ganglion/xacpx-relay-protocol": "^0.3.0-beta.0",
+        "@ganglion/xacpx-relay-protocol": "^0.3.0",
         "@lezer/highlight": "^1.0.0",
         "@lobehub/icons-static-svg": "^1.91.0",
         "codemirror": "^6.0.0",
