@@ -363,17 +363,17 @@
 - Modify: `packages/channel-relay/src/terminal/terminal-runtime.ts`
 - Test: `tests/unit/packages/channel-relay/terminal-reconciler.test.ts`
 
-- [ ] 按 spec §12.4 实现完整 mark-and-sweep；catalog、registry 或 inventory 任一不完整时，本轮 destructive GC fail closed。
-- [ ] startup 处理 creating/live/reaping 全矩阵；live 在 hub connect 前 adopt lease；超过 TTL 已 gone 时清 record并发资源退出状态。
-- [ ] inventory-only 合法 owner session 先持久化 quarantine first-seen；只有 tags 唯一映射 active logical session 时可重建/adopt，否则两轮且超过 grace 后再 kill。
-- [ ] quarantine 不引入未定义的第四种 resource state：把完整合法 tags 重建为 durable `creating` record，`createdAt` 作为 first-seen；下一轮只能转 live 或 reaping。tags 不完整时不能伪造 record，也不能 kill。
-- [ ] malformed/ambiguous tags、name prefix mismatch、stable ID mismatch 只记录诊断并等待 lease，不猜测 kill。
-- [ ] GC kill 前在 per-terminal lock 内重新读取 revision，并再次核对 terminalId/generation/stable ID/state。
-- [ ] periodic task 防重入、可注入 clock/timer、unref；`stop()` 等待 active pass 或安全取消。
-- [ ] owner lease lost 会立即 fence driver mutation和 streams；旧 runtime 不能 kill 被新 owner adopt 的 resource。
-- [ ] 测试 corrupt registry、missing catalog、inventory failure、sidecar outage、kill timeout→later success、restart within/after TTL。
-- [ ] Run focused reconciler/runtime tests and channel-relay typecheck.
-- [ ] Commit: `feat(channel-relay): reconcile rmux terminal ownership`
+- [x] 按 spec §12.4 实现完整 mark-and-sweep；catalog、registry 或 inventory 任一不完整时，本轮 destructive GC fail closed。
+- [x] startup 处理 creating/live/reaping 全矩阵；live 在 hub connect 前 adopt lease；超过 TTL 已 gone 时清 record并发资源退出状态。
+- [x] inventory-only 合法 owner session 先持久化 quarantine first-seen；只有 tags 唯一映射 active logical session 时可重建/adopt，否则两轮且超过 grace 后再 kill。
+- [x] quarantine 不引入未定义的第四种 resource state：把完整合法 tags 重建为 durable `creating` record，`createdAt` 作为 first-seen；下一轮只能转 live 或 reaping。tags 不完整时不能伪造 record，也不能 kill。
+- [x] malformed/ambiguous tags、name prefix mismatch、stable ID mismatch 只记录诊断并等待 lease，不猜测 kill。
+- [x] GC kill 前在 per-terminal lock 内重新读取 revision，并再次核对 terminalId/generation/stable ID/state。
+- [x] periodic task 防重入、可注入 clock/timer、unref；`stop()` 等待 active pass 或安全取消。
+- [x] owner lease lost 会立即 fence driver mutation和 streams；旧 runtime 不能 kill 被新 owner adopt 的 resource。
+- [x] 测试 corrupt registry、missing catalog、inventory failure、sidecar outage、kill timeout→later success、restart within/after TTL。
+- [x] Run focused reconciler/runtime tests and channel-relay typecheck.
+- [x] Commit: `feat(channel-relay): reconcile rmux terminal ownership`
 
 ---
 

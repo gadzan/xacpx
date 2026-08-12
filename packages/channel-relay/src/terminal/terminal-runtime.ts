@@ -11,18 +11,15 @@
 //
 // Viewer/controller/recovery state stays in memory via TerminalAttachmentRegistry.
 // Durable creating/live/reaping transitions go through TerminalRegistryStore.
-import { randomUUID } from "node:crypto";
-import { Buffer } from "node:buffer";
-
+import type { TerminalReconciler } from "./terminal-reconciler.js";
+import { TerminalReconciler as TerminalReconcilerImpl } from "./terminal-reconciler.js";
+import type { TerminalRecordV1, TerminalReapReason } from "./terminal-types.js";
+import type { TerminalRegistryStore } from "./terminal-registry-store.js";
 import {
-  TERMINAL_REBASE_CHUNK_BYTES,
-  type TerminalErrorCode,
-} from "@ganglion/xacpx-relay-protocol";
-import type {
-  SessionResourceCatalog,
-  SessionResourceDescriptor,
-} from "xacpx/plugin-api";
-
+  RmuxLeaseLostError,
+  type RmuxRecoveryEvent,
+  type RmuxTerminalDriver,
+} from "./rmux-driver.js";
 import type { RelayTerminalConfig } from "../config.js";
 import {
   TerminalAttachmentGenerationMismatchError,
@@ -32,13 +29,16 @@ import {
   TerminalViewerCapacityExceededError,
   type TerminalAttachmentEvent,
 } from "./terminal-attachments.js";
+import type {
+  SessionResourceCatalog,
+  SessionResourceDescriptor,
+} from "xacpx/plugin-api";
 import {
-  RmuxLeaseLostError,
-  type RmuxRecoveryEvent,
-  type RmuxTerminalDriver,
-} from "./rmux-driver.js";
-import type { TerminalRegistryStore } from "./terminal-registry-store.js";
-import type { TerminalRecordV1, TerminalReapReason } from "./terminal-types.js";
+  TERMINAL_REBASE_CHUNK_BYTES,
+  type TerminalErrorCode,
+} from "@ganglion/xacpx-relay-protocol";
+import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 
 const RELAY_CHANNEL_ID = "relay";
 const DEFAULT_KILL_TIMEOUT_MS = 5_000;
@@ -292,6 +292,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   private stopped = false;
   /** paneId lookup after adopt/create — keyed by terminalId. */
   private paneByTerminal = new Map<string, string>();
+  private readonly reconciler: TerminalReconciler;
 
   constructor(options: TerminalRuntimeOptions) {
     this.registry = options.registry;
@@ -312,22 +313,54 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       onEvent: (event) => this.forwardAttachmentEvent(event),
       randomId: () => this.randomUUID(),
     });
+
+    this.reconciler = new TerminalReconcilerImpl({
+      host: {
+        registry: this.registry,
+        driver: this.driver,
+        catalog: this.catalog,
+        config: this.config,
+        clock: this.clock,
+        withTerminalLock: (terminalId, fn) => this.withTerminalLock(terminalId, fn),
+        onAdopted: (rec, paneId, sessionId) => {
+          this.installHandle(
+            { ...rec, rmuxSessionId: sessionId, state: "live" },
+            paneId,
+            this.clock.now(),
+          );
+        },
+        onResourceAbsent: (terminalId, generation, reason) => {
+          this.handles.delete(terminalId);
+          this.paneByTerminal.delete(terminalId);
+          void this.stopAllRecoveriesForTerminal(terminalId, { wait: false });
+          this.emitExitToViewers(terminalId, generation, reason);
+          for (const a of this.attachments.listByTerminal(terminalId)) {
+            this.attachments.detach(a.attachmentId);
+          }
+        },
+        onFence: (terminalId) => {
+          const handle = this.handles.get(terminalId);
+          if (handle) handle.leaseLost = true;
+          void this.stopAllRecoveriesForTerminal(terminalId, { wait: false });
+        },
+        killWithTimeout: (sessionId) => this.killWithTimeout(sessionId),
+      },
+    });
   }
 
   async start(): Promise<void> {
     if (this.started) return;
     await this.registry.load();
-    const snap = this.registry.getSnapshot();
-    for (const rec of Object.values(snap.terminals)) {
-      if (rec.state !== "live" || !rec.rmuxSessionId) continue;
-      try {
-        const handle = await this.driver.adopt({ sessionId: rec.rmuxSessionId });
-        this.installHandle(rec, handle.paneId, this.clock.now());
-      } catch {
-        // Task 14 reconciler owns failed adopt / creating / reaping recovery.
-      }
-    }
+    // Spec §12.4: reconcile (adopt/reap/quarantine) before hub connect.
+    await this.reconciler.runOnce();
     this.started = true;
+    this.reconciler.startPeriodic();
+  }
+
+  /** Test/ops seam: run one mark-and-sweep pass without waiting for the timer. */
+  async reconcileOnce(): Promise<void> {
+    this.assertStarted();
+    await this.reconciler.runOnce();
   }
 
   async openOrResume(input: {
@@ -599,6 +632,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    await this.reconciler.stop();
     const loops = [...this.recoveries.values()];
     for (const loop of loops) loop.abort.abort();
     await Promise.allSettled(loops.map((l) => l.done));
