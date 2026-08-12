@@ -46,6 +46,12 @@
 
 - Relay-web: stack the turn status bar, plan panel, and message input as a document-flow layered composer (peek-behind overlap with reserved padding; no absolute overlays).
 
+## [channel-relay 0.5.2] - 2026-08-12
+
+### Fixed
+
+- Tool presentation: show Cursor `rawOutput.content` for reads, summarize search count-only results, hide `_toolName`, and omit empty detail drawers.
+
 ## [channel-relay 0.5.2-beta.0] - 2026-08-09
 
 ### Fixed
