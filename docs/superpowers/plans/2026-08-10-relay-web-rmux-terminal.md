@@ -541,16 +541,16 @@
 - Test: `packages/relay-web/src/__tests__/terminal-store.test.ts`
 - Create/Test: `packages/relay-web/src/__tests__/terminal-recovery.test.ts`
 
-- [ ] events client 提供 requestId generator + pending map + deadline；socket close/reconnect reject pending并通知 store重开 active local terminal tabs。
-- [ ] store 以 local tab/session key 管理 attachment metadata，而不是用 persisted terminalId 作为服务端身份。
-- [ ] 精确实现 spec §14.6 reducer：waiting/rebase/live/resyncing/exited、epoch/sequence/chunk index/decoded bytes/generation 全校验。
-- [ ] gap、duplicate epoch、bad chunk/base64、generation mismatch、adapter failure 后停止渲染并发一次 resync；新 rebase 完成前不再接受 bytes。
-- [ ] open metadata 到达后发送 stream-start；reconnect 重新 openOrResume，同 logical session 得到同 terminal resource但新 attachment。
-- [ ] input/resize 仅 controller 状态允许发送；role-changed 立即更新双方；server 仍是最终权限边界。
-- [ ] heartbeat 每 10 秒，仅 attachment open 时运行；页面/route unmount发送 best-effort detach，不发 terminate。
-- [ ] terminate 等待 ack，offline/timeout保留本地 Tab和重试状态。
-- [ ] Run focused Vitest files and vue typecheck.
-- [ ] Commit: `feat(relay-web): recover rmux terminal attachments`
+- [x] events client 提供 requestId generator + pending map + deadline；socket close/reconnect reject pending并通知 store重开 active local terminal tabs。
+- [x] store 以 local tab/session key 管理 attachment metadata，而不是用 persisted terminalId 作为服务端身份。
+- [x] 精确实现 spec §14.6 reducer：waiting/rebase/live/resyncing/exited、epoch/sequence/chunk index/decoded bytes/generation 全校验。
+- [x] gap、duplicate epoch、bad chunk/base64、generation mismatch、adapter failure 后停止渲染并发一次 resync；新 rebase 完成前不再接受 bytes。
+- [x] open metadata 到达后发送 stream-start；reconnect 重新 openOrResume，同 logical session 得到同 terminal resource但新 attachment。
+- [x] input/resize 仅 controller 状态允许发送；role-changed 立即更新双方；server 仍是最终权限边界。
+- [x] heartbeat 每 10 秒，仅 attachment open 时运行；页面/route unmount发送 best-effort detach，不发 terminate。
+- [x] terminate 等待 ack，offline/timeout保留本地 Tab和重试状态。
+- [x] Run focused Vitest files and vue typecheck.
+- [x] Commit: `feat(relay-web): recover rmux terminal attachments`
 
 ### Task 23: TerminalTab controller/spectator、全局 close 与 capability UX
 
