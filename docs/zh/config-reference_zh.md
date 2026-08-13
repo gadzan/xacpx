@@ -483,10 +483,12 @@ Windows 上新建自定义 agent 请使用结构化 argv：
 | `kimi` | `"kimi"` | 无（使用 acpx 默认） |
 | `kiro` | `"kiro"` | 无（使用 acpx 默认） |
 | `mux` | `"mux"` | 无（使用 acpx 默认） |
+| `omp` | `"omp"` | 无（PATH 上有 `omp` 时使用 `omp acp`；acpx 不包含此 driver） |
 | `opencode` | `"opencode"` | 无（使用 acpx 默认） |
 | `pool` | `"pool"` | 无（使用 acpx 默认） |
 | `qoder` | `"qoder"` | 无（使用 acpx 默认） |
 | `qwen` | `"qwen"` | 无（使用 acpx 默认） |
+| `reasonix` | `"reasonix"` | 无（PATH 上有 `reasonix` 时使用 `reasonix acp`；acpx 不包含此 driver） |
 | `trae` | `"trae"` | 无（使用 acpx 默认） |
 | `zeroclaw` | `"zeroclaw"` | 无（使用 acpx 默认） |
 

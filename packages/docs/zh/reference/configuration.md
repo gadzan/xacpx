@@ -142,9 +142,11 @@ WEACPX_CLI_COMMAND="node /path/to/xacpx/dist/cli.js" xacpx run
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
 | `mux` | `"mux"` |
+| `omp` | `"omp"` |
 | `opencode` | `"opencode"` |
 | `qoder` | `"qoder"` |
 | `qwen` | `"qwen"` |
+| `reasonix` | `"reasonix"` |
 | `trae` | `"trae"` |
 
 通过聊天使用 `/agent add <name>` 添加模板，或在终端使用 `xacpx agent add <name>` 添加。添加配置完全相同的代理是幂等的；若名称冲突但配置不同，会提示先删除现有代理。

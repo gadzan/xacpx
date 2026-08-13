@@ -9,6 +9,10 @@ import { resolveRuntimeAgentCommand } from "../../../src/config/resolve-agent-co
 test("resolveLocalAgentCommand prefers a native opencode on PATH", () => {
   expect(resolveLocalAgentCommand("opencode", (name) => name === "opencode")).toBe("opencode acp");
   expect(resolveLocalAgentCommand("kilocode", (name) => name === "kilocode")).toBe("kilocode acp");
+  // reasonix (`reasonix` npm) and omp (`@oh-my-pi/cli` npm, bin `omp`) speak
+  // ACP via `<bin> acp` like opencode — same fallback shape, just not in acpx.
+  expect(resolveLocalAgentCommand("reasonix", (name) => name === "reasonix")).toBe("reasonix acp");
+  expect(resolveLocalAgentCommand("omp", (name) => name === "omp")).toBe("omp acp");
 });
 
 test("resolveLocalAgentCommand returns undefined when the native CLI is not on PATH", () => {
@@ -80,6 +84,8 @@ import { resolveLocalAgentArgv } from "../../../src/config/local-agent-bin";
 test("resolveLocalAgentArgv returns structured argv for a native CLI on PATH", () => {
   expect(resolveLocalAgentArgv("opencode", (name) => name === "opencode")).toEqual(["opencode", "acp"]);
   expect(resolveLocalAgentArgv("kilocode", (name) => name === "kilocode")).toEqual(["kilocode", "acp"]);
+  expect(resolveLocalAgentArgv("reasonix", (name) => name === "reasonix")).toEqual(["reasonix", "acp"]);
+  expect(resolveLocalAgentArgv("omp", (name) => name === "omp")).toEqual(["omp", "acp"]);
 });
 
 test("resolveLocalAgentArgv returns undefined when the native CLI is not on PATH", () => {

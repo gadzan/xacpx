@@ -142,9 +142,11 @@ Built-in templates (use `driver` only; let `acpx` resolve the alias):
 | `kimi` | `"kimi"` |
 | `kiro` | `"kiro"` |
 | `mux` | `"mux"` |
+| `omp` | `"omp"` |
 | `opencode` | `"opencode"` |
 | `qoder` | `"qoder"` |
 | `qwen` | `"qwen"` |
+| `reasonix` | `"reasonix"` |
 | `trae` | `"trae"` |
 
 Add templates via chat with `/agent add <name>` or from the terminal with `xacpx agent add <name>`. Adding an agent that already has the same configuration is idempotent; a name conflict with different settings prompts you to delete first.
