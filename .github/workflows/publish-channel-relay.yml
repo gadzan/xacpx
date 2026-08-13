@@ -77,10 +77,12 @@ jobs:
             platform: darwin
             arch: arm64
             package: darwin-arm64
-          - runner: macos-13
+          - runner: macos-14
             platform: darwin
             arch: x64
             package: darwin-x64
+            rust_target: x86_64-apple-darwin
+            bin_path: target/x86_64-apple-darwin/release/xacpx-rmux-bridge
           - runner: windows-latest
             platform: win32
             arch: x64
@@ -119,11 +121,18 @@ jobs:
           grep -F 'rmux-sdk = "=0.10.0"' packages/channel-relay/native/rmux-bridge/Cargo.toml
 
       - name: Build release sidecar
-        run: cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+        run: |
+          if [[ -n "${{ matrix.rust_target }}" ]]; then
+            rustup target add "${{ matrix.rust_target }}"
+            cargo build --release --target "${{ matrix.rust_target }}" \
+              --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+          else
+            cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+          fi
 
       - name: Pack platform package
         run: |
-          BIN="packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
+          BIN="packages/channel-relay/native/rmux-bridge/${BIN_REL:-target/release}/xacpx-rmux-bridge"
           if [[ "${{ matrix.platform }}" == "win32" ]]; then
             BIN="${BIN}.exe"
           fi
@@ -133,6 +142,8 @@ jobs:
             --binary "$BIN"
           test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json"
           node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1)"
+        env:
+          BIN_REL: ${{ matrix.bin_path && 'target/x86_64-apple-darwin/release' || 'target/release' }}
 
       - name: Upload platform package
         uses: actions/upload-artifact@v4
