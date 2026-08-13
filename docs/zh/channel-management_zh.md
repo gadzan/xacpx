@@ -506,6 +506,7 @@ xacpx restart
 - 默认目录：`~/.xacpx/plugins/`，里面有一个独立的 `package.json` + `node_modules/`，**不污染**全局或当前项目。
 - 自定义：导出环境变量 `WEACPX_PLUGIN_HOME=/some/path`，所有 `xacpx plugin *` 命令都会切到这个目录。
 - 包管理器自动选择：检测到 `bun` 就用 `bun add/remove`，否则回退到 `npm install/uninstall`。
+- 安装和更新默认走 `https://registry.npmjs.org`（含 `@ganglion` scope），避免公司镜像 404 掉 `@ganglion/xacpx-rmux-bridge-*` 这类 optional 平台包。官方源不可达时用 `XACPX_PLUGIN_REGISTRY` 覆盖。
 
 ### 安装
 

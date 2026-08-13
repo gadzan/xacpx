@@ -3,7 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { installPluginPackage, removePluginPackage, updatePluginPackage } from "../../../src/plugins/package-manager";
+import { installPluginPackage, pluginRegistryInstallArgs, removePluginPackage, updatePluginPackage } from "../../../src/plugins/package-manager";
+
+const registryArgs = pluginRegistryInstallArgs();
 
 test("installPluginPackage runs add in plugin home", async () => {
   const calls: unknown[] = [];
@@ -14,7 +16,7 @@ test("installPluginPackage runs add in plugin home", async () => {
     runCommand: async (command, args, options) => { calls.push({ command, args, cwd: options.cwd }); },
   });
 
-  expect(calls).toEqual([{ command: "npm", args: ["install", "weacpx-channel-demo"], cwd: "/tmp/weacpx-plugins" }]);
+  expect(calls).toEqual([{ command: "npm", args: ["install", "weacpx-channel-demo", ...registryArgs], cwd: "/tmp/weacpx-plugins" }]);
 });
 
 test("installPluginPackage appends version range", async () => {
@@ -27,7 +29,7 @@ test("installPluginPackage appends version range", async () => {
     runCommand: async (command, args, options) => { calls.push({ command, args, cwd: options.cwd }); },
   });
 
-  expect(calls).toEqual([{ command: "bun", args: ["add", "weacpx-channel-demo@^1.2.0"], cwd: "/tmp/weacpx-plugins" }]);
+  expect(calls).toEqual([{ command: "bun", args: ["add", "weacpx-channel-demo@^1.2.0", ...registryArgs], cwd: "/tmp/weacpx-plugins" }]);
 });
 
 test("updatePluginPackage reuses package-manager add semantics", async () => {
@@ -40,7 +42,7 @@ test("updatePluginPackage reuses package-manager add semantics", async () => {
     runCommand: async (command, args, options) => { calls.push({ command, args, cwd: options.cwd }); },
   });
 
-  expect(calls).toEqual([{ command: "npm", args: ["install", "weacpx-channel-demo@2.0.0"], cwd: "/tmp/weacpx-plugins" }]);
+  expect(calls).toEqual([{ command: "npm", args: ["install", "weacpx-channel-demo@2.0.0", ...registryArgs], cwd: "/tmp/weacpx-plugins" }]);
 });
 
 test("updatePluginPackage without version uses bare package name", async () => {
@@ -52,7 +54,7 @@ test("updatePluginPackage without version uses bare package name", async () => {
     runCommand: async (command, args, options) => { calls.push({ command, args, cwd: options.cwd }); },
   });
 
-  expect(calls).toEqual([{ command: "bun", args: ["add", "weacpx-channel-demo"], cwd: "/tmp/weacpx-plugins" }]);
+  expect(calls).toEqual([{ command: "bun", args: ["add", "weacpx-channel-demo", ...registryArgs], cwd: "/tmp/weacpx-plugins" }]);
 });
 
 test("installPluginPackage repairs duplicate dependency keys before installing", async () => {
@@ -77,9 +79,52 @@ test("installPluginPackage repairs duplicate dependency keys before installing",
     const rawAfter = await readFile(manifest, "utf8");
     const occurrences = rawAfter.split('"@scope/feishu"').length - 1;
     expect(occurrences).toBe(1);
-    expect(calls).toEqual([{ command: "bun", args: ["add", "@scope/yuanbao"], cwd: dir }]);
+    expect(calls).toEqual([{ command: "bun", args: ["add", "@scope/yuanbao", ...registryArgs], cwd: dir }]);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("installPluginPackage honors XACPX_PLUGIN_REGISTRY", async () => {
+  const previous = process.env.XACPX_PLUGIN_REGISTRY;
+  process.env.XACPX_PLUGIN_REGISTRY = "https://registry.example.com/npm/";
+  try {
+    const calls: unknown[] = [];
+    await installPluginPackage({
+      packageName: "@ganglion/xacpx-channel-relay",
+      pluginHome: "/tmp/weacpx-plugins",
+      packageManager: "bun",
+      runCommand: async (command, args, options) => { calls.push({ command, args, cwd: options.cwd }); },
+    });
+    expect(calls).toEqual([{
+      command: "bun",
+      args: [
+        "add",
+        "@ganglion/xacpx-channel-relay",
+        "--registry=https://registry.example.com/npm",
+        "--@ganglion:registry=https://registry.example.com/npm",
+      ],
+      cwd: "/tmp/weacpx-plugins",
+    }]);
+  } finally {
+    if (previous === undefined) delete process.env.XACPX_PLUGIN_REGISTRY;
+    else process.env.XACPX_PLUGIN_REGISTRY = previous;
+  }
+});
+
+test("installPluginPackage rejects a non-URL XACPX_PLUGIN_REGISTRY", async () => {
+  const previous = process.env.XACPX_PLUGIN_REGISTRY;
+  process.env.XACPX_PLUGIN_REGISTRY = "not a url";
+  try {
+    await expect(installPluginPackage({
+      packageName: "@ganglion/xacpx-channel-relay",
+      pluginHome: "/tmp/weacpx-plugins",
+      packageManager: "bun",
+      runCommand: async () => {},
+    })).rejects.toThrow("XACPX_PLUGIN_REGISTRY must be a valid http(s) URL");
+  } finally {
+    if (previous === undefined) delete process.env.XACPX_PLUGIN_REGISTRY;
+    else process.env.XACPX_PLUGIN_REGISTRY = previous;
   }
 });
 

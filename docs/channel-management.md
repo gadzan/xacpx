@@ -517,6 +517,7 @@ Install the plugin first, then add the channel; `channel rm` first, then `plugin
 - Default directory: `~/.xacpx/plugins/`, which contains an independent `package.json` + `node_modules/`, and **does not pollute** the global or the current project.
 - Custom: export the environment variable `WEACPX_PLUGIN_HOME=/some/path`, and all `xacpx plugin *` commands will switch to this directory.
 - Automatic package-manager selection: if `bun` is detected it uses `bun add/remove`, otherwise it falls back to `npm install/uninstall`.
+- Install and update fetch from `https://registry.npmjs.org` (and the `@ganglion` scope) so company mirrors cannot 404 optional platform packages such as `@ganglion/xacpx-rmux-bridge-*`. Override with `XACPX_PLUGIN_REGISTRY` when the official registry is unreachable.
 
 ### Install
 

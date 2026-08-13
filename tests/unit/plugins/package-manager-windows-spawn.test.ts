@@ -70,7 +70,12 @@ test("installPluginPackage spawns npm via shell with quoted args on win32", asyn
   expect(spawnCalls).toHaveLength(1);
   expect(spawnCalls[0]!.command).toBe("npm");
   // Quoting keeps the `^` in the range from being eaten by cmd.exe.
-  expect(spawnCalls[0]!.args).toEqual(['"install"', '"weacpx-channel-demo@^1.2.0"']);
+  expect(spawnCalls[0]!.args).toEqual([
+    '"install"',
+    '"weacpx-channel-demo@^1.2.0"',
+    '"--registry=https://registry.npmjs.org"',
+    '"--@ganglion:registry=https://registry.npmjs.org"',
+  ]);
   expect(spawnCalls[0]!.options.shell).toBe(true);
   expect(spawnCalls[0]!.options.cwd).toBe(pluginHome);
   expect(spawnCalls[0]!.options.stdio).toBe("inherit");
@@ -90,7 +95,12 @@ test("installPluginPackage spawns npm without a shell and unquoted on posix", as
 
   expect(spawnCalls).toHaveLength(1);
   expect(spawnCalls[0]!.command).toBe("npm");
-  expect(spawnCalls[0]!.args).toEqual(["install", "weacpx-channel-demo@^1.2.0"]);
+  expect(spawnCalls[0]!.args).toEqual([
+    "install",
+    "weacpx-channel-demo@^1.2.0",
+    "--registry=https://registry.npmjs.org",
+    "--@ganglion:registry=https://registry.npmjs.org",
+  ]);
   expect(spawnCalls[0]!.options.shell).toBe(false);
 });
 
