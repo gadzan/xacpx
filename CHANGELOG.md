@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.21.0] - 2026-08-12
+
+### Added
+
+- Sessions: publish durable resource lifecycle events, persist immutable logical session ids, and expose a session resource catalog through the plugin API.
+- Channels: add reasoned asynchronous shutdown and retire relay RMUX terminals on destructive channel actions.
+
+### Changed
+
+- Doctor: report relay rmux terminal health.
+
+## [relay-protocol 0.4.0] - 2026-08-12
+
+### Added
+
+- Terminal: define recoverable terminal wire contract and propagate connector capabilities.
+
+## [relay 0.12.0] - 2026-08-12
+
+### Added
+
+- Relay-web: recover rmux terminal attachments, shared terminal control, and global close; route terminal streams to attached viewers; make terminal replay reset-safe.
+
+### Fixed
+
+- Relay: fail-close uncertain inventory and recovery identity races; revalidate live terminals under lock before resume attach.
+
+## [channel-relay 0.6.0] - 2026-08-12
+
+### Added
+
+- Terminal: process-owned RMUX sidecar with Node driver, supervisor, registry, reconciler, attachments, and multi-platform optional bridge packages (`@ganglion/xacpx-rmux-bridge-<os>-<arch>`). Terminal is default-off (`options.terminal.enabled: false`).
+
+### Changed
+
+- Retire RMUX terminals on destructive channel actions and via the loaded plugin hook.
+
 ## [0.20.3] - 2026-08-12
 
 ### Added

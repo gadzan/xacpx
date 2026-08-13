@@ -42,18 +42,18 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "dependencies": {
         "@ganglion/xacpx-relay-protocol": "^0.3.0",
         "proper-lockfile": "^4.1.2",
         "ws": "^8.20.0",
       },
       "optionalDependencies": {
-        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.5.2",
-        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.5.2",
-        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.5.2",
-        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.5.2",
-        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.5.2",
+        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.6.0",
+        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.6.0",
+        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.6.0",
+        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.6.0",
+        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.6.0",
       },
       "peerDependencies": {
         "xacpx": ">=0.17.0",
@@ -86,7 +86,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.11.3",
+      "version": "0.12.0",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
@@ -99,7 +99,7 @@
     },
     "packages/relay-protocol": {
       "name": "@ganglion/xacpx-relay-protocol",
-      "version": "0.3.0",
+      "version": "0.4.0",
     },
     "packages/relay-web": {
       "name": "@ganglion/xacpx-relay-web",
@@ -2000,6 +2000,12 @@
     "@babel/helper-create-regexp-features-plugin/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
 
     "@babel/preset-env/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
+
+    "@ganglion/xacpx-channel-relay/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.3.0", "", {}, "sha512-GBwRqPDlWjRp0qrWrCm33oboNd2sGiV82u7aULgCnDL2kKCwxJ3jDR7kiq7k3fpiNGiym3BYhh5kiWWbqFgqDA=="],
+
+    "@ganglion/xacpx-relay/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.3.0", "", {}, "sha512-GBwRqPDlWjRp0qrWrCm33oboNd2sGiV82u7aULgCnDL2kKCwxJ3jDR7kiq7k3fpiNGiym3BYhh5kiWWbqFgqDA=="],
+
+    "@ganglion/xacpx-relay-web/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.3.0", "", {}, "sha512-GBwRqPDlWjRp0qrWrCm33oboNd2sGiV82u7aULgCnDL2kKCwxJ3jDR7kiq7k3fpiNGiym3BYhh5kiWWbqFgqDA=="],
 
     "@modelcontextprotocol/sdk/zod": ["zod@4.3.6", "", {}, ""],
 
