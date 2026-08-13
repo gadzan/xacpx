@@ -11,6 +11,14 @@ class MemoryCredentialStore {
   clear() { this.value = null; }
 }
 
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`);
+    await Bun.sleep(5);
+  }
+}
+
 function makeStartInput(overrides: Record<string, unknown> = {}) {
   const subscribed: unknown[] = [];
   return {
@@ -30,12 +38,12 @@ function makeStartInput(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("isLoggedIn true with credential or pairing token; logout clears credential", () => {
+test("isLoggedIn true with credential or pairing token; logout clears credential", async () => {
   const withCredential = new RelayChannel({ url: "ws://h:1" }, {
     credentialStore: new MemoryCredentialStore({ instanceId: "i", credential: "c", relayUrl: "ws://h:1" }),
   });
   expect(withCredential.isLoggedIn()).toBe(true);
-  withCredential.logout();
+  await withCredential.logout();
   expect(withCredential.isLoggedIn()).toBe(false);
 
   const withToken = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
@@ -58,8 +66,7 @@ test("start requires ChannelStartInput.control and wires client + event subscrip
   const controller = new AbortController();
   const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
   const startPromise = channel.start(input as never);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(clientCalls).toContain("start");
+  await waitUntil(() => clientCalls.includes("start"), "client.start");
   expect(subscribed).toHaveLength(1);
   controller.abort();
   await startPromise; // start resolves on abort
@@ -93,7 +100,7 @@ test("onReady pushes an instance state sync; dead aliases are filtered now and p
     { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
   ];
   const startPromise = channel.start(input as never);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => subscribed.length > 0, "event subscription");
   const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
   const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { turns: Array<{ sessionAlias: string }> });
 
@@ -149,7 +156,7 @@ test("finishedOffline entries clear only on the hub's recovery ack, not on a flu
     { alias: "backend", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false },
   ];
   const startPromise = channel.start(input as never);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => subscribed.length > 0, "event subscription");
   const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
   const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as { finishedOffline: unknown[] });
   const lastForwardedEvent = () => (events.findLast((e) => e.type === MSG.instanceEvent)!.payload as { event: { recoveryId?: string } }).event;
@@ -192,10 +199,10 @@ test("sendScheduledMessage runs the fired task as a control turn (not a side not
     createClient: () => fakeClient as never,
   });
   const controller = new AbortController();
-  const { input } = makeStartInput({ abortSignal: controller.signal });
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
   (input.control as Record<string, unknown>).runScheduledTurn = async (arg: unknown) => { calls.push(arg); return { ok: true }; };
   const startPromise = channel.start(input as never);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => subscribed.length > 0, "event subscription");
 
   await channel.sendScheduledMessage({
     chatKey: "relay:acc", sessionAlias: "backend", taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z",
@@ -215,10 +222,10 @@ test("sendScheduledMessage throws when the turn fails, so the scheduler records 
     createClient: () => fakeClient as never,
   });
   const controller = new AbortController();
-  const { input } = makeStartInput({ abortSignal: controller.signal });
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
   (input.control as Record<string, unknown>).runScheduledTurn = async () => ({ ok: false, errorMessage: "turn-already-running" });
   const startPromise = channel.start(input as never);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => subscribed.length > 0, "event subscription");
 
   await expect(channel.sendScheduledMessage({
     chatKey: "relay:acc", sessionAlias: "backend", taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z",
@@ -237,9 +244,9 @@ test("notify methods forward as instance notices through the client", async () =
     createClient: () => fakeClient as never,
   });
   const controller = new AbortController();
-  const { input } = makeStartInput({ abortSignal: controller.signal });
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
   const startPromise = channel.start(input as never);
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitUntil(() => subscribed.length > 0, "event subscription");
   await channel.notifyTaskCompletion({ taskId: "t1", summary: "done", resultText: "" } as never);
   await channel.notifyTaskProgress({ taskId: "t1" } as never, "50%");
   await channel.sendCoordinatorMessage({ coordinatorSession: "c", chatKey: "k", text: "hello" });
