@@ -9,16 +9,12 @@ import { useFue } from "../lib/use-fue";
 import type { Rect } from "../lib/fue-placement";
 import { GROUP_COLLAPSE_FUE_THRESHOLD, KIND_ICON, summarizeSteps } from "../lib/tool-summary";
 
-const props = defineProps<{ steps: ToolStepDto[] }>();
+const props = defineProps<{ steps: ToolStepDto[]; ensureFull?: () => Promise<void> }>();
 
 // Legacy history stores tool calls as one aggregate panel. Keep that panel collapsed
 // too, regardless of step count, so old and current transcripts follow the same rule.
 const open = ref(false);
 const expanded = ref<Set<string>>(new Set());
-function toggleRow(id: string) {
-  if (expanded.value.has(id)) expanded.value.delete(id); else expanded.value.add(id);
-  expanded.value = new Set(expanded.value);
-}
 
 const summary = computed(() => summarizeSteps(props.steps));
 
@@ -30,13 +26,24 @@ const showFueDot = computed(() => collapsible.value && fue.status.value !== "ack
 const header = ref<HTMLElement | null>(null);
 const anchor = ref<Rect | null>(null);
 
-function onHeaderClick() {
+async function onHeaderClick() {
+  if (!open.value && props.ensureFull) {
+    try { await props.ensureFull(); } catch { /* stub remains */ }
+  }
   open.value = !open.value;
   if (showFueDot.value) {
     const r = header.value?.getBoundingClientRect();
     if (r) anchor.value = { top: r.top, left: r.left, width: r.width, height: r.height };
     fue.engage();
   }
+}
+
+async function toggleRow(id: string) {
+  if (!expanded.value.has(id) && props.ensureFull) {
+    try { await props.ensureFull(); } catch { /* stub remains */ }
+  }
+  if (expanded.value.has(id)) expanded.value.delete(id); else expanded.value.add(id);
+  expanded.value = new Set(expanded.value);
 }
 
 function fmtDuration(ms?: number): string {

@@ -191,3 +191,73 @@ test("a late delete response cannot purge messages from a recreated same-alias s
   expect(history.messages.map((message) => message.text)).toEqual(["new question"]);
   runtime.close();
 });
+
+test("GET messages?view=compact strips bulky tool details; GET :id returns the full row", async () => {
+  const { runtime, cookie } = await loggedIn();
+  const structured = {
+    toolSteps: [{
+      toolCallId: "t1",
+      toolName: "Read",
+      kind: "read" as const,
+      status: "success" as const,
+      title: "a.ts",
+      detail: { type: "read" as const, path: "a.ts", preview: "const x = 1;\n".repeat(20) },
+    }],
+    parts: [
+      { type: "text" as const, text: "looked" },
+      {
+        type: "tool" as const,
+        step: {
+          toolCallId: "t1",
+          toolName: "Read",
+          kind: "read" as const,
+          status: "success" as const,
+          title: "a.ts",
+          detail: { type: "read" as const, path: "a.ts", preview: "const x = 1;\n".repeat(20) },
+        },
+      },
+    ],
+  };
+  runtime.messages.append("i1", "backend", "out", "looked", structured);
+  const listed = await runtime.app.request("/api/instances/i1/sessions/backend/messages?view=compact", { headers: { cookie } });
+  const page = (await listed.json()) as { messages: Array<{ id: number; structured?: { compact?: boolean; toolSteps?: unknown; parts?: Array<{ type: string; step?: { detail?: { preview?: string; path?: string } } }> } }> };
+  expect(page.messages).toHaveLength(1);
+  expect(page.messages[0]?.structured?.compact).toBe(true);
+  expect(page.messages[0]?.structured?.toolSteps).toBeUndefined();
+  const tool = page.messages[0]?.structured?.parts?.find((p) => p.type === "tool");
+  expect(tool?.step?.detail?.preview).toBeUndefined();
+  expect(tool?.step?.detail?.path).toBe("a.ts");
+
+  const full = await runtime.app.request(`/api/instances/i1/sessions/backend/messages/${page.messages[0]!.id}`, { headers: { cookie } });
+  const body = (await full.json()) as { message: { structured?: { compact?: boolean; parts?: Array<{ type: string; step?: { detail?: { preview?: string } } }> } } };
+  expect(body.message.structured?.compact).toBeUndefined();
+  const fullTool = body.message.structured?.parts?.find((p) => p.type === "tool");
+  expect(fullTool?.step?.detail?.preview).toContain("const x = 1;");
+  runtime.close();
+});
+
+test("GET messages without view=compact still returns full structured rows", async () => {
+  const { runtime, cookie } = await loggedIn();
+  runtime.messages.append("i1", "backend", "out", "looked", {
+    toolSteps: [{
+      toolCallId: "t1",
+      toolName: "Read",
+      kind: "read",
+      status: "success",
+      title: "a.ts",
+      detail: { type: "read", path: "a.ts", preview: "full preview" },
+    }],
+  });
+  const res = await runtime.app.request("/api/instances/i1/sessions/backend/messages", { headers: { cookie } });
+  const page = (await res.json()) as { messages: Array<{ structured?: { compact?: boolean; toolSteps?: Array<{ detail?: { preview?: string } }> } }> };
+  expect(page.messages[0]?.structured?.compact).toBeUndefined();
+  expect(page.messages[0]?.structured?.toolSteps?.[0]?.detail?.preview).toBe("full preview");
+  runtime.close();
+});
+
+test("GET a missing message id is 404", async () => {
+  const { runtime, cookie } = await loggedIn();
+  const res = await runtime.app.request("/api/instances/i1/sessions/backend/messages/99", { headers: { cookie } });
+  expect(res.status).toBe(404);
+  runtime.close();
+});

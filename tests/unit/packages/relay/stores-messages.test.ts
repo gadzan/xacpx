@@ -63,3 +63,14 @@ test("listBySession paginates oldest-first with a `before` cursor and hasMore", 
   expect(page3.hasMore).toBe(false);
   db.close();
 });
+
+test("getById returns one account-scoped row or null", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  store.append("i1", "backend", "out", "answer", { reasoning: "thought" } as never);
+  const listed = store.listBySession("a1", "i1", "backend").messages[0]!;
+  expect(store.getById("a1", "i1", "backend", listed.id!).structured).toEqual({ reasoning: "thought" });
+  expect(store.getById("a1", "i1", "other", listed.id!)).toBeNull();
+  expect(store.getById("a2", "i1", "backend", listed.id!)).toBeNull();
+  db.close();
+});

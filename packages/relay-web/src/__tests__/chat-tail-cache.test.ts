@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
-import { read, resetTailCacheForTests, write } from "../lib/session-tail-cache";
+import { read, resetTailCacheForTests, TAIL_ROWS, write } from "../lib/session-tail-cache";
 import {
   read as readViewSnapshot,
   resetViewSnapshotCacheForTests,
@@ -115,7 +115,7 @@ test("authoritative loadHistory replaces the seeded tail and writes back on the 
   // The write-back is debounced; switching sessions flushes it for the outgoing session.
   chat.select("i1", "other");
   const cached = (await readEventually("alice", "i1", "s1"))!;
-  expect(cached.length).toBe(30); // tail only
+  expect(cached.length).toBe(TAIL_ROWS); // tail only
   expect(cached.at(-1)).toMatchObject({ id: 50, text: "fresh50" });
 });
 

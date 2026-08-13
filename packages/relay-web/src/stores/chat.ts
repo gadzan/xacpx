@@ -87,6 +87,35 @@ function rawStructured<T extends MessageRecordDto>(row: T): T {
   return row;
 }
 
+function isFullStructured(structured: MessageRecordDto["structured"] | undefined): boolean {
+  return structured !== undefined && structured.compact !== true;
+}
+
+/** Prefer already-hydrated / live-flushed structured over a compact list row so
+ *  turn-finished convergence and a cache seed with full details don't regress. */
+function keepRicherStructured(incoming: MessageRecordDto[], previous: ChatMessage[]): MessageRecordDto[] {
+  if (previous.length === 0) return incoming;
+  const byId = new Map<number, ChatMessage>();
+  for (const m of previous) {
+    if (typeof m.id === "number") byId.set(m.id, m);
+  }
+  const flushed = [...previous].reverse().find((m) => m.id === undefined && m.direction === "out" && isFullStructured(m.structured));
+  let lastOutIndex = -1;
+  for (let i = incoming.length - 1; i >= 0; i--) {
+    if (incoming[i]?.direction === "out") { lastOutIndex = i; break; }
+  }
+  return incoming.map((row, i) => {
+    const prev = typeof row.id === "number" ? byId.get(row.id) : undefined;
+    if (row.structured?.compact === true && isFullStructured(prev?.structured)) {
+      return { ...row, structured: prev!.structured };
+    }
+    if (i === lastOutIndex && flushed?.structured && row.structured?.compact === true && flushed.text === row.text) {
+      return { ...row, structured: flushed.structured };
+    }
+    return row;
+  });
+}
+
 export const useChatStore = defineStore("chat", () => {
   const instanceId = ref<string | null>(null);
   const sessionAlias = ref<string | null>(null);
@@ -159,6 +188,7 @@ export const useChatStore = defineStore("chat", () => {
   // the response establishes correlation; a later finish reloads authoritative rows.
   const pendingPromptRequests = new Map<string, number>();
   const deferredHistoryLoads = new Set<string>();
+  const hydratingMessages = new Map<number, Promise<void>>();
   const error = ref("");
   // "View" on a fired scheduled task asks MessageList to scroll to that run. Nonce-keyed
   // so repeat clicks on the same task re-trigger the jump (a plain id wouldn't change).
@@ -169,7 +199,15 @@ export const useChatStore = defineStore("chat", () => {
   }
   // Cursor pagination for "load older" on scroll-up. `hasMoreOlder` = older rows exist
   // beyond what's loaded; `loadingOlder` guards against overlapping fetches.
-  const HISTORY_PAGE = 100;
+  // First screen is the newest 10 rows (~5 exchanges). Compact view omits bulky
+  // tool details; expand hydrates the full row via ensureFullMessage().
+  const HISTORY_PAGE = 10;
+  const historyPath = (id: string, alias: string, before?: number): string => {
+    const qs = before === undefined
+      ? `limit=${HISTORY_PAGE}&view=compact`
+      : `before=${before}&limit=${HISTORY_PAGE}&view=compact`;
+    return `/api/instances/${id}/sessions/${alias}/messages?${qs}`;
+  };
   const hasMoreOlder = ref(false);
   const loadingOlder = ref(false);
   // True while the initial history page for a freshly selected session is in flight —
@@ -413,7 +451,7 @@ export const useChatStore = defineStore("chat", () => {
     loadingHistory.value = true;
     try {
       const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
-        `/api/instances/${id}/sessions/${alias}/messages?limit=${HISTORY_PAGE}`,
+        historyPath(id, alias),
       );
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
       if (requestSequence !== historyRequestSequence) return;
@@ -423,7 +461,7 @@ export const useChatStore = defineStore("chat", () => {
       // would leave the pane with only the live turn. Retry against the same
       // selection so persisted history and the current turn converge.
       if (revision !== transcriptRevision) return loadHistory();
-      messages.value = rows.map(rawStructured);
+      messages.value = keepRicherStructured(rows, messages.value).map(rawStructured);
       touchTranscript();
       seededFromCache = false;
       seedRowsPresent = false;
@@ -449,7 +487,7 @@ export const useChatStore = defineStore("chat", () => {
     loadingOlder.value = true;
     try {
       const { messages: older, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
-        `/api/instances/${id}/sessions/${alias}/messages?before=${oldestId}&limit=${HISTORY_PAGE}`,
+        historyPath(id, alias, oldestId),
       );
       // The session may have changed while awaiting; only apply if still selected.
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
@@ -787,6 +825,40 @@ export const useChatStore = defineStore("chat", () => {
   /** Cancel a still-pending queued prompt. Drops the chip optimistically (so the strip
    *  reacts immediately) and issues the RPC best-effort — if it fails, the next
    *  `queue-updated` snapshot re-syncs the truth anyway. */
+  /** Replace a compact list row with the full persisted structured payload so
+   *  expanding a tool/subagent card can show diffs and command output. No-op when
+   *  the row is already full, missing, or the selection changed. */
+  async function ensureFullMessage(messageId: number): Promise<void> {
+    const existing = messages.value.find((m) => m.id === messageId);
+    if (!existing?.structured?.compact) return;
+    if (!instanceId.value || !sessionAlias.value) return;
+    const inFlight = hydratingMessages.get(messageId);
+    if (inFlight) return inFlight;
+    const id = instanceId.value;
+    const alias = sessionAlias.value;
+    const work = (async () => {
+      const { message } = await api.get<{ message: MessageRecordDto }>(
+        `/api/instances/${id}/sessions/${alias}/messages/${messageId}`,
+      );
+      if (id !== instanceId.value || alias !== sessionAlias.value) return;
+      const idx = messages.value.findIndex((m) => m.id === messageId);
+      if (idx < 0) return;
+      const current = messages.value[idx]!;
+      // A live event may have already replaced this row with full structured.
+      if (current.structured?.compact !== true) return;
+      const next = [...messages.value];
+      next[idx] = rawStructured({ ...current, ...message, structured: message.structured });
+      messages.value = next;
+      cacheWrite.schedule();
+    })();
+    hydratingMessages.set(messageId, work);
+    try {
+      await work;
+    } finally {
+      hydratingMessages.delete(messageId);
+    }
+  }
+
   async function cancelQueuedItem(instanceId: string, alias: string, itemId: string): Promise<void> {
     const key = bufKey(instanceId, alias);
     const list = queues.value[key];
@@ -798,5 +870,5 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem, purgeTailCache, reconcileTailCache };
+  return { instanceId, sessionAlias, messages, streaming, liveTurn, sessionPlan, sessionUsage, sessionCommands, liveToolSteps, busy, unread, sessionAttention, runningSince, sending, error, scrollRequest, requestScrollToScheduled, hasMoreOlder, loadingOlder, loadingHistory, queues, sessionQueue, select, clearSelection, loadHistory, loadOlder, ensureFullMessage, loadActiveTurns, seedActiveTurns, applyStateSnapshot, applyEvent, send, resend, cancel, cancelQueuedItem, purgeTailCache, reconcileTailCache };
 });

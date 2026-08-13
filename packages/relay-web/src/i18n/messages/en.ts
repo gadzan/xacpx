@@ -434,6 +434,7 @@ export default {
     runningNoActivityYet: "Running — no activity details yet…",
     noRecordedActivity: "No recorded activity",
     viewFullTrace: "View full trace",
+    loadingDetails: "Loading details…",
   },
   plan: {
     title: "Plan",

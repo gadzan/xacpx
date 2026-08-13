@@ -10,6 +10,7 @@ import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
 import type { RelayLogger } from "../logging.js";
 import { clientIp } from "./client-ip.js";
+import { compactHistoryMessage } from "./compact-history.js";
 import { readRelayVersion, type UpdateCheck } from "../version.js";
 
 export interface GatewayForApp {
@@ -446,12 +447,26 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     return c.json({ turns, usage, commands });
   });
 
+  app.get("/api/instances/:id/sessions/:alias/messages/:messageId", (c) => {
+    const account = c.get("account");
+    const instance = deps.instances.getOwned(c.req.param("id"), account.id);
+    if (!instance) return c.json({ error: "not-found" }, 404);
+    const messageId = Number(c.req.param("messageId"));
+    if (!Number.isFinite(messageId) || messageId <= 0) return c.json({ error: "not-found" }, 404);
+    const message = deps.messages.getById(account.id, instance.id, c.req.param("alias"), Math.floor(messageId));
+    if (!message) return c.json({ error: "not-found" }, 404);
+    return c.json({ message });
+  });
+
   app.get("/api/instances/:id/sessions/:alias/messages", (c) => {
     const account = c.get("account");
     const instance = deps.instances.getOwned(c.req.param("id"), account.id);
     if (!instance) return c.json({ error: "not-found" }, 404);
     // Cursor pagination: `before` = oldest id the client already has (load older);
     // `limit` is clamped to [1, 200]. Both optional — omitted = most recent page.
+    // `view=compact` strips bulky tool details (diffs/output) for first-paint; the
+    // full row is available from GET .../messages/:messageId. Omitted = full rows
+    // so older web clients keep expanding tool cards without a hydrate round-trip.
     const limitRaw = Number(c.req.query("limit"));
     const beforeRaw = Number(c.req.query("before"));
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 100;
@@ -460,6 +475,9 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       limit,
       ...(before !== undefined ? { before } : {}),
     });
+    if (c.req.query("view") === "compact") {
+      return c.json({ ...page, messages: page.messages.map(compactHistoryMessage) });
+    }
     return c.json(page);
   });
 

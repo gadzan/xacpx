@@ -100,7 +100,8 @@
 - **cookie 鉴权的 `/ws` web 扇出端点**：挂在 HTTP server 的 upgrade 上，按路径与实例网关分流
   （默认单端口时实例网关合并在同一 upgrade handler 的根 `/`；传 `--ws-port` 时网关另起专用端口），
   校验 `xrelay_session` cookie → 账号后 `webGateway.register(accountId, ws)`。
-- **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话的缓存历史。
+- **`GET /api/instances/:id/sessions/:alias/messages`**：按登录账号返回该会话的缓存历史。默认返回完整 `structured`（旧看板兼容）。新看板带 `view=compact`：去掉 `parts` 已覆盖的重复 `toolSteps`，并剥掉折叠卡片用不到的工具正文（diff / 命令输出 / 文件预览），只留标题、状态和短 snippet；展开时再 `GET .../messages/:messageId` 拉该行全文。
+- **`GET /api/instances/:id/sessions/:alias/messages/:messageId`**：同一所有权校验下返回单条完整历史（含未压缩的 `structured`），供 compact 列表在用户展开工具卡时补全。
 - **真实删除同步清历史**：`control.sessions.remove` 经 connector 成功确认后，Hub 删除对应
   `(instance_id, session_alias)` 的缓存消息；归档不删除，因此恢复归档会话仍能看到历史。
 - **prompt 回显历史**：`control.prompt` 经 RPC 代理时，把 prompt 文本 append 为一条 `in` 历史消息；
@@ -209,7 +210,7 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 `messages` 表含 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning? }`），直接由建表 DDL 定义。
 
-- `MessageStore.append(instanceId, alias, dir, text, structured?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto.structured` 中返回。
+- `MessageStore.append(instanceId, alias, dir, text, structured?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto.structured` 中返回完整行。HTTP 列表在 `view=compact` 时由 `compactHistoryMessage` 投影后再发给看板；`getById` 仍返回未经投影的原文。
 
 ## 阶段七：Hub 重启状态恢复（instance.state.sync + turn-finished.text）
 

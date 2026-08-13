@@ -432,6 +432,7 @@ export default {
     runningNoActivityYet: "执行中，暂无活动明细…",
     noRecordedActivity: "暂无执行记录",
     viewFullTrace: "查看完整过程",
+    loadingDetails: "正在加载详情…",
   },
   plan: {
     title: "计划",

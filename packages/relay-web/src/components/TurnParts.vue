@@ -10,7 +10,7 @@ import { deriveTurnPresentation } from "../lib/turn-presentation";
 // Wire parts preserve arrival order, but transport events are not necessarily safe
 // Markdown boundaries. The presentation module anchors activity after the top-level
 // Markdown block that was in progress when the activity arrived.
-const props = defineProps<{ parts: TurnPartDto[]; streaming?: boolean }>();
+const props = defineProps<{ parts: TurnPartDto[]; streaming?: boolean; ensureFull?: () => Promise<void> }>();
 const presentation = computed(() => deriveTurnPresentation(props.parts));
 </script>
 
@@ -25,8 +25,8 @@ const presentation = computed(() => deriveTurnPresentation(props.parts));
                       :reasoning="item.text"
                       :streaming="streaming === true && item.isLatest"
                       :default-open="false" />
-      <ToolStepCard v-else-if="item.type === 'tool'" :step="item.step" />
-      <SubagentStepCard v-else :step="item.step" :children="item.children" />
+      <ToolStepCard v-else-if="item.type === 'tool'" :step="item.step" :ensure-full="ensureFull" />
+      <SubagentStepCard v-else :step="item.step" :children="item.children" :ensure-full="ensureFull" />
     </template>
   </div>
 </template>

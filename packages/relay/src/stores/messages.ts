@@ -28,6 +28,20 @@ export interface QueueCorrelation {
   queueItemId: string;
 }
 
+function toDto(r: MessageRow): MessageRecordDto {
+  return {
+    id: r.id,
+    instanceId: r.instance_id,
+    sessionAlias: r.session_alias,
+    direction: r.direction,
+    text: r.text,
+    createdAt: r.created_at,
+    ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
+    ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
+    ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
+  };
+}
+
 export class MessageStore {
   constructor(private readonly db: SqlDriver, private readonly now: () => Date = () => new Date()) {}
 
@@ -238,18 +252,24 @@ export class MessageStore {
     const page = hasMore ? rows.slice(0, limit) : rows;
     return {
       hasMore,
-      messages: page.reverse().map((r) => ({
-        id: r.id,
-        instanceId: r.instance_id,
-        sessionAlias: r.session_alias,
-        direction: r.direction,
-        text: r.text,
-        createdAt: r.created_at,
-        ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
-        ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
-        ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
-      })),
+      messages: page.reverse().map(toDto),
     };
+  }
+
+  /** One persisted row, account-scoped. Used to hydrate compact list rows on expand. */
+  getById(
+    accountId: string,
+    instanceId: string,
+    sessionAlias: string,
+    id: number,
+  ): MessageRecordDto | null {
+    const row = this.db.get<MessageRow>(
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id
+       FROM messages m JOIN instances i ON i.id = m.instance_id
+       WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ? AND m.id = ?`,
+      [accountId, instanceId, sessionAlias, id],
+    );
+    return row ? toDto(row) : null;
   }
 
   /** Permanently removes the Hub-cached history for one logical session. */
