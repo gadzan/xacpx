@@ -249,12 +249,24 @@ async function handleTerminalOpen(
     return;
   }
 
-  deps.webGateway.bindAttachment({
-    socket,
-    attachmentId: result.attachmentId,
-    terminalId: result.terminalId,
-    instanceId: msg.instanceId,
-  });
+  if (deps.webGateway.getViewerId(socket) !== viewerId) {
+    detachConnectorAttachment(deps, msg.instanceId, result.attachmentId, viewerId);
+    fail(deps, socket, msg.requestId, msg.instanceId, "terminal-unavailable", "viewer disconnected");
+    return;
+  }
+
+  try {
+    deps.webGateway.bindAttachment({
+      socket,
+      attachmentId: result.attachmentId,
+      terminalId: result.terminalId,
+      instanceId: msg.instanceId,
+    });
+  } catch {
+    detachConnectorAttachment(deps, msg.instanceId, result.attachmentId, viewerId);
+    fail(deps, socket, msg.requestId, msg.instanceId, "terminal-unavailable", "viewer disconnected");
+    return;
+  }
 
   const sent = deps.webGateway.send(socket, {
     kind: "terminal-opened",
@@ -268,11 +280,20 @@ async function handleTerminalOpen(
   });
   if (!sent) {
     deps.webGateway.unbindAttachment(result.attachmentId);
-    deps.gateway.sendEvent(msg.instanceId, MSG.terminalDetach, {
-      attachmentId: result.attachmentId,
-      viewerId,
-    });
+    detachConnectorAttachment(deps, msg.instanceId, result.attachmentId, viewerId);
   }
+}
+
+function detachConnectorAttachment(
+  deps: WebClientDeps,
+  instanceId: string,
+  attachmentId: string,
+  viewerId: string,
+): void {
+  deps.gateway.sendEvent(instanceId, MSG.terminalDetach, {
+    attachmentId,
+    viewerId,
+  });
 }
 
 async function handleTakeControl(

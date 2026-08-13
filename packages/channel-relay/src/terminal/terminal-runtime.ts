@@ -252,6 +252,7 @@ interface LiveHandle {
 
 interface RecoveryLoop {
   attachmentId: string;
+  token: symbol;
   abort: AbortController;
   done: Promise<void>;
 }
@@ -366,6 +367,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         clock: this.clock,
         withTerminalLock: (terminalId, fn) => this.withTerminalLock(terminalId, fn),
         hasLiveHandle: (terminalId) => this.handles.has(terminalId),
+        lastActivityAt: (terminalId) => this.handles.get(terminalId)?.lastActivityAt,
         onResourceAbsent: (terminalId, generation, reason) => {
           this.handles.delete(terminalId);
           this.paneByTerminal.delete(terminalId);
@@ -387,7 +389,13 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
 
   async start(): Promise<void> {
     if (this.started) return;
-    await this.registry.load();
+    const snapshot = await this.registry.load();
+    if (snapshot.inventoryUncertain) {
+      throw new TerminalRuntimeError(
+        "terminal-rmux-unavailable",
+        "terminal registry inventory is uncertain; refusing to start",
+      );
+    }
     // Spec §12.4 process-owned: reap leftover registry records before hub connect.
     await this.reconciler.runOnce();
     this.started = true;
@@ -423,6 +431,12 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     rows: number;
   }): Promise<TerminalOpenResult> {
     this.assertStarted();
+    if (this.registry.getSnapshot().inventoryUncertain) {
+      throw new TerminalRuntimeError(
+        "terminal-rmux-unavailable",
+        "terminal registry inventory is uncertain",
+      );
+    }
     if (!this.config.enabled) {
       throw new TerminalRuntimeError("terminal-disabled");
     }
@@ -580,6 +594,11 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     const ids = this.attachments.listAll().map((a) => a.attachmentId);
     for (const id of ids) void this.stopRecovery(id, { wait: false });
     this.attachments.detachMany(ids);
+  }
+
+  /** Test seam: whether a recovery loop is registered for this attachment. */
+  hasRecoveryForTests(attachmentId: string): boolean {
+    return this.recoveries.has(attachmentId);
   }
 
   peekAttachment(attachmentId: string): {
@@ -1041,15 +1060,17 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       throw new TerminalRuntimeError("terminal-generation-mismatch");
     }
     await this.stopRecovery(attachmentId);
+    const token = Symbol("recovery");
     const abort = new AbortController();
     const done = this.runRecoveryLoop({
       attachmentId,
       terminalId: attachment.terminalId,
       generation: attachment.generation,
       paneId: handle.paneId,
+      token,
       signal: abort.signal,
     });
-    this.recoveries.set(attachmentId, { attachmentId, abort, done });
+    this.recoveries.set(attachmentId, { attachmentId, token, abort, done });
   }
 
   private async stopRecovery(
@@ -1086,9 +1107,10 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     terminalId: string;
     generation: string;
     paneId: string;
+    token: symbol;
     signal: AbortSignal;
   }): Promise<void> {
-    const { attachmentId, terminalId, generation, paneId, signal } = input;
+    const { attachmentId, terminalId, generation, paneId, token, signal } = input;
     let cancel!: () => void;
     const cancelled = new Promise<void>((resolve) => {
       cancel = resolve;
@@ -1121,7 +1143,10 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       } catch {
         // ignore driver teardown errors
       }
-      this.recoveries.delete(attachmentId);
+      const current = this.recoveries.get(attachmentId);
+      if (current?.token === token) {
+        this.recoveries.delete(attachmentId);
+      }
     }
   }
 

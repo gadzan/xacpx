@@ -295,6 +295,11 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.crash(new RmuxDriverCrashedError());
   }
 
+  /** Abort pending RPCs and kill the child without waiting for a shutdown ack. */
+  dispose(): void {
+    this.crash(new RmuxDriverCrashedError());
+  }
+
   private assertReady(): void {
     if (this.crashed) throw new RmuxDriverCrashedError();
     if (!this.handshaken) throw new RmuxDriverCrashedError();

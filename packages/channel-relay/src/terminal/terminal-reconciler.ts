@@ -46,6 +46,8 @@ export interface TerminalReconcileHost {
   withTerminalLock<T>(terminalId: string, fn: () => Promise<T>): Promise<T>;
   /** True when this process already owns a live in-memory handle for the terminal. */
   hasLiveHandle(terminalId: string): boolean;
+  /** Live idle clock (ms). Absent when this process has no handle. */
+  lastActivityAt(terminalId: string): number | undefined;
   /** Drop in-memory handle and fan out exit to current attachments. */
   onResourceAbsent(terminalId: string, generation: string, reason: string): void;
   /** Fence mutations after observing the resource should no longer be live. */
@@ -208,7 +210,7 @@ export class TerminalReconciler {
 
         const logical = catalogByLogical.get(current.logicalSessionId);
         const idleMs = this.host.config.idleTimeoutSeconds * 1000;
-        const lastInput = Date.parse(current.lastInputAt);
+        const lastInput = this.host.lastActivityAt(current.terminalId) ?? Date.parse(current.lastInputAt);
         const idleExpired =
           Number.isFinite(lastInput) && this.host.clock.now() - lastInput >= idleMs;
 

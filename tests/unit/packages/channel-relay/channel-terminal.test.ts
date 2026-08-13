@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -306,6 +306,60 @@ test("terminal disabled omits capabilities and still starts chat client", async 
   const started = channel.start(input as never);
   await Bun.sleep(10);
   expect(capturedCaps ?? []).toEqual([]);
+  controller.abort();
+  await started;
+});
+
+test("valid owner + corrupt terminals.json does not advertise terminal capabilities or create shells", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-term-chan-"));
+  dirs.push(dir);
+  writeFileSync(
+    join(dir, "terminal-owner.json"),
+    JSON.stringify({ schemaVersion: 1, installationId: "11111111-1111-4111-8111-111111111111" }),
+    "utf8",
+  );
+  writeFileSync(join(dir, "terminals.json"), "{ not valid json !!", "utf8");
+
+  let capturedCaps: string[] | undefined;
+  let creates = 0;
+  const driver = new InMemoryRmuxDriver();
+  const origCreate = driver.create.bind(driver);
+  driver.create = async (input) => {
+    creates += 1;
+    return origCreate(input);
+  };
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: () => {},
+  };
+  const channel = new RelayChannel(
+    { url: "ws://h:1", pairingToken: "t", terminal: { enabled: true } },
+    {
+      credentialStore: new MemoryCredentialStore(),
+      terminalRegistryDir: dir,
+      createTerminalDriver: () => driver,
+      createClient: (opts) => {
+        capturedCaps = opts.capabilities;
+        return fakeClient as never;
+      },
+    },
+  );
+  const controller = new AbortController();
+  const { input } = makeStartInput({
+    abortSignal: controller.signal,
+    sessionResources: new FakeCatalog(),
+  });
+  const started = channel.start(input as never);
+  const deadline = Date.now() + 2000;
+  while (capturedCaps === undefined && Date.now() < deadline) {
+    await Bun.sleep(5);
+  }
+  expect(capturedCaps).toEqual([]);
+  expect(channel.getTerminalRuntimeForTests()).toBeNull();
+  expect(creates).toBe(0);
+  expect(readdirSync(dir).some((f) => f.startsWith("terminals.json.corrupt-"))).toBe(true);
+  expect(existsSync(join(dir, "terminals.json"))).toBe(false);
   controller.abort();
   await started;
 });

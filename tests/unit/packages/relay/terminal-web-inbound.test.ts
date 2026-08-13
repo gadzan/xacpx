@@ -283,4 +283,53 @@ test("a subscribe frame filters ownership and installs the subscription", () => 
   });
 });
 
+test("in-flight terminal-open after socket close detaches the connector attachment", async () => {
+  let resolveOpen!: (value: unknown) => void;
+  const openGate = new Promise((resolve) => {
+    resolveOpen = resolve;
+  });
+  const d = deps(true, { sendRequest: mock(() => openGate) });
+  const rejections: unknown[] = [];
+  const onRej = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onRej);
+  try {
+    handleWebClientMessage(
+      d as never,
+      "a1",
+      d.sock as never,
+      encodeEnvelope(webClientEnvelope({
+        kind: "terminal-open",
+        requestId: "req-close",
+        instanceId: "i1",
+        sessionAlias: "demo",
+        cols: 80,
+        rows: 24,
+      })),
+    );
+    await Bun.sleep(10);
+    d.sock.close();
+    resolveOpen({
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "att-1",
+      role: "controller",
+      viewerCount: 1,
+    });
+    await Bun.sleep(30);
+
+    const detachCalls = (d.gateway.sendEvent as ReturnType<typeof mock>).mock.calls.filter(
+      (call) => call[1] === MSG.terminalDetach,
+    );
+    expect(detachCalls).toHaveLength(1);
+    expect(detachCalls[0]?.[0]).toBe("i1");
+    expect(detachCalls[0]?.[2]).toMatchObject({ attachmentId: "att-1" });
+    expect(d.webGateway.socketOwnsAttachment(d.sock as never, "att-1")).toBe(false);
+    expect(rejections).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onRej);
+  }
+});
+
 void webEventEnvelope;

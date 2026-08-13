@@ -2,6 +2,7 @@ import { test, expect, mock } from "bun:test";
 import { MSG, RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "@ganglion/xacpx-relay-protocol";
 import { dispatchControlEvent } from "../../../../packages/channel-relay/src/control-bridge";
 import {
+  handleTerminalEvent,
   handleTerminalRequest,
   terminalRequestDeadlineAt,
 } from "../../../../packages/channel-relay/src/terminal-bridge";
@@ -164,4 +165,68 @@ test("late timed-out open strips openKind from successful wire responses", async
     viewerCount: 1,
   });
   expect((responses[0] as { openKind?: string }).openKind).toBeUndefined();
+});
+
+test("malformed terminal-open payload returns invalid-payload and does not call runtime", async () => {
+  const runtime = {
+    openOrResume: mock(async () => {
+      throw new Error("should not run");
+    }),
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-bad",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 9999,
+        rows: 24,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+  expect(responses[0]).toEqual({
+    error: { code: "invalid-payload", message: `${MSG.terminalOpen}: malformed payload` },
+  });
+  expect((runtime.openOrResume as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
+test("malformed terminal event is dropped with zero runtime side effects", async () => {
+  const runtime = {
+    resize: mock(async () => {
+      throw new Error("should not run");
+    }),
+    input: mock(async () => {
+      throw new Error("should not run");
+    }),
+    startRecovery: mock(async () => {
+      throw new Error("should not run");
+    }),
+    heartbeat: mock(() => {
+      throw new Error("should not run");
+    }),
+    detach: mock(() => {
+      throw new Error("should not run");
+    }),
+  };
+  const consumed = await handleTerminalEvent(runtime as never, {
+    protocolVersion: RELAY_PROTOCOL_VERSION,
+    kind: "event",
+    type: MSG.terminalResize,
+    payload: {
+      attachmentId: "att-1",
+      generation: "g1",
+      viewerId: "v1",
+      cols: 9999,
+      rows: 24,
+    },
+  });
+  expect(consumed).toBe(true);
+  expect((runtime.resize as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });

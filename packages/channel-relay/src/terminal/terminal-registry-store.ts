@@ -495,6 +495,11 @@ export class TerminalRegistryStore {
     fn: (draft: TerminalRegistryDraft) => void,
   ): Promise<{ revision: number }> {
     if (!this.state) throw new TerminalRegistryNotLoadedError();
+    if (this.state.inventoryUncertain) {
+      throw new TerminalRegistryInventoryUncertainError(
+        "terminal registry inventory is uncertain; refusing to mutate",
+      );
+    }
 
     const draftTerminals = cloneTerminals(this.state.terminals);
     fn({ terminals: draftTerminals });

@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { parseRelayTerminalConfig } from "../../../../packages/channel-relay/src/config";
 import { RmuxSidecarDriver } from "../../../../packages/channel-relay/src/terminal/rmux-sidecar-driver";
 import {
+  createProductionTerminalDriver,
   RmuxSidecarSupervisor,
   SupervisedRmuxDriver,
 } from "../../../../packages/channel-relay/src/terminal/rmux-sidecar-supervisor";
@@ -159,4 +161,85 @@ test("protocol crash without child exit nulls the live driver so proxy fences", 
   expect(killed).toBe(true);
   await expect(proxy.diagnostics()).rejects.toBeInstanceOf(RmuxDriverCrashedError);
   await supervisor.stop();
+});
+
+function makeFakeChild(opts: { autoHandshake?: boolean } = {}): ChildProcessWithoutNullStreams & { killed: boolean } {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const life = new EventEmitter();
+  const child = Object.assign(life, {
+    stdin,
+    stdout,
+    stderr,
+    pid: 4242,
+    killed: false,
+    kill(signal?: NodeJS.Signals) {
+      this.killed = true;
+      this.emit("exit", null, signal ?? "SIGTERM");
+      return true;
+    },
+  }) as unknown as ChildProcessWithoutNullStreams & { killed: boolean };
+  if (opts.autoHandshake) {
+    stdin.on("data", (chunk: Buffer) => {
+      for (const raw of chunk.toString("utf8").split("\n")) {
+        if (!raw.trim()) continue;
+        const msg = JSON.parse(raw) as { type: string; id: string };
+        if (msg.type === "handshake") {
+          stdout.write(
+            `${JSON.stringify({
+              type: "handshake-ok",
+              id: msg.id,
+              bridge_version: "0.1.0",
+              protocol_version: 1,
+              rmux_wire_version: "0.10.0",
+              capabilities: ["create"],
+            })}\n`,
+          );
+        } else if (msg.type === "shutdown") {
+          stdout.write(`${JSON.stringify({ type: "ok", id: msg.id })}\n`);
+        }
+      }
+    });
+  }
+  return child;
+}
+
+test("handshake timeout kills the hung child and allows a later restart", async () => {
+  let n = 0;
+  const hung = makeFakeChild();
+  const live = makeFakeChild({ autoHandshake: true });
+  const supervisor = new RmuxSidecarSupervisor({
+    config: parseRelayTerminalConfig({ enabled: true }),
+    spawnFn: ((() => {
+      n += 1;
+      return n === 1 ? hung : live;
+    }) as unknown as typeof spawn),
+    requestTimeoutMs: 40,
+    sleep: async () => {},
+    maxRestarts: 1,
+  });
+
+  await expect(supervisor.start()).rejects.toThrow(/timeout/);
+  expect(hung.killed).toBe(true);
+
+  const deadline = Date.now() + 1000;
+  while (supervisor.getDriver() === null && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  expect(supervisor.getDriver()).not.toBeNull();
+  await supervisor.stop();
+});
+
+test("createProductionTerminalDriver stops the supervisor when handshake fails", async () => {
+  const hung = makeFakeChild();
+  await expect(
+    createProductionTerminalDriver(parseRelayTerminalConfig({ enabled: true }), {
+      spawnFn: ((() => hung) as unknown as typeof spawn),
+      requestTimeoutMs: 40,
+      sleep: async () => {},
+      maxRestarts: 0,
+    }),
+  ).rejects.toThrow(/timeout/);
+  expect(hung.killed).toBe(true);
 });

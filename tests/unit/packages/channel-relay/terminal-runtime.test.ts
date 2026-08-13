@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -860,4 +860,76 @@ test("resync then a late old-loop flush success does not debit the new recovery"
   await Bun.sleep(10);
   expect(events.some((e) => e.type === "queue-overflow")).toBe(false);
   expect(events.filter((e) => e.type === "bytes").length).toBeGreaterThanOrEqual(2);
+});
+
+test("start fails closed on corrupt inventory and never calls driver.create", async () => {
+  const dir = freshDir();
+  const bootstrap = new TerminalRegistryStore({ dir });
+  await bootstrap.load();
+  writeFileSync(join(dir, "terminals.json"), "{ not valid json !!", "utf8");
+
+  const registry = new TerminalRegistryStore({ dir });
+  const driver = new InMemoryRmuxDriver();
+  let creates = 0;
+  const origCreate = driver.create.bind(driver);
+  driver.create = async (input) => {
+    creates += 1;
+    return origCreate(input);
+  };
+  const runtime = new DefaultRelayTerminalRuntime({
+    registry,
+    driver,
+    catalog: new FakeCatalog([descriptor()]),
+    config: baseConfig(),
+    onViewerEvent: () => {},
+    clock: { now: () => 1_000_000 },
+    killTimeoutMs: 50,
+  });
+
+  await expect(runtime.start()).rejects.toMatchObject({
+    name: "TerminalRuntimeError",
+    code: "terminal-rmux-unavailable",
+  });
+  expect(creates).toBe(0);
+  expect(readdirSync(dir).some((f) => f.startsWith("terminals.json.corrupt-"))).toBe(true);
+  expect(existsSync(join(dir, "terminals.json"))).toBe(false);
+});
+
+test("old recovery finally cannot delete a replacement loop for the same attachment", async () => {
+  const { runtime, driver } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(20);
+  const paneId = (await driver.list())[0]!.paneId;
+  expect(runtime.hasRecoveryForTests(opened.attachmentId)).toBe(true);
+
+  const held = driver.holdNextRecoverReturn();
+  driver.injectError(paneId, "rebase-too-large", "oversized");
+  await Bun.sleep(20);
+  expect(runtime.hasRecoveryForTests(opened.attachmentId)).toBe(false);
+
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(20);
+  expect(runtime.hasRecoveryForTests(opened.attachmentId)).toBe(true);
+  expect(driver.recoverySubscriberCount(paneId)).toBe(2);
+
+  held.release();
+  await Bun.sleep(20);
+  expect(runtime.hasRecoveryForTests(opened.attachmentId)).toBe(true);
+  expect(driver.recoverySubscriberCount(paneId)).toBe(1);
+
+  await runtime.terminate({
+    terminalId: opened.terminalId,
+    generation: opened.generation,
+    reason: "explicit-close",
+  });
+  await Bun.sleep(20);
+  expect(runtime.hasRecoveryForTests(opened.attachmentId)).toBe(false);
+  expect(driver.recoverySubscriberCount(paneId)).toBe(0);
 });

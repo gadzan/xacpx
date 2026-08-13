@@ -5,17 +5,10 @@ import {
   MAX_TERMINAL_INPUT_BYTES,
   errorPayload,
   parseCanonicalBase64,
+  parseControlPayload,
+  parseTerminalEventPayload,
   type RelayEnvelope,
-  type TerminalDetachPayload,
-  type TerminalHeartbeatPayload,
-  type TerminalInputPayload,
-  type TerminalOpenPayload,
-  type TerminalResyncPayload,
-  type TerminalResizePayload,
   type TerminalResourceExitPayload,
-  type TerminalStreamStartPayload,
-  type TerminalTakeControlPayload,
-  type TerminalTerminatePayload,
   type TerminalViewerEventInner,
   type TerminalViewerEventPayload,
 } from "@ganglion/xacpx-relay-protocol";
@@ -235,7 +228,11 @@ export async function handleTerminalRequest(
   try {
     switch (envelope.type) {
       case MSG.terminalOpen: {
-        const p = envelope.payload as TerminalOpenPayload;
+        const p = parseControlPayload(MSG.terminalOpen, envelope.payload);
+        if (!p) {
+          respondOnce(errorPayload("invalid-payload", `${MSG.terminalOpen}: malformed payload`));
+          return true;
+        }
         const result = await runtime.openOrResume({
           chatKey: p.chatKey,
           sessionAlias: p.sessionAlias,
@@ -251,21 +248,33 @@ export async function handleTerminalRequest(
         return true;
       }
       case MSG.terminalTakeControl: {
-        const p = envelope.payload as TerminalTakeControlPayload;
+        const p = parseControlPayload(MSG.terminalTakeControl, envelope.payload);
+        if (!p) {
+          respondOnce(errorPayload("invalid-payload", `${MSG.terminalTakeControl}: malformed payload`));
+          return true;
+        }
         const result = await runtime.takeControl(p.attachmentId, p.generation);
         if (timedOut) return true;
         respondOnce(result);
         return true;
       }
       case MSG.terminalResync: {
-        const p = envelope.payload as TerminalResyncPayload;
+        const p = parseControlPayload(MSG.terminalResync, envelope.payload);
+        if (!p) {
+          respondOnce(errorPayload("invalid-payload", `${MSG.terminalResync}: malformed payload`));
+          return true;
+        }
         await runtime.resync(p.attachmentId, p.generation);
         if (timedOut) return true;
         respondOnce({ ok: true });
         return true;
       }
       case MSG.terminalTerminate: {
-        const p = envelope.payload as TerminalTerminatePayload;
+        const p = parseControlPayload(MSG.terminalTerminate, envelope.payload);
+        if (!p) {
+          respondOnce(errorPayload("invalid-payload", `${MSG.terminalTerminate}: malformed payload`));
+          return true;
+        }
         const result = await runtime.terminate({
           terminalId: p.terminalId,
           generation: p.generation,
@@ -300,29 +309,34 @@ export async function handleTerminalEvent(
   try {
     switch (envelope.type) {
       case MSG.terminalStreamStart: {
-        const p = envelope.payload as TerminalStreamStartPayload;
+        const p = parseTerminalEventPayload(MSG.terminalStreamStart, envelope.payload);
+        if (!p) return true;
         await runtime.startRecovery(p.attachmentId);
         return true;
       }
       case MSG.terminalInput: {
-        const p = envelope.payload as TerminalInputPayload;
+        const p = parseTerminalEventPayload(MSG.terminalInput, envelope.payload);
+        if (!p) return true;
         const bytes = parseCanonicalBase64(p.dataBase64, MAX_TERMINAL_INPUT_BYTES);
         if (!bytes) return true;
         await runtime.input(p.attachmentId, p.generation, bytes);
         return true;
       }
       case MSG.terminalResize: {
-        const p = envelope.payload as TerminalResizePayload;
+        const p = parseTerminalEventPayload(MSG.terminalResize, envelope.payload);
+        if (!p) return true;
         await runtime.resize(p.attachmentId, p.generation, p.cols, p.rows);
         return true;
       }
       case MSG.terminalHeartbeat: {
-        const p = envelope.payload as TerminalHeartbeatPayload;
+        const p = parseTerminalEventPayload(MSG.terminalHeartbeat, envelope.payload);
+        if (!p) return true;
         runtime.heartbeat(p.attachmentId);
         return true;
       }
       case MSG.terminalDetach: {
-        const p = envelope.payload as TerminalDetachPayload;
+        const p = parseTerminalEventPayload(MSG.terminalDetach, envelope.payload);
+        if (!p) return true;
         runtime.detach(p.attachmentId);
         return true;
       }

@@ -27,6 +27,8 @@ export interface RmuxSidecarSupervisorOptions {
   spawnFn?: typeof spawn;
   sleep?: (ms: number) => Promise<void>;
   maxRestarts?: number;
+  /** Sidecar RPC timeout (handshake included). Production keeps the driver default. */
+  requestTimeoutMs?: number;
   /** Invoked after the live child exits unexpectedly (before restart). */
   onChildExit?: () => void;
 }
@@ -87,7 +89,16 @@ export class RmuxSidecarSupervisor {
     this.starting = this.startUnlocked().finally(() => {
       this.starting = null;
     });
-    return this.starting;
+    try {
+      return await this.starting;
+    } catch (err) {
+      // Only after `this.starting` is cleared — otherwise a restart would
+      // join the already-rejected in-flight promise and never spawn again.
+      if (!this.stopped) {
+        void this.scheduleRestart();
+      }
+      throw err;
+    }
   }
 
   getDriver(): RmuxTerminalDriver | null {
@@ -113,6 +124,8 @@ export class RmuxSidecarSupervisor {
   private async startUnlocked(): Promise<RmuxTerminalDriver> {
     if (this.spawning) throw new RmuxDriverCrashedError();
     this.spawning = true;
+    let spawned: ChildProcessWithoutNullStreams | null = null;
+    let candidate: RmuxSidecarDriver | null = null;
     try {
       if (this.opts.createDriver) {
         // Test inject path: skip filesystem binary resolution.
@@ -121,25 +134,30 @@ export class RmuxSidecarSupervisor {
           ...(this.opts.config.rmuxCommand ? { rmuxCommand: this.opts.config.rmuxCommand } : {}),
           source: { bridge: "config" },
         };
-        const driver = await this.opts.createDriver(binaries);
-        driver.onCrash(() => {
+        candidate = await this.opts.createDriver(binaries);
+        candidate.onCrash(() => {
           // Injected drivers have no real child exit; fence immediately.
           this.driver = null;
         });
-        await driver.handshake();
-        this.driver = driver;
-        return driver;
+        await candidate.handshake();
+        this.driver = candidate;
+        this.restartCount = 0;
+        return candidate;
       }
 
-      const binaries = resolveRmuxBinaries({
-        bridgeCommand: this.opts.config.bridgeCommand,
-        rmuxCommand: this.opts.config.rmuxCommand,
-      });
+      const spawnFn = this.opts.spawnFn ?? spawn;
+      const binaries: ResolvedRmuxBinaries = this.opts.spawnFn
+        ? {
+            bridgeCommand: this.opts.config.bridgeCommand ?? "test-bridge",
+            source: { bridge: "config" },
+          }
+        : resolveRmuxBinaries({
+            bridgeCommand: this.opts.config.bridgeCommand,
+            rmuxCommand: this.opts.config.rmuxCommand,
+          });
 
       // Never spawn a second child while one is still attached.
       if (this.child) throw new RmuxDriverCrashedError();
-
-      const spawnFn = this.opts.spawnFn ?? spawn;
       const env: NodeJS.ProcessEnv = { ...process.env };
       // Scrub obvious secrets from child env before injecting daemon path.
       for (const key of Object.keys(env)) {
@@ -151,32 +169,35 @@ export class RmuxSidecarSupervisor {
         env.RMUX_SDK_DAEMON_BINARY = binaries.rmuxCommand;
       }
 
-      const child = spawnFn(binaries.bridgeCommand, [], {
+      spawned = spawnFn(binaries.bridgeCommand, [], {
         stdio: ["pipe", "pipe", "pipe"],
         env,
         windowsHide: true,
       }) as ChildProcessWithoutNullStreams;
 
-      this.child = child;
-      const driver = new RmuxSidecarDriver({
-        stdin: child.stdin,
-        stdout: child.stdout,
-        stderr: child.stderr,
+      this.child = spawned;
+      candidate = new RmuxSidecarDriver({
+        stdin: spawned.stdin,
+        stdout: spawned.stdout,
+        stderr: spawned.stderr,
         kill: (sig) => {
-          child.kill(sig);
+          spawned?.kill(sig);
         },
         on: (event, listener) => {
-          child.on(event, listener as never);
+          spawned?.on(event, listener as never);
         },
-      });
+      }, this.opts.requestTimeoutMs !== undefined
+        ? { requestTimeoutMs: this.opts.requestTimeoutMs }
+        : {});
 
       // Protocol-fatal crash kills the child; exit handler restarts. Also
       // null the driver immediately so callers fence before exit races.
-      driver.onCrash(() => {
+      candidate.onCrash(() => {
         this.driver = null;
       });
 
-      child.on("exit", () => {
+      spawned.on("exit", () => {
+        if (this.child !== spawned) return;
         this.child = null;
         this.driver = null;
         if (this.stopped) return;
@@ -184,10 +205,31 @@ export class RmuxSidecarSupervisor {
         void this.scheduleRestart();
       });
 
-      await driver.handshake();
-      this.driver = driver;
+      await candidate.handshake();
+      this.driver = candidate;
       this.restartCount = 0;
-      return driver;
+      return candidate;
+    } catch (err) {
+      const ownedChild = spawned !== null && this.child === spawned;
+      if (ownedChild) {
+        this.child = null;
+        this.driver = null;
+      }
+      if (candidate && this.driver !== candidate) {
+        try {
+          candidate.dispose();
+        } catch {
+          // ignore
+        }
+      }
+      if (ownedChild && spawned && !spawned.killed) {
+        try {
+          spawned.kill("SIGTERM");
+        } catch {
+          // ignore
+        }
+      }
+      throw err;
     } finally {
       this.spawning = false;
     }
@@ -215,6 +257,15 @@ export async function createProductionTerminalDriver(
   opts: Omit<RmuxSidecarSupervisorOptions, "config"> = {},
 ): Promise<{ driver: RmuxTerminalDriver; supervisor: RmuxSidecarSupervisor }> {
   const supervisor = new RmuxSidecarSupervisor({ ...opts, config });
-  await supervisor.start();
+  try {
+    await supervisor.start();
+  } catch (err) {
+    try {
+      await supervisor.stop();
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
   return { driver: new SupervisedRmuxDriver(supervisor), supervisor };
 }

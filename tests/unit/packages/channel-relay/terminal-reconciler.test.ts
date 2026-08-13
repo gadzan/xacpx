@@ -96,6 +96,7 @@ interface Harness {
   diagnostics: ReconcileDiagnostic[];
   clock: { nowMs: number; now: () => number };
   liveHandles: Set<string>;
+  liveActivity: Map<string, number>;
   absent: Array<{ terminalId: string; generation: string; reason: string }>;
   fenced: string[];
   installationId: string;
@@ -115,6 +116,7 @@ async function makeHarness(
   const diagnostics: ReconcileDiagnostic[] = [];
   const clock = { nowMs: 1_000_000, now: () => clock.nowMs };
   const liveHandles = new Set<string>();
+  const liveActivity = new Map<string, number>();
   const absent: Harness["absent"] = [];
   const fenced: string[] = [];
   const config = baseConfig(opts.config);
@@ -127,6 +129,7 @@ async function makeHarness(
     clock,
     withTerminalLock: async (_id, fn) => fn(),
     hasLiveHandle: (terminalId) => liveHandles.has(terminalId),
+    lastActivityAt: (terminalId) => liveActivity.get(terminalId),
     onResourceAbsent: (terminalId, generation, reason) => {
       liveHandles.delete(terminalId);
       absent.push({ terminalId, generation, reason });
@@ -157,6 +160,7 @@ async function makeHarness(
     diagnostics,
     clock,
     liveHandles,
+    liveActivity,
     absent,
     fenced,
     installationId: registry.getSnapshot().installationId,
@@ -560,6 +564,7 @@ test("corrupt registry inventoryUncertain skips destructive orphan kill", async 
       clock,
       withTerminalLock: async (_id, fn) => fn(),
       hasLiveHandle: () => false,
+      lastActivityAt: () => undefined,
       onResourceAbsent: () => {},
       onFence: () => {},
       killWithTimeout: async (sessionId) => {
@@ -617,6 +622,7 @@ test("reaping retries kill after earlier timeout (cleanup-pending → later succ
       clock: h.clock,
       withTerminalLock: async (_id, fn) => fn(),
       hasLiveHandle: () => false,
+      lastActivityAt: () => undefined,
       onResourceAbsent: (terminalId, generation, reason) => {
         h.absent.push({ terminalId, generation, reason });
       },
@@ -658,6 +664,7 @@ test("periodic reconcile is re-entrant safe and stop waits for active pass", asy
       clock: h.clock,
       withTerminalLock: async (_id, fn) => fn(),
       hasLiveHandle: () => false,
+      lastActivityAt: () => undefined,
       onResourceAbsent: () => {},
       onFence: () => {},
       killWithTimeout: async () => true,
@@ -720,6 +727,41 @@ test("live idle-expired resources are reaped by reconcile", async () => {
   expect(h.registry.getSnapshot().terminals[terminalId]).toBeUndefined();
   expect(await h.driver.list()).toHaveLength(0);
   expect(h.diagnostics.some((d) => d.type === "reaping" && d.reason === "idle")).toBe(true);
+});
+
+test("live lastActivityAt prevents idle reap when durable lastInputAt is stale", async () => {
+  const h = await makeHarness({ config: { idleTimeoutSeconds: 30 } });
+  const terminalId = "91919191-9191-4919-8919-919191919191";
+  const generation = "gen-live-idle";
+  const name = rmuxName(h.installationId, terminalId);
+  const created = await h.driver.create({
+    name,
+    cwd: "/tmp",
+    cols: 80,
+    rows: 24,
+    historyLimit: 100,
+    tags: tagsFor(h.installationId, descriptor().logicalSessionId, terminalId, generation),
+    ownerLeaseTtlSeconds: 90,
+  });
+
+  const past = new Date(h.clock.nowMs - 60_000).toISOString();
+  await h.registry.upsertCreating({
+    terminalId,
+    logicalSessionId: descriptor().logicalSessionId,
+    internalAliasSnapshot: "demo",
+    rmuxSessionName: name,
+    generation,
+    createdAt: past,
+    lastInputAt: past,
+  });
+  await h.registry.markLive(terminalId, { rmuxSessionId: created.sessionId });
+  h.liveHandles.add(terminalId);
+  h.liveActivity.set(terminalId, h.clock.nowMs - 5_000);
+
+  await h.reconciler.runOnce();
+  expect(h.registry.getSnapshot().terminals[terminalId]?.state).toBe("live");
+  expect(await h.driver.list()).toHaveLength(1);
+  expect(h.diagnostics.some((d) => d.type === "reaping" && d.reason === "idle")).toBe(false);
 });
 
 // Keep a typed reference so unused-import lint on TerminalRecordV1 does not fire in editors.

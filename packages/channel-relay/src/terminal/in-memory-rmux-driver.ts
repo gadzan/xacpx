@@ -134,6 +134,7 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
   private readonly delays = new Map<RmuxDriverOp, number>();
   private crashed = false;
   private crashError: Error = new RmuxDriverCrashedError();
+  private recoverReturnHold: Promise<void> | null = null;
   private diagnosticsValue: RmuxDiagnostics = {
     bridgeVersion: "in-memory-fake-0.0.0",
     rmuxWireVersion: "0.10.0-fake",
@@ -237,10 +238,36 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
         yield event;
       }
     } finally {
+      if (this.recoverReturnHold) {
+        const hold = this.recoverReturnHold;
+        this.recoverReturnHold = null;
+        await hold;
+      }
       signal?.removeEventListener("abort", onAbort);
       session.subscribers.delete(queue);
       queue.close();
     }
+  }
+
+  /** Stall the next `iterator.return()` / generator finally until `release()`. */
+  holdNextRecoverReturn(): { release: () => void } {
+    let release!: () => void;
+    this.recoverReturnHold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { release };
+  }
+
+  injectError(paneId: string, code: string, message: string): void {
+    const session = this.requireSessionByPane(paneId);
+    const event: RmuxRecoveryEvent = { type: "error", code, message };
+    for (const queue of session.subscribers) queue.push(event);
+  }
+
+  recoverySubscriberCount(paneId: string): number {
+    const sessionId = this.sessionsByPane.get(paneId);
+    const session = sessionId ? this.sessionsById.get(sessionId) : undefined;
+    return session?.subscribers.size ?? 0;
   }
 
   async diagnostics(): Promise<RmuxDiagnostics> {

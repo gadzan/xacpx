@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -197,6 +197,11 @@ test("corrupt terminals.json is backed up and flips inventoryUncertain, without 
   const backupName = files.find((f) => f.startsWith("terminals.json.corrupt-"));
   expect(backupName).toBeDefined();
   expect(readFileSync(join(dir, backupName!), "utf8")).toBe("{ not valid json !!");
+
+  await expect(store.upsertCreating(baseRecordInput())).rejects.toBeInstanceOf(
+    TerminalRegistryInventoryUncertainError,
+  );
+  expect(existsSync(join(dir, "terminals.json"))).toBe(false);
 });
 
 test("empty terminals.json file is treated as corruption, not an empty registry", async () => {
