@@ -17,7 +17,7 @@ import { MessageStore } from "./stores/messages.js";
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
-import { handleWebClientMessage } from "./gateway/web-inbound.js";
+import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
 import { createApp } from "./http/app.js";
 import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
 import { startMaintenanceLoop } from "./maintenance.js";
@@ -122,7 +122,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
-  const webGateway = new WebGateway({ logger });
+  let gatewayRef: InstanceGateway | null = null;
+  const webGateway = new WebGateway({
+    logger,
+    onAttachmentDetached: (info) => {
+      gatewayRef?.sendEvent(info.instanceId, MSG.terminalDetach, {
+        attachmentId: info.attachmentId,
+        viewerId: info.viewerId,
+      });
+    },
+  });
 
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
   // `parts` records text / reasoning / tool events in arrival order so the web can
@@ -238,6 +247,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
     },
     onEvent: (instanceId, accountId, envelope: RelayEnvelope) => {
+      // Recoverable terminal streams are attachment-targeted and must never enter
+      // the SQLite messages / turn accumulator / state-snapshot path (Task 20).
+      if (handleConnectorTerminalEvent(webGateway, instanceId, envelope.type, envelope.payload)) {
+        return;
+      }
       // Shared inbound-prompt reconciliation (live turn-started AND state-sync
       // restore/backfill) — one code path so the two cannot drift apart. See the
       // helper body for the correlation order (queue association first, pre-write
@@ -606,6 +620,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       }
     },
   });
+  gatewayRef = gateway;
 
   const app = createApp({
     accounts, instances, messages, gateway, webRoot: options.webRoot,

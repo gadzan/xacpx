@@ -7,6 +7,9 @@ import type {
   ChannelRuntimeConfig,
   MessageChannelRuntime,
   ScheduledChannelMessageInput,
+  SessionResourceCatalog,
+  SessionResourceDescriptor,
+  SessionResourceLifecycleEvent,
   WeacpxPlugin,
 } from "../../../src/plugin-api";
 
@@ -35,4 +38,31 @@ test("plugin-api exports the types needed by channel packages", async () => {
   const source = await readFile("src/plugin-api.ts", "utf8");
   expect(source).toContain("ChannelRuntimeConfig");
   expect(source).toContain("ScheduledChannelMessageInput");
+});
+
+test("plugin-api exports the session resource catalog contract types", async () => {
+  const descriptor: SessionResourceDescriptor = {
+    logicalSessionId: "uuid-1",
+    channelId: "relay",
+    internalAlias: "relay:demo",
+    displayAlias: "demo",
+    workspace: "backend",
+    cwd: "/tmp/backend",
+    archived: false,
+  };
+  const event: SessionResourceLifecycleEvent = { type: "archived", session: descriptor };
+  const catalog: SessionResourceCatalog = {
+    resolve: async () => descriptor,
+    list: async () => [descriptor],
+    subscribe: () => () => {},
+  };
+
+  expect(event.type).toBe("archived");
+  expect(await catalog.resolve("relay:acc", "demo")).toEqual(descriptor);
+  expect(await catalog.list("relay")).toHaveLength(1);
+
+  const source = await readFile("src/plugin-api.ts", "utf8");
+  expect(source).toContain("SessionResourceCatalog");
+  expect(source).toContain("SessionResourceDescriptor");
+  expect(source).toContain("SessionResourceLifecycleEvent");
 });

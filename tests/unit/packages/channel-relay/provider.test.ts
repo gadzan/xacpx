@@ -53,3 +53,52 @@ test("renderSummary masks the pairing token", () => {
   expect(summary).toContain("ws://h:8788");
   expect(summary).not.toContain("very-secret-token");
 });
+
+test("buildDefaultConfig does not enable terminal by default", () => {
+  const config = relayCliProvider.buildDefaultConfig({ url: "ws://h:8788", token: "tok" });
+  expect(config.options?.terminal).toBeUndefined();
+});
+
+test("renderSummary shows terminal backend/enabled/TTL/quota without command paths", () => {
+  const config = {
+    id: "relay",
+    type: "relay",
+    enabled: true,
+    options: {
+      url: "wss://hub.example.com",
+      pairingToken: "secret-token",
+      terminal: {
+        enabled: true,
+        backend: "rmux",
+        bridgeCommand: "/secret/path/bridge",
+        idleTimeoutSeconds: 900,
+        ownerLeaseTtlSeconds: 90,
+        maxSessions: 16,
+        maxViewersPerTerminal: 4,
+      },
+    },
+  };
+  const summary = relayCliProvider.renderSummary(config).join("\n");
+  expect(summary).toContain("terminal: enabled");
+  expect(summary).toContain("backend=rmux");
+  expect(summary).toContain("idle=900s");
+  expect(summary).toContain("lease=90s");
+  expect(summary).toContain("maxSessions=16");
+  expect(summary).toContain("maxViewers=4");
+  expect(summary).not.toContain("/secret/path/bridge");
+  expect(summary).not.toContain("secret-token");
+});
+
+test("validateConfig rejects invalid terminal options", () => {
+  const issues = relayCliProvider.validateConfig({
+    id: "relay",
+    type: "relay",
+    enabled: true,
+    options: {
+      url: "wss://hub.example.com",
+      pairingToken: "tok",
+      terminal: { backend: "pty", ownerLeaseTtlSeconds: 90, orphanGraceSeconds: 30 },
+    },
+  });
+  expect(issues.some((i) => i.kind === "invalid-config")).toBe(true);
+});

@@ -27,6 +27,13 @@ export interface ChannelCliDeps extends ChannelCliIo {
    * config-only.
    */
   clearChannelCredentials?: (channel: ChannelRuntimeConfig) => Promise<void>;
+  /**
+   * Optional: async retirement hook invoked before a channel is disabled or
+   * removed. Production wires this to `invokeChannelRetireHook`, which calls
+   * the loaded plugin's `ChannelPluginDefinition.retireChannel` by type.
+   * Failures are logged but do not block the config mutation.
+   */
+  retireChannel?: (channel: ChannelRuntimeConfig, reason: "disabled" | "removed") => Promise<void>;
 }
 
 export async function handleChannelCli(args: string[], deps: ChannelCliDeps): Promise<number | null> {
@@ -352,6 +359,19 @@ async function removeChannel(type: string, rawArgs: string[], deps: ChannelCliDe
     deps.print(t().channelCli.cannotRemoveLastEnabled);
     return 1;
   }
+
+  // Invoke retirement hook before removing config. This allows the channel to
+  // perform one-shot maintenance cleanup (e.g. relay terminal cleanup) using
+  // the original config before it's discarded. Failures are logged but do not
+  // block removal.
+  if (deps.retireChannel) {
+    try {
+      await deps.retireChannel(channel, "removed");
+    } catch (error) {
+      deps.print(t().channelCli.channelRetirementFailed(channel.id, error instanceof Error ? error.message : String(error)));
+    }
+  }
+
   config.channels = config.channels.filter((entry) => entry.id !== channel.id);
   await deps.saveChannels(config.channels);
   deps.print(t().channelCli.channelRemoved(channel.id));
@@ -389,6 +409,18 @@ async function setChannelEnabled(type: string, enabled: boolean, rawArgs: string
     deps.print(t().channelCli.cannotDisableLastEnabled);
     return 1;
   }
+
+  // Invoke retirement hook before disabling. This allows the channel to
+  // perform one-shot maintenance cleanup using the original enabled config.
+  // Failures are logged but do not block disable.
+  if (!enabled && channel.enabled && deps.retireChannel) {
+    try {
+      await deps.retireChannel(channel, "disabled");
+    } catch (error) {
+      deps.print(t().channelCli.channelRetirementFailed(channel.id, error instanceof Error ? error.message : String(error)));
+    }
+  }
+
   channel.enabled = enabled;
   await deps.saveChannels(config.channels);
   deps.print(t().channelCli.channelEnabledToggled(channel.id, enabled));

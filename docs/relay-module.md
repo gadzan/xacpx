@@ -61,6 +61,22 @@
   连接器侧镜像暂存并随 `instance.state.sync` 恢复（见阶段七）；无镜像的旧 connector 断线期间事件仍丢弃。
   Web 看板（阶段三）消费本阶段的 HTTP API 与事件。
 
+## RMUX 终端后端（channel-relay，默认关闭）
+
+权威设计见 `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`。实现落点：
+
+- **配置**：`channels[].options.terminal`（见 `docs/config-reference.md`）；默认 `enabled=false`，不声明
+  `terminal.rmux.recovery.v1` / `terminal.multi-view.v1`。
+- **运行时**：`packages/channel-relay/src/terminal/`（registry、runtime、reconciler、in-memory driver；
+  真实 sidecar 仍待 RMUX publish）。
+- **持久化**：`<xacpx-home>/relay/` 下 `terminal-owner.json` + `terminals.json`（与 `credential.json` 同目录惯例）；
+  文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
+- **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；
+  hub disconnect → 只 `detachAllAttachments`。CLI `channel disable|rm` 在 daemon **已停止**时走 one-shot retirement；daemon 仍在跑时推迟到重启，由旧进程 `stop()` 杀会话，避免再起一个看不到 HashMap 的 sidecar。`terminals.lock` 保证 registry 同一时刻只有一个 writer。
+- **Doctor**：`ChannelCliProvider.diagnose` → `diagnoseRelayTerminal`（只读）；core 的 Plugins 检查只呈现结构化 finding，
+  不理解 RMUX。terminal disabled → skip；cleanup-pending / 未打包 sidecar → warn；缺失 `bridgeCommand` 路径 → fail。
+- **日志**：`relay.terminal.*` 事件（spec §19）；只记 ID / sizes / counts / error class，不记 bytes / credential / cwd。
+
 ## 阶段三服务端接缝（Web 看板扇出）
 
 服务端为 Web 看板新增的接缝（见 docs/relay-web-module.md）：

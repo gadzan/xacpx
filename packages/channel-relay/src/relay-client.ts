@@ -19,9 +19,19 @@ export interface RelayClientOptions {
   pairingToken?: string;
   instanceName?: string;
   coreVersion?: string;
+  /**
+   * Confirmed capability snapshot at construction time. Handshake sends this
+   * set as-is (missing → []); do not connect first and backfill later.
+   */
+  capabilities?: string[];
   onRequest: (envelope: RelayEnvelope, respond: (payload: unknown) => void) => void;
   onEvent?: (envelope: RelayEnvelope) => void;
   onReady?: () => void;
+  /**
+   * Fired when an authenticated hub socket drops (before reconnect). Used to
+   * bulk-detach viewer attachments without releasing RMUX owner leases.
+   */
+  onDisconnected?: () => void;
   reconnectDelaysMs?: number[];
   /**
    * Kill the socket when no inbound traffic (the hub pings every 30s) arrives
@@ -131,7 +141,19 @@ export class RelayClient {
     });
     socket.on("close", () => {
       clearLiveness();
+      const wasReady = this.ready;
       this.ready = false;
+      if (wasReady) {
+        try {
+          this.options.onDisconnected?.();
+        } catch (err) {
+          void this.options.logger?.error(
+            "relay.disconnect_handler_failed",
+            `onDisconnected threw: ${err instanceof Error ? err.message : String(err)}`,
+            {},
+          );
+        }
+      }
       if (this.stopped) return;
       const delays = this.options.reconnectDelaysMs ?? DEFAULT_DELAYS;
       const delay = delays[Math.min(this.attempts, delays.length - 1)] ?? 30_000;
@@ -141,6 +163,7 @@ export class RelayClient {
   }
 
   private sendHandshake(socket: WebSocket): void {
+    const capabilities = this.options.capabilities ?? [];
     const credential = this.options.credentialStore.load();
     if (credential) {
       socket.send(
@@ -153,6 +176,7 @@ export class RelayClient {
             instanceId: credential.instanceId,
             credential: credential.credential,
             coreVersion: this.options.coreVersion,
+            capabilities,
           },
         }),
       );
@@ -169,6 +193,7 @@ export class RelayClient {
             pairingToken: this.options.pairingToken,
             name: this.options.instanceName,
             coreVersion: this.options.coreVersion,
+            capabilities,
           },
         }),
       );

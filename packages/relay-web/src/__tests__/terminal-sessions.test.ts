@@ -1,28 +1,32 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { saveTerminalId, loadTerminalId, clearTerminalId } from "../lib/terminal-sessions";
+import {
+  saveTerminalId,
+  loadTerminalId,
+  clearTerminalId,
+  migrateAwayFromLegacyTerminalIds,
+} from "../lib/terminal-sessions";
 
 beforeEach(() => sessionStorage.clear());
 
-describe("terminal-sessions", () => {
-  it("save then load round-trips the id", () => {
+describe("terminal-sessions (legacy migration)", () => {
+  it("migrateAwayFromLegacyTerminalIds clears the legacy map", () => {
+    sessionStorage.setItem("xacpx.terminal-ids.v1", JSON.stringify({ "i1::s1": "t1" }));
+    migrateAwayFromLegacyTerminalIds();
+    expect(sessionStorage.getItem("xacpx.terminal-ids.v1")).toBeNull();
+  });
+
+  it("save/load/clear are no-ops after deprecation", () => {
     saveTerminalId("i1::s1", "term-abc");
-    expect(loadTerminalId("i1::s1")).toBe("term-abc");
-  });
-  it("returns null when absent", () => {
-    expect(loadTerminalId("i1::none")).toBeNull();
-  });
-  it("clear removes the id", () => {
-    saveTerminalId("i1::s1", "t");
+    expect(loadTerminalId("i1::s1")).toBeNull();
     clearTerminalId("i1::s1");
     expect(loadTerminalId("i1::s1")).toBeNull();
   });
-  it("tolerates corrupt storage", () => {
-    sessionStorage.setItem("xacpx.terminal-ids.v1", "{bad");
-    expect(loadTerminalId("i1::s1")).toBeNull();
-  });
-  it("swallows setItem quota errors", () => {
-    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("q", "QuotaExceededError"); });
-    expect(() => saveTerminalId("i1::s1", "t")).not.toThrow();
+
+  it("tolerates missing storage", () => {
+    const spy = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("q", "QuotaExceededError");
+    });
+    expect(() => migrateAwayFromLegacyTerminalIds()).not.toThrow();
     spy.mockRestore();
   });
 });

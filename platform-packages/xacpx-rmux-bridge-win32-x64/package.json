@@ -1,0 +1,28 @@
+{
+  "name": "@ganglion/xacpx-rmux-bridge-win32-x64",
+  "version": "0.5.2",
+  "description": "Process-owned xacpx RMUX bridge binary for win32-x64.",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "README.md",
+    "checksums.json"
+  ],
+  "bin": {
+    "xacpx-rmux-bridge": "./bin/xacpx-rmux-bridge.exe"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gadzan/xacpx.git",
+    "directory": "platform-packages/xacpx-rmux-bridge-win32-x64"
+  }
+}

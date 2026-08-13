@@ -157,7 +157,11 @@ export async function runRouterOracle(
     freeWarmProcess: async () => {},
     ...scenario.transport,
   };
-  const sessions = new SessionService(config, { save: async () => {} } as never, createEmptyState());
+  const sessions = new SessionService(
+    config,
+    { save: async () => {}, saveNow: async () => {} } as never,
+    createEmptyState(),
+  );
   const recordedSessions = recordProxy("sessions", sessions, push);
   const recordedTransport = recordProxy("transport", baseTransport, push);
   await scenario.seed?.(sessions); // seed on the REAL instance (not the proxy) so setup isn't logged

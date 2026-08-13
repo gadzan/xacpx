@@ -815,3 +815,34 @@ test("passes the control facade through to channel startup", async () => {
   signalHandlers.get("SIGTERM")?.();
   await runPromise;
 });
+
+test("passes the session resource catalog through to channel startup", async () => {
+  const signalHandlers = new Map<string, () => void>();
+  let startInput: { sessionResources?: unknown } | undefined;
+  const sessionResources = { marker: "session-resources" };
+
+  const runPromise = runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        ...createRuntime(),
+        sessionResources: sessionResources as never,
+      }),
+      channels: {
+        startAll: async (input) => {
+          startInput = input as { sessionResources?: unknown };
+        },
+      },
+      addProcessListener: (signal, handler) => {
+        signalHandlers.set(signal, handler);
+      },
+      removeProcessListener: () => {},
+    },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(startInput?.sessionResources).toBe(sessionResources);
+
+  signalHandlers.get("SIGTERM")?.();
+  await runPromise;
+});

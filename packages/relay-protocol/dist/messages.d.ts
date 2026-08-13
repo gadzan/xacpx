@@ -64,9 +64,20 @@ export declare const MSG: {
     readonly sessionEffortSet: "control.session.effort.set";
     readonly terminalCreate: "control.terminal.create";
     readonly terminalAttach: "control.terminal.attach";
+    /** Legacy live-PTY input AND recoverable RMUX input share this wire name; payload shape differs by capability path. */
     readonly terminalInput: "instance.terminal.input";
+    /** Legacy live-PTY resize AND recoverable RMUX resize share this wire name; payload shape differs by capability path. */
     readonly terminalResize: "instance.terminal.resize";
     readonly terminalClose: "instance.terminal.close";
+    readonly terminalOpen: "instance.terminal.open";
+    readonly terminalTakeControl: "instance.terminal.take-control";
+    readonly terminalResync: "instance.terminal.resync";
+    readonly terminalTerminate: "instance.terminal.terminate";
+    readonly terminalStreamStart: "instance.terminal.stream-start";
+    readonly terminalHeartbeat: "instance.terminal.heartbeat";
+    readonly terminalDetach: "instance.terminal.detach";
+    readonly terminalViewerEvent: "instance.terminal.viewer-event";
+    readonly terminalResourceExit: "instance.terminal.resource-exit";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -81,6 +92,8 @@ export interface InstanceRegisterPayload {
     pairingToken: string;
     name?: string;
     coreVersion?: string;
+    /** Confirmed connector capability snapshot; omit/undefined → hub normalizes to []. */
+    capabilities?: string[];
 }
 export interface InstanceRegisterResult {
     instanceId: string;
@@ -90,10 +103,19 @@ export interface InstanceAuthPayload {
     instanceId: string;
     credential: string;
     coreVersion?: string;
+    /** Confirmed connector capability snapshot; omit/undefined → hub normalizes to []. */
+    capabilities?: string[];
 }
 export interface InstanceAuthResult {
     ok: true;
 }
+export { MAX_CAPABILITIES, MAX_CAPABILITY_LENGTH } from "./limits.js";
+/**
+ * Normalize a connector-advertised capability list for persistence and dashboard DTO.
+ * Missing/invalid → []; drops empty/overlong; dedupes (order-preserving); caps count.
+ * Unknown strings are retained for forward-compat but are not interpreted by this version.
+ */
+export declare function normalizeCapabilities(raw: unknown): string[];
 export interface InstanceEventPayload {
     event: ControlEventDto;
 }
@@ -645,4 +667,137 @@ export interface TerminalCreatePayload {
 }
 export interface TerminalAttachPayload {
     terminalId: string;
+}
+/** Capability strings a connector may advertise during register/auth. */
+export declare const RELAY_CAPABILITIES: {
+    readonly terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1";
+    readonly terminalMultiViewV1: "terminal.multi-view.v1";
+};
+export type RelayCapability = (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];
+/** Stable browser-facing terminal error codes (i18n by code, not message text). */
+export declare const TERMINAL_ERROR_CODES: readonly ["terminal-disabled", "terminal-rmux-unavailable", "terminal-session-not-found", "terminal-session-archived", "terminal-capacity-exceeded", "terminal-viewer-capacity-exceeded", "terminal-terminating", "terminal-attachment-not-found", "terminal-generation-mismatch", "terminal-not-controller", "terminal-recovery-too-large", "terminal-protocol-error", "terminal-timeout", "instance-offline"];
+export type TerminalErrorCode = (typeof TERMINAL_ERROR_CODES)[number];
+export type TerminalRole = "controller" | "spectator";
+export interface TerminalOpenPayload {
+    chatKey: string;
+    sessionAlias: string;
+    /** Hub-stamped viewer identity; browser must not supply this. */
+    viewerId: string;
+    cols: number;
+    rows: number;
+}
+export interface TerminalOpenResult {
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: TerminalRole;
+    viewerCount: number;
+}
+export interface TerminalTakeControlPayload {
+    attachmentId: string;
+    generation: string;
+    viewerId: string;
+}
+export interface TerminalRoleResult {
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+}
+export interface TerminalResyncPayload {
+    attachmentId: string;
+    generation: string;
+    viewerId: string;
+}
+export interface TerminalResyncResult {
+    ok: true;
+}
+export interface TerminalTerminatePayload {
+    terminalId: string;
+    generation: string;
+}
+export type TerminalTerminateResult = {
+    status: "terminated";
+} | {
+    status: "cleanup-pending";
+};
+export interface TerminalStreamStartPayload {
+    attachmentId: string;
+    viewerId: string;
+}
+export interface TerminalInputPayload {
+    attachmentId: string;
+    generation: string;
+    viewerId: string;
+    dataBase64: string;
+}
+export interface TerminalResizePayload {
+    attachmentId: string;
+    generation: string;
+    viewerId: string;
+    cols: number;
+    rows: number;
+}
+export interface TerminalHeartbeatPayload {
+    attachmentId: string;
+    viewerId: string;
+}
+export interface TerminalDetachPayload {
+    attachmentId: string;
+    viewerId: string;
+}
+/** Connector → hub targeted recovery/role/failure event for one viewer attachment. */
+export type TerminalViewerEventInner = {
+    kind: "terminal-rebase-start";
+    generation: string;
+    epoch: number;
+    nextSequence: number;
+    cols: number;
+    rows: number;
+    alternate: boolean;
+    totalBytes: number;
+    chunkCount: number;
+} | {
+    kind: "terminal-rebase-chunk";
+    generation: string;
+    epoch: number;
+    index: number;
+    dataBase64: string;
+} | {
+    kind: "terminal-rebase-end";
+    generation: string;
+    epoch: number;
+} | {
+    kind: "terminal-bytes";
+    generation: string;
+    epoch: number;
+    sequence: number;
+    dataBase64: string;
+} | {
+    kind: "terminal-role-changed";
+    terminalId: string;
+    role: TerminalRole;
+    viewerCount: number;
+} | {
+    kind: "terminal-request-failed";
+    requestId?: string;
+    code: string;
+    message: string;
+} | {
+    kind: "terminal-recovery-failed";
+    generation: string;
+    code: string;
+    message: string;
+};
+export interface TerminalViewerEventPayload {
+    viewerId: string;
+    attachmentId: string;
+    event: TerminalViewerEventInner;
+}
+export interface TerminalResourceExitPayload {
+    terminalId: string;
+    generation: string;
+    reason: string;
+    code?: number;
 }

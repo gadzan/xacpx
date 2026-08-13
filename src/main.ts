@@ -31,6 +31,8 @@ import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
 import { createScheduledTaskFromRoute } from "./scheduled/scheduled-route-create";
 import { cancelScheduledTaskFromRoute, listScheduledTasksFromRoute } from "./scheduled/scheduled-route-manage";
 import { SessionService, type SessionLockedTransaction } from "./sessions/session-service";
+import { CoreSessionResourceCatalog } from "./sessions/session-resource-catalog";
+import type { SessionResourceCatalog } from "./sessions/session-resource-catalog";
 import { createActiveTurnRegistry, type ActiveTurnRegistry } from "./sessions/active-turn-registry";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
@@ -96,6 +98,7 @@ export interface AppRuntime {
   agent: ConsoleAgent;
   router: CommandRouter;
   sessions: SessionService;
+  sessionResources: SessionResourceCatalog;
   activeTurns: ActiveTurnRegistry;
   stateStore: StateStore;
   configStore: ConfigStore;
@@ -287,6 +290,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         message: stateLoadReport.backupError,
       });
     }
+    for (const record of stateLoadReport.migrated ?? []) {
+      await logger.info("state.session_id_migrated", "assigned a new logical_session_id to a legacy session record", {
+        statePath: paths.statePath,
+        section: record.section,
+        key: record.key,
+        reason: record.reason,
+      });
+    }
   }
   const stateMutex = new AsyncMutex();
   const debouncedStateStore = new DebouncedStateStore({
@@ -300,6 +311,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   });
   const runtimeRoot = dirname(paths.configPath);
   const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
+  // Generic catalog over logical session resources (immutable id, aliases,
+  // authoritative workspace cwd, archived flag). Structured channels consume
+  // it via ChannelStartInput.sessionResources. Archive/restore/remove
+  // transitions publish their lifecycle events through it; SessionService
+  // gates each emission on the transition being durably persisted first.
+  const sessionResources = new CoreSessionResourceCatalog({ sessions, config, logger });
+  sessions.setSessionResourceLifecyclePublisher((transition) =>
+    sessionResources.publishLifecycleEvent(transition),
+  );
   const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
     platform: process.platform,
     runtimeRoot,
@@ -1121,6 +1141,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     agent,
     router,
     sessions,
+    sessionResources,
     activeTurns,
     stateStore,
     configStore,

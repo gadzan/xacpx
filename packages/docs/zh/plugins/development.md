@@ -98,6 +98,7 @@ export interface ChannelPluginDefinition {
   type: string;
   factory: ChannelFactory;
   cliProvider?: ChannelCliProvider;
+  retireChannel?: (ctx: ChannelRetireContext) => Promise<void>;
 }
 ```
 
@@ -106,6 +107,7 @@ export interface ChannelPluginDefinition {
 | `type` | 是 | 频道类型字符串，如 `"feishu"`、`"yuanbao"`。在进程内必须全局唯一。 |
 | `factory` | 是 | 工厂函数；在守护进程启动时被调用以实例化 `MessageChannelRuntime`。 |
 | `cliProvider` | 否 | 为 `xacpx channel add <type>` 提供解析和交互逻辑。不提供时，用户须手动编辑 `~/.xacpx/config.json`。强烈建议提供。 |
+| `retireChannel` | 否 | `xacpx channel disable` / `xacpx channel rm` 的 CLI 生命周期钩子。core 在已加载插件中按类型分发，不会 import 插件包。用于一次性资源清理。 |
 
 `type` 约束：不可为空，不可含 `:` 字符（chatKey 使用 `:` 作为分隔符），不可与已注册类型冲突（`weixin` 始终由内置频道保留）。
 

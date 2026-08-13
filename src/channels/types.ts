@@ -5,6 +5,7 @@ import type { AppLogger } from "../logging/app-logger.js";
 import type { PendingFinalChunk } from "../weixin/messaging/quota-manager.js";
 import type { PerfTracer } from "../perf/perf-tracer.js";
 import type { SessionService } from "../sessions/session-service.js";
+import type { SessionResourceCatalog } from "../sessions/session-resource-catalog.js";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { Locale } from "../i18n/index.js";
 import type { ControlService } from "../control/control-service.js";
@@ -90,6 +91,12 @@ export interface ChannelStartInput {
    * channels ignore it.
    */
   control?: ControlService;
+  /**
+   * Generic catalog of logical-session resources: immutable logical session
+   * IDs, internal/display aliases, authoritative workspace cwd, archived flag,
+   * and a lifecycle-event subscription. Optional: text-only channels ignore it.
+   */
+  sessionResources?: SessionResourceCatalog;
 }
 
 export interface OrchestrationDeliveryCallbacks {
@@ -139,6 +146,8 @@ export interface ConsumerLockOptions {
   ) => void | Promise<void>;
 }
 
+export type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
+
 export interface MessageChannelRuntime {
   id: string;
 
@@ -148,7 +157,7 @@ export interface MessageChannelRuntime {
    * Destructive credential removal. Reached only via the explicit
    * `xacpx logout` CLI path — never as part of a normal shutdown.
    */
-  logout(): void;
+  logout(): void | Promise<void>;
 
   start(input: ChannelStartInput): Promise<void>;
 
@@ -157,8 +166,14 @@ export interface MessageChannelRuntime {
    * stored credentials. Optional for compatibility with already-published
    * plugin channels; when absent, the registry falls back to `logout()`
    * (which for those plugins is a benign client stop).
+   *
+   * @param reason - The reason for stopping:
+   *   - "shutdown": normal signal/startup-error cleanup
+   *   - "disabled": channel disabled via CLI
+   *   - "removed": channel removed via CLI
+   *   - "logout": explicit logout command
    */
-  stop?(): void | Promise<void>;
+  stop?(reason?: ChannelStopReason): void | Promise<void>;
 
   createConsumerLock?(options?: ConsumerLockOptions): ConsumerLock;
 

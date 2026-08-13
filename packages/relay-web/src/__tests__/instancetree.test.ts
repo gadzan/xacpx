@@ -5,8 +5,7 @@ import InstanceTree from "../components/InstanceTree.vue";
 import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
-import { useTerminalStore } from "../stores/terminal";
-import { saveTerminalId, loadTerminalId } from "../lib/terminal-sessions";
+import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 
 const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
@@ -360,19 +359,16 @@ describe("InstanceTree session management", () => {
     w.unmount();
   });
 
-  // Regression: archiving a session with a LIVE terminal must kill its PTY and forget its
-  // persisted id too — clearSession alone only drops the center-tab entry (UI state); without
-  // this the process leaks server-side and a later re-attach could resurrect a dead id.
-  it("kills the terminal PTY and clears the persisted id when a session with a live terminal is archived", async () => {
+  // Archive only detaches the local viewer; channel-relay retires the durable resource.
+  it("detaches the terminal viewer when a session with a live terminal is archived", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     vi.spyOn(store, "archiveSession").mockResolvedValue();
     const centerTabs = useCenterTabsStore();
     const key = sessionKey("i1", "backend");
     centerTabs.openTerminal(key);
-    saveTerminalId(key, "tid-archive");
     const terminals = useTerminalStore();
-    const closeSpy = vi.spyOn(terminals, "close");
+    const detachSpy = vi.spyOn(terminals, "detach");
     const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
     await w.find('[data-test="session-menu"]').trigger("mousedown");
     await w.find('[data-test="session-menu"]').trigger("click");
@@ -380,8 +376,8 @@ describe("InstanceTree session management", () => {
     await item.trigger("mousedown");
     await item.trigger("click");
     await flushPromises();
-    expect(closeSpy).toHaveBeenCalledWith("i1", "tid-archive");
-    expect(loadTerminalId(key)).toBeNull();
+    expect(detachSpy).toHaveBeenCalledWith(terminalLocalKey("i1", "backend"));
+    expect(centerTabs.tabsFor(key)).toEqual([]);
     w.unmount();
   });
 
@@ -403,24 +399,22 @@ describe("InstanceTree session management", () => {
     expect(centerTabs.tabsFor(key)).toEqual([]);
   });
 
-  // Regression: deleting a session with a LIVE terminal must kill its PTY and forget its
-  // persisted id too, for the same leak/dead-id reasons as the archive case above.
-  it("kills the terminal PTY and clears the persisted id when a session with a live terminal is deleted", async () => {
+  // Delete only detaches the local viewer; channel-relay retires the durable resource.
+  it("detaches the terminal viewer when a session with a live terminal is deleted", async () => {
     const store = useInstancesStore();
     store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
     vi.spyOn(store, "removeSession").mockResolvedValue();
     const centerTabs = useCenterTabsStore();
     const key = sessionKey("i1", "backend");
     centerTabs.openTerminal(key);
-    saveTerminalId(key, "tid-delete");
     const terminals = useTerminalStore();
-    const closeSpy = vi.spyOn(terminals, "close");
+    const detachSpy = vi.spyOn(terminals, "detach");
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     await w.find('[data-test="session-menu"]').trigger("click");
     await w.find('[data-test="delete-session"]').trigger("click");
     settleConfirm(true);
     await flushPromises();
-    expect(closeSpy).toHaveBeenCalledWith("i1", "tid-delete");
-    expect(loadTerminalId(key)).toBeNull();
+    expect(detachSpy).toHaveBeenCalledWith(terminalLocalKey("i1", "backend"));
+    expect(centerTabs.tabsFor(key)).toEqual([]);
   });
 });

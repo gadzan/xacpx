@@ -1,5 +1,9 @@
 # relay-web 远程实例终端 设计 (Design Spec)
 
+> **兼容背景（非权威）**：RMUX 持久终端以后，权威设计为
+> [`2026-08-10-relay-web-rmux-terminal-design.md`](./2026-08-10-relay-web-rmux-terminal-design.md)。
+> 本文保留为 legacy live-PTY 背景，不删除。
+
 > 状态:已脑暴定稿,待写实现计划。
 > 日期:2026-06-30。
 > 相关:[[project_hapi_borrow_relay_web_ux]](终端是其中明确 deferred 项)、docs/relay-module.md、docs/relay-web-module.md、docs/control-module.md。

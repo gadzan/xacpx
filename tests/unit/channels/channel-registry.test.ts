@@ -285,3 +285,56 @@ test("defaults native session list format to table when no channel owns the chat
 
   expect(registry.nativeSessionListFormat("weixin:default:wxid_alice")).toBe("table");
 });
+
+test("stopAll passes reason to stop() when present", async () => {
+  const events: string[] = [];
+  const withReasonedStop: MessageChannelRuntime = {
+    ...fakeChannel("weixin", events),
+    stop: async (reason?: string) => {
+      events.push(`weixin:stop:${reason ?? "none"}`);
+    },
+  };
+  const legacy = fakeChannel("feishu", events);
+  const registry = new MessageChannelRegistry([withReasonedStop, legacy]);
+
+  await registry.stopAll("shutdown");
+
+  expect(events).toEqual(["weixin:stop:shutdown", "feishu:logout"]);
+});
+
+test("stopAll defaults to shutdown reason when omitted", async () => {
+  const events: string[] = [];
+  const withReasonedStop: MessageChannelRuntime = {
+    ...fakeChannel("weixin", events),
+    stop: async (reason?: string) => {
+      events.push(`weixin:stop:${reason ?? "none"}`);
+    },
+  };
+  const registry = new MessageChannelRegistry([withReasonedStop]);
+
+  await registry.stopAll();
+
+  expect(events).toEqual(["weixin:stop:shutdown"]);
+});
+
+test("stopAll passes different reasons correctly", async () => {
+  const events: string[] = [];
+  const withReasonedStop: MessageChannelRuntime = {
+    ...fakeChannel("weixin", events),
+    stop: async (reason?: string) => {
+      events.push(`weixin:stop:${reason ?? "none"}`);
+    },
+  };
+  const registry = new MessageChannelRegistry([withReasonedStop]);
+
+  await registry.stopAll("disabled");
+  expect(events).toEqual(["weixin:stop:disabled"]);
+
+  events.length = 0;
+  await registry.stopAll("removed");
+  expect(events).toEqual(["weixin:stop:removed"]);
+
+  events.length = 0;
+  await registry.stopAll("logout");
+  expect(events).toEqual(["weixin:stop:logout"]);
+});

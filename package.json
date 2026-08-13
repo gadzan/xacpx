@@ -54,6 +54,7 @@
     "build:relay": "bun run build:relay-web && bun run clean:relay && bun build ./packages/relay/src/cli.ts --outdir ./packages/relay/dist --target node --external ws --external hono --external @hono/node-server --external @ganglion/xacpx-relay-protocol && tsc -p packages/relay/tsconfig.json && bun run bundle:relay-web",
     "clean:channel-relay": "node -e \"require('node:fs').rmSync('packages/channel-relay/dist', { recursive: true, force: true })\"",
     "build:channel-relay": "bun run build:plugin-api && bun run build:relay-protocol && bun run clean:channel-relay && bun build ./packages/channel-relay/src/index.ts --outdir ./packages/channel-relay/dist --target node --external xacpx --external ws --external @ganglion/xacpx-relay-protocol && tsc -p packages/channel-relay/tsconfig.json",
+    "pack:rmux-bridge": "node ./scripts/pack-rmux-bridge-platform.mjs",
     "clean:relay-web": "node -e \"require('node:fs').rmSync('packages/relay-web/dist',{recursive:true,force:true})\"",
     "build:relay-web": "bun run build:relay-protocol && bun run clean:relay-web && bun run --cwd packages/relay-web build",
     "test:web": "bun run --cwd packages/relay-web test",

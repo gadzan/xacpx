@@ -4,9 +4,11 @@ import type {
   ChannelCliParseResult,
   ChannelCliProvider,
   ChannelCliValidationIssue,
+  ChannelDoctorFinding,
   ChannelRuntimeConfig,
 } from "xacpx/plugin-api";
-import { normalizeRelayUrl } from "./config.js";
+import { normalizeRelayUrl, parseRelayTerminalConfig } from "./config.js";
+import { diagnoseRelayTerminal } from "./terminal/terminal-diagnostics.js";
 
 function stringField(input: ChannelCliInput, key: string): string | undefined {
   const value = input[key];
@@ -44,6 +46,7 @@ export const relayCliProvider: ChannelCliProvider = {
     if (url !== undefined) options.url = normalizeRelayUrl(url);
     if (pairingToken !== undefined) options.pairingToken = pairingToken;
     if (name !== undefined) options.name = name;
+    // Terminal stays opt-in: do not write options.terminal (enabled defaults false at parse time).
     return {
       id: "relay",
       type: "relay",
@@ -64,6 +67,16 @@ export const relayCliProvider: ChannelCliProvider = {
     if (typeof options.pairingToken !== "string" || !options.pairingToken) {
       issues.push({ kind: "missing-required-field", flag: "--token", message: "access token is required (generate one with: xacpx-relay add token)" });
     }
+    if (options.terminal !== undefined) {
+      try {
+        parseRelayTerminalConfig(options.terminal);
+      } catch (err) {
+        issues.push({
+          kind: "invalid-config",
+          message: err instanceof Error ? err.message : "invalid terminal options",
+        });
+      }
+    }
     return issues;
   },
 
@@ -71,6 +84,14 @@ export const relayCliProvider: ChannelCliProvider = {
     const options = (config.options ?? {}) as Record<string, unknown>;
     const lines = [`relay url: ${String(options.url ?? "")}`, "pairing token: ***"];
     if (typeof options.name === "string") lines.push(`instance name: ${options.name}`);
+    try {
+      const terminal = parseRelayTerminalConfig(options.terminal);
+      lines.push(
+        `terminal: ${terminal.enabled ? "enabled" : "disabled"} backend=${terminal.backend} idle=${terminal.idleTimeoutSeconds}s lease=${terminal.ownerLeaseTtlSeconds}s maxSessions=${terminal.maxSessions} maxViewers=${terminal.maxViewersPerTerminal}`,
+      );
+    } catch {
+      lines.push("terminal: invalid");
+    }
     return lines;
   },
 
@@ -85,5 +106,11 @@ export const relayCliProvider: ChannelCliProvider = {
       if (value) completed.token = value;
     }
     return completed;
+  },
+
+  async diagnose(config: ChannelRuntimeConfig): Promise<ChannelDoctorFinding[]> {
+    return diagnoseRelayTerminal({
+      options: (config.options ?? {}) as Record<string, unknown>,
+    });
   },
 };

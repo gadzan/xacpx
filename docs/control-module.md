@@ -276,3 +276,7 @@ agent 必须对 `~/.xacpx/runtime/uploads/` 目录下的路径有**文件系统�
 
 - **`packages/relay-protocol`** — relay 线协议（信封 + wire DTO），零依赖、
   不 import xacpx；core↔wire 的映射放在阶段二的连接器里。
+- **`SessionResourceCatalog`**（`src/sessions/session-resource-catalog.ts`，经
+  `ChannelStartInput.sessionResources` 注入）— 逻辑会话不可变 ID + archive/remove/restore
+  生命周期。Relay RMUX 终端只绑定 catalog descriptor（cwd/alias），浏览器 payload 不得带 cwd。
+  详见 `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`。

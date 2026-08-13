@@ -98,6 +98,7 @@ export interface ChannelPluginDefinition {
   type: string;
   factory: ChannelFactory;
   cliProvider?: ChannelCliProvider;
+  retireChannel?: (ctx: ChannelRetireContext) => Promise<void>;
 }
 ```
 
@@ -106,6 +107,7 @@ export interface ChannelPluginDefinition {
 | `type` | Yes | Channel type string, e.g. `"feishu"`, `"yuanbao"`. Must be globally unique within the process. |
 | `factory` | Yes | Factory function; called during daemon startup to instantiate `MessageChannelRuntime`. |
 | `cliProvider` | No | Parsing and prompt logic for `xacpx channel add <type>`. Without it, users must manually edit `~/.xacpx/config.json`. Strongly recommended. |
+| `retireChannel` | No | CLI lifecycle hook for `xacpx channel disable` / `xacpx channel rm`. Core dispatches by channel type after configured plugins load; it does not import the plugin package. Use for one-shot resource cleanup. |
 
 `type` constraints: non-empty, no `:` character (the chatKey uses `:` as a separator), cannot conflict with already-registered types (`weixin` is always reserved by the built-in).
 

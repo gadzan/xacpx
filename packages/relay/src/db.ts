@@ -154,6 +154,7 @@ export function initSchema(db: SqlDriver): void {
       name TEXT NOT NULL,
       credential_hash TEXT NOT NULL,
       core_version TEXT,
+      capabilities_json TEXT,
       last_seen_at TEXT,
       created_at TEXT NOT NULL
     );
@@ -199,6 +200,10 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "prompt_request_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN prompt_request_id TEXT");
+  }
+  const instanceCols = db.all<{ name: string }>("PRAGMA table_info(instances)");
+  if (!instanceCols.some((c) => c.name === "capabilities_json")) {
+    db.exec("ALTER TABLE instances ADD COLUMN capabilities_json TEXT");
   }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_origin_queue ON messages (instance_id, session_alias, origin_queue_item_id);

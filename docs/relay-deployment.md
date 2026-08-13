@@ -70,6 +70,18 @@ xacpx-relay start \
 - **多租户**：账号只见自己的实例/会话；服务端盖戳身份；登录令牌和凭证一律哈希存储。
 - **看板可安装为 PWA**：看板是 PWA，可「添加到主屏 / 安装为独立窗口」并预缓存应用壳加速二次加载（实时数据仍走 `/ws`，不做离线数据）。**前提是安全上下文**：必须经反代终结 TLS 用 `https://` 访问；纯 `http://`（局域网 IP 直连）下浏览器**不会注册 Service Worker、也不显示安装入口**。模块细节见 [relay-web-module.md](relay-web-module.md) 的「PWA」段。
 
+## RMUX 终端运维要点
+
+- **默认关闭**：连接器 `options.terminal.enabled` 默认为 `false`。开启前确认 hub 登录者可接受交互 shell。
+- **路径**：实例侧 registry/owner 在 `<xacpx-home>/relay/`（与 `credential.json` 同级）。不要手工删除
+  `terminals.json` / `terminal-owner.json` —— cleanup-pending 时它们是唯一回收证据。
+- **重启窗口**：daemon 在 `ownerLeaseTtlSeconds`（默认 90s）内重启可 adopt 同一 RMUX session；超过 TTL 由
+  daemon 回收，shell 内容丢失属预期。
+- **cleanup-pending**：显式终止时 RMUX/sidecar 暂时不可达会留下 reaping tombstone；`xacpx doctor` 的 Plugins
+  检查会 warn，并提示保留 registry/owner、依赖 reconciler/lease，**不会**提供猜测性 orphan kill。
+- **假路径 E2E**：`tests/unit/packages/relay/rmux-terminal-e2e.test.ts`（in-memory driver）。真实 RMUX smoke
+  仍 opt-in，见 [relay-release.md](relay-release.md)。
+
 ## 访问令牌管理
 
 访问令牌（access token）是唯一的凭证形式——既用于 Web 登录，也直接用于连接器注册（无需单独的配对令牌）。

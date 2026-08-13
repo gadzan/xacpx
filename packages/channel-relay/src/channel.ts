@@ -1,7 +1,12 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import {
   MSG,
+  RELAY_CAPABILITIES,
   type InstanceNoticePayload,
   type InstanceRecoveryAckPayload,
+  type RelayEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
@@ -9,13 +14,37 @@ import type {
   CoordinatorMessageInput,
   MessageChannelRuntime,
   ScheduledChannelMessageInput,
+  SessionResourceCatalog,
 } from "xacpx/plugin-api";
+import { coreHomeDir } from "xacpx/plugin-api";
+
+/** Mirrors core `ChannelStopReason` (exported from plugin-api once consumers pick up the bump). */
+type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
 
 import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
 import { CredentialStore, defaultCredentialPath, type RelayCredential } from "./credential-store.js";
 import { createControlBridge, subscribeControlEvents, dispatchControlEvent } from "./control-bridge.js";
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
 import { createStateMirror } from "./state-mirror.js";
+import {
+  createProductionTerminalDriver,
+  type RmuxSidecarSupervisor,
+} from "./terminal/rmux-sidecar-supervisor.js";
+import type { RmuxTerminalDriver } from "./terminal/rmux-driver.js";
+import { TerminalRegistryStore } from "./terminal/terminal-registry-store.js";
+import {
+  DefaultRelayTerminalRuntime,
+  type RelayTerminalRuntime,
+} from "./terminal/terminal-runtime.js";
+import {
+  createTerminalViewerPublisher,
+  handleTerminalEvent,
+  handleTerminalRequest,
+  isTerminalEventType,
+  isTerminalRequestType,
+} from "./terminal-bridge.js";
+import { retireRelayTerminals } from "./terminal/retire-terminals.js";
+import { logTerminalEvent } from "./terminal/terminal-log.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -31,9 +60,20 @@ interface RelayClientLike {
   sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void;
 }
 
+export function defaultTerminalRegistryDir(): string {
+  return join(coreHomeDir(process.env.HOME ?? homedir()), "relay");
+}
+
 export interface RelayChannelDeps {
   credentialStore?: CredentialStoreLike;
   createClient?: (options: RelayClientOptions) => RelayClientLike;
+  /** Override terminal registry directory (tests). Default: ~/.xacpx/relay */
+  terminalRegistryDir?: string;
+  /**
+   * Driver factory for tests. Production resolves the Rust sidecar via
+   * `createProductionTerminalDriver` — never falls back to InMemory.
+   */
+  createTerminalDriver?: () => RmuxTerminalDriver;
 }
 
 export class RelayChannel implements MessageChannelRuntime {
@@ -44,10 +84,13 @@ export class RelayChannel implements MessageChannelRuntime {
   private readonly credentials: CredentialStoreLike;
   private client: RelayClientLike | null = null;
   private unsubscribe: (() => void) | null = null;
-  // The structured control facade, captured at start(). Scheduled dispatch runs a
-  // fired task's prompt through this so it streams as a real turn (turn-* events flow
-  // over the same event subscription to the hub → conversation history + live view).
+  private catalogUnsub: (() => void) | null = null;
   private control: ControlService | null = null;
+  private terminal: DefaultRelayTerminalRuntime | null = null;
+  private terminalReady = false;
+  private terminalSupervisor: RmuxSidecarSupervisor | null = null;
+  private startLogger: ChannelStartInput["logger"] | undefined;
+  private readonly pendingRetirements = new Set<Promise<void>>();
 
   constructor(options: Record<string, unknown> | undefined, private readonly deps: RelayChannelDeps = {}) {
     this.config = parseRelayChannelConfig(options);
@@ -62,7 +105,25 @@ export class RelayChannel implements MessageChannelRuntime {
     return "relay channel pairs automatically on start; configure it via: xacpx channel add relay --url <ws-url> --token <pairing-token>";
   }
 
-  logout(): void {
+  async logout(): Promise<void> {
+    // Spec §12.3: await durable reaping before dropping credential.
+    await this.detachCatalogAndDrainRetirements();
+    if (this.terminal) {
+      try {
+        await this.terminal.terminateAll("logout");
+      } catch {
+        // cleanup-pending / unreachable RMUX still allows credential clear only
+        // after we attempted terminateAll (records are reaping).
+      }
+      try {
+        await this.terminal.stop();
+      } catch {
+        // ignore
+      }
+      this.terminal = null;
+      this.terminalReady = false;
+    }
+    await this.stopTerminalSupervisor();
     this.credentials.clear();
   }
 
@@ -70,25 +131,29 @@ export class RelayChannel implements MessageChannelRuntime {
     if (!input.control) {
       throw new Error("relay channel requires ChannelStartInput.control (xacpx >= 0.11)");
     }
-    // Capture the guard-narrowed ControlService in a const: the `onEvent` closure below
-    // runs later, and TS does not carry the `if (!input.control)` narrowing into a
-    // deferred closure over the mutable `input.control` property.
     const control = input.control;
     this.control = control;
+
+    const capabilities = await this.bootstrapTerminal(input);
+
     const bridge = createControlBridge(control);
+    const onRequest = (envelope: RelayEnvelope, respond: (payload: unknown) => void) => {
+      if (this.terminal && this.terminalReady && isTerminalRequestType(envelope.type)) {
+        void handleTerminalRequest(this.terminal, envelope, respond);
+        return;
+      }
+      bridge(envelope, respond);
+    };
+
     const client = (this.deps.createClient ?? ((options) => new RelayClient(options)))({
       url: this.config.url,
       credentialStore: this.credentials,
       pairingToken: this.config.pairingToken,
       instanceName: this.config.name,
       coreVersion: input.coreVersion,
-      onRequest: bridge,
+      capabilities,
+      onRequest,
       onEvent: (envelope) => {
-        // The hub acks a recovery id only AFTER its rows (messages + receipt)
-        // committed to SQLite. Retire the finished-offline entry here — and ONLY
-        // here: the ws flush callback proves the frame left this process, not
-        // that the hub persisted it, so confirming on flush would drop the entry
-        // if the hub died before the commit, leaving a permanent history hole.
         if (envelope.type === MSG.instanceRecoveryAck) {
           const ids = (envelope.payload as InstanceRecoveryAckPayload | undefined)?.recoveryIds;
           if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) {
@@ -96,16 +161,18 @@ export class RelayChannel implements MessageChannelRuntime {
           }
           return;
         }
+        if (this.terminal && this.terminalReady && isTerminalEventType(envelope.type)) {
+          // RMUX path: never fall through to legacy core PTY handlers.
+          void handleTerminalEvent(this.terminal, envelope);
+          return;
+        }
         dispatchControlEvent(control, envelope);
       },
+      onDisconnected: () => {
+        this.terminal?.detachAllAttachments();
+      },
       logger: input.logger,
-      // Right after (re)auth — before any subsequent control events can arrive — push
-      // the local state mirror so a restarted hub recovers running turns, usage meters
-      // and command hints. First connect usually sends an empty sync; harmless, and it
-      // keeps one code path.
       onReady: () => {
-        // Prune aliases of sessions removed while offline; a chatKey whose session
-        // list cannot be read keeps its aliases (don't prune what we can't verify).
         const liveAliases = new Set<string>();
         for (const chatKey of mirror.chatKeys()) {
           try {
@@ -114,14 +181,6 @@ export class RelayChannel implements MessageChannelRuntime {
             for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
           }
         }
-        // Expire entries past the shared retention horizon first, so a stale entry
-        // can never ride the sync into a duplicate (the hub prunes its receipt on
-        // the same horizon). Then a pure snapshot; the destructive prune of dead
-        // aliases runs ONLY after the frame was confirmed flushed — and only against
-        // the aliases that existed when the snapshot was built, so state that arrived
-        // in between (new sessions/turns forwarded live) is never GC'd by this
-        // callback. Finished-offline entries are NOT confirmed here: only the hub's
-        // recovery ack retires those (see onEvent).
         mirror.expirePendingFinished();
         const { snapshot, aliases } = mirror.buildStateSync(liveAliases);
         client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
@@ -129,23 +188,29 @@ export class RelayChannel implements MessageChannelRuntime {
         });
       },
     });
-    // Mirror sees the exact payloads being forwarded, so the sync snapshot equals
-    // what the hub consumed (normalized tool steps included).
+
     const mirror = createStateMirror({ logger: input.logger });
     this.client = client;
+
+    if (this.terminal) {
+      // Rebind publisher now that client exists.
+      const publish = createTerminalViewerPublisher(this.terminal, (type, payload, onFlush) => {
+        client.sendEvent(type, payload, onFlush);
+      });
+      // Runtime was constructed with a no-op publisher; replace via fresh wiring
+      // is awkward — instead emit through a mutable slot set below.
+      this.viewerPublish = publish;
+    }
+
     this.unsubscribe = subscribeControlEvents(control, (type, payload) => {
       const finishedRecoveryId = mirror.handleEnvelope(type, payload);
       const forwardedPayload = finishedRecoveryId && typeof payload === "object" && payload !== null
         ? { ...payload as Record<string, unknown>, event: { ...(payload as { event: Record<string, unknown> }).event, recoveryId: finishedRecoveryId } }
         : payload;
-      // Deliver the live frame (the hub persists it and acks the recovery id);
-      // no flush-confirm — the FIFO entry is retired by the hub's ack, and if
-      // the frame never lands the next state sync re-delivers it.
       client.sendEvent(type, forwardedPayload);
     });
     client.start(input.abortSignal);
 
-    // Channel convention: start() stays pending until shutdown (see run-console).
     await new Promise<void>((resolve) => {
       if (input.abortSignal.aborted) {
         resolve();
@@ -153,15 +218,68 @@ export class RelayChannel implements MessageChannelRuntime {
       }
       input.abortSignal.addEventListener("abort", () => resolve(), { once: true });
     });
-    this.stop();
+    await this.stop("shutdown");
   }
 
-  stop(): void {
+  /** Mutable slot filled after client construction so runtime events reach the hub. */
+  private viewerPublish: ((
+    event: import("./terminal/terminal-runtime.js").TerminalViewerEvent,
+    onFlush?: (error?: Error) => void,
+  ) => void) | null = null;
+
+  async stop(reason: ChannelStopReason = "shutdown"): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    await this.detachCatalogAndDrainRetirements();
+
+    if (this.terminal) {
+      // Process-owned: Runtime.stop() durable-terminates all sessions.
+      // Hub/browser disconnect still only detachAllAttachments (not stop).
+      await this.terminal.stop();
+      this.terminal = null;
+      this.terminalReady = false;
+      this.viewerPublish = null;
+    }
+    await this.stopTerminalSupervisor();
+
     this.client?.stop();
     this.client = null;
     this.control = null;
+  }
+
+  private async detachCatalogAndDrainRetirements(): Promise<void> {
+    this.catalogUnsub?.();
+    this.catalogUnsub = null;
+    if (this.pendingRetirements.size === 0) return;
+    await Promise.allSettled([...this.pendingRetirements]);
+  }
+
+  private queueLogicalRetirement(
+    runtime: DefaultRelayTerminalRuntime,
+    logicalSessionId: string,
+    reason: "archive" | "delete",
+  ): void {
+    const work = runtime.retireLogicalSession(logicalSessionId, reason).catch((err) => {
+      void this.startLogger?.error(
+        "relay.terminal_retire_failed",
+        `logical session retirement failed: ${err instanceof Error ? err.message : String(err)}`,
+        {},
+      );
+    });
+    const tracked = work.finally(() => {
+      this.pendingRetirements.delete(tracked);
+    });
+    this.pendingRetirements.add(tracked);
+  }
+
+  private async stopTerminalSupervisor(): Promise<void> {
+    if (!this.terminalSupervisor) return;
+    try {
+      await this.terminalSupervisor.stop();
+    } catch {
+      // ignore
+    }
+    this.terminalSupervisor = null;
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
@@ -176,9 +294,6 @@ export class RelayChannel implements MessageChannelRuntime {
     this.sendNotice({ kind: "coordinator-message", chatKey: input.chatKey, text: input.text });
   }
 
-  // A due scheduled task fires here. Run it through the control turn path (not a side
-  // notice) so it behaves exactly like a manual web prompt: the prompt appears in the
-  // conversation, the agent reply streams + persists, and the schedule origin badges it.
   async sendScheduledMessage(input: ScheduledChannelMessageInput): Promise<void> {
     if (!this.control) {
       throw new Error("relay channel cannot dispatch scheduled task before start()");
@@ -191,8 +306,6 @@ export class RelayChannel implements MessageChannelRuntime {
       executeAt: input.executeAt ?? new Date(0).toISOString(),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
-    // Surface a failed turn as a thrown error so the scheduler records the task as
-    // "failed" (and the web panel shows it) rather than silently "executed".
     if (!result.ok) {
       throw new Error(result.errorMessage ?? "scheduled turn failed");
     }
@@ -200,5 +313,125 @@ export class RelayChannel implements MessageChannelRuntime {
 
   private sendNotice(payload: InstanceNoticePayload): void {
     this.client?.sendEvent(MSG.instanceNotice, payload);
+  }
+
+  /**
+   * Registry → driver → reconcile, then return the capability snapshot for
+   * handshake. Terminal disabled / unavailable → empty caps; chat still works.
+   * When config flips enabled→disabled, still reads the existing registry and
+   * retires leftover resources before omitting capabilities.
+   */
+  private async bootstrapTerminal(input: ChannelStartInput): Promise<string[]> {
+    const registryDir = this.deps.terminalRegistryDir ?? defaultTerminalRegistryDir();
+
+    if (!this.config.terminal.enabled) {
+      try {
+        await retireRelayTerminals({
+          registryDir,
+          terminalConfig: this.config.terminal,
+          createDriver: this.deps.createTerminalDriver,
+        });
+      } catch (err) {
+        void input.logger?.error(
+          "relay.terminal_retire_on_disabled",
+          `Failed to retire leftover terminals after terminal.enabled=false: ${err instanceof Error ? err.message : String(err)}`,
+          {},
+        );
+      }
+      return [];
+    }
+
+    const catalog = input.sessionResources as SessionResourceCatalog | undefined;
+    if (!catalog) {
+      throw new Error(
+        "relay terminal.enabled requires ChannelStartInput.sessionResources (xacpx with SessionResourceCatalog)",
+      );
+    }
+    this.startLogger = input.logger;
+
+    const registry = new TerminalRegistryStore({ dir: registryDir, exclusiveWriter: true });
+    try {
+      let driver: RmuxTerminalDriver;
+      if (this.deps.createTerminalDriver) {
+        driver = this.deps.createTerminalDriver();
+      } else {
+        const prod = await createProductionTerminalDriver(this.config.terminal);
+        this.terminalSupervisor = prod.supervisor;
+        driver = prod.driver;
+      }
+
+      const runtime = new DefaultRelayTerminalRuntime({
+        registry,
+        driver,
+        catalog,
+        config: this.config.terminal,
+        onViewerEvent: (event, onFlush) => {
+          this.viewerPublish?.(event, onFlush);
+        },
+      });
+      await runtime.start();
+      this.terminal = runtime;
+      this.terminalReady = true;
+      void logTerminalEvent(input.logger, "relay.terminal.runtime_ready", {
+        capabilityCount: 2,
+        maxSessions: this.config.terminal.maxSessions,
+        maxViewersPerTerminal: this.config.terminal.maxViewersPerTerminal,
+      });
+      this.viewerPublish = createTerminalViewerPublisher(runtime, (type, payload, onFlush) => {
+        if (!this.client) {
+          onFlush?.(new Error("not-ready"));
+          return;
+        }
+        this.client.sendEvent(type, payload, onFlush);
+      });
+
+      this.catalogUnsub = catalog.subscribe((event) => {
+        if (event.type === "archived" || event.type === "removed") {
+          this.queueLogicalRetirement(
+            runtime,
+            event.session.logicalSessionId,
+            event.type === "archived" ? "archive" : "delete",
+          );
+        }
+        // restored: catalog view only — do not create/revive a terminal.
+      });
+
+      return [
+        RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
+        RELAY_CAPABILITIES.terminalMultiViewV1,
+      ];
+    } catch (err) {
+      void logTerminalEvent(input.logger, "relay.terminal.runtime_unavailable", {
+        errorClass: err instanceof Error ? err.name : "Error",
+      });
+      void input.logger?.error(
+        "relay.terminal_bootstrap_failed",
+        `RMUX terminal runtime failed to start; continuing without terminal capabilities: ${err instanceof Error ? err.message : String(err)}`,
+        {},
+      );
+      const running = this.terminal;
+      this.terminal = null;
+      this.terminalReady = false;
+      if (running) {
+        try {
+          await running.stop();
+        } catch {
+          // ignore
+        }
+      } else {
+        try {
+          await registry.close();
+        } catch {
+          // ignore
+        }
+      }
+      await this.stopTerminalSupervisor();
+      return [];
+    }
+  }
+
+  /** Test seam */
+  getTerminalRuntimeForTests(): RelayTerminalRuntime | null {
+    return this.terminal;
   }
 }

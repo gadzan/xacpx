@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -202,6 +202,7 @@ test("persists sessions and chat context", async () => {
         agent: "codex",
         workspace: "backend",
         transport_session: "backend:api-fix",
+        logical_session_id: "33333333-3333-4333-8333-333333333333",
         transport_agent_command: "npx @zed-industries/codex-acp@^0.9.5",
         created_at: "2026-03-24T10:00:00.000Z",
         last_used_at: "2026-03-24T10:00:00.000Z",
@@ -1591,5 +1592,174 @@ test("rejects a malformed transport_agent_argv and keeps the record loadable", a
   await store.save(state);
   const loaded = await store.load();
   expect(loaded.sessions.demo).toBeUndefined();
+  await rm(dir, { recursive: true, force: true });
+});
+
+// ── logical_session_id migration ─────────────────────────────────────────────
+
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function legacySessionRecord(alias: string) {
+  // Pre-migration shape: everything a valid session needs EXCEPT logical_session_id.
+  return {
+    alias,
+    agent: "codex",
+    workspace: "backend",
+    transport_session: `backend:${alias}`,
+    created_at: "2026-06-10T10:00:00.000Z",
+    last_used_at: "2026-06-10T10:00:00.000Z",
+  };
+}
+
+test("load migrates legacy sessions missing logical_session_id, persists them, and reports the migration", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const store = new StateStore(path);
+
+  await Bun.write(
+    path,
+    JSON.stringify({
+      sessions: {
+        legacy: legacySessionRecord("legacy"),
+        current: {
+          ...legacySessionRecord("current"),
+          logical_session_id: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+      chat_contexts: {},
+    }),
+  );
+
+  const state = await store.load();
+  const migratedId = state.sessions.legacy?.logical_session_id;
+  expect(migratedId).toMatch(UUID_V4_PATTERN);
+  // an existing valid id is never rewritten
+  expect(state.sessions.current?.logical_session_id).toBe("11111111-1111-4111-8111-111111111111");
+
+  // the report distinguishes a migration from a dropped corrupt record
+  const report = store.lastLoadReport;
+  expect(report?.dropped).toEqual([]);
+  expect(report?.migrated).toEqual([
+    { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
+  ]);
+
+  // the migration is durable BEFORE load() returns: the file on disk already
+  // carries the exact id that was handed to the caller
+  const onDisk = JSON.parse(await readFile(path, "utf8")) as {
+    sessions: Record<string, { logical_session_id?: string }>;
+  };
+  expect(onDisk.sessions.legacy?.logical_session_id).toBe(migratedId);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("a second load keeps migrated logical_session_id values stable and reports nothing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+
+  await Bun.write(
+    path,
+    JSON.stringify({
+      sessions: { legacy: legacySessionRecord("legacy") },
+      chat_contexts: {},
+    }),
+  );
+
+  const firstId = (await new StateStore(path).load()).sessions.legacy?.logical_session_id;
+  expect(firstId).toMatch(UUID_V4_PATTERN);
+
+  const secondStore = new StateStore(path);
+  const secondState = await secondStore.load();
+  expect(secondState.sessions.legacy?.logical_session_id).toBe(firstId);
+  expect(secondStore.lastLoadReport).toBeNull();
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("load rejects and does not publish temporary ids when the migration save fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const raw = JSON.stringify({
+    sessions: { legacy: legacySessionRecord("legacy") },
+    chat_contexts: {},
+  });
+  await Bun.write(path, raw);
+
+  const store = new StateStore(path, {
+    writeMigration: async () => {
+      throw new Error("disk full");
+    },
+  });
+
+  await expect(store.load()).rejects.toThrow("disk full");
+  // no in-memory-only id was published and the file was left untouched
+  expect(store.lastLoadReport).toBeNull();
+  expect(await readFile(path, "utf8")).toBe(raw);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("a present-but-invalid logical_session_id is quarantined, never migrated", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const store = new StateStore(path);
+
+  await Bun.write(
+    path,
+    JSON.stringify({
+      sessions: {
+        good: {
+          ...legacySessionRecord("good"),
+          logical_session_id: "22222222-2222-4222-8222-222222222222",
+        },
+        "bad-type": { ...legacySessionRecord("bad-type"), logical_session_id: 42 },
+        "bad-shape": { ...legacySessionRecord("bad-shape"), logical_session_id: "not-a-uuid" },
+        // a valid UUID but not v4: still not a logical_session_id
+        "bad-version": {
+          ...legacySessionRecord("bad-version"),
+          logical_session_id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        },
+      },
+      chat_contexts: {},
+    }),
+  );
+
+  const state = await store.load();
+  expect(state.sessions.good?.logical_session_id).toBe("22222222-2222-4222-8222-222222222222");
+  expect(state.sessions["bad-type"]).toBeUndefined();
+  expect(state.sessions["bad-shape"]).toBeUndefined();
+  expect(state.sessions["bad-version"]).toBeUndefined();
+
+  const report = store.lastLoadReport;
+  expect(report?.dropped).toHaveLength(3);
+  expect(report?.dropped.every((record) => record.reason === "malformed session record")).toBe(true);
+  expect(report?.migrated ?? []).toEqual([]);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("inspect reports pending id migrations without writing anything", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const raw = JSON.stringify({
+    sessions: { legacy: legacySessionRecord("legacy") },
+    chat_contexts: {},
+  });
+  await Bun.write(path, raw);
+
+  const store = new StateStore(path);
+  const inspection = await store.inspect();
+
+  // diagnostic callers get a fully-typed state (in-memory id)…
+  expect(inspection.state.sessions.legacy?.logical_session_id).toMatch(UUID_V4_PATTERN);
+  // …and can tell a pending migration apart from a dropped corrupt record
+  expect(inspection.report?.dropped).toEqual([]);
+  expect(inspection.report?.migrated).toEqual([
+    { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
+  ]);
+  // side-effect free: nothing persisted, no backup files
+  expect(await readFile(path, "utf8")).toBe(raw);
+  expect(await readdir(dir)).toEqual(["state.json"]);
+
   await rm(dir, { recursive: true, force: true });
 });

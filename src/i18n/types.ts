@@ -1025,6 +1025,7 @@ export interface ChannelCliMessages {
   // removeChannel
   cannotRemoveLastEnabled: string;
   channelRemoved: (id: string) => string;
+  channelRetirementFailed: (id: string, error: string) => string;
   channelCredentialsCleared: (id: string) => string;
   channelCredentialsClearFailed: (id: string, error: string) => string;
   channelCredentialsKept: (id: string) => string;

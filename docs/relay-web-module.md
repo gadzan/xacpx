@@ -429,6 +429,21 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 - **构建**：仓库根 `bun run build:relay-web`（先 build relay-protocol 再 vite build）；
 - **测试**：仓库根 `bun run test:web`（Vitest）。
 
+## RMUX 共享终端（看板行为）
+
+当实例在线且同时具备 `terminal.rmux.recovery.v1` 与 `terminal.multi-view.v1` 时，会话 Tab 可打开可恢复终端。
+
+用户语义（与 legacy live-PTY 的关键差别）：
+
+- **Tab 上的 `X` = 全局终止**该共享 shell（有 ack：`terminated` 或 `cleanup-pending`）。`viewerCount > 1` 时必须确认。
+- **关闭浏览器窗口 / 刷新 / 断网**只 detach 本地 attachment，**不** kill RMUX session；其他设备上的 viewer 继续。
+- **多设备**共享同一个 `terminalId`/`generation`：首个打开方为 controller，其余为 spectator；spectator 可 **take control**。
+- Tab 布局 / 本地 UI 状态不跨设备共享；只共享底层 shell。
+- 用户文案使用「睡眠/唤醒」；API / 代码里仍可见 archive 拼写（兼容）。
+
+实现入口：`packages/relay-web/src/stores/terminal.ts`、`TerminalTab.vue`、recovery reducer
+（`src/lib/terminal-recovery.ts`）。权威状态机见 RMUX terminal design spec。
+
 ## PWA（可安装 + 应用壳缓存）
 
 看板是可安装的 PWA：支持「添加到主屏 / 安装为独立窗口」，并对应用壳（JS/CSS/字体/图标/`index.html`）做 Service Worker 预缓存以加速二次加载。它是 **WS 实时控制台**，所以 PWA 的目标是「可安装 + 秒开」，**不做离线数据**——断网时壳能开，但实时数据仍需 WS 重连。

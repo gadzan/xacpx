@@ -12,14 +12,186 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: publish-channel-relay-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  publish:
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Read version and verify tag
+        id: meta
+        run: |
+          VERSION="$(node -p "require('./packages/channel-relay/package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG_NAME="${{ inputs.tag }}"
+          else
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          fi
+          EXPECTED="channel-relay-v${VERSION}"
+          if [[ "$TAG_NAME" != "$EXPECTED" ]]; then
+            echo "::error::tag $TAG_NAME does not match package.json version ($EXPECTED)" >&2
+            exit 1
+          fi
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+  build-platform:
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux
+            arch: x64
+            package: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            package: linux-arm64
+          - runner: macos-14
+            platform: darwin
+            arch: arm64
+            package: darwin-arm64
+          - runner: macos-13
+            platform: darwin
+            arch: x64
+            package: darwin-x64
+          - runner: windows-latest
+            platform: win32
+            arch: x64
+            package: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Verify RMUX sidecar pin (no ../rmux path dep)
+        run: |
+          if grep -E 'path\s*=|\.\./rmux' packages/channel-relay/native/rmux-bridge/Cargo.toml; then
+            echo "::error::rmux-bridge must not path-depend on ../rmux" >&2
+            exit 1
+          fi
+          grep -F 'rmux-sdk = "=0.10.0"' packages/channel-relay/native/rmux-bridge/Cargo.toml
+
+      - name: Build release sidecar
+        run: cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+
+      - name: Pack platform package
+        run: |
+          BIN="packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
+          if [[ "${{ matrix.platform }}" == "win32" ]]; then
+            BIN="${BIN}.exe"
+          fi
+          node ./scripts/pack-rmux-bridge-platform.mjs \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --binary "$BIN"
+          test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json"
+          node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1)"
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmux-bridge-${{ matrix.package }}
+          path: platform-packages/xacpx-rmux-bridge-${{ matrix.package }}
+          if-no-files-found: error
+
+  smoke-linux:
+    needs: [meta, build-platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download linux-x64 bridge artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rmux-bridge-linux-x64
+          path: platform-packages/xacpx-rmux-bridge-linux-x64
+
+      - name: Install pinned RMUX 0.10.0
+        run: |
+          chmod +x scripts/install-rmux-release.sh
+          bash scripts/install-rmux-release.sh
+          echo "RMUX_SDK_DAEMON_BINARY=$HOME/.local/libexec/rmux/rmux" >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run real RMUX smoke matrix
+        env:
+          XACPX_RMUX_INTEGRATION: "1"
+          XACPX_RMUX_BRIDGE: ${{ github.workspace }}/platform-packages/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
+        run: |
+          chmod +x "$XACPX_RMUX_BRIDGE"
+          bun test tests/smoke/relay-rmux-terminal.test.ts
+
+  publish-platforms:
+    needs: [meta, build-platform, smoke-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -29,6 +201,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rmux-bridge-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Publish platform packages (before channel-relay)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          NPM_TAG="${{ needs.meta.outputs.npm_tag }}"
+          for pkg in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+            src="artifacts/rmux-bridge-${pkg}"
+            dest="platform-packages/xacpx-rmux-bridge-${pkg}"
+            rm -rf "$dest"
+            mv "$src" "$dest"
+            echo "Publishing @ganglion/xacpx-rmux-bridge-${pkg}@${{ needs.meta.outputs.version }}"
+            (cd "$dest" && npm publish --tag "$NPM_TAG" --access public)
+          done
+
+  publish-channel-relay:
+    needs: [meta, publish-platforms, smoke-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
@@ -42,7 +257,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -53,52 +268,49 @@ jobs:
       - name: Build channel-relay (and relay-protocol + plugin-api types)
         run: bun run build:channel-relay
 
+      - name: Sync rmux-bridge optionalDependencies to channel-relay version
+        run: node ./scripts/sync-rmux-bridge-versions.mjs
+
+      - name: Verify rmux-bridge versions match channel-relay
+        run: node ./scripts/sync-rmux-bridge-versions.mjs --check
+
       - name: Verify publishable artifacts
         run: bun run verify:publish
 
-      - name: Read version
-        id: meta
-        run: |
-          VERSION="$(node -p "require('./packages/channel-relay/package.json').version")"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if [[ "$VERSION" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Verify tag matches package version
-        run: |
-          if [[ -n "${{ inputs.tag }}" ]]; then
-            TAG_NAME="${{ inputs.tag }}"
-          else
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          fi
-          EXPECTED="channel-relay-v${{ steps.meta.outputs.version }}"
-          if [[ "$TAG_NAME" != "$EXPECTED" ]]; then
-            echo "::error::tag $TAG_NAME does not match package.json version ($EXPECTED)" >&2
-            exit 1
-          fi
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_ENV"
-
-      - name: Publish to npm
+      - name: Publish channel-relay to npm
         working-directory: packages/channel-relay
-        run: npm publish --tag ${{ steps.meta.outputs.npm_tag }} --access public
+        run: npm publish --tag ${{ needs.meta.outputs.npm_tag }} --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    needs: [meta, publish-channel-relay]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          tag_name="${{ needs.meta.outputs.tag_name }}"
           if gh release view "$tag_name" >/dev/null 2>&1; then
             echo "Release $tag_name already exists, skipping create"
             exit 0
           fi
-          TITLE="@ganglion/xacpx-channel-relay v${{ steps.meta.outputs.version }}"
-          if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
+          TITLE="@ganglion/xacpx-channel-relay v${{ needs.meta.outputs.version }}"
+          if [[ "${{ needs.meta.outputs.prerelease }}" == "true" ]]; then
             gh release create "$tag_name" --title "$TITLE" --prerelease --generate-notes
           else
             gh release create "$tag_name" --title "$TITLE" --latest=false --generate-notes

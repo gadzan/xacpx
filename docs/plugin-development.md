@@ -213,6 +213,7 @@ export interface ChannelPluginDefinition {
   type: string;
   factory: ChannelFactory;
   cliProvider?: ChannelCliProvider;
+  retireChannel?: (ctx: ChannelRetireContext) => Promise<void>;
 }
 ```
 
@@ -221,6 +222,7 @@ export interface ChannelPluginDefinition {
 | `type` | Yes | Channel type string, e.g. `"feishu"`, `"yuanbao"`. Globally unique within a process. |
 | `factory` | Yes | Factory function, called at daemon startup to instantiate the `MessageChannelRuntime`. |
 | `cliProvider` | No | Parsing and prompting logic for `xacpx channel add <type>`. Without it, the user must hand-edit `~/.xacpx/config.json`. Strongly recommended to provide. |
+| `retireChannel` | No | CLI lifecycle hook for `xacpx channel disable` / `xacpx channel rm`. Core looks this up by channel type after configured plugins are loaded — it does not import the plugin npm package. Use this for one-shot resource cleanup (for example process-owned terminals). The hook receives `print` and `getDaemonStatus`; a live daemon may require deferring cleanup until restart. |
 
 `type` constraints:
 
@@ -806,7 +808,7 @@ Every plugin command accepts `--restart` / `--no-restart`, and by default asks i
 3. plugin-loader iterates plugins[].enabled === true:
    3.1 import("<plugin-home>/node_modules/<name>")
    3.2 validateWeacpxPlugin
-   3.3 registerChannelPlugin — inject factory + cliProvider
+   3.3 registerChannelPlugin — inject factory + cliProvider + optional retireChannel
 4. createMessageChannels iterates channels[].enabled === true:
    4.1 channelFactories.get(type)
    4.2 factory(options, deps) → MessageChannelRuntime

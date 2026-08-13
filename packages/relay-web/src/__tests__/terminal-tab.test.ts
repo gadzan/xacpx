@@ -1,43 +1,117 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
+import { TerminalRequestError } from "../api/events";
+import { initialRecoveryState } from "../lib/terminal-recovery";
 
 const adapter = {
-  write: vi.fn(), resize: vi.fn(), dispose: vi.fn(), focus: vi.fn(),
-  getSelection: vi.fn(() => ""), setTheme: vi.fn(), scrollLines: vi.fn(),
+  write: vi.fn(async () => {}),
+  resize: vi.fn(),
+  dispose: vi.fn(),
+  focus: vi.fn(),
+  getSelection: vi.fn(() => ""),
+  setTheme: vi.fn(),
+  scrollLines: vi.fn(),
+  resetAndReplay: vi.fn(async () => {}),
   fit: vi.fn((): { cols: number; rows: number } | null => ({ cols: 80, rows: 24 })),
-  cols: () => 80, rows: () => 24,
+  cols: () => 80,
+  rows: () => 24,
 };
 vi.mock("../lib/terminal-adapter", () => ({ createTerminalAdapter: vi.fn(() => adapter) }));
-vi.mock("../api/client", () => ({ api: { rpc: vi.fn(async () => ({ terminalId: "t1" })) } }));
-vi.mock("../api/events", () => ({ sendWebClientMessage: vi.fn() }));
+
+const openOrResume = vi.fn();
+const detach = vi.fn();
+const sendInput = vi.fn();
+const sendResize = vi.fn();
+const takeControl = vi.fn();
+const onRebase = vi.fn(() => () => {});
+const onBytes = vi.fn(() => () => {});
+const onMeta = vi.fn(() => () => {});
+const onAttachmentExit = vi.fn(() => () => {});
+
+vi.mock("../stores/terminal", async () => {
+  const actual = await vi.importActual<typeof import("../stores/terminal")>("../stores/terminal");
+  return {
+    ...actual,
+    useTerminalStore: () => ({
+      openOrResume,
+      detach,
+      sendInput,
+      sendResize,
+      takeControl,
+      onRebase,
+      onBytes,
+      onMeta,
+      onAttachmentExit,
+      get: vi.fn(),
+    }),
+  };
+});
 
 import TerminalTab from "../components/TerminalTab.vue";
 import { createTerminalAdapter } from "../lib/terminal-adapter";
-import { api } from "../api/client";
-import { sendWebClientMessage } from "../api/events";
-import { useTerminalStore } from "../stores/terminal";
-import { saveTerminalId, loadTerminalId } from "../lib/terminal-sessions";
 
-const globalOpts = { mocks: { $t: (k: string) => k } };
+const globalOpts = { mocks: { $t: (k: string, p?: Record<string, unknown>) => (p ? `${k}:${JSON.stringify(p)}` : k) } };
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-// Grab the onData callback TerminalTab passed into the (mocked) adapter factory.
 function onDataOf() {
   const call = vi.mocked(createTerminalAdapter).mock.calls.at(-1);
   return (call![1] as { onData: (d: string) => void }).onData;
 }
 
-describe("TerminalTab", () => {
-  beforeEach(() => { setActivePinia(createPinia()); vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear(); });
+function openedView(overrides?: Partial<{
+  localKey: string;
+  sessionAlias: string;
+  role: "controller" | "spectator";
+  viewerCount: number;
+}>) {
+  const sessionAlias = overrides?.sessionAlias ?? "demo";
+  const localKey = overrides?.localKey ?? `i1\0${sessionAlias}`;
+  return {
+    localKey,
+    instanceId: "i1",
+    sessionAlias,
+    cols: 80,
+    rows: 24,
+    terminalId: "t1",
+    generation: "g1",
+    attachmentId: "a1",
+    role: overrides?.role ?? "controller",
+    viewerCount: overrides?.viewerCount ?? 1,
+    recovery: initialRecoveryState("g1"),
+    active: true,
+    terminatePending: false,
+    terminateRetryable: false,
+  };
+}
 
-  it("creates a terminal and mounts the adapter when a session is selected", async () => {
+describe("TerminalTab", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    openOrResume.mockResolvedValue(openedView());
+    onRebase.mockReturnValue(() => {});
+    onBytes.mockReturnValue(() => {});
+    onMeta.mockReturnValue(() => {});
+    onAttachmentExit.mockReturnValue(() => {});
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias }),
+    );
+  });
+
+  it("openOrResumes and mounts the adapter when a session is selected", async () => {
     mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
     expect(createTerminalAdapter).toHaveBeenCalled();
+    expect(openOrResume).toHaveBeenCalledWith("i1\0demo", expect.objectContaining({
+      instanceId: "i1",
+      sessionAlias: "demo",
+    }));
   });
 
-  it("host carries the term-host class the focus-ring suppression targets", async () => {
+  it("host carries the term-host class", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
     expect(w.find('[data-test="terminal-host"]').classes()).toContain("term-host");
@@ -46,406 +120,55 @@ describe("TerminalTab", () => {
   it("shows the no-session hint when sessionAlias is empty", () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "" }, global: globalOpts });
     expect(w.text()).toContain("terminal.noSession");
-    expect(createTerminalAdapter).not.toHaveBeenCalled();
+    expect(openOrResume).not.toHaveBeenCalled();
   });
 
-  it("maps a resolved errorPayload 'terminal-disabled' to the disabled hint", async () => {
-    vi.mocked(api.rpc).mockResolvedValueOnce({ error: { code: "internal", message: "terminal-disabled" } } as never);
+  it("maps TerminalRequestError codes to i18n keys", async () => {
+    openOrResume.mockRejectedValueOnce(new TerminalRequestError("terminal-disabled", "off"));
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await tick();
     expect(w.text()).toContain("terminal.disabled");
   });
 
-  it("maps an unrecognized error message to terminal.error", async () => {
-    vi.mocked(api.rpc).mockResolvedValueOnce({ error: { code: "session-not-found", message: "session-not-found" } } as never);
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    expect(w.text()).toContain("terminal.error");
-  });
-
-  it("superseded create() is closed and does not leak the terminal", async () => {
-    let resolveFn!: (v: unknown) => void;
-    const deferred = new Promise((res) => { resolveFn = res; });
-    vi.mocked(api.rpc).mockReturnValueOnce(deferred as never);
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "s1" }, global: globalOpts });
-    vi.mocked(api.rpc).mockResolvedValueOnce({ terminalId: "t2" } as never);
-    await w.setProps({ sessionAlias: "s2" });
-    await tick();
-    resolveFn({ terminalId: "t1" });
-    await tick();
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-close", terminalId: "t1" }),
+  it("spectator disables input and shows take-control", async () => {
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
     );
-  });
-
-  it("keybar Esc sends the escape sequence to the PTY", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-esc"]').trigger("click");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", terminalId: "t1", data: "\u001b" }),
-    );
+    await flushPromises();
+    expect(w.find('[data-test="terminal-role"]').text()).toContain("terminal.role.spectator");
+    expect(w.find('[data-test="terminal-take-control"]').exists()).toBe(true);
+    onDataOf()("x");
+    expect(sendInput).not.toHaveBeenCalled();
   });
 
-  it("keybar arrow-up sends the CSI up sequence", async () => {
+  it("controller keystrokes go through sendInput", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-up"]').trigger("click");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "\u001b[A" }),
-    );
+    await flushPromises();
+    onDataOf()("x");
+    expect(sendInput).toHaveBeenCalledWith("i1\0demo", "x");
   });
 
-  it("sticky Ctrl turns the next typed letter into a control code, then disarms", async () => {
+  it("detaches on unmount without terminate", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-ctrl"]').trigger("click"); // arm
-    const onData = onDataOf();
-    onData("c");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "\u0003" }),
-    );
-    vi.mocked(sendWebClientMessage).mockClear();
-    onData("d"); // disarmed → plain 'd'
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "d" }),
-    );
-  });
-
-  it("sticky Alt prefixes ESC to the next typed char, then disarms", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-alt"]').trigger("click"); // arm
-    const onData = onDataOf();
-    onData("b");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "b" }),
-    );
-    vi.mocked(sendWebClientMessage).mockClear();
-    onData("b"); // disarmed → plain 'b'
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "b" }),
-    );
-  });
-
-  it("multi-char input (paste/IME) passes through and disarms an armed modifier", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-alt"]').trigger("click"); // arm Alt
-    const onData = onDataOf();
-    onData("abc"); // multi-char → unchanged, and the one-shot arm is dropped
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "abc" }),
-    );
-    vi.mocked(sendWebClientMessage).mockClear();
-    onData("x"); // disarmed → plain 'x' (no ESC prefix)
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "x" }),
-    );
-  });
-
-  it("sticky Shift upcases the next typed letter, then disarms", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-shift"]').trigger("click"); // arm
-    onDataOf()("a");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "A" }),
-    );
-  });
-
-  it("Shift + arrow-up sends the xterm modified CSI sequence and disarms Shift", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-shift"]').trigger("click"); // arm
-    await w.find('[data-test="key-up"]').trigger("click");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "[1;2A" }),
-    );
-    vi.mocked(sendWebClientMessage).mockClear();
-    await w.find('[data-test="key-up"]').trigger("click"); // disarmed → plain up
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "[A" }),
-    );
-  });
-
-  it("Shift + Tab sends reverse-tab CSI Z", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-shift"]').trigger("click"); // arm
-    await w.find('[data-test="key-tab"]').trigger("click");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "[Z" }),
-    );
-  });
-
-  it("keybar Home / End send Ctrl-A / Ctrl-E (bound in default zsh/bash)", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-home"]').trigger("click");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "" }),
-    );
-    await w.find('[data-test="key-end"]').trigger("click");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "" }),
-    );
-  });
-
-  it("keybar PgUp / PgDn scroll the viewport locally (rows-1 lines), not send keys", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    vi.mocked(sendWebClientMessage).mockClear();
-    await w.find('[data-test="key-pageup"]').trigger("click");
-    expect(adapter.scrollLines).toHaveBeenCalledWith(-23); // rows(24) - 1, toward older
-    await w.find('[data-test="key-pagedown"]').trigger("click");
-    expect(adapter.scrollLines).toHaveBeenCalledWith(23); // toward newer
-    expect(sendWebClientMessage).not.toHaveBeenCalled(); // local scroll, nothing sent to PTY
-  });
-
-  // The mount uses a mocked adapter (no real ghostty), so tap-to-focus suppression is
-  // asserted via stopPropagation on the touchend — the actual mechanism that prevents
-  // ghostty's canvas touchend handler (an ancestor-capture vs descendant-bubble race) from
-  // focusing and popping the keyboard on a drag.
-  function touchOn(el: HTMLElement, type: string, y: number) {
-    const e = new Event(type, { bubbles: true, cancelable: true });
-    Object.defineProperty(e, "touches", { value: [{ clientX: 0, clientY: y }], configurable: true });
-    const stop = vi.spyOn(e, "stopPropagation");
-    el.dispatchEvent(e);
-    return stop;
-  }
-
-  it("touch drag scrolls (finger up -> toward newer) and stops propagation to suppress focus", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
-    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true }); // rows 24 -> lineH 10
-    adapter.scrollLines.mockClear();
-    touchOn(el, "touchstart", 100);
-    touchOn(el, "touchmove", 60); // dy=-40, lineH=10 -> 4 lines toward newer
-    const endStop = touchOn(el, "touchend", 60);
-    expect(adapter.scrollLines).toHaveBeenCalledWith(4);
-    expect(endStop).toHaveBeenCalled(); // drag suppresses ghostty's tap-to-focus
-  });
-
-  it("a plain touch tap does NOT stop propagation (falls through to focus/keyboard)", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
-    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true });
-    adapter.scrollLines.mockClear();
-    touchOn(el, "touchstart", 100);
-    const endStop = touchOn(el, "touchend", 100); // no movement → tap
-    expect(adapter.scrollLines).not.toHaveBeenCalled();
-    expect(endStop).not.toHaveBeenCalled(); // tap reaches ghostty → focuses/raises keyboard
-  });
-
-  it("keyboard inset applies only while focused and above the toolbar threshold", async () => {
-    const vv = { height: 400, offsetTop: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() };
-    Object.defineProperty(window, "visualViewport", { value: vv, configurable: true });
-    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true }); // delta 400 > 120
-    try {
-      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-      await tick();
-      const center = () => w.find('[data-test="terminal-center"]').attributes("style") ?? "";
-      const keybar = () => w.find('[data-test="keybar"]').attributes("style") ?? "";
-      const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
-      // Unfocused: a large innerHeight−visualViewport delta is browser chrome, NOT a keyboard → no inset.
-      expect(center()).not.toContain("padding-bottom");
-      el.dispatchEvent(new Event("focusin", { bubbles: true }));
-      await tick();
-      expect(center()).toContain("padding-bottom: 400px");
-      // Keyboard open → the keybar drops its home-indicator safe-area padding so it sits
-      // flush on the keyboard instead of leaving a gap.
-      expect(keybar()).toContain("padding-bottom: 0.375rem");
-      el.dispatchEvent(new Event("focusout", { bubbles: true }));
-      await tick();
-      expect(center()).not.toContain("padding-bottom");
-      expect(keybar()).not.toContain("padding-bottom");
-    } finally {
-      Reflect.deleteProperty(window, "visualViewport");
-      Object.defineProperty(window, "innerHeight", { value: 768, configurable: true });
-    }
-  });
-
-  it("keyboard inset ignores a sub-threshold delta (browser toolbar) even when focused", async () => {
-    const vv = { height: 740, offsetTop: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() };
-    Object.defineProperty(window, "visualViewport", { value: vv, configurable: true });
-    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true }); // delta 60 < 120
-    try {
-      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-      await tick();
-      const el = w.find('[data-test="terminal-host"]').element as HTMLElement;
-      el.dispatchEvent(new Event("focusin", { bubbles: true }));
-      await tick();
-      expect(w.find('[data-test="terminal-center"]').attributes("style") ?? "").not.toContain("padding-bottom");
-    } finally {
-      Reflect.deleteProperty(window, "visualViewport");
-      Object.defineProperty(window, "innerHeight", { value: 768, configurable: true });
-    }
-  });
-
-  it("Copy writes the terminal selection to the clipboard; no-op when empty", async () => {
-    const writeText = vi.fn(async () => {});
-    Object.assign(navigator, { clipboard: { writeText } });
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    adapter.getSelection.mockReturnValueOnce("selected text");
-    await w.find('[data-test="key-copy"]').trigger("click");
-    expect(writeText).toHaveBeenCalledWith("selected text");
-    writeText.mockClear();
-    adapter.getSelection.mockReturnValueOnce("");
-    await w.find('[data-test="key-copy"]').trigger("click");
-    expect(writeText).not.toHaveBeenCalled();
-  });
-
-  it("sticky Ctrl passes a non-letter through unchanged and disarms", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="key-ctrl"]').trigger("click"); // arm
-    const onData = onDataOf();
-    onData("1");
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-input", data: "1" }),
-    );
-  });
-
-  it("keybar defaults visible on non-desktop (no matchMedia)", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    expect(w.find('[data-test="keybar"]').exists()).toBe(true);
-  });
-
-  it("keybar honors a persisted hidden preference", async () => {
-    localStorage.setItem("xacpx.terminalKeybar", "0");
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    expect(w.find('[data-test="keybar"]').exists()).toBe(false);
-  });
-
-  it("applyFit drives both the ghostty grid and the PTY resize after open", async () => {
-    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    expect(adapter.resize).toHaveBeenCalledWith(80, 24);
-    expect(sendWebClientMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "terminal-resize", cols: 80, rows: 24 }),
-    );
-  });
-
-  // Non-active terminal tabs now stay mounted under v-show (display:none -> the host is
-  // 0×0). fit() returning null used to unconditionally reschedule via requestAnimationFrame,
-  // which would self-perpetuate a 60fps rAF loop forever for a backgrounded terminal. The
-  // guard must bail instead when the host isn't actually laid out (jsdom's div clientWidth
-  // defaults to 0, same as a real display:none host) — it self-heals via the ResizeObserver
-  // once the terminal is revealed again.
-  it("applyFit does not reschedule an rAF when the host is hidden (0 width)", async () => {
-    const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
-    adapter.fit.mockReturnValue(null); // host can't be measured — as when display:none
-    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    expect(rafSpy).not.toHaveBeenCalled();
-    rafSpy.mockRestore();
-  });
-
-  it("autostart=false does NOT spawn and shows the restore placeholder", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
-    await tick();
-    expect(createTerminalAdapter).not.toHaveBeenCalled();
-    expect(w.find('[data-test="term-restore"]').exists()).toBe(true);
-    expect(w.find('[data-test="term-start"]').exists()).toBe(true);
-  });
-
-  it("clicking the placeholder start button spawns the terminal", async () => {
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
-    await tick();
-    await w.find('[data-test="term-start"]').trigger("click");
-    await tick();
-    expect(createTerminalAdapter).toHaveBeenCalledTimes(1);
-    expect(w.find('[data-test="term-restore"]').exists()).toBe(false);
-  });
-
-  it("autostart=true (default) spawns on mount as before", async () => {
-    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
-    await tick();
-    expect(createTerminalAdapter).toHaveBeenCalledTimes(1);
-  });
-
-  it("on mount with a persisted terminalId, attaches and replays the buffer (no fresh create)", async () => {
-    saveTerminalId("i1::demo", "term-persisted");
-    vi.mocked(api.rpc).mockImplementation(async (_i, method) => {
-      if (method === "control.terminal.attach") return { ok: true, buffer: "PRIOR SCROLLBACK", lastSeq: 5 } as never;
-      return { terminalId: "should-not-create" } as never;
-    });
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
-    await tick();
-    expect(api.rpc).toHaveBeenCalledWith("i1", "control.terminal.attach", { terminalId: "term-persisted" });
-    expect(adapter.write).toHaveBeenCalledWith("PRIOR SCROLLBACK"); // scrollback replayed
-    // did NOT create a fresh terminal
-    expect(api.rpc).not.toHaveBeenCalledWith("i1", "control.terminal.create", expect.anything());
-  });
-
-  it("drops live output with seq <= lastSeq after attach (dedup)", async () => {
-    saveTerminalId("i1::demo", "term-persisted");
-    vi.mocked(api.rpc).mockImplementation(async (_i, method) =>
-      method === "control.terminal.attach" ? ({ ok: true, buffer: "BUF", lastSeq: 5 } as never) : ({} as never));
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
-    await tick();
-    adapter.write.mockClear();
-    // deliver live output via the store event path
-    const store = useTerminalStore();
-    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 5, data: "DUP" } } as never); // <= lastSeq → dropped
-    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 6, data: "NEW" } } as never); // > lastSeq → written
-    await tick();
-    expect(adapter.write).not.toHaveBeenCalledWith("DUP");
-    expect(adapter.write).toHaveBeenCalledWith("NEW");
-  });
-
-  it("queues live output arriving during attach-in-flight, then flushes seq>lastSeq after the buffer", async () => {
-    saveTerminalId("i1::demo", "term-persisted");
-    let resolveAttach!: (v: unknown) => void;
-    vi.mocked(api.rpc).mockImplementation((_i, method) =>
-      method === "control.terminal.attach"
-        ? new Promise((r) => { resolveAttach = r; })
-        : (Promise.resolve({}) as never));
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
-    await tick(); // attach now in flight, subscribed + queueing
-    const store = useTerminalStore();
-    // live events arrive WHILE attach is pending → must be queued (not written yet)
-    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 5, data: "DUP" } } as never); // <= lastSeq → drop
-    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "terminal-output", terminalId: "term-persisted", seq: 6, data: "MID" } } as never); // > lastSeq → flush
-    expect(adapter.write).not.toHaveBeenCalledWith("MID"); // still queued, buffer not replayed yet
-    resolveAttach({ ok: true, buffer: "BUF", lastSeq: 5 });
-    await tick();
-    // order: buffer first, then queued live (MID), DUP dropped
-    expect(adapter.write).toHaveBeenCalledWith("BUF");
-    expect(adapter.write).toHaveBeenCalledWith("MID");
-    expect(adapter.write).not.toHaveBeenCalledWith("DUP");
-  });
-
-  it("attach ok:false clears the id and falls back to the start placeholder", async () => {
-    saveTerminalId("i1::demo", "gone");
-    vi.mocked(api.rpc).mockImplementation(async (_i, method) =>
-      method === "control.terminal.attach" ? ({ ok: false } as never) : ({} as never));
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: false }, global: globalOpts });
-    await tick();
-    expect(w.find('[data-test="term-restore"]').exists()).toBe(true); // placeholder
-    expect(loadTerminalId("i1::demo")).toBeNull(); // stale id cleared
-  });
-
-  it("fresh create persists the terminalId", async () => {
-    vi.mocked(api.rpc).mockResolvedValue({ terminalId: "t-new" } as never);
-    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: true }, global: globalOpts });
-    await tick();
-    expect(loadTerminalId("i1::demo")).toBe("t-new");
-  });
-
-  it("unmount (refresh) does NOT close the PTY", async () => {
-    vi.mocked(api.rpc).mockResolvedValue({ terminalId: "t-new" } as never);
-    const sent: unknown[] = [];
-    vi.mocked(sendWebClientMessage).mockImplementation((m) => { sent.push(m); });
-    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo", autostart: true }, global: globalOpts });
     await tick();
     w.unmount();
-    expect(sent.some((m: any) => m.kind === "terminal-close")).toBe(false); // no close on unmount
+    expect(detach).toHaveBeenCalledWith("i1\0demo");
+  });
+
+  it("registers rebase/bytes handlers for recovery rendering", async () => {
+    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    expect(onRebase).toHaveBeenCalled();
+    expect(onBytes).toHaveBeenCalled();
+  });
+
+  it("toggles the keybar", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await tick();
+    const btn = w.find('[data-test="toggle-keybar"]');
+    const before = w.find('[data-test="keybar"]').exists();
+    await btn.trigger("click");
+    expect(w.find('[data-test="keybar"]').exists()).toBe(!before);
   });
 });

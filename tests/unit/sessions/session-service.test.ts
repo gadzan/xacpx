@@ -6,6 +6,7 @@ import type { AppState } from "../../../src/state/types";
 import type { StateStore } from "../../../src/state/state-store";
 import { DebouncedStateStore } from "../../../src/state/debounced-state-store";
 import { SessionService } from "../../../src/sessions/session-service";
+import type { SessionResourceLifecyclePublishInput } from "../../../src/sessions/session-resource-catalog";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { setLocale, t } from "../../../src/i18n";
 
@@ -1047,19 +1048,25 @@ test("mutations under the shared mutex commit immediately and coalesce into one 
   const startedAt = Date.now();
   await service.createSession("api-fix", "codex", "backend");
   await service.setSessionModel("api-fix", "gpt-5.5");
-  await service.setArchived("api-fix", true);
-  await service.setArchived("api-fix", false);
 
-  // Four awaited mutations must not pay four debounce intervals (>=800ms before).
+  // Back-to-back mutations must not pay a debounce interval each and must not
+  // reach the delegate until the window closes.
   expect(Date.now() - startedAt).toBeLessThan(200);
-  // Nothing has hit the delegate yet: the debounce window is still open.
   expect(inner.savedStates.length).toBe(0);
 
   await debounced.flush();
   expect(inner.savedStates.length).toBe(1);
-  // The single write carries the LAST committed state (all four mutations).
+  // The single coalesced write carries the LAST committed state.
   expect(inner.savedStates[0]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
-  expect(inner.savedStates[0]!.sessions["api-fix"]!.archived).toBeUndefined();
+
+  // Lifecycle transitions are durability-gated instead: archive/restore write
+  // immediately via saveNow rather than riding the debounce window.
+  await service.setArchived("api-fix", true);
+  await service.setArchived("api-fix", false);
+  expect(inner.savedStates.length).toBe(3);
+  expect(inner.savedStates[1]!.sessions["api-fix"]!.archived).toBe(true);
+  expect(inner.savedStates[2]!.sessions["api-fix"]!.archived).toBeUndefined();
+  expect(inner.savedStates[2]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
   await debounced.dispose();
 });
 
@@ -1347,6 +1354,245 @@ test("command refresh preserves recorded structured launch fields", async () => 
   expect(after?.agentArgv).toEqual(["C:\\Program Files\\agent-a.exe", "--acp"]);
 });
 
+// ── immutable logical_session_id ─────────────────────────────────────────────
+
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+test("createSession assigns a fresh UUIDv4 logical_session_id and persists it", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.createSession("api-fix", "codex", "backend");
+
+  const id = state.sessions["api-fix"]?.logical_session_id;
+  expect(id).toMatch(UUID_V4_PATTERN);
+  expect(store.savedStates.at(-1)?.sessions["api-fix"]?.logical_session_id).toBe(id);
+});
+
+test("attach and attach-native paths each assign a fresh logical_session_id", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.attachSession("ext", "codex", "backend", "backend:ext");
+  await service.attachNativeSession({
+    alias: "native",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "backend:native",
+    agentSessionId: "thread-1",
+  });
+
+  const extId = state.sessions.ext?.logical_session_id;
+  const nativeId = state.sessions.native?.logical_session_id;
+  expect(extId).toMatch(UUID_V4_PATTERN);
+  expect(nativeId).toMatch(UUID_V4_PATTERN);
+  expect(extId).not.toBe(nativeId);
+});
+
+test("two aliases sharing one transport session get different logical_session_id values", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.attachSession("one", "codex", "backend", "shared-transport");
+  await service.attachSession("two", "codex", "backend", "shared-transport");
+
+  const first = state.sessions.one?.logical_session_id;
+  const second = state.sessions.two?.logical_session_id;
+  expect(first).toMatch(UUID_V4_PATTERN);
+  expect(second).toMatch(UUID_V4_PATTERN);
+  expect(first).not.toBe(second);
+});
+
+test("deleting an alias and re-creating it yields a different logical_session_id", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.createSession("api-fix", "codex", "backend");
+  const originalId = state.sessions["api-fix"]?.logical_session_id;
+  expect(originalId).toMatch(UUID_V4_PATTERN);
+
+  await service.removeSession("api-fix");
+  await service.createSession("api-fix", "codex", "backend");
+
+  const recreatedId = state.sessions["api-fix"]?.logical_session_id;
+  expect(recreatedId).toMatch(UUID_V4_PATTERN);
+  expect(recreatedId).not.toBe(originalId);
+});
+
+test("ordinary updates to an existing session keep its logical_session_id", async () => {
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.createSession("api-fix", "codex", "backend");
+  const id = state.sessions["api-fix"]?.logical_session_id;
+  expect(id).toBeDefined();
+
+  await service.setDisplayName("api-fix", "API fix");
+  await service.setSessionModel("api-fix", "gpt-5.2");
+  await service.setSessionEffort("api-fix", "high");
+  await service.setSessionTransportAgentCommand("api-fix", "custom-acp-adapter");
+  await service.useSession("wx:user", "api-fix");
+  await service.setArchived("api-fix", true);
+  await service.setArchived("api-fix", false);
+
+  expect(state.sessions["api-fix"]?.logical_session_id).toBe(id);
+  for (const saved of store.savedStates) {
+    expect(saved.sessions["api-fix"]?.logical_session_id).toBe(id);
+  }
+});
+
+function seedLifecycleSession(state: AppState, alias: string, archived = false): void {
+  state.sessions[alias] = {
+    alias,
+    agent: "codex",
+    workspace: "backend",
+    transport_session: `backend:${alias}`,
+    logical_session_id: `uuid-for-${alias}`,
+    created_at: "2026-01-01T00:00:00.000Z",
+    last_used_at: "2026-01-01T00:00:00.000Z",
+    ...(archived ? { archived: true, archived_at: "2026-01-01T00:00:00.000Z" } : {}),
+  };
+}
+
+function recordLifecycleEvents(service: SessionService): SessionResourceLifecyclePublishInput[] {
+  const events: SessionResourceLifecyclePublishInput[] = [];
+  service.setSessionResourceLifecyclePublisher((event) => {
+    events.push(event);
+  });
+  return events;
+}
+
+test("archive publishes its lifecycle event only after saveNow settles", async () => {
+  const state = createEmptyState();
+  seedLifecycleSession(state, "api-fix");
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const events: string[] = [];
+  const lifecycle = recordLifecycleEventsEventsOnly(events);
+  const store = {
+    save: async () => {},
+    saveNow: async () => {
+      events.push("save:start");
+      await saveGate;
+      events.push("save:done");
+    },
+  };
+  const service = new SessionService(createConfig(), store, state);
+  lifecycle(service);
+
+  const pending = service.setArchived("api-fix", true);
+  await Promise.resolve();
+  // Mid-write: neither the runtime state nor the event stream shows the transition.
+  expect(state.sessions["api-fix"]?.archived).toBeUndefined();
+  expect(events).toEqual(["save:start"]);
+
+  releaseSave();
+  await pending;
+  // Ordering: durable write -> runtime state publish -> lifecycle event.
+  expect(events).toEqual(["save:start", "save:done", "lifecycle:archived"]);
+  expect(state.sessions["api-fix"]?.archived).toBe(true);
+});
+
+function recordLifecycleEventsEventsOnly(events: string[]): (service: SessionService) => void {
+  return (service) =>
+    service.setSessionResourceLifecyclePublisher((event) => {
+      events.push(`lifecycle:${event.type}`);
+    });
+}
+
+test("removeSession publishes one 'removed' event carrying the pre-delete record snapshot", async () => {
+  const state = createEmptyState();
+  seedLifecycleSession(state, "api-fix", true);
+  state.chat_contexts["wx:user"] = { current_session: "api-fix" };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+  const events = recordLifecycleEvents(service);
+
+  const result = await service.removeSession("api-fix");
+
+  expect(result.wasActive).toBe(true);
+  expect(events).toHaveLength(1);
+  expect(events[0]?.type).toBe("removed");
+  // The snapshot is the record as it existed BEFORE deletion: still archived,
+  // with its immutable identity intact.
+  expect(events[0]?.record).toMatchObject({
+    alias: "api-fix",
+    logical_session_id: "uuid-for-api-fix",
+    transport_session: "backend:api-fix",
+    archived: true,
+    archived_at: "2026-01-01T00:00:00.000Z",
+  });
+  expect(state.sessions["api-fix"]).toBeUndefined();
+  expect(state.chat_contexts["wx:user"]).toBeUndefined();
+});
+
+test("failed saveNow on removeSession leaves sessions, chat contexts and event stream untouched", async () => {
+  const state = createEmptyState();
+  seedLifecycleSession(state, "api-fix");
+  state.chat_contexts["wx:user"] = { current_session: "api-fix", previous_session: "other" };
+  const durableWrites: AppState[] = [];
+  const store = {
+    save: async (snapshot: AppState) => {
+      durableWrites.push(structuredClone(snapshot));
+    },
+    saveNow: async () => {
+      throw new Error("disk full");
+    },
+  };
+  const service = new SessionService(createConfig(), store, state);
+  const events = recordLifecycleEvents(service);
+
+  await expect(service.removeSession("api-fix")).rejects.toThrow("disk full");
+
+  expect(state.sessions["api-fix"]).toBeDefined();
+  expect(state.chat_contexts["wx:user"]).toEqual({ current_session: "api-fix", previous_session: "other" });
+  expect(events).toHaveLength(0);
+  // Nothing durable was written by the failed transition.
+  expect(durableWrites).toHaveLength(0);
+});
+
+test("useSession restore publishes 'restored' only after saveNow settles; plain switches publish nothing", async () => {
+  // beforeAll already registers the feishu channel id used by these aliases.
+  const state = createEmptyState();
+  seedLifecycleSession(state, "feishu:fix", true);
+  seedLifecycleSession(state, "feishu:other");
+  const events: string[] = [];
+  let saveNowCalls = 0;
+  let debouncedSaves = 0;
+  const store = {
+    save: async () => {
+      debouncedSaves += 1;
+    },
+    saveNow: async () => {
+      saveNowCalls += 1;
+    },
+  };
+  const service = new SessionService(createConfig(), store, state);
+  service.setSessionResourceLifecyclePublisher((event) => {
+    events.push(event.type);
+  });
+
+  // Restoring an archived session is durability-gated and publishes exactly once.
+  await service.useSession("feishu:acc:user", "feishu:fix");
+  expect(events).toEqual(["restored"]);
+  expect(saveNowCalls).toBe(1);
+  expect(state.sessions["feishu:fix"]?.archived).toBeUndefined();
+
+  // Switching between active sessions keeps the cheap debounced persist and
+  // publishes no lifecycle event.
+  await service.useSession("feishu:acc:user", "feishu:other");
+  expect(events).toEqual(["restored"]);
+  expect(saveNowCalls).toBe(1);
+  expect(debouncedSaves).toBe(1);
+  expect(state.chat_contexts["feishu:acc:user"]?.current_session).toBe("feishu:other");
+});
 test("deriveFreeAlias returns the desired alias when it is free", () => {
   const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   expect(service.deriveFreeAlias("new-session")).toBe("new-session");

@@ -49,6 +49,29 @@ var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
 var REASONING_CAP = 16000;
 var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+var MAX_TERMINAL_REQUEST_ID_LENGTH = 128;
+var MAX_TERMINAL_ID_LENGTH = 128;
+var MAX_TERMINAL_ATTACHMENT_ID_LENGTH = 128;
+var MAX_TERMINAL_GENERATION_LENGTH = 128;
+var MAX_TERMINAL_SESSION_ALIAS_LENGTH = 256;
+var MAX_TERMINAL_VIEWER_ID_LENGTH = 128;
+var MAX_TERMINAL_ERROR_MESSAGE_LENGTH = 512;
+var MIN_TERMINAL_COLS = 1;
+var MAX_TERMINAL_COLS = 500;
+var MIN_TERMINAL_ROWS = 1;
+var MAX_TERMINAL_ROWS = 300;
+var MAX_TERMINAL_INPUT_BYTES = 64 * 1024;
+var TERMINAL_REBASE_CHUNK_BYTES = 48 * 1024;
+var MAX_TERMINAL_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
+var MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES = 2 * 1024 * 1024;
+var TERMINAL_HUB_REQUEST_TIMEOUT_MS = 45000;
+var TERMINAL_RPC_TIMEOUT_MS = 60000;
+var TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
+var MAX_CAPABILITIES = 32;
+var MAX_CAPABILITY_LENGTH = 128;
+function maxBase64EncodedLength(maxDecodedBytes) {
+  return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);
+}
 // packages/relay-protocol/src/messages.ts
 var MSG = {
   instanceRegister: "instance.register",
@@ -111,7 +134,16 @@ var MSG = {
   terminalAttach: "control.terminal.attach",
   terminalInput: "instance.terminal.input",
   terminalResize: "instance.terminal.resize",
-  terminalClose: "instance.terminal.close"
+  terminalClose: "instance.terminal.close",
+  terminalOpen: "instance.terminal.open",
+  terminalTakeControl: "instance.terminal.take-control",
+  terminalResync: "instance.terminal.resync",
+  terminalTerminate: "instance.terminal.terminate",
+  terminalStreamStart: "instance.terminal.stream-start",
+  terminalHeartbeat: "instance.terminal.heartbeat",
+  terminalDetach: "instance.terminal.detach",
+  terminalViewerEvent: "instance.terminal.viewer-event",
+  terminalResourceExit: "instance.terminal.resource-exit"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };
@@ -125,19 +157,90 @@ function isErrorPayload(payload) {
   const error = candidate;
   return typeof error.code === "string" && typeof error.message === "string";
 }
+function normalizeCapabilities(raw) {
+  if (!Array.isArray(raw))
+    return [];
+  const out = [];
+  const seen = new Set;
+  for (const item of raw) {
+    if (typeof item !== "string" || item.length === 0 || item.length > MAX_CAPABILITY_LENGTH)
+      continue;
+    if (seen.has(item))
+      continue;
+    seen.add(item);
+    out.push(item);
+    if (out.length >= MAX_CAPABILITIES)
+      break;
+  }
+  return out;
+}
+var RELAY_CAPABILITIES = {
+  terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
+  terminalMultiViewV1: "terminal.multi-view.v1"
+};
+var TERMINAL_ERROR_CODES = [
+  "terminal-disabled",
+  "terminal-rmux-unavailable",
+  "terminal-session-not-found",
+  "terminal-session-archived",
+  "terminal-capacity-exceeded",
+  "terminal-viewer-capacity-exceeded",
+  "terminal-terminating",
+  "terminal-attachment-not-found",
+  "terminal-generation-mismatch",
+  "terminal-not-controller",
+  "terminal-recovery-too-large",
+  "terminal-protocol-error",
+  "terminal-timeout",
+  "instance-offline"
+];
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
 var isStr = (v) => typeof v === "string";
 var optStr = (v) => v === undefined || typeof v === "string";
 var optNum = (v) => v === undefined || typeof v === "number";
 var optBool = (v) => v === undefined || typeof v === "boolean";
+var isBoundedStr = (v, maxLen) => typeof v === "string" && v.length > 0 && v.length <= maxLen;
+var isIntInRange = (v, min, max) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+var isNonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+function parseCanonicalBase64(encoded, maxDecodedBytes) {
+  if (typeof encoded !== "string")
+    return null;
+  if (encoded.length > maxBase64EncodedLength(maxDecodedBytes))
+    return null;
+  let decoded;
+  try {
+    decoded = Buffer.from(encoded, "base64");
+  } catch {
+    return null;
+  }
+  if (decoded.length > maxDecodedBytes)
+    return null;
+  if (decoded.toString("base64") !== encoded)
+    return null;
+  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+}
 
 // packages/relay-protocol/src/web-dtos.ts
 var WEB_EVENT_TYPE = "web.event";
 function webEventEnvelope(event) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
-var WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "state-snapshot", "notice"]);
+var WEB_EVENT_KINDS = new Set([
+  "instance-status",
+  "control-event",
+  "state-snapshot",
+  "notice",
+  "terminal-opened",
+  "terminal-request-failed",
+  "terminal-recovery-failed",
+  "terminal-rebase-start",
+  "terminal-rebase-chunk",
+  "terminal-rebase-end",
+  "terminal-bytes",
+  "terminal-role-changed",
+  "terminal-exit"
+]);
 var CONTROL_EVENT_TYPE_MAP = {
   "turn-output": true,
   "turn-started": true,
@@ -362,6 +465,36 @@ function validNotice(n) {
   const c = n;
   return typeof c.kind === "string" && NOTICE_KINDS.has(c.kind) && typeof c.text === "string";
 }
+function expectedRebaseChunkCount(totalBytes) {
+  return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
+}
+function validTerminalRole(value) {
+  return value === "controller" || value === "spectator";
+}
+function validTargetedTerminalEvent(candidate) {
+  switch (candidate.kind) {
+    case "terminal-opened":
+      return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && validTerminalRole(candidate.role) && isNonNegInt(candidate.viewerCount);
+    case "terminal-request-failed":
+      return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-rebase-start":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(candidate.epoch) && isNonNegInt(candidate.nextSequence) && isIntInRange(candidate.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(candidate.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && typeof candidate.alternate === "boolean" && isIntInRange(candidate.totalBytes, 0, MAX_TERMINAL_REBASE_TOTAL_BYTES) && isNonNegInt(candidate.chunkCount) && candidate.chunkCount === expectedRebaseChunkCount(candidate.totalBytes);
+    case "terminal-rebase-chunk":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(candidate.epoch) && isNonNegInt(candidate.index) && parseCanonicalBase64(candidate.dataBase64, TERMINAL_REBASE_CHUNK_BYTES) !== null;
+    case "terminal-rebase-end":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(candidate.epoch);
+    case "terminal-bytes":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(candidate.epoch) && isNonNegInt(candidate.sequence) && parseCanonicalBase64(candidate.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null;
+    case "terminal-role-changed":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && validTerminalRole(candidate.role) && isNonNegInt(candidate.viewerCount);
+    case "terminal-exit":
+      return isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.reason, 128) && optNum(candidate.code) && (candidate.code === undefined || Number.isInteger(candidate.code));
+    default:
+      return false;
+  }
+}
 function parseWebServerEvent(envelope) {
   if (envelope.kind !== "event" || envelope.type !== WEB_EVENT_TYPE)
     return null;
@@ -381,12 +514,29 @@ function parseWebServerEvent(envelope) {
     return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice))
     return null;
+  if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate))
+    return null;
   return payload;
 }
 var WEB_CLIENT_TYPE = "web.client";
 var MAX_WEB_INSTANCE_ID_LENGTH = 128;
 function webClientEnvelope(msg) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
+}
+function rejectsBrowserStampedIdentity(c) {
+  return c.viewerId !== undefined || c.cwd !== undefined;
+}
+function validLegacyTerminalInput(c) {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) && typeof c.data === "string" && c.attachmentId === undefined && c.generation === undefined && c.dataBase64 === undefined && !rejectsBrowserStampedIdentity(c);
+}
+function validRecoverableTerminalInput(c) {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH) && parseCanonicalBase64(c.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null && c.terminalId === undefined && c.data === undefined && !rejectsBrowserStampedIdentity(c);
+}
+function validLegacyTerminalResize(c) {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) && isIntInRange(c.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(c.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && c.attachmentId === undefined && c.generation === undefined && !rejectsBrowserStampedIdentity(c);
+}
+function validRecoverableTerminalResize(c) {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH) && isIntInRange(c.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(c.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && c.terminalId === undefined && !rejectsBrowserStampedIdentity(c);
 }
 function parseWebClientMessage(envelope) {
   if (envelope.kind !== "event" || envelope.type !== WEB_CLIENT_TYPE)
@@ -398,15 +548,37 @@ function parseWebClientMessage(envelope) {
   if (c.kind === "subscribe") {
     return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH) ? p : null;
   }
-  if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string")
+  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-"))
     return null;
-  if (c.kind === "terminal-input")
-    return typeof c.data === "string" ? p : null;
-  if (c.kind === "terminal-resize")
-    return typeof c.cols === "number" && typeof c.rows === "number" ? p : null;
-  if (c.kind === "terminal-close")
-    return p;
-  return null;
+  if (rejectsBrowserStampedIdentity(c))
+    return null;
+  switch (c.kind) {
+    case "terminal-open":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.sessionAlias, MAX_TERMINAL_SESSION_ALIAS_LENGTH) && isIntInRange(c.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(c.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) ? p : null;
+    case "terminal-stream-start":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) ? p : null;
+    case "terminal-input":
+      if (c.attachmentId !== undefined)
+        return validRecoverableTerminalInput(c) ? p : null;
+      return validLegacyTerminalInput(c) ? p : null;
+    case "terminal-resize":
+      if (c.attachmentId !== undefined)
+        return validRecoverableTerminalResize(c) ? p : null;
+      return validLegacyTerminalResize(c) ? p : null;
+    case "terminal-heartbeat":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) ? p : null;
+    case "terminal-take-control":
+    case "terminal-resync":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH) ? p : null;
+    case "terminal-terminate":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH) ? p : null;
+    case "terminal-detach":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) ? p : null;
+    case "terminal-close":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) ? p : null;
+    default:
+      return null;
+  }
 }
 // packages/relay-protocol/src/payload-validators.ts
 var fields = (p) => isObj(p) ? p : null;
@@ -590,6 +762,22 @@ var validateTerminalAttach = (p) => {
   const o = fields(p);
   return o && isStr(o.terminalId) ? o : null;
 };
+var validateTerminalOpen = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isBoundedStr(o.sessionAlias, MAX_TERMINAL_SESSION_ALIAS_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) && isIntInRange(o.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(o.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && o.cwd === undefined ? o : null;
+};
+var validateTerminalTakeControl = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) ? o : null;
+};
+var validateTerminalResync = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) ? o : null;
+};
+var validateTerminalTerminate = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) ? o : null;
+};
 var validateUpload = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? o : null;
@@ -642,10 +830,80 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionEffortSet]: validateSessionEffortSet,
   [MSG.terminalCreate]: validateTerminalCreate,
   [MSG.terminalAttach]: validateTerminalAttach,
+  [MSG.terminalOpen]: validateTerminalOpen,
+  [MSG.terminalTakeControl]: validateTerminalTakeControl,
+  [MSG.terminalResync]: validateTerminalResync,
+  [MSG.terminalTerminate]: validateTerminalTerminate,
   [MSG.upload]: validateUpload
 };
 function parseControlPayload(type, payload) {
   const validate = CONTROL_PAYLOAD_VALIDATORS[type];
+  return validate(payload);
+}
+function expectedRebaseChunkCount2(totalBytes) {
+  return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
+}
+function validTerminalViewerEventInner(event) {
+  if (!isObj(event) || typeof event.kind !== "string")
+    return false;
+  switch (event.kind) {
+    case "terminal-rebase-start":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(event.epoch) && isNonNegInt(event.nextSequence) && isIntInRange(event.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(event.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && typeof event.alternate === "boolean" && isIntInRange(event.totalBytes, 0, MAX_TERMINAL_REBASE_TOTAL_BYTES) && isNonNegInt(event.chunkCount) && event.chunkCount === expectedRebaseChunkCount2(event.totalBytes);
+    case "terminal-rebase-chunk":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(event.epoch) && isNonNegInt(event.index) && parseCanonicalBase64(event.dataBase64, TERMINAL_REBASE_CHUNK_BYTES) !== null;
+    case "terminal-rebase-end":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(event.epoch);
+    case "terminal-bytes":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(event.epoch) && isNonNegInt(event.sequence) && parseCanonicalBase64(event.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null;
+    case "terminal-role-changed":
+      return isBoundedStr(event.terminalId, MAX_TERMINAL_ID_LENGTH) && (event.role === "controller" || event.role === "spectator") && isNonNegInt(event.viewerCount);
+    case "terminal-request-failed":
+      return optStr(event.requestId) && (event.requestId === undefined || isBoundedStr(event.requestId, 128)) && isBoundedStr(event.code, 128) && typeof event.message === "string" && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(event.code, 128) && typeof event.message === "string" && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    default:
+      return false;
+  }
+}
+var validateTerminalStreamStart = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) ? o : null;
+};
+var validateTerminalInputEvent = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) && parseCanonicalBase64(o.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null && o.terminalId === undefined && o.data === undefined ? o : null;
+};
+var validateTerminalResizeEvent = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) && isIntInRange(o.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(o.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && o.terminalId === undefined ? o : null;
+};
+var validateTerminalHeartbeat = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) ? o : null;
+};
+var validateTerminalDetach = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) ? o : null;
+};
+var validateTerminalViewerEvent = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.viewerId, MAX_TERMINAL_VIEWER_ID_LENGTH) && isBoundedStr(o.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && validTerminalViewerEventInner(o.event) ? o : null;
+};
+var validateTerminalResourceExit = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(o.reason, 128) && optNum(o.code) && (o.code === undefined || Number.isInteger(o.code)) ? o : null;
+};
+var TERMINAL_EVENT_PAYLOAD_VALIDATORS = {
+  [MSG.terminalStreamStart]: validateTerminalStreamStart,
+  [MSG.terminalInput]: validateTerminalInputEvent,
+  [MSG.terminalResize]: validateTerminalResizeEvent,
+  [MSG.terminalHeartbeat]: validateTerminalHeartbeat,
+  [MSG.terminalDetach]: validateTerminalDetach,
+  [MSG.terminalViewerEvent]: validateTerminalViewerEvent,
+  [MSG.terminalResourceExit]: validateTerminalResourceExit
+};
+function parseTerminalEventPayload(type, payload) {
+  const validate = TERMINAL_EVENT_PAYLOAD_VALIDATORS[type];
   return validate(payload);
 }
 export {
@@ -655,25 +913,55 @@ export {
   validControlEvent,
   parseWebServerEvent,
   parseWebClientMessage,
+  parseTerminalEventPayload,
   parseControlPayload,
+  parseCanonicalBase64,
   optStr,
   optNum,
   optBool,
+  normalizeCapabilities,
+  maxBase64EncodedLength,
   isStr,
   isObj,
+  isNonNegInt,
+  isIntInRange,
   isErrorPayload,
+  isBoundedStr,
   errorPayload,
   encodeEnvelope,
   decodeEnvelope,
   WEB_EVENT_TYPE,
   WEB_CLIENT_TYPE,
+  TERMINAL_RPC_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_ERROR_CODES,
   STATE_SYNC_TEXT_CAP,
   STATE_SYNC_PARTS_CAP,
   RELAY_PROTOCOL_VERSION,
+  RELAY_CAPABILITIES,
   RECOVERY_RETENTION_MS,
   REASONING_CAP,
   MSG,
+  MIN_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
   MAX_WEB_INSTANCE_ID_LENGTH,
   MAX_TOOL_STEPS,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+  MAX_CAPABILITIES,
   CONTROL_PAYLOAD_VALIDATORS
 };

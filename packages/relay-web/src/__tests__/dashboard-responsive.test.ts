@@ -1,12 +1,21 @@
 import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 
 // Stub the WS client so jsdom needs no real socket.
 const disconnect = vi.fn();
 vi.mock("../api/events", () => ({
   connectEvents: () => disconnect,
   sendSubscribe: vi.fn(),
+  sendWebClientMessage: vi.fn(),
+  TerminalRequestError: class extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.code = code;
+    }
+  },
 }));
 vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
@@ -18,12 +27,21 @@ import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
+const capableInstance = {
+  id: "i1",
+  name: "pc",
+  online: true,
+  lastSeenAt: null,
+  capabilities: [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1],
+};
+
 beforeEach(() => {
   setActivePinia(createPinia());
   // center-tabs now persists to sessionStorage (task 2); clear it too so tabs opened in one
   // test don't leak into the next test's store via hydrate().
   sessionStorage.clear();
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [] }), { status: 200 })));
+  localStorage.clear();
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [capableInstance] }), { status: 200 })));
 });
 
 function mountDash() {
@@ -229,14 +247,17 @@ test("edge-swipe left from the right edge opens the tasks/files drawer (mobile)"
   }
 });
 
-test("terminal toggle is disabled without a session and enabled with one", async () => {
+test("terminal toggle is disabled without a capable session and enabled with one", async () => {
   const wrapper = mountDash();
+  await flushPromises();
+  const chat = useChatStore();
+  chat.instanceId = null;
+  chat.sessionAlias = null;
   await flushPromises();
   const btn = wrapper.find('[data-test="toggle-terminal"]');
   expect(btn.exists()).toBe(true);
   expect(btn.attributes("disabled")).toBeDefined();
 
-  const chat = useChatStore();
   chat.instanceId = "i1";
   chat.sessionAlias = "demo";
   await flushPromises();

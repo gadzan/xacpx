@@ -24,6 +24,14 @@ export interface LogicalSession {
   agent: string;
   workspace: string;
   transport_session: string;
+  /**
+   * Immutable identity of this logical session (UUIDv4), assigned once at
+   * create/attach time. Never changes across rename, display-name, agent,
+   * workspace, or transport-binding updates; never reused after the alias is
+   * deleted. Legacy records missing the field are migrated once at load time
+   * and persisted before startup proceeds.
+   */
+  logical_session_id: string;
   source?: LogicalSessionSource;
   agent_session_id?: string;
   agent_session_title?: string;

@@ -1,10 +1,16 @@
-export type { ChannelPluginDefinition } from "./channels/plugin.js";
+export type {
+  ChannelPluginDefinition,
+  ChannelRetireContext,
+  ChannelRetireDaemonState,
+  ChannelRetireHook,
+} from "./channels/plugin.js";
 export type { ChannelFactory, CreateChannelDeps } from "./channels/create-channel.js";
 export type {
   ChannelStartInput,
   ConsumerLock,
   ConsumerLockMetadata,
   ConsumerLockOptions,
+  ChannelStopReason,
   CoordinatorMessageInput,
   MessageChannelRuntime,
   ScheduledChannelMessageInput,
@@ -35,6 +41,8 @@ export type {
   ChannelCliParseResult,
   ChannelCliProvider,
   ChannelCliValidationIssue,
+  ChannelDoctorFinding,
+  ChannelDoctorFindingLevel,
 } from "./channels/cli/provider.js";
 export type { ChannelRuntimeConfig } from "./config/types.js";
 export type { CommandHint } from "./commands/command-hints.js";
@@ -79,6 +87,16 @@ export type {
   ControlSessionInfo,
 } from "./control/control-service.js";
 export type { ControlEvent, ControlEventBus, ControlEventListener } from "./control/control-event-bus.js";
+
+// Generic session resource catalog — interface/types ONLY. The production
+// adapter (CoreSessionResourceCatalog) and SessionService internals stay
+// core-private; channel plugins receive the catalog via
+// ChannelStartInput.sessionResources.
+export type {
+  SessionResourceCatalog,
+  SessionResourceDescriptor,
+  SessionResourceLifecycleEvent,
+} from "./sessions/session-resource-catalog.js";
 
 // Core home directory (~/.xacpx or env override). Channel plugins that persist
 // their own runtime credentials (weixin precedent) anchor their state files here.

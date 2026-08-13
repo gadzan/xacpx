@@ -14,6 +14,7 @@ function goodSession(alias: string) {
     agent: "codex",
     workspace: "backend",
     transport_session: `backend:${alias}`,
+    logical_session_id: "44444444-4444-4444-8444-444444444444",
     created_at: "2026-06-10T10:00:00.000Z",
     last_used_at: "2026-06-10T10:00:00.000Z",
   };
@@ -388,5 +389,81 @@ test("a fully valid state file produces no report and no quarantine files", asyn
     expect(store.lastLoadReport).toBeNull();
     const files = await readdir(dir);
     expect(files).toEqual(["state.json"]);
+  });
+});
+
+test("a legacy session missing logical_session_id is migrated, not quarantined", async () => {
+  await withStateDir(async (dir, path) => {
+    const { logical_session_id: _omit, ...legacy } = goodSession("legacy");
+    await Bun.write(
+      path,
+      JSON.stringify({ sessions: { legacy }, chat_contexts: {} }),
+    );
+
+    const store = new StateStore(path, { now: () => FIXED_NOW });
+    const state = await store.load();
+
+    const migratedId = state.sessions.legacy?.logical_session_id;
+    expect(migratedId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+
+    // the load report keeps "migrated" distinct from "dropped corrupt record"
+    const report = store.lastLoadReport;
+    expect(report?.dropped).toEqual([]);
+    expect(report?.migrated).toEqual([
+      { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
+    ]);
+    // nothing was dropped, so there is nothing to quarantine: the only write is
+    // the durable in-place migration of state.json itself
+    expect(report?.quarantinePath).toBeUndefined();
+    expect(await readdir(dir)).toEqual(["state.json"]);
+    const onDisk = JSON.parse(await readFile(path, "utf8")) as {
+      sessions: Record<string, { logical_session_id?: string }>;
+    };
+    expect(onDisk.sessions.legacy?.logical_session_id).toBe(migratedId);
+  });
+});
+
+test("quarantine and migration combine: original backed up once, cleaned state persisted with new ids", async () => {
+  await withStateDir(async (dir, path) => {
+    const { logical_session_id: _omit, ...legacy } = goodSession("legacy");
+    const raw = JSON.stringify({
+      sessions: {
+        good: goodSession("good"),
+        legacy,
+        bad: { alias: "bad", agent: 42 },
+      },
+      chat_contexts: {},
+    });
+    await Bun.write(path, raw);
+
+    const store = new StateStore(path, { now: () => FIXED_NOW });
+    const state = await store.load();
+
+    expect(state.sessions.good?.logical_session_id).toBe("44444444-4444-4444-8444-444444444444");
+    const migratedId = state.sessions.legacy?.logical_session_id;
+    expect(migratedId).toBeDefined();
+    expect(state.sessions.bad).toBeUndefined();
+
+    const report = store.lastLoadReport;
+    expect(report?.dropped).toEqual([
+      { section: "sessions", key: "bad", reason: expect.stringContaining("malformed") },
+    ]);
+    expect(report?.migrated).toEqual([
+      { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
+    ]);
+
+    // the original bytes (including the dropped record) are preserved exactly once
+    const quarantinePath = `${path}.quarantine-${FIXED_TS}`;
+    expect(report?.quarantinePath).toBe(quarantinePath);
+    expect(await readFile(quarantinePath, "utf8")).toBe(raw);
+
+    // and the live file is the cleaned state with the durable migrated id
+    const onDisk = JSON.parse(await readFile(path, "utf8")) as {
+      sessions: Record<string, { logical_session_id?: string }>;
+    };
+    expect(onDisk.sessions.bad).toBeUndefined();
+    expect(onDisk.sessions.legacy?.logical_session_id).toBe(migratedId);
   });
 });

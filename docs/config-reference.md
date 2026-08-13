@@ -349,6 +349,43 @@ The Yuanbao channel is provided by the plugin `@ganglion/xacpx-channel-yuanbao`:
 | `options.markdownHintEnabled` | `boolean` | No | Reserved field available to the gateway, defaults to `true` |
 | `options.accounts` | `object` | No | Multi-account override configuration; sub-items inherit the top-level configuration |
 
+### Relay Channel Configuration (`options`, provided by `@ganglion/xacpx-channel-relay`)
+
+The Relay connector is provided by `@ganglion/xacpx-channel-relay`. Install the plugin, then add the channel:
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-relay
+xacpx channel add relay --url <hub-host> --token <access-token>
+xacpx restart
+```
+
+Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mode `0600`), **not** in `config.json`.
+
+| Field | Type | Required | Description |
+|------|------|------|------|
+| `options.url` | `string` | Yes | Hub URL. Bare domain → `wss://`; IPv4/`localhost`/bracketed IPv6 without port → `ws://…:8787`; `http(s)://` is rewritten to `ws(s)://`. |
+| `options.pairingToken` | `string` | Yes (first pair) | Access / pairing token used on first connect. After credential exchange it may remain in config but is not re-sent while `credential.json` is valid. |
+| `options.name` | `string` | No | Instance display name shown on the hub. |
+| `options.terminal` | `object` | No | Opt-in RMUX terminal backend. **Omitted / disabled by default** — enabling allows hub login holders to open an interactive shell in the session workspace. |
+
+#### `options.terminal` (defaults apply when the object is present or parsed)
+
+| Field | Type | Default | Range / notes |
+|------|------|------|------|
+| `enabled` | `boolean` | `false` | Master switch. When `false`, capabilities are omitted and leftover registry records are still retired on bootstrap / channel disable-remove. |
+| `backend` | `"rmux"` | `"rmux"` | Only `"rmux"` is accepted. |
+| `idleTimeoutSeconds` | `number` | `900` | `60..86400`. No viewer input for this long → durable reaping. Independent of owner lease / attachment TTL. |
+| `ownerLeaseTtlSeconds` | `number` | `90` | `15..600`. Hard-crash cleanup TTL for RMUX `KillOnOwnerExit` orphans after connector/sidecar death. **Not** a restart-adoption window — graceful stop kills sessions; a new process never adopts. |
+| `reconcileIntervalSeconds` | `number` | `30` | `5..300`. Periodic mark-and-sweep interval. |
+| `orphanGraceSeconds` | `number` | `max(120, ownerLeaseTtlSeconds)` | `ownerLeaseTtlSeconds..3600`. Inventory-only quarantine aging before kill. |
+| `attachmentTtlSeconds` | `number` | `45` | `15..300`. Hub/browser attachment liveness (heartbeat); expiry detaches viewers, does **not** kill the shell. |
+| `maxSessions` | `number` | `16` | `1..128` concurrent live/creating terminal resources. |
+| `maxViewersPerTerminal` | `number` | `4` | `1..16` attachments per shared terminal. |
+| `historyLimit` | `number` | `10000` | `0..100000` RMUX scrollback / recovery keyframe budget (lines). |
+| `bridgeCommand` / `rmuxCommand` | absolute path | unset | Optional explicit binaries. When unset, bridge resolves via `@ganglion/xacpx-rmux-bridge-<os>-<arch>` optional packages then `PATH`; RMUX daemon via `rmuxCommand`, `~/.local/libexec/rmux/rmux`, or `PATH`. |
+
+**Security:** enabling terminal is equivalent to granting every hub account that can open the instance an interactive shell in that workspace. Terminal bytes are never written to the messages DB or app logs (IDs / sizes / error class only).
+
 ### WeChat Channel Extended Configuration (`openclaw.json`)
 
 The `options` of the built-in weixin channel is currently an empty object; the following fields are read from a separate `openclaw.json` file (the path defaults to `~/.xacpx/state/openclaw.json` and can be overridden with the environment variable `OPENCLAW_CONFIG`). This is an extension point xacpx carried over from openclaw, and **it is not the same file as the main `~/.xacpx/config.json`**.

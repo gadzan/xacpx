@@ -112,11 +112,49 @@ async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
   if (packageJson.name !== pkg.expectedName) {
     failures.push(`${pkg.id}: package.json name must be ${pkg.expectedName}, got ${String(packageJson.name)}`);
   }
+  if (pkg.id === "channel-relay") {
+    const version = String(packageJson.version ?? "");
+    const optional = packageJson.optionalDependencies ?? {};
+    for (const [name, pinned] of Object.entries(optional)) {
+      if (!name.startsWith("@ganglion/xacpx-rmux-bridge-")) continue;
+      if (pinned !== version) {
+        failures.push(
+          `${pkg.id}: optionalDependency ${name} is ${pinned}, must equal package version ${version} (run scripts/sync-rmux-bridge-versions.mjs)`,
+        );
+      }
+    }
+  }
   if (pkg.id === "root" && pkg.expectedName === "@ganglion/xacpx") {
     if (packageJson.optionalDependencies?.["fs-ext"] !== "2.1.1") {
       failures.push("root: optionalDependencies must include fs-ext@2.1.1 for the Unix flock helper");
     }
     await verifyRootRuntimeBundle(packageRoot, failures);
+  }
+
+  if (pkg.id === "channel-relay") {
+    const expected = [
+      "@ganglion/xacpx-rmux-bridge-darwin-arm64",
+      "@ganglion/xacpx-rmux-bridge-darwin-x64",
+      "@ganglion/xacpx-rmux-bridge-linux-arm64",
+      "@ganglion/xacpx-rmux-bridge-linux-x64",
+      "@ganglion/xacpx-rmux-bridge-win32-x64",
+    ];
+    const optional = packageJson.optionalDependencies ?? {};
+    for (const name of expected) {
+      if (!(name in optional)) {
+        failures.push(`channel-relay: optionalDependencies must include ${name}`);
+      }
+    }
+    const cargoToml = join(repoRoot, "packages/channel-relay/native/rmux-bridge/Cargo.toml");
+    if (existsSync(cargoToml)) {
+      const cargo = await readFile(cargoToml, "utf8");
+      if (/rmux-sdk\s*=\s*\{[^}]*path\s*=/.test(cargo) || cargo.includes("../rmux")) {
+        failures.push("channel-relay: rmux-bridge Cargo.toml must not path-depend on ../rmux");
+      }
+      if (!cargo.includes('rmux-sdk = "=0.10.0"')) {
+        failures.push('channel-relay: rmux-bridge must pin rmux-sdk = "=0.10.0"');
+      }
+    }
   }
 
   for (const file of pkg.requiredFiles) {

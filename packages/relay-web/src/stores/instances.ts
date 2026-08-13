@@ -1,6 +1,16 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { isErrorPayload, type AgentCatalogEntryDto, type AgentDto, type NativeSessionDto, type SessionDto, type SessionModelResult, type WebServerEvent, type WorkspaceDto } from "@ganglion/xacpx-relay-protocol";
+import {
+  RELAY_CAPABILITIES,
+  isErrorPayload,
+  type AgentCatalogEntryDto,
+  type AgentDto,
+  type NativeSessionDto,
+  type SessionDto,
+  type SessionModelResult,
+  type WebServerEvent,
+  type WorkspaceDto,
+} from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 import { useChatStore } from "./chat";
 import { useAuthStore } from "./auth";
@@ -45,6 +55,8 @@ export interface InstanceView {
   // connectors that predate version reporting). Surfaced so operators can spot a
   // version-skewed connector before its missing features fail with `unknown-type`.
   coreVersion?: string | null;
+  /** Last known connector capabilities; missing API field normalizes to [] on load. */
+  capabilities?: string[];
   sessions: SessionRow[];
   // Distinguishes "sessions never fetched" from "fetched and genuinely empty" so the
   // sidebar only shows the "no sessions yet" empty row once a list has actually loaded.
@@ -60,6 +72,17 @@ export interface InstanceView {
   agents: AgentDto[];
   workspaces: WorkspaceDto[];
   agentCatalog: AgentCatalogEntryDto[];
+}
+
+/** True when the instance is online and advertises both RMUX terminal capabilities. */
+export function supportsRmuxTerminal(instance: {
+  online: boolean;
+  capabilities?: string[] | null;
+}): boolean {
+  if (!instance.online) return false;
+  const caps = instance.capabilities ?? [];
+  return caps.includes(RELAY_CAPABILITIES.terminalRmuxRecoveryV1)
+    && caps.includes(RELAY_CAPABILITIES.terminalMultiViewV1);
 }
 
 /** Sidebar grouping modes that support per-group sleeping-session pages. */
@@ -156,10 +179,24 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function loadInstances(): Promise<void> {
-    const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog">> }>("/api/instances");
+    const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog" | "capabilities"> & { capabilities?: string[] }> }>("/api/instances");
     instances.value = rows.map((r) => {
       const prev = byId(r.id);
-      return { ...r, sessions: prev?.sessions ?? [], sessionsLoaded: prev?.sessionsLoaded ?? false, sessionsHasMore: prev?.sessionsHasMore ?? false, sessionsNextOffset: prev?.sessionsNextOffset ?? 0, sessionsLoading: false, archivedSessionsLoaded: prev?.archivedSessionsLoaded ?? false, archivedSessionsLoading: false, groupArchived: prev?.groupArchived, agents: prev?.agents ?? [], workspaces: prev?.workspaces ?? [], agentCatalog: prev?.agentCatalog ?? [] };
+      return {
+        ...r,
+        capabilities: Array.isArray(r.capabilities) ? r.capabilities : [],
+        sessions: prev?.sessions ?? [],
+        sessionsLoaded: prev?.sessionsLoaded ?? false,
+        sessionsHasMore: prev?.sessionsHasMore ?? false,
+        sessionsNextOffset: prev?.sessionsNextOffset ?? 0,
+        sessionsLoading: false,
+        archivedSessionsLoaded: prev?.archivedSessionsLoaded ?? false,
+        archivedSessionsLoading: false,
+        groupArchived: prev?.groupArchived,
+        agents: prev?.agents ?? [],
+        workspaces: prev?.workspaces ?? [],
+        agentCatalog: prev?.agentCatalog ?? [],
+      };
     });
   }
 

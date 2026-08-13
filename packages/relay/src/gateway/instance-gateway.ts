@@ -1,9 +1,11 @@
 import {
   MSG,
   RELAY_PROTOCOL_VERSION,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
   decodeEnvelope,
   encodeEnvelope,
   errorPayload,
+  normalizeCapabilities,
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
   type RelayEnvelope,
@@ -17,6 +19,10 @@ import { startHeartbeat } from "./heartbeat.js";
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const REQUEST_RESPONSE_RESERVE_MS = 15_000;
+/** Default timeout for recoverable terminal open/take-control/resync/terminate.
+ *  Must exceed REQUEST_RESPONSE_RESERVE_MS so requestBudgetMs stays large enough
+ *  for RMUX create (~15s) without Hub timing out first and creating ghost terminals. */
+export const TERMINAL_REQUEST_TIMEOUT_MS = TERMINAL_HUB_REQUEST_TIMEOUT_MS;
 
 export interface GatewaySocket {
   send(data: string): void;
@@ -226,7 +232,7 @@ export class InstanceGateway {
         result = redeemed;
       }
       respond({ instanceId: result.instanceId, credential: result.credential });
-      this.deps.instances.touch(result.instanceId);
+      this.deps.instances.touch(result.instanceId, payload?.coreVersion, normalizeCapabilities(payload?.capabilities));
       return { instanceId: result.instanceId, accountId: result.accountId };
     }
     if (envelope.type === MSG.instanceAuth) {
@@ -239,7 +245,7 @@ export class InstanceGateway {
         return null;
       }
       respond({ ok: true });
-      this.deps.instances.touch(instance.id, payload?.coreVersion);
+      this.deps.instances.touch(instance.id, payload?.coreVersion, normalizeCapabilities(payload?.capabilities));
       return { instanceId: instance.id, accountId: instance.accountId };
     }
     this.logger.info("relay.instance.handshake_failed", "handshake rejected", { reason: "unknown-message-type" });
@@ -278,13 +284,18 @@ export class InstanceGateway {
     }
   }
 
-  async sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown> {
+  async sendRequest(
+    instanceId: string,
+    type: string,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<unknown> {
     const connection = this.connections.get(instanceId);
     if (!connection) {
       throw new Error("instance-offline");
     }
     const id = `relay-${++this.seq}`;
-    const timeoutMs = this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    const timeoutMs = options?.timeoutMs ?? this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const requestBudgetMs = Math.max(timeoutMs - REQUEST_RESPONSE_RESERVE_MS, 1);
     // This is the mutation work cutoff, not the Hub response timer. Keeping the
     // reserve in both representations prevents delivery latency from consuming it.

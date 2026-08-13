@@ -1,8 +1,27 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
-import { MAX_TOOL_STEPS, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP } from "./limits.js";
-import type { InstanceNoticePayload } from "./messages.js";
-import { isStr, optStr, optNum, optBool } from "./validate-primitives.js";
+import {
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TOOL_STEPS,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+  REASONING_CAP,
+  STATE_SYNC_PARTS_CAP,
+  STATE_SYNC_TEXT_CAP,
+  TERMINAL_REBASE_CHUNK_BYTES,
+} from "./limits.js";
+import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
+import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optStr, optNum, optBool, parseCanonicalBase64 } from "./validate-primitives.js";
+
 
 /** Envelope `type` for every relay→web push. */
 export const WEB_EVENT_TYPE = "web.event";
@@ -87,19 +106,123 @@ export interface InstanceStateSnapshotDto {
   commands: SessionCommandsSnapshotDto[];
 }
 
+/** Dashboard instance row (HTTP `/api/instances` and web store seed). */
+export interface InstanceSummaryDto {
+  id: string;
+  name: string;
+  online: boolean;
+  lastSeenAt: string | null;
+  coreVersion?: string | null;
+  /** Last known connector capabilities; missing/undefined → treat as []. */
+  capabilities?: string[];
+}
+
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent =
   | { kind: "instance-status"; instanceId: string; online: boolean }
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
   | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
-  | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload };
+  | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload }
+  | {
+      kind: "terminal-opened";
+      requestId: string;
+      instanceId: string;
+      terminalId: string;
+      generation: string;
+      attachmentId: string;
+      role: TerminalRole;
+      viewerCount: number;
+    }
+  | {
+      kind: "terminal-request-failed";
+      requestId: string;
+      instanceId: string;
+      code: string;
+      message: string;
+    }
+  | {
+      kind: "terminal-recovery-failed";
+      instanceId: string;
+      attachmentId: string;
+      generation: string;
+      code: string;
+      message: string;
+    }
+  | {
+      kind: "terminal-rebase-start";
+      instanceId: string;
+      attachmentId: string;
+      generation: string;
+      epoch: number;
+      nextSequence: number;
+      cols: number;
+      rows: number;
+      alternate: boolean;
+      totalBytes: number;
+      chunkCount: number;
+    }
+  | {
+      kind: "terminal-rebase-chunk";
+      instanceId: string;
+      attachmentId: string;
+      generation: string;
+      epoch: number;
+      index: number;
+      dataBase64: string;
+    }
+  | {
+      kind: "terminal-rebase-end";
+      instanceId: string;
+      attachmentId: string;
+      generation: string;
+      epoch: number;
+    }
+  | {
+      kind: "terminal-bytes";
+      instanceId: string;
+      attachmentId: string;
+      generation: string;
+      epoch: number;
+      sequence: number;
+      dataBase64: string;
+    }
+  | {
+      kind: "terminal-role-changed";
+      instanceId: string;
+      attachmentId: string;
+      terminalId: string;
+      role: TerminalRole;
+      viewerCount: number;
+    }
+  | {
+      kind: "terminal-exit";
+      instanceId: string;
+      terminalId: string;
+      generation: string;
+      reason: string;
+      code?: number;
+    };
 
 /** Wrap a server→web push event in a relay envelope. */
 export function webEventEnvelope(event: WebServerEvent): RelayEnvelope {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
 }
 
-const WEB_EVENT_KINDS = new Set(["instance-status", "control-event", "state-snapshot", "notice"]);
+const WEB_EVENT_KINDS = new Set([
+  "instance-status",
+  "control-event",
+  "state-snapshot",
+  "notice",
+  "terminal-opened",
+  "terminal-request-failed",
+  "terminal-recovery-failed",
+  "terminal-rebase-start",
+  "terminal-rebase-chunk",
+  "terminal-rebase-end",
+  "terminal-bytes",
+  "terminal-role-changed",
+  "terminal-exit",
+]);
 
 /** Compile-time-exhaustive whitelist of inner control-event discriminants. The
  *  `satisfies Record<ControlEventDto["type"], true>` clause makes tsc fail if a new
@@ -381,6 +504,77 @@ function validNotice(n: unknown): boolean {
   return typeof c.kind === "string" && NOTICE_KINDS.has(c.kind) && typeof c.text === "string";
 }
 
+function expectedRebaseChunkCount(totalBytes: number): number {
+  return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
+}
+
+function validTerminalRole(value: unknown): value is TerminalRole {
+  return value === "controller" || value === "spectator";
+}
+
+function validTargetedTerminalEvent(candidate: Record<string, unknown>): boolean {
+  switch (candidate.kind) {
+    case "terminal-opened":
+      return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && validTerminalRole(candidate.role)
+        && isNonNegInt(candidate.viewerCount);
+    case "terminal-request-failed":
+      return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.code, 128)
+        && typeof candidate.message === "string"
+        && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isBoundedStr(candidate.code, 128)
+        && typeof candidate.message === "string"
+        && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-rebase-start":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(candidate.epoch)
+        && isNonNegInt(candidate.nextSequence)
+        && isIntInRange(candidate.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+        && isIntInRange(candidate.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+        && typeof candidate.alternate === "boolean"
+        && isIntInRange(candidate.totalBytes, 0, MAX_TERMINAL_REBASE_TOTAL_BYTES)
+        && isNonNegInt(candidate.chunkCount)
+        && candidate.chunkCount === expectedRebaseChunkCount(candidate.totalBytes as number);
+    case "terminal-rebase-chunk":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(candidate.epoch)
+        && isNonNegInt(candidate.index)
+        && parseCanonicalBase64(candidate.dataBase64, TERMINAL_REBASE_CHUNK_BYTES) !== null;
+    case "terminal-rebase-end":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(candidate.epoch);
+    case "terminal-bytes":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isNonNegInt(candidate.epoch)
+        && isNonNegInt(candidate.sequence)
+        && parseCanonicalBase64(candidate.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null;
+    case "terminal-role-changed":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH)
+        && validTerminalRole(candidate.role)
+        && isNonNegInt(candidate.viewerCount);
+    case "terminal-exit":
+      return isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isBoundedStr(candidate.reason, 128)
+        && optNum(candidate.code)
+        && (candidate.code === undefined || Number.isInteger(candidate.code));
+    default:
+      return false;
+  }
+}
+
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null {
   if (envelope.kind !== "event" || envelope.type !== WEB_EVENT_TYPE) return null;
@@ -393,6 +587,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
+  if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate)) return null;
   return payload as WebServerEvent;
 }
 
@@ -402,13 +597,68 @@ export const WEB_CLIENT_TYPE = "web.client";
 export const MAX_WEB_INSTANCE_ID_LENGTH = 128;
 
 export type WebClientMessage =
+  // Legacy live-PTY path (kept until RMUX cutover).
   | { kind: "terminal-input"; instanceId: string; terminalId: string; data: string }
   | { kind: "terminal-resize"; instanceId: string; terminalId: string; cols: number; rows: number }
   | { kind: "terminal-close"; instanceId: string; terminalId: string }
+  // Recoverable RMUX path.
+  | { kind: "terminal-open"; requestId: string; instanceId: string; sessionAlias: string; cols: number; rows: number }
+  | { kind: "terminal-stream-start"; requestId: string; instanceId: string; attachmentId: string }
+  | { kind: "terminal-input"; instanceId: string; attachmentId: string; generation: string; dataBase64: string }
+  | { kind: "terminal-resize"; instanceId: string; attachmentId: string; generation: string; cols: number; rows: number }
+  | { kind: "terminal-heartbeat"; instanceId: string; attachmentId: string }
+  | { kind: "terminal-take-control"; requestId: string; instanceId: string; attachmentId: string; generation: string }
+  | { kind: "terminal-resync"; requestId: string; instanceId: string; attachmentId: string; generation: string }
+  | { kind: "terminal-terminate"; requestId: string; instanceId: string; terminalId: string; generation: string }
+  | { kind: "terminal-detach"; instanceId: string; attachmentId: string }
   | { kind: "subscribe"; instanceIds: string[] };
 
 export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
+}
+
+function rejectsBrowserStampedIdentity(c: Record<string, unknown>): boolean {
+  return c.viewerId !== undefined || c.cwd !== undefined;
+}
+
+function validLegacyTerminalInput(c: Record<string, unknown>): boolean {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+    && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
+    && typeof c.data === "string"
+    && c.attachmentId === undefined
+    && c.generation === undefined
+    && c.dataBase64 === undefined
+    && !rejectsBrowserStampedIdentity(c);
+}
+
+function validRecoverableTerminalInput(c: Record<string, unknown>): boolean {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+    && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && parseCanonicalBase64(c.dataBase64, MAX_TERMINAL_INPUT_BYTES) !== null
+    && c.terminalId === undefined
+    && c.data === undefined
+    && !rejectsBrowserStampedIdentity(c);
+}
+
+function validLegacyTerminalResize(c: Record<string, unknown>): boolean {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+    && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
+    && isIntInRange(c.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+    && isIntInRange(c.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+    && c.attachmentId === undefined
+    && c.generation === undefined
+    && !rejectsBrowserStampedIdentity(c);
+}
+
+function validRecoverableTerminalResize(c: Record<string, unknown>): boolean {
+  return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+    && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+    && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH)
+    && isIntInRange(c.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+    && isIntInRange(c.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+    && c.terminalId === undefined
+    && !rejectsBrowserStampedIdentity(c);
 }
 
 export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage | null {
@@ -422,10 +672,61 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
       ? (p as WebClientMessage)
       : null;
   }
-  // terminal-* frames all require instanceId + terminalId strings.
-  if (typeof c.instanceId !== "string" || typeof c.terminalId !== "string") return null;
-  if (c.kind === "terminal-input") return typeof c.data === "string" ? (p as WebClientMessage) : null;
-  if (c.kind === "terminal-resize") return typeof c.cols === "number" && typeof c.rows === "number" ? (p as WebClientMessage) : null;
-  if (c.kind === "terminal-close") return p as WebClientMessage;
-  return null;
+  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-")) return null;
+  if (rejectsBrowserStampedIdentity(c)) return null;
+
+  switch (c.kind) {
+    case "terminal-open":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.sessionAlias, MAX_TERMINAL_SESSION_ALIAS_LENGTH)
+        && isIntInRange(c.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS)
+        && isIntInRange(c.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS)
+        ? (p as WebClientMessage)
+        : null;
+    case "terminal-stream-start":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "terminal-input":
+      if (c.attachmentId !== undefined) return validRecoverableTerminalInput(c) ? (p as WebClientMessage) : null;
+      return validLegacyTerminalInput(c) ? (p as WebClientMessage) : null;
+    case "terminal-resize":
+      if (c.attachmentId !== undefined) return validRecoverableTerminalResize(c) ? (p as WebClientMessage) : null;
+      return validLegacyTerminalResize(c) ? (p as WebClientMessage) : null;
+    case "terminal-heartbeat":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "terminal-take-control":
+    case "terminal-resync":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "terminal-terminate":
+      return isBoundedStr(c.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
+        && isBoundedStr(c.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "terminal-detach":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "terminal-close":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    default:
+      return null;
+  }
 }

@@ -2,30 +2,28 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
-import { useTerminalStore } from "../stores/terminal";
+import { useTerminalStore, terminalLocalKey, type TerminalAttachmentView } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
-import { sessionKey as makeSessionKey } from "../stores/center-tabs";
-import { loadTerminalId, saveTerminalId, clearTerminalId } from "../lib/terminal-sessions";
+import { TerminalRequestError } from "../api/events";
 
-const props = withDefaults(defineProps<{ instanceId: string; sessionAlias: string; autostart?: boolean }>(), {
-  autostart: true,
-});
-// A terminal tab is closed from the center tab strip; the parent routes @close to
-// requestCloseTab (which kills the PTY). Declared here, never emitted internally.
+const props = defineProps<{ instanceId: string; sessionAlias: string }>();
+// Close is owned by the center tab strip → Dashboard requestCloseTerminal (global terminate).
 defineEmits<{ close: [] }>();
+
 const terminals = useTerminalStore();
 const theme = useThemeStore();
-const sessionKey = computed(() => makeSessionKey(props.instanceId, props.sessionAlias));
+const localKey = computed(() => terminalLocalKey(props.instanceId, props.sessionAlias));
 const host = ref<HTMLDivElement | null>(null);
 const status = ref<"idle" | "connecting" | "open" | "exited" | "error">("idle");
 const errorKey = ref<string>("");
-// Sticky modifiers — click to arm, applied to the next key, then auto-disarm (one-shot).
+const role = ref<"controller" | "spectator" | "">("");
+const viewerCount = ref(0);
+const takingControl = ref(false);
+
 const ctrlArmed = ref(false);
 const altArmed = ref(false);
 const shiftArmed = ref(false);
 
-// Read a `--c-*` design token ("R G B" triplet) as a hex color ghostty's theme parses.
-// Falls back to a dark default when the var is unreadable (e.g. jsdom, or pre-mount).
 function tokenHex(varName: string, fallback: string): string {
   if (typeof getComputedStyle !== "function") return fallback;
   const raw = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
@@ -33,14 +31,10 @@ function tokenHex(varName: string, fallback: string): string {
   if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return fallback;
   return "#" + parts.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0")).join("");
 }
-// Keep the terminal background identical to the host so the integer-cell fit remainder
-// (the < 1-cell strip on the right/bottom) is invisible instead of a black seam.
 function currentTheme(): TerminalTheme {
   return { background: tokenHex("--c-bg", "#0e1116"), foreground: tokenHex("--c-fg", "#e8ecf1") };
 }
 
-// Mobile has no physical Esc/Ctrl/arrows, so the shortcut bar defaults visible there and
-// hidden on desktop (which has a real keyboard). A saved preference overrides the default.
 function isDesktop(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function"
     && window.matchMedia("(min-width: 1024px)").matches;
@@ -56,26 +50,16 @@ function toggleKeybar() {
   try { localStorage.setItem("xacpx.terminalKeybar", keybarVisible.value ? "1" : "0"); } catch { /* ignore */ }
 }
 
-// Lazy start: a tab restored from sessionStorage arrives autostart=false — it can't reconnect
-// to its old PTY, so it waits on a "start new terminal" placeholder instead of spawning on
-// mount. `started` gates the prop-watch so a dormant tab never auto-spawns on a prop change.
-let started = false;
-const showPlaceholder = computed(() => !!props.sessionAlias && status.value === "idle" && !props.autostart);
-
 let adapter: TerminalAdapter | null = null;
-let terminalId = "";
-let offOutput: (() => void) | null = null;
+let offRebase: (() => void) | null = null;
+let offBytes: (() => void) | null = null;
+let offMeta: (() => void) | null = null;
 let offExit: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
 let epoch = 0;
+let attached = false;
 
-// ESC built from a char code — a literal escape byte in this .vue gets mangled on save.
 const ESC = String.fromCharCode(0x1b);
-// Named sequences for the shortcut bar (arrows stay inline in the template).
-// Home/End are sent as Ctrl-A / Ctrl-E (emacs beginning/end-of-line): a bare zsh/bash
-// line editor leaves the raw Home/End escape sequences (ESC[H / ESC[F) unbound, but binds
-// Ctrl-A/Ctrl-E by default, so these actually move the cursor on the command line.
-// PgUp/PgDn are NOT here — they scroll the viewport locally (pageUp/pageDown below).
 const KEYS = {
   home: String.fromCharCode(1),
   end: String.fromCharCode(5),
@@ -88,15 +72,16 @@ function anyModArmed(): boolean {
 function disarmMods() {
   ctrlArmed.value = false; altArmed.value = false; shiftArmed.value = false;
 }
-// xterm modifier parameter: 1 + Shift(1) + Alt(2) + Ctrl(4). 1 means "no modifiers".
 function modParam(): number {
   return 1 + (shiftArmed.value ? 1 : 0) + (altArmed.value ? 2 : 0) + (ctrlArmed.value ? 4 : 0);
 }
 
-// Apply armed modifiers to typed soft-keyboard input (a single char): Shift upcases,
-// Ctrl maps a letter to its control code (c→\x03), Alt/Meta prefixes ESC. Then disarm.
+function isController(): boolean {
+  return role.value === "controller";
+}
+
 function handleData(d: string) {
-  if (!terminalId) return;
+  if (!attached || !isController()) return;
   let out = d;
   if (d.length === 1 && anyModArmed()) {
     if (shiftArmed.value) out = out.toUpperCase();
@@ -107,16 +92,11 @@ function handleData(d: string) {
     if (altArmed.value) out = ESC + out;
     disarmMods();
   } else if (anyModArmed()) {
-    // Multi-char input (paste/IME) can't carry a soft modifier — drop the one-shot arm
-    // instead of letting it silently fire on a later keystroke.
     disarmMods();
   }
-  terminals.input(props.instanceId, terminalId, out);
+  terminals.sendInput(localKey.value, out);
 }
 
-// Apply armed modifiers to a keybar escape sequence. CSI keys (arrows, Home/End as
-// `\x1b[<L>` and PgUp/Ins etc. as `\x1b[<n>~`) take an xterm `1;<mod>` parameter;
-// Shift+Tab is the special reverse-tab `\x1b[Z`. Non-CSI keys (Enter/Esc) pass through.
 function applyMods(seq: string): string {
   const mod = modParam();
   if (mod === 1) return seq;
@@ -129,21 +109,21 @@ function applyMods(seq: string): string {
 }
 
 function sendKey(seq: string) {
-  if (!terminalId) return;
+  if (!attached || !isController()) return;
   const out = applyMods(seq);
   if (anyModArmed()) disarmMods();
-  terminals.input(props.instanceId, terminalId, out);
+  terminals.sendInput(localKey.value, out);
   adapter?.focus();
 }
 
 async function pasteClipboard() {
+  if (!isController()) return;
   try {
     const text = await navigator.clipboard?.readText();
     if (text) sendKey(text);
   } catch { /* clipboard blocked/unavailable — ignore */ }
 }
 
-// Copy the current terminal selection to the clipboard (no-op when nothing is selected).
 async function copySelection() {
   const sel = adapter?.getSelection() ?? "";
   if (!sel) return;
@@ -151,24 +131,12 @@ async function copySelection() {
   adapter?.focus();
 }
 
-// PgUp/PgDn scroll the local viewport by ~one screen (ghostty scrollLines: + = toward the
-// newest/bottom rows). This is what "page up/down" means for a scrollback pager, rather
-// than sending ESC[5~/ESC[6~ which a shell ignores. No-op in alt-screen (no scrollback).
 function pageLines(): number {
   return Math.max(1, (adapter?.rows() ?? 24) - 1);
 }
 function pageUp() { adapter?.scrollLines(-pageLines()); }
 function pageDown() { adapter?.scrollLines(pageLines()); }
 
-// --- Mobile: keep the shortcut bar above the on-screen keyboard ---------------------
-// When the layout viewport doesn't shrink for the keyboard (iOS Safari ignores
-// interactive-widget), a bottom-anchored bar hides behind it. visualViewport tells us the
-// covered height, applied as pane padding. Two guards keep this from firing spuriously:
-//   1. Only while the terminal is focused — a keyboard can't be open otherwise, so a
-//      persistent browser-chrome gap (Safari's bottom toolbar) never leaves a phantom inset.
-//   2. Only above a keyboard-sized threshold — a toolbar (<=~90px) must not count; real
-//      keyboards are >=~150px. (When the browser DOES resize the layout, the raw delta is
-//      ~0 and this is a no-op, so it never double-applies.)
 const KEYBOARD_MIN_INSET = 120;
 const hostFocused = ref(false);
 const keyboardInset = ref(0);
@@ -179,9 +147,6 @@ function updateKeyboardInset() {
   keyboardInset.value = raw > KEYBOARD_MIN_INSET ? raw : 0;
 }
 
-// --- Mobile: drag to scroll, tap to focus (raise the keyboard) ----------------------
-// ghostty only wires wheel (desktop) + a touchend that focuses; there's no touch scroll,
-// and every tap raises the keyboard. We add touch scrolling and only focus on a real tap.
 let touchStartY = 0, touchStartX = 0, touchLastY = 0, touchResidual = 0, touchMoved = false;
 function onTouchStart(e: TouchEvent) {
   if (e.touches.length !== 1) return;
@@ -194,153 +159,151 @@ function onTouchMove(e: TouchEvent) {
   const t = e.touches[0];
   if (!touchMoved && Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY) < 8) return;
   touchMoved = true;
-  e.preventDefault(); e.stopPropagation(); // suppress page scroll + ghostty's tap-to-focus
+  e.preventDefault(); e.stopPropagation();
   const lineH = host.value.clientHeight / Math.max(1, adapter.rows());
-  if (!(lineH > 0)) return; // not laid out yet — avoid div-by-zero → Infinity scroll
+  if (!(lineH > 0)) return;
   touchResidual += t.clientY - touchLastY;
   touchLastY = t.clientY;
   const lines = Math.trunc(touchResidual / lineH);
   if (lines !== 0) { adapter.scrollLines(-lines); touchResidual -= lines * lineH; }
 }
 function onTouchEnd(e: TouchEvent) {
-  // A drag already scrolled — stop ghostty's touchend from focusing (which pops the
-  // keyboard). A plain tap falls through to ghostty and focuses as expected.
   if (touchMoved) { e.preventDefault(); e.stopPropagation(); }
 }
 
-// Fit the ghostty grid to the host using the adapter's canvas-derived cell size, then tell
-// the PTY. Retries via rAF until the canvas has a measurable size. Epoch-guarded so a
-// teardown/supersede stops the retry loop.
 function applyFit(myEpoch = epoch) {
-  if (myEpoch !== epoch || !terminalId || !adapter) return;
+  if (myEpoch !== epoch || !attached || !adapter) return;
   const dim = adapter.fit();
   if (!dim) {
-    // fit() also returns null when the host is hidden (v-show="false" -> display:none ->
-    // 0x0), which non-active terminal tabs now stay mounted as. Rescheduling unconditionally
-    // there would self-perpetuate this rAF loop at 60fps forever for every backgrounded
-    // terminal. Only retry while the host is actually laid out (non-zero size); once it's
-    // hidden, bail — the ResizeObserver below re-invokes applyFit when it's revealed again
-    // (display change -> size change), so this self-heals without polling.
     if (host.value && host.value.clientWidth > 0) requestAnimationFrame(() => applyFit(myEpoch));
     return;
   }
   adapter.resize(dim.cols, dim.rows);
-  terminals.resize(props.instanceId, terminalId, dim.cols, dim.rows);
+  // Spectator: local fit only — never push backend resize.
+  if (isController()) terminals.sendResize(localKey.value, dim.cols, dim.rows);
 }
 
-// Releases front-end resources (adapter, listeners, resize observer) WITHOUT killing the
-// backend PTY — a refresh/tab-close should be able to reattach to the same live terminal
-// later. The PTY is only closed on an explicit user action (the close button), which sends
-// terminal-close itself; this function must never do that.
-function releaseFrontend() {
-  epoch++;
-  offOutput?.(); offOutput = null;
-  offExit?.(); offExit = null;
-  resizeObs?.disconnect(); resizeObs = null;
-  adapter?.dispose(); adapter = null; terminalId = "";
-  disarmMods();
-}
-
-// Attempt to reattach to a persisted terminalId (e.g. after a page reload). Subscribes to
-// live output BEFORE issuing the attach RPC so no output emitted between the RPC firing and
-// its response is lost — those events are queued and, once the attach resolves, flushed in
-// order after the replayed scrollback buffer (so history never appears out of order relative
-// to live output). Returns true on success (adapter mounted, status "open"), false if the
-// PTY is gone (caller should forget the persisted id and fall back to start()/placeholder).
-async function tryAttach(id: string): Promise<boolean> {
-  if (!host.value) return false;
-  releaseFrontend();
-  const myEpoch = epoch;
-  status.value = "connecting";
-  terminalId = id;
-  const currentAdapter = createTerminalAdapter(host.value, { cols: 80, rows: 24, onData: handleData, theme: currentTheme() });
-  adapter = currentAdapter;
-  const pending: Array<{ data: string; seq: number }> = [];
-  let queueing = true;
-  let ignoreThroughSeq = -1;
-  offOutput = terminals.onOutput((oid, data, seq) => {
-    if (oid !== terminalId) return;
-    if (queueing) { pending.push({ data, seq }); return; }
-    if (seq <= ignoreThroughSeq) return;
-    adapter?.write(data);
-  });
-  offExit = terminals.onExit((oid, code) => { if (oid === terminalId) { status.value = "exited"; errorKey.value = String(code); } });
-  try {
-    const res = await terminals.attach(props.instanceId, id);
-    if (myEpoch !== epoch) {
-      // Superseded while the attach RPC was in flight: the superseding releaseFrontend()
-      // already disposed this adapter when `adapter` still pointed at it, so only dispose
-      // if it wasn't (guard against double-dispose).
-      if (adapter === currentAdapter) currentAdapter.dispose();
-      return true;
-    }
-    if (!res.ok) { releaseFrontend(); status.value = "idle"; return false; }
-    ignoreThroughSeq = res.lastSeq;
-    currentAdapter.write(res.buffer);            // replay scrollback
-    queueing = false;
-    for (const p of pending) if (p.seq > ignoreThroughSeq) currentAdapter.write(p.data); // flush queued live
-    pending.length = 0;
-    started = true; // gate the prop-watch only once attach actually succeeded
-    status.value = "open";
-    resizeObs = new ResizeObserver(() => applyFit());
-    if (host.value) resizeObs.observe(host.value);
-    applyFit(myEpoch);
-    return true;
-  } catch {
-    if (myEpoch !== epoch) return true;
-    releaseFrontend(); status.value = "idle";
-    return false;
+function mapErrorCode(code: string): string {
+  switch (code) {
+    case "terminal-disabled": return "terminal.disabled";
+    case "terminal-rmux-unavailable": return "terminal.unsupported";
+    case "terminal-unsupported-platform": return "terminal.unsupported";
+    case "instance-offline": return "terminal.offline";
+    case "terminal-session-not-found": return "terminal.sessionNotFound";
+    case "terminal-session-archived": return "terminal.sessionArchived";
+    case "terminal-capacity-exceeded": return "terminal.capacityExceeded";
+    case "terminal-viewer-capacity-exceeded": return "terminal.viewerCapacityExceeded";
+    default: return "terminal.error";
   }
 }
 
-async function start() {
-  releaseFrontend();
+function applyMeta(view: TerminalAttachmentView): void {
+  if (view.localKey !== localKey.value) return;
+  role.value = view.role ?? "";
+  viewerCount.value = view.viewerCount ?? 0;
+}
+
+function releaseFrontend(detachBackend: boolean): void {
+  epoch++;
+  offRebase?.(); offRebase = null;
+  offBytes?.(); offBytes = null;
+  offMeta?.(); offMeta = null;
+  offExit?.(); offExit = null;
+  resizeObs?.disconnect(); resizeObs = null;
+  adapter?.dispose(); adapter = null;
+  if (detachBackend && attached) {
+    terminals.detach(localKey.value);
+  }
+  attached = false;
+  disarmMods();
+}
+
+async function openAttachment(): Promise<void> {
+  releaseFrontend(true);
   const myEpoch = epoch;
   if (!props.sessionAlias || !host.value) { status.value = "idle"; return; }
   status.value = "connecting";
-  started = true;
+  errorKey.value = "";
+
   const currentAdapter = createTerminalAdapter(host.value, {
-    cols: 80, rows: 24,
+    cols: 80,
+    rows: 24,
     onData: handleData,
     theme: currentTheme(),
   });
   adapter = currentAdapter;
-  offOutput = terminals.onOutput((id, data) => { if (id === terminalId) adapter?.write(data); });
-  offExit = terminals.onExit((id, code) => { if (id === terminalId) { status.value = "exited"; errorKey.value = String(code); } });
+
+  offRebase = terminals.onRebase(async (key, keyframe, cols, rows) => {
+    if (key !== localKey.value || myEpoch !== epoch) return;
+    await currentAdapter.resetAndReplay(keyframe, cols, rows);
+  });
+  offBytes = terminals.onBytes(async (key, data) => {
+    if (key !== localKey.value || myEpoch !== epoch) return;
+    await currentAdapter.write(data);
+  });
+  offMeta = terminals.onMeta((key, view) => {
+    if (key !== localKey.value || myEpoch !== epoch) return;
+    applyMeta(view);
+  });
+  offExit = terminals.onAttachmentExit((key, reason, code) => {
+    if (key !== localKey.value || myEpoch !== epoch) return;
+    attached = false;
+    status.value = "exited";
+    errorKey.value = reason === "cleanup-pending" ? "cleanup-pending" : String(code ?? reason);
+  });
+
   try {
-    const newId = await terminals.create(props.instanceId, props.sessionAlias, currentAdapter.cols(), currentAdapter.rows());
+    const cols = currentAdapter.cols();
+    const rows = currentAdapter.rows();
+    const view = await terminals.openOrResume(localKey.value, {
+      instanceId: props.instanceId,
+      sessionAlias: props.sessionAlias,
+      cols,
+      rows,
+    });
     if (myEpoch !== epoch) {
-      // Superseded by a later start()/releaseFrontend: close the just-created orphan PTY. The
-      // superseding releaseFrontend already disposed this adapter when `adapter` still pointed at
-      // it, so only dispose if it wasn't (guard against double-dispose).
-      terminals.close(props.instanceId, newId);
       if (adapter === currentAdapter) currentAdapter.dispose();
+      terminals.detach(localKey.value);
       return;
     }
-    terminalId = newId;
-    saveTerminalId(sessionKey.value, newId);
+    attached = true;
+    applyMeta(view);
     status.value = "open";
     resizeObs = new ResizeObserver(() => applyFit());
     if (host.value) resizeObs.observe(host.value);
     applyFit(myEpoch);
   } catch (e) {
     if (myEpoch !== epoch) return;
+    attached = false;
     status.value = "error";
-    const msg = e instanceof Error ? e.message : "";
-    errorKey.value = msg === "terminal-disabled" ? "terminal.disabled"
-      : msg === "terminal-unsupported-platform" ? "terminal.unsupported"
-      : msg === "instance-offline" ? "terminal.offline"
-      : "terminal.error";
+    const code = e instanceof TerminalRequestError ? e.code
+      : e instanceof Error ? e.message
+      : "";
+    errorKey.value = mapErrorCode(code);
+    if (adapter === currentAdapter) {
+      currentAdapter.dispose();
+      adapter = null;
+    }
   }
 }
 
-// focusin/focusout bubble from ghostty's focus target (the contenteditable host or its
-// textarea), so listening on the host catches both — gating the keyboard inset on focus.
+async function takeControl(): Promise<void> {
+  if (takingControl.value || isController()) return;
+  takingControl.value = true;
+  try {
+    const view = await terminals.takeControl(localKey.value);
+    applyMeta(view);
+    applyFit();
+  } catch {
+    /* server remains the authority; role-changed will update if another path succeeds */
+  } finally {
+    takingControl.value = false;
+  }
+}
+
 function onHostFocusIn() { hostFocused.value = true; updateKeyboardInset(); }
 function onHostFocusOut() { hostFocused.value = false; keyboardInset.value = 0; }
 
-// Touch listeners go on the host in CAPTURE phase so they run before ghostty's own
-// bubble-phase touchend — letting a drag stopPropagation() to suppress its tap-to-focus.
 function attachTouch() {
   const el = host.value;
   if (!el) return;
@@ -360,45 +323,45 @@ function detachTouch() {
   el.removeEventListener("focusout", onHostFocusOut);
 }
 
-// On mount, prefer reattaching to a persisted terminalId (survives a reload) over spawning a
-// fresh PTY. Only falls through to start()/the placeholder when there's no persisted id, or
-// the persisted PTY is gone (attach failed) — in which case the stale id is forgotten so a
-// later mount doesn't keep retrying a dead terminal.
-async function mount() {
-  const id = loadTerminalId(sessionKey.value);
-  if (id) {
-    const ok = await tryAttach(id);
-    if (ok) return;
-    clearTerminalId(sessionKey.value); // stale PTY → forget, fall through
-  }
-  if (props.autostart) void start();
-  // else: showPlaceholder stays (status idle)
+function onPageHide() {
+  // Refresh / tab discard: detach only — durable resource stays for re-open.
+  if (attached) terminals.detach(localKey.value);
 }
 
 onMounted(() => {
-  void mount();
+  void openAttachment();
   attachTouch();
   window.visualViewport?.addEventListener("resize", updateKeyboardInset);
   window.visualViewport?.addEventListener("scroll", updateKeyboardInset);
+  window.addEventListener("pagehide", onPageHide);
 });
-watch(() => [props.instanceId, props.sessionAlias], () => { if (started) void start(); });
-// Recolor the live terminal when the app toggles light/dark so it never leaves a
-// mismatched background band around the grid.
+watch(() => [props.instanceId, props.sessionAlias], () => { void openAttachment(); });
 watch(() => theme.mode, () => adapter?.setTheme(currentTheme()));
 onBeforeUnmount(() => {
   detachTouch();
   window.visualViewport?.removeEventListener("resize", updateKeyboardInset);
   window.visualViewport?.removeEventListener("scroll", updateKeyboardInset);
-  releaseFrontend();
+  window.removeEventListener("pagehide", onPageHide);
+  releaseFrontend(true);
 });
 </script>
 
 <template>
   <div class="flex h-full flex-col bg-bg" data-test="terminal-center"
        :style="keyboardInset ? { paddingBottom: `${keyboardInset}px` } : undefined">
-    <!-- header -->
     <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
       <span class="min-w-0 truncate font-mono text-[12.5px] text-fg">{{ props.sessionAlias }}</span>
+      <span v-if="role" data-test="terminal-role"
+            class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-fg-muted">
+        {{ role === "controller" ? $t("terminal.role.controller") : $t("terminal.role.spectator") }}
+      </span>
+      <span v-if="viewerCount > 0" data-test="terminal-viewers"
+            class="shrink-0 text-[11px] text-fg-muted">{{ $t("terminal.viewers", { count: viewerCount }) }}</span>
+      <button v-if="role === 'spectator'" data-test="terminal-take-control"
+              type="button"
+              class="shrink-0 rounded-md border border-border px-2 py-0.5 text-[11px] text-fg transition-colors hover:bg-raised disabled:opacity-40"
+              :disabled="takingControl"
+              @click="void takeControl()">{{ $t("terminal.takeControl") }}</button>
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <button data-test="toggle-keybar"
                 :aria-label="keybarVisible ? $t('terminal.keybar.hide') : $t('terminal.keybar.show')"
@@ -409,58 +372,48 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- body -->
     <div v-if="!props.sessionAlias" class="p-4 text-sm text-fg-muted">{{ $t("terminal.noSession") }}</div>
     <div v-else-if="status === 'error'" class="p-4 text-sm text-fg-muted">{{ $t(errorKey) }}</div>
     <div v-else-if="status === 'exited'" class="p-4 text-sm text-fg-muted">{{ $t("terminal.exited", { code: errorKey }) }}</div>
-    <div v-if="showPlaceholder" data-test="term-restore"
-         class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-      <p class="text-sm text-fg-muted">{{ $t("terminal.restoredHint") }}</p>
-      <button data-test="term-start"
-              class="rounded-md border border-border px-3 py-1.5 text-[12px] font-medium text-fg transition-colors hover:bg-raised"
-              @click="void start()">{{ $t("terminal.startNew") }}</button>
-    </div>
-    <div v-show="!showPlaceholder" ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg" data-test="terminal-host"></div>
+    <div v-show="status === 'connecting' || status === 'open' || status === 'idle'"
+         ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg"
+         data-test="terminal-host"
+         :data-spectator="role === 'spectator' ? '1' : '0'"></div>
 
-    <!-- shortcut bar — the root's padding-bottom (= keyboard height) lifts the whole pane,
-         so both this bar and the terminal's prompt row stay above the on-screen keyboard.
-         The safe-area bottom padding (home-indicator inset) only applies when the keyboard
-         is CLOSED; while it's open the keyboard already covers the home indicator, so the
-         inset would just leave a gap between the buttons and the keyboard. -->
     <div v-if="keybarVisible" data-test="keybar"
          :style="keyboardInset ? { paddingBottom: '0.375rem' } : undefined"
          class="flex shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-surface px-2 py-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] thin-scroll">
-      <button data-test="key-esc" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b')">Esc</button>
-      <button data-test="key-tab" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\t')">Tab</button>
-      <button data-test="key-ctrl" :aria-pressed="ctrlArmed"
-              class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors"
+      <button data-test="key-esc" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b')">Esc</button>
+      <button data-test="key-tab" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\t')">Tab</button>
+      <button data-test="key-ctrl" :disabled="!isController()" :aria-pressed="ctrlArmed"
+              class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors disabled:opacity-40"
               :class="ctrlArmed ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="ctrlArmed = !ctrlArmed">Ctrl</button>
-      <button data-test="key-alt" :aria-pressed="altArmed"
-              class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors"
+      <button data-test="key-alt" :disabled="!isController()" :aria-pressed="altArmed"
+              class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors disabled:opacity-40"
               :class="altArmed ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="altArmed = !altArmed">Alt</button>
-      <button data-test="key-shift" :aria-pressed="shiftArmed"
-              class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors"
+      <button data-test="key-shift" :disabled="!isController()" :aria-pressed="shiftArmed"
+              class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors disabled:opacity-40"
               :class="shiftArmed ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="shiftArmed = !shiftArmed">Shift</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-      <button data-test="key-left" :aria-label="$t('terminal.keybar.left')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b[D')"><ChevronLeft :size="15" /></button>
-      <button data-test="key-up" :aria-label="$t('terminal.keybar.up')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b[A')"><ChevronUp :size="15" /></button>
-      <button data-test="key-down" :aria-label="$t('terminal.keybar.down')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b[B')"><ChevronDown :size="15" /></button>
-      <button data-test="key-right" :aria-label="$t('terminal.keybar.right')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey('\u001b[C')"><ChevronRight :size="15" /></button>
+      <button data-test="key-left" :disabled="!isController()" :aria-label="$t('terminal.keybar.left')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[D')"><ChevronLeft :size="15" /></button>
+      <button data-test="key-up" :disabled="!isController()" :aria-label="$t('terminal.keybar.up')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[A')"><ChevronUp :size="15" /></button>
+      <button data-test="key-down" :disabled="!isController()" :aria-label="$t('terminal.keybar.down')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[B')"><ChevronDown :size="15" /></button>
+      <button data-test="key-right" :disabled="!isController()" :aria-label="$t('terminal.keybar.right')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[C')"><ChevronRight :size="15" /></button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-      <button data-test="key-home" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.home)">Home</button>
-      <button data-test="key-end" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.end)">End</button>
+      <button data-test="key-home" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.home)">Home</button>
+      <button data-test="key-end" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.end)">End</button>
       <button data-test="key-pageup" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageUp">PgUp</button>
       <button data-test="key-pagedown" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageDown">PgDn</button>
-      <button data-test="key-insert" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.insert)">Ins</button>
-      <button data-test="key-enter" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="sendKey(KEYS.enter)">Enter</button>
+      <button data-test="key-insert" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.insert)">Ins</button>
+      <button data-test="key-enter" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.enter)">Enter</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <button data-test="key-copy" class="ml-auto flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="copySelection">
         <Copy :size="14" />{{ $t("terminal.keybar.copy") }}
       </button>
-      <button data-test="key-paste" class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pasteClipboard">
+      <button data-test="key-paste" :disabled="!isController()" class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="pasteClipboard">
         <ClipboardPaste :size="14" />{{ $t("terminal.keybar.paste") }}
       </button>
     </div>
@@ -468,11 +421,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ghostty turns the host element itself into a focusable contenteditable textbox
- * (open() sets tabindex + contenteditable on the element we pass in), so the browser's
- * default focus ring draws a blue box around the whole terminal. Suppress it on the host
- * itself (NOT just descendants — :deep(*:focus) never matches the host element) and on any
- * focusable child; the cursor already signals focus. box-shadow covers ring-style focus. */
 .term-host,
 .term-host:focus,
 .term-host:focus-visible,

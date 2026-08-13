@@ -61,3 +61,67 @@ test("sendRequest pending requests reject with instance-offline on disconnect", 
   socket.close();
   await expect(p).rejects.toThrow("instance-offline");
 });
+
+test("auth handshake normalizes and persists capabilities (missing → empty)", async () => {
+  const touches: Array<{ id: string; coreVersion?: string; capabilities?: string[] }> = [];
+  const gateway = new InstanceGateway({
+    instances: {
+      redeemPairingToken: () => null,
+      registerInstanceForAccount: () => ({ instanceId: "i1", credential: "c", accountId: "a1", name: "" }),
+      verifyCredential: () => ({ id: "i1", accountId: "a1" }),
+      touch: (id: string, coreVersion?: string, capabilities?: string[]) => {
+        touches.push({ id, coreVersion, capabilities });
+      },
+    } as never,
+    accounts: stubAccounts,
+  });
+  const socket = new FakeSocket();
+  gateway.handleConnection(socket as never);
+  socket.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "h1", type: MSG.instanceAuth,
+    payload: {
+      instanceId: "i1",
+      credential: "c",
+      coreVersion: "0.12.0",
+      capabilities: ["terminal.rmux.recovery.v1", "terminal.rmux.recovery.v1", "future.cap.v9", ""],
+    },
+  }));
+  expect(touches).toEqual([{
+    id: "i1",
+    coreVersion: "0.12.0",
+    capabilities: ["terminal.rmux.recovery.v1", "future.cap.v9"],
+  }]);
+
+  const socket2 = new FakeSocket();
+  gateway.handleConnection(socket2 as never);
+  socket2.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "h2", type: MSG.instanceAuth,
+    payload: { instanceId: "i1", credential: "c" },
+  }));
+  expect(touches.at(-1)).toEqual({ id: "i1", coreVersion: undefined, capabilities: [] });
+});
+
+test("register handshake persists capabilities on first connect", async () => {
+  const touches: Array<{ id: string; capabilities?: string[] }> = [];
+  const gateway = new InstanceGateway({
+    instances: {
+      redeemPairingToken: () => ({ instanceId: "i-new", credential: "cred", accountId: "a1", name: "pc" }),
+      registerInstanceForAccount: () => ({ instanceId: "i1", credential: "c", accountId: "a1", name: "" }),
+      verifyCredential: () => null,
+      touch: (id: string, _coreVersion?: string, capabilities?: string[]) => {
+        touches.push({ id, capabilities });
+      },
+    } as never,
+    accounts: stubAccounts,
+  });
+  const socket = new FakeSocket();
+  gateway.handleConnection(socket as never);
+  socket.emit("message", encodeEnvelope({
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id: "h1", type: MSG.instanceRegister,
+    payload: {
+      pairingToken: "pair",
+      capabilities: ["terminal.multi-view.v1"],
+    },
+  }));
+  expect(touches).toEqual([{ id: "i-new", capabilities: ["terminal.multi-view.v1"] }]);
+});

@@ -606,6 +606,11 @@ function warnStateLoadReport(
   if (report.backupError) {
     writeStderr(`[xacpx] state.quarantine_backup_failed ${report.backupError}\n`);
   }
+  for (const record of report.migrated ?? []) {
+    writeStderr(
+      `[xacpx] state.session_id_migrated section=${record.section}${record.key ? ` key=${record.key}` : ""} reason=${record.reason}\n`,
+    );
+  }
 }
 
 async function runOnboardingBeforeStart(input: {
@@ -984,7 +989,7 @@ async function defaultLogin(): Promise<void> {
 
 async function defaultLogout(): Promise<void> {
   const channel = await resolveLoginChannelForCli();
-  channel.logout();
+  await channel.logout();
 }
 
 async function defaultLoadConfiguredPluginsForChannelCli(): Promise<void> {
@@ -1277,7 +1282,21 @@ async function createChannelCliDeps(input: {
       // credential; weixin clears its login). Plugins are already loaded for the
       // channel CLI path, so the factory resolves.
       const { createMessageChannel } = await import("./channels/create-channel.js");
-      createMessageChannel(channel.type, channel).logout();
+      await createMessageChannel(channel.type, channel).logout();
+    },
+    retireChannel: async (channel, reason) => {
+      const { invokeChannelRetireHook } = await import("./channels/plugin.js");
+      await invokeChannelRetireHook({
+        channel,
+        reason,
+        print: input.print,
+        getDaemonStatus: async () => {
+          const status = await controller.getStatus();
+          if (status.state === "running") return { state: "running" as const };
+          if (status.state === "indeterminate") return { state: "indeterminate" as const };
+          return { state: "stopped" as const };
+        },
+      });
     },
   };
   return { ...base, ...input.overrides };

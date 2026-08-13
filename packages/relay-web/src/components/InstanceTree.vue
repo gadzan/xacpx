@@ -6,7 +6,7 @@ import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey } from "../s
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
-import { killSessionTerminal } from "../lib/session-terminal";
+import { detachSessionTerminal } from "../lib/session-terminal";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
 import { pushToast } from "../lib/use-toasts";
@@ -286,11 +286,10 @@ function onRowTap(id: string, alias: string) {
 async function onArchive(id: string, alias: string) {
   openMenuFor.value = null;
   openSwipeFor.value = null;
-  // Drop this session's center tabs (terminal/file panes) right away — a live terminal's
-  // PTY is killed and its persisted id forgotten via killSessionTerminal (unarchive, via
-  // the undo toast, does not restore either the tabs or the PTY).
+  // Drop this session's center tabs. TerminalTab unmount detaches the viewer;
+  // channel-relay retires the durable resource — browser must not terminate/kill.
   const key = sessionKey(id, alias);
-  killSessionTerminal(key, id, terminals);
+  detachSessionTerminal(key, id, alias, terminals);
   centerTabs.clearSession(key);
   await store.archiveSession(id, alias).catch(() => {});
   showUndoToast(id, alias);
@@ -322,10 +321,10 @@ async function askDelete(id: string, alias: string) {
   // Deleting the session you're viewing drops the view back to the empty "no session"
   // state rather than leaving a stale, now-broken selection pointed at it.
   const wasActive = isSelected(id, alias);
-  // Drop this session's center tabs (terminal/file panes) so they unmount along with it,
-  // killing any live terminal PTY and forgetting its persisted id first.
+  // Drop this session's center tabs so they unmount along with it. Browser detaches only;
+  // channel-relay owns resource retirement for deleted sessions.
   const key = sessionKey(id, alias);
-  killSessionTerminal(key, id, terminals);
+  detachSessionTerminal(key, id, alias, terminals);
   centerTabs.clearSession(key);
   void store.removeSession(id, alias).catch(() => {});
   if (wasActive) chat.clearSelection();

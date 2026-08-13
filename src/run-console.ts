@@ -17,7 +17,7 @@ interface DaemonLifecycle {
 
 interface ChannelRegistry {
   startAll(input: ChannelStartInput): Promise<void>;
-  stopAll?(): void | Promise<void>;
+  stopAll?(reason?: "shutdown" | "disabled" | "removed" | "logout"): void | Promise<void>;
 }
 
 type ChannelStartupPolicy = "require-one" | "best-effort";
@@ -232,6 +232,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       abortSignal: shutdownController.signal,
       quota: runtime.quota,
       sessions: runtime.sessions,
+      sessionResources: runtime.sessionResources,
       activeTurns: runtime.activeTurns,
       logger: runtime.logger,
       perfTracer: runtime.perfTracer,

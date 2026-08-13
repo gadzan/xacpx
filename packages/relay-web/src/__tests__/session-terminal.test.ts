@@ -1,31 +1,20 @@
-// packages/relay-web/src/__tests__/session-terminal.test.ts
 import { expect, test, vi } from "vitest";
-import { killSessionTerminal } from "../lib/session-terminal";
-import { saveTerminalId, loadTerminalId, clearTerminalId } from "../lib/terminal-sessions";
+import { detachSessionTerminal, killSessionTerminal } from "../lib/session-terminal";
 import type { useTerminalStore } from "../stores/terminal";
 
 function mockTerminals(): ReturnType<typeof useTerminalStore> {
-  return { close: vi.fn() } as unknown as ReturnType<typeof useTerminalStore>;
+  return { detach: vi.fn(), close: vi.fn() } as unknown as ReturnType<typeof useTerminalStore>;
 }
 
-test("killSessionTerminal closes the PTY and clears the persisted id when one exists", () => {
-  const key = "i1::demo";
-  saveTerminalId(key, "tid-1");
+test("detachSessionTerminal detaches by local key and does not terminate", () => {
   const terminals = mockTerminals();
-
-  killSessionTerminal(key, "i1", terminals);
-
-  expect(terminals.close).toHaveBeenCalledWith("i1", "tid-1");
-  expect(loadTerminalId(key)).toBeNull();
+  const key = "i1::demo";
+  detachSessionTerminal(key, "i1", "demo", terminals);
+  expect(terminals.detach).toHaveBeenCalledWith("i1\0demo");
 });
 
-test("killSessionTerminal is a no-op (does not call close) when the session has no persisted terminal id", () => {
-  const key = "i1::demo";
-  clearTerminalId(key); // ensure no stale id from another test
+test("killSessionTerminal is a deprecated alias that detaches", () => {
   const terminals = mockTerminals();
-
-  killSessionTerminal(key, "i1", terminals);
-
-  expect(terminals.close).not.toHaveBeenCalled();
-  expect(loadTerminalId(key)).toBeNull();
+  killSessionTerminal("i1::demo", "i1", terminals);
+  expect(terminals.detach).toHaveBeenCalledWith("i1\0demo");
 });

@@ -201,3 +201,33 @@ test("first-party channel packages live outside core", async () => {
 
   expect(channelPackages).toEqual(["channel-feishu", "channel-relay", "channel-yuanbao"]);
 });
+
+test("core does not import first-party channel plugin packages", async () => {
+  const allowed = new Set([
+    join(repoRoot, "src/plugins/known-plugins.ts"),
+    join(repoRoot, "src/plugins/plugin-renames.ts"),
+  ]);
+  const hits: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(path);
+        continue;
+      }
+      if (!entry.name.endsWith(".ts")) continue;
+      if (allowed.has(path)) continue;
+      const source = await Bun.file(path).text();
+      if (source.includes("@ganglion/xacpx-channel-relay")
+        || source.includes("@ganglion/xacpx-channel-feishu")
+        || source.includes("@ganglion/xacpx-channel-yuanbao")) {
+        hits.push(path.slice(repoRoot.length + 1));
+      }
+    }
+  }
+
+  await walk(join(repoRoot, "src"));
+  expect(hits).toEqual([]);
+});

@@ -1,0 +1,3 @@
+# Release-built sidecar binaries are packed in CI / pack:rmux-bridge, not committed.
+bin/xacpx-rmux-bridge
+bin/xacpx-rmux-bridge.exe

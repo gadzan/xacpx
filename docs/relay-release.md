@@ -33,12 +33,41 @@
 
 ## 发布顺序
 
+完整能力（含 RMUX 终端）上线时的固定顺序：
+
+1. **RMUX SDK / daemon**（上游；本仓库不内嵌 SDK 源码）
+2. **Sidecar platform packages**（checksum manifest；Task 27）
+3. **core `@ganglion/xacpx`** —— `SessionResourceCatalog` / plugin-api；channel-relay `minXacpxVersion` / peer
+4. **`@ganglion/xacpx-relay-protocol`**
+5. **`@ganglion/xacpx-relay`（含内嵌 relay-web）**
+6. **`@ganglion/xacpx-channel-relay`**（最后发）
+
+当前 tag 触发的 npm 发布顺序仍是：
+
 1. **core `@ganglion/xacpx` 0.17.0-beta.6** —— channel-relay 声明
    `peerDependencies.xacpx >= 0.17.0-beta.6`，必须先发布含 deadline-aware `setSessionModel` 的 core。
 2. **`@ganglion/xacpx-relay-protocol`** —— relay 和 channel-relay 都依赖它（`^0.1.0`）。
 3. **`@ganglion/xacpx-relay` + `@ganglion/xacpx-channel-relay`** —— 两者都依赖已发布的 protocol。
 
-`bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。
+`bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。半截升级时旧 hub/connector/web 组合会安全隐藏终端 UI（缺 capability），属预期。
+
+### RMUX terminal smoke（opt-in）
+
+真实 RMUX daemon + process-owned sidecar 验收**不**进入默认 `npm test`。
+
+```bash
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+bash scripts/install-rmux-release.sh   # pins RMUX 0.10.0 into ~/.local (SHA-256 verified; does not execute install.sh)
+export RMUX_SDK_DAEMON_BINARY="$HOME/.local/libexec/rmux/rmux"
+cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+export XACPX_RMUX_BRIDGE="$PWD/packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
+export XACPX_RMUX_INTEGRATION=1
+bun test tests/smoke/relay-rmux-terminal.test.ts
+```
+
+覆盖矩阵（driver 级）：UTF-8 input / invalid UTF-8、shutdown kill、resize、`vim`/`top`（本机有命令时）、多 viewer recover fanout。
+
+语义提醒：`ownerLeaseTtlSeconds` 只约束硬崩溃孤儿回收，**不是**跨进程 adopt 窗口。发布 workflow（`publish-channel-relay.yml`）会按 OS 矩阵构建 `@ganglion/xacpx-rmux-bridge-*`（源码在 `platform-packages/`，不进 root workspaces），跑 Linux smoke，**先发 platform 包再发** `@ganglion/xacpx-channel-relay`。发 connector 前必须把 `optionalDependencies` 同步到同一版本（`node ./scripts/sync-rmux-bridge-versions.mjs`；workflow 已强制 `--check`），否则会发布仍请求旧 bridge beta 的 channel-relay。权威说明：`docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`。
 
 ## 发布前自检（必跑）
 

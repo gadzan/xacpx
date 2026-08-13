@@ -14,8 +14,11 @@ export interface TerminalTheme {
 
 export interface GhosttyTerminalLike {
   open(el: HTMLElement): void;
-  write(data: string): void;
+  write(data: string | Uint8Array): void;
   resize(cols: number, rows: number): void;
+  /** Full VT reset (RIS-equivalent): clears grid + scrollback and exits alt-screen. Required
+   *  before replaying a rebase keyframe — a keyframe must never be appended to a stale screen. */
+  reset(): void;
   dispose(): void;
   onData(cb: (data: string) => void): void;
   focus?(): void;
@@ -32,13 +35,23 @@ export interface GhosttyTerminalLike {
 }
 
 export interface TerminalAdapter {
-  write(data: string): void;
+  /** Resolves once the underlying terminal is open and wired. Rejects if construction fails
+   *  or the adapter is disposed before that happens — never hangs forever either way. */
+  ready(): Promise<void>;
+  /** Accepts raw bytes (preferred — no UTF-8 round trip) or a string (legacy callers). Queued
+   *  until ready, and ordered relative to any in-flight resetAndReplay(). */
+  write(data: string | Uint8Array): Promise<void> | void;
+  /** Queued the same way as write() — never silently dropped before ready. */
   resize(cols: number, rows: number): void;
+  /** Rebase entry point: reset (clear grid/scrollback, exit alt-screen) → resize → write the
+   *  keyframe, as one atomic, ready-awaited, serialized step. Any write() issued concurrently
+   *  is queued behind it and flushed strictly afterward — never interleaved with the keyframe. */
+  resetAndReplay(data: Uint8Array, cols: number, rows: number): Promise<void>;
   dispose(): void;
   focus(): void;
   /** The current text selection (empty string when nothing is selected). */
   getSelection(): string;
-  /** Recolor the live terminal (e.g. on light/dark theme switch). No-op before open. */
+  /** Recolor the live terminal (e.g. on light/dark theme switch). Queued until ready. */
   setTheme(theme: TerminalTheme): void;
   /** Scroll the viewport by N lines (positive = toward the newest/bottom rows). */
   scrollLines(amount: number): void;
@@ -57,8 +70,9 @@ export interface TerminalAdapterOptions {
   fontSize?: number;
   /** Initial foreground/background; keeps the terminal matching the app theme. */
   theme?: TerminalTheme;
-  /** Test seam. Defaults to constructing a real ghostty-web Terminal. */
-  factory?: (cols: number, rows: number) => GhosttyTerminalLike;
+  /** Test seam. Defaults to constructing a real ghostty-web Terminal. May return a Promise —
+   *  tests use this to exercise genuine ready-before/after-dispose races. */
+  factory?: (cols: number, rows: number) => GhosttyTerminalLike | Promise<GhosttyTerminalLike>;
 }
 
 // ghostty-web loads its ~400KB WASM once via the argless `init()`, which fetches
@@ -78,32 +92,71 @@ async function defaultFactory(
 
 export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOptions): TerminalAdapter {
   let live: GhosttyTerminalLike | undefined;
+  let disposed = false;
   const fontFamily = opts.fontFamily ?? `"${TERMINAL_FONT_FAMILY}", monospace`;
   const fontSize = opts.fontSize ?? 13;
 
-  const ready: Promise<GhosttyTerminalLike> = opts.factory
-    ? Promise.resolve(opts.factory(opts.cols, opts.rows))
-    : defaultFactory(opts.cols, opts.rows, fontFamily, fontSize, opts.theme);
+  let settleReady!: () => void;
+  let failReady!: (err: unknown) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => { settleReady = resolve; failReady = reject; });
+  // Nobody is required to call ready() — a rejection (e.g. dispose racing construction) must
+  // never surface as an unhandled rejection on this internal reference. The promise returned
+  // BY ready() below is a fresh one whenever it matters, so callers still observe the outcome.
+  readyPromise.catch(() => {});
 
-  // open()/onData() are called ONLY inside ready.then — never synchronously. With an
-  // injected factory (tests), ready is already-resolved, so .then runs next microtask;
-  // await Promise.resolve() in tests before asserting.
-  void ready.then((t) => {
-    live = t;
-    t.open(el);
-    t.onData(opts.onData);
-  });
+  const factoryResult = opts.factory ? opts.factory(opts.cols, opts.rows) : defaultFactory(opts.cols, opts.rows, fontFamily, fontSize, opts.theme);
+  const factoryPromise: Promise<GhosttyTerminalLike> = Promise.resolve(factoryResult);
+
+  void factoryPromise.then(
+    (t) => {
+      if (disposed) { t.dispose(); return; } // dispose() won the race — never open()/mutate the canvas.
+      live = t;
+      t.open(el);
+      t.onData(opts.onData);
+      settleReady();
+    },
+    (err) => {
+      if (!disposed) failReady(err);
+    },
+  );
+
+  // Every write/resize/theme/replay funnels through this single FIFO chain: (a) calls made
+  // before `ready` queue instead of silently no-oping, and (b) a resetAndReplay() together with
+  // any write()s issued while it's in flight run in strict call order — a keyframe can never be
+  // interleaved with (or preceded by) a stale live write landing on the old screen.
+  let queue: Promise<void> = readyPromise.catch(() => { /* dispose-before-ready: drain queued ops as no-ops below */ });
+
+  function enqueue(op: (t: GhosttyTerminalLike) => void): Promise<void> {
+    const run = queue.then(() => {
+      if (disposed || !live) return;
+      op(live);
+    });
+    queue = run.catch(() => { /* one failing op must not wedge every op queued after it */ });
+    return run;
+  }
 
   return {
-    write: (d) => live?.write(d),
-    resize: (c, r) => live?.resize(c, r),
-    dispose: () => live?.dispose(),
+    ready: () => (disposed ? Promise.reject(new Error("terminal adapter disposed")) : readyPromise),
+    write: (data) => enqueue((t) => t.write(data)),
+    resize: (c, r) => { void enqueue((t) => t.resize(c, r)); },
+    resetAndReplay: (data, cols, rows) => enqueue((t) => {
+      t.reset();
+      t.resize(cols, rows);
+      t.write(data);
+    }),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      failReady(new Error("terminal adapter disposed")); // unstick anyone awaiting ready()
+      live?.dispose();
+      live = undefined;
+    },
     focus: () => live?.focus?.(),
     getSelection: () => live?.getSelection?.() ?? "",
-    setTheme: (theme) => {
-      if (live?.setTheme) live.setTheme(theme);
-      else live?.renderer?.setTheme?.(theme);
-    },
+    setTheme: (theme) => { void enqueue((t) => {
+      if (t.setTheme) t.setTheme(theme);
+      else t.renderer?.setTheme?.(theme);
+    }); },
     scrollLines: (n) => live?.scrollLines?.(n),
     fit: () => {
       if (!live?.element || !live.cols || !live.rows) return null;
