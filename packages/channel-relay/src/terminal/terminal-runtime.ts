@@ -827,6 +827,11 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     viewerId: string,
     openKind: TerminalOpenKind,
   ): TerminalOpenResult {
+    const stale = this.attachments.listByTerminal(rec.terminalId)
+      .filter((a) => a.viewerId === viewerId);
+    for (const prior of stale) {
+      void this.stopRecovery(prior.attachmentId, { wait: false });
+    }
     let attached;
     try {
       attached = this.attachments.attach({

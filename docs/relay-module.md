@@ -67,15 +67,19 @@
 
 - **配置**：`channels[].options.terminal`（见 `docs/config-reference.md`）；默认 `enabled=false`，不声明
   `terminal.rmux.recovery.v1` / `terminal.multi-view.v1`。
-- **运行时**：`packages/channel-relay/src/terminal/`（registry、runtime、reconciler、in-memory driver；
-  真实 sidecar 仍待 RMUX publish）。
+- **运行时**：`packages/channel-relay/src/terminal/`（registry、runtime、reconciler、process-owned sidecar）。
 - **持久化**：`<xacpx-home>/relay/` 下 `terminal-owner.json` + `terminals.json`（与 `credential.json` 同目录惯例）；
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
 - **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；
   hub disconnect → 只 `detachAllAttachments`。CLI `channel disable|rm` 在 daemon **已停止**时走 one-shot retirement；daemon 仍在跑时推迟到重启，由旧进程 `stop()` 杀会话，避免再起一个看不到 HashMap 的 sidecar。`terminals.lock` 保证 registry 同一时刻只有一个 writer。
 - **Doctor**：`ChannelCliProvider.diagnose` → `diagnoseRelayTerminal`（只读）；core 的 Plugins 检查只呈现结构化 finding，
-  不理解 RMUX。terminal disabled → skip；cleanup-pending / 未打包 sidecar → warn；缺失 `bridgeCommand` 路径 → fail。
+  不理解 RMUX。terminal disabled → skip；cleanup-pending / 未打包 sidecar → warn；缺失 `bridgeCommand` 路径 → fail；
+  bridge 找到但 RMUX daemon 未解析 → `terminal-rmux-daemon-unresolved` warn。
 - **日志**：`relay.terminal.*` 事件（spec §19）；只记 ID / sizes / counts / error class，不记 bytes / credential / cwd。
+  Sidecar 启动失败会把 stderr 尾部附在 `relay.terminal_bootstrap_failed`（例如 `rmux driver has crashed: xacpx-rmux-bridge fatal: …`）。
+- **Windows**：`@ganglion/xacpx-rmux-bridge-win32-x64` 只带 `xacpx-rmux-bridge.exe`。还需要 RMUX 0.10.x daemon
+  （`rmux.exe` / `rmux-daemon.exe` 在 PATH，或 `options.terminal.rmuxCommand` 指向绝对路径），否则 handshake 前 sidecar 退出、
+  不声明 terminal capability。发布包：https://github.com/Helvesec/rmux/releases （`rmux-*-windows-x86_64.zip`）。
 
 ## 阶段三服务端接缝（Web 看板扇出）
 
@@ -272,7 +276,10 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   请求 type（`PendingRequest` 绑定 socket/type）——请求 id 是顺序可猜的，跨实例伪造 response
   会污染别的实例的 queue correlation / 删除历史 / 写入伪造行，多账号 Hub 上是跨租户边界。
   socket 被 supersede 时，旧 socket 的 pending RPC **立即拒绝**（`instance-reconnected`），
-  HTTP 调用不必等满 120s 超时。
+  HTTP 调用不必等满 120s 超时。Web 终端 RPC（open / take-control / resync / terminate）
+  在收到 `instance-reconnected` 后**向新 socket 重试一次**，不再把该错误映射成
+  `instance-offline`（实例此时已经在线）。看板自己的 `/ws` 断开使用 `events-offline`，
+  也不再显示「实例已离线」。
 - `instance.state.sync` 处理：防御性形状校验（`validInstanceStateSync`，malformed 整体丢弃）；
   **整个 reconciliation 包在专用 try/catch 里**——任何数据库失败（不只是 finished 事务，也包括
   active turn 的 prompt backfill、recency 读取等）都会 `gateway.disconnect(instanceId)` 强制重连重发，

@@ -166,7 +166,7 @@ describe("connectEvents", () => {
       { expect: "opened" },
     );
     FakeWS.instances[0].onclose?.();
-    await expect(pending).rejects.toMatchObject({ code: "instance-offline" });
+    await expect(pending).rejects.toMatchObject({ code: "events-offline" });
 
     await vi.runOnlyPendingTimersAsync();
     FakeWS.instances[1]?.onopen?.();
@@ -213,5 +213,15 @@ describe("connectEvents", () => {
 
   it("sendWebClientMessage is a no-op without an open socket", () => {
     expect(() => sendWebClientMessage({ kind: "subscribe", instanceIds: [] })).not.toThrow();
+  });
+
+  it("requestTerminal before the socket is open is events-offline, not instance-offline", async () => {
+    connectEvents(() => {});
+    FakeWS.instances[0].readyState = 0;
+    const pending = requestTerminal(
+      { kind: "terminal-open", requestId: nextTerminalRequestId(), instanceId: "i1", sessionAlias: "s", cols: 80, rows: 24 },
+      { expect: "opened" },
+    );
+    await expect(pending).rejects.toMatchObject({ code: "events-offline" });
   });
 });

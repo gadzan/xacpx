@@ -127,6 +127,15 @@ export async function diagnoseRelayTerminal(
             : {}),
         },
       });
+      if (!resolved.rmuxCommand) {
+        findings.push({
+          level: "warn",
+          code: "terminal-rmux-daemon-unresolved",
+          message: "RMUX daemon binary not found; sidecar will try PATH and likely crash on Windows",
+          suggestion:
+            "install RMUX 0.10.x (rmux.exe / rmux-daemon.exe) or set absolute channels[].options.terminal.rmuxCommand",
+        });
+      }
     } catch (err) {
       if (err instanceof RmuxBinaryUnavailableError) {
         findings.push({

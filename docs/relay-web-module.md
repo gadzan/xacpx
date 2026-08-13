@@ -437,11 +437,15 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 
 用户语义（与 legacy live-PTY 的关键差别）：
 
-- **Tab 上的 `X` = 全局终止**该共享 shell（有 ack：`terminated` 或 `cleanup-pending`）。`viewerCount > 1` 时必须确认。
+- **Tab 上的 `X` = 全局终止**该共享 shell（有 ack：`terminated` 或 `cleanup-pending`）。`viewerCount > 1` 时必须确认。打开从未成功（没有 `terminalId`）时只丢掉本地 Tab，不走 terminate RPC，避免误报「无法打开终端」。
+- 看板 `/ws` 断开或 connector 重连中途的 open 失败分别是 `events-offline` / `instance-reconnected`，**不是**实例离线；Tab 会在连接恢复后自动重试。
 - **关闭浏览器窗口 / 刷新 / 断网**只 detach 本地 attachment，**不** kill RMUX session；其他设备上的 viewer 继续。
 - **多设备**共享同一个 `terminalId`/`generation`：首个打开方为 controller，其余为 spectator；spectator 可 **take control**。
 - Tab 布局 / 本地 UI 状态不跨设备共享；只共享底层 shell。
 - 用户文案使用「睡眠/唤醒」；API / 代码里仍可见 archive 拼写（兼容）。
+- ghostty-web 点画布会聚焦其 1×1 clipped textarea，而 keydown 监听在宿主上；看板会把该 textarea 铺满宿主并把焦点拉回宿主，否则键盘（含 Enter）无响应。底部快捷键栏的 Enter 不依赖画布焦点，可作对照。
+- 同一 `viewerId` 再次打开会替换旧 attachment，避免留下幽灵 controller 把新连接变成 spectator（快捷键栏全灰）。若仍是唯一观看者却是 spectator，看板会自动 take-control。
+- 快捷键栏没有本地回显：按键只发到 PTY，字符要等 recover 进入 live 后的 `terminal-bytes` 才画到画布。take-control 或控制者首次输入时，若 recover 仍停在 waiting，会再发一次 `terminal-stream-start`；waiting 期间先到的 bytes 会触发 resync，而不是被丢掉（否则栏能点、画面没反应）。
 
 实现入口：`packages/relay-web/src/stores/terminal.ts`、`TerminalTab.vue`、recovery reducer
 （`src/lib/terminal-recovery.ts`）。权威状态机见 RMUX terminal design spec。

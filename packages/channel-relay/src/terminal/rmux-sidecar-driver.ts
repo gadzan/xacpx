@@ -79,6 +79,8 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private handshaken = false;
   private diagnosticsCache: RmuxDiagnostics | null = null;
   private readonly requestTimeoutMs: number;
+  /** Trailing sidecar stderr (protocol stays on stdout). Surfaced on crash. */
+  private stderrTail = "";
   /**
    * Per-pane recovery snapshot for late multi-viewer subscribers: last rebase
    * plus every bytes event since that rebase. A second `recover` against the
@@ -96,8 +98,12 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     child.stdout.on("data", (chunk: Buffer | string) => {
       this.onStdout(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
-    child.on?.("exit", () => this.crash(new RmuxDriverCrashedError()));
-    child.on?.("error", () => this.crash(new RmuxDriverCrashedError()));
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      this.stderrTail = `${this.stderrTail}${text}`.slice(-4 * 1024);
+    });
+    child.on?.("exit", () => this.crash(this.crashError()));
+    child.on?.("error", () => this.crash(this.crashError()));
   }
 
   async handshake(): Promise<RmuxDiagnostics> {
@@ -111,7 +117,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       capabilities: string[];
     };
     if (res.type !== "handshake-ok") {
-      throw new RmuxDriverCrashedError();
+      throw this.crashError();
     }
     this.handshaken = true;
     this.diagnosticsCache = {
@@ -292,21 +298,26 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       // ignore
     }
     this.child.kill?.("SIGTERM");
-    this.crash(new RmuxDriverCrashedError());
+    this.crash(this.crashError());
   }
 
   /** Abort pending RPCs and kill the child without waiting for a shutdown ack. */
   dispose(): void {
-    this.crash(new RmuxDriverCrashedError());
+    this.crash(this.crashError());
+  }
+
+  private crashError(): RmuxDriverCrashedError {
+    const detail = this.stderrTail.replace(/\s+/g, " ").trim();
+    return new RmuxDriverCrashedError(detail || undefined);
   }
 
   private assertReady(): void {
-    if (this.crashed) throw new RmuxDriverCrashedError();
+    if (this.crashed) throw this.crashError();
     if (!this.handshaken) throw new RmuxDriverCrashedError();
   }
 
   private request(payload: Record<string, unknown>, timeoutMs = this.requestTimeoutMs): Promise<unknown> {
-    if (this.crashed) return Promise.reject(new RmuxDriverCrashedError());
+    if (this.crashed) return Promise.reject(this.crashError());
     const id = String(this.nextId++);
     const body = { ...payload, id };
     const line = `${JSON.stringify(body)}\n`;
@@ -533,7 +544,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.crashed = true;
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(err instanceof RmuxDriverCrashedError ? err : new RmuxDriverCrashedError());
+      p.reject(err instanceof RmuxDriverCrashedError ? err : this.crashError());
     }
     this.pending.clear();
     for (const set of this.recoveries.values()) {

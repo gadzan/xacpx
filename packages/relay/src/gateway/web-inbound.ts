@@ -63,8 +63,12 @@ function fail(
 
 function mapConnectorError(err: unknown): { code: string; message: string } {
   if (err instanceof Error) {
-    if (err.message === "instance-offline" || err.message === "instance-reconnected") {
+    if (err.message === "instance-offline") {
       return { code: "instance-offline", message: err.message };
+    }
+    // New connector socket already owns the instance — not offline.
+    if (err.message === "instance-reconnected") {
+      return { code: "instance-reconnected", message: err.message };
     }
     if (err.message === "timeout") {
       return { code: "terminal-timeout", message: "terminal request timed out" };
@@ -72,6 +76,31 @@ function mapConnectorError(err: unknown): { code: string; message: string } {
     return { code: "terminal-protocol-error", message: err.message };
   }
   return { code: "terminal-protocol-error", message: String(err) };
+}
+
+/** One retry when the connector socket was superseded mid-RPC (new conn is already online). */
+async function sendConnectorRequest(
+  deps: WebClientDeps,
+  instanceId: string,
+  type: string,
+  payload: unknown,
+): Promise<unknown> {
+  try {
+    return await deps.gateway.sendRequest(instanceId, type, payload, {
+      timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (
+      err instanceof Error
+      && err.message === "instance-reconnected"
+      && deps.gateway.isOnline(instanceId)
+    ) {
+      return await deps.gateway.sendRequest(instanceId, type, payload, {
+        timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
+      });
+    }
+    throw err;
+  }
 }
 
 /** Decode + route a browser→hub frame. Recoverable terminal RPCs are async. */
@@ -215,7 +244,8 @@ async function handleTerminalOpen(
 
   let payload: unknown;
   try {
-    payload = await deps.gateway.sendRequest(
+    payload = await sendConnectorRequest(
+      deps,
       msg.instanceId,
       MSG.terminalOpen,
       {
@@ -225,7 +255,6 @@ async function handleTerminalOpen(
         cols: msg.cols,
         rows: msg.rows,
       },
-      { timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS },
     );
   } catch (err) {
     const mapped = mapConnectorError(err);
@@ -307,11 +336,11 @@ async function handleTakeControl(
     return;
   }
   try {
-    const payload = await deps.gateway.sendRequest(
+    const payload = await sendConnectorRequest(
+      deps,
       msg.instanceId,
       MSG.terminalTakeControl,
       { attachmentId: msg.attachmentId, generation: msg.generation, viewerId },
-      { timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS },
     );
     if (isErrorPayload(payload)) {
       fail(deps, socket, msg.requestId, msg.instanceId, payload.error.code, payload.error.message);
@@ -345,11 +374,11 @@ async function handleResync(
     return;
   }
   try {
-    const payload = await deps.gateway.sendRequest(
+    const payload = await sendConnectorRequest(
+      deps,
       msg.instanceId,
       MSG.terminalResync,
       { attachmentId: msg.attachmentId, generation: msg.generation, viewerId },
-      { timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS },
     );
     if (isErrorPayload(payload)) {
       fail(deps, socket, msg.requestId, msg.instanceId, payload.error.code, payload.error.message);
@@ -375,11 +404,11 @@ async function handleTerminate(
   msg: { requestId: string; instanceId: string; terminalId: string; generation: string },
 ): Promise<void> {
   try {
-    const payload = await deps.gateway.sendRequest(
+    const payload = await sendConnectorRequest(
+      deps,
       msg.instanceId,
       MSG.terminalTerminate,
       { terminalId: msg.terminalId, generation: msg.generation },
-      { timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS },
     );
     if (isErrorPayload(payload)) {
       fail(deps, socket, msg.requestId, msg.instanceId, payload.error.code, payload.error.message);

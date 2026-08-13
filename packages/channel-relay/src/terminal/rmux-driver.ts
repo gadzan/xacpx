@@ -135,8 +135,9 @@ export class RmuxInvalidUtf8InputError extends Error {
 /** Thrown by every driver call once the underlying driver/sidecar process is
  *  considered crashed (fake: via `crashDriver()`; real: sidecar exit). */
 export class RmuxDriverCrashedError extends Error {
-  constructor() {
-    super("rmux driver has crashed");
+  constructor(detail?: string) {
+    const suffix = detail?.trim() ? `: ${detail.trim().slice(0, 500)}` : "";
+    super(`rmux driver has crashed${suffix}`);
     this.name = "RmuxDriverCrashedError";
   }
 }

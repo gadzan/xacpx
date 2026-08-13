@@ -90,6 +90,28 @@ async function defaultFactory(
   return new mod.Terminal({ cols, rows, fontFamily, fontSize, ...(theme ? { theme } : {}) }) as unknown as GhosttyTerminalLike;
 }
 
+/**
+ * ghostty-web 0.4 mounts a 1×1 `clip-path: inset(50%)` textarea and focuses it on
+ * canvas click, while InputHandler listens for keydown on the host. Several browsers
+ * then never deliver keydown. Stretch that textarea over the host so IME and keys work
+ * whether focus lands on the host or the helper.
+ */
+export function revealGhosttyInputSurface(host: HTMLElement): void {
+  const ta = host.querySelector("textarea");
+  if (!(ta instanceof HTMLTextAreaElement)) return;
+  ta.style.position = "absolute";
+  ta.style.left = "0";
+  ta.style.top = "0";
+  ta.style.right = "0";
+  ta.style.bottom = "0";
+  ta.style.width = "100%";
+  ta.style.height = "100%";
+  ta.style.opacity = "0";
+  ta.style.clipPath = "none";
+  ta.style.overflow = "hidden";
+  ta.style.zIndex = "1";
+}
+
 export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOptions): TerminalAdapter {
   let live: GhosttyTerminalLike | undefined;
   let disposed = false;
@@ -113,6 +135,7 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       live = t;
       t.open(el);
       t.onData(opts.onData);
+      revealGhosttyInputSurface(el);
       settleReady();
     },
     (err) => {
@@ -151,7 +174,14 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       live?.dispose();
       live = undefined;
     },
-    focus: () => live?.focus?.(),
+    // Queue behind ready(): a focus() issued while WASM is still loading must not
+    // no-op. ghostty-web's canvas mousedown focuses a 1×1 clipped textarea; its
+    // keydown listener is on the host, so we unclip that textarea and focus the host.
+    focus: () => { void enqueue((t) => {
+      revealGhosttyInputSurface(el);
+      t.focus?.();
+      el.focus?.();
+    }); },
     getSelection: () => live?.getSelection?.() ?? "",
     setTheme: (theme) => { void enqueue((t) => {
       if (t.setTheme) t.setTheme(theme);

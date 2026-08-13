@@ -5,7 +5,7 @@
 import { accessSync, constants } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 export interface ResolvedRmuxBinaries {
   bridgeCommand: string;
@@ -46,6 +46,29 @@ function which(command: string, pathEnv = process.env.PATH ?? ""): string | unde
   return undefined;
 }
 
+/** Release-layout + PATH names the RMUX SDK looks for as the daemon helper. */
+const DAEMON_NAMES = ["rmux-daemon.exe", "rmux.exe", "rmux-daemon", "rmux"] as const;
+
+function firstExecutable(paths: readonly string[]): string | undefined {
+  for (const candidate of paths) {
+    if (existsExecutable(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function resolveDaemonHelper(homeDir: string): string | undefined {
+  const dir = join(homeDir, ".local", "libexec", "rmux");
+  return firstExecutable(DAEMON_NAMES.map((name) => join(dir, name)));
+}
+
+function resolveDaemonBesideBridge(bridgeCommand: string): string | undefined {
+  return firstExecutable(DAEMON_NAMES.map((name) => join(dirname(bridgeCommand), name)));
+}
+
+function resolveDaemonOnPath(pathEnv: string): string | undefined {
+  return which("rmux-daemon", pathEnv) ?? which("rmux", pathEnv);
+}
+
 function platformPackageName(): string {
   const plat = process.platform;
   const arch = process.arch;
@@ -74,6 +97,8 @@ export function resolveRmuxBinaries(input: {
   bridgeCommand?: string;
   rmuxCommand?: string;
   pathEnv?: string;
+  /** Override `os.homedir()` (tests). */
+  homeDir?: string;
 }): ResolvedRmuxBinaries {
   let bridgeCommand: string | undefined;
   let bridgeSource: ResolvedRmuxBinaries["source"]["bridge"];
@@ -112,15 +137,13 @@ export function resolveRmuxBinaries(input: {
     rmuxCommand = input.rmuxCommand;
     rmuxSource = "config";
   } else {
-    // Prefer full daemon helper when present next to a release install.
-    const helper = join(homedir(), ".local", "libexec", "rmux", "rmux");
-    if (existsExecutable(helper)) {
-      rmuxCommand = helper;
-      rmuxSource = "path";
-    } else {
-      rmuxCommand = which("rmux", input.pathEnv);
-      if (rmuxCommand) rmuxSource = "path";
-    }
+    // Prefer the release helper (Windows ships `rmux.exe`), then a daemon
+    // sitting next to the bridge, then PATH `rmux-daemon` / `rmux`.
+    const helper = resolveDaemonHelper(input.homeDir ?? homedir());
+    const beside = resolveDaemonBesideBridge(bridgeCommand);
+    const onPath = resolveDaemonOnPath(input.pathEnv ?? process.env.PATH ?? "");
+    rmuxCommand = helper ?? beside ?? onPath;
+    if (rmuxCommand) rmuxSource = "path";
   }
 
   return {

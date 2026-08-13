@@ -189,9 +189,14 @@ export function reduceRecovery(state: RecoveryState, inbound: RecoveryInbound): 
 
   if (inbound.kind === "bytes") {
     if (state.phase !== "live") {
-      // Spec: do not accept bytes until rebase completes.
+      // Spec: do not accept bytes until rebase completes. Bytes in waiting
+      // mean rebase-start was lost (or recover never started); ignore would
+      // drop PTY echo forever and make the keybar look dead.
       if (state.phase === "rebase") {
         return resync(state, "bytes-during-rebase");
+      }
+      if (state.phase === "waiting") {
+        return resync(state, "bytes-before-rebase");
       }
       return { state, action: { type: "ignore" } };
     }

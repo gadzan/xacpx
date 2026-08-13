@@ -130,6 +130,14 @@ describe("TerminalTab", () => {
     expect(w.text()).toContain("terminal.disabled");
   });
 
+  it("does not label a dashboard socket drop as instance-offline", async () => {
+    openOrResume.mockRejectedValueOnce(new TerminalRequestError("events-offline", "events socket is offline"));
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.text()).toContain("terminal.eventsOffline");
+    expect(w.text()).not.toContain("terminal.offline");
+  });
+
   it("spectator disables input and shows take-control", async () => {
     openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
       openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
@@ -140,6 +148,20 @@ describe("TerminalTab", () => {
     expect(w.find('[data-test="terminal-take-control"]').exists()).toBe(true);
     onDataOf()("x");
     expect(sendInput).not.toHaveBeenCalled();
+    expect(takeControl).not.toHaveBeenCalled();
+  });
+
+  it("sole spectator auto take-controls so the keybar is usable", async () => {
+    takeControl.mockResolvedValueOnce(
+      openedView({ role: "controller", viewerCount: 1 }),
+    );
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 1 }),
+    );
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(takeControl).toHaveBeenCalled();
+    expect(w.find('[data-test="key-enter"]').attributes("disabled")).toBeUndefined();
   });
 
   it("controller keystrokes go through sendInput", async () => {
@@ -147,6 +169,31 @@ describe("TerminalTab", () => {
     await flushPromises();
     onDataOf()("x");
     expect(sendInput).toHaveBeenCalledWith("i1\0demo", "x");
+  });
+
+  it("keybar Enter sends CR without needing ghostty focus", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    if (!w.find('[data-test="keybar"]').exists()) {
+      await w.find('[data-test="toggle-keybar"]').trigger("click");
+    }
+    await w.find('[data-test="key-enter"]').trigger("click");
+    expect(sendInput).toHaveBeenCalledWith("i1\0demo", "\r");
+  });
+
+  it("host is keyboard-focusable", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-host"]').attributes("tabindex")).toBe("0");
+  });
+
+  it("focuses the adapter after a successful open, and again on host mousedown", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(adapter.focus).toHaveBeenCalled();
+    adapter.focus.mockClear();
+    await w.find('[data-test="terminal-host"]').trigger("mousedown");
+    expect(adapter.focus).toHaveBeenCalled();
   });
 
   it("detaches on unmount without terminate", async () => {

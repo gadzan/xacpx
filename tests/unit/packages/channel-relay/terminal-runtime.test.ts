@@ -200,6 +200,29 @@ test("openOrResume is idempotent by logicalSessionId (alias reuse shares one res
   expect(await driver.list()).toHaveLength(1);
 });
 
+test("same viewerId re-open replaces the prior attachment and stays controller", async () => {
+  const { runtime } = await makeHarness();
+  const first = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  const second = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v1",
+    cols: 80,
+    rows: 24,
+  });
+  expect(second.terminalId).toBe(first.terminalId);
+  expect(second.role).toBe("controller");
+  expect(second.viewerCount).toBe(1);
+  expect(second.attachmentId).not.toBe(first.attachmentId);
+  expect(runtime.peekAttachment(first.attachmentId)).toBeUndefined();
+});
+
 test("concurrent openOrResume for one logical id only creates one RMUX session", async () => {
   const { runtime, driver } = await makeHarness();
   const results = await Promise.all([

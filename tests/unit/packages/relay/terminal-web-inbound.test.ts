@@ -138,6 +138,41 @@ test("instance offline open returns terminal-request-failed with instance-offlin
   expect((d.gateway.sendRequest as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });
 
+test("connector reconnect mid-open retries on the new socket instead of reporting instance-offline", async () => {
+  const sendRequest = mock(async () => {
+    if (sendRequest.mock.calls.length === 1) throw new Error("instance-reconnected");
+    return {
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "att-1",
+      role: "controller",
+      viewerCount: 1,
+    };
+  });
+  const d = deps(true, { sendRequest, isOnline: mock(() => true) });
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({
+      kind: "terminal-open",
+      requestId: "req-re",
+      instanceId: "i1",
+      sessionAlias: "demo",
+      cols: 80,
+      rows: 24,
+    })),
+  );
+  await Bun.sleep(20);
+  expect(sendRequest.mock.calls.length).toBe(2);
+  const decoded = decodeEnvelope(d.sock.sent[0]!);
+  expect(decoded.ok && parseWebServerEvent(decoded.envelope)).toMatchObject({
+    kind: "terminal-opened",
+    requestId: "req-re",
+    terminalId: "t1",
+  });
+});
+
 test("recoverable input requires socket-owned attachment and stamps viewerId", async () => {
   const d = deps(true);
   d.webGateway.bindAttachment({

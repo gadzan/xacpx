@@ -4,7 +4,9 @@ import { Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, Ch
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
 import { useTerminalStore, terminalLocalKey, type TerminalAttachmentView } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
-import { TerminalRequestError } from "../api/events";
+import { useConnectionStore } from "../stores/connection";
+import { useInstancesStore } from "../stores/instances";
+import { TerminalRequestError, isRetryableTerminalError } from "../api/events";
 
 const props = defineProps<{ instanceId: string; sessionAlias: string }>();
 // Close is owned by the center tab strip → Dashboard requestCloseTerminal (global terminate).
@@ -12,6 +14,8 @@ defineEmits<{ close: [] }>();
 
 const terminals = useTerminalStore();
 const theme = useThemeStore();
+const conn = useConnectionStore();
+const instances = useInstancesStore();
 const localKey = computed(() => terminalLocalKey(props.instanceId, props.sessionAlias));
 const host = ref<HTMLDivElement | null>(null);
 const status = ref<"idle" | "connecting" | "open" | "exited" | "error">("idle");
@@ -19,6 +23,7 @@ const errorKey = ref<string>("");
 const role = ref<"controller" | "spectator" | "">("");
 const viewerCount = ref(0);
 const takingControl = ref(false);
+const attached = ref(false);
 
 const ctrlArmed = ref(false);
 const altArmed = ref(false);
@@ -57,7 +62,8 @@ let offMeta: (() => void) | null = null;
 let offExit: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
 let epoch = 0;
-let attached = false;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let autoRetried = false;
 
 const ESC = String.fromCharCode(0x1b);
 const KEYS = {
@@ -80,8 +86,10 @@ function isController(): boolean {
   return role.value === "controller";
 }
 
+const canType = computed(() => attached.value && role.value === "controller");
+
 function handleData(d: string) {
-  if (!attached || !isController()) return;
+  if (!canType.value) return;
   let out = d;
   if (d.length === 1 && anyModArmed()) {
     if (shiftArmed.value) out = out.toUpperCase();
@@ -109,7 +117,7 @@ function applyMods(seq: string): string {
 }
 
 function sendKey(seq: string) {
-  if (!attached || !isController()) return;
+  if (!canType.value) return;
   const out = applyMods(seq);
   if (anyModArmed()) disarmMods();
   terminals.sendInput(localKey.value, out);
@@ -117,7 +125,7 @@ function sendKey(seq: string) {
 }
 
 async function pasteClipboard() {
-  if (!isController()) return;
+  if (!canType.value) return;
   try {
     const text = await navigator.clipboard?.readText();
     if (text) sendKey(text);
@@ -172,7 +180,7 @@ function onTouchEnd(e: TouchEvent) {
 }
 
 function applyFit(myEpoch = epoch) {
-  if (myEpoch !== epoch || !attached || !adapter) return;
+  if (myEpoch !== epoch || !attached.value || !adapter) return;
   const dim = adapter.fit();
   if (!dim) {
     if (host.value && host.value.clientWidth > 0) requestAnimationFrame(() => applyFit(myEpoch));
@@ -180,7 +188,7 @@ function applyFit(myEpoch = epoch) {
   }
   adapter.resize(dim.cols, dim.rows);
   // Spectator: local fit only — never push backend resize.
-  if (isController()) terminals.sendResize(localKey.value, dim.cols, dim.rows);
+  if (canType.value) terminals.sendResize(localKey.value, dim.cols, dim.rows);
 }
 
 function mapErrorCode(code: string): string {
@@ -189,6 +197,8 @@ function mapErrorCode(code: string): string {
     case "terminal-rmux-unavailable": return "terminal.unsupported";
     case "terminal-unsupported-platform": return "terminal.unsupported";
     case "instance-offline": return "terminal.offline";
+    case "events-offline": return "terminal.eventsOffline";
+    case "instance-reconnected": return "terminal.reconnecting";
     case "terminal-session-not-found": return "terminal.sessionNotFound";
     case "terminal-session-archived": return "terminal.sessionArchived";
     case "terminal-capacity-exceeded": return "terminal.capacityExceeded";
@@ -201,6 +211,9 @@ function applyMeta(view: TerminalAttachmentView): void {
   if (view.localKey !== localKey.value) return;
   role.value = view.role ?? "";
   viewerCount.value = view.viewerCount ?? 0;
+  if (!takingControl.value && view.role === "spectator" && (view.viewerCount ?? 0) <= 1) {
+    void takeControl();
+  }
 }
 
 function releaseFrontend(detachBackend: boolean): void {
@@ -211,10 +224,10 @@ function releaseFrontend(detachBackend: boolean): void {
   offExit?.(); offExit = null;
   resizeObs?.disconnect(); resizeObs = null;
   adapter?.dispose(); adapter = null;
-  if (detachBackend && attached) {
+  if (detachBackend && attached.value) {
     terminals.detach(localKey.value);
   }
-  attached = false;
+  attached.value = false;
   disarmMods();
 }
 
@@ -247,7 +260,7 @@ async function openAttachment(): Promise<void> {
   });
   offExit = terminals.onAttachmentExit((key, reason, code) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
-    attached = false;
+    attached.value = false;
     status.value = "exited";
     errorKey.value = reason === "cleanup-pending" ? "cleanup-pending" : String(code ?? reason);
   });
@@ -266,15 +279,17 @@ async function openAttachment(): Promise<void> {
       terminals.detach(localKey.value);
       return;
     }
-    attached = true;
+    attached.value = true;
+    autoRetried = false;
     applyMeta(view);
     status.value = "open";
     resizeObs = new ResizeObserver(() => applyFit());
     if (host.value) resizeObs.observe(host.value);
     applyFit(myEpoch);
+    currentAdapter.focus();
   } catch (e) {
     if (myEpoch !== epoch) return;
-    attached = false;
+    attached.value = false;
     status.value = "error";
     const code = e instanceof TerminalRequestError ? e.code
       : e instanceof Error ? e.message
@@ -283,6 +298,13 @@ async function openAttachment(): Promise<void> {
     if (adapter === currentAdapter) {
       currentAdapter.dispose();
       adapter = null;
+    }
+    if (isRetryableTerminalError(code) && !autoRetried) {
+      autoRetried = true;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (status.value === "error") void openAttachment();
+      }, 1500);
     }
   }
 }
@@ -303,6 +325,13 @@ async function takeControl(): Promise<void> {
 
 function onHostFocusIn() { hostFocused.value = true; updateKeyboardInset(); }
 function onHostFocusOut() { hostFocused.value = false; keyboardInset.value = 0; }
+function onHostMouseDown() {
+  if (role.value === "spectator") {
+    void takeControl();
+    return;
+  }
+  if (isController()) adapter?.focus();
+}
 
 function attachTouch() {
   const el = host.value;
@@ -325,7 +354,7 @@ function detachTouch() {
 
 function onPageHide() {
   // Refresh / tab discard: detach only — durable resource stays for re-open.
-  if (attached) terminals.detach(localKey.value);
+  if (attached.value) terminals.detach(localKey.value);
 }
 
 onMounted(() => {
@@ -337,7 +366,20 @@ onMounted(() => {
 });
 watch(() => [props.instanceId, props.sessionAlias], () => { void openAttachment(); });
 watch(() => theme.mode, () => adapter?.setTheme(currentTheme()));
+watch(() => conn.online, (online) => {
+  if (online && status.value === "error") {
+    autoRetried = false;
+    void openAttachment();
+  }
+});
+watch(() => instances.byId(props.instanceId)?.online, (online) => {
+  if (online && status.value === "error") {
+    autoRetried = false;
+    void openAttachment();
+  }
+});
 onBeforeUnmount(() => {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   detachTouch();
   window.visualViewport?.removeEventListener("resize", updateKeyboardInset);
   window.visualViewport?.removeEventListener("scroll", updateKeyboardInset);
@@ -359,7 +401,7 @@ onBeforeUnmount(() => {
             class="shrink-0 text-[11px] text-fg-muted">{{ $t("terminal.viewers", { count: viewerCount }) }}</span>
       <button v-if="role === 'spectator'" data-test="terminal-take-control"
               type="button"
-              class="shrink-0 rounded-md border border-border px-2 py-0.5 text-[11px] text-fg transition-colors hover:bg-raised disabled:opacity-40"
+              class="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
               :disabled="takingControl"
               @click="void takeControl()">{{ $t("terminal.takeControl") }}</button>
       <div class="ml-auto flex shrink-0 items-center gap-1">
@@ -376,44 +418,56 @@ onBeforeUnmount(() => {
     <div v-else-if="status === 'error'" class="p-4 text-sm text-fg-muted">{{ $t(errorKey) }}</div>
     <div v-else-if="status === 'exited'" class="p-4 text-sm text-fg-muted">{{ $t("terminal.exited", { code: errorKey }) }}</div>
     <div v-show="status === 'connecting' || status === 'open' || status === 'idle'"
-         ref="host" class="term-host flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg"
-         data-test="terminal-host"
-         :data-spectator="role === 'spectator' ? '1' : '0'"></div>
+         class="relative flex min-h-0 flex-1 flex-col">
+      <div ref="host" class="term-host relative flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden bg-bg"
+           data-test="terminal-host"
+           tabindex="0"
+           :data-spectator="role === 'spectator' ? '1' : '0'"
+           @mousedown="onHostMouseDown"></div>
+      <div v-if="role === 'spectator'" data-test="terminal-spectator-overlay"
+           class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-bg/75 px-4 text-center text-sm text-fg">
+        <p>{{ $t("terminal.spectatorHint") }}</p>
+        <button type="button"
+                class="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white hover:bg-accent-hover disabled:opacity-40"
+                :disabled="takingControl"
+                @click="void takeControl()">{{ $t("terminal.takeControl") }}</button>
+      </div>
+    </div>
 
     <div v-if="keybarVisible" data-test="keybar"
          :style="keyboardInset ? { paddingBottom: '0.375rem' } : undefined"
          class="flex shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-surface px-2 py-1.5 pb-[calc(0.375rem+env(safe-area-inset-bottom))] thin-scroll">
-      <button data-test="key-esc" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b')">Esc</button>
-      <button data-test="key-tab" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\t')">Tab</button>
-      <button data-test="key-ctrl" :disabled="!isController()" :aria-pressed="ctrlArmed"
+      <button data-test="key-esc" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b')">Esc</button>
+      <button data-test="key-tab" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\t')">Tab</button>
+      <button data-test="key-ctrl" :disabled="!canType" :aria-pressed="ctrlArmed"
               class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors disabled:opacity-40"
               :class="ctrlArmed ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="ctrlArmed = !ctrlArmed">Ctrl</button>
-      <button data-test="key-alt" :disabled="!isController()" :aria-pressed="altArmed"
+      <button data-test="key-alt" :disabled="!canType" :aria-pressed="altArmed"
               class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors disabled:opacity-40"
               :class="altArmed ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="altArmed = !altArmed">Alt</button>
-      <button data-test="key-shift" :disabled="!isController()" :aria-pressed="shiftArmed"
+      <button data-test="key-shift" :disabled="!canType" :aria-pressed="shiftArmed"
               class="shrink-0 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors disabled:opacity-40"
               :class="shiftArmed ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="shiftArmed = !shiftArmed">Shift</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-      <button data-test="key-left" :disabled="!isController()" :aria-label="$t('terminal.keybar.left')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[D')"><ChevronLeft :size="15" /></button>
-      <button data-test="key-up" :disabled="!isController()" :aria-label="$t('terminal.keybar.up')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[A')"><ChevronUp :size="15" /></button>
-      <button data-test="key-down" :disabled="!isController()" :aria-label="$t('terminal.keybar.down')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[B')"><ChevronDown :size="15" /></button>
-      <button data-test="key-right" :disabled="!isController()" :aria-label="$t('terminal.keybar.right')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[C')"><ChevronRight :size="15" /></button>
+      <button data-test="key-left" :disabled="!canType" :aria-label="$t('terminal.keybar.left')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[D')"><ChevronLeft :size="15" /></button>
+      <button data-test="key-up" :disabled="!canType" :aria-label="$t('terminal.keybar.up')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[A')"><ChevronUp :size="15" /></button>
+      <button data-test="key-down" :disabled="!canType" :aria-label="$t('terminal.keybar.down')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[B')"><ChevronDown :size="15" /></button>
+      <button data-test="key-right" :disabled="!canType" :aria-label="$t('terminal.keybar.right')" class="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[C')"><ChevronRight :size="15" /></button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
-      <button data-test="key-home" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.home)">Home</button>
-      <button data-test="key-end" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.end)">End</button>
+      <button data-test="key-home" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.home)">Home</button>
+      <button data-test="key-end" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.end)">End</button>
       <button data-test="key-pageup" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageUp">PgUp</button>
       <button data-test="key-pagedown" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageDown">PgDn</button>
-      <button data-test="key-insert" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.insert)">Ins</button>
-      <button data-test="key-enter" :disabled="!isController()" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.enter)">Enter</button>
+      <button data-test="key-insert" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.insert)">Ins</button>
+      <button data-test="key-enter" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.enter)">Enter</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <button data-test="key-copy" class="ml-auto flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="copySelection">
         <Copy :size="14" />{{ $t("terminal.keybar.copy") }}
       </button>
-      <button data-test="key-paste" :disabled="!isController()" class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="pasteClipboard">
+      <button data-test="key-paste" :disabled="!canType" class="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="pasteClipboard">
         <ClipboardPaste :size="14" />{{ $t("terminal.keybar.paste") }}
       </button>
     </div>
@@ -430,5 +484,14 @@ onBeforeUnmount(() => {
 .term-host :deep(*:focus-visible) {
   outline: none !important;
   box-shadow: none !important;
+}
+/* ghostty-web 0.4 helper is 1×1 + clip-path; unclip so canvas-click focus can receive keys. */
+.term-host :deep(textarea) {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  clip-path: none !important;
+  opacity: 0 !important;
 }
 </style>
