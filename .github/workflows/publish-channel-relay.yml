@@ -112,7 +112,7 @@ jobs:
 
       - name: Verify RMUX sidecar pin (no ../rmux path dep)
         run: |
-          if grep -E 'path\s*=|\.\./rmux' packages/channel-relay/native/rmux-bridge/Cargo.toml; then
+          if grep -E '\.\./rmux|rmux-sdk\s*=\s*\{[^}]*path\s*=' packages/channel-relay/native/rmux-bridge/Cargo.toml; then
             echo "::error::rmux-bridge must not path-depend on ../rmux" >&2
             exit 1
           fi
