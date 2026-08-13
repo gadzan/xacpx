@@ -240,7 +240,16 @@ jobs:
             rm -rf "$dest"
             mv "$src" "$dest"
             echo "Publishing @ganglion/xacpx-rmux-bridge-${pkg}@${{ needs.meta.outputs.version }}"
-            (cd "$dest" && npm publish --tag "$NPM_TAG" --access public)
+            # Tolerate a re-publish after a partial run: a version already on the
+            # registry is expected and should not abort the rest of the pipeline.
+            if (cd "$dest" && npm publish --tag "$NPM_TAG" --access public); then
+              echo "published ${pkg}"
+            elif [[ "$(cd "$dest" && npm view "@ganglion/xacpx-rmux-bridge-${pkg}"@${{ needs.meta.outputs.version }} version 2>/dev/null || true)" == "${{ needs.meta.outputs.version }}" ]]; then
+              echo "already published ${pkg}@${{ needs.meta.outputs.version }}, skipping"
+            else
+              echo "::error::failed to publish ${pkg}" >&2
+              exit 1
+            fi
           done
 
   publish-channel-relay:
