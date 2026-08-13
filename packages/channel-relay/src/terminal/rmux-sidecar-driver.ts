@@ -24,7 +24,8 @@ const SIDECAR_PROTOCOL_VERSION = 2;
 const REBASE_CHUNK_BYTES = 48 * 1024;
 const MAX_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
 /** Cap for bytes buffered after the last rebase for late multi-viewer joins.
- *  Matches the recovery size budget; overflow folds bytes into a synthetic rebase. */
+ *  Matches the recovery size budget. Overflow asks RMUX for a fresh snapshot
+ *  instead of synthesizing an oversized keyframe. */
 const MAX_BYTES_SINCE_REBASE = 2 * 1024 * 1024;
 
 type RebaseEvent = Extract<RmuxRecoveryEvent, { type: "rebase" }>;
@@ -86,6 +87,8 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
    */
   private readonly recoveryCache = new Map<string, PaneRecoveryCache>();
   private readonly rebaseAssembly = new Map<string, RebaseAssembly>();
+  /** Panes waiting for a fresh RMUX rebase after the catch-up cache hit its budget. */
+  private readonly snapshotRefresh = new Set<string>();
 
   constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
     this.child = child;
@@ -207,7 +210,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     }
   }
 
-  async *recover(paneId: string): AsyncGenerator<RmuxRecoveryEvent> {
+  async *recover(paneId: string, signal?: AbortSignal): AsyncGenerator<RmuxRecoveryEvent> {
     this.assertReady();
     const queue = new AsyncQueue<RmuxRecoveryEvent>();
     let set = this.recoveries.get(paneId);
@@ -220,6 +223,9 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       push: (e) => queue.push(e),
       close: (err) => queue.close(err),
     };
+    const onAbort = () => queue.close();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     try {
       // One sidecar recover stream per pane; fan out to all Node subscribers.
       // A second recover request would abort the first in the Rust actor.
@@ -237,6 +243,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         if (event.type === "exit") break;
       }
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       set.delete(sub);
       if (set.size === 0) {
         this.recoveries.delete(paneId);
@@ -472,7 +479,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         ...(assembly.reason !== undefined ? { reason: assembly.reason } : {}),
       };
     }
-    if (this.rebaseAssembly.has(paneId) && (raw.type === "bytes" || raw.type === "exit")) {
+    if (this.rebaseAssembly.has(paneId) && (raw.type === "bytes" || raw.type === "exit" || raw.type === "error")) {
       this.crash(new Error("sidecar event during rebase assembly"));
       return null;
     }
@@ -481,6 +488,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
 
   private rememberRecoveryEvent(paneId: string, event: RmuxRecoveryEvent): void {
     if (event.type === "rebase") {
+      this.snapshotRefresh.delete(paneId);
       this.recoveryCache.set(paneId, {
         rebase: cloneRecoveryEvent(event),
         bytes: [],
@@ -493,17 +501,26 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     if (!cache) return;
     const nextTotal = cache.bytesTotal + event.data.byteLength;
     if (nextTotal > MAX_BYTES_SINCE_REBASE) {
-      // Fold buffered + current bytes into a synthetic rebase so late joiners
-      // still land on a contiguous nextSequence without an unbounded buffer.
-      this.recoveryCache.set(paneId, {
-        rebase: foldBytesIntoRebase(cache.rebase, [...cache.bytes, event]),
-        bytes: [],
-        bytesTotal: 0,
-      });
+      // Do not fold into a synthetic keyframe — that would exceed the 2 MiB
+      // rebase cap. Keep the last real snapshot and ask RMUX for a fresh one.
+      if (!this.snapshotRefresh.has(paneId)) {
+        this.snapshotRefresh.add(paneId);
+        void this.refreshPaneSnapshot(paneId);
+      }
       return;
     }
     cache.bytes.push(cloneRecoveryEvent(event));
     cache.bytesTotal = nextTotal;
+  }
+
+  private async refreshPaneSnapshot(paneId: string): Promise<void> {
+    try {
+      await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
+      if (this.crashed) return;
+      await this.request({ type: "recover", pane_id: paneId });
+    } catch {
+      this.snapshotRefresh.delete(paneId);
+    }
   }
 
   private crash(err: Error): void {
@@ -520,6 +537,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.recoveries.clear();
     this.recoveryCache.clear();
     this.rebaseAssembly.clear();
+    this.snapshotRefresh.clear();
     this.emitter.emit("crash", err);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {
@@ -564,6 +582,13 @@ function mapEvent(raw: Record<string, unknown> | undefined): RmuxRecoveryEvent |
       ...(raw.code !== undefined && raw.code !== null ? { code: Number(raw.code) } : {}),
     };
   }
+  if (raw.type === "error") {
+    return {
+      type: "error",
+      code: String(raw.code ?? "rebase-too-large"),
+      message: String(raw.message ?? "rebase keyframe too large"),
+    };
+  }
   return null;
 }
 
@@ -581,31 +606,6 @@ function cloneRecoveryEvent<T extends RmuxRecoveryEvent>(event: T): T {
     };
   }
   return { ...event };
-}
-
-/** Merge post-rebase bytes into the keyframe and advance nextSequence. */
-function foldBytesIntoRebase(rebase: RebaseEvent, bytes: BytesEvent[]): RebaseEvent {
-  if (bytes.length === 0) return cloneRecoveryEvent(rebase);
-  let total = rebase.keyframe.byteLength;
-  for (const item of bytes) total += item.data.byteLength;
-  const keyframe = new Uint8Array(total);
-  keyframe.set(rebase.keyframe, 0);
-  let offset = rebase.keyframe.byteLength;
-  for (const item of bytes) {
-    keyframe.set(item.data, offset);
-    offset += item.data.byteLength;
-  }
-  const last = bytes[bytes.length - 1]!;
-  return {
-    type: "rebase",
-    epoch: rebase.epoch,
-    nextSequence: last.sequence + 1,
-    cols: rebase.cols,
-    rows: rebase.rows,
-    alternate: rebase.alternate,
-    keyframe,
-    ...(rebase.reason !== undefined ? { reason: rebase.reason } : {}),
-  };
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {

@@ -1,5 +1,6 @@
 import { openSync, closeSync, fsyncSync, writeSync, constants as fsConstants } from "node:fs";
 import { mkdir, readFile, rename, writeFile, chmod, open, unlink } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -14,6 +15,22 @@ const OWNER_FILE = "terminal-owner.json";
 const REGISTRY_FILE = "terminals.json";
 const LOCK_FILE = "terminals.lock";
 const FILE_MODE = 0o600;
+const require = createRequire(import.meta.url);
+const properLockfile = require("proper-lockfile") as {
+  lock: (
+    resource: string,
+    options: {
+      lockfilePath: string;
+      retries: number;
+      stale: number;
+      update?: number;
+      realpath: boolean;
+    },
+  ) => Promise<() => Promise<void>>;
+};
+
+const WRITER_LOCK_STALE_MS = 30_000;
+const WRITER_LOCK_UPDATE_MS = 10_000;
 
 export class TerminalRegistryRevisionMismatchError extends Error {
   constructor(expected: number, actual: number) {
@@ -80,8 +97,20 @@ export interface TerminalRegistryFsDeps {
   unlink?: (path: string) => Promise<void>;
   randomUUID?: () => string;
   now?: () => Date;
-  pid?: () => number;
-  isPidAlive?: (pid: number) => boolean;
+  /**
+   * Cross-process writer lock. Production uses `proper-lockfile` against
+   * `terminals.lock`. Tests may inject a fake.
+   */
+  lock?: (
+    resource: string,
+    options: {
+      lockfilePath: string;
+      retries: number;
+      stale: number;
+      update?: number;
+      realpath: boolean;
+    },
+  ) => Promise<() => Promise<void>>;
 }
 
 export interface TerminalRegistryStoreOptions {
@@ -89,9 +118,10 @@ export interface TerminalRegistryStoreOptions {
   dir: string;
   deps?: TerminalRegistryFsDeps;
   /**
-   * When true, `load()` takes an exclusive pid lock on `terminals.lock`.
-   * Production writers (live runtime, one-shot retirement) must set this;
-   * unit tests default to false so they can share a temp dir without a lock.
+   * When true, `load()` takes an exclusive `proper-lockfile` lock on
+   * `terminals.lock`. Production writers (live runtime, one-shot retirement)
+   * must set this; unit tests default to false so they can share a temp dir
+   * without a lock.
    */
   exclusiveWriter?: boolean;
 }
@@ -123,26 +153,6 @@ function defaultWriteFileExclusive(path: string, data: string, mode: number): bo
       }
     }
   }
-}
-
-function defaultIsPidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    // EPERM: process exists but we cannot signal it. Treat as alive so we
-    // never steal a live writer's lock.
-    return code === "EPERM";
-  }
-}
-
-function parseLockPid(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (!/^[0-9]+$/.test(trimmed)) return null;
-  const pid = Number(trimmed);
-  return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 function cloneTerminals(terminals: Record<string, TerminalRecordV1>): Record<string, TerminalRecordV1> {
@@ -220,7 +230,7 @@ export class TerminalRegistryStore {
   private readonly exclusiveWriter: boolean;
   private state: LoadedState | null = null;
   private chain: Promise<unknown> = Promise.resolve();
-  private lockHeld = false;
+  private releaseLock: (() => Promise<void>) | null = null;
 
   constructor(options: TerminalRegistryStoreOptions) {
     this.dir = options.dir;
@@ -240,8 +250,7 @@ export class TerminalRegistryStore {
       unlink: d.unlink ?? ((p) => unlink(p)),
       randomUUID: d.randomUUID ?? (() => randomUUID()),
       now: d.now ?? (() => new Date()),
-      pid: d.pid ?? (() => process.pid),
-      isPidAlive: d.isPidAlive ?? defaultIsPidAlive,
+      lock: d.lock ?? ((resource, options) => properLockfile.lock(resource, options)),
     };
   }
 
@@ -549,42 +558,29 @@ export class TerminalRegistryStore {
   }
 
   private async acquireWriterLock(): Promise<void> {
-    if (!this.exclusiveWriter || this.lockHeld) return;
-    const lockPath = join(this.dir, LOCK_FILE);
-    const pid = this.deps.pid();
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const created = await this.deps.writeFileExclusive(lockPath, `${pid}\n`, FILE_MODE);
-      if (created) {
-        this.lockHeld = true;
-        return;
-      }
-      const existing = await this.tryRead(lockPath);
-      const existingPid = existing === null ? null : parseLockPid(existing);
-      if (existingPid !== null && this.deps.isPidAlive(existingPid)) {
-        throw new TerminalRegistryLockedError(existingPid);
-      }
-      try {
-        await this.deps.unlink(lockPath);
-      } catch {
-        // Lost the steal race; retry exclusive create.
-      }
+    if (!this.exclusiveWriter || this.releaseLock) return;
+    try {
+      this.releaseLock = await this.deps.lock(this.dir, {
+        lockfilePath: join(this.dir, LOCK_FILE),
+        retries: 0,
+        stale: WRITER_LOCK_STALE_MS,
+        update: WRITER_LOCK_UPDATE_MS,
+        realpath: false,
+      });
+    } catch {
+      throw new TerminalRegistryLockedError(0);
     }
-    throw new TerminalRegistryLockedError(0);
   }
 
   private async releaseWriterLock(): Promise<void> {
-    if (!this.lockHeld) return;
-    const lockPath = join(this.dir, LOCK_FILE);
+    const release = this.releaseLock;
+    this.releaseLock = null;
+    if (!release) return;
     try {
-      const existing = await this.tryRead(lockPath);
-      const existingPid = existing === null ? null : parseLockPid(existing);
-      if (existingPid === this.deps.pid()) {
-        await this.deps.unlink(lockPath);
-      }
+      await release();
     } catch {
       // best-effort; do not throw from close()
     }
-    this.lockHeld = false;
   }
 
   private async tryRead(path: string): Promise<string | null> {

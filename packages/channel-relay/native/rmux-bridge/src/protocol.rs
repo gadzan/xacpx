@@ -154,6 +154,10 @@ pub enum RecoveryEventDto {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<i32>,
     },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 /// Split a rebase keyframe into start/chunk/end events so each NDJSON line
@@ -334,5 +338,12 @@ mod tests {
     fn rejects_rebase_over_two_mib() {
         let keyframe = vec![0u8; MAX_REBASE_TOTAL_BYTES + 1];
         assert!(encode_rebase_events(1, 1, 80, 24, false, &keyframe, None).is_err());
+        let event = RecoveryEventDto::Error {
+            code: "rebase-too-large".to_owned(),
+            message: "rebase keyframe too large".to_owned(),
+        };
+        let line = serde_json::to_string(&event).unwrap();
+        assert!(line.contains("\"type\":\"error\""));
+        assert!(line.contains("rebase-too-large"));
     }
 }

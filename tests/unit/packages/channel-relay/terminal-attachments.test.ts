@@ -344,7 +344,10 @@ test("late release after resetOutboundQueue does not debit the new epoch", () =>
   expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(25);
 
   registry.releaseOutbound(a.attachmentId, 40, first.epoch);
-  registry.closeOutboundQueue(a.attachmentId, first.epoch);
+  expect(registry.closeOutboundQueue(a.attachmentId, first.epoch)).toBe(false);
   expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(25);
   expect(registry.isOutboundQueueClosed(a.attachmentId)).toBe(false);
+  if (!second.ok) throw new Error("expected second enqueue to succeed");
+  expect(registry.closeOutboundQueue(a.attachmentId, second.epoch)).toBe(true);
+  expect(registry.isOutboundQueueClosed(a.attachmentId)).toBe(true);
 });

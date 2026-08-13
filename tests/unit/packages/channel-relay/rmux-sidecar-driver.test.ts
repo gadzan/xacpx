@@ -400,3 +400,119 @@ test("sidecar driver reassembles a keyframe that would overflow a 96KiB NDJSON l
   if (events[0]?.type !== "rebase") return;
   expect(events[0].keyframe.byteLength).toBe(100_000);
 });
+
+function ackLast(fake: ReturnType<typeof makeFakeChild>, type: string): boolean {
+  for (let i = fake.written.length - 1; i >= 0; i--) {
+    for (const line of fake.written[i]!.trim().split("\n")) {
+      if (!line.includes(`"${type}"`)) continue;
+      const req = JSON.parse(line) as { id: string; type: string };
+      if (req.type === type) {
+        fake.reply({ type: "ok", id: req.id });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+test("catch-up cache over budget asks RMUX for a fresh rebase instead of synthesizing an oversized keyframe", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      aEvents.push(ev);
+      if (ev.type === "exit") break;
+    }
+  })();
+  await Promise.resolve();
+  expect(ackLast(fake, "recover")).toBe(true);
+
+  writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
+  await Bun.sleep(15);
+  expect(aEvents[0]?.type).toBe("rebase");
+  if (aEvents[0]?.type === "rebase") {
+    expect(aEvents[0].keyframe.byteLength).toBeLessThan(16);
+  }
+
+  const chunk = Buffer.alloc(48 * 1024, 0x61);
+  const chunkB64 = chunk.toString("base64");
+  let sent = 0;
+  let sequence = 0;
+  while (sent <= 2 * 1024 * 1024) {
+    fake.stdout.write(
+      `${JSON.stringify({
+        type: "event",
+        pane_id: "%1",
+        event: {
+          type: "bytes",
+          epoch: 1,
+          sequence,
+          data_base64: chunkB64,
+        },
+      })}\n`,
+    );
+    sent += chunk.byteLength;
+    sequence += 1;
+  }
+  await Bun.sleep(30);
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await Bun.sleep(10);
+  expect(ackLast(fake, "recover")).toBe(true);
+
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await Bun.sleep(20);
+  const lastRebase = [...aEvents].reverse().find((e) => e.type === "rebase");
+  expect(lastRebase).toMatchObject({ type: "rebase", epoch: 2 });
+  if (lastRebase?.type === "rebase") {
+    expect(lastRebase.keyframe.byteLength).toBe(5);
+  }
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "exit") break;
+    }
+  })();
+  await Bun.sleep(20);
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  if (bEvents[0]?.type === "rebase") {
+    expect(bEvents[0].keyframe.byteLength).toBeLessThanOrEqual(2 * 1024 * 1024);
+    expect(bEvents[0].keyframe.byteLength).toBe(5);
+  }
+
+  fake.stdout.write(
+    `${JSON.stringify({ type: "event", pane_id: "%1", event: { type: "exit", code: 0 } })}\n`,
+  );
+  await Promise.all([aDone, bDone]);
+});
+
+test("sidecar oversized rebase error is forwarded instead of dropped", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const events: RmuxRecoveryEvent[] = [];
+  const iterP = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      events.push(ev);
+      if (ev.type === "error") break;
+    }
+  })();
+  await Promise.resolve();
+  expect(ackLast(fake, "recover")).toBe(true);
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: { type: "error", code: "rebase-too-large", message: "rebase keyframe too large" },
+    })}\n`,
+  );
+  await iterP;
+  expect(events).toEqual([
+    { type: "error", code: "rebase-too-large", message: "rebase keyframe too large" },
+  ]);
+});

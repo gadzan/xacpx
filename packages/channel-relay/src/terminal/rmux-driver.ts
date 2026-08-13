@@ -65,7 +65,8 @@ export type RmuxRecoveryEvent =
     reason?: string;
   }
   | { type: "bytes"; epoch: number; sequence: number; data: Uint8Array }
-  | { type: "exit"; code?: number };
+  | { type: "exit"; code?: number }
+  | { type: "error"; code: string; message: string };
 
 /** Version/capability stub — real driver reports bridge + RMUX wire version. */
 export interface RmuxDiagnostics {
@@ -94,8 +95,10 @@ export interface RmuxTerminalDriver {
 
   resize(paneId: string, cols: number, rows: number): Promise<void>;
 
-  /** Recovery stream for a pane. Consumers must stop iterating to release. */
-  recover(paneId: string): AsyncIterable<RmuxRecoveryEvent>;
+  /** Recovery stream for a pane. Consumers must stop iterating to release.
+   *  Pass `signal` so abort unblocks `next()` instead of deadlocking against
+   *  `iterator.return()`. */
+  recover(paneId: string, signal?: AbortSignal): AsyncIterable<RmuxRecoveryEvent>;
 
   diagnostics(): Promise<RmuxDiagnostics>;
 }

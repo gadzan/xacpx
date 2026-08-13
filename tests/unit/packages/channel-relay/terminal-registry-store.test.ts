@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -444,26 +445,66 @@ test("exclusiveWriter load rejects while another live writer holds terminals.loc
   const dir = freshDir();
   const holder = new TerminalRegistryStore({ dir, exclusiveWriter: true });
   await holder.load();
-  expect(readFileSync(join(dir, "terminals.lock"), "utf8").trim()).toBe(String(process.pid));
 
   const waiter = new TerminalRegistryStore({ dir, exclusiveWriter: true });
   await expect(waiter.load()).rejects.toBeInstanceOf(TerminalRegistryLockedError);
 
   await holder.close();
   await waiter.load();
-  expect(readFileSync(join(dir, "terminals.lock"), "utf8").trim()).toBe(String(process.pid));
   await waiter.close();
 });
 
-test("exclusiveWriter steals terminals.lock when the recorded pid is dead", async () => {
+test("exclusiveWriter stale lock is stolen by exactly one of two concurrent loaders", async () => {
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const properLockfile = require("proper-lockfile") as {
+    lock: (
+      resource: string,
+      options: {
+        lockfilePath: string;
+        retries: number;
+        stale: number;
+        update?: number;
+        realpath: boolean;
+        onCompromised?: (err: Error) => void;
+      },
+    ) => Promise<() => Promise<void>>;
+  };
   const dir = freshDir();
-  writeFileSync(join(dir, "terminals.lock"), "999999\n", { encoding: "utf8", mode: 0o600 });
-  const store = new TerminalRegistryStore({
-    dir,
-    exclusiveWriter: true,
-    deps: { pid: () => 333, isPidAlive: () => false },
+  const lockPath = join(dir, "terminals.lock");
+  // Simulate a crashed writer: lock dir exists but mtime is older than the
+  // store's 30s stale window. Swallow compromised callbacks so the leaked
+  // holder's update timer cannot fail later tests after we steal/rm the lock.
+  const releaseLeaked = await properLockfile.lock(dir, {
+    lockfilePath: lockPath,
+    retries: 0,
+    stale: 30_000,
+    update: 10_000,
+    realpath: false,
+    onCompromised: () => {},
   });
-  await store.load();
-  expect(readFileSync(join(dir, "terminals.lock"), "utf8").trim()).toBe("333");
-  await store.close();
+  const past = new Date(Date.now() - 60_000);
+  await utimes(lockPath, past, past);
+
+  const a = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  const b = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  try {
+    const results = await Promise.allSettled([a.load(), b.load()]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({ status: "rejected" });
+    if (rejected[0] && rejected[0].status === "rejected") {
+      expect(rejected[0].reason).toBeInstanceOf(TerminalRegistryLockedError);
+    }
+  } finally {
+    await a.close();
+    await b.close();
+    try {
+      await releaseLeaked();
+    } catch {
+      // stolen
+    }
+  }
 });

@@ -767,3 +767,97 @@ test("pending resume waiting on terminal lock fails after compensate terminates"
   expect(runtime.peekAttachment(created.attachmentId)).toBeUndefined();
   expect(await driver.list()).toHaveLength(0);
 });
+
+test("resync binds in-flight frames to the old epoch before starting a new recovery", async () => {
+  const dir = freshDir();
+  const registry = new TerminalRegistryStore({ dir });
+  const driver = new InMemoryRmuxDriver();
+  const catalog = new FakeCatalog([descriptor()]);
+  const events: TerminalViewerEvent[] = [];
+  const flushes: Array<(error?: Error) => void> = [];
+  const runtime = new DefaultRelayTerminalRuntime({
+    registry,
+    driver,
+    catalog,
+    config: baseConfig(),
+    onViewerEvent: (e, onFlush) => {
+      events.push(e);
+      if (onFlush) flushes.push(onFlush);
+    },
+    clock: { now: () => 1_000_000 },
+    killTimeoutMs: 50,
+  });
+  await runtime.start();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+  const paneId = (await driver.list())[0]!.paneId;
+  driver.injectOutput(paneId, new Uint8Array(20));
+  await Bun.sleep(10);
+  expect(flushes.length).toBeGreaterThan(0);
+  const staleFlush = flushes[flushes.length - 1]!;
+
+  await runtime.resync(opened.attachmentId, opened.generation);
+  const overflowBefore = events.filter((e) => e.type === "queue-overflow").length;
+  const bytesBefore = events.filter((e) => e.type === "bytes").length;
+
+  driver.injectOutput(paneId, new Uint8Array([0x62]));
+  await Bun.sleep(10);
+  expect(events.filter((e) => e.type === "bytes").length).toBeGreaterThan(bytesBefore);
+
+  staleFlush(new Error("stale-flush"));
+  await Bun.sleep(10);
+  expect(events.filter((e) => e.type === "queue-overflow").length).toBe(overflowBefore);
+
+  driver.injectOutput(paneId, new Uint8Array([0x63]));
+  await Bun.sleep(10);
+  expect(events.filter((e) => e.type === "bytes").length).toBeGreaterThan(bytesBefore + 1);
+});
+
+test("resync then a late old-loop flush success does not debit the new recovery", async () => {
+  const dir = freshDir();
+  const registry = new TerminalRegistryStore({ dir });
+  const driver = new InMemoryRmuxDriver();
+  const catalog = new FakeCatalog([descriptor()]);
+  const events: TerminalViewerEvent[] = [];
+  const flushes: Array<(error?: Error) => void> = [];
+  const runtime = new DefaultRelayTerminalRuntime({
+    registry,
+    driver,
+    catalog,
+    config: baseConfig(),
+    onViewerEvent: (e, onFlush) => {
+      events.push(e);
+      if (onFlush) flushes.push(onFlush);
+    },
+    clock: { now: () => 1_000_000 },
+    killTimeoutMs: 50,
+  });
+  await runtime.start();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "v",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(10);
+  const paneId = (await driver.list())[0]!.paneId;
+  driver.injectOutput(paneId, new Uint8Array(30));
+  await Bun.sleep(10);
+  const firstFlush = flushes[flushes.length - 1]!;
+
+  await runtime.resync(opened.attachmentId, opened.generation);
+  firstFlush();
+  driver.injectOutput(paneId, new Uint8Array(40));
+  await Bun.sleep(10);
+  expect(events.some((e) => e.type === "queue-overflow")).toBe(false);
+  expect(events.filter((e) => e.type === "bytes").length).toBeGreaterThanOrEqual(2);
+});

@@ -387,8 +387,10 @@ fn map_recovery_events(event: PaneRecoveryEvent) -> Vec<RecoveryEventDto> {
             Some(rebase_reason_name(rebase.reason).to_owned()),
         )
         .unwrap_or_else(|err| {
-            eprintln!("xacpx-rmux-bridge: drop oversized rebase: {err}");
-            Vec::new()
+            vec![RecoveryEventDto::Error {
+                code: "rebase-too-large".to_owned(),
+                message: err,
+            }]
         }),
         PaneRecoveryEvent::Bytes {
             epoch,

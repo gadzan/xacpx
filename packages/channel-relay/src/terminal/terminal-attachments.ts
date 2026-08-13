@@ -316,10 +316,14 @@ export class TerminalAttachmentRegistry {
     queue.bytes = Math.max(0, queue.bytes - Math.max(0, byteLength));
   }
 
-  /** Close the outbound queue (flush/transport failure) without emitting overflow. */
-  closeOutboundQueue(attachmentId: string, epoch: number): void {
+  /** Close the outbound queue (flush/transport failure) without emitting overflow.
+   *  Returns true only when `epoch` is still the live queue — a stale flush
+   *  from a previous recovery must not close or kill the current stream. */
+  closeOutboundQueue(attachmentId: string, epoch: number): boolean {
     const queue = this.queues.get(attachmentId);
-    if (queue && queue.epoch === epoch) queue.closed = true;
+    if (!queue || queue.epoch !== epoch) return false;
+    queue.closed = true;
+    return true;
   }
 
   isOutboundQueueClosed(attachmentId: string): boolean {

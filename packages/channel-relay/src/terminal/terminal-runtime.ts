@@ -566,25 +566,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     if (!attachment) {
       throw new TerminalRuntimeError("terminal-attachment-not-found");
     }
-
-    await this.withTerminalLock(attachment.terminalId, async () => {
-      const handle = this.requireLiveHandle(attachment.terminalId);
-      if (handle.generation !== attachment.generation) {
-        throw new TerminalRuntimeError("terminal-generation-mismatch");
-      }
-      // Restart if already running (resync path).
-      await this.stopRecovery(attachmentId);
-
-      const abort = new AbortController();
-      const done = this.runRecoveryLoop({
-        attachmentId,
-        terminalId: attachment.terminalId,
-        generation: attachment.generation,
-        paneId: handle.paneId,
-        signal: abort.signal,
-      });
-      this.recoveries.set(attachmentId, { attachmentId, abort, done });
-    });
+    await this.withTerminalLock(attachment.terminalId, () => this.startRecoveryUnlocked(attachmentId));
   }
 
   detach(attachmentId: string): void {
@@ -702,8 +684,14 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     if (attachment.generation !== generation) {
       throw new TerminalRuntimeError("terminal-generation-mismatch");
     }
-    this.attachments.resetOutboundQueue(attachmentId);
-    await this.startRecovery(attachmentId);
+    // Atomic switch under the terminal lock: the old loop must finish (and
+    // any in-flight enqueue must bind the old epoch) before the queue epoch
+    // bumps and a new recover stream starts.
+    await this.withTerminalLock(attachment.terminalId, async () => {
+      await this.stopRecovery(attachmentId);
+      this.attachments.resetOutboundQueue(attachmentId);
+      await this.startRecoveryUnlocked(attachmentId);
+    });
   }
 
   async terminate(input: {
@@ -1042,6 +1030,28 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     }
   }
 
+  /** Caller must hold the per-terminal lock. */
+  private async startRecoveryUnlocked(attachmentId: string): Promise<void> {
+    const attachment = this.attachments.getAttachment(attachmentId);
+    if (!attachment) {
+      throw new TerminalRuntimeError("terminal-attachment-not-found");
+    }
+    const handle = this.requireLiveHandle(attachment.terminalId);
+    if (handle.generation !== attachment.generation) {
+      throw new TerminalRuntimeError("terminal-generation-mismatch");
+    }
+    await this.stopRecovery(attachmentId);
+    const abort = new AbortController();
+    const done = this.runRecoveryLoop({
+      attachmentId,
+      terminalId: attachment.terminalId,
+      generation: attachment.generation,
+      paneId: handle.paneId,
+      signal: abort.signal,
+    });
+    this.recoveries.set(attachmentId, { attachmentId, abort, done });
+  }
+
   private async stopRecovery(
     attachmentId: string,
     opts: { wait?: boolean } = {},
@@ -1086,7 +1096,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     if (signal.aborted) cancel();
     else signal.addEventListener("abort", cancel, { once: true });
 
-    const iterator = this.driver.recover(paneId)[Symbol.asyncIterator]();
+    const iterator = this.driver.recover(paneId, signal)[Symbol.asyncIterator]();
     try {
       while (!signal.aborted) {
         const step = await Promise.race([
@@ -1106,9 +1116,11 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       });
     } finally {
       signal.removeEventListener("abort", cancel);
-      // Do not await return() — some driver iterators may not wake a pending
-      // next() promptly; stop()/resync must remain non-blocking.
-      void iterator.return?.();
+      try {
+        await iterator.return?.();
+      } catch {
+        // ignore driver teardown errors
+      }
       this.recoveries.delete(attachmentId);
     }
   }
@@ -1119,6 +1131,12 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     generation: string,
     event: RmuxRecoveryEvent,
   ): Promise<void> {
+    if (event.type === "error") {
+      this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId, generation });
+      await this.stopRecovery(attachmentId, { wait: false });
+      return;
+    }
+
     if (event.type === "rebase") {
       const totalBytes = event.keyframe.byteLength;
       if (totalBytes > 2 * 1024 * 1024) {
@@ -1224,7 +1242,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       if (settled) return;
       settled = true;
       if (error) {
-        this.attachments.closeOutboundQueue(attachmentId, epoch);
+        if (!this.attachments.closeOutboundQueue(attachmentId, epoch)) return;
         this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId, generation });
         void this.stopRecovery(attachmentId, { wait: false });
         return;

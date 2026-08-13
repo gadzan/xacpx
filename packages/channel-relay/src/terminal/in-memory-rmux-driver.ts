@@ -220,11 +220,14 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     session.rows = rows;
   }
 
-  async *recover(paneId: string): AsyncGenerator<RmuxRecoveryEvent> {
+  async *recover(paneId: string, signal?: AbortSignal): AsyncGenerator<RmuxRecoveryEvent> {
     await this.gate("recover");
     const session = this.requireSessionByPane(paneId);
 
     const queue = new AsyncEventQueue<RmuxRecoveryEvent>();
+    const onAbort = () => queue.close();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     session.subscribers.add(queue);
     queue.push(this.buildRebaseEvent(session));
     if (!session.alive) queue.push({ type: "exit" });
@@ -234,7 +237,9 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
         yield event;
       }
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       session.subscribers.delete(queue);
+      queue.close();
     }
   }
 

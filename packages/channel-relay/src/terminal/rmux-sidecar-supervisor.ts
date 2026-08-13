@@ -59,8 +59,8 @@ export class SupervisedRmuxDriver implements RmuxTerminalDriver {
   resize(paneId: string, cols: number, rows: number): Promise<void> {
     return Promise.resolve().then(() => this.require().resize(paneId, cols, rows));
   }
-  recover(paneId: string): AsyncIterable<RmuxRecoveryEvent> {
-    return this.require().recover(paneId);
+  recover(paneId: string, signal?: AbortSignal): AsyncIterable<RmuxRecoveryEvent> {
+    return this.require().recover(paneId, signal);
   }
   diagnostics(): Promise<RmuxDiagnostics> {
     return Promise.resolve().then(() => this.require().diagnostics());
