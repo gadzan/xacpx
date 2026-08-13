@@ -1,5 +1,27 @@
 # Changelog
 
+## [relay-protocol 0.4.1-beta.0] - 2026-08-13
+
+### Added
+
+- `MessageRecordDto.structured.compact`: marks rows served by `GET .../messages?view=compact` where bulky tool details were omitted.
+
+## [relay 0.12.1-beta.0] - 2026-08-13
+
+### Added
+
+- Relay-web: compact conversation history (pages of 10) and hydrate tool details on expand.
+
+### Fixed
+
+- Relay: restore RMUX terminal typing and surface Windows sidecar crashes.
+
+## [channel-relay 0.6.1-beta.0] - 2026-08-13
+
+### Fixed
+
+- RMUX terminal: restore typing, surface Windows sidecar crashes, and harden sidecar/attachment recovery.
+
 ## [0.22.0] - 2026-08-13
 
 ### Added
