@@ -41,10 +41,12 @@ export interface TransportConfig {
   queueOwnerTtlSeconds?: number;
   /**
    * Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback
-   * when one is on PATH (currently the unpinned-npx drivers: opencode, kilocode). This
-   * avoids a per-cold-start npm-registry fetch — faster and immune to network blips
-   * (e.g. ECONNRESET during agent init). Defaults to `true`; set `false` to always use
-   * acpx's default resolution. A per-agent `command` override still takes precedence.
+   * when one is on PATH (currently opencode, kilocode, plus the local-fallback drivers
+   * reasonix and omp that aren't in acpx's registry but speak ACP via `<bin> acp`).
+   * This avoids a per-cold-start npm-registry fetch — faster and immune to network
+   * blips (e.g. ECONNRESET during agent init). Defaults to `true`; set `false` to
+   * always use acpx's default resolution. A per-agent `command` override still takes
+   * precedence.
    */
   preferLocalAgents?: boolean;
   /** Exact local overrides for xacpx-managed ACP adapter versions. Omitted entries

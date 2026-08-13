@@ -111,7 +111,7 @@ export interface ResolveAgentLaunchOptions {
  * 2. user `argv`: content-addressed overlay alias + canonical identity.
  * 3. managed codex/claude: structured pinned npx argv (alias launch).
  * 4. hermes: ACP shim argv (alias launch).
- * 5. local fallback (opencode/kilocode on PATH): structured argv (alias launch).
+ * 5. local fallback (opencode/kilocode/reasonix/omp on PATH): structured argv (alias launch).
  * 6. anything else: bare built-in driver positional.
  */
 export function resolveConfiguredAgentLaunch(

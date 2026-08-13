@@ -15,6 +15,14 @@ import { delimiter, join } from "node:path";
 const LOCAL_AGENT_BINS: Record<string, { bin: string; args: string[] }> = {
   opencode: { bin: "opencode", args: ["acp"] },
   kilocode: { bin: "kilocode", args: ["acp"] },
+  // reasonix (npm `reasonix`) and omp (npm `@oh-my-pi/cli`) speak ACP via
+  // `<bin> acp` like opencode — not via a separate `@agentclientprotocol/*`
+  // adapter package, so they don't show up in acpx's registry. We list them
+  // here so a locally-installed CLI short-circuits acpx's npx fallback, and
+  // the drift guard in agent-catalog.test.ts exempts them for the same
+  // reason as hermes: xacpx itself supplies the command at runtime.
+  reasonix: { bin: "reasonix", args: ["acp"] },
+  omp: { bin: "omp", args: ["acp"] },
 };
 
 /**
@@ -62,6 +70,15 @@ export function isExecutableOnPath(
     }
   }
   return false;
+}
+
+/**
+ * Is `driver` listed as a local-fallback agent in LOCAL_AGENT_BINS? Use this — not a
+ * hand-copied allow-list — for drift guards that need to exempt drivers xacpx itself
+ * supplies at runtime (e.g. `agent-catalog.test.ts`'s acpx-registry drift guard).
+ */
+export function isLocalAgentBinDriver(driver: string): boolean {
+  return Object.hasOwn(LOCAL_AGENT_BINS, driver);
 }
 
 /**
