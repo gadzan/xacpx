@@ -213,6 +213,7 @@ export interface ChannelPluginDefinition {
   type: string;
   factory: ChannelFactory;
   cliProvider?: ChannelCliProvider;
+  retireChannel?: (ctx: ChannelRetireContext) => Promise<void>;
 }
 ```
 
@@ -221,6 +222,7 @@ export interface ChannelPluginDefinition {
 | `type` | 是 | 频道类型字符串，例如 `"feishu"`、`"yuanbao"`。同一进程内全局唯一。 |
 | `factory` | 是 | 工厂函数，daemon 启动时调用，用于实例化 `MessageChannelRuntime`。 |
 | `cliProvider` | 否 | `xacpx channel add <type>` 的解析与提示逻辑。不提供时用户必须手改 `~/.xacpx/config.json`。强烈建议提供。 |
+| `retireChannel` | 否 | `xacpx channel disable` / `xacpx channel rm` 的 CLI 生命周期钩子。core 在已加载插件中按频道类型查找，不会自行 import 插件 npm 包。用于一次性资源清理（例如 process-owned 终端）。钩子会收到 `print` 和 `getDaemonStatus`；若 daemon 仍在运行，可能需要推迟到重启再清理。 |
 
 `type` 约束：
 
@@ -806,7 +808,7 @@ CLI 不会自动 disable 出错的插件——需要用户手工 `xacpx plugin d
 3. plugin-loader 遍历 plugins[].enabled === true：
    3.1 import("<plugin-home>/node_modules/<name>")
    3.2 validateWeacpxPlugin
-   3.3 registerChannelPlugin —— 注入 factory + cliProvider
+   3.3 registerChannelPlugin —— 注入 factory + cliProvider + 可选 retireChannel
 4. createMessageChannels 遍历 channels[].enabled === true：
    4.1 channelFactories.get(type)
    4.2 factory(options, deps) → MessageChannelRuntime

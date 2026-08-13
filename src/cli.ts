@@ -1284,10 +1284,11 @@ async function createChannelCliDeps(input: {
       const { createMessageChannel } = await import("./channels/create-channel.js");
       await createMessageChannel(channel.type, channel).logout();
     },
-    retireChannel: async (channel, _reason) => {
-      const { retireRelayChannelFromCli } = await import("./channels/cli/retire-relay-channel.js");
-      await retireRelayChannelFromCli({
+    retireChannel: async (channel, reason) => {
+      const { invokeChannelRetireHook } = await import("./channels/plugin.js");
+      await invokeChannelRetireHook({
         channel,
+        reason,
         print: input.print,
         getDaemonStatus: async () => {
           const status = await controller.getStatus();

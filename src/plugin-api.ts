@@ -1,4 +1,9 @@
-export type { ChannelPluginDefinition } from "./channels/plugin.js";
+export type {
+  ChannelPluginDefinition,
+  ChannelRetireContext,
+  ChannelRetireDaemonState,
+  ChannelRetireHook,
+} from "./channels/plugin.js";
 export type { ChannelFactory, CreateChannelDeps } from "./channels/create-channel.js";
 export type {
   ChannelStartInput,

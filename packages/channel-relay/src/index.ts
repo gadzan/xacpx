@@ -2,9 +2,11 @@ import type { XacpxPlugin } from "xacpx/plugin-api";
 
 import { RelayChannel } from "./channel.js";
 import { relayCliProvider } from "./relay-provider.js";
+import { retireRelayChannelFromCli } from "./retire-channel-cli.js";
 
 export { RelayChannel, defaultTerminalRegistryDir } from "./channel.js";
 export { relayCliProvider } from "./relay-provider.js";
+export { retireRelayChannelFromCli } from "./retire-channel-cli.js";
 export { parseRelayChannelConfig, parseRelayTerminalConfig } from "./config.js";
 export {
   retireRelayTerminals,
@@ -35,6 +37,7 @@ const plugin: XacpxPlugin = {
       type: "relay",
       factory: (options, deps) => new RelayChannel(options, deps as never),
       cliProvider: relayCliProvider,
+      retireChannel: retireRelayChannelFromCli,
     },
   ],
 };
