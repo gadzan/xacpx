@@ -44,7 +44,7 @@
       "name": "@ganglion/xacpx-channel-relay",
       "version": "0.6.1-beta.0",
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.4.0",
+        "@ganglion/xacpx-relay-protocol": "^0.4.1-beta.0",
         "proper-lockfile": "^4.1.2",
         "ws": "^8.20.0",
       },
@@ -91,7 +91,7 @@
         "xacpx-relay": "./dist/cli.js",
       },
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.4.0",
+        "@ganglion/xacpx-relay-protocol": "^0.4.1-beta.0",
         "@hono/node-server": "^1.13.0",
         "hono": "^4.6.0",
         "ws": "^8.20.0",
@@ -122,7 +122,7 @@
         "@codemirror/view": "^6.0.0",
         "@fontsource/inter": "^5.2.8",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@ganglion/xacpx-relay-protocol": "^0.4.0",
+        "@ganglion/xacpx-relay-protocol": "^0.4.1-beta.0",
         "@lezer/highlight": "^1.0.0",
         "@lobehub/icons-static-svg": "^1.91.0",
         "codemirror": "^6.0.0",
@@ -512,6 +512,16 @@
     "@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@workspace:packages/relay-protocol"],
 
     "@ganglion/xacpx-relay-web": ["@ganglion/xacpx-relay-web@workspace:packages/relay-web"],
+
+    "@ganglion/xacpx-rmux-bridge-darwin-arm64": ["@ganglion/xacpx-rmux-bridge-darwin-arm64@0.6.1-beta.0", "", { "os": "darwin", "cpu": "arm64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-GDmgfgOrzKIGM6ww0ia4cir6dI8QF8xRiaSktwwZ05wsSgBAyMWmSEVeC6V5WJZG38ceheaUzVEUeTOQkm8a9g=="],
+
+    "@ganglion/xacpx-rmux-bridge-darwin-x64": ["@ganglion/xacpx-rmux-bridge-darwin-x64@0.6.1-beta.0", "", { "os": "darwin", "cpu": "x64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-R5IwmzI7CYrTvEwXd1QAqZqZqATaCEEsfIV0EgOZTyi6j11+NPpdsGa6f6Ue8bftKzeKzJvZPqUsy6mt5dOETQ=="],
+
+    "@ganglion/xacpx-rmux-bridge-linux-arm64": ["@ganglion/xacpx-rmux-bridge-linux-arm64@0.6.1-beta.0", "", { "os": "linux", "cpu": "arm64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-v5CH9ztP0mMdugvebkM2LTKLAfj9Wungv1J0BzwUWYTxwamxCRM69BzNXggviaTcHs1I9bAEE5iJZxDyPuHJWw=="],
+
+    "@ganglion/xacpx-rmux-bridge-linux-x64": ["@ganglion/xacpx-rmux-bridge-linux-x64@0.6.1-beta.0", "", { "os": "linux", "cpu": "x64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge" } }, "sha512-JTeHXyLUNhMUMhJx1rbVCtdwAHlYtaXX6iVufLO3GZUlrmSUkF4zEBw43epjaUjaB1hnn8eS3XxE525td/HrGA=="],
+
+    "@ganglion/xacpx-rmux-bridge-win32-x64": ["@ganglion/xacpx-rmux-bridge-win32-x64@0.6.1-beta.0", "", { "os": "win32", "cpu": "x64", "bin": { "xacpx-rmux-bridge": "bin/xacpx-rmux-bridge.exe" } }, "sha512-ICpRu99GtKKXRNYDbq07thKyWEaGG3oPXDQM3yu7Ieqaqa7OcBDdFQ7nb6rPyelHSY8hY1MMwLQFWmdet50mcw=="],
 
     "@hono/node-server": ["@hono/node-server@1.19.14", "", { "peerDependencies": { "hono": "^4" } }, ""],
 
@@ -2000,12 +2010,6 @@
     "@babel/helper-create-regexp-features-plugin/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
 
     "@babel/preset-env/semver": ["semver@6.3.1", "", { "bin": "bin/semver.js" }, ""],
-
-    "@ganglion/xacpx-channel-relay/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.4.0", "", {}, "sha512-6e+Q0uGCgBffIsg5KVMRZb3NNW8M2nr7taI3OZkqbBWRtfGmk7poozhtkSzSHrIVHwPTlHn532qySz9N9uc9yA=="],
-
-    "@ganglion/xacpx-relay/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.4.0", "", {}, "sha512-6e+Q0uGCgBffIsg5KVMRZb3NNW8M2nr7taI3OZkqbBWRtfGmk7poozhtkSzSHrIVHwPTlHn532qySz9N9uc9yA=="],
-
-    "@ganglion/xacpx-relay-web/@ganglion/xacpx-relay-protocol": ["@ganglion/xacpx-relay-protocol@0.4.0", "", {}, "sha512-6e+Q0uGCgBffIsg5KVMRZb3NNW8M2nr7taI3OZkqbBWRtfGmk7poozhtkSzSHrIVHwPTlHn532qySz9N9uc9yA=="],
 
     "@modelcontextprotocol/sdk/zod": ["zod@4.3.6", "", {}, ""],
 
