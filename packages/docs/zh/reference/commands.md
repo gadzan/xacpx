@@ -110,7 +110,7 @@
 | `/agent add <name>` | 添加内置代理模板；不会覆盖已有不同配置的同名代理 |
 | `/agent rm <name>` | 删除代理 |
 
-内置模板名称：`codex`、`claude`、`pi`、`openclaw`、`gemini`、`cursor`、`copilot`、`droid`、`factory-droid`、`factorydroid`、`grok-build`、`iflow`、`kilocode`、`kimi`、`kiro`、`mux`、`opencode`、`qoder`、`qwen`、`trae`。
+内置模板名称：`codex`、`claude`、`pi`、`openclaw`、`gemini`、`cursor`、`copilot`、`droid`、`factory-droid`、`factorydroid`、`grok-build`、`iflow`、`kilocode`、`kimi`、`kiro`、`mux`、`omp`、`opencode`、`qoder`、`qwen`、`reasonix`、`trae`。
 
 ```text
 /agent add codex

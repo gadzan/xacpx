@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.22.0] - 2026-08-13
+
+### Added
+
+- Agents: add reasonix and omp (oh-my-pi) ACP support with bundled agent templates and local binary resolution.
+
+### Fixed
+
+- Plugins: install from the public npm registry by default; regenerate stale rmux-bridge lockfile entries.
+
 ## [0.21.0] - 2026-08-12
 
 ### Added

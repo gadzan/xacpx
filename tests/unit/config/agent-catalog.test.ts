@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { listAgentCatalog } from "../../../src/config/agent-catalog";
 import { listAgentTemplates } from "../../../src/config/agent-templates";
 import { getAgentTemplate } from "../../../src/config/agent-templates";
+import { isLocalAgentBinDriver } from "../../../src/config/local-agent-bin";
 import { resolveRuntimeAgentCommand } from "../../../src/config/resolve-agent-command";
 import type { AppConfig } from "../../../src/config/types";
 
@@ -92,13 +93,15 @@ test("configured is true when a config agent uses the driver under a different n
 test("every template driver is still known to the acpx registry", () => {
   const registry = createAgentRegistry();
   const known = new Set(registry.list());
-  // Drivers whose command xacpx itself supplies at runtime (e.g. the hermes shim)
-  // never consult the acpx registry, so they are exempt from the drift guard.
+  // Drivers whose command xacpx itself supplies at runtime (e.g. the hermes shim,
+  // or any local-fallback bin in LOCAL_AGENT_BINS like opencode/omp/reasonix) never
+  // consult the acpx registry, so they are exempt from the drift guard.
   const dropped = listAgentTemplates().filter(
     (driver) =>
       !resolveRuntimeAgentCommand(driver, getAgentTemplate(driver)?.command, false) &&
       !known.has(driver) &&
-      registry.resolve(driver) === driver,
+      registry.resolve(driver) === driver &&
+      !isLocalAgentBinDriver(driver),
   );
   expect(dropped).toEqual([]);
 });

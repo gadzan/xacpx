@@ -97,15 +97,16 @@ xacpx agents list
 xacpx agent rm kimi
 ```
 
-当前内置模板与 acpx 的 built-in agents 对齐（另含通过 xacpx 内置 ACP shim 启动的 `hermes`）：
+当前内置模板与 acpx 的 built-in agents 对齐（另含通过 xacpx 内置 ACP shim 启动的 `hermes`，以及通过本地 `<bin> acp` 启动的 `omp` 和 `reasonix`）：
 
 ```text
 codex, claude, pi, openclaw, gemini, cursor, copilot, droid,
 factory-droid, factorydroid, grok-build, hermes, iflow, kilocode,
-kimi, kiro, mux, opencode, pool, qoder, qwen, trae, zeroclaw
+kimi, kiro, mux, omp, opencode, pool, qoder, qwen, reasonix,
+trae, zeroclaw
 ```
 
-多数模板只写入 `driver`，实际启动命令交给 acpx 解析；例如 `/agent add kimi` 会保存 `{ "driver": "kimi" }`。`hermes` 不在 acpx 注册表中，xacpx 会在启动时注入内置 ACP shim 命令（不会向配置写入额外字段，详见 [config-reference_zh.md](./config-reference_zh.md)）。配置字段见 [config-reference_zh.md](./config-reference_zh.md)。
+多数模板只写入 `driver`，实际启动命令交给 acpx 解析；例如 `/agent add kimi` 会保存 `{ "driver": "kimi" }`。`hermes` 不在 acpx 注册表中，xacpx 会在启动时注入内置 ACP shim 命令（不会向配置写入额外字段，详见 [config-reference_zh.md](./config-reference_zh.md)）。`omp` 和 `reasonix` 也不在 acpx 注册表中，但它们的本地 CLI 通过 `<bin> acp` 暴露 ACP；当 PATH 上有对应二进制时，xacpx 直接使用它，不走 acpx 的 npx 回退。配置字段见 [config-reference_zh.md](./config-reference_zh.md)。
 
 ## `doctor`
 

@@ -99,6 +99,13 @@ export function resolveRmuxBinaries(input: {
   pathEnv?: string;
   /** Override `os.homedir()` (tests). */
   homeDir?: string;
+  /**
+   * Test seam: override the platform-package lookup. Defaults to the
+   * require-based detection (`resolveFromPlatformPackage`). Tests pass
+   * `() => undefined` to force the PATH fallback — the production path
+   * leaves this unset.
+   */
+  platformPackageResolver?: () => string | undefined;
 }): ResolvedRmuxBinaries {
   let bridgeCommand: string | undefined;
   let bridgeSource: ResolvedRmuxBinaries["source"]["bridge"];
@@ -112,7 +119,7 @@ export function resolveRmuxBinaries(input: {
     bridgeCommand = input.bridgeCommand;
     bridgeSource = "config";
   } else {
-    bridgeCommand = resolveFromPlatformPackage();
+    bridgeCommand = (input.platformPackageResolver ?? resolveFromPlatformPackage)();
     if (bridgeCommand) {
       bridgeSource = "platform-package";
     } else {

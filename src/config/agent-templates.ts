@@ -54,6 +54,13 @@ const TEMPLATES: Record<string, AgentConfig> = {
   mux: {
     driver: "mux",
   },
+  // Local-fallback templates: acpx's registry doesn't know these drivers, but
+  // their native CLIs (`omp` from `@oh-my-pi/cli`, `opencode`) speak ACP via
+  // `<bin> acp`. See LOCAL_AGENT_BINS in local-agent-bin.ts and the drift-guard
+  // exemption in agent-catalog.test.ts.
+  omp: {
+    driver: "omp",
+  },
   opencode: {
     driver: "opencode",
   },
@@ -67,6 +74,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   },
   qwen: {
     driver: "qwen",
+  },
+  // Local-fallback template: same shape as omp/opencode — acpx doesn't list it,
+  // but `reasonix` (npm `reasonix`) exposes ACP via `reasonix acp`.
+  reasonix: {
+    driver: "reasonix",
   },
   trae: {
     driver: "trae",

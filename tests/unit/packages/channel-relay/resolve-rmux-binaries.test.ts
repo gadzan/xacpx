@@ -37,7 +37,15 @@ test("resolveRmuxBinaries finds bridge on PATH", () => {
   const dir = mkdtempSync(join(tmpdir(), "rmux-path-"));
   try {
     const bridge = touchExecutable(join(dir, "xacpx-rmux-bridge"));
-    const resolved = resolveRmuxBinaries({ pathEnv: dir, homeDir: dir });
+    // Force the PATH fallback: the platform-package resolver is enabled by
+    // default and would otherwise take priority when @ganglion/xacpx-rmux-bridge-*
+    // is installed as an optional dep of the channel-relay workspace (which it
+    // is in CI after the lockfile was regenerated with real metadata).
+    const resolved = resolveRmuxBinaries({
+      pathEnv: dir,
+      homeDir: dir,
+      platformPackageResolver: () => undefined,
+    });
     expect(resolved.bridgeCommand).toBe(bridge);
     expect(resolved.source.bridge).toBe("path");
     expect(resolved.rmuxCommand).toBeUndefined();
@@ -100,7 +108,10 @@ test("resolveRmuxBinaries finds a daemon sitting next to the bridge", () => {
 
 
 test("resolveRmuxBinaries fails closed when nothing is available", () => {
-  expect(() => resolveRmuxBinaries({ pathEnv: "/empty-path-that-does-not-exist" })).toThrow(
-    RmuxBinaryUnavailableError,
-  );
+  expect(() =>
+    resolveRmuxBinaries({
+      pathEnv: "/empty-path-that-does-not-exist",
+      platformPackageResolver: () => undefined,
+    }),
+  ).toThrow(RmuxBinaryUnavailableError);
 });
