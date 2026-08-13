@@ -340,7 +340,7 @@ bun run dry-run --chat-key wx:test -- \
 1. `WEACPX_PLUGIN_HOME` 环境变量
 2. 默认 `~/.xacpx/plugins/`（独立 `package.json`，与全局 / 项目 `node_modules` 隔离）
 
-包管理器自动探测：能跑 `bun --version` 就用 `bun add/remove`，否则回退 `npm install/uninstall`（`src/plugins/package-manager.ts`）。
+包管理器自动探测：能跑 `bun --version` 就用 `bun add/remove`，否则回退 `npm install/uninstall`（`src/plugins/package-manager.ts`）。插件 add/update 会带 `--registry=https://registry.npmjs.org` 和 `--@ganglion:registry=...`，避免 optional 的 `@ganglion/xacpx-rmux-bridge-*` 被公司镜像 404。可用 `XACPX_PLUGIN_REGISTRY` 覆盖。
 
 ---
 

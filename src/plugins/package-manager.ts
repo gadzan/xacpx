@@ -7,6 +7,32 @@ import { coreEnv } from "../runtime/core-env.js";
 
 export type PluginPackageManager = "bun" | "npm";
 
+/** Public npm. Plugin add/update pass this so bun/npm do not inherit a
+ * company mirror that 404s `@ganglion/xacpx-rmux-bridge-*` optionals. */
+export const DEFAULT_PLUGIN_REGISTRY = "https://registry.npmjs.org";
+
+export function pluginRegistryInstallArgs(registry = effectivePluginRegistry()): string[] {
+  return [
+    `--registry=${registry}`,
+    `--@ganglion:registry=${registry}`,
+  ];
+}
+
+function effectivePluginRegistry(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = coreEnv("PLUGIN_REGISTRY", env)?.trim();
+  if (!raw) return DEFAULT_PLUGIN_REGISTRY;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("XACPX_PLUGIN_REGISTRY must be a valid http(s) URL");
+  }
+  if ((url.protocol !== "https:" && url.protocol !== "http:") || !url.hostname) {
+    throw new Error("XACPX_PLUGIN_REGISTRY must be a valid http(s) URL");
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
 export interface RunCommandOptions {
   cwd: string;
 }
@@ -86,11 +112,12 @@ export async function installPluginPackage(input: {
     await rm(join(input.pluginHome, "bun.lock"), { force: true }).catch(() => {});
   }
   const spec = input.version ? `${input.packageName}@${input.version}` : input.packageName;
+  const registryArgs = pluginRegistryInstallArgs();
   if (packageManager === "bun") {
-    await runCommand("bun", ["add", spec], { cwd: input.pluginHome });
+    await runCommand("bun", ["add", spec, ...registryArgs], { cwd: input.pluginHome });
     return;
   }
-  await runCommand("npm", ["install", spec], { cwd: input.pluginHome });
+  await runCommand("npm", ["install", spec, ...registryArgs], { cwd: input.pluginHome });
 }
 
 export async function updatePluginPackage(input: {

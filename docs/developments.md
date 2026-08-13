@@ -340,7 +340,7 @@ Side paths:
 1. `WEACPX_PLUGIN_HOME` environment variable
 2. Default `~/.xacpx/plugins/` (a standalone `package.json`, isolated from the global / project `node_modules`)
 
-Package manager auto-detection: if `bun --version` runs, use `bun add/remove`; otherwise fall back to `npm install/uninstall` (`src/plugins/package-manager.ts`).
+Package manager auto-detection: if `bun --version` runs, use `bun add/remove`; otherwise fall back to `npm install/uninstall` (`src/plugins/package-manager.ts`). Plugin add/update pass `--registry=https://registry.npmjs.org` and `--@ganglion:registry=...` so optional `@ganglion/xacpx-rmux-bridge-*` packages are not resolved from a company mirror. Override with `XACPX_PLUGIN_REGISTRY`.
 
 ---
 
