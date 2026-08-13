@@ -1,6 +1,6 @@
 # Changelog
 
-## [relay-protocol 0.4.1-beta.0] - 2026-08-13
+## [relay-protocol 0.4.1] - 2026-08-13
 
 ### Added
 
