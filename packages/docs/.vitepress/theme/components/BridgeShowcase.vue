@@ -50,6 +50,8 @@ const agents: Agent[] = [
   { name: 'iFlow', mono: 'iF' },
   { name: 'Kilocode', svg: kilocode },
   { name: 'Kiro', svg: kiro },
+  { name: 'omp', mono: 'o' },
+  { name: 'Reasonix', mono: 'Rx' },
   { name: 'Qoder', svg: qoder },
   { name: 'Trae', svg: trae },
 ];
