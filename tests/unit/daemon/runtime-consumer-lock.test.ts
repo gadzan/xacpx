@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,18 +93,34 @@ test("Bun acquisition timeout kills a helper that already holds flock before its
     configPath: join(root, "config.json"),
     statePath: join(root, "state.json"),
   };
+  let helperPid: number | undefined;
   const timedOut = createRuntimeConsumerLock({
     lockFilePath,
     helperAcquireTimeoutMs: 3_000,
     // The Node helper takes the flock before delaying its protocol response.
     helperHandshakeDelayMs: 10_000,
+    onDiagnostic: (event, context) => {
+      if (event === "lock_helper_spawned" && typeof context.helperPid === "number") {
+        helperPid = context.helperPid;
+      }
+    },
   });
 
   const acquisition = timedOut.acquire(input).then(
     () => ({ ok: true as const }),
     (error: unknown) => ({ ok: false as const, error }),
   );
-  const busyDeadline = Date.now() + 2_000;
+  const spawnDeadline = Date.now() + 2_000;
+  while (helperPid === undefined && Date.now() < spawnDeadline) {
+    await Bun.sleep(10);
+  }
+  expect(helperPid).toBeDefined();
+  // Competing exclusive probes can take the flock themselves. If they win
+  // before the helper, the helper reports BUSY and exits; later probes then
+  // see FREE forever. Wait for spawn, then for the helper's flock syscall.
+  await Bun.sleep(100);
+
+  const busyDeadline = Date.now() + 1_500;
   let observedBusy = false;
   while (!observedBusy && Date.now() < busyDeadline) {
     observedBusy = await probeFlockBusy(lockFilePath);
@@ -320,7 +336,24 @@ fsExt.flock(fd, "exnb", (error) => {
 });
 `;
 
-function probeFlockBusy(lockFilePath: string): Promise<boolean> {
+async function probeFlockBusy(lockFilePath: string): Promise<boolean> {
+  if (process.platform === "linux") {
+    try {
+      const [fileStat, locks] = await Promise.all([
+        stat(lockFilePath),
+        readFile("/proc/locks", "utf8"),
+      ]);
+      const inode = String(fileStat.ino);
+      return locks.split("\n").some((line) => {
+        const field = line.trim().split(/\s+/).find((part) => /^\d+:\d+:\d+$/.test(part));
+        if (!field) return false;
+        const parts = field.split(":");
+        return parts[2] === inode;
+      });
+    } catch {
+      return false;
+    }
+  }
   const child = spawn("node", [
     "-e",
     FLOCK_PROBE_SOURCE,

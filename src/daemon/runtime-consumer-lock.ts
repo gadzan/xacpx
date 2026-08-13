@@ -154,6 +154,7 @@ function createCoreRuntimeLock(options: CreateRuntimeConsumerLockOptions): Consu
               options.lockFilePath,
               options.helperAcquireTimeoutMs,
               options.helperHandshakeDelayMs,
+              onDiagnostic,
             );
             await emitDiagnostic(onDiagnostic, "lock_helper_started", {
               lockFilePath: options.lockFilePath,
@@ -304,11 +305,18 @@ async function acquireFlockHelper(
   lockFilePath: string,
   timeoutMs = 10_000,
   handshakeDelayMs = 0,
+  onDiagnostic?: CreateRuntimeConsumerLockOptions["onDiagnostic"],
 ): Promise<ChildProcessWithoutNullStreams> {
   const fsExtPath = require.resolve("fs-ext");
   const child = spawn("node", ["-e", FLOCK_HELPER_SOURCE, fsExtPath, lockFilePath, String(handshakeDelayMs)], {
     stdio: ["pipe", "pipe", "pipe"],
   });
+  if (child.pid) {
+    await emitDiagnostic(onDiagnostic, "lock_helper_spawned", {
+      lockFilePath,
+      helperPid: child.pid,
+    });
+  }
   const line = await new Promise<string>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
