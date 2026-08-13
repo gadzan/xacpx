@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { connectEvents, sendSubscribe, TerminalRequestError } from "../api/events";
+import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
 import { useInstancesStore, supportsRmuxTerminal } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useTasksStore } from "../stores/tasks";
@@ -156,7 +156,16 @@ async function requestCloseTerminal(key: string): Promise<void> {
   const localKey = terminalLocalKey(instanceId, alias);
   const view = terminals.get(localKey);
   if (view?.terminatePending) return;
-  const viewerCount = view?.viewerCount ?? 1;
+
+  // Open never succeeded (or identity was cleared): just drop the local tab.
+  // There is no shared RMUX resource to terminate, so do not block on RPC.
+  if (!view?.terminalId || !view.generation) {
+    if (view) terminals.detach(localKey);
+    centerTabs.closeTab(key, "terminal");
+    return;
+  }
+
+  const viewerCount = view.viewerCount ?? 1;
   const ok = window.confirm(
     viewerCount > 1 ? t("terminal.closeSharedConfirm") : t("terminal.closeConfirm"),
   );
@@ -170,11 +179,16 @@ async function requestCloseTerminal(key: string): Promise<void> {
     }
   } catch (err) {
     const code = err instanceof TerminalRequestError ? err.code : "terminal-protocol-error";
-    if (code === "terminal-timeout" || code === "instance-offline") {
+    if (code === "terminal-session-not-found" || code === "terminal-attachment-not-found") {
+      if (view) terminals.detach(localKey);
+      centerTabs.closeTab(key, "terminal");
+      return;
+    }
+    if (isRetryableTerminalError(code)) {
       pushToast("error", "terminal.closeRetryToast");
       return;
     }
-    pushToast("error", "terminal.error");
+    pushToast("error", "terminal.closeError");
   } finally {
     terminalCloseInFlight = false;
   }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
@@ -11,10 +12,15 @@ import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
-import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
+function ensureFullOf(m: ChatMessage): (() => Promise<void>) | undefined {
+  const id = m.id;
+  if (id === undefined || m.structured?.compact !== true || !props.ensureFull) return undefined;
+  return () => props.ensureFull!(id);
+}
+
 // A message's schedule origin — set live on the optimistic row (`scheduled`) and
 // persisted on history rows (`structured.scheduled`), so the badge survives a reload.
 function schedOf(m: ChatMessage): ScheduledOriginDto | undefined {
@@ -425,10 +431,10 @@ watch(
               <!-- Structured transcript: activity cards stay grouped above one continuous
                    Markdown narrative. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
-                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" />
+                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" />
                 <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
                 <template v-else>
-                  <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" />
+                  <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
                   <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
                 </template>

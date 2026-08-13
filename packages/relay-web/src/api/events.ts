@@ -81,6 +81,14 @@ export function nextTerminalRequestId(): string {
   return `tr-${Date.now().toString(36)}-${requestSeq.toString(36)}`;
 }
 
+/** Transient codes: the tab should retry, not treat the instance as gone. */
+export function isRetryableTerminalError(code: string): boolean {
+  return code === "instance-offline"
+    || code === "events-offline"
+    || code === "terminal-timeout"
+    || code === "instance-reconnected";
+}
+
 function rejectAllPending(code: string, message: string): void {
   for (const [id, entry] of pending) {
     clearTimeout(entry.timer);
@@ -157,7 +165,7 @@ export function requestTerminal(
 ): Promise<TerminalOpenedResult | TerminalAckResult> {
   const timeoutMs = options.timeoutMs ?? TERMINAL_RPC_TIMEOUT_MS;
   if (!isEventsSocketOpen()) {
-    return Promise.reject(new TerminalRequestError("instance-offline", "events socket is offline"));
+    return Promise.reject(new TerminalRequestError("events-offline", "events socket is offline"));
   }
   if (pending.has(msg.requestId)) {
     return Promise.reject(new TerminalRequestError("terminal-protocol-error", "duplicate requestId"));
@@ -227,7 +235,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
     socket.onclose = () => {
       onStatus?.(false);
       activeSocket = null;
-      rejectAllPending("instance-offline", "events socket closed");
+      rejectAllPending("events-offline", "events socket closed");
       if (closed) return;
       retry = Math.min(retry + 1, 6);
       timer = setTimeout(() => { timer = null; if (!closed) open(); }, 250 * 2 ** (retry - 1));
@@ -239,7 +247,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
     closed = true;
     if (timer) { clearTimeout(timer); timer = null; }
     reconnectHandler = null;
-    rejectAllPending("instance-offline", "events socket disposed");
+    rejectAllPending("events-offline", "events socket disposed");
     socket?.close();
   };
 }

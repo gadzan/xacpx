@@ -70,6 +70,17 @@ test("attachments are isolated per terminalId", () => {
   expect(registry.getViewerCount("term-2")).toBe(1);
 });
 
+test("same viewerId re-attach replaces the old attachment and stays controller", () => {
+  const { registry } = makeRegistry();
+  const first = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
+  const second = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
+  expect(second.role).toBe("controller");
+  expect(second.viewerCount).toBe(1);
+  expect(second.attachmentId).not.toBe(first.attachmentId);
+  expect(registry.getAttachment(first.attachmentId)).toBeUndefined();
+  expect(registry.getViewerCount("term-1")).toBe(1);
+});
+
 // ---------------------------------------------------------------------------
 // input / resize validation
 // ---------------------------------------------------------------------------

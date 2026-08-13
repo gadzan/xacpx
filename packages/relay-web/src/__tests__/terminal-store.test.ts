@@ -23,6 +23,14 @@ function pushEvent(ws: FakeWS, event: Parameters<typeof webEventEnvelope>[0]): v
   ws.onmessage?.({ data: encodeEnvelope(webEventEnvelope(event)) });
 }
 
+function sentMessages(ws: FakeWS): unknown[] {
+  return ws.send.mock.calls.map((c) => {
+    const decoded = decodeEnvelope(c[0] as string);
+    if (!decoded.ok) throw new Error("decode");
+    return parseWebClientMessage(decoded.envelope);
+  });
+}
+
 async function openAttached(
   store: ReturnType<typeof useTerminalStore>,
   key: string,
@@ -110,13 +118,101 @@ describe("terminal store", () => {
     });
     expect(store.get(key)?.role).toBe("controller");
     store.sendInput(key, "y");
-    const inputDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls.at(-1)![0] as string);
-    if (!inputDecoded.ok) throw new Error("decode");
-    expect(parseWebClientMessage(inputDecoded.envelope)).toMatchObject({
-      kind: "terminal-input",
+    const added = sentMessages(FakeWS.instances[0]).slice(before);
+    expect(added).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "terminal-input", attachmentId: "a1", generation: "g1" }),
+      expect.objectContaining({ kind: "terminal-stream-start", attachmentId: "a1" }),
+    ]));
+  });
+
+  it("takeControl re-issues stream-start when recover is still waiting", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "spectator", viewerCount: 2 });
+    ws.send.mockClear();
+
+    const takePromise = store.takeControl(key);
+    const takeDecoded = decodeEnvelope(ws.send.mock.calls.at(-1)![0] as string);
+    if (!takeDecoded.ok) throw new Error("decode");
+    const takeMsg = parseWebClientMessage(takeDecoded.envelope) as { requestId: string };
+    expect(takeMsg).toMatchObject({ kind: "terminal-take-control", attachmentId: "a1" });
+    pushEvent(ws, {
+      kind: "terminal-opened",
+      requestId: takeMsg.requestId,
+      instanceId: "i1",
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "a1",
+      role: "controller",
+      viewerCount: 2,
+    });
+    await takePromise;
+    expect(store.get(key)?.role).toBe("controller");
+    expect(sentMessages(ws)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "terminal-stream-start", attachmentId: "a1" }),
+    ]));
+  });
+
+  it("sendInput while live does not restart the output stream", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws);
+    await store.applyEvent({
+      kind: "terminal-rebase-start",
+      instanceId: "i1",
       attachmentId: "a1",
       generation: "g1",
+      epoch: 1,
+      nextSequence: 0,
+      cols: 80,
+      rows: 24,
+      alternate: false,
+      totalBytes: 0,
+      chunkCount: 0,
     });
+    await store.applyEvent({
+      kind: "terminal-rebase-end",
+      instanceId: "i1",
+      attachmentId: "a1",
+      generation: "g1",
+      epoch: 1,
+    });
+    expect(store.get(key)?.recovery.phase).toBe("live");
+    ws.send.mockClear();
+    store.sendInput(key, "z");
+    expect(sentMessages(ws)).toEqual([
+      expect.objectContaining({ kind: "terminal-input", attachmentId: "a1" }),
+    ]);
+  });
+
+  it("bytes before rebase trigger a resync instead of a silent drop", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws);
+    ws.send.mockClear();
+
+    await store.applyEvent({
+      kind: "terminal-bytes",
+      instanceId: "i1",
+      attachmentId: "a1",
+      generation: "g1",
+      epoch: 1,
+      sequence: 0,
+      dataBase64: Buffer.from("hi").toString("base64"),
+    });
+    expect(store.get(key)?.recovery.phase).toBe("resyncing");
+    expect(sentMessages(ws)).toEqual([
+      expect.objectContaining({ kind: "terminal-resync", attachmentId: "a1", generation: "g1" }),
+    ]);
   });
 
   it("applies rebase then bytes via recovery callbacks; gap triggers one resync", async () => {
@@ -209,7 +305,7 @@ describe("terminal store", () => {
     await openAttached(store, key, FakeWS.instances[0], { generation: "g2", attachmentId: "a2" });
     const offlineTerm = store.terminate(key);
     FakeWS.instances[0].onclose?.();
-    await expect(offlineTerm).rejects.toMatchObject({ code: "instance-offline" });
+    await expect(offlineTerm).rejects.toMatchObject({ code: "events-offline" });
     expect(store.get(key)?.terminateRetryable).toBe(true);
     expect(store.get(key)?.active).toBe(true);
   });

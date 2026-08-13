@@ -234,7 +234,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 ## 切换会话的渲染性能
 
 长历史会话的切换开销主要在**组件创建**（每个文本 part 同步跑 markdown-it + DOMPurify），
-`content-visibility: auto` 只省 layout/paint。两道针对性优化：
+`content-visibility: auto` 只省 layout/paint。三道针对性优化：
+
+- **compact 历史页**（hub `view=compact` + `HISTORY_PAGE = 10`）：首屏只拉最近 10 条（约 5 轮问答），并剥掉折叠工具卡用不到的 diff/命令输出/文件预览，同时去掉 `parts` 已覆盖的重复 `toolSteps`。滚到顶部再翻更早的一页。展开工具/子代理卡片时 `ensureFullMessage` 再 `GET .../messages/:id` 补全文。`loadHistory` 若本地已有更完整的 `structured`（刚结束的 live flush、已 hydrate、或旧尾部缓存）不会被 compact 页盖掉。旧看板不带 `view=compact`，仍拿完整行。
 
 - **尾部优先渐进挂载**（`MessageList.vue`）：历史页落地（0→N）时先只挂载最新 30 行
   （`INITIAL_ROWS`），随后 rAF 每帧向上补 30 行（`REVEAL_BATCH`）直到全量；`hiddenCount`
@@ -252,7 +254,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   收敛（key 稳定无闪烁）。成功加载与 turn-finished 后防抖写回（`debounce-flush`，切会话时
   flush，写入 fire-and-forget）。存储 = DB `xacpx.chat-tail` / store `tails`，数组主键
   `[user, instanceId, alias]`（reconcile 用前缀 KeyRange，无需转义含点 alias），值含
-  `rows`（≤30 条持久化行，剥离 client-only 字段）+ `lastAccess` + `bytes` + `incarnation`
+  `rows`（≤10 条持久化行，剥离 client-only 字段）+ `lastAccess` + `bytes` + `incarnation`
   （= `SessionDto.transportSession`；chat store 维护由 `loadSessions` 喂的 incarnation 注册表
   （对账时同步剪掉死 alias 的注册项），seed 读/写回都带上，`""` 为通配——**同名重建不复活旧尾部**：
   read 发现两侧都已知且不等即删条目返 miss；`""` 写回保留条目原有标签（刷新后首个 flush 抢跑
@@ -268,9 +270,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   （`xacpx.chat.tail.*` / `xacpx.chat.tail-index.*`，不迁数据）。所有操作 try/catch +
   `indexedDB` 缺失兼容：read 返回 null、其余静默 no-op（缓存永不成为错误源）。
   仅含缓存播种行的 transcript 在 `loadHistory` 的 pending-prompt 守卫里视同为空
-  （`seededFromCache`，保持 #199 的重选中途拉取语义）；播种（≤30 行）→ 权威整页替换
-  不经过 0→N，`MessageList` 的渐进挂载对该替换同样重新触发
-  （prev ≤ INITIAL_ROWS 且一次增长 ≥ REVEAL_BATCH 视为新 transcript）。
+  （`seededFromCache`，保持 #199 的重选中途拉取语义）；播种（≤10 行，与 HISTORY_PAGE 对齐）→ 权威整页替换
+  不经过 0→N。旧缓存长于首屏时，read 会裁到 `TAIL_ROWS`。若一次替换仍从短尾跳到很长的一页，
+  `MessageList` 仍按 `prev ≤ INITIAL_ROWS` 且增长 ≥ `REVEAL_BATCH` 重新触发渐进挂载。
 - **切换视图快照缓存**（`src/lib/view-snapshot-cache.ts`）：切换会话时仍需读取的轻量只读数据采用
   stale-while-revalidate。缓存按 `[user, namespace, instanceId, scope]` 隔离，内存热缓存让同页往返
   同步恢复，IndexedDB `xacpx.view-snapshots` 让刷新后也能先恢复；model、effort、scheduled tasks、
@@ -331,7 +333,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - `src/lib/render-markdown.ts` —— 净化版流式 markdown 渲染（markdown-it + remend + DOMPurify）；
 - `src/api/events.ts` —— WS 客户端（`connectEvents` → `/ws`，自动重连）；
 - `src/stores/auth.ts` —— 登录态；`src/stores/instances.ts` —— 实例/会话树 + `applyEvent`；
-  `src/stores/chat.ts` —— 聊天流、NUL-key 流式缓冲、`error`、`loadHistory`/`send` + `applyEvent`；
+  `src/stores/chat.ts` —— 聊天流、NUL-key 流式缓冲、`error`、`loadHistory`/`loadOlder`/`ensureFullMessage`/`send` + `applyEvent`；
   `src/stores/tasks.ts` —— 定时/编排（loadFor/create/cancel + `applyEvent`）；
   `src/stores/notices.ts` —— notice toast 队列；`src/stores/connection.ts` —— `/ws` 在线态；
 - `src/views/LoginView.vue`、`src/views/DashboardView.vue`、`src/views/SettingsView.vue`；
@@ -435,11 +437,15 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 
 用户语义（与 legacy live-PTY 的关键差别）：
 
-- **Tab 上的 `X` = 全局终止**该共享 shell（有 ack：`terminated` 或 `cleanup-pending`）。`viewerCount > 1` 时必须确认。
+- **Tab 上的 `X` = 全局终止**该共享 shell（有 ack：`terminated` 或 `cleanup-pending`）。`viewerCount > 1` 时必须确认。打开从未成功（没有 `terminalId`）时只丢掉本地 Tab，不走 terminate RPC，避免误报「无法打开终端」。
+- 看板 `/ws` 断开或 connector 重连中途的 open 失败分别是 `events-offline` / `instance-reconnected`，**不是**实例离线；Tab 会在连接恢复后自动重试。
 - **关闭浏览器窗口 / 刷新 / 断网**只 detach 本地 attachment，**不** kill RMUX session；其他设备上的 viewer 继续。
 - **多设备**共享同一个 `terminalId`/`generation`：首个打开方为 controller，其余为 spectator；spectator 可 **take control**。
 - Tab 布局 / 本地 UI 状态不跨设备共享；只共享底层 shell。
 - 用户文案使用「睡眠/唤醒」；API / 代码里仍可见 archive 拼写（兼容）。
+- ghostty-web 点画布会聚焦其 1×1 clipped textarea，而 keydown 监听在宿主上；看板会把该 textarea 铺满宿主并把焦点拉回宿主，否则键盘（含 Enter）无响应。底部快捷键栏的 Enter 不依赖画布焦点，可作对照。
+- 同一 `viewerId` 再次打开会替换旧 attachment，避免留下幽灵 controller 把新连接变成 spectator（快捷键栏全灰）。若仍是唯一观看者却是 spectator，看板会自动 take-control。
+- 快捷键栏没有本地回显：按键只发到 PTY，字符要等 recover 进入 live 后的 `terminal-bytes` 才画到画布。take-control 或控制者首次输入时，若 recover 仍停在 waiting，会再发一次 `terminal-stream-start`；waiting 期间先到的 bytes 会触发 resync，而不是被丢掉（否则栏能点、画面没反应）。
 
 实现入口：`packages/relay-web/src/stores/terminal.ts`、`TerminalTab.vue`、recovery reducer
 （`src/lib/terminal-recovery.ts`）。权威状态机见 RMUX terminal design spec。

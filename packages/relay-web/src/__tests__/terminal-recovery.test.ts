@@ -96,6 +96,19 @@ describe("terminal recovery reducer", () => {
     expect(bytes.state.expectedSequence).toBe(8);
   });
 
+  it("resyncs when bytes arrive before rebase-start instead of dropping them", () => {
+    const state = initialRecoveryState("g1");
+    const early = reduceRecovery(state, {
+      kind: "bytes",
+      generation: "g1",
+      epoch: 1,
+      sequence: 0,
+      dataBase64: textB64("echo"),
+    });
+    expect(early.state.phase).toBe("resyncing");
+    expect(early.action).toEqual({ type: "request-resync", reason: "bytes-before-rebase" });
+  });
+
   it("resyncs on sequence gap and ignores bytes until new rebase", () => {
     let state = initialRecoveryState("g1");
     state = reduceRecovery(state, {

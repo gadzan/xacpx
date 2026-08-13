@@ -8,6 +8,9 @@ vi.mock("../api/events", () => ({
   connectEvents: () => vi.fn(),
   sendWebClientMessage: vi.fn(),
   sendSubscribe: vi.fn(),
+  isRetryableTerminalError: (code: string) =>
+    code === "instance-offline" || code === "events-offline"
+    || code === "terminal-timeout" || code === "instance-reconnected",
   TerminalRequestError: class extends Error {
     code: string;
     constructor(code: string, message: string) {
@@ -248,6 +251,27 @@ test("closing a terminal tab confirms then terminates the shared resource", asyn
   expect(centerTabs.tabsFor(key).some((t) => t.kind === "terminal")).toBe(false);
 });
 
+test("closing a terminal tab that never opened just drops the tab", async () => {
+  const termStub = { name: "TerminalTab", template: '<div data-test="stub-term" />', emits: ["close"] };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
+  await flushPromises();
+  const key = selectSession();
+  await flushPromises();
+  const centerTabs = useCenterTabsStore();
+  centerTabs.openTerminal(key);
+  await flushPromises();
+  const terminals = useTerminalStore();
+  const terminateSpy = vi.spyOn(terminals, "terminate");
+  const confirmSpy = vi.spyOn(window, "confirm");
+
+  wrapper.findComponent(TerminalTab).vm.$emit("close");
+  await flushPromises();
+
+  expect(confirmSpy).not.toHaveBeenCalled();
+  expect(terminateSpy).not.toHaveBeenCalled();
+  expect(centerTabs.tabsFor(key).some((t) => t.kind === "terminal")).toBe(false);
+});
+
 test("canceling terminal close confirm does not terminate", async () => {
   const termStub = { name: "TerminalTab", template: '<div data-test="stub-term" />', emits: ["close"] };
   const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
@@ -258,6 +282,23 @@ test("canceling terminal close confirm does not terminate", async () => {
   centerTabs.openTerminal(key);
   await flushPromises();
   const terminals = useTerminalStore();
+  const localKey = terminalLocalKey("i1", "demo");
+  terminals.attachments.set(localKey, {
+    localKey,
+    instanceId: "i1",
+    sessionAlias: "demo",
+    cols: 80,
+    rows: 24,
+    terminalId: "t1",
+    generation: "g1",
+    attachmentId: "a1",
+    role: "controller",
+    viewerCount: 1,
+    recovery: initialRecoveryState("g1"),
+    active: true,
+    terminatePending: false,
+    terminateRetryable: false,
+  });
   const terminateSpy = vi.spyOn(terminals, "terminate");
   vi.spyOn(window, "confirm").mockReturnValue(false);
 

@@ -3,7 +3,7 @@ import type { MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
 
 /** Stale-while-revalidate tail cache for session transcripts (spec #205).
  *
- *  Stores the last ≤30 persisted rows of a session in IndexedDB so
+ *  Stores the last ≤10 persisted rows of a session in IndexedDB so
  *  `chat.select()` can seed the first screen while the authoritative history
  *  fetch is in flight. IndexedDB's quota (hundreds of MB) fits full structured
  *  rows — no per-entry byte budget or row degradation is needed (a 640KB tool
@@ -22,7 +22,7 @@ const DB_NAME = "xacpx.chat-tail";
 const DB_VERSION = 3;
 const STORE = "tails";
 
-export const TAIL_ROWS = 30;
+export const TAIL_ROWS = 10;
 const GLOBAL_BUDGET_BYTES = 64 * 1024 * 1024;
 // Aligned with the hub's historyRetentionDays default (30): rows older than the
 // retention window are gone server-side anyway.
@@ -163,7 +163,7 @@ export async function read(user: string, instanceId: string, alias: string, inca
       tx.objectStore(STORE).put({ ...record, lastAccess: now });
       await txDone(tx);
     } catch { /* touch is best-effort */ }
-    return rows as MessageRecordDto[];
+    return (rows as MessageRecordDto[]).slice(-TAIL_ROWS);
   } catch { return null; }
 }
 
@@ -241,7 +241,7 @@ async function putAndEvict(db: IDBDatabase, record: TailRecord, now: number): Pr
   }
 }
 
-/** Cache the tail of `rows` for a session: the last ≤30 persisted rows
+/** Cache the tail of `rows` for a session: the last ≤TAIL_ROWS persisted rows
  *  (id !== undefined). Expired entries and LRU victims beyond the global
  *  budget are pruned in the same transaction. */
 export async function write(user: string, instanceId: string, alias: string, rows: MessageRecordDto[], incarnation = ""): Promise<void> {

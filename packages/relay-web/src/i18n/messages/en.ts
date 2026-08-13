@@ -434,6 +434,7 @@ export default {
     runningNoActivityYet: "Running — no activity details yet…",
     noRecordedActivity: "No recorded activity",
     viewFullTrace: "View full trace",
+    loadingDetails: "Loading details…",
   },
   plan: {
     title: "Plan",
@@ -460,6 +461,8 @@ export default {
     noSession: "Select a session to open a terminal.",
     exited: "Terminal exited ({code}).",
     error: "Could not open the terminal.",
+    eventsOffline: "Dashboard connection lost. Reconnecting…",
+    reconnecting: "Instance is reconnecting. Retry in a moment.",
     sessionNotFound: "Session was not found.",
     sessionArchived: "Session is sleeping; wake it before opening a terminal.",
     capacityExceeded: "Terminal capacity exceeded on this instance.",
@@ -467,8 +470,10 @@ export default {
     closeConfirm: "Close this terminal? The shared shell will be terminated.",
     closeSharedConfirm: "This terminal is open on other devices. Closing terminates it everywhere. Continue?",
     closeRetryToast: "Could not close the terminal (offline or timed out). Keep the tab and retry.",
+    closeError: "Could not close the terminal.",
     cleanupPendingToast: "Terminal cleanup is still pending on the instance.",
     takeControl: "Take control",
+    spectatorHint: "Read-only. Take control to type.",
     viewers: "{count} viewers",
     role: {
       controller: "Controller",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTerminalAdapter, type GhosttyTerminalLike } from "../lib/terminal-adapter";
+import { createTerminalAdapter, revealGhosttyInputSurface, type GhosttyTerminalLike } from "../lib/terminal-adapter";
 
 type Call = { op: "write" | "resize" | "reset" | "setTheme"; args: unknown[] };
 
@@ -90,15 +90,69 @@ describe("terminal-adapter", () => {
     expect(a.fit()).toBeNull();
   });
 
+  it("revealGhosttyInputSurface unclips the 1×1 helper textarea", () => {
+    const host = document.createElement("div");
+    const ta = document.createElement("textarea");
+    ta.style.width = "1px";
+    ta.style.height = "1px";
+    ta.style.clipPath = "inset(50%)";
+    host.appendChild(ta);
+    revealGhosttyInputSurface(host);
+    expect(ta.style.width).toBe("100%");
+    expect(ta.style.height).toBe("100%");
+    expect(ta.style.clipPath).toBe("none");
+  });
+
   it("focus() proxies to the underlying terminal", async () => {
     const { term } = fakeTerminal();
     const focus = vi.fn();
     (term as unknown as { focus: () => void }).focus = focus;
-    const a = createTerminalAdapter(document.createElement("div"), {
+    const el = document.createElement("div");
+    const elFocus = vi.spyOn(el, "focus");
+    const a = createTerminalAdapter(el, {
       cols: 80, rows: 24, onData: () => {}, factory: () => term,
     });
     await a.ready();
     a.focus();
+    await flush();
+    expect(focus).toHaveBeenCalled();
+    expect(elFocus).toHaveBeenCalled();
+  });
+
+  it("open/focus unclip a helper textarea so canvas-click focus can receive keys", async () => {
+    const { term } = fakeTerminal();
+    const el = document.createElement("div");
+    const ta = document.createElement("textarea");
+    ta.style.width = "1px";
+    ta.style.height = "1px";
+    ta.style.clipPath = "inset(50%)";
+    el.appendChild(ta);
+    term.open = vi.fn(() => { el.appendChild(ta); });
+    const a = createTerminalAdapter(el, {
+      cols: 80, rows: 24, onData: () => {}, factory: () => term,
+    });
+    await a.ready();
+    expect(ta.style.clipPath).toBe("none");
+    ta.style.clipPath = "inset(50%)";
+    a.focus();
+    await flush();
+    expect(ta.style.clipPath).toBe("none");
+  });
+
+  it("focus() issued before ready still lands after the terminal opens", async () => {
+    const { term } = fakeTerminal();
+    const focus = vi.fn();
+    (term as unknown as { focus: () => void }).focus = focus;
+    const { factory, resolve } = deferredFactory(term);
+    const a = createTerminalAdapter(document.createElement("div"), {
+      cols: 80, rows: 24, onData: () => {}, factory,
+    });
+    a.focus();
+    await flush();
+    expect(focus).not.toHaveBeenCalled();
+    resolve();
+    await a.ready();
+    await flush();
     expect(focus).toHaveBeenCalled();
   });
 

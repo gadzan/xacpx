@@ -8,7 +8,7 @@ import { subagentDetailOutput } from "../lib/subagent-trace";
 import SubagentTraceDialog from "./SubagentTraceDialog.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 
-const props = defineProps<{ step: ToolStepDto; children: ToolStepDto[] }>();
+const props = defineProps<{ step: ToolStepDto; children: ToolStepDto[]; ensureFull?: () => Promise<void> }>();
 const open = ref(false);
 const dialogOpen = ref(false);
 const paused = ref(false);
@@ -70,6 +70,20 @@ function stopClock() {
 }
 watch(status, (value) => { if (value === "running") startClock(); else stopClock(); });
 
+async function hydrateThen(run: () => void): Promise<void> {
+  if (props.ensureFull) {
+    try { await props.ensureFull(); } catch { /* stub remains; retry on next expand */ }
+  }
+  run();
+}
+async function onHeaderClick(): Promise<void> {
+  if (open.value) { open.value = false; return; }
+  await hydrateThen(() => { open.value = true; });
+}
+async function onOpenTrace(): Promise<void> {
+  await hydrateThen(() => { dialogOpen.value = true; });
+}
+
 function compact(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -110,7 +124,7 @@ onBeforeUnmount(() => {
            @mouseenter="paused = true" @mouseleave="paused = false" @focusin="paused = true" @focusout="paused = false">
     <button type="button" data-test="subagent-header"
             class="group flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg/70"
-            :aria-expanded="open" @click="open = !open">
+            :aria-expanded="open" @click="onHeaderClick">
       <ChevronDown v-if="open" :size="14" class="shrink-0 text-fg-muted" />
       <ChevronRight v-else :size="14" class="shrink-0 text-fg-muted" />
       <span class="relative grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
@@ -190,7 +204,7 @@ onBeforeUnmount(() => {
       </template>
       <button type="button" data-test="subagent-open-trace"
               class="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[10.5px] font-medium text-fg-muted transition-colors hover:border-accent/40 hover:text-accent"
-              @click="dialogOpen = true">
+              @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>
     </div>

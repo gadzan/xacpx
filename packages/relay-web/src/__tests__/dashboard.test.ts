@@ -19,6 +19,16 @@ vi.mock("../api/events", () => ({
     return disconnect;
   },
   sendSubscribe,
+  isRetryableTerminalError: (code: string) =>
+    code === "instance-offline" || code === "events-offline"
+    || code === "terminal-timeout" || code === "instance-reconnected",
+  TerminalRequestError: class extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.code = code;
+    }
+  },
 }));
 
 // DashboardView now uses useRouter()/<router-link>; mock to avoid a real router.

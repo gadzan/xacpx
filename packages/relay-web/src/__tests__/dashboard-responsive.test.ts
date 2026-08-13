@@ -9,6 +9,9 @@ vi.mock("../api/events", () => ({
   connectEvents: () => disconnect,
   sendSubscribe: vi.fn(),
   sendWebClientMessage: vi.fn(),
+  isRetryableTerminalError: (code: string) =>
+    code === "instance-offline" || code === "events-offline"
+    || code === "terminal-timeout" || code === "instance-reconnected",
   TerminalRequestError: class extends Error {
     code: string;
     constructor(code: string, message: string) {

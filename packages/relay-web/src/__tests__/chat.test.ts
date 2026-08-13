@@ -438,11 +438,89 @@ test("loadHistory records hasMore; loadOlder prepends the older page and updates
   expect(chat.hasMoreOlder).toBe(false);
   // The cursor was the oldest id we held (10).
   expect(calls.some((c) => c.includes("before=10"))).toBe(true);
+  expect(calls[0]).toBe("/api/instances/i1/sessions/s1/messages?limit=10&view=compact");
+  expect(calls.some((c) => c.includes("view=compact"))).toBe(true);
 
   // No older remain → loadOlder is now a no-op (no extra fetch).
   const before = calls.length;
   await chat.loadOlder();
   expect(calls.length).toBe(before);
+});
+
+test("ensureFullMessage replaces a compact row with the full persisted structured payload", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    if (path.endsWith("/messages/7")) {
+      return new Response(JSON.stringify({
+        message: {
+          id: 7,
+          instanceId: "i1",
+          sessionAlias: "s1",
+          direction: "out",
+          text: "done",
+          createdAt: "t",
+          structured: {
+            parts: [{ type: "tool", step: { toolCallId: "t1", toolName: "Read", kind: "read", status: "success", title: "a.ts", detail: { type: "read", path: "a.ts", preview: "full file" } } }],
+          },
+        },
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      messages: [{
+        id: 7,
+        instanceId: "i1",
+        sessionAlias: "s1",
+        direction: "out",
+        text: "done",
+        createdAt: "t",
+        structured: {
+          compact: true,
+          parts: [{ type: "tool", step: { toolCallId: "t1", toolName: "Read", kind: "read", status: "success", title: "a.ts", detail: { type: "read", path: "a.ts" } } }],
+        },
+      }],
+    }), { status: 200 });
+  }));
+
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  await chat.loadHistory();
+  expect(chat.messages[0]?.structured?.compact).toBe(true);
+  await chat.ensureFullMessage(7);
+  expect(chat.messages[0]?.structured?.compact).toBeUndefined();
+  const part = chat.messages[0]?.structured?.parts?.[0];
+  expect(part?.type === "tool" ? part.step.detail : undefined).toEqual({ type: "read", path: "a.ts", preview: "full file" });
+});
+
+test("loadHistory keeps a locally richer structured payload over a compact page", async () => {
+  const full = {
+    parts: [{ type: "text" as const, text: "done" }, { type: "tool" as const, step: { toolCallId: "t1", toolName: "Bash", kind: "execute" as const, status: "success" as const, title: "ls", detail: { type: "command" as const, command: "ls", output: "a.ts" } } }],
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [{
+      id: 3,
+      instanceId: "i1",
+      sessionAlias: "s1",
+      direction: "out",
+      text: "done",
+      createdAt: "t",
+      structured: { compact: true, parts: [{ type: "text", text: "done" }, { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls", detail: { type: "command", command: "ls" } } }] },
+    }],
+  }), { status: 200 })));
+
+  const chat = useChatStore();
+  chat.select("i1", "s1");
+  chat.messages = [{
+    id: 3,
+    instanceId: "i1",
+    sessionAlias: "s1",
+    direction: "out",
+    text: "done",
+    createdAt: "t",
+    structured: full,
+  }];
+  await chat.loadHistory();
+  const part = chat.messages[0]?.structured?.parts?.find((p) => p.type === "tool");
+  expect(chat.messages[0]?.structured?.compact).toBeUndefined();
+  expect(part?.type === "tool" ? part.step.detail : undefined).toEqual({ type: "command", command: "ls", output: "a.ts" });
 });
 
 test("select persists the open session so a refresh can restore it", () => {
@@ -570,7 +648,7 @@ test("network jitter without turn events converges the optimistic prompt from hi
   await chat.send("never arrived");
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  expect(fetchMock).toHaveBeenCalledWith("/api/instances/i1/sessions/s1/messages?limit=100", { credentials: "include" });
+  expect(fetchMock).toHaveBeenCalledWith("/api/instances/i1/sessions/s1/messages?limit=10&view=compact", { credentials: "include" });
   expect(chat.messages).toEqual([]);
   expect(chat.error).toBe("");
 });

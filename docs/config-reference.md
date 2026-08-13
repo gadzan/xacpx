@@ -382,7 +382,7 @@ Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mo
 | `maxSessions` | `number` | `16` | `1..128` concurrent live/creating terminal resources. |
 | `maxViewersPerTerminal` | `number` | `4` | `1..16` attachments per shared terminal. |
 | `historyLimit` | `number` | `10000` | `0..100000` RMUX scrollback / recovery keyframe budget (lines). |
-| `bridgeCommand` / `rmuxCommand` | absolute path | unset | Optional explicit binaries. When unset, bridge resolves via `@ganglion/xacpx-rmux-bridge-<os>-<arch>` optional packages then `PATH`; RMUX daemon via `rmuxCommand`, `~/.local/libexec/rmux/rmux`, or `PATH`. |
+| `bridgeCommand` / `rmuxCommand` | absolute path | unset | Optional explicit binaries. When unset, bridge resolves via `@ganglion/xacpx-rmux-bridge-<os>-<arch>` optional packages then `PATH`; RMUX daemon via `rmuxCommand`, `~/.local/libexec/rmux/rmux[.exe]`, a daemon sitting next to the bridge, then `PATH` `rmux-daemon` / `rmux`. The platform package ships only the bridge — Windows still needs a 0.10.x `rmux.exe` (or `rmux-daemon.exe`) on PATH or in `rmuxCommand`, otherwise bootstrap logs `rmux driver has crashed`. |
 
 **Security:** enabling terminal is equivalent to granting every hub account that can open the instance an interactive shell in that workspace. Terminal bytes are never written to the messages DB or app logs (IDs / sizes / error class only).
 

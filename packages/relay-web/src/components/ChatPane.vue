@@ -188,6 +188,7 @@ const verb = computed(() => {
                      :scroll-to-scheduled="chat.scrollRequest"
                      :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                      :loading-history="chat.loadingHistory"
+                     :ensure-full="chat.ensureFullMessage"
                      @resend="chat.resend" @load-older="chat.loadOlder" />
       </div>
       <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator

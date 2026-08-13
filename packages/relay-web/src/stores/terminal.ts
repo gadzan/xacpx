@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import type { WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import {
+  isRetryableTerminalError,
   nextTerminalRequestId,
   requestTerminal,
   sendWebClientMessage,
@@ -69,6 +70,8 @@ export const useTerminalStore = defineStore("terminal", () => {
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   const resyncInFlight = new Set<string>();
+  /** One extra stream-start while recover is still waiting (key-mash debounce). */
+  const waitingStreamStartInFlight = new Set<string>();
 
   function ensureReconnectHook(): void {
     setEventsReconnectHandler(() => {
@@ -178,6 +181,13 @@ export const useTerminalStore = defineStore("terminal", () => {
   ): Promise<TerminalAttachmentView> {
     ensureReconnectHook();
     const existing = get(localKey);
+    if (existing?.attachmentId) {
+      sendWebClientMessage({
+        kind: "terminal-detach",
+        instanceId: existing.instanceId,
+        attachmentId: existing.attachmentId,
+      });
+    }
     let view: TerminalAttachmentView = existing ?? {
       localKey,
       instanceId: opts.instanceId,
@@ -200,11 +210,12 @@ export const useTerminalStore = defineStore("terminal", () => {
       lastErrorCode: undefined,
       exitReason: undefined,
       exitCode: undefined,
-      // Clear stale attachment before re-open (new attachment id on every open).
+      // Drop the old attachment id so input cannot target a detached binding.
+      // Keep role until the new open settles — clearing it greys the keybar.
       attachmentId: undefined,
-      role: undefined,
       recovery: initialRecoveryState(view.generation ?? ""),
     };
+    waitingStreamStartInFlight.delete(localKey);
     put(view);
 
     try {
@@ -278,6 +289,7 @@ export const useTerminalStore = defineStore("terminal", () => {
       attachmentId: undefined,
       role: undefined,
     });
+    waitingStreamStartInFlight.delete(localKey);
     refreshHeartbeat();
   }
 
@@ -313,12 +325,13 @@ export const useTerminalStore = defineStore("terminal", () => {
         recovery: stepped.state,
         exitReason: status,
       });
+      waitingStreamStartInFlight.delete(localKey);
       refreshHeartbeat();
       for (const cb of attachmentExitCbs) cb(localKey, status);
       return { status };
     } catch (err) {
       const code = err instanceof TerminalRequestError ? err.code : "terminal-protocol-error";
-      const retryable = code === "terminal-timeout" || code === "instance-offline";
+      const retryable = isRetryableTerminalError(code);
       put({
         ...get(localKey)!,
         terminatePending: false,
@@ -327,6 +340,25 @@ export const useTerminalStore = defineStore("terminal", () => {
       });
       throw err;
     }
+  }
+
+  function startOutputStream(view: TerminalAttachmentView): void {
+    if (!view.attachmentId) return;
+    sendWebClientMessage({
+      kind: "terminal-stream-start",
+      requestId: nextTerminalRequestId(),
+      instanceId: view.instanceId,
+      attachmentId: view.attachmentId,
+    });
+  }
+
+  /** Re-issue stream-start if recover never left waiting. Open already sends one;
+   *  take-control / first input retry when that frame was dropped. */
+  function ensureOutputStreamIfWaiting(view: TerminalAttachmentView): void {
+    if (view.recovery.phase !== "waiting" || !view.attachmentId) return;
+    if (waitingStreamStartInFlight.has(view.localKey)) return;
+    waitingStreamStartInFlight.add(view.localKey);
+    startOutputStream(view);
   }
 
   /** RMUX path: controller-only input for a local tab attachment. */
@@ -340,6 +372,9 @@ export const useTerminalStore = defineStore("terminal", () => {
       generation: view.generation,
       dataBase64: utf8ToCanonicalBase64(data),
     });
+    // No local echo — characters appear only after recover is live. If it is
+    // still waiting, restart the output stream so the PTY reply can rebase.
+    ensureOutputStreamIfWaiting(view);
   }
 
   /** RMUX path: controller-only resize for a local tab attachment. */
@@ -381,6 +416,10 @@ export const useTerminalStore = defineStore("terminal", () => {
       viewerCount: opened.viewerCount,
     };
     put(next);
+    // Open already sent stream-start; take-control does not. If recover never
+    // went live (lost rebase-start), the keybar is clickable but the canvas
+    // stays blank until a new recover produces a rebase.
+    ensureOutputStreamIfWaiting(next);
     return next;
   }
 
@@ -443,6 +482,7 @@ export const useTerminalStore = defineStore("terminal", () => {
         exitCode: event.code,
         terminatePending: false,
       });
+      waitingStreamStartInFlight.delete(view.localKey);
       refreshHeartbeat();
       for (const cb of attachmentExitCbs) cb(view.localKey, event.reason, event.code);
       return;
@@ -502,6 +542,9 @@ export const useTerminalStore = defineStore("terminal", () => {
                 dataBase64: event.dataBase64,
               };
       const stepped = reduceRecovery(view.recovery, inbound);
+      if (stepped.state.phase !== "waiting") {
+        waitingStreamStartInFlight.delete(view.localKey);
+      }
       put({ ...view, recovery: stepped.state });
       await applyRecoveryAction(view.localKey, stepped.action);
     }

@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -78,5 +79,31 @@ describe("ToolStepCard error banner de-duplication", () => {
     });
     await expand(w);
     expect(w.find('[data-test="tool-step-error"]').exists()).toBe(false);
+  });
+
+  it("hydrates compact details before showing the expanded body", async () => {
+    let resolveHydrate!: () => void;
+    const ensureFull = vi.fn(() => new Promise<void>((resolve) => { resolveHydrate = resolve; }));
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "read",
+          title: "a.ts",
+          status: "success",
+          detail: { type: "read", path: "a.ts" },
+        } as ToolStepDto,
+        ensureFull,
+      },
+    });
+    await w.find('[data-test="tool-step-header"]').trigger("click");
+    await nextTick();
+    expect(ensureFull).toHaveBeenCalledTimes(1);
+    expect(w.find('[data-test="tool-step-hydrating"]').exists()).toBe(true);
+    resolveHydrate();
+    await nextTick();
+    await nextTick();
+    expect(w.find('[data-test="tool-step-hydrating"]').exists()).toBe(false);
+    expect(w.find('[data-test="read-path"]').text()).toContain("a.ts");
   });
 });

@@ -112,6 +112,10 @@ interface OutboundQueueState {
  * set of attachments, not "was ever first" — so after an explicit controller
  * detach the terminal has no controller, and a genuinely new `attach()` call
  * fills that role, while EXISTING spectators are never silently promoted.
+ *
+ * Same `viewerId` on the same terminal replaces its prior attachment (reconnect
+ * / re-open). Otherwise a stale controller from the previous attachment would
+ * force the new one into spectator with a greyed-out keybar.
  */
 export class TerminalAttachmentRegistry {
   private readonly attachments = new Map<string, TerminalAttachment>();
@@ -134,6 +138,14 @@ export class TerminalAttachmentRegistry {
   }
 
   attach(input: AttachInput): AttachResult {
+    const staleIds = this.listByTerminal(input.terminalId)
+      .filter((a) => a.viewerId === input.viewerId)
+      .map((a) => a.attachmentId);
+    for (const id of staleIds) {
+      const live = this.attachments.get(id);
+      if (live) this.removeAttachment(live);
+    }
+
     const currentViewerCount = this.getViewerCount(input.terminalId);
     if (currentViewerCount >= this.maxViewersPerTerminal) {
       throw new TerminalViewerCapacityExceededError(input.terminalId);

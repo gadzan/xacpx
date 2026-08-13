@@ -195,6 +195,20 @@ test("sidecar driver fences after child exit", async () => {
   await expect(driver.list()).rejects.toBeInstanceOf(RmuxDriverCrashedError);
 });
 
+test("sidecar crash includes trailing stderr from the bridge", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  fake.child.stderr!.write(
+    "xacpx-rmux-bridge fatal: bridge connect: rmux connect failed: no daemon\n",
+  );
+  fake.life.emit("exit", 1);
+  await expect(driver.handshake()).rejects.toMatchObject({
+    name: "RmuxDriverCrashedError",
+    message: expect.stringContaining("no daemon"),
+  });
+});
+
+
 test("protocol corruption kill child so supervisor can restart", async () => {
   const fake = makeFakeChild();
   let killed = false;

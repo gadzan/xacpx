@@ -56,8 +56,10 @@ export interface MessageRecordDto {
    *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
    *  `reasoning` are a flat fallback for older rows that predate `parts`.
    *  `truncated` marks a recovered offline reply the connector capped at
-   *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply. */
-  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean };
+   *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply.
+   *  `compact` is set by `GET .../messages?view=compact`: bulky tool details were
+   *  omitted (collapsed cards still render); `GET .../messages/:id` returns the full row. */
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean };
   attachments?: AttachmentMetadata[];
 }
 
