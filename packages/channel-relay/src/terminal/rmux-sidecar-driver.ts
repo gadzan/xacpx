@@ -19,6 +19,10 @@ import {
 const MAX_LINE_BYTES = 96 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const SIDECAR_PROTOCOL_VERSION = 2;
+/** Must match the Rust sidecar `REBASE_CHUNK_BYTES`. */
+const REBASE_CHUNK_BYTES = 48 * 1024;
+const MAX_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
 /** Cap for bytes buffered after the last rebase for late multi-viewer joins.
  *  Matches the recovery size budget; overflow folds bytes into a synthetic rebase. */
 const MAX_BYTES_SINCE_REBASE = 2 * 1024 * 1024;
@@ -30,6 +34,18 @@ type PaneRecoveryCache = {
   rebase: RebaseEvent;
   bytes: BytesEvent[];
   bytesTotal: number;
+};
+
+type RebaseAssembly = {
+  epoch: number;
+  nextSequence: number;
+  cols: number;
+  rows: number;
+  alternate: boolean;
+  reason?: string;
+  totalBytes: number;
+  chunkCount: number;
+  chunks: Uint8Array[];
 };
 
 export interface SidecarStdio {
@@ -69,6 +85,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
    * from this cache before joining the live fan-out.
    */
   private readonly recoveryCache = new Map<string, PaneRecoveryCache>();
+  private readonly rebaseAssembly = new Map<string, RebaseAssembly>();
 
   constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
     this.child = child;
@@ -83,7 +100,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   async handshake(): Promise<RmuxDiagnostics> {
     const res = (await this.request({
       type: "handshake",
-      protocol_version: 1,
+      protocol_version: SIDECAR_PROTOCOL_VERSION,
     })) as {
       type: string;
       bridge_version: string;
@@ -338,7 +355,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private dispatch(msg: Record<string, unknown>): void {
     if (msg.type === "event") {
       const paneId = String(msg.pane_id ?? "");
-      const event = mapEvent(msg.event as Record<string, unknown>);
+      const event = this.ingestSidecarEvent(paneId, msg.event as Record<string, unknown>);
       if (!event) return;
       this.rememberRecoveryEvent(paneId, event);
       const set = this.recoveries.get(paneId);
@@ -364,6 +381,102 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       return;
     }
     pending.resolve(msg);
+  }
+
+  /**
+   * Reassemble sidecar rebase-start/chunk/end into one driver rebase event.
+   * Incomplete frames stay buffered; protocol violations fence the child.
+   */
+  private ingestSidecarEvent(
+    paneId: string,
+    raw: Record<string, unknown> | undefined,
+  ): RmuxRecoveryEvent | null {
+    if (!raw || typeof raw.type !== "string") return null;
+    if (raw.type === "rebase-start") {
+      const totalBytes = Number(raw.total_bytes ?? 0);
+      const chunkCount = Number(raw.chunk_count ?? 0);
+      if (!Number.isInteger(totalBytes) || totalBytes < 0 || totalBytes > MAX_REBASE_TOTAL_BYTES) {
+        this.crash(new Error("sidecar rebase-start total_bytes invalid"));
+        return null;
+      }
+      const expectedChunks = totalBytes === 0 ? 0 : Math.ceil(totalBytes / REBASE_CHUNK_BYTES);
+      if (!Number.isInteger(chunkCount) || chunkCount !== expectedChunks) {
+        this.crash(new Error("sidecar rebase-start chunk_count mismatch"));
+        return null;
+      }
+      this.rebaseAssembly.set(paneId, {
+        epoch: Number(raw.epoch ?? 0),
+        nextSequence: Number(raw.next_sequence ?? 0),
+        cols: Number(raw.cols ?? 0),
+        rows: Number(raw.rows ?? 0),
+        alternate: Boolean(raw.alternate),
+        ...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
+        totalBytes,
+        chunkCount,
+        chunks: [],
+      });
+      return null;
+    }
+    if (raw.type === "rebase-chunk") {
+      const assembly = this.rebaseAssembly.get(paneId);
+      if (!assembly) {
+        this.crash(new Error("sidecar rebase-chunk without start"));
+        return null;
+      }
+      const index = Number(raw.index ?? -1);
+      if (index !== assembly.chunks.length) {
+        this.crash(new Error("sidecar rebase-chunk index mismatch"));
+        return null;
+      }
+      const data = Buffer.from(String(raw.data_base64 ?? ""), "base64");
+      if (data.byteLength > REBASE_CHUNK_BYTES) {
+        this.crash(new Error("sidecar rebase-chunk too large"));
+        return null;
+      }
+      assembly.chunks.push(new Uint8Array(data));
+      return null;
+    }
+    if (raw.type === "rebase-end") {
+      const assembly = this.rebaseAssembly.get(paneId);
+      this.rebaseAssembly.delete(paneId);
+      if (!assembly) {
+        this.crash(new Error("sidecar rebase-end without start"));
+        return null;
+      }
+      if (Number(raw.epoch ?? 0) !== assembly.epoch) {
+        this.crash(new Error("sidecar rebase-end epoch mismatch"));
+        return null;
+      }
+      if (assembly.chunks.length !== assembly.chunkCount) {
+        this.crash(new Error("sidecar rebase-end chunk count mismatch"));
+        return null;
+      }
+      const keyframe = new Uint8Array(assembly.totalBytes);
+      let offset = 0;
+      for (const chunk of assembly.chunks) {
+        keyframe.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      if (offset !== assembly.totalBytes) {
+        this.crash(new Error("sidecar rebase-end byte count mismatch"));
+        return null;
+      }
+      return {
+        type: "rebase",
+        epoch: assembly.epoch,
+        nextSequence: assembly.nextSequence,
+        cols: assembly.cols,
+        rows: assembly.rows,
+        alternate: assembly.alternate,
+        keyframe,
+        ...(assembly.reason !== undefined ? { reason: assembly.reason } : {}),
+      };
+    }
+    if (this.rebaseAssembly.has(paneId) && (raw.type === "bytes" || raw.type === "exit")) {
+      this.crash(new Error("sidecar event during rebase assembly"));
+      return null;
+    }
+    return mapEvent(raw);
   }
 
   private rememberRecoveryEvent(paneId: string, event: RmuxRecoveryEvent): void {
@@ -406,6 +519,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     }
     this.recoveries.clear();
     this.recoveryCache.clear();
+    this.rebaseAssembly.clear();
     this.emitter.emit("crash", err);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {
@@ -435,19 +549,6 @@ function mapPaneError(paneId: string, err: unknown): Error {
 
 function mapEvent(raw: Record<string, unknown> | undefined): RmuxRecoveryEvent | null {
   if (!raw || typeof raw.type !== "string") return null;
-  if (raw.type === "rebase") {
-    const keyframe = Buffer.from(String(raw.keyframe_base64 ?? ""), "base64");
-    return {
-      type: "rebase",
-      epoch: Number(raw.epoch ?? 0),
-      nextSequence: Number(raw.next_sequence ?? 0),
-      cols: Number(raw.cols ?? 0),
-      rows: Number(raw.rows ?? 0),
-      alternate: Boolean(raw.alternate),
-      keyframe: new Uint8Array(keyframe),
-      ...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
-    };
-  }
   if (raw.type === "bytes") {
     const data = Buffer.from(String(raw.data_base64 ?? ""), "base64");
     return {

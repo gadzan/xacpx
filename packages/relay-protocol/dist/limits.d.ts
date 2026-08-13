@@ -31,8 +31,14 @@ export declare const TERMINAL_REBASE_CHUNK_BYTES: number;
 export declare const MAX_TERMINAL_REBASE_TOTAL_BYTES: number;
 /** Per-attachment outbound queue cap before the recovery stream is closed. */
 export declare const MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES: number;
-/** open / take-control / resync / terminate request deadline. */
-export declare const TERMINAL_RPC_TIMEOUT_MS = 10000;
+/** Hub → connector terminal RPC deadline (open / take-control / resync / terminate). */
+export declare const TERMINAL_HUB_REQUEST_TIMEOUT_MS = 45000;
+/**
+ * Browser → hub terminal RPC deadline. Must be strictly longer than
+ * `TERMINAL_HUB_REQUEST_TIMEOUT_MS` so a slow open cannot bind an attachment
+ * after the browser has already dropped the pending request.
+ */
+export declare const TERMINAL_RPC_TIMEOUT_MS = 60000;
 /** RMUX kill confirmation wait inside terminate. */
 export declare const TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
 /** Max capability strings accepted on instance register/auth. */

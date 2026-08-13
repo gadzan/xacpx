@@ -64,7 +64,8 @@ var MAX_TERMINAL_INPUT_BYTES = 64 * 1024;
 var TERMINAL_REBASE_CHUNK_BYTES = 48 * 1024;
 var MAX_TERMINAL_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
 var MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES = 2 * 1024 * 1024;
-var TERMINAL_RPC_TIMEOUT_MS = 1e4;
+var TERMINAL_HUB_REQUEST_TIMEOUT_MS = 45000;
+var TERMINAL_RPC_TIMEOUT_MS = 60000;
 var TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
 var MAX_CAPABILITIES = 32;
 var MAX_CAPABILITY_LENGTH = 128;
@@ -232,6 +233,7 @@ var WEB_EVENT_KINDS = new Set([
   "notice",
   "terminal-opened",
   "terminal-request-failed",
+  "terminal-recovery-failed",
   "terminal-rebase-start",
   "terminal-rebase-chunk",
   "terminal-rebase-end",
@@ -475,6 +477,8 @@ function validTargetedTerminalEvent(candidate) {
       return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && validTerminalRole(candidate.role) && isNonNegInt(candidate.viewerCount);
     case "terminal-request-failed":
       return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
     case "terminal-rebase-start":
       return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isNonNegInt(candidate.epoch) && isNonNegInt(candidate.nextSequence) && isIntInRange(candidate.cols, MIN_TERMINAL_COLS, MAX_TERMINAL_COLS) && isIntInRange(candidate.rows, MIN_TERMINAL_ROWS, MAX_TERMINAL_ROWS) && typeof candidate.alternate === "boolean" && isIntInRange(candidate.totalBytes, 0, MAX_TERMINAL_REBASE_TOTAL_BYTES) && isNonNegInt(candidate.chunkCount) && candidate.chunkCount === expectedRebaseChunkCount(candidate.totalBytes);
     case "terminal-rebase-chunk":
@@ -855,6 +859,8 @@ function validTerminalViewerEventInner(event) {
       return isBoundedStr(event.terminalId, MAX_TERMINAL_ID_LENGTH) && (event.role === "controller" || event.role === "spectator") && isNonNegInt(event.viewerCount);
     case "terminal-request-failed":
       return optStr(event.requestId) && (event.requestId === undefined || isBoundedStr(event.requestId, 128)) && isBoundedStr(event.code, 128) && typeof event.message === "string" && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(event.code, 128) && typeof event.message === "string" && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
     default:
       return false;
   }
@@ -929,6 +935,7 @@ export {
   TERMINAL_RPC_TIMEOUT_MS,
   TERMINAL_REBASE_CHUNK_BYTES,
   TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
   TERMINAL_EVENT_PAYLOAD_VALIDATORS,
   TERMINAL_ERROR_CODES,
   STATE_SYNC_TEXT_CAP,

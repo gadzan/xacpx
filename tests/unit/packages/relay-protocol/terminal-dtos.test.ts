@@ -8,6 +8,8 @@ import {
   MAX_TERMINAL_INPUT_BYTES,
   TERMINAL_REBASE_CHUNK_BYTES,
   MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_RPC_TIMEOUT_MS,
   parseWebServerEvent,
   webEventEnvelope,
   parseWebClientMessage,
@@ -70,6 +72,9 @@ test("hard limits match the wire contract", () => {
   expect(MAX_TERMINAL_INPUT_BYTES).toBe(64 * 1024);
   expect(TERMINAL_REBASE_CHUNK_BYTES).toBe(48 * 1024);
   expect(MAX_TERMINAL_REBASE_TOTAL_BYTES).toBe(2 * 1024 * 1024);
+  expect(TERMINAL_HUB_REQUEST_TIMEOUT_MS).toBe(45_000);
+  expect(TERMINAL_RPC_TIMEOUT_MS).toBe(60_000);
+  expect(TERMINAL_RPC_TIMEOUT_MS).toBeGreaterThan(TERMINAL_HUB_REQUEST_TIMEOUT_MS);
 });
 
 test("result DTOs compile with the locked shapes", () => {
@@ -178,6 +183,14 @@ test("targeted recoverable terminal server events round-trip", () => {
       instanceId: "i1",
       code: "terminal-session-not-found",
       message: "missing",
+    },
+    {
+      kind: "terminal-recovery-failed",
+      instanceId: "i1",
+      attachmentId: "a1",
+      generation: "g1",
+      code: "terminal-recovery-too-large",
+      message: "queue overflow",
     },
     {
       kind: "terminal-rebase-start",

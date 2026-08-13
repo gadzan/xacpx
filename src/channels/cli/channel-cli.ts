@@ -29,10 +29,9 @@ export interface ChannelCliDeps extends ChannelCliIo {
   clearChannelCredentials?: (channel: ChannelRuntimeConfig) => Promise<void>;
   /**
    * Optional: async retirement hook invoked before a channel is disabled or
-   * removed. Allows channels (e.g. relay) to perform one-shot maintenance
-   * cleanup using the original config before it's discarded. Invoked with the
-   * channel and reason ("disabled" or "removed"). Failures are logged but do
-   * not block the config mutation.
+   * removed. Relay defers one-shot cleanup while the daemon is running so the
+   * live sidecar remains the sole registry writer; other channels default to
+   * no-op. Failures are logged but do not block the config mutation.
    */
   retireChannel?: (channel: ChannelRuntimeConfig, reason: "disabled" | "removed") => Promise<void>;
 }

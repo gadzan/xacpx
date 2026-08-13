@@ -448,6 +448,17 @@ export const useTerminalStore = defineStore("terminal", () => {
       return;
     }
 
+    if (event.kind === "terminal-recovery-failed") {
+      const view = findByAttachmentId(event.attachmentId);
+      if (!view) return;
+      if (view.generation && event.generation && view.generation !== event.generation) return;
+      const stepped = reduceRecovery(view.recovery, { kind: "resync-started" });
+      put({ ...view, lastErrorCode: event.code, recovery: stepped.state });
+      // Fire-and-forget: do not block event application on the resync ack.
+      void requestResync(view.localKey, event.code);
+      return;
+    }
+
     if (
       event.kind === "terminal-rebase-start"
       || event.kind === "terminal-rebase-chunk"

@@ -5,7 +5,10 @@ import type { SessionResourceCatalog } from "xacpx/plugin-api";
 import { parseRelayTerminalConfig, type RelayTerminalConfig } from "../config.js";
 import type { RmuxTerminalDriver } from "./rmux-driver.js";
 import { createProductionTerminalDriver } from "./rmux-sidecar-supervisor.js";
-import { TerminalRegistryStore } from "./terminal-registry-store.js";
+import {
+  TerminalRegistryLockedError,
+  TerminalRegistryStore,
+} from "./terminal-registry-store.js";
 import { DefaultRelayTerminalRuntime } from "./terminal-runtime.js";
 
 export type RetireRelayTerminalsResult =
@@ -23,6 +26,12 @@ export interface RetireRelayTerminalsInput {
    */
   terminalConfig?: RelayTerminalConfig;
   createDriver?: () => RmuxTerminalDriver;
+  /**
+   * Exclusive pid lock on terminals.lock. Production one-shot retirement
+   * defaults to true so it cannot race the live daemon writer. Tests that
+   * inject `createDriver` default to false unless overridden.
+   */
+  exclusiveWriter?: boolean;
 }
 
 const emptyCatalog: SessionResourceCatalog = {
@@ -46,69 +55,82 @@ const emptyCatalog: SessionResourceCatalog = {
 export async function retireRelayTerminals(
   input: RetireRelayTerminalsInput,
 ): Promise<RetireRelayTerminalsResult> {
-  const registry = new TerminalRegistryStore({ dir: input.registryDir });
-  await registry.load();
-  const before = registry.getSnapshot();
-  if (Object.keys(before.terminals).length === 0) {
-    return { status: "idle" };
-  }
+  const exclusiveWriter = input.exclusiveWriter ?? input.createDriver === undefined;
+  const registry = new TerminalRegistryStore({
+    dir: input.registryDir,
+    exclusiveWriter,
+  });
+  try {
+    await registry.load();
+    const before = registry.getSnapshot();
+    if (Object.keys(before.terminals).length === 0) {
+      return { status: "idle" };
+    }
 
-  const base = input.terminalConfig ?? parseRelayTerminalConfig(undefined);
-  // Maintenance runtime must accept terminateAll regardless of the surviving
-  // channel config's enabled flag.
-  const config: RelayTerminalConfig = Object.freeze({ ...base, enabled: true });
+    const base = input.terminalConfig ?? parseRelayTerminalConfig(undefined);
+    // Maintenance runtime must accept terminateAll regardless of the surviving
+    // channel config's enabled flag.
+    const config: RelayTerminalConfig = Object.freeze({ ...base, enabled: true });
 
-  let driver: RmuxTerminalDriver;
-  let dispose: (() => Promise<void>) | undefined;
-  if (input.createDriver) {
-    driver = input.createDriver();
-  } else {
+    let driver: RmuxTerminalDriver;
+    let dispose: (() => Promise<void>) | undefined;
+    if (input.createDriver) {
+      driver = input.createDriver();
+    } else {
+      try {
+        const prod = await createProductionTerminalDriver(config);
+        driver = prod.driver;
+        dispose = () => prod.supervisor.stop();
+      } catch {
+        // Durable-mark reaping so the next healthy sidecar pass can finish kill,
+        // but do not clear the registry with a fake InMemory driver.
+        for (const rec of Object.values(registry.getSnapshot().terminals)) {
+          if (rec.state === "reaping") continue;
+          try {
+            await registry.markReaping(rec.terminalId, "disabled");
+          } catch {
+            // leave for next pass
+          }
+        }
+        return { status: "cleanup-pending" };
+      }
+    }
+
+    const runtime = new DefaultRelayTerminalRuntime({
+      registry,
+      driver,
+      catalog: emptyCatalog,
+      config,
+      onViewerEvent: () => {},
+    });
+
     try {
-      const prod = await createProductionTerminalDriver(config);
-      driver = prod.driver;
-      dispose = () => prod.supervisor.stop();
-    } catch {
-      // Durable-mark reaping so the next healthy sidecar pass can finish kill,
-      // but do not clear the registry with a fake InMemory driver.
-      for (const rec of Object.values(registry.getSnapshot().terminals)) {
-        if (rec.state === "reaping") continue;
+      await runtime.start();
+      await runtime.terminateAll("disabled");
+      // Drain anything left in reaping (prior crash window / kill timeout).
+      await runtime.reconcileOnce();
+    } finally {
+      // stop() also terminates in process-owned mode; already-reaped records are fine.
+      await runtime.stop();
+      if (dispose) {
         try {
-          await registry.markReaping(rec.terminalId, "disabled");
+          await dispose();
         } catch {
-          // leave for next pass
+          // ignore
         }
       }
+    }
+
+    const after = registry.getSnapshot();
+    const remaining = Object.values(after.terminals);
+    if (remaining.length === 0) return { status: "terminated" };
+    return { status: "cleanup-pending" };
+  } catch (err) {
+    if (err instanceof TerminalRegistryLockedError) {
       return { status: "cleanup-pending" };
     }
-  }
-
-  const runtime = new DefaultRelayTerminalRuntime({
-    registry,
-    driver,
-    catalog: emptyCatalog,
-    config,
-    onViewerEvent: () => {},
-  });
-
-  try {
-    await runtime.start();
-    await runtime.terminateAll("disabled");
-    // Drain anything left in reaping (prior crash window / kill timeout).
-    await runtime.reconcileOnce();
+    throw err;
   } finally {
-    // stop() also terminates in process-owned mode; already-reaped records are fine.
-    await runtime.stop();
-    if (dispose) {
-      try {
-        await dispose();
-      } catch {
-        // ignore
-      }
-    }
+    await registry.close();
   }
-
-  const after = registry.getSnapshot();
-  const remaining = Object.values(after.terminals);
-  if (remaining.length === 0) return { status: "terminated" };
-  return { status: "cleanup-pending" };
 }

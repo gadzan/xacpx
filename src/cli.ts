@@ -1285,27 +1285,17 @@ async function createChannelCliDeps(input: {
       await createMessageChannel(channel.type, channel).logout();
     },
     retireChannel: async (channel, _reason) => {
-      // Relay: one-shot terminal retirement using the original channel options
-      // (even when the surviving config will disable terminal). Other channels
-      // are a no-op. Credential clear stays in clearChannelCredentials / logout.
-      if (channel.type !== "relay") return;
-      const {
-        retireRelayTerminals,
-        defaultTerminalRegistryDir,
-        parseRelayChannelConfig,
-      } = await import("@ganglion/xacpx-channel-relay");
-      const parsed = parseRelayChannelConfig(
-        (channel.options ?? {}) as Record<string, unknown>,
-      );
-      const result = await retireRelayTerminals({
-        registryDir: defaultTerminalRegistryDir(),
-        terminalConfig: parsed.terminal,
+      const { retireRelayChannelFromCli } = await import("./channels/cli/retire-relay-channel.js");
+      await retireRelayChannelFromCli({
+        channel,
+        print: input.print,
+        getDaemonStatus: async () => {
+          const status = await controller.getStatus();
+          if (status.state === "running") return { state: "running" as const };
+          if (status.state === "indeterminate") return { state: "indeterminate" as const };
+          return { state: "stopped" as const };
+        },
       });
-      if (result.status === "cleanup-pending") {
-        input.print(
-          `relay terminal cleanup is still pending under ${defaultTerminalRegistryDir()}; registry/owner identity was kept for retry`,
-        );
-      }
     },
   };
   return { ...base, ...input.overrides };

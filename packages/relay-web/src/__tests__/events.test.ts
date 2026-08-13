@@ -14,6 +14,7 @@ import {
   decodeEnvelope,
   encodeEnvelope,
   parseWebClientMessage,
+  TERMINAL_RPC_TIMEOUT_MS,
   webEventEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
 
@@ -183,6 +184,31 @@ describe("connectEvents", () => {
       role: "controller",
       viewerCount: 1,
     })).toBe(false);
+  });
+
+  it("default timeout still resolves terminal-opened after 18s", async () => {
+    expect(TERMINAL_RPC_TIMEOUT_MS).toBeGreaterThan(18_000);
+    connectEvents(() => {});
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+
+    const id = nextTerminalRequestId();
+    const pending = requestTerminal(
+      { kind: "terminal-open", requestId: id, instanceId: "i1", sessionAlias: "s", cols: 80, rows: 24 },
+      { expect: "opened" },
+    );
+    await vi.advanceTimersByTimeAsync(18_000);
+    pushEvent(ws, {
+      kind: "terminal-opened",
+      requestId: id,
+      instanceId: "i1",
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "a1",
+      role: "controller",
+      viewerCount: 1,
+    });
+    await expect(pending).resolves.toMatchObject({ terminalId: "t1", attachmentId: "a1" });
   });
 
   it("sendWebClientMessage is a no-op without an open socket", () => {

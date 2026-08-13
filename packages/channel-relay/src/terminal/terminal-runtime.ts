@@ -147,6 +147,7 @@ export type TerminalViewerEvent =
     type: "queue-overflow";
     attachmentId: string;
     terminalId: string;
+    generation: string;
   };
 
 export interface RelayTerminalRuntime {
@@ -763,6 +764,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     for (const loop of loops) loop.abort.abort();
     await Promise.allSettled(loops.map((l) => l.done));
     this.recoveries.clear();
+    await this.registry.close();
   }
 
   // --- private ------------------------------------------------------------
@@ -1120,7 +1122,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     if (event.type === "rebase") {
       const totalBytes = event.keyframe.byteLength;
       if (totalBytes > 2 * 1024 * 1024) {
-        this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId });
+        this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId, generation });
         // Never await our own recovery loop from inside it.
         await this.stopRecovery(attachmentId, { wait: false });
         return;
@@ -1142,14 +1144,17 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       for (let index = 0; index < chunkCount; index++) {
         const start = index * TERMINAL_REBASE_CHUNK_BYTES;
         const chunk = event.keyframe.subarray(start, start + TERMINAL_REBASE_CHUNK_BYTES);
-        if (!this.attachments.enqueueOutbound(attachmentId, chunk)) {
+        const queued = this.attachments.enqueueOutbound(attachmentId, chunk);
+        if (!queued.ok) {
           await this.stopRecovery(attachmentId, { wait: false });
           return;
         }
         this.publishOutbound(
           attachmentId,
           terminalId,
+          generation,
           chunk.byteLength,
+          queued.epoch,
           {
             type: "rebase-chunk",
             attachmentId,
@@ -1172,14 +1177,17 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     }
 
     if (event.type === "bytes") {
-      if (!this.attachments.enqueueOutbound(attachmentId, event.data)) {
+      const queued = this.attachments.enqueueOutbound(attachmentId, event.data);
+      if (!queued.ok) {
         await this.stopRecovery(attachmentId, { wait: false });
         return;
       }
       this.publishOutbound(
         attachmentId,
         terminalId,
+        generation,
         event.data.byteLength,
+        queued.epoch,
         {
           type: "bytes",
           attachmentId,
@@ -1206,7 +1214,9 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
   private publishOutbound(
     attachmentId: string,
     terminalId: string,
+    generation: string,
     byteLength: number,
+    epoch: number,
     event: TerminalViewerEvent,
   ): void {
     let settled = false;
@@ -1214,12 +1224,12 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       if (settled) return;
       settled = true;
       if (error) {
-        this.attachments.closeOutboundQueue(attachmentId);
-        this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId });
+        this.attachments.closeOutboundQueue(attachmentId, epoch);
+        this.onViewerEvent({ type: "queue-overflow", attachmentId, terminalId, generation });
         void this.stopRecovery(attachmentId, { wait: false });
         return;
       }
-      this.attachments.releaseOutbound(attachmentId, byteLength);
+      this.attachments.releaseOutbound(attachmentId, byteLength, epoch);
     });
   }
 
@@ -1259,6 +1269,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
       type: "queue-overflow",
       attachmentId: event.attachmentId,
       terminalId: event.terminalId,
+      generation: event.generation,
     });
   }
 }

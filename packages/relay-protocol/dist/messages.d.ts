@@ -784,6 +784,11 @@ export type TerminalViewerEventInner = {
     requestId?: string;
     code: string;
     message: string;
+} | {
+    kind: "terminal-recovery-failed";
+    generation: string;
+    code: string;
+    message: string;
 };
 export interface TerminalViewerEventPayload {
     viewerId: string;

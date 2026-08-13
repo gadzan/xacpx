@@ -321,8 +321,8 @@ export class RelayChannel implements MessageChannelRuntime {
       );
     }
 
+    const registry = new TerminalRegistryStore({ dir: registryDir, exclusiveWriter: true });
     try {
-      const registry = new TerminalRegistryStore({ dir: registryDir });
       let driver: RmuxTerminalDriver;
       if (this.deps.createTerminalDriver) {
         driver = this.deps.createTerminalDriver();
@@ -380,8 +380,22 @@ export class RelayChannel implements MessageChannelRuntime {
         `RMUX terminal runtime failed to start; continuing without terminal capabilities: ${err instanceof Error ? err.message : String(err)}`,
         {},
       );
+      const running = this.terminal;
       this.terminal = null;
       this.terminalReady = false;
+      if (running) {
+        try {
+          await running.stop();
+        } catch {
+          // ignore
+        }
+      } else {
+        try {
+          await registry.close();
+        } catch {
+          // ignore
+        }
+      }
       await this.stopTerminalSupervisor();
       return [];
     }

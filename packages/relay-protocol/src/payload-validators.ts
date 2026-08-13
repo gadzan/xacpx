@@ -490,6 +490,11 @@ function validTerminalViewerEventInner(event: unknown): event is TerminalViewerE
         && isBoundedStr(event.code, 128)
         && typeof event.message === "string"
         && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(event.generation, MAX_TERMINAL_GENERATION_LENGTH)
+        && isBoundedStr(event.code, 128)
+        && typeof event.message === "string"
+        && event.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
     default:
       return false;
   }

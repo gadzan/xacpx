@@ -141,6 +141,14 @@ export type WebServerEvent =
       message: string;
     }
   | {
+      kind: "terminal-recovery-failed";
+      instanceId: string;
+      attachmentId: string;
+      generation: string;
+      code: string;
+      message: string;
+    }
+  | {
       kind: "terminal-rebase-start";
       instanceId: string;
       attachmentId: string;
@@ -207,6 +215,7 @@ const WEB_EVENT_KINDS = new Set([
   "notice",
   "terminal-opened",
   "terminal-request-failed",
+  "terminal-recovery-failed",
   "terminal-rebase-start",
   "terminal-rebase-chunk",
   "terminal-rebase-end",
@@ -514,6 +523,12 @@ function validTargetedTerminalEvent(candidate: Record<string, unknown>): boolean
         && isNonNegInt(candidate.viewerCount);
     case "terminal-request-failed":
       return isBoundedStr(candidate.requestId, MAX_TERMINAL_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.code, 128)
+        && typeof candidate.message === "string"
+        && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;
+    case "terminal-recovery-failed":
+      return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH)
+        && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH)
         && isBoundedStr(candidate.code, 128)
         && typeof candidate.message === "string"
         && candidate.message.length <= MAX_TERMINAL_ERROR_MESSAGE_LENGTH;

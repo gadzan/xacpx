@@ -245,14 +245,14 @@ test("enqueueOutbound accepts bytes under the cap and rejects once it overflows"
   const registry = new TerminalAttachmentRegistry({ maxViewersPerTerminal: 4, attachmentTtlMs: 45_000, maxQueueBytes: 100 });
   const att = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
 
-  expect(registry.enqueueOutbound(att.attachmentId, new Uint8Array(60))).toBe(true);
+  expect(registry.enqueueOutbound(att.attachmentId, new Uint8Array(60))).toEqual({ ok: true, epoch: 1 });
   expect(registry.isOutboundQueueClosed(att.attachmentId)).toBe(false);
 
-  expect(registry.enqueueOutbound(att.attachmentId, new Uint8Array(60))).toBe(false);
+  expect(registry.enqueueOutbound(att.attachmentId, new Uint8Array(60))).toEqual({ ok: false });
   expect(registry.isOutboundQueueClosed(att.attachmentId)).toBe(true);
 
   // Further enqueue attempts stay rejected without growing the counter further.
-  expect(registry.enqueueOutbound(att.attachmentId, new Uint8Array(10))).toBe(false);
+  expect(registry.enqueueOutbound(att.attachmentId, new Uint8Array(10))).toEqual({ ok: false });
 });
 
 test("queue overflow on one attachment does not affect another viewer's queue", () => {
@@ -260,10 +260,10 @@ test("queue overflow on one attachment does not affect another viewer's queue", 
   const a = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
   const b = registry.attach({ viewerId: "viewer-b", terminalId: "term-1", generation: "gen-1" });
 
-  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(100))).toBe(false);
+  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(100))).toEqual({ ok: false });
   expect(registry.isOutboundQueueClosed(a.attachmentId)).toBe(true);
 
-  expect(registry.enqueueOutbound(b.attachmentId, new Uint8Array(30))).toBe(true);
+  expect(registry.enqueueOutbound(b.attachmentId, new Uint8Array(30))).toEqual({ ok: true, epoch: 1 });
   expect(registry.isOutboundQueueClosed(b.attachmentId)).toBe(false);
 });
 
@@ -280,7 +280,12 @@ test("enqueueOutbound emits queue-overflow exactly for the affected attachment",
 
   registry.enqueueOutbound(a.attachmentId, new Uint8Array(30));
   const overflow = events.filter((e) => e.type === "queue-overflow");
-  expect(overflow).toEqual([{ type: "queue-overflow", attachmentId: a.attachmentId, terminalId: "term-1" }]);
+  expect(overflow).toEqual([{
+    type: "queue-overflow",
+    attachmentId: a.attachmentId,
+    terminalId: "term-1",
+    generation: "gen-1",
+  }]);
 });
 
 test("resetOutboundQueue reopens a closed queue for resync without touching role/generation", () => {
@@ -295,16 +300,16 @@ test("resetOutboundQueue reopens a closed queue for resync without touching role
   expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(0);
   expect(registry.getAttachment(a.attachmentId)?.role).toBe("controller");
 
-  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(5))).toBe(true);
+  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(5))).toEqual({ ok: true, epoch: 2 });
 });
 
 test("enqueueOutbound on an unknown/detached attachment returns false without throwing", () => {
   const registry = new TerminalAttachmentRegistry({ maxViewersPerTerminal: 4, attachmentTtlMs: 45_000 });
-  expect(registry.enqueueOutbound("never-existed", new Uint8Array(1))).toBe(false);
+  expect(registry.enqueueOutbound("never-existed", new Uint8Array(1))).toEqual({ ok: false });
 
   const a = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
   registry.detach(a.attachmentId);
-  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(1))).toBe(false);
+  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(1))).toEqual({ ok: false });
 });
 
 test("releaseOutbound frees pending bytes so healthy streams do not trip lifetime caps", () => {
@@ -314,8 +319,32 @@ test("releaseOutbound frees pending bytes so healthy streams do not trip lifetim
     maxQueueBytes: 100,
   });
   const a = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
-  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(80))).toBe(true);
-  registry.releaseOutbound(a.attachmentId, 80);
+  const queued = registry.enqueueOutbound(a.attachmentId, new Uint8Array(80));
+  expect(queued).toEqual({ ok: true, epoch: 1 });
+  if (!queued.ok) throw new Error("expected enqueue to succeed");
+  registry.releaseOutbound(a.attachmentId, 80, queued.epoch);
   expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(0);
-  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(80))).toBe(true);
+  expect(registry.enqueueOutbound(a.attachmentId, new Uint8Array(80))).toEqual({ ok: true, epoch: 1 });
+});
+
+test("late release after resetOutboundQueue does not debit the new epoch", () => {
+  const registry = new TerminalAttachmentRegistry({
+    maxViewersPerTerminal: 4,
+    attachmentTtlMs: 45_000,
+    maxQueueBytes: 100,
+  });
+  const a = registry.attach({ viewerId: "viewer-a", terminalId: "term-1", generation: "gen-1" });
+  const first = registry.enqueueOutbound(a.attachmentId, new Uint8Array(40));
+  expect(first).toEqual({ ok: true, epoch: 1 });
+  if (!first.ok) throw new Error("expected enqueue to succeed");
+
+  registry.resetOutboundQueue(a.attachmentId);
+  const second = registry.enqueueOutbound(a.attachmentId, new Uint8Array(25));
+  expect(second).toEqual({ ok: true, epoch: 2 });
+  expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(25);
+
+  registry.releaseOutbound(a.attachmentId, 40, first.epoch);
+  registry.closeOutboundQueue(a.attachmentId, first.epoch);
+  expect(registry.getOutboundQueueBytes(a.attachmentId)).toBe(25);
+  expect(registry.isOutboundQueueClosed(a.attachmentId)).toBe(false);
 });

@@ -465,6 +465,16 @@ export function handleConnectorTerminalEvent(
           message: inner.message,
         };
         break;
+      case "terminal-recovery-failed":
+        event = {
+          kind: "terminal-recovery-failed",
+          instanceId,
+          attachmentId: p.attachmentId,
+          generation: inner.generation,
+          code: inner.code,
+          message: inner.message,
+        };
+        break;
       default:
         return true;
     }

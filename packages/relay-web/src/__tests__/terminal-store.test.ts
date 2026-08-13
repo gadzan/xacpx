@@ -240,4 +240,31 @@ describe("terminal store", () => {
       attachmentId: "a1",
     });
   });
+
+  it("terminal-recovery-failed sets lastErrorCode and requests resync", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    FakeWS.instances[0].onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, FakeWS.instances[0]);
+    FakeWS.instances[0].send.mockClear();
+
+    await store.applyEvent({
+      kind: "terminal-recovery-failed",
+      instanceId: "i1",
+      attachmentId: "a1",
+      generation: "g1",
+      code: "terminal-recovery-too-large",
+      message: "queue overflow",
+    });
+    expect(store.get(key)?.lastErrorCode).toBe("terminal-recovery-too-large");
+    expect(store.get(key)?.recovery.phase).toBe("resyncing");
+    const resyncDecoded = decodeEnvelope(FakeWS.instances[0].send.mock.calls[0][0] as string);
+    if (!resyncDecoded.ok) throw new Error("decode");
+    expect(parseWebClientMessage(resyncDecoded.envelope)).toMatchObject({
+      kind: "terminal-resync",
+      attachmentId: "a1",
+      generation: "g1",
+    });
+  });
 });

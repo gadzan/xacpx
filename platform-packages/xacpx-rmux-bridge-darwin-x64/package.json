@@ -23,6 +23,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gadzan/xacpx.git",
-    "directory": "packages/xacpx-rmux-bridge-darwin-x64"
+    "directory": "platform-packages/xacpx-rmux-bridge-darwin-x64"
   }
 }

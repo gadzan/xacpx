@@ -71,8 +71,8 @@
   真实 sidecar 仍待 RMUX publish）。
 - **持久化**：`<xacpx-home>/relay/` 下 `terminal-owner.json` + `terminals.json`（与 `credential.json` 同目录惯例）；
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
-- **停止语义**：`shutdown` → abandon（不 kill）；`disabled` / `removed` / `logout` → durable reaping 后再 kill；
-  hub disconnect → 只 `detachAllAttachments`。CLI `channel disable|rm` 经 `retireChannel` 走 one-shot retirement。
+- **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；
+  hub disconnect → 只 `detachAllAttachments`。CLI `channel disable|rm` 在 daemon **已停止**时走 one-shot retirement；daemon 仍在跑时推迟到重启，由旧进程 `stop()` 杀会话，避免再起一个看不到 HashMap 的 sidecar。`terminals.lock` 保证 registry 同一时刻只有一个 writer。
 - **Doctor**：`ChannelCliProvider.diagnose` → `diagnoseRelayTerminal`（只读）；core 的 Plugins 检查只呈现结构化 finding，
   不理解 RMUX。terminal disabled → skip；cleanup-pending / 未打包 sidecar → warn；缺失 `bridgeCommand` 路径 → fail。
 - **日志**：`relay.terminal.*` 事件（spec §19）；只记 ID / sizes / counts / error class，不记 bytes / credential / cwd。

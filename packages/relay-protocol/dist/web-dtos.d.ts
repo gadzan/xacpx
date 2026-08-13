@@ -124,6 +124,13 @@ export type WebServerEvent = {
     code: string;
     message: string;
 } | {
+    kind: "terminal-recovery-failed";
+    instanceId: string;
+    attachmentId: string;
+    generation: string;
+    code: string;
+    message: string;
+} | {
     kind: "terminal-rebase-start";
     instanceId: string;
     attachmentId: string;

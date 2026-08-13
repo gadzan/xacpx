@@ -32,7 +32,7 @@ const binary = resolve(
 );
 
 const key = `${platform}-${arch}`;
-const pkgDir = join(root, `packages/xacpx-rmux-bridge-${key}`);
+const pkgDir = join(root, `platform-packages/xacpx-rmux-bridge-${key}`);
 const binName = platform === "win32" ? "xacpx-rmux-bridge.exe" : "xacpx-rmux-bridge";
 const dest = join(pkgDir, "bin", binName);
 

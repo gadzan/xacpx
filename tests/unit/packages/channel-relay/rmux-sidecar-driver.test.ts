@@ -49,11 +49,62 @@ async function withHandshake(driver: RmuxSidecarDriver, fake: ReturnType<typeof 
     type: "handshake-ok",
     id: req.id,
     bridge_version: "0.1.0",
-    protocol_version: 1,
+    protocol_version: 2,
     rmux_wire_version: "0.10.0",
     capabilities: ["create", "list", "kill", "input", "resize", "recover"],
   });
   await hs;
+}
+
+const REBASE_CHUNK_BYTES = 48 * 1024;
+
+function writeRebase(
+  stdout: NodeJS.WritableStream,
+  paneId: string,
+  keyframe: Uint8Array | string,
+  meta: { epoch?: number; nextSequence?: number; cols?: number; rows?: number } = {},
+): void {
+  const bytes = typeof keyframe === "string" ? Buffer.from(keyframe) : Buffer.from(keyframe);
+  const epoch = meta.epoch ?? 1;
+  const chunkCount = bytes.byteLength === 0 ? 0 : Math.ceil(bytes.byteLength / REBASE_CHUNK_BYTES);
+  stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: paneId,
+      event: {
+        type: "rebase-start",
+        epoch,
+        next_sequence: meta.nextSequence ?? 1,
+        cols: meta.cols ?? 80,
+        rows: meta.rows ?? 24,
+        alternate: false,
+        total_bytes: bytes.byteLength,
+        chunk_count: chunkCount,
+      },
+    })}\n`,
+  );
+  for (let index = 0; index < chunkCount; index++) {
+    const chunk = bytes.subarray(index * REBASE_CHUNK_BYTES, (index + 1) * REBASE_CHUNK_BYTES);
+    stdout.write(
+      `${JSON.stringify({
+        type: "event",
+        pane_id: paneId,
+        event: {
+          type: "rebase-chunk",
+          epoch,
+          index,
+          data_base64: Buffer.from(chunk).toString("base64"),
+        },
+      })}\n`,
+    );
+  }
+  stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: paneId,
+      event: { type: "rebase-end", epoch },
+    })}\n`,
+  );
 }
 
 test("sidecar driver handshake then diagnostics", async () => {
@@ -182,21 +233,7 @@ test("sidecar driver recover stream delivers rebase then exit", async () => {
   const recoverLine = fake.written.find((w) => w.includes('"recover"'));
   const recoverReq = JSON.parse(recoverLine!.trim()) as { id: string };
   fake.reply({ type: "ok", id: recoverReq.id });
-  fake.stdout.write(
-    `${JSON.stringify({
-      type: "event",
-      pane_id: "%1",
-      event: {
-        type: "rebase",
-        epoch: 1,
-        next_sequence: 1,
-        cols: 80,
-        rows: 24,
-        alternate: false,
-        keyframe_base64: Buffer.from("hi").toString("base64"),
-      },
-    })}\n`,
-  );
+  writeRebase(fake.stdout, "%1", "hi");
   fake.stdout.write(
     `${JSON.stringify({
       type: "event",
@@ -225,20 +262,7 @@ test("sidecar driver fans out recover to a late second subscriber without restar
   expect(recoverLines.length).toBe(1);
   const recoverReq = JSON.parse(recoverLines[0]!.trim()) as { id: string };
   fake.reply({ type: "ok", id: recoverReq.id });
-  const rebase = {
-    type: "event",
-    pane_id: "%1",
-    event: {
-      type: "rebase",
-      epoch: 1,
-      next_sequence: 1,
-      cols: 80,
-      rows: 24,
-      alternate: false,
-      keyframe_base64: Buffer.from("hi").toString("base64"),
-    },
-  };
-  fake.stdout.write(`${JSON.stringify(rebase)}\n`);
+  writeRebase(fake.stdout, "%1", "hi");
   await Bun.sleep(10);
 
   const bEvents: Array<{ type: string }> = [];
@@ -282,21 +306,7 @@ test("late subscriber receives post-rebase bytes so live sequence does not gap",
   ) as { id: string };
   fake.reply({ type: "ok", id: recoverReq.id });
 
-  fake.stdout.write(
-    `${JSON.stringify({
-      type: "event",
-      pane_id: "%1",
-      event: {
-        type: "rebase",
-        epoch: 1,
-        next_sequence: 0,
-        cols: 80,
-        rows: 24,
-        alternate: false,
-        keyframe_base64: Buffer.from("base").toString("base64"),
-      },
-    })}\n`,
-  );
+  writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
   fake.stdout.write(
     `${JSON.stringify({
       type: "event",
@@ -363,4 +373,30 @@ test("late subscriber receives post-rebase bytes so live sequence does not gap",
     })}\n`,
   );
   await Promise.all([aDone, bDone]);
+});
+
+test("sidecar driver reassembles a keyframe that would overflow a 96KiB NDJSON line", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const events: RmuxRecoveryEvent[] = [];
+  const iterP = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      events.push(ev);
+      if (ev.type === "rebase") break;
+    }
+  })();
+  await Promise.resolve();
+  const recoverReq = JSON.parse(
+    fake.written.find((w) => w.includes('"recover"'))!.trim(),
+  ) as { id: string };
+  fake.reply({ type: "ok", id: recoverReq.id });
+
+  const keyframe = Buffer.alloc(100_000, 0x61);
+  writeRebase(fake.stdout, "%1", keyframe);
+  await iterP;
+  expect(events[0]?.type).toBe("rebase");
+  if (events[0]?.type !== "rebase") return;
+  expect(events[0].keyframe.byteLength).toBe(100_000);
 });

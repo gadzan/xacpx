@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   TerminalRegistryInventoryUncertainError,
+  TerminalRegistryLockedError,
   TerminalRegistryRevisionMismatchError,
   TerminalRegistryStore,
 } from "../../../../packages/channel-relay/src/terminal/terminal-registry-store";
@@ -437,4 +438,32 @@ test("remove is idempotent for an already-absent terminalId", async () => {
   const loaded = await store.load();
   const { revision } = await store.remove("never-existed");
   expect(revision).toBe(1);
+});
+
+test("exclusiveWriter load rejects while another live writer holds terminals.lock", async () => {
+  const dir = freshDir();
+  const holder = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  await holder.load();
+  expect(readFileSync(join(dir, "terminals.lock"), "utf8").trim()).toBe(String(process.pid));
+
+  const waiter = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  await expect(waiter.load()).rejects.toBeInstanceOf(TerminalRegistryLockedError);
+
+  await holder.close();
+  await waiter.load();
+  expect(readFileSync(join(dir, "terminals.lock"), "utf8").trim()).toBe(String(process.pid));
+  await waiter.close();
+});
+
+test("exclusiveWriter steals terminals.lock when the recorded pid is dead", async () => {
+  const dir = freshDir();
+  writeFileSync(join(dir, "terminals.lock"), "999999\n", { encoding: "utf8", mode: 0o600 });
+  const store = new TerminalRegistryStore({
+    dir,
+    exclusiveWriter: true,
+    deps: { pid: () => 333, isPidAlive: () => false },
+  });
+  await store.load();
+  expect(readFileSync(join(dir, "terminals.lock"), "utf8").trim()).toBe("333");
+  await store.close();
 });

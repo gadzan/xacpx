@@ -51,7 +51,7 @@ export interface TakeControlResult {
 
 export type TerminalAttachmentEvent =
   | { type: "role-changed"; attachmentId: string; terminalId: string; role: TerminalAttachmentRole; viewerCount: number }
-  | { type: "queue-overflow"; attachmentId: string; terminalId: string };
+  | { type: "queue-overflow"; attachmentId: string; terminalId: string; generation: string };
 
 export interface TerminalAttachmentsClock {
   now(): number;
@@ -100,6 +100,7 @@ export class TerminalViewerCapacityExceededError extends Error {
 interface OutboundQueueState {
   bytes: number;
   closed: boolean;
+  epoch: number;
 }
 
 /**
@@ -155,7 +156,7 @@ export class TerminalAttachmentRegistry {
 
     this.attachments.set(attachmentId, attachment);
     this.indexByTerminal(input.terminalId).add(attachmentId);
-    this.queues.set(attachmentId, { bytes: 0, closed: false });
+    this.queues.set(attachmentId, { bytes: 0, closed: false, epoch: 1 });
 
     const viewerCount = this.recomputeAndBroadcast(input.terminalId);
     return { attachmentId, role, viewerCount };
@@ -277,20 +278,22 @@ export class TerminalAttachmentRegistry {
     return expired;
   }
 
-  /** Adds bytes to an attachment's outbound accounting. Returns `false` once
-   *  this call pushed the queue over `maxQueueBytes` (or it was already
+  /** Adds bytes to an attachment's outbound accounting. Returns `{ ok: false }`
+   *  once this call pushed the queue over `maxQueueBytes` (or it was already
    *  closed) — the caller must close/resync that one recovery stream without
    *  touching any other attachment (spec §14.7). Unknown attachmentId is
-   *  treated as an already-torn-down stream (`false`, no throw): the viewer
+   *  treated as an already-torn-down stream (`ok: false`, no throw): the viewer
    *  may have detached in the same tick a byte was in flight.
    *
    *  Bytes count **pending** outbound only. Callers must `releaseOutbound`
    *  after the underlying websocket flush succeeds so healthy streams do not
    *  trip the cap on lifetime cumulative output, while stalled sockets still
-   *  hit the 2 MiB pending limit. */
-  enqueueOutbound(attachmentId: string, bytes: Uint8Array): boolean {
+   *  hit the 2 MiB pending limit. The returned `epoch` must be passed back to
+   *  `releaseOutbound` / `closeOutboundQueue` so a late flush from a previous
+   *  recovery cannot mutate the queue after `terminal-resync`. */
+  enqueueOutbound(attachmentId: string, bytes: Uint8Array): { ok: true; epoch: number } | { ok: false } {
     const queue = this.queues.get(attachmentId);
-    if (!queue || queue.closed) return false;
+    if (!queue || queue.closed) return { ok: false };
     queue.bytes += bytes.length;
     if (queue.bytes > this.maxQueueBytes) {
       queue.closed = true;
@@ -299,23 +302,24 @@ export class TerminalAttachmentRegistry {
         type: "queue-overflow",
         attachmentId,
         terminalId: attachment?.terminalId ?? "",
+        generation: attachment?.generation ?? "",
       });
-      return false;
+      return { ok: false };
     }
-    return true;
+    return { ok: true, epoch: queue.epoch };
   }
 
   /** Decrement pending outbound bytes after a successful send/handoff. */
-  releaseOutbound(attachmentId: string, byteLength: number): void {
+  releaseOutbound(attachmentId: string, byteLength: number, epoch: number): void {
     const queue = this.queues.get(attachmentId);
-    if (!queue || queue.closed) return;
+    if (!queue || queue.closed || queue.epoch !== epoch) return;
     queue.bytes = Math.max(0, queue.bytes - Math.max(0, byteLength));
   }
 
   /** Close the outbound queue (flush/transport failure) without emitting overflow. */
-  closeOutboundQueue(attachmentId: string): void {
+  closeOutboundQueue(attachmentId: string, epoch: number): void {
     const queue = this.queues.get(attachmentId);
-    if (queue) queue.closed = true;
+    if (queue && queue.epoch === epoch) queue.closed = true;
   }
 
   isOutboundQueueClosed(attachmentId: string): boolean {
@@ -327,10 +331,13 @@ export class TerminalAttachmentRegistry {
   }
 
   /** Reopens a closed outbound queue once the client has resynced (protocol
-   *  `terminal-resync`). Attachment/role/generation are untouched. */
+   *  `terminal-resync`). Attachment/role/generation are untouched. Bumps the
+   *  queue epoch so in-flight flush callbacks from the previous recovery
+   *  cannot debit or close the new stream. */
   resetOutboundQueue(attachmentId: string): void {
     const queue = this.queues.get(attachmentId);
     if (queue) {
+      queue.epoch += 1;
       queue.bytes = 0;
       queue.closed = false;
     }

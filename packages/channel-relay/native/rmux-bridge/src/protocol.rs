@@ -9,13 +9,17 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const BRIDGE_VERSION: &str = "0.1.0";
 
 /// Hard caps (decoded / line lengths).
 pub const MAX_LINE_BYTES: usize = 96 * 1024;
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 pub const MAX_OUTSTANDING_REQUESTS: usize = 64;
+/// Decoded rebase chunk size. Base64+JSON stays well under `MAX_LINE_BYTES`.
+pub const REBASE_CHUNK_BYTES: usize = 48 * 1024;
+/// Single rebase keyframe cap (decoded).
+pub const MAX_REBASE_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -122,15 +126,24 @@ pub struct InventoryEntryDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum RecoveryEventDto {
-    Rebase {
+    RebaseStart {
         epoch: u64,
         next_sequence: u64,
         cols: u16,
         rows: u16,
         alternate: bool,
-        keyframe_base64: String,
+        total_bytes: usize,
+        chunk_count: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+    },
+    RebaseChunk {
+        epoch: u64,
+        index: usize,
+        data_base64: String,
+    },
+    RebaseEnd {
+        epoch: u64,
     },
     Bytes {
         epoch: u64,
@@ -141,6 +154,49 @@ pub enum RecoveryEventDto {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<i32>,
     },
+}
+
+/// Split a rebase keyframe into start/chunk/end events so each NDJSON line
+/// stays under `MAX_LINE_BYTES`. Returns `Err` when the keyframe exceeds the
+/// public 2 MiB cap — callers must not serialize an unbounded frame.
+pub fn encode_rebase_events(
+    epoch: u64,
+    next_sequence: u64,
+    cols: u16,
+    rows: u16,
+    alternate: bool,
+    keyframe: &[u8],
+    reason: Option<String>,
+) -> Result<Vec<RecoveryEventDto>, String> {
+    if keyframe.len() > MAX_REBASE_TOTAL_BYTES {
+        return Err("rebase keyframe too large".to_owned());
+    }
+    let total_bytes = keyframe.len();
+    let chunk_count = if total_bytes == 0 {
+        0
+    } else {
+        total_bytes.div_ceil(REBASE_CHUNK_BYTES)
+    };
+    let mut out = Vec::with_capacity(chunk_count + 2);
+    out.push(RecoveryEventDto::RebaseStart {
+        epoch,
+        next_sequence,
+        cols,
+        rows,
+        alternate,
+        total_bytes,
+        chunk_count,
+        reason,
+    });
+    for (index, chunk) in keyframe.chunks(REBASE_CHUNK_BYTES).enumerate() {
+        out.push(RecoveryEventDto::RebaseChunk {
+            epoch,
+            index,
+            data_base64: encode_b64(chunk),
+        });
+    }
+    out.push(RecoveryEventDto::RebaseEnd { epoch });
+    Ok(out)
 }
 
 pub fn encode_b64(bytes: &[u8]) -> String {
@@ -180,19 +236,35 @@ pub fn parse_client_line(line: &str) -> Result<ClientMessage, String> {
 pub fn redact_error_message(raw: &str) -> String {
     // Never echo cwd/env/terminal bytes/credentials in error responses.
     let lower = raw.to_ascii_lowercase();
-    if lower.contains("credential")
+    if looks_sensitive(&lower) {
+        return "redacted error".to_owned();
+    }
+    truncate_chars(raw, 200)
+}
+
+fn looks_sensitive(lower: &str) -> bool {
+    lower.contains("credential")
         || lower.contains("password")
         || lower.contains("token")
         || lower.contains("/users/")
         || lower.contains("\\users\\")
-    {
-        return "redacted error".to_owned();
-    }
-    // Cap length.
-    if raw.len() > 200 {
-        format!("{}…", &raw[..200])
+        || lower.contains("/home/")
+        || lower.contains("/root/")
+        || lower.contains("/tmp/")
+        || lower.contains("/var/")
+        || lower.contains("/opt/")
+        || lower.contains("/etc/")
+        || lower.contains(":\\")
+        || lower.contains("\\\\")
+}
+
+fn truncate_chars(raw: &str, max_chars: usize) -> String {
+    let mut chars = raw.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
     } else {
-        raw.to_owned()
+        truncated
     }
 }
 
@@ -223,5 +295,44 @@ mod tests {
             redact_error_message("failed path /Users/me/secret"),
             "redacted error"
         );
+        assert_eq!(
+            redact_error_message("cwd /home/alice/project"),
+            "redacted error"
+        );
+        assert_eq!(
+            redact_error_message("path /home/用户/很长的中文目录名/secret"),
+            "redacted error"
+        );
+    }
+
+    #[test]
+    fn truncates_long_errors_on_utf8_char_boundary() {
+        let raw = "错误".repeat(120);
+        let redacted = redact_error_message(&raw);
+        assert!(redacted.ends_with('…'));
+        assert!(redacted.chars().count() <= 201);
+        assert!(std::str::from_utf8(redacted.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn rebase_chunks_stay_under_line_cap() {
+        let keyframe = vec![b'x'; 200_000];
+        let events = encode_rebase_events(1, 1, 80, 24, false, &keyframe, Some("lag".into()))
+            .expect("encode");
+        assert!(events.len() > 3);
+        for event in events {
+            let line = serde_json::to_string(&ServerMessage::Event {
+                pane_id: "%1".to_owned(),
+                event,
+            })
+            .unwrap();
+            assert!(line.len() <= MAX_LINE_BYTES, "line {} bytes", line.len());
+        }
+    }
+
+    #[test]
+    fn rejects_rebase_over_two_mib() {
+        let keyframe = vec![0u8; MAX_REBASE_TOTAL_BYTES + 1];
+        assert!(encode_rebase_events(1, 1, 80, 24, false, &keyframe, None).is_err());
     }
 }

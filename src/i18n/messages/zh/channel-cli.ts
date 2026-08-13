@@ -22,6 +22,8 @@ export const channelCli: ChannelCliMessages = {
   cannotRemoveLastEnabled: "不能删除最后一个启用的频道。",
   channelRemoved: (id) => `频道 ${id} 已删除`,
   channelRetirementFailed: (id, error) => `频道 ${id} 退役清理失败：${error}`,
+  channelRetirementDeferredUntilRestart: (id) =>
+    `频道 ${id} 的终端退役已推迟到守护进程重启（当前 sidecar 仍持有会话）`,
   channelCredentialsCleared: (id) => `已移除频道 ${id} 的存储凭证`,
   channelCredentialsClearFailed: (id, error) => `频道 ${id} 已删除，但清除其存储凭证失败：${error}`,
   channelCredentialsKept: (id) => `已保留频道 ${id} 的存储凭证（--keep-credentials）`,

@@ -285,3 +285,22 @@ test("logout clears credentials only after terminateAll attempt", async () => {
   controller.abort();
   await started;
 });
+
+test("retireRelayTerminals returns cleanup-pending when the registry writer lock is held", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "retire-locked-"));
+  dirs.push(dir);
+  const driver = new InMemoryRmuxDriver();
+  await seedLiveTerminal(dir, driver);
+  const holder = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  await holder.load();
+
+  const result = await retireRelayTerminals({
+    registryDir: dir,
+    createDriver: () => driver,
+    exclusiveWriter: true,
+  });
+  expect(result.status).toBe("cleanup-pending");
+  expect((await driver.list()).length).toBe(1);
+
+  await holder.close();
+});

@@ -18,7 +18,8 @@ use rmux_sdk::{
 use tokio::sync::{mpsc, Mutex};
 
 use crate::protocol::{
-    encode_b64, InventoryEntryDto, RecoveryEventDto, ServerMessage, BRIDGE_VERSION,
+    encode_b64, encode_rebase_events, InventoryEntryDto, RecoveryEventDto, ServerMessage,
+    BRIDGE_VERSION,
 };
 
 pub struct BridgeState {
@@ -303,17 +304,22 @@ impl BridgeState {
             loop {
                 match stream.next().await {
                     Ok(Some(event)) => {
-                        let Some(dto) = map_recovery_event(event) else {
-                            continue;
-                        };
-                        if event_tx
-                            .send(ServerMessage::Event {
-                                pane_id: pane_id_for_task.clone(),
-                                event: dto,
-                            })
-                            .await
-                            .is_err()
-                        {
+                        let dtos = map_recovery_events(event);
+                        let mut send_failed = false;
+                        for dto in dtos {
+                            if event_tx
+                                .send(ServerMessage::Event {
+                                    pane_id: pane_id_for_task.clone(),
+                                    event: dto,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                send_failed = true;
+                                break;
+                            }
+                        }
+                        if send_failed {
                             break;
                         }
                     }
@@ -369,29 +375,33 @@ fn parse_pane_id(raw: &str) -> Result<PaneId, String> {
     Ok(PaneId::new(n))
 }
 
-fn map_recovery_event(event: PaneRecoveryEvent) -> Option<RecoveryEventDto> {
+fn map_recovery_events(event: PaneRecoveryEvent) -> Vec<RecoveryEventDto> {
     match event {
-        PaneRecoveryEvent::Rebase(rebase) => Some(RecoveryEventDto::Rebase {
-            epoch: rebase.epoch,
-            next_sequence: rebase.next_sequence,
-            cols: rebase.cols,
-            rows: rebase.rows,
-            alternate: rebase.alternate,
-            keyframe_base64: encode_b64(&rebase.keyframe),
-            reason: Some(rebase_reason_name(rebase.reason).to_owned()),
+        PaneRecoveryEvent::Rebase(rebase) => encode_rebase_events(
+            rebase.epoch,
+            rebase.next_sequence,
+            rebase.cols,
+            rebase.rows,
+            rebase.alternate,
+            &rebase.keyframe,
+            Some(rebase_reason_name(rebase.reason).to_owned()),
+        )
+        .unwrap_or_else(|err| {
+            eprintln!("xacpx-rmux-bridge: drop oversized rebase: {err}");
+            Vec::new()
         }),
         PaneRecoveryEvent::Bytes {
             epoch,
             sequence,
             bytes,
-        } => Some(RecoveryEventDto::Bytes {
+        } => vec![RecoveryEventDto::Bytes {
             epoch,
             sequence,
             data_base64: encode_b64(&bytes),
-        }),
-        PaneRecoveryEvent::End(_) => Some(RecoveryEventDto::Exit { code: None }),
-        PaneRecoveryEvent::Lifecycle(_) => None,
-        _ => None,
+        }],
+        PaneRecoveryEvent::End(_) => vec![RecoveryEventDto::Exit { code: None }],
+        PaneRecoveryEvent::Lifecycle(_) => Vec::new(),
+        _ => Vec::new(),
     }
 }
 

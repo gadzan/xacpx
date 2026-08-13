@@ -24,8 +24,8 @@ async function fixtureRepo(channelVersion: string, bridgeVersion: string): Promi
   const root = await mkdtemp(join(tmpdir(), "rmux-bridge-sync-"));
   tempRoots.push(root);
   await mkdir(join(root, "packages/channel-relay"), { recursive: true });
-  await mkdir(join(root, "packages/xacpx-rmux-bridge-linux-x64"), { recursive: true });
-  await mkdir(join(root, "packages/xacpx-rmux-bridge-darwin-arm64"), { recursive: true });
+  await mkdir(join(root, "platform-packages/xacpx-rmux-bridge-linux-x64"), { recursive: true });
+  await mkdir(join(root, "platform-packages/xacpx-rmux-bridge-darwin-arm64"), { recursive: true });
 
   await writeJson(join(root, "packages/channel-relay/package.json"), {
     name: "@ganglion/xacpx-channel-relay",
@@ -35,11 +35,11 @@ async function fixtureRepo(channelVersion: string, bridgeVersion: string): Promi
       "@ganglion/xacpx-rmux-bridge-darwin-arm64": bridgeVersion,
     },
   });
-  await writeJson(join(root, "packages/xacpx-rmux-bridge-linux-x64/package.json"), {
+  await writeJson(join(root, "platform-packages/xacpx-rmux-bridge-linux-x64/package.json"), {
     name: "@ganglion/xacpx-rmux-bridge-linux-x64",
     version: bridgeVersion,
   });
-  await writeJson(join(root, "packages/xacpx-rmux-bridge-darwin-arm64/package.json"), {
+  await writeJson(join(root, "platform-packages/xacpx-rmux-bridge-darwin-arm64/package.json"), {
     name: "@ganglion/xacpx-rmux-bridge-darwin-arm64",
     version: bridgeVersion,
   });
@@ -66,7 +66,7 @@ test("sync rewrites optionalDependencies and platform package versions", async (
     "@ganglion/xacpx-rmux-bridge-linux-x64": "0.5.2",
   });
   const linux = JSON.parse(
-    await readFile(join(root, "packages/xacpx-rmux-bridge-linux-x64/package.json"), "utf8"),
+    await readFile(join(root, "platform-packages/xacpx-rmux-bridge-linux-x64/package.json"), "utf8"),
   );
   expect(linux.version).toBe("0.5.2");
 });

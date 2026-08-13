@@ -3,6 +3,10 @@
  * Keep channel-relay optionalDependencies and platform package versions
  * locked to packages/channel-relay/package.json#version.
  *
+ * Platform packages live in platform-packages/ (outside the root workspaces
+ * glob) so `npm ci` on Linux/Windows does not try to install darwin-only
+ * packages as workspace members.
+ *
  * Pack updates platform package.json versions, but publish must also rewrite
  * channel-relay's optionalDependencies before npm publish — otherwise a bump
  * of channel-relay alone ships requests for stale @ganglion/xacpx-rmux-bridge-*.
@@ -19,8 +23,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_PREFIX = "@ganglion/xacpx-rmux-bridge-";
 const CHANNEL_RELAY_PKG = join(root, "packages/channel-relay/package.json");
 
+const PLATFORM_PACKAGES_DIR = "platform-packages";
+
 export function listBridgePackageDirs(repoRoot = root) {
-  return readdirSync(join(repoRoot, "packages"), { withFileTypes: true })
+  return readdirSync(join(repoRoot, PLATFORM_PACKAGES_DIR), { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name.startsWith("xacpx-rmux-bridge-"))
     .map((entry) => entry.name)
     .sort();
@@ -65,7 +71,7 @@ export function collectRmuxBridgeVersionDrift(repoRoot = root) {
     }
   }
   for (const dir of platforms) {
-    const pkgPath = join(repoRoot, "packages", dir, "package.json");
+    const pkgPath = join(repoRoot, PLATFORM_PACKAGES_DIR, dir, "package.json");
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
     if (pkg.version !== version) {
       failures.push(`${dir} version is ${pkg.version}, expected ${version}`);
@@ -99,7 +105,7 @@ export function syncRmuxBridgeVersions(repoRoot = root) {
       optionalDependencies[key] = version;
       updated.push(`channel-relay optionalDependencies.${key}`);
     }
-    const pkgPath = join(repoRoot, "packages", dir, "package.json");
+    const pkgPath = join(repoRoot, PLATFORM_PACKAGES_DIR, dir, "package.json");
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
     if (pkg.version !== version) {
       pkg.version = version;

@@ -12,6 +12,7 @@ import type {
 
 const OWNER_FILE = "terminal-owner.json";
 const REGISTRY_FILE = "terminals.json";
+const LOCK_FILE = "terminals.lock";
 const FILE_MODE = 0o600;
 
 export class TerminalRegistryRevisionMismatchError extends Error {
@@ -32,6 +33,17 @@ export class TerminalRegistryNotLoadedError extends Error {
   constructor() {
     super("TerminalRegistryStore.getSnapshot() called before load()");
     this.name = "TerminalRegistryNotLoadedError";
+  }
+}
+
+export class TerminalRegistryLockedError extends Error {
+  readonly pid: number;
+  constructor(pid: number) {
+    super(pid > 0
+      ? `terminal registry is locked by pid ${pid}`
+      : "terminal registry is locked by another writer");
+    this.name = "TerminalRegistryLockedError";
+    this.pid = pid;
   }
 }
 
@@ -68,12 +80,20 @@ export interface TerminalRegistryFsDeps {
   unlink?: (path: string) => Promise<void>;
   randomUUID?: () => string;
   now?: () => Date;
+  pid?: () => number;
+  isPidAlive?: (pid: number) => boolean;
 }
 
 export interface TerminalRegistryStoreOptions {
   /** Directory holding terminal-owner.json and terminals.json. */
   dir: string;
   deps?: TerminalRegistryFsDeps;
+  /**
+   * When true, `load()` takes an exclusive pid lock on `terminals.lock`.
+   * Production writers (live runtime, one-shot retirement) must set this;
+   * unit tests default to false so they can share a temp dir without a lock.
+   */
+  exclusiveWriter?: boolean;
 }
 
 type LoadedState = {
@@ -103,6 +123,26 @@ function defaultWriteFileExclusive(path: string, data: string, mode: number): bo
       }
     }
   }
+}
+
+function defaultIsPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    // EPERM: process exists but we cannot signal it. Treat as alive so we
+    // never steal a live writer's lock.
+    return code === "EPERM";
+  }
+}
+
+function parseLockPid(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^[0-9]+$/.test(trimmed)) return null;
+  const pid = Number(trimmed);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
 function cloneTerminals(terminals: Record<string, TerminalRecordV1>): Record<string, TerminalRecordV1> {
@@ -177,11 +217,14 @@ function isValidRecord(value: unknown): value is TerminalRecordV1 {
 export class TerminalRegistryStore {
   private readonly dir: string;
   private readonly deps: Required<TerminalRegistryFsDeps>;
+  private readonly exclusiveWriter: boolean;
   private state: LoadedState | null = null;
   private chain: Promise<unknown> = Promise.resolve();
+  private lockHeld = false;
 
   constructor(options: TerminalRegistryStoreOptions) {
     this.dir = options.dir;
+    this.exclusiveWriter = options.exclusiveWriter === true;
     const d = options.deps ?? {};
     this.deps = {
       mkdir: d.mkdir ?? ((p, o) => mkdir(p, o)),
@@ -197,6 +240,8 @@ export class TerminalRegistryStore {
       unlink: d.unlink ?? ((p) => unlink(p)),
       randomUUID: d.randomUUID ?? (() => randomUUID()),
       now: d.now ?? (() => new Date()),
+      pid: d.pid ?? (() => process.pid),
+      isPidAlive: d.isPidAlive ?? defaultIsPidAlive,
     };
   }
 
@@ -211,6 +256,11 @@ export class TerminalRegistryStore {
 
   async load(): Promise<TerminalRegistrySnapshot> {
     return this.enqueue(() => this.loadUnlocked());
+  }
+
+  /** Release `terminals.lock` if this instance acquired it. Safe to call twice. */
+  async close(): Promise<void> {
+    return this.enqueue(() => this.releaseWriterLock());
   }
 
   getSnapshot(): TerminalRegistrySnapshot {
@@ -310,6 +360,7 @@ export class TerminalRegistryStore {
 
   private async loadUnlocked(): Promise<TerminalRegistrySnapshot> {
     await this.deps.mkdir(this.dir, { recursive: true });
+    await this.acquireWriterLock();
 
     const ownerPath = join(this.dir, OWNER_FILE);
     const registryPath = join(this.dir, REGISTRY_FILE);
@@ -495,6 +546,45 @@ export class TerminalRegistryStore {
     } finally {
       await handle.close();
     }
+  }
+
+  private async acquireWriterLock(): Promise<void> {
+    if (!this.exclusiveWriter || this.lockHeld) return;
+    const lockPath = join(this.dir, LOCK_FILE);
+    const pid = this.deps.pid();
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const created = await this.deps.writeFileExclusive(lockPath, `${pid}\n`, FILE_MODE);
+      if (created) {
+        this.lockHeld = true;
+        return;
+      }
+      const existing = await this.tryRead(lockPath);
+      const existingPid = existing === null ? null : parseLockPid(existing);
+      if (existingPid !== null && this.deps.isPidAlive(existingPid)) {
+        throw new TerminalRegistryLockedError(existingPid);
+      }
+      try {
+        await this.deps.unlink(lockPath);
+      } catch {
+        // Lost the steal race; retry exclusive create.
+      }
+    }
+    throw new TerminalRegistryLockedError(0);
+  }
+
+  private async releaseWriterLock(): Promise<void> {
+    if (!this.lockHeld) return;
+    const lockPath = join(this.dir, LOCK_FILE);
+    try {
+      const existing = await this.tryRead(lockPath);
+      const existingPid = existing === null ? null : parseLockPid(existing);
+      if (existingPid === this.deps.pid()) {
+        await this.deps.unlink(lockPath);
+      }
+    } catch {
+      // best-effort; do not throw from close()
+    }
+    this.lockHeld = false;
   }
 
   private async tryRead(path: string): Promise<string | null> {

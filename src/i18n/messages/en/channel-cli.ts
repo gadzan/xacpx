@@ -22,6 +22,8 @@ export const channelCli: ChannelCliMessages = {
   cannotRemoveLastEnabled: "Cannot remove the last enabled channel.",
   channelRemoved: (id) => `Channel ${id} removed`,
   channelRetirementFailed: (id, error) => `Channel ${id} retirement cleanup failed: ${error}`,
+  channelRetirementDeferredUntilRestart: (id) =>
+    `Channel ${id} terminal retirement deferred until daemon restart (live sidecar still owns the shells)`,
   channelCredentialsCleared: (id) => `Removed stored credentials for channel ${id}`,
   channelCredentialsClearFailed: (id, error) => `Channel ${id} removed, but clearing its stored credentials failed: ${error}`,
   channelCredentialsKept: (id) => `Kept stored credentials for channel ${id} (--keep-credentials)`,

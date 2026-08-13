@@ -1,6 +1,7 @@
 import {
   MSG,
   RELAY_PROTOCOL_VERSION,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
   decodeEnvelope,
   encodeEnvelope,
   errorPayload,
@@ -18,6 +19,10 @@ import { startHeartbeat } from "./heartbeat.js";
 /** Single authoritative default for the gateway RPC timeout, shared by the server layer. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 export const REQUEST_RESPONSE_RESERVE_MS = 15_000;
+/** Default timeout for recoverable terminal open/take-control/resync/terminate.
+ *  Must exceed REQUEST_RESPONSE_RESERVE_MS so requestBudgetMs stays large enough
+ *  for RMUX create (~15s) without Hub timing out first and creating ghost terminals. */
+export const TERMINAL_REQUEST_TIMEOUT_MS = TERMINAL_HUB_REQUEST_TIMEOUT_MS;
 
 export interface GatewaySocket {
   send(data: string): void;
@@ -327,8 +332,3 @@ export class InstanceGateway {
     }
   }
 }
-
-/** Default timeout for recoverable terminal open/take-control/resync/terminate.
- *  Must exceed REQUEST_RESPONSE_RESERVE_MS so requestBudgetMs stays large enough
- *  for RMUX create (~15s) without Hub timing out first and creating ghost terminals. */
-export const TERMINAL_REQUEST_TIMEOUT_MS = 45_000;

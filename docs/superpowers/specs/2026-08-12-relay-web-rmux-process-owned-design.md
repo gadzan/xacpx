@@ -29,7 +29,7 @@ Ship the Relay Web terminal **without modifying `../rmux`**. The connector owns 
 
 - Rust sidecar: `packages/channel-relay/native/rmux-bridge`
 - Node driver / supervisor / resolver: `packages/channel-relay/src/terminal/rmux-sidecar-*.ts`, `resolve-rmux-binaries.ts`
-- Platform optional packages: `@ganglion/xacpx-rmux-bridge-<os>-<arch>` (see `packages/xacpx-rmux-bridge-*`)
+- Platform optional packages: `@ganglion/xacpx-rmux-bridge-<os>-<arch>` (see `platform-packages/xacpx-rmux-bridge-*`; outside the root workspaces glob so `npm ci` does not EBADPLATFORM)
 - Fake driver for unit/E2E: `in-memory-rmux-driver.ts`
 - Opt-in smoke: `tests/smoke/relay-rmux-terminal.test.ts` (`XACPX_RMUX_INTEGRATION=1`)
 

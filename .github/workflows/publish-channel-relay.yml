@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: publish-channel-relay-${{ github.ref }}
@@ -31,6 +31,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
@@ -93,6 +94,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Rust
@@ -129,14 +131,14 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
             --binary "$BIN"
-          test -f "packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json"
-          node -e "const c=require('./packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1)"
+          test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json"
+          node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1)"
 
       - name: Upload platform package
         uses: actions/upload-artifact@v4
         with:
           name: rmux-bridge-${{ matrix.package }}
-          path: packages/xacpx-rmux-bridge-${{ matrix.package }}
+          path: platform-packages/xacpx-rmux-bridge-${{ matrix.package }}
           if-no-files-found: error
 
   smoke-linux:
@@ -150,6 +152,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Bun
@@ -170,7 +173,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: rmux-bridge-linux-x64
-          path: packages/xacpx-rmux-bridge-linux-x64
+          path: platform-packages/xacpx-rmux-bridge-linux-x64
 
       - name: Install pinned RMUX 0.10.0
         run: |
@@ -182,7 +185,7 @@ jobs:
       - name: Run real RMUX smoke matrix
         env:
           XACPX_RMUX_INTEGRATION: "1"
-          XACPX_RMUX_BRIDGE: ${{ github.workspace }}/packages/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
+          XACPX_RMUX_BRIDGE: ${{ github.workspace }}/platform-packages/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
         run: |
           chmod +x "$XACPX_RMUX_BRIDGE"
           bun test tests/smoke/relay-rmux-terminal.test.ts
@@ -198,6 +201,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Setup Node.js
@@ -221,7 +225,7 @@ jobs:
           NPM_TAG="${{ needs.meta.outputs.npm_tag }}"
           for pkg in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
             src="artifacts/rmux-bridge-${pkg}"
-            dest="packages/xacpx-rmux-bridge-${pkg}"
+            dest="platform-packages/xacpx-rmux-bridge-${pkg}"
             rm -rf "$dest"
             mv "$src" "$dest"
             echo "Publishing @ganglion/xacpx-rmux-bridge-${pkg}@${{ needs.meta.outputs.version }}"
@@ -239,6 +243,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
