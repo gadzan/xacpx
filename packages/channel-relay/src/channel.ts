@@ -89,6 +89,8 @@ export class RelayChannel implements MessageChannelRuntime {
   private terminal: DefaultRelayTerminalRuntime | null = null;
   private terminalReady = false;
   private terminalSupervisor: RmuxSidecarSupervisor | null = null;
+  private startLogger: ChannelStartInput["logger"] | undefined;
+  private readonly pendingRetirements = new Set<Promise<void>>();
 
   constructor(options: Record<string, unknown> | undefined, private readonly deps: RelayChannelDeps = {}) {
     this.config = parseRelayChannelConfig(options);
@@ -105,6 +107,7 @@ export class RelayChannel implements MessageChannelRuntime {
 
   async logout(): Promise<void> {
     // Spec §12.3: await durable reaping before dropping credential.
+    await this.detachCatalogAndDrainRetirements();
     if (this.terminal) {
       try {
         await this.terminal.terminateAll("logout");
@@ -227,8 +230,7 @@ export class RelayChannel implements MessageChannelRuntime {
   async stop(reason: ChannelStopReason = "shutdown"): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
-    this.catalogUnsub?.();
-    this.catalogUnsub = null;
+    await this.detachCatalogAndDrainRetirements();
 
     if (this.terminal) {
       // Process-owned: Runtime.stop() durable-terminates all sessions.
@@ -243,6 +245,31 @@ export class RelayChannel implements MessageChannelRuntime {
     this.client?.stop();
     this.client = null;
     this.control = null;
+  }
+
+  private async detachCatalogAndDrainRetirements(): Promise<void> {
+    this.catalogUnsub?.();
+    this.catalogUnsub = null;
+    if (this.pendingRetirements.size === 0) return;
+    await Promise.allSettled([...this.pendingRetirements]);
+  }
+
+  private queueLogicalRetirement(
+    runtime: DefaultRelayTerminalRuntime,
+    logicalSessionId: string,
+    reason: "archive" | "delete",
+  ): void {
+    const work = runtime.retireLogicalSession(logicalSessionId, reason).catch((err) => {
+      void this.startLogger?.error(
+        "relay.terminal_retire_failed",
+        `logical session retirement failed: ${err instanceof Error ? err.message : String(err)}`,
+        {},
+      );
+    });
+    const tracked = work.finally(() => {
+      this.pendingRetirements.delete(tracked);
+    });
+    this.pendingRetirements.add(tracked);
   }
 
   private async stopTerminalSupervisor(): Promise<void> {
@@ -320,6 +347,7 @@ export class RelayChannel implements MessageChannelRuntime {
         "relay terminal.enabled requires ChannelStartInput.sessionResources (xacpx with SessionResourceCatalog)",
       );
     }
+    this.startLogger = input.logger;
 
     const registry = new TerminalRegistryStore({ dir: registryDir, exclusiveWriter: true });
     try {
@@ -359,7 +387,8 @@ export class RelayChannel implements MessageChannelRuntime {
 
       this.catalogUnsub = catalog.subscribe((event) => {
         if (event.type === "archived" || event.type === "removed") {
-          void runtime.retireLogicalSession(
+          this.queueLogicalRetirement(
+            runtime,
             event.session.logicalSessionId,
             event.type === "archived" ? "archive" : "delete",
           );

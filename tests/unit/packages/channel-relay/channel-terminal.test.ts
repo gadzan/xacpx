@@ -42,6 +42,7 @@ function descriptor(overrides: Partial<SessionResourceDescriptor> = {}): Session
 }
 
 class FakeCatalog implements SessionResourceCatalog {
+  private readonly listeners = new Set<(e: SessionResourceLifecycleEvent) => void>();
   constructor(private readonly items: SessionResourceDescriptor[] = [descriptor()]) {}
   async resolve(_c: string, alias: string) {
     return this.items.find((d) => d.displayAlias === alias) ?? null;
@@ -49,8 +50,14 @@ class FakeCatalog implements SessionResourceCatalog {
   async list(channelId: string) {
     return this.items.filter((d) => d.channelId === channelId);
   }
-  subscribe(_l: (e: SessionResourceLifecycleEvent) => void) {
-    return () => {};
+  subscribe(listener: (e: SessionResourceLifecycleEvent) => void) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  emit(event: SessionResourceLifecycleEvent): void {
+    for (const listener of [...this.listeners]) listener(event);
   }
 }
 
@@ -362,4 +369,106 @@ test("valid owner + corrupt terminals.json does not advertise terminal capabilit
   expect(existsSync(join(dir, "terminals.json"))).toBe(false);
   controller.abort();
   await started;
+});
+
+test("catalog retire rejection is isolated and does not become unhandled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-term-chan-"));
+  dirs.push(dir);
+  const catalog = new FakeCatalog();
+  const errors: string[] = [];
+  const rejections: unknown[] = [];
+  const onRej = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onRej);
+  const fakeClient = { start: () => {}, stop: () => {}, sendEvent: () => {} };
+  const channel = new RelayChannel(
+    { url: "ws://h:1", pairingToken: "t", terminal: { enabled: true } },
+    {
+      credentialStore: new MemoryCredentialStore(),
+      terminalRegistryDir: dir,
+      createTerminalDriver: () => new InMemoryRmuxDriver(),
+      createClient: () => fakeClient as never,
+    },
+  );
+  const controller = new AbortController();
+  const { input } = makeStartInput({
+    abortSignal: controller.signal,
+    sessionResources: catalog,
+    logger: {
+      info: async () => {},
+      error: async (_id: string, message: string) => {
+        errors.push(message);
+      },
+      debug: async () => {},
+    },
+  });
+  const started = channel.start(input as never);
+  try {
+    const waitUntil = Date.now() + 2000;
+    while (channel.getTerminalRuntimeForTests() === null && Date.now() < waitUntil) {
+      await Bun.sleep(5);
+    }
+    const runtime = channel.getTerminalRuntimeForTests();
+    expect(runtime).not.toBeNull();
+    runtime!.retireLogicalSession = async () => {
+      throw new Error("retire boom");
+    };
+    catalog.emit({ type: "removed", session: descriptor() });
+    await Bun.sleep(30);
+    expect(rejections).toEqual([]);
+    expect(errors.some((message) => message.includes("retire boom"))).toBe(true);
+  } finally {
+    process.off("unhandledRejection", onRej);
+    controller.abort();
+    await started;
+  }
+});
+
+test("in-flight catalog retirement is drained before stop closes the runtime", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-term-chan-"));
+  dirs.push(dir);
+  const catalog = new FakeCatalog();
+  const fakeClient = { start: () => {}, stop: () => {}, sendEvent: () => {} };
+  const channel = new RelayChannel(
+    { url: "ws://h:1", pairingToken: "t", terminal: { enabled: true } },
+    {
+      credentialStore: new MemoryCredentialStore(),
+      terminalRegistryDir: dir,
+      createTerminalDriver: () => new InMemoryRmuxDriver(),
+      createClient: () => fakeClient as never,
+    },
+  );
+  const controller = new AbortController();
+  const { input } = makeStartInput({
+    abortSignal: controller.signal,
+    sessionResources: catalog,
+  });
+  const started = channel.start(input as never);
+  const waitUntil = Date.now() + 2000;
+  while (channel.getTerminalRuntimeForTests() === null && Date.now() < waitUntil) {
+    await Bun.sleep(5);
+  }
+  const runtime = channel.getTerminalRuntimeForTests();
+  expect(runtime).not.toBeNull();
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let finished = false;
+  runtime!.retireLogicalSession = async () => {
+    await gate;
+    finished = true;
+  };
+  catalog.emit({ type: "archived", session: descriptor() });
+  await Bun.sleep(10);
+  controller.abort();
+  await Bun.sleep(30);
+  expect(finished).toBe(false);
+  const stopState = await Promise.race([started.then(() => "stopped"), Promise.resolve("waiting")]);
+  expect(stopState).toBe("waiting");
+  release();
+  await started;
+  expect(finished).toBe(true);
 });

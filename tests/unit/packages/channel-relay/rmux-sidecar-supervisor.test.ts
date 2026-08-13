@@ -163,7 +163,7 @@ test("protocol crash without child exit nulls the live driver so proxy fences", 
   await supervisor.stop();
 });
 
-function makeFakeChild(opts: { autoHandshake?: boolean } = {}): ChildProcessWithoutNullStreams & { killed: boolean } {
+function makeFakeChild(opts: { autoHandshake?: boolean; exitAfterHandshake?: boolean } = {}): ChildProcessWithoutNullStreams & { killed: boolean } {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -196,6 +196,12 @@ function makeFakeChild(opts: { autoHandshake?: boolean } = {}): ChildProcessWith
               capabilities: ["create"],
             })}\n`,
           );
+          if (opts.exitAfterHandshake) {
+            setTimeout(() => {
+              child.killed = true;
+              child.emit("exit", 1, null);
+            }, 5);
+          }
         } else if (msg.type === "shutdown") {
           stdout.write(`${JSON.stringify({ type: "ok", id: msg.id })}\n`);
         }
@@ -242,4 +248,31 @@ test("createProductionTerminalDriver stops the supervisor when handshake fails",
     }),
   ).rejects.toThrow(/timeout/);
   expect(hung.killed).toBe(true);
+});
+
+test("handshake-ok then immediate crash is capped at 1 + maxRestarts spawns with growing backoff", async () => {
+  let spawns = 0;
+  const delays: number[] = [];
+  const supervisor = new RmuxSidecarSupervisor({
+    config: parseRelayTerminalConfig({ enabled: true }),
+    spawnFn: ((() => {
+      spawns += 1;
+      return makeFakeChild({ autoHandshake: true, exitAfterHandshake: true });
+    }) as unknown as typeof spawn),
+    requestTimeoutMs: 40,
+    sleep: async (ms) => {
+      delays.push(ms);
+    },
+    maxRestarts: 3,
+  });
+
+  await supervisor.start();
+  const deadline = Date.now() + 2000;
+  while (spawns < 4 && Date.now() < deadline) {
+    await Bun.sleep(10);
+  }
+  await Bun.sleep(40);
+  expect(spawns).toBe(4);
+  expect(delays).toEqual([500, 1000, 2000]);
+  await supervisor.stop();
 });

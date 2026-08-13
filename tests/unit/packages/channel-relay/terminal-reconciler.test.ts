@@ -452,23 +452,49 @@ test("inventory-only orphan without active logical waits two rounds + grace befo
   );
 });
 
-test("malformed tags are diagnosed and never killed", async () => {
-  const h = await makeHarness({ catalog: new FakeCatalog([]) });
-  await h.driver.create({
+test("malformed-tag orphans wait for wall-clock grace, not reconcile round count", async () => {
+  const h = await makeHarness();
+  const created = await h.driver.create({
     name: `xacpx-relay-${h.installationId.slice(0, 8)}-deadbeef`,
     cwd: "/tmp",
     cols: 80,
     rows: 24,
     historyLimit: 100,
-    tags: ["xacpx:relay", `owner:${h.installationId}`], // incomplete
+    tags: ["xacpx:relay", `owner:${h.installationId}`],
     ownerLeaseTtlSeconds: 90,
   });
 
-  h.clock.nowMs += 999_000;
   await h.reconciler.runOnce();
+  h.clock.nowMs += 90_000;
   await h.reconciler.runOnce();
   expect(await h.driver.list()).toHaveLength(1);
   expect(h.diagnostics.some((d) => d.type === "malformed-tags")).toBe(true);
+  expect(h.diagnostics.some((d) => d.type === "orphan-killed")).toBe(false);
+
+  h.clock.nowMs += 30_000;
+  await h.reconciler.runOnce();
+  expect(await h.driver.list()).toHaveLength(0);
+  expect(h.diagnostics.some((d) => d.type === "orphan-killed" && d.sessionId === created.sessionId)).toBe(true);
+});
+
+test("consecutive reconcileOnce calls without clock progress do not satisfy orphan grace", async () => {
+  const h = await makeHarness({
+    catalog: new FakeCatalog([]),
+    config: { reconcileIntervalSeconds: 300, orphanGraceSeconds: 90 },
+  });
+  await h.driver.create({
+    name: `xacpx-relay-${h.installationId.slice(0, 8)}-cafef00d`,
+    cwd: "/tmp",
+    cols: 80,
+    rows: 24,
+    historyLimit: 100,
+    tags: ["xacpx:relay", `owner:${h.installationId}`],
+    ownerLeaseTtlSeconds: 90,
+  });
+
+  await h.reconciler.runOnce();
+  await h.reconciler.runOnce();
+  expect(await h.driver.list()).toHaveLength(1);
   expect(h.diagnostics.some((d) => d.type === "orphan-killed")).toBe(false);
 });
 

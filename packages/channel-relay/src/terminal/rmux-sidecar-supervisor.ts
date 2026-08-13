@@ -29,6 +29,12 @@ export interface RmuxSidecarSupervisorOptions {
   maxRestarts?: number;
   /** Sidecar RPC timeout (handshake included). Production keeps the driver default. */
   requestTimeoutMs?: number;
+  /**
+   * How long a child must stay alive after handshake before `restartCount`
+   * resets. Handshake-ok followed by an immediate crash must not refill the
+   * restart budget.
+   */
+  stableAfterMs?: number;
   /** Invoked after the live child exits unexpectedly (before restart). */
   onChildExit?: () => void;
 }
@@ -77,6 +83,7 @@ export class RmuxSidecarSupervisor {
   private restartCount = 0;
   private starting: Promise<RmuxTerminalDriver> | null = null;
   private spawning = false;
+  private stableTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: RmuxSidecarSupervisorOptions) {
     this.opts = opts;
@@ -114,6 +121,7 @@ export class RmuxSidecarSupervisor {
         // ignore
       }
     }
+    this.clearStabilityTimer();
     this.driver = null;
     if (this.child && !this.child.killed) {
       this.child.kill("SIGTERM");
@@ -141,7 +149,7 @@ export class RmuxSidecarSupervisor {
         });
         await candidate.handshake();
         this.driver = candidate;
-        this.restartCount = 0;
+        this.armStabilityReset();
         return candidate;
       }
 
@@ -198,6 +206,7 @@ export class RmuxSidecarSupervisor {
 
       spawned.on("exit", () => {
         if (this.child !== spawned) return;
+        this.clearStabilityTimer();
         this.child = null;
         this.driver = null;
         if (this.stopped) return;
@@ -207,9 +216,10 @@ export class RmuxSidecarSupervisor {
 
       await candidate.handshake();
       this.driver = candidate;
-      this.restartCount = 0;
+      this.armStabilityReset();
       return candidate;
     } catch (err) {
+      this.clearStabilityTimer();
       const ownedChild = spawned !== null && this.child === spawned;
       if (ownedChild) {
         this.child = null;
@@ -249,6 +259,25 @@ export class RmuxSidecarSupervisor {
     } catch {
       // leave unavailable; channel bootstrap already fail-closed without caps
     }
+  }
+
+  private armStabilityReset(): void {
+    this.clearStabilityTimer();
+    const stableAfterMs = this.opts.stableAfterMs ?? 30_000;
+    const timer = setTimeout(() => {
+      this.stableTimer = null;
+      if (!this.stopped && this.driver) {
+        this.restartCount = 0;
+      }
+    }, stableAfterMs);
+    timer.unref?.();
+    this.stableTimer = timer;
+  }
+
+  private clearStabilityTimer(): void {
+    if (this.stableTimer === null) return;
+    clearTimeout(this.stableTimer);
+    this.stableTimer = null;
   }
 }
 

@@ -103,7 +103,11 @@ export class TerminalReconciler {
   private readonly clearIntervalFn: (id: ReturnType<typeof setInterval>) => void;
 
   private pass = 0;
-  private readonly orphanPasses = new Map<string, { first: number; last: number }>();
+  private readonly orphanPasses = new Map<string, {
+    firstPass: number;
+    lastPass: number;
+    firstSeenAt: number;
+  }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
   private stopped = false;
@@ -463,8 +467,15 @@ export class TerminalReconciler {
 
   private touchOrphan(sessionId: string): void {
     const seen = this.orphanPasses.get(sessionId);
-    if (seen) seen.last = this.pass;
-    else this.orphanPasses.set(sessionId, { first: this.pass, last: this.pass });
+    if (seen) {
+      seen.lastPass = this.pass;
+    } else {
+      this.orphanPasses.set(sessionId, {
+        firstPass: this.pass,
+        lastPass: this.pass,
+        firstSeenAt: this.host.clock.now(),
+      });
+    }
   }
 
   private async maybeKillQuarantine(
@@ -472,13 +483,13 @@ export class TerminalReconciler {
     inv: RmuxInventoryEntry,
   ): Promise<void> {
     const seen = this.orphanPasses.get(inv.sessionId);
-    const rounds = seen ? seen.last - seen.first + 1 : 1;
+    const independentPasses = seen ? seen.lastPass - seen.firstPass + 1 : 1;
     const firstSeen = Date.parse(rec.createdAt);
     const graceMs = this.host.config.orphanGraceSeconds * 1000;
     const aged =
       Number.isFinite(firstSeen) && this.host.clock.now() - firstSeen >= graceMs;
 
-    if (rounds < 2 || !aged) return;
+    if (independentPasses < 2 || !aged) return;
 
     const snap = this.host.registry.getSnapshot();
     const current = snap.terminals[rec.terminalId];
@@ -504,14 +515,11 @@ export class TerminalReconciler {
 
   private async maybeKillNamelessOrphan(entry: RmuxInventoryEntry): Promise<void> {
     const seen = this.orphanPasses.get(entry.sessionId);
-    const rounds = seen ? seen.last - seen.first + 1 : 1;
+    const independentPasses = seen ? seen.lastPass - seen.firstPass + 1 : 1;
     const graceMs = this.host.config.orphanGraceSeconds * 1000;
-    // Without a registry first-seen timestamp, require ≥2 passes and use
-    // reconcile interval * rounds as a coarse age proxy.
-    const aged =
-      rounds >= 2 &&
-      rounds * this.host.config.reconcileIntervalSeconds * 1000 >= graceMs;
-    if (!aged) {
+    const firstSeenAt = seen?.firstSeenAt ?? this.host.clock.now();
+    const aged = this.host.clock.now() - firstSeenAt >= graceMs;
+    if (independentPasses < 2 || !aged) {
       this.onDiagnostic({
         type: "malformed-tags",
         sessionId: entry.sessionId,
