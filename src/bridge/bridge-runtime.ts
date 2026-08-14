@@ -161,8 +161,6 @@ interface BridgeRuntimeOptions {
   now?: () => number;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
-  /** Test seam: cool a live queue owner before `acpx set` releases exclusive leases. */
-  terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
   createAdapterContext?: (input: {
     id: "codex" | "claude";
     sessionKey: string;
@@ -172,6 +170,7 @@ interface BridgeRuntimeOptions {
 
 type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
   wouldReuse?(input: LaunchQueueOwnerInput): Promise<boolean>;
+  cool?(acpxRecordId: string): Promise<void>;
 };
 
 export class BridgeRuntime {
@@ -835,8 +834,16 @@ export class BridgeRuntime {
       ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(input, acpxRecordId),
     });
     if (!effort) return;
-    if (acpxRecordId) await this.terminateQueueOwner(acpxRecordId);
+    if (acpxRecordId) await this.coolQueueOwner(acpxRecordId);
     await this.applyAdvertisedSessionEffort(input, effort, record);
+  }
+
+  private async coolQueueOwner(acpxRecordId: string): Promise<void> {
+    if (this.queueOwnerLauncher.cool) {
+      await this.queueOwnerLauncher.cool(acpxRecordId);
+      return;
+    }
+    await terminateAcpxQueueOwnerVerified(acpxRecordId);
   }
 
   private async queueOwnerWillBeReplaced(
@@ -870,10 +877,6 @@ export class BridgeRuntime {
       ...(adapterContext ? { adapterContext } : {}),
       ...(env ? { env } : {}),
     };
-  }
-
-  private terminateQueueOwner(acpxRecordId: string): Promise<void> {
-    return (this.options.terminateQueueOwner ?? terminateAcpxQueueOwner)(acpxRecordId);
   }
 
   private async applyAdvertisedSessionEffort(

@@ -888,12 +888,7 @@ test("a model change cools the owner and reapplies persisted effort before repla
     events.push("prompt");
     return { code: 0, stdout: "worker response", stderr: "" };
   };
-  const runtime = new BridgeRuntime("acpx", run, undefined, {
-    terminateQueueOwner: async () => {
-      events.push("cool");
-      alive = false;
-    },
-  }, undefined, undefined, queueOwnerLauncher);
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
   const baseInput = {
     agent: "codex",
     cwd: "/repo",
@@ -907,8 +902,8 @@ test("a model change cools the owner and reapplies persisted effort before repla
   await runtime.prompt({ ...baseInput, model: "model-b" });
 
   expect(events).toEqual([
-    "cool", "set:high", "replace", "spawn", "prompt",
-    "cool", "set:high", "replace", "spawn", "prompt",
+    "replace", "set:high", "replace", "spawn", "prompt",
+    "replace", "set:high", "replace", "spawn", "prompt",
   ]);
   expect(payloads.map((payload) => payload.sessionOptions?.model)).toEqual(["model-a", "model-b"]);
 });
@@ -928,6 +923,9 @@ test("prompt persists effort before launching the queue owner so reconnect repla
   });
   const queueOwnerLauncher = {
     wouldReuse: async () => false,
+    cool: async () => {
+      events.push("cool");
+    },
     launch: async () => {
       events.push("launch");
     },
@@ -943,11 +941,7 @@ test("prompt persists effort before launching the queue owner so reconnect repla
     events.push("prompt");
     return { code: 0, stdout: "worker response", stderr: "" };
   };
-  const runtime = new BridgeRuntime("acpx", run, undefined, {
-    terminateQueueOwner: async () => {
-      events.push("cool");
-    },
-  }, undefined, undefined, queueOwnerLauncher);
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
 
   await runtime.prompt({
     agent: "codex",
@@ -965,6 +959,9 @@ test("prompt skips effort reapply when a reusable owner already holds the persis
   const events: string[] = [];
   const queueOwnerLauncher = {
     wouldReuse: async () => true,
+    cool: async () => {
+      events.push("cool");
+    },
     launch: async () => {
       events.push("launch");
     },
@@ -991,11 +988,7 @@ test("prompt skips effort reapply when a reusable owner already holds the persis
     events.push(args.includes("prompt") ? "prompt" : "other");
     return { code: 0, stdout: "worker response", stderr: "" };
   };
-  const runtime = new BridgeRuntime("acpx", run, undefined, {
-    terminateQueueOwner: async () => {
-      events.push("cool");
-    },
-  }, undefined, undefined, queueOwnerLauncher);
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
 
   await runtime.prompt({
     agent: "codex",
@@ -1013,6 +1006,9 @@ test("prompt cools a reusable owner and reapplies persisted effort when adapter 
   const events: string[] = [];
   const queueOwnerLauncher = {
     wouldReuse: async () => true,
+    cool: async () => {
+      events.push("cool");
+    },
     launch: async () => {
       events.push("launch");
     },
@@ -1042,11 +1038,7 @@ test("prompt cools a reusable owner and reapplies persisted effort when adapter 
     events.push("prompt");
     return { code: 0, stdout: "worker response", stderr: "" };
   };
-  const runtime = new BridgeRuntime("acpx", run, undefined, {
-    terminateQueueOwner: async () => {
-      events.push("cool");
-    },
-  }, undefined, undefined, queueOwnerLauncher);
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
 
   await runtime.prompt({
     agent: "codex",
@@ -1058,6 +1050,56 @@ test("prompt cools a reusable owner and reapplies persisted effort when adapter 
   });
 
   expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
+});
+
+test("prompt does not acpx set when the queue owner cannot be cooled", async () => {
+  const events: string[] = [];
+  const queueOwnerLauncher = {
+    wouldReuse: async () => true,
+    cool: async () => {
+      events.push("cool");
+      throw new Error(
+        "queue owner for session acpx-record-1 is still live after termination; " +
+          "refusing to apply session effort while the owner may still be running",
+      );
+    },
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "medium",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) events.push("set");
+    events.push(args.includes("prompt") ? "prompt" : "other");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+
+  await expect(runtime.prompt({
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    effort: "high",
+    mcpCoordinatorSession: "backend:main",
+  })).rejects.toThrow(/still live after termination/);
+  expect(events).toEqual(["cool"]);
 });
 
 test("prompt continues when the persisted effort is no longer advertised", async () => {

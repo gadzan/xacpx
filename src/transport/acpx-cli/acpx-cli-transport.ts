@@ -77,8 +77,6 @@ interface AcpxCliTransportOptions {
   queueOwnerTtlSeconds?: number;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
-  /** Test seam: cool a live queue owner before `acpx set` releases exclusive leases. */
-  terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
   createAdapterContext?: (input: {
     id: "codex" | "claude";
     sessionKey: string;
@@ -223,6 +221,7 @@ async function defaultPtyRunner(command: string, args: string[], options?: RunOp
 
 type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
   wouldReuse?(input: LaunchQueueOwnerInput): Promise<boolean>;
+  cool?(acpxRecordId: string): Promise<void>;
 };
 
 export class AcpxCliTransport implements SessionTransport {
@@ -239,7 +238,6 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly streamingHooks: StreamingPromptHooks;
   private readonly resolveSpawnEnvironment: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
   private readonly createAdapterContext?: AcpxCliTransportOptions["createAdapterContext"];
-  private readonly terminateQueueOwner: (acpxRecordId: string) => Promise<void>;
 
   constructor(
     options: AcpxCliTransportOptions,
@@ -269,7 +267,6 @@ export class AcpxCliTransport implements SessionTransport {
     this.streamingHooks = streamingHooks;
     this.resolveSpawnEnvironment = options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment;
     this.createAdapterContext = options.createAdapterContext;
-    this.terminateQueueOwner = options.terminateQueueOwner ?? terminateAcpxQueueOwner;
   }
 
   // acpx-cli transport does not stream stderr back to the caller, so "note" progress
@@ -558,8 +555,16 @@ export class AcpxCliTransport implements SessionTransport {
       ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(session, acpxRecordId),
     });
     if (!effort) return;
-    if (acpxRecordId) await this.terminateQueueOwner(acpxRecordId);
+    if (acpxRecordId) await this.coolQueueOwner(acpxRecordId);
     await this.applyAdvertisedSessionEffort(session, effort, record);
+  }
+
+  private async coolQueueOwner(acpxRecordId: string): Promise<void> {
+    if (this.queueOwnerLauncher.cool) {
+      await this.queueOwnerLauncher.cool(acpxRecordId);
+      return;
+    }
+    await terminateAcpxQueueOwnerVerified(acpxRecordId);
   }
 
   private async queueOwnerWillBeReplaced(
