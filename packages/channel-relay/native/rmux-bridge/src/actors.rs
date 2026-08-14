@@ -280,12 +280,12 @@ impl BridgeState {
             .get_mut(&session_id)
             .ok_or_else(|| format!("session not found: {session_id}"))?;
         if let Some(prev) = actor.recover_abort.take() {
-            // Idempotent re-subscribe from Node: keep the live stream rather than
-            // tearing down multi-viewer fanout. Only replace when the task finished.
-            if !prev.is_finished() {
-                actor.recover_abort = Some(prev);
-                return Ok(());
-            }
+            // Explicit recover always restarts. Node only sends recover from the
+            // pane start barrier (never for a late live viewer), so this cannot
+            // abort multi-viewer fan-out. `is_finished()` is a TOCTOU: the task
+            // can exit with Ok(None)/Err immediately after we observe it live.
+            prev.abort();
+            let _ = prev.await;
         }
 
         let pane = actor

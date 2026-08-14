@@ -429,6 +429,20 @@ function ackLast(fake: ReturnType<typeof makeFakeChild>, type: string): boolean 
   return false;
 }
 
+function nackLast(fake: ReturnType<typeof makeFakeChild>, type: string, message: string): boolean {
+  for (let i = fake.written.length - 1; i >= 0; i--) {
+    for (const line of fake.written[i]!.trim().split("\n")) {
+      if (!line.includes(`"${type}"`)) continue;
+      const req = JSON.parse(line) as { id: string; type: string };
+      if (req.type === type) {
+        fake.reply({ type: "error", id: req.id, message });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function parsedWrites(fake: ReturnType<typeof makeFakeChild>): Array<{ id?: string; type?: string }> {
   const out: Array<{ id?: string; type?: string }> = [];
   for (const chunk of fake.written) {
@@ -716,4 +730,44 @@ test("cache hit still writes recover so a finished server-side task restarts", a
   );
   await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after restart");
   await Promise.all([aDone, bDone]);
+});
+
+test("recover RPC failure rejects waiters that joined during start", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aErr: { current?: unknown } = {};
+  const aDone = (async () => {
+    try {
+      for await (const _ev of driver.recover("%1")) {
+        // should not yield
+      }
+    } catch (err) {
+      aErr.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+
+  const bErr: { current?: unknown } = {};
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    try {
+      for await (const ev of driver.recover("%1")) {
+        bEvents.push(ev);
+      }
+    } catch (err) {
+      bErr.current = err;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(requestCount(fake, "recover")).toBe(1);
+  expect(nackLast(fake, "recover", "recover_output failed")).toBe(true);
+
+  await Promise.all([aDone, bDone]);
+  expect(aErr.current).toBeInstanceOf(Error);
+  expect(String(aErr.current)).toContain("recover_output failed");
+  expect(bErr.current).toBeInstanceOf(Error);
+  expect(String(bErr.current)).toContain("recover_output failed");
+  expect(bEvents).toEqual([]);
 });

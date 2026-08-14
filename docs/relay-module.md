@@ -68,7 +68,7 @@
 - **配置**：`channels[].options.terminal`（见 `docs/config-reference.md`）；默认 `enabled=false`，不声明
   `terminal.rmux.recovery.v1` / `terminal.multi-view.v1`。
 - **运行时**：`packages/channel-relay/src/terminal/`（registry、runtime、reconciler、process-owned sidecar）。
-  同一 pane 的 `recover` / `stop-recover` 在 `RmuxSidecarDriver` 里按 FIFO 串行，避免旧 attachment 的 teardown 杀掉新 attachment 的 recovery。first subscriber 即使已有 catch-up cache 也会再发一次幂等 `recover`（Rust `start_recover` 在 task 仍活着时 no-op，已结束则重启）。recover 启动失败走既有 `terminal-recovery-failed` 事件（不另开协议字段）。
+  同一 pane 的 `recover` / `stop-recover` 在 `RmuxSidecarDriver` 里按 FIFO 串行，避免旧 attachment 的 teardown 杀掉新 attachment 的 recovery。pane start barrier 让同时 attach 的 viewer 共享同一次 `recover` RPC（成功则一起 catch-up，失败则一起收到错误，不会有人永久 waiting）。显式 `recover` 在 Rust 侧**总是 restart** recovery task（abort 旧 task 再 `recover_output`），不依赖 `JoinHandle::is_finished()`。Node 只在 start barrier 发送 `recover`；已 live 的 late viewer 只 fan-out。recover 启动失败走既有 `terminal-recovery-failed` 事件（不另开协议字段）。
 - **持久化**：`<xacpx-home>/relay/` 下 `terminal-owner.json` + `terminals.json`（与 `credential.json` 同目录惯例）；
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
 - **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；

@@ -66,6 +66,8 @@ type Pending = {
 type RecoverSubscriber = {
   push: (event: RmuxRecoveryEvent) => void;
   close: (err?: Error) => void;
+  /** True after this subscriber's start barrier succeeds and catch-up is queued. */
+  armed: boolean;
 };
 
 export class RmuxSidecarDriver implements RmuxTerminalDriver {
@@ -84,9 +86,9 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   /**
    * Per-pane recovery snapshot for late multi-viewer subscribers: last rebase
    * plus every bytes event since that rebase. Late joiners catch up from this
-   * cache before joining the live fan-out. Cache presence is not proof the
-   * Rust recovery task is still running (`recover_output` can finish silently);
-   * the first subscriber still sends an idempotent `recover`.
+   * cache before being armed for live fan-out. Cache presence is not proof the
+   * Rust recovery task is still running; an explicit `recover` always restarts
+   * it. Node only sends `recover` from the pane start barrier.
    */
   private readonly recoveryCache = new Map<string, PaneRecoveryCache>();
   private readonly rebaseAssembly = new Map<string, RebaseAssembly>();
@@ -94,6 +96,10 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private readonly snapshotRefresh = new Set<string>();
   /** Per-pane FIFO for recover / stop-recover control RPCs. */
   private readonly recoveryControls = new Map<string, Promise<void>>();
+  /** Panes whose recover RPC has succeeded and has not yet been stopped. */
+  private readonly recoveryLive = new Set<string>();
+  /** In-flight start barrier: waiters share success or the same failure. */
+  private readonly recoveryStarts = new Map<string, Promise<void>>();
 
   constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
     this.child = child;
@@ -223,7 +229,6 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.assertReady();
     const queue = new AsyncQueue<RmuxRecoveryEvent>();
     let set = this.recoveries.get(paneId);
-    const isFirst = !set || set.size === 0;
     if (!set) {
       set = new Set();
       this.recoveries.set(paneId, set);
@@ -231,31 +236,33 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     const sub: RecoverSubscriber = {
       push: (e) => queue.push(e),
       close: (err) => queue.close(err),
+      armed: false,
     };
     const onAbort = () => queue.close();
     if (signal?.aborted) onAbort();
     else signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      // One sidecar recover stream per pane; fan out to all Node subscribers.
-      // Join the set before waiting on control RPCs so a queued stop-recover
-      // can see the new subscriber and skip tearing the Rust task down.
-      if (isFirst) {
-        set.add(sub);
-        await this.enqueueRecoveryControl(paneId, async () => {
-          if (!set.has(sub)) return;
-          // Cache may outlive a silently finished Rust recovery task. Catch up
-          // first, then always send recover: start_recover is idempotent
-          // (live task → no-op, finished → restart).
-          if (this.recoveryCache.has(paneId)) {
-            this.pushCatchUp(paneId, sub);
-          }
-          await this.request({ type: "recover", pane_id: paneId });
-        });
-      } else {
-        // Catch up BEFORE joining live fan-out so buffered bytes are not
-        // interleaved after a live event that arrived during subscribe.
+      // Join the interested set before waiting on control RPCs so a queued
+      // stop-recover can see the new subscriber and skip tearing the task down.
+      set.add(sub);
+      if (this.recoveryLive.has(paneId)) {
         this.pushCatchUp(paneId, sub);
-        set.add(sub);
+        sub.armed = true;
+      } else {
+        let inFlight = this.recoveryStarts.get(paneId);
+        const starter = !inFlight;
+        if (starter) {
+          // Starter must be armed before recover acks: tests (and RMUX) may
+          // emit rebase/exit on the same turn, and those events are not all
+          // in the catch-up cache.
+          sub.armed = true;
+          inFlight = this.beginRecoveryStart(paneId);
+        }
+        await inFlight;
+        if (!starter && set.has(sub) && this.recoveryLive.has(paneId)) {
+          this.pushCatchUp(paneId, sub);
+          sub.armed = true;
+        }
       }
       for await (const event of queue) {
         yield event;
@@ -265,12 +272,14 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       signal?.removeEventListener("abort", onAbort);
       set.delete(sub);
       if (set.size === 0) {
+        this.recoveryLive.delete(paneId);
         void this.enqueueRecoveryControl(paneId, async () => {
           const current = this.recoveries.get(paneId);
           if (current && current.size > 0) return;
           try {
             await this.request({ type: "stop-recover", pane_id: paneId }, 1_000);
           } finally {
+            this.recoveryLive.delete(paneId);
             this.recoveryCache.delete(paneId);
             this.rebaseAssembly.delete(paneId);
             this.snapshotRefresh.delete(paneId);
@@ -282,6 +291,34 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         }).catch(() => {});
       }
     }
+  }
+
+  /**
+   * starting → live barrier for one pane. Concurrent subscribers share the
+   * same recover RPC: success sets `recoveryLive`; failure rejects everyone.
+   * A subscriber gap clears `recoveryLive` so the replacement sends a fresh
+   * recover (Rust always restarts).
+   */
+  private beginRecoveryStart(paneId: string): Promise<void> {
+    const set = this.recoveries.get(paneId);
+    const started = this.enqueueRecoveryControl(paneId, async () => {
+      if (!set || set.size === 0) return;
+      if (this.recoveryLive.has(paneId)) return;
+      // Replacement starter needs the previous snapshot before recover acks.
+      // First-ever start has an empty cache, so this is a no-op.
+      for (const s of set) {
+        if (s.armed) this.pushCatchUp(paneId, s);
+      }
+      await this.request({ type: "recover", pane_id: paneId });
+      this.recoveryLive.add(paneId);
+    });
+    const shared = started.finally(() => {
+      if (this.recoveryStarts.get(paneId) === shared) {
+        this.recoveryStarts.delete(paneId);
+      }
+    });
+    this.recoveryStarts.set(paneId, shared);
+    return shared;
   }
 
   /**
@@ -424,7 +461,9 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       this.rememberRecoveryEvent(paneId, event);
       const set = this.recoveries.get(paneId);
       if (!set) return;
-      for (const sub of set) sub.push(event);
+      for (const sub of set) {
+        if (sub.armed) sub.push(event);
+      }
       return;
     }
 
@@ -575,12 +614,14 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       await this.enqueueRecoveryControl(paneId, async () => {
         const current = this.recoveries.get(paneId);
         if (!current || current.size === 0) return;
+        this.recoveryLive.delete(paneId);
         await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
         this.recoveryCache.delete(paneId);
         this.rebaseAssembly.delete(paneId);
         if (this.crashed) return;
         if (!this.recoveries.get(paneId)?.size) return;
         await this.request({ type: "recover", pane_id: paneId });
+        this.recoveryLive.add(paneId);
       });
     } catch {
       this.snapshotRefresh.delete(paneId);
@@ -603,6 +644,8 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.rebaseAssembly.clear();
     this.snapshotRefresh.clear();
     this.recoveryControls.clear();
+    this.recoveryLive.clear();
+    this.recoveryStarts.clear();
     this.emitter.emit("crash", err);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {
