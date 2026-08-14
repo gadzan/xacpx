@@ -618,14 +618,28 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
         this.recoveryCache.delete(paneId);
         this.rebaseAssembly.delete(paneId);
-        if (this.crashed) return;
-        if (!this.recoveries.get(paneId)?.size) return;
-        await this.request({ type: "recover", pane_id: paneId });
-        this.recoveryLive.add(paneId);
       });
-    } catch {
+      const current = this.recoveries.get(paneId);
+      if (!current || current.size === 0 || this.crashed) return;
+      if (this.recoveryLive.has(paneId)) return;
+      const start = this.recoveryStarts.get(paneId) ?? this.beginRecoveryStart(paneId);
+      await start;
+      if (!this.recoveryLive.has(paneId) && (this.recoveries.get(paneId)?.size ?? 0) > 0) {
+        throw new Error("snapshot refresh recover failed");
+      }
+    } catch (err) {
+      this.failPaneSubscribers(paneId, err);
+    } finally {
       this.snapshotRefresh.delete(paneId);
     }
+  }
+
+  private failPaneSubscribers(paneId: string, err: unknown): void {
+    const set = this.recoveries.get(paneId);
+    if (!set || set.size === 0) return;
+    const error = err instanceof Error ? err : new Error(String(err));
+    this.recoveryLive.delete(paneId);
+    for (const sub of [...set]) sub.close(error);
   }
 
   private crash(err: Error): void {

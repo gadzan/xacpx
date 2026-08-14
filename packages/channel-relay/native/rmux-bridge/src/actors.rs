@@ -266,7 +266,7 @@ impl BridgeState {
         Ok(())
     }
 
-    pub async fn start_recover(self: &Arc<Self>, pane_id: String) -> Result<(), String> {
+    pub async fn start_recover(self: &Arc<Self>, pane_id: String) -> Result<Vec<RecoveryEventDto>, String> {
         let pane_id_parsed = parse_pane_id(&pane_id)?;
         let session_id = self
             .panes
@@ -275,28 +275,46 @@ impl BridgeState {
             .get(&pane_id)
             .cloned()
             .ok_or_else(|| format!("pane not found: {pane_id}"))?;
-        let mut sessions = self.sessions.lock().await;
-        let actor = sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| format!("session not found: {session_id}"))?;
-        if let Some(prev) = actor.recover_abort.take() {
-            // Explicit recover always restarts. Node only sends recover from the
-            // pane start barrier (never for a late live viewer), so this cannot
-            // abort multi-viewer fan-out. `is_finished()` is a TOCTOU: the task
-            // can exit with Ok(None)/Err immediately after we observe it live.
-            prev.abort();
-            let _ = prev.await;
-        }
 
-        let pane = actor
-            .owned
-            .pane_by_id(pane_id_parsed)
-            .await
-            .map_err(|e| format!("pane_by_id failed: {e}"))?;
-        let mut stream = pane
-            .recover_output()
-            .await
-            .map_err(|e| format!("recover_output failed: {e}"))?;
+        let mut stream = {
+            let mut sessions = self.sessions.lock().await;
+            let actor = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| format!("session not found: {session_id}"))?;
+            if let Some(prev) = actor.recover_abort.take() {
+                // Explicit recover always restarts. Node only sends recover from
+                // the pane start barrier (never for a late live viewer).
+                prev.abort();
+                let _ = prev.await;
+            }
+            let pane = actor
+                .owned
+                .pane_by_id(pane_id_parsed)
+                .await
+                .map_err(|e| format!("pane_by_id failed: {e}"))?;
+            pane.recover_output()
+                .await
+                .map_err(|e| format!("recover_output failed: {e}"))?
+        };
+
+        // Recover RPC succeeds only after the initial Rebase. A spawned task
+        // can still exit on the first next(); waiting here makes "OK" mean
+        // the authority snapshot exists, not merely that a task was spawned.
+        let first_dtos = loop {
+            match stream.next().await {
+                Ok(Some(event)) => match classify_startup_event(event) {
+                    StartupPoll::Skip => continue,
+                    StartupPoll::Ready(dtos) => break dtos,
+                    StartupPoll::Failed(message) => return Err(message),
+                },
+                Ok(None) => {
+                    return Err("recovery stream ended before initial rebase".to_owned());
+                }
+                Err(err) => {
+                    return Err(format!("recover_output failed: {err}"));
+                }
+            }
+        };
 
         let event_tx = self.event_tx.clone();
         let pane_id_for_task = pane_id.clone();
@@ -327,8 +345,19 @@ impl BridgeState {
                 }
             }
         });
-        actor.recover_abort = Some(handle);
-        Ok(())
+
+        {
+            let mut sessions = self.sessions.lock().await;
+            match sessions.get_mut(&session_id) {
+                Some(actor) => actor.recover_abort = Some(handle),
+                None => {
+                    handle.abort();
+                    return Err("session gone during recover start".to_owned());
+                }
+            }
+        }
+
+        Ok(first_dtos)
     }
 
     pub async fn stop_recover(&self, pane_id: &str) -> Result<(), String> {
@@ -373,6 +402,38 @@ fn parse_pane_id(raw: &str) -> Result<PaneId, String> {
         .parse()
         .map_err(|_| format!("invalid pane id: {raw}"))?;
     Ok(PaneId::new(n))
+}
+
+enum StartupPoll {
+    Skip,
+    Ready(Vec<RecoveryEventDto>),
+    Failed(String),
+}
+
+fn classify_startup_event(event: PaneRecoveryEvent) -> StartupPoll {
+    match event {
+        PaneRecoveryEvent::Lifecycle(_) => StartupPoll::Skip,
+        PaneRecoveryEvent::End(_) => {
+            StartupPoll::Failed("recovery ended before initial rebase".to_owned())
+        }
+        PaneRecoveryEvent::Bytes { .. } => {
+            StartupPoll::Failed("recovery started with bytes instead of rebase".to_owned())
+        }
+        PaneRecoveryEvent::Rebase(_) => {
+            let dtos = map_recovery_events(event);
+            if let Some(message) = dtos.iter().find_map(|d| match d {
+                RecoveryEventDto::Error { message, .. } => Some(message.clone()),
+                _ => None,
+            }) {
+                StartupPoll::Failed(message)
+            } else if dtos.is_empty() {
+                StartupPoll::Failed("initial rebase produced no events".to_owned())
+            } else {
+                StartupPoll::Ready(dtos)
+            }
+        }
+        _ => StartupPoll::Skip,
+    }
 }
 
 fn map_recovery_events(event: PaneRecoveryEvent) -> Vec<RecoveryEventDto> {

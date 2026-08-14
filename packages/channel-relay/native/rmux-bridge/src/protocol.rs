@@ -108,7 +108,8 @@ pub enum ServerMessage {
         code: String,
         message: String,
     },
-    /// Unsolicited recovery stream event (after a successful Recover).
+    /// Recovery stream event. The initial rebase is written immediately before
+    /// the Recover RPC ack; later bytes follow asynchronously.
     Event {
         pane_id: String,
         event: RecoveryEventDto,

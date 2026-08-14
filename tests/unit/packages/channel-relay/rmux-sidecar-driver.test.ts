@@ -771,3 +771,69 @@ test("recover RPC failure rejects waiters that joined during start", async () =>
   expect(String(bErr.current)).toContain("recover_output failed");
   expect(bEvents).toEqual([]);
 });
+
+test("snapshot refresh recover failure fails every live subscriber", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aErr: { current?: unknown } = {};
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    try {
+      for await (const ev of driver.recover("%1")) {
+        aEvents.push(ev);
+      }
+    } catch (err) {
+      aErr.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  const bErr: { current?: unknown } = {};
+  const bDone = (async () => {
+    try {
+      for await (const _ev of driver.recover("%1")) {
+        // stay subscribed through refresh
+      }
+    } catch (err) {
+      bErr.current = err;
+    }
+  })();
+  await pumpUntil(() => bErr.current === undefined && aEvents.length >= 1, "B joined");
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+
+  const chunk = Buffer.alloc(48 * 1024, 0x61);
+  const chunkB64 = chunk.toString("base64");
+  let sent = 0;
+  let sequence = 0;
+  while (sent <= 2 * 1024 * 1024) {
+    fake.stdout.write(
+      `${JSON.stringify({
+        type: "event",
+        pane_id: "%1",
+        event: {
+          type: "bytes",
+          epoch: 1,
+          sequence,
+          data_base64: chunkB64,
+        },
+      })}\n`,
+    );
+    sent += chunk.byteLength;
+    sequence += 1;
+  }
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "refresh stop-recover", 256);
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "refresh recover", 64);
+  expect(nackLast(fake, "recover", "recover_output failed")).toBe(true);
+
+  await Promise.all([aDone, bDone]);
+  expect(aErr.current).toBeInstanceOf(Error);
+  expect(String(aErr.current)).toContain("recover_output failed");
+  expect(bErr.current).toBeInstanceOf(Error);
+  expect(String(bErr.current)).toContain("recover_output failed");
+});

@@ -133,7 +133,7 @@ async fn run() -> Result<(), String> {
         }
         outstanding += 1;
 
-        let response = handle_message(&bridge, msg, &mut handshaken).await;
+        let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;
         let is_shutdown = matches!(
             &response,
             ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown")
@@ -178,6 +178,7 @@ async fn handle_message(
     bridge: &std::sync::Arc<actors::BridgeState>,
     msg: ClientMessage,
     handshaken: &mut bool,
+    out_tx: &mpsc::Sender<ServerMessage>,
 ) -> ServerMessage {
     match msg {
         ClientMessage::Handshake {
@@ -289,8 +290,28 @@ async fn handle_message(
                 message: redact_error_message(&err),
             },
         },
-        ClientMessage::Recover { id, pane_id } => match bridge.start_recover(pane_id).await {
-            Ok(()) => ServerMessage::Ok { id },
+        ClientMessage::Recover { id, pane_id } => match bridge.start_recover(pane_id.clone()).await {
+            Ok(dtos) => {
+                // Emit the initial rebase before the RPC ack so Node's start
+                // barrier means "snapshot ready", not merely "task spawned".
+                for dto in dtos {
+                    if out_tx
+                        .send(ServerMessage::Event {
+                            pane_id: pane_id.clone(),
+                            event: dto,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return ServerMessage::Error {
+                            id,
+                            code: "terminal-rmux-unavailable".to_owned(),
+                            message: "stdout closed during recover start".to_owned(),
+                        };
+                    }
+                }
+                ServerMessage::Ok { id }
+            }
             Err(err) => ServerMessage::Error {
                 id,
                 code: "terminal-rmux-unavailable".to_owned(),

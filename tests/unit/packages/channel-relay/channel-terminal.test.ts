@@ -61,6 +61,14 @@ class FakeCatalog implements SessionResourceCatalog {
   }
 }
 
+async function waitUntil(pred: () => boolean, label: string, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!pred() && Date.now() < deadline) {
+    await Bun.sleep(5);
+  }
+  if (!pred()) throw new Error(`timed out waiting for ${label}`);
+}
+
 function makeStartInput(overrides: Record<string, unknown> = {}) {
   const subscribed: unknown[] = [];
   return {
@@ -156,7 +164,7 @@ test("terminal open request routes to runtime and does not hit legacy control br
     sessionResources: new FakeCatalog(),
   });
   const started = channel.start(input as never);
-  await Bun.sleep(20);
+  await waitUntil(() => typeof onRequest === "function", "onRequest");
 
   let response: unknown;
   await new Promise<void>((resolve) => {
@@ -217,7 +225,7 @@ test("hub disconnect bulk-detaches attachments; stop(shutdown) kills RMUX (proce
     sessionResources: new FakeCatalog(),
   });
   const started = channel.start(input as never);
-  await Bun.sleep(20);
+  await waitUntil(() => typeof onRequest === "function", "onRequest");
 
   let opened: { attachmentId: string } | undefined;
   await new Promise<void>((resolve) => {
