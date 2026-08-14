@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1435,10 +1435,44 @@ test("persists effort before launching the queue owner so reconnect replays it",
     undefined,
     queueOwnerLauncher,
   );
+  spyOn(transport, "isSessionWarm").mockResolvedValue(false);
 
   await transport.prompt(effortSession, "hello");
 
   expect(events).toEqual(["set:high", "launch", "prompt"]);
+});
+
+test("skips effort reapply when the queue owner is already warm", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "max",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("set")) events.push("set");
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    events.push(args.includes("prompt") ? "prompt" : "other");
+    return { code: 0, stdout: "ok", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    launch: async () => {
+      events.push("launch");
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+  spyOn(transport, "isSessionWarm").mockResolvedValue(true);
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["launch", "prompt"]);
 });
 
 test("does not block a prompt when the persisted effort is no longer advertised", async () => {
@@ -1481,6 +1515,7 @@ test("does not block a prompt when the persisted effort is no longer advertised"
     undefined,
     queueOwnerLauncher,
   );
+  spyOn(transport, "isSessionWarm").mockResolvedValue(false);
 
   await expect(transport.prompt(staleSession, "hello")).resolves.toEqual({ text: "worker response" });
   expect(events).toEqual(["launch", "prompt"]);

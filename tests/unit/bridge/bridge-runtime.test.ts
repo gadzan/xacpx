@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
 import {
   BridgeRuntime,
@@ -875,6 +875,7 @@ test("prompt persists effort before launching the queue owner so reconnect repla
     return { code: 0, stdout: "worker response", stderr: "" };
   };
   const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+  spyOn(runtime, "isSessionWarm").mockResolvedValue({ warm: false });
 
   await runtime.prompt({
     agent: "codex",
@@ -886,6 +887,36 @@ test("prompt persists effort before launching the queue owner so reconnect repla
   });
 
   expect(events).toEqual(["set:high", "launch", "prompt"]);
+});
+
+test("prompt skips effort reapply when the queue owner is already warm", async () => {
+  const events: string[] = [];
+  const queueOwnerLauncher = {
+    launch: async () => {
+      events.push("launch");
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("set")) events.push("set");
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    events.push(args.includes("prompt") ? "prompt" : "other");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {}, undefined, undefined, queueOwnerLauncher);
+  spyOn(runtime, "isSessionWarm").mockResolvedValue({ warm: true });
+
+  await runtime.prompt({
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    effort: "max",
+    mcpCoordinatorSession: "backend:main",
+  });
+
+  expect(events).toEqual(["launch", "prompt"]);
 });
 
 test("prompt continues when the persisted effort is no longer advertised", async () => {

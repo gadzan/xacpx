@@ -547,7 +547,9 @@ export class BridgeRuntime {
   }
 
   async prompt(input: BridgeSessionInput & { text: string }, onEvent?: (event: BridgePromptStreamEvent) => void): Promise<{ text: string }> {
-    if (input.effort?.trim()) {
+    // Same cold-only rule as AcpxCliTransport.prompt: a live queue owner
+    // already holds the effort, and `acpx set` would race a second ACP process.
+    if (input.effort?.trim() && !(await this.isSessionWarm(input)).warm) {
       await this.reapplySessionEffort(input, input.effort.trim());
     }
     await this.launchMcpQueueOwnerIfNeeded(input);

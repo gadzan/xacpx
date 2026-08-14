@@ -397,7 +397,11 @@ export class AcpxCliTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
-    if (session.effort?.trim()) {
+    // Reapply only on a cold owner: `acpx set` against a live queue owner
+    // falls back to spawning a second ACP process and `session/resume`. Agents
+    // with exclusive session leases (Reasonix) reject that as "in use by
+    // another process" — the warm owner already holds the configured effort.
+    if (session.effort?.trim() && !(await this.isSessionWarm(session))) {
       await this.reapplySessionEffort(session, session.effort.trim());
     }
     await this.launchMcpQueueOwnerIfNeeded(session);
