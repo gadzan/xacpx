@@ -1167,7 +1167,6 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     signal: AbortSignal;
   }): Promise<void> {
     const { attachmentId, terminalId, generation, paneId, token, signal } = input;
-    let live = false;
     let cancel!: () => void;
     const cancelled = new Promise<void>((resolve) => {
       cancel = resolve;
@@ -1191,19 +1190,14 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         ]);
         if (step.kind === "cancel" || signal.aborted) break;
         if (step.value.done) break;
-        live = true;
         const event = step.value.value;
         await this.dispatchRecoveryEvent(attachmentId, terminalId, generation, event);
         if (event.type === "exit") break;
       }
     } catch (err) {
-      if (!live) {
-        this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
-      } else {
-        queueMicrotask(() => {
-          void this.handleNaturalExit(terminalId, generation);
-        });
-      }
+      // Transport/driver failures (snapshot refresh NACK, sidecar error) are
+      // not a pane process exit. Reaping here would kill a healthy shell.
+      this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
     } finally {
       signal.removeEventListener("abort", cancel);
       try {

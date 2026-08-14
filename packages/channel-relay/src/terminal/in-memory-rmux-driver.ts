@@ -264,6 +264,13 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     for (const queue of session.subscribers) queue.push(event);
   }
 
+  /** Fail live recover iterators without killing the pane process. */
+  failRecover(paneId: string, err: Error): void {
+    const session = this.requireSessionByPane(paneId);
+    for (const queue of session.subscribers) queue.close(err);
+    session.subscribers.clear();
+  }
+
   recoverySubscriberCount(paneId: string): number {
     const sessionId = this.sessionsByPane.get(paneId);
     const session = sessionId ? this.sessionsById.get(sessionId) : undefined;

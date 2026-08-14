@@ -22,11 +22,14 @@ use crate::protocol::{
     BRIDGE_VERSION,
 };
 
+/// Bound the Recover RPC so a pending first Rebase cannot stall the serial
+/// stdin loop forever. Kept under the Node sidecar request timeout (15s).
+const INITIAL_REBASE_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct BridgeState {
     rmux: Rmux,
     sessions: Mutex<HashMap<String, SessionActor>>,
     panes: Mutex<HashMap<String, String>>, // pane_id → session_id
-    event_tx: mpsc::Sender<ServerMessage>,
 }
 
 struct SessionActor {
@@ -38,9 +41,7 @@ struct SessionActor {
     recover_abort: Option<tokio::task::JoinHandle<()>>,
 }
 
-pub async fn connect_bridge(
-    event_tx: mpsc::Sender<ServerMessage>,
-) -> Result<Arc<BridgeState>, String> {
+pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
     let rmux = Rmux::builder()
         .default_timeout(Duration::from_secs(15))
         .connect_or_start()
@@ -50,7 +51,6 @@ pub async fn connect_bridge(
         rmux,
         sessions: Mutex::new(HashMap::new()),
         panes: Mutex::new(HashMap::new()),
-        event_tx,
     }))
 }
 
@@ -266,7 +266,11 @@ impl BridgeState {
         Ok(())
     }
 
-    pub async fn start_recover(self: &Arc<Self>, pane_id: String) -> Result<Vec<RecoveryEventDto>, String> {
+    pub async fn start_recover(
+        self: &Arc<Self>,
+        pane_id: String,
+        out_tx: &mpsc::Sender<ServerMessage>,
+    ) -> Result<(), String> {
         let pane_id_parsed = parse_pane_id(&pane_id)?;
         let session_id = self
             .panes
@@ -300,23 +304,40 @@ impl BridgeState {
         // Recover RPC succeeds only after the initial Rebase. A spawned task
         // can still exit on the first next(); waiting here makes "OK" mean
         // the authority snapshot exists, not merely that a task was spawned.
-        let first_dtos = loop {
-            match stream.next().await {
-                Ok(Some(event)) => match classify_startup_event(event) {
-                    StartupPoll::Skip => continue,
-                    StartupPoll::Ready(dtos) => break dtos,
-                    StartupPoll::Failed(message) => return Err(message),
-                },
-                Ok(None) => {
-                    return Err("recovery stream ended before initial rebase".to_owned());
-                }
-                Err(err) => {
-                    return Err(format!("recover_output failed: {err}"));
+        // The deadline keeps a pending stream from wedging the serial stdin loop.
+        let first_dtos = with_initial_rebase_deadline(async {
+            loop {
+                match stream.next().await {
+                    Ok(Some(event)) => match classify_startup_event(event) {
+                        StartupPoll::Skip => continue,
+                        StartupPoll::Ready(dtos) => return Ok(dtos),
+                        StartupPoll::Failed(message) => return Err(message),
+                    },
+                    Ok(None) => {
+                        return Err("recovery stream ended before initial rebase".to_owned());
+                    }
+                    Err(err) => {
+                        return Err(format!("recover_output failed: {err}"));
+                    }
                 }
             }
-        };
+        })
+        .await?;
 
-        let event_tx = self.event_tx.clone();
+        // Queue the snapshot on the stdout channel *before* spawning the
+        // follow-up reader, and have that reader use the same channel. Bytes
+        // cannot enter out_tx until after this send completes.
+        for dto in first_dtos {
+            out_tx
+                .send(ServerMessage::Event {
+                    pane_id: pane_id.clone(),
+                    event: dto,
+                })
+                .await
+                .map_err(|_| "stdout closed during recover start".to_owned())?;
+        }
+
+        let out_tx_follow = out_tx.clone();
         let pane_id_for_task = pane_id.clone();
         let handle = tokio::spawn(async move {
             loop {
@@ -325,7 +346,7 @@ impl BridgeState {
                         let dtos = map_recovery_events(event);
                         let mut send_failed = false;
                         for dto in dtos {
-                            if event_tx
+                            if out_tx_follow
                                 .send(ServerMessage::Event {
                                     pane_id: pane_id_for_task.clone(),
                                     event: dto,
@@ -357,7 +378,7 @@ impl BridgeState {
             }
         }
 
-        Ok(first_dtos)
+        Ok(())
     }
 
     pub async fn stop_recover(&self, pane_id: &str) -> Result<(), String> {
@@ -476,5 +497,58 @@ fn rebase_reason_name(reason: PaneRecoveryRebaseReason) -> &'static str {
         PaneRecoveryRebaseReason::Lag => "lag",
         PaneRecoveryRebaseReason::GenerationChanged => "generation-changed",
         _ => "other",
+    }
+}
+
+async fn with_initial_rebase_deadline<T>(
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    match tokio::time::timeout(INITIAL_REBASE_TIMEOUT, fut).await {
+        Ok(inner) => inner,
+        Err(_) => Err("recovery timed out waiting for initial rebase".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmux_sdk::PaneStreamEndReason;
+
+    #[test]
+    fn startup_rejects_bytes_before_rebase() {
+        let event = PaneRecoveryEvent::Bytes {
+            epoch: 1,
+            sequence: 0,
+            bytes: b"x".to_vec(),
+        };
+        match classify_startup_event(event) {
+            StartupPoll::Failed(message) => {
+                assert!(message.contains("bytes instead of rebase"), "{message}");
+            }
+            StartupPoll::Skip => panic!("expected Failed, got Skip"),
+            StartupPoll::Ready(_) => panic!("expected Failed, got Ready"),
+        }
+    }
+
+    #[test]
+    fn startup_rejects_end_before_rebase() {
+        let event = PaneRecoveryEvent::End(PaneStreamEndReason::PaneRemoved);
+        match classify_startup_event(event) {
+            StartupPoll::Failed(message) => {
+                assert!(message.contains("ended before initial rebase"), "{message}");
+            }
+            StartupPoll::Skip => panic!("expected Failed, got Skip"),
+            StartupPoll::Ready(_) => panic!("expected Failed, got Ready"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_first_rebase_times_out() {
+        let err = with_initial_rebase_deadline(std::future::pending::<
+            Result<Vec<RecoveryEventDto>, String>,
+        >())
+        .await
+        .expect_err("pending rebase must fail closed");
+        assert_eq!(err, "recovery timed out waiting for initial rebase");
     }
 }

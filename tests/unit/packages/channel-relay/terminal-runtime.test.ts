@@ -957,6 +957,39 @@ test("old recovery finally cannot delete a replacement loop for the same attachm
   expect(driver.recoverySubscriberCount(paneId)).toBe(0);
 });
 
+test("recovery iterator error after live publishes recovery-failed and keeps the shell", async () => {
+  const { runtime, driver, events, registry } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "controller",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(30);
+  expect(events.some((e) => e.type === "rebase-end")).toBe(true);
+  expect(registry.getSnapshot().terminals[opened.terminalId]?.state).toBe("live");
+
+  events.length = 0;
+  const paneId = (await driver.list())[0]!.paneId;
+  driver.failRecover(paneId, new Error("snapshot refresh recover failed"));
+  await Bun.sleep(30);
+
+  expect(events.filter((e) => e.type === "recovery-failed")).toEqual([
+    expect.objectContaining({
+      type: "recovery-failed",
+      attachmentId: opened.attachmentId,
+      terminalId: opened.terminalId,
+      generation: opened.generation,
+      code: "terminal-rmux-unavailable",
+    }),
+  ]);
+  expect(events.some((e) => e.type === "exit")).toBe(false);
+  expect(registry.getSnapshot().terminals[opened.terminalId]?.state).toBe("live");
+  expect((await driver.list()).some((s) => s.paneId === paneId)).toBe(true);
+});
+
 test("startRecovery failure publishes terminal-recovery-failed and keeps the live resource", async () => {
   const { runtime, driver, events, registry } = await makeHarness();
   const opened = await runtime.openOrResume({

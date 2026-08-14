@@ -29,14 +29,14 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), String> {
-    let (event_tx, mut event_rx) = mpsc::channel::<ServerMessage>(256);
     let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(512);
 
-    let bridge = connect_bridge(event_tx)
+    let bridge = connect_bridge()
         .await
         .map_err(|e| format!("bridge connect: {e}"))?;
 
-    // stdout writer task — sole owner of stdout.
+    // stdout writer task — sole owner of stdout. Recover events and RPC
+    // replies share this FIFO so initial Rebase cannot race follow-up Bytes.
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(msg) = out_rx.recv().await {
@@ -55,16 +55,6 @@ async fn run() -> Result<(), String> {
                 Err(err) => {
                     eprintln!("serialize error: {err}");
                 }
-            }
-        }
-    });
-
-    // Forward recovery events to stdout queue.
-    let out_tx_events = out_tx.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = event_rx.recv().await {
-            if out_tx_events.send(msg).await.is_err() {
-                break;
             }
         }
     });
@@ -290,28 +280,9 @@ async fn handle_message(
                 message: redact_error_message(&err),
             },
         },
-        ClientMessage::Recover { id, pane_id } => match bridge.start_recover(pane_id.clone()).await {
-            Ok(dtos) => {
-                // Emit the initial rebase before the RPC ack so Node's start
-                // barrier means "snapshot ready", not merely "task spawned".
-                for dto in dtos {
-                    if out_tx
-                        .send(ServerMessage::Event {
-                            pane_id: pane_id.clone(),
-                            event: dto,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        return ServerMessage::Error {
-                            id,
-                            code: "terminal-rmux-unavailable".to_owned(),
-                            message: "stdout closed during recover start".to_owned(),
-                        };
-                    }
-                }
-                ServerMessage::Ok { id }
-            }
+        ClientMessage::Recover { id, pane_id } => match bridge.start_recover(pane_id, out_tx).await
+        {
+            Ok(()) => ServerMessage::Ok { id },
             Err(err) => ServerMessage::Error {
                 id,
                 code: "terminal-rmux-unavailable".to_owned(),
