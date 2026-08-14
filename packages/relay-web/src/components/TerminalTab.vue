@@ -87,6 +87,9 @@ function isController(): boolean {
 }
 
 const canType = computed(() => attached.value && role.value === "controller");
+const otherViewerCount = computed(() =>
+  Math.max(0, viewerCount.value - (attached.value && role.value ? 1 : 0)),
+);
 
 function handleData(d: string) {
   if (!canType.value) return;
@@ -402,8 +405,8 @@ onBeforeUnmount(() => {
             class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-fg-muted">
         {{ role === "controller" ? $t("terminal.role.controller") : $t("terminal.role.spectator") }}
       </span>
-      <span v-if="viewerCount > 0" data-test="terminal-viewers"
-            class="shrink-0 text-[11px] text-fg-muted">{{ $t("terminal.viewers", { count: viewerCount }) }}</span>
+      <span v-if="otherViewerCount > 0" data-test="terminal-viewers"
+            class="shrink-0 text-[11px] text-fg-muted">{{ $t("terminal.viewers", { count: otherViewerCount }) }}</span>
       <button v-if="role === 'spectator'" data-test="terminal-take-control"
               type="button"
               class="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-40"

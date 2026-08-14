@@ -138,6 +138,32 @@ describe("TerminalTab", () => {
     expect(w.text()).not.toContain("terminal.offline");
   });
 
+  it("sole controller does not count itself as a viewer", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-role"]').text()).toContain("terminal.role.controller");
+    expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
+  });
+
+  it("shows other viewers as total attachments minus self", async () => {
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "controller", viewerCount: 2 }),
+    );
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-viewers"]').text()).toContain("\"count\":1");
+  });
+
+  it("spectator with two attachments also shows one other viewer", async () => {
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
+    );
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-role"]').text()).toContain("terminal.role.spectator");
+    expect(w.find('[data-test="terminal-viewers"]').text()).toContain("\"count\":1");
+  });
+
   it("spectator disables input and shows take-control", async () => {
     openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
       openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
