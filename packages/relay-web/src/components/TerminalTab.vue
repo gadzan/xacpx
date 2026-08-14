@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
-import { useTerminalStore, terminalLocalKey, type TerminalAttachmentView } from "../stores/terminal";
+import { useTerminalStore, terminalLocalKey, isFatalTerminalRecoveryCode, type TerminalAttachmentView } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
 import { useConnectionStore } from "../stores/connection";
 import { useInstancesStore } from "../stores/instances";
@@ -211,6 +211,11 @@ function applyMeta(view: TerminalAttachmentView): void {
   if (view.localKey !== localKey.value) return;
   role.value = view.role ?? "";
   viewerCount.value = view.viewerCount ?? 0;
+  if (view.lastErrorCode && isFatalTerminalRecoveryCode(view.lastErrorCode)) {
+    status.value = "error";
+    errorKey.value = mapErrorCode(view.lastErrorCode);
+    return;
+  }
   if (!takingControl.value && view.role === "spectator" && (view.viewerCount ?? 0) <= 1) {
     void takeControl();
   }

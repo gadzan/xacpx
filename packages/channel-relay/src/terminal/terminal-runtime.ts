@@ -148,6 +148,14 @@ export type TerminalViewerEvent =
     attachmentId: string;
     terminalId: string;
     generation: string;
+  }
+  | {
+    type: "recovery-failed";
+    attachmentId: string;
+    terminalId: string;
+    generation: string;
+    code: TerminalErrorCode;
+    message: string;
   };
 
 export interface RelayTerminalRuntime {
@@ -255,6 +263,15 @@ interface RecoveryLoop {
   token: symbol;
   abort: AbortController;
   done: Promise<void>;
+}
+
+function recoveryFailureCode(err: unknown): TerminalErrorCode {
+  if (err instanceof TerminalRuntimeError) return err.code;
+  return "terminal-rmux-unavailable";
+}
+
+function recoveryFailureMessage(err: unknown): string {
+  return recoveryFailureCode(err);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -580,7 +597,20 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     if (!attachment) {
       throw new TerminalRuntimeError("terminal-attachment-not-found");
     }
-    await this.withTerminalLock(attachment.terminalId, () => this.startRecoveryUnlocked(attachmentId));
+    try {
+      await this.withTerminalLock(attachment.terminalId, () => this.startRecoveryUnlocked(attachmentId));
+    } catch (err) {
+      const latest = this.attachments.getAttachment(attachmentId);
+      if (latest && latest.generation === attachment.generation) {
+        this.publishRecoveryFailed(
+          attachmentId,
+          attachment.terminalId,
+          attachment.generation,
+          err,
+        );
+      }
+      throw err;
+    }
   }
 
   detach(attachmentId: string): void {
@@ -709,7 +739,12 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     await this.withTerminalLock(attachment.terminalId, async () => {
       await this.stopRecovery(attachmentId);
       this.attachments.resetOutboundQueue(attachmentId);
-      await this.startRecoveryUnlocked(attachmentId);
+      try {
+        await this.startRecoveryUnlocked(attachmentId);
+      } catch (err) {
+        this.publishRecoveryFailed(attachmentId, attachment.terminalId, generation, err);
+        throw err;
+      }
     });
   }
 
@@ -1054,6 +1089,22 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     }
   }
 
+  private publishRecoveryFailed(
+    attachmentId: string,
+    terminalId: string,
+    generation: string,
+    err: unknown,
+  ): void {
+    this.onViewerEvent({
+      type: "recovery-failed",
+      attachmentId,
+      terminalId,
+      generation,
+      code: recoveryFailureCode(err),
+      message: recoveryFailureMessage(err),
+    });
+  }
+
   /** Caller must hold the per-terminal lock. */
   private async startRecoveryUnlocked(attachmentId: string): Promise<void> {
     const attachment = this.attachments.getAttachment(attachmentId);
@@ -1116,6 +1167,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     signal: AbortSignal;
   }): Promise<void> {
     const { attachmentId, terminalId, generation, paneId, token, signal } = input;
+    let live = false;
     let cancel!: () => void;
     const cancelled = new Promise<void>((resolve) => {
       cancel = resolve;
@@ -1123,7 +1175,14 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     if (signal.aborted) cancel();
     else signal.addEventListener("abort", cancel, { once: true });
 
-    const iterator = this.driver.recover(paneId, signal)[Symbol.asyncIterator]();
+    let iterator: AsyncIterator<RmuxRecoveryEvent>;
+    try {
+      iterator = this.driver.recover(paneId, signal)[Symbol.asyncIterator]();
+    } catch (err) {
+      this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
+      signal.removeEventListener("abort", cancel);
+      return;
+    }
     try {
       while (!signal.aborted) {
         const step = await Promise.race([
@@ -1132,15 +1191,19 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         ]);
         if (step.kind === "cancel" || signal.aborted) break;
         if (step.value.done) break;
+        live = true;
         const event = step.value.value;
         await this.dispatchRecoveryEvent(attachmentId, terminalId, generation, event);
         if (event.type === "exit") break;
       }
-    } catch {
-      // Sidecar/driver crash: fan out exit and durable-reap (never adopt).
-      queueMicrotask(() => {
-        void this.handleNaturalExit(terminalId, generation);
-      });
+    } catch (err) {
+      if (!live) {
+        this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
+      } else {
+        queueMicrotask(() => {
+          void this.handleNaturalExit(terminalId, generation);
+        });
+      }
     } finally {
       signal.removeEventListener("abort", cancel);
       try {

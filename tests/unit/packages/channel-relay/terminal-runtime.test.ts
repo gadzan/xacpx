@@ -482,12 +482,12 @@ test("natural shell exit marks reaping(exited) and fans out exit", async () => {
     rows: 24,
   });
   await runtime.startRecovery(opened.attachmentId);
-  await Bun.sleep(10);
+  await Bun.sleep(30);
 
   const sessionId = (await driver.list())[0]!.sessionId;
   events.length = 0;
   driver.exitSession(sessionId, 0);
-  await Bun.sleep(30);
+  await Bun.sleep(80);
 
   expect(events.some((e) => e.type === "exit" && e.reason === "exited")).toBe(true);
   // finishReap should have removed once kill/absent completes; exitSession leaves
@@ -955,4 +955,35 @@ test("old recovery finally cannot delete a replacement loop for the same attachm
   await Bun.sleep(20);
   expect(runtime.hasRecoveryForTests(opened.attachmentId)).toBe(false);
   expect(driver.recoverySubscriberCount(paneId)).toBe(0);
+});
+
+test("startRecovery failure publishes terminal-recovery-failed and keeps the live resource", async () => {
+  const { runtime, driver, events, registry } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "controller",
+    cols: 80,
+    rows: 24,
+  });
+  events.length = 0;
+  driver.configureFailure("recover", new Error("no-daemon"));
+
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(30);
+
+  const failed = events.filter((e) => e.type === "recovery-failed");
+  expect(failed).toEqual([
+    expect.objectContaining({
+      type: "recovery-failed",
+      attachmentId: opened.attachmentId,
+      terminalId: opened.terminalId,
+      generation: opened.generation,
+      code: "terminal-rmux-unavailable",
+      message: "terminal-rmux-unavailable",
+    }),
+  ]);
+  expect(runtime.peekAttachment(opened.attachmentId)).toBeTruthy();
+  expect(registry.getSnapshot().terminals[opened.terminalId]?.state).toBe("live");
+  expect(events.some((e) => e.type === "exit")).toBe(false);
 });

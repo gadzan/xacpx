@@ -218,4 +218,19 @@ describe("TerminalTab", () => {
     await btn.trigger("click");
     expect(w.find('[data-test="keybar"]').exists()).toBe(!before);
   });
+
+  it("fatal recovery failure shows an error instead of a blank controller canvas", async () => {
+    let metaCb: ((key: string, view: ReturnType<typeof openedView> & { lastErrorCode?: string }) => void) | undefined;
+    onMeta.mockImplementation((cb: typeof metaCb) => {
+      metaCb = cb;
+      return () => {};
+    });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-host"]').exists()).toBe(true);
+    metaCb?.("i1\0demo", { ...openedView(), lastErrorCode: "terminal-rmux-unavailable" });
+    await flushPromises();
+    expect(w.text()).toContain("terminal.unsupported");
+    expect(w.find('[data-test="terminal-host"]').isVisible()).toBe(false);
+  });
 });

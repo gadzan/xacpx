@@ -144,6 +144,13 @@ function toViewerInner(event: TerminalViewerEvent): TerminalViewerEventInner | n
         code: "terminal-recovery-too-large",
         message: "attachment outbound queue overflow",
       };
+    case "recovery-failed":
+      return {
+        kind: "terminal-recovery-failed",
+        generation: event.generation,
+        code: event.code,
+        message: event.message,
+      };
     default:
       return null;
   }
