@@ -18,12 +18,14 @@ use rmux_sdk::{
 use tokio::sync::{mpsc, Mutex};
 
 use crate::protocol::{
-    encode_b64, encode_rebase_events, InventoryEntryDto, RecoveryEventDto, ServerMessage,
-    BRIDGE_VERSION,
+    encode_b64, encode_rebase_events, redact_error_message, InventoryEntryDto, RecoveryEventDto,
+    ServerMessage, BRIDGE_VERSION, RECOVERY_STREAM_ENDED_CODE, RECOVERY_STREAM_FAILED_CODE,
 };
 
-/// Bound the Recover RPC so a pending first Rebase cannot stall the serial
-/// stdin loop forever. Kept under the Node sidecar request timeout (15s).
+/// Bound Recover startup (`pane_by_id` + `recover_output` + first Rebase) so a
+/// pending stream cannot stall the Recover RPC forever. Kept under the Node
+/// sidecar request timeout (15s). Recover itself is dispatched off the stdin
+/// loop so other panes are not queued behind this wait.
 const INITIAL_REBASE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct BridgeState {
@@ -280,37 +282,36 @@ impl BridgeState {
             .cloned()
             .ok_or_else(|| format!("pane not found: {pane_id}"))?;
 
-        let mut stream = {
-            let mut sessions = self.sessions.lock().await;
-            let actor = sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| format!("session not found: {session_id}"))?;
-            if let Some(prev) = actor.recover_abort.take() {
-                // Explicit recover always restarts. Node only sends recover from
-                // the pane start barrier (never for a late live viewer).
-                prev.abort();
-                let _ = prev.await;
-            }
-            let pane = actor
-                .owned
-                .pane_by_id(pane_id_parsed)
-                .await
-                .map_err(|e| format!("pane_by_id failed: {e}"))?;
-            pane.recover_output()
-                .await
-                .map_err(|e| format!("recover_output failed: {e}"))?
-        };
+        let (mut stream, first_dtos) = with_initial_rebase_deadline(async {
+            let mut stream = {
+                let mut sessions = self.sessions.lock().await;
+                let actor = sessions
+                    .get_mut(&session_id)
+                    .ok_or_else(|| format!("session not found: {session_id}"))?;
+                if let Some(prev) = actor.recover_abort.take() {
+                    // Explicit recover always restarts. Node only sends recover from
+                    // the pane start barrier (never for a late live viewer).
+                    prev.abort();
+                    let _ = prev.await;
+                }
+                let pane = actor
+                    .owned
+                    .pane_by_id(pane_id_parsed)
+                    .await
+                    .map_err(|e| format!("pane_by_id failed: {e}"))?;
+                pane.recover_output()
+                    .await
+                    .map_err(|e| format!("recover_output failed: {e}"))?
+            };
 
-        // Recover RPC succeeds only after the initial Rebase. A spawned task
-        // can still exit on the first next(); waiting here makes "OK" mean
-        // the authority snapshot exists, not merely that a task was spawned.
-        // The deadline keeps a pending stream from wedging the serial stdin loop.
-        let first_dtos = with_initial_rebase_deadline(async {
-            loop {
+            // Recover RPC succeeds only after the initial Rebase. A spawned task
+            // can still exit on the first next(); waiting here makes "OK" mean
+            // the authority snapshot exists, not merely that a task was spawned.
+            let first_dtos = loop {
                 match stream.next().await {
                     Ok(Some(event)) => match classify_startup_event(event) {
                         StartupPoll::Skip => continue,
-                        StartupPoll::Ready(dtos) => return Ok(dtos),
+                        StartupPoll::Ready(dtos) => break dtos,
                         StartupPoll::Failed(message) => return Err(message),
                     },
                     Ok(None) => {
@@ -320,7 +321,8 @@ impl BridgeState {
                         return Err(format!("recover_output failed: {err}"));
                     }
                 }
-            }
+            };
+            Ok((stream, first_dtos))
         })
         .await?;
 
@@ -362,7 +364,20 @@ impl BridgeState {
                             break;
                         }
                     }
-                    Ok(None) | Err(_) => break,
+                    other => {
+                        let dto = match other {
+                            Ok(None) => unexpected_stream_end_event(),
+                            Err(err) => stream_transport_error_event(&format!("{err}")),
+                            Ok(Some(_)) => unreachable!(),
+                        };
+                        let _ = out_tx_follow
+                            .send(ServerMessage::Event {
+                                pane_id: pane_id_for_task,
+                                event: dto,
+                            })
+                            .await;
+                        break;
+                    }
                 }
             }
         });
@@ -500,6 +515,20 @@ fn rebase_reason_name(reason: PaneRecoveryRebaseReason) -> &'static str {
     }
 }
 
+fn unexpected_stream_end_event() -> RecoveryEventDto {
+    RecoveryEventDto::Error {
+        code: RECOVERY_STREAM_ENDED_CODE.to_owned(),
+        message: "recovery stream ended unexpectedly".to_owned(),
+    }
+}
+
+fn stream_transport_error_event(err: &str) -> RecoveryEventDto {
+    RecoveryEventDto::Error {
+        code: RECOVERY_STREAM_FAILED_CODE.to_owned(),
+        message: redact_error_message(&format!("recover_output failed: {err}")),
+    }
+}
+
 async fn with_initial_rebase_deadline<T>(
     fut: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
@@ -550,5 +579,29 @@ mod tests {
         .await
         .expect_err("pending rebase must fail closed");
         assert_eq!(err, "recovery timed out waiting for initial rebase");
+    }
+
+    #[test]
+    fn followup_none_is_a_transport_error_not_exit() {
+        let event = unexpected_stream_end_event();
+        match event {
+            RecoveryEventDto::Error { code, message } => {
+                assert_eq!(code, RECOVERY_STREAM_ENDED_CODE);
+                assert!(message.contains("ended unexpectedly"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn followup_err_is_a_transport_error_not_exit() {
+        let event = stream_transport_error_event("connection reset");
+        match event {
+            RecoveryEventDto::Error { code, message } => {
+                assert_eq!(code, RECOVERY_STREAM_FAILED_CODE);
+                assert!(message.contains("recover_output failed"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 }

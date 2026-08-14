@@ -568,6 +568,75 @@ test("sidecar oversized rebase error is forwarded instead of dropped", async () 
   ]);
 });
 
+test("post-start recovery stream error fails live subscribers", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const events: RmuxRecoveryEvent[] = [];
+  const thrown: { current?: unknown } = {};
+  const iterP = (async () => {
+    try {
+      for await (const ev of driver.recover("%1")) {
+        events.push(ev);
+      }
+    } catch (err) {
+      thrown.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "hi", { nextSequence: 0 });
+  await pumpUntil(() => events.some((e) => e.type === "rebase"), "rebase");
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: { type: "bytes", epoch: 1, sequence: 0, data_base64: Buffer.from("x").toString("base64") },
+    })}\n`,
+  );
+  await pumpUntil(() => events.some((e) => e.type === "bytes"), "bytes");
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "error",
+        code: "recovery-stream-failed",
+        message: "recover_output failed: connection reset",
+      },
+    })}\n`,
+  );
+  await iterP;
+  expect(events.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+  expect(thrown.current).toBeInstanceOf(Error);
+  expect(String(thrown.current)).toContain("recover_output failed");
+});
+
+test("protocol fatal crash fails recover iterators as RmuxDriverCrashedError", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const thrown: { current?: unknown } = {};
+  const iterP = (async () => {
+    try {
+      for await (const _ev of driver.recover("%1")) {
+        // wait for crash
+      }
+    } catch (err) {
+      thrown.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "hi");
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write("this is not json\n");
+  await iterP;
+  expect(thrown.current).toBeInstanceOf(RmuxDriverCrashedError);
+});
+
 test("new subscriber before stop executes skips stop-recover and keeps the live stream", async () => {
   const fake = makeFakeChild();
   const driver = new RmuxSidecarDriver(fake.child);

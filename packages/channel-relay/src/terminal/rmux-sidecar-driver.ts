@@ -23,6 +23,11 @@ const SIDECAR_PROTOCOL_VERSION = 2;
 /** Must match the Rust sidecar `REBASE_CHUNK_BYTES`. */
 const REBASE_CHUNK_BYTES = 48 * 1024;
 const MAX_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
+/** Must match Rust `RECOVERY_STREAM_ENDED_CODE` / `RECOVERY_STREAM_FAILED_CODE`. */
+const RECOVERY_STREAM_FAILURE_CODES = new Set([
+  "recovery-stream-ended",
+  "recovery-stream-failed",
+]);
 /** Cap for bytes buffered after the last rebase for late multi-viewer joins.
  *  Matches the recovery size budget. Overflow asks RMUX for a fresh snapshot
  *  instead of synthesizing an oversized keyframe. */
@@ -495,6 +500,14 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     raw: Record<string, unknown> | undefined,
   ): RmuxRecoveryEvent | null {
     if (!raw || typeof raw.type !== "string") return null;
+    if (raw.type === "error") {
+      const code = String(raw.code ?? "");
+      if (RECOVERY_STREAM_FAILURE_CODES.has(code)) {
+        this.rebaseAssembly.delete(paneId);
+        this.failPaneSubscribers(paneId, new Error(String(raw.message ?? code)));
+        return null;
+      }
+    }
     if (raw.type === "rebase-start") {
       const totalBytes = Number(raw.total_bytes ?? 0);
       const chunkCount = Number(raw.chunk_count ?? 0);
@@ -645,13 +658,14 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private crash(err: Error): void {
     if (this.crashed) return;
     this.crashed = true;
+    const crashed = err instanceof RmuxDriverCrashedError ? err : this.crashError();
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(err instanceof RmuxDriverCrashedError ? err : this.crashError());
+      p.reject(crashed);
     }
     this.pending.clear();
     for (const set of this.recoveries.values()) {
-      for (const sub of set) sub.close(err);
+      for (const sub of set) sub.close(crashed);
     }
     this.recoveries.clear();
     this.recoveryCache.clear();
@@ -660,7 +674,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.recoveryControls.clear();
     this.recoveryLive.clear();
     this.recoveryStarts.clear();
-    this.emitter.emit("crash", err);
+    this.emitter.emit("crash", crashed);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {
       this.child.kill?.("SIGTERM");

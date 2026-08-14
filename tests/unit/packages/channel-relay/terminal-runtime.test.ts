@@ -11,6 +11,7 @@ import type {
 
 import type { RelayTerminalConfig } from "../../../../packages/channel-relay/src/config";
 import { InMemoryRmuxDriver } from "../../../../packages/channel-relay/src/terminal/in-memory-rmux-driver";
+import { RmuxDriverCrashedError } from "../../../../packages/channel-relay/src/terminal/rmux-driver";
 import { TerminalRegistryStore } from "../../../../packages/channel-relay/src/terminal/terminal-registry-store";
 import {
   DefaultRelayTerminalRuntime,
@@ -971,9 +972,13 @@ test("recovery iterator error after live publishes recovery-failed and keeps the
   expect(events.some((e) => e.type === "rebase-end")).toBe(true);
   expect(registry.getSnapshot().terminals[opened.terminalId]?.state).toBe("live");
 
-  events.length = 0;
   const paneId = (await driver.list())[0]!.paneId;
-  driver.failRecover(paneId, new Error("snapshot refresh recover failed"));
+  driver.injectOutput(paneId, new Uint8Array([0x61]));
+  await Bun.sleep(20);
+  expect(events.some((e) => e.type === "bytes")).toBe(true);
+
+  events.length = 0;
+  driver.failRecover(paneId, new Error("recover_output failed: connection reset"));
   await Bun.sleep(30);
 
   expect(events.filter((e) => e.type === "recovery-failed")).toEqual([
@@ -988,6 +993,29 @@ test("recovery iterator error after live publishes recovery-failed and keeps the
   expect(events.some((e) => e.type === "exit")).toBe(false);
   expect(registry.getSnapshot().terminals[opened.terminalId]?.state).toBe("live");
   expect((await driver.list()).some((s) => s.paneId === paneId)).toBe(true);
+});
+
+test("sidecar crash after live reaps the owned session", async () => {
+  const { runtime, driver, events, registry } = await makeHarness();
+  const opened = await runtime.openOrResume({
+    chatKey: "relay:u1",
+    sessionAlias: "demo",
+    viewerId: "controller",
+    cols: 80,
+    rows: 24,
+  });
+  await runtime.startRecovery(opened.attachmentId);
+  await Bun.sleep(30);
+  expect(registry.getSnapshot().terminals[opened.terminalId]?.state).toBe("live");
+
+  events.length = 0;
+  const paneId = (await driver.list())[0]!.paneId;
+  driver.failRecover(paneId, new RmuxDriverCrashedError("bridge exited"));
+  await Bun.sleep(80);
+
+  expect(events.some((e) => e.type === "recovery-failed")).toBe(false);
+  expect(events.some((e) => e.type === "exit" && e.reason === "exited")).toBe(true);
+  expect(registry.getSnapshot().terminals[opened.terminalId]).toBeUndefined();
 });
 
 test("startRecovery failure publishes terminal-recovery-failed and keeps the live resource", async () => {

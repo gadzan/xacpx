@@ -18,6 +18,7 @@ import type { TerminalRegistryStore } from "./terminal-registry-store.js";
 import {
   type RmuxRecoveryEvent,
   type RmuxTerminalDriver,
+  RmuxDriverCrashedError,
 } from "./rmux-driver.js";
 import type { RelayTerminalConfig } from "../config.js";
 import {
@@ -272,6 +273,10 @@ function recoveryFailureCode(err: unknown): TerminalErrorCode {
 
 function recoveryFailureMessage(err: unknown): string {
   return recoveryFailureCode(err);
+}
+
+function isOwnerLoss(err: unknown): boolean {
+  return err instanceof RmuxDriverCrashedError;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -1178,7 +1183,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
     try {
       iterator = this.driver.recover(paneId, signal)[Symbol.asyncIterator]();
     } catch (err) {
-      this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
+      this.handleRecoveryIteratorFailure(attachmentId, terminalId, generation, err);
       signal.removeEventListener("abort", cancel);
       return;
     }
@@ -1195,9 +1200,7 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         if (event.type === "exit") break;
       }
     } catch (err) {
-      // Transport/driver failures (snapshot refresh NACK, sidecar error) are
-      // not a pane process exit. Reaping here would kill a healthy shell.
-      this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
+      this.handleRecoveryIteratorFailure(attachmentId, terminalId, generation, err);
     } finally {
       signal.removeEventListener("abort", cancel);
       try {
@@ -1210,6 +1213,21 @@ export class DefaultRelayTerminalRuntime implements RelayTerminalRuntime {
         this.recoveries.delete(attachmentId);
       }
     }
+  }
+
+  private handleRecoveryIteratorFailure(
+    attachmentId: string,
+    terminalId: string,
+    generation: string,
+    err: unknown,
+  ): void {
+    if (isOwnerLoss(err)) {
+      queueMicrotask(() => {
+        void this.handleNaturalExit(terminalId, generation);
+      });
+      return;
+    }
+    this.publishRecoveryFailed(attachmentId, terminalId, generation, err);
   }
 
   private async dispatchRecoveryEvent(

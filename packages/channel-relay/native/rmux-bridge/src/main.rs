@@ -4,6 +4,8 @@ mod actors;
 mod protocol;
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use actors::connect_bridge;
 use protocol::{
@@ -61,7 +63,7 @@ async fn run() -> Result<(), String> {
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.split(b'\n');
-    let mut outstanding: usize = 0;
+    let outstanding = Arc::new(AtomicUsize::new(0));
     let mut handshaken = false;
 
     while let Some(chunk) = lines
@@ -110,7 +112,7 @@ async fn run() -> Result<(), String> {
             }
         };
 
-        if outstanding >= MAX_OUTSTANDING_REQUESTS {
+        if outstanding.load(Ordering::SeqCst) >= MAX_OUTSTANDING_REQUESTS {
             let id = request_id(&msg).to_owned();
             let _ = out_tx
                 .send(ServerMessage::Error {
@@ -121,26 +123,44 @@ async fn run() -> Result<(), String> {
                 .await;
             continue;
         }
-        outstanding += 1;
 
-        let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;
-        let is_shutdown = matches!(
-            &response,
-            ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown")
-        );
-        let response = match response {
-            ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown") => ServerMessage::Ok {
-                id: id.trim_end_matches("\u{0}shutdown").to_owned(),
-            },
-            other => other,
-        };
-        outstanding = outstanding.saturating_sub(1);
-        if out_tx.send(response).await.is_err() {
-            break;
+        // Handshake stays on the stdin task so later requests cannot race it.
+        // Shutdown stays here so we stop reading before tearing the process down.
+        // Everything else — including Recover startup — is spawned so a pending
+        // first Rebase cannot HOL-block input/stop/kill for other panes.
+        let inline = !handshaken || matches!(msg, ClientMessage::Shutdown { .. });
+        outstanding.fetch_add(1, Ordering::SeqCst);
+        if inline {
+            let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;
+            outstanding.fetch_sub(1, Ordering::SeqCst);
+            let is_shutdown = matches!(
+                &response,
+                ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown")
+            );
+            let response = match response {
+                ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown") => ServerMessage::Ok {
+                    id: id.trim_end_matches("\u{0}shutdown").to_owned(),
+                },
+                other => other,
+            };
+            if out_tx.send(response).await.is_err() {
+                break;
+            }
+            if is_shutdown {
+                break;
+            }
+            continue;
         }
-        if is_shutdown {
-            break;
-        }
+
+        let bridge = Arc::clone(&bridge);
+        let out_tx = out_tx.clone();
+        let outstanding = Arc::clone(&outstanding);
+        tokio::spawn(async move {
+            let mut handshaken = true;
+            let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;
+            let _ = out_tx.send(response).await;
+            outstanding.fetch_sub(1, Ordering::SeqCst);
+        });
     }
 
     bridge.shutdown_all().await;
@@ -165,7 +185,7 @@ fn request_id(msg: &ClientMessage) -> &str {
 }
 
 async fn handle_message(
-    bridge: &std::sync::Arc<actors::BridgeState>,
+    bridge: &Arc<actors::BridgeState>,
     msg: ClientMessage,
     handshaken: &mut bool,
     out_tx: &mpsc::Sender<ServerMessage>,
