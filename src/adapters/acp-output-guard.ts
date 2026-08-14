@@ -23,6 +23,96 @@ export interface GuardOptions {
   maxStringChars?: number;
 }
 
+/**
+ * Read ACP stdout as a backpressure-aware async stream. The caller's line
+ * handler is awaited before the iterator is advanced, so a slow acpx stdout
+ * consumer pauses the child stdout source instead of accumulating a Promise
+ * chain in this process.
+ */
+export async function pumpAcpStdout(
+  source: AsyncIterable<Buffer | string>,
+  onLine: (line: Buffer) => Promise<void>,
+  maxRawLineBytes: number = MAX_RAW_ACP_LINE_BYTES,
+): Promise<void> {
+  let pendingParts: Buffer[] = [];
+  let pendingBytes = 0;
+
+  const append = (part: Buffer): void => {
+    if (part.length === 0) return;
+    pendingParts.push(part);
+    pendingBytes += part.length;
+    if (pendingBytes > maxRawLineBytes) {
+      throw new AcpOutputGuardError(`raw ACP stdout line exceeded ${maxRawLineBytes} bytes`);
+    }
+  };
+
+  const reset = (): void => {
+    pendingParts = [];
+    pendingBytes = 0;
+  };
+
+  for await (const chunk of source) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let offset = 0;
+    while (offset <= buffer.length) {
+      const newline = buffer.indexOf(0x0a, offset);
+      const end = newline === -1 ? buffer.length : newline;
+      append(buffer.subarray(offset, end));
+      if (newline === -1) break;
+
+      await onLine(Buffer.concat(pendingParts, pendingBytes));
+      reset();
+      offset = newline + 1;
+    }
+  }
+
+  if (pendingBytes > 0) {
+    await onLine(Buffer.concat(pendingParts, pendingBytes));
+  }
+}
+
+export interface AcpAgentSpawnSpec {
+  command: string;
+  args: string[];
+  shell: false;
+}
+
+/** Keep real Windows executables on the exact argv path. cmd/bat launchers are
+ * the one case that needs an explicit cmd.exe boundary. */
+export function buildAcpAgentSpawnSpec(
+  commandArgv: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  comspec: string = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
+): AcpAgentSpawnSpec {
+  const command = commandArgv[0];
+  if (!command) {
+    throw new AcpOutputGuardError("missing agent command after --");
+  }
+  const args = [...commandArgv.slice(1)];
+  if (platform !== "win32" || !isWindowsScriptLauncher(command)) {
+    return { command, args, shell: false };
+  }
+
+  return {
+    command: comspec,
+    args: ["/d", "/s", "/c", commandArgv.map(quoteWindowsCmdArg).join(" ")],
+    shell: false,
+  };
+}
+
+function isWindowsScriptLauncher(command: string): boolean {
+  const basename = command.slice(Math.max(command.lastIndexOf("/"), command.lastIndexOf("\\")) + 1).toLowerCase();
+  return basename.endsWith(".cmd") || basename.endsWith(".bat");
+}
+
+function quoteWindowsCmdArg(value: string): string {
+  if (value.length === 0) return '""';
+  const escaped = value
+    .replace(/(\\*)"/gu, "$1$1\\\"")
+    .replace(/(\\+)$/gu, "$1$1");
+  return `"${escaped}"`;
+}
+
 export class AcpOutputGuardError extends Error {
   readonly code = ACP_OUTPUT_GUARD_ERROR_CODE;
 

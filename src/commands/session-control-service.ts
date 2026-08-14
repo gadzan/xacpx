@@ -312,6 +312,7 @@ export class SessionControlService {
         agent,
         workspace,
         `${workspace}:${finalInternalAlias}`,
+        { guardAcpOutput: true },
       );
       const release = await this.reserveLogicalTransportSession(session.transportSession);
       try {

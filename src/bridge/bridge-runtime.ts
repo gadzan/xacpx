@@ -19,7 +19,7 @@ import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
-import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow } from "../transport/acpx-queue-overflow";
+import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../transport/acpx-queue-overflow";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
@@ -586,8 +586,8 @@ export class BridgeRuntime {
         throw error;
       }
 
-      const cleanupDiagnostic = await this.cleanupOverflowedOwner(input);
-      throw new AcpxQueueOverflowError(cleanupDiagnostic);
+      const cleanup = await this.cleanupOverflowedOwner(input);
+      throw new AcpxQueueOverflowError(cleanup);
     } finally {
       try {
         await structuredPrompt?.cleanup();
@@ -604,28 +604,40 @@ export class BridgeRuntime {
    * provenance-aware verified terminator so the owner cannot become a ghost
    * turn. Neither step is allowed to replace the original overflow diagnosis.
    */
-  private async cleanupOverflowedOwner(input: BridgeSessionInput): Promise<string | undefined> {
-    let record: { acpxRecordId: string };
-    try {
-      record = await this.readSessionRecord(input);
-    } catch (error) {
-      return `could not resolve the queue owner record: ${describeCleanupError(error)}`;
-    }
-
+  private async cleanupOverflowedOwner(input: BridgeSessionInput): Promise<AcpxQueueCleanupResult> {
     const diagnostics: string[] = [];
+    let cancelSucceeded = false;
     try {
       await this.cancel(input);
+      cancelSucceeded = true;
     } catch (error) {
       diagnostics.push(`cancel failed: ${describeCleanupError(error)}`);
     }
 
+    let record: { acpxRecordId: string } | undefined;
     try {
-      await (this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified)(record.acpxRecordId);
+      record = await this.readSessionRecord(input);
     } catch (error) {
-      diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
+      diagnostics.push(`could not resolve the queue owner record: ${describeCleanupError(error)}`);
     }
 
-    return diagnostics.length > 0 ? diagnostics.join("; ") : undefined;
+    let ownerTerminationSucceeded = false;
+    if (record) {
+      try {
+        await (this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified)(record.acpxRecordId);
+        ownerTerminationSucceeded = true;
+      } catch (error) {
+        diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
+      }
+    }
+
+    return {
+      cancelAttempted: true,
+      cancelSucceeded,
+      ownerTerminationAttempted: Boolean(record),
+      ownerTerminationSucceeded,
+      ...(diagnostics.length > 0 ? { diagnostic: diagnostics.join("; ") } : {}),
+    };
   }
 
   private async launchMcpQueueOwnerIfNeeded(input: BridgeSessionInput): Promise<void> {

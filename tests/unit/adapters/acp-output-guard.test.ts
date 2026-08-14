@@ -9,7 +9,9 @@ import {
   ACP_OUTPUT_GUARD_TRUNCATION_MARKER,
   AcpOutputGuardError,
   SAFE_ACP_LINE_CHARS,
+  buildAcpAgentSpawnSpec,
   guardAcpStdoutLine,
+  pumpAcpStdout,
   resolveAcpOutputGuardEntry,
 } from "../../../src/adapters/acp-output-guard";
 
@@ -174,3 +176,57 @@ test("stdio guard handles arbitrary child chunking and preserves exit status", a
     rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("stdio pumping does not pull the next child chunk until the downstream write settles", async () => {
+  const first = Buffer.from('{"jsonrpc":"2.0","id":1}\n');
+  const second = Buffer.from('{"jsonrpc":"2.0","id":2}\n');
+  let releaseFirst!: () => void;
+  const firstWrite = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const writes: Buffer[] = [];
+  let yielded = 0;
+
+  async function* source(): AsyncGenerator<Buffer> {
+    yielded += 1;
+    yield first;
+    yielded += 1;
+    yield second;
+  }
+
+  const pumping = pumpAcpStdout(source(), async (line) => {
+    writes.push(line);
+    if (writes.length === 1) await firstWrite;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(writes).toHaveLength(1);
+  expect(yielded).toBe(1);
+  releaseFirst();
+  await pumping;
+  expect(writes).toHaveLength(2);
+  expect(yielded).toBe(2);
+});
+
+test("Windows real executables keep exact argv while cmd launchers use an explicit cmd boundary", () => {
+  const executable = buildAcpAgentSpawnSpec(
+    ["C:\\Program Files\\agent.exe", "--arg", "a&b", "(quoted)"],
+    "win32",
+    "C:\\Windows\\System32\\cmd.exe",
+  );
+  expect(executable).toEqual({
+    command: "C:\\Program Files\\agent.exe",
+    args: ["--arg", "a&b", "(quoted)"],
+    shell: false,
+  });
+
+  const launcher = buildAcpAgentSpawnSpec(
+    ["C:\\Program Files\\agent.cmd", "--arg", "a&b", "(quoted)"],
+    "win32",
+    "C:\\Windows\\System32\\cmd.exe",
+  );
+  expect(launcher.command).toBe("C:\\Windows\\System32\\cmd.exe");
+  expect(launcher.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+  expect(launcher.shell).toBe(false);
+  expect(launcher.args[3]).toContain('"C:\\Program Files\\agent.cmd"');
+  expect(launcher.args[3]).toContain('"a&b"');
+  expect(launcher.args[3]).toContain('"(quoted)"');
+});

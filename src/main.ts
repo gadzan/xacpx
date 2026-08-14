@@ -625,6 +625,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         input.targetAgent,
         input.workspace,
         input.workerSession,
+        { guardAcpOutput: true },
       );
     }
 
@@ -1068,8 +1069,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     dispatchTask: buildScheduledDispatchTask({
       getSession: (alias) => sessions.getSession(alias),
       resolveAliasForChat: (chatKey, alias) => sessions.resolveAliasForChat(chatKey, alias),
-      resolveSession: (alias, agent, workspace, transportSession) =>
-        sessions.resolveSession(alias, agent, workspace, transportSession),
+      resolveSession: (alias, agent, workspace, transportSession, options) =>
+        sessions.resolveSession(alias, agent, workspace, transportSession, options),
       sendScheduledMessage: async (input) => {
         if (!deps.channel?.sendScheduledMessage) {
           throw new Error("no channel runtime available for scheduled task dispatch");

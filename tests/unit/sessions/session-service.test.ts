@@ -923,7 +923,8 @@ test("resolveSession does not reuse a cached transport agent command from a diff
   await service.setSessionTransportAgentCommand("foo", "npx @zed-industries/codex-acp@^0.9.5");
 
   const crossAgent = service.resolveSession("foo", "claude", "backend", "backend:foo");
-  expect(crossAgent.agentCommand).toBe("npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/claude-agent-acp@0.64.2");
+  expect(crossAgent.agentCommand).toContain("acp-output-guard-main.");
+  expect(crossAgent.agentCommand).toContain("@agentclientprotocol/claude-agent-acp@0.64.2");
 
   const sameAgent = service.resolveSession("foo", "codex", "backend", "backend:foo");
   expect(sameAgent.agentCommand).toBe("npx @zed-industries/codex-acp@^0.9.5");
@@ -1132,6 +1133,43 @@ test("new sessions persist the guarded structured launch identity", async () => 
   const afterRestart = await service.getSession("guarded-run");
   expect(afterRestart?.agentArgv).toEqual(created.agentArgv);
   expect(afterRestart?.agentCommand).toBe(created.agentCommand);
+});
+
+test("resolveSession defaults newly-created structured launches to the ACP output guard", () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const resolved = service.resolveSession("default-guard", "codex", "backend", "backend:default-guard");
+
+  expect(resolved.agentArgv?.[0]).toBe(process.execPath);
+  expect(resolved.agentArgv?.[1]).toContain("acp-output-guard-main.");
+  expect(resolved.agentArgv?.[2]).toBe("--");
+});
+
+test("guarded new resolution wraps a previously-recorded custom structured argv", async () => {
+  const config = createConfig();
+  config.agents.custom = { driver: "custom" };
+  const service = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  await service.attachSession(
+    "custom-existing",
+    "custom",
+    "backend",
+    "backend:custom-existing",
+    "custom-agent --acp",
+    "custom-alias",
+    ["/opt/custom-agent", "--acp"],
+  );
+
+  const guarded = service.resolveSession("custom-existing", "custom", "backend", "backend:custom-existing");
+  expect(guarded.agentArgv?.[1]).toContain("acp-output-guard-main.");
+  expect(guarded.agentArgv?.slice(3)).toEqual(["/opt/custom-agent", "--acp"]);
+
+  const persisted = service.resolveSession(
+    "custom-existing",
+    "custom",
+    "backend",
+    "backend:custom-existing",
+    { guardAcpOutput: false },
+  );
+  expect(persisted.agentArgv).toEqual(["/opt/custom-agent", "--acp"]);
 });
 
 test("resolves bare built-in drivers positionally", async () => {

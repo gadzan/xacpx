@@ -1,7 +1,7 @@
 {
   "record": [
     "sessions.tryReserveFreeSessionAlias(\"relay:demo\")",
-    "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo\")",
+    "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo\", {…})",
     "orchestration.reserveLogicalTransportSession(\"backend:relay:demo\")",
     "transport.resumeAgentSession(session(relay:demo/backend:relay:demo), \"sess-1\")",
     "transport.hasSession(session(relay:demo/backend:relay:demo))",
@@ -14,9 +14,12 @@
       "alias": "relay:demo",
       "agent": "codex",
       "driver": "codex",
-      "agentCommand": "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
-      "acpxAgent": "xacpx-managed-codex-f4349e35c3c8",
+      "agentCommand": "<runtime> <xacpx>/src/adapters/acp-output-guard-main.ts -- npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+      "acpxAgent": "xacpx-managed-<driver>-<hash>",
       "agentArgv": [
+        "<runtime>",
+        "<xacpx>/src/adapters/acp-output-guard-main.ts",
+        "--",
         "npx",
         "-y",
         "--registry=https://registry.npmjs.org",

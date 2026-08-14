@@ -40,9 +40,13 @@ const boundTask: ScheduledTaskRecord = {
 test("temp task resolves a transient session, sends a descriptor, and tears it down", async () => {
   const sent: ScheduledChannelMessageInput[] = [];
   const removed: ResolvedSession[] = [];
+  let resolveOptions: unknown;
   const dispatch = buildScheduledDispatchTask({
     getSession: async () => null,
-    resolveSession: (alias, agent, workspace, transportSession) => resolved(alias, agent, workspace, transportSession),
+    resolveSession: (alias, agent, workspace, transportSession, options) => {
+      resolveOptions = options;
+      return resolved(alias, agent, workspace, transportSession);
+    },
     sendScheduledMessage: async (input) => { sent.push(input); },
     removeSession: async (session) => { removed.push(session); },
   });
@@ -60,6 +64,7 @@ test("temp task resolves a transient session, sends a descriptor, and tears it d
   expect(sent[0]!.noticeText).toContain("临时会话（backend · codex）");
   expect(removed).toHaveLength(1);
   expect(removed[0]!.transportSession).toBe("backend:later-k8f2");
+  expect(resolveOptions).toEqual({ guardAcpOutput: true });
 });
 
 test("bound task uses the persisted session and never tears it down", async () => {

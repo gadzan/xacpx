@@ -187,12 +187,13 @@ test("chat attach and reset persist the structured launch they actually use", as
     "/session attach sticky --agent custom --ws backend --name existing-sticky",
   );
   expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/attached-agent", "--acp", ""]);
+  const guardedArgv = wrapAcpOutputGuardArgv(["/opt/attached-agent", "--acp", ""]);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(guardedArgv);
 
   const reset = await router.handle("wx:user", "/session reset");
   expect(reset.text).toBe(t().misc.sessionResetSuccess("sticky"));
   expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/attached-agent", "--acp", ""]);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(guardedArgv);
 });
 
 test("createSessionWithTransport applies a model override to the session and persists it", async () => {
@@ -1406,6 +1407,8 @@ test("/ssn explicit target auto-attaches a single native session", async () => {
     source: "agent-side",
     agentSessionId: "61456d60-b7e1-47e6-8641-72bbe8e552e7",
   });
+  const attached = await sessions.getCurrentSession("wx:user");
+  expect(attached?.agentArgv?.[1]).toContain("acp-output-guard-main.");
 });
 
 test("/ssn avoids clobbering an existing transport session owned by another alias", async () => {
@@ -1806,6 +1809,8 @@ test("attachNativeSessionWithTransport resumes the agent session and records a n
   const stored = await sessions.getSession("relay:resumed");
   expect(stored?.source).toBe("agent-side");
   expect(stored?.agentSessionId).toBe("ses_42");
+  expect(session.agentArgv?.[1]).toContain("acp-output-guard-main.");
+  expect(stored?.agentArgv).toEqual(session.agentArgv);
 });
 
 test("attachNativeSessionWithTransport auto-derives a free alias when the desired alias collides", async () => {

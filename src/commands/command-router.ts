@@ -414,6 +414,7 @@ export class CommandRouter {
                 descriptor.agent,
                 descriptor.workspace,
                 descriptor.transportSession,
+                { guardAcpOutput: true },
               ),
               transient: true,
             };

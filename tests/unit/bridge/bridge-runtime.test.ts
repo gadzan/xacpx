@@ -886,6 +886,41 @@ test("prompt keeps the overflow as the primary error when owner cleanup fails", 
   expect(calls.filter((args) => args.includes("prompt"))).toHaveLength(1);
 });
 
+test("prompt still attempts cancel when the queue owner record cannot be read", async () => {
+  const calls: string[][] = [];
+  let terminated = false;
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      return { code: 1, stdout: "", stderr: "session index unavailable" };
+    }
+    if (args.includes("cancel")) {
+      return { code: 0, stdout: "cancelled", stderr: "" };
+    }
+    return { code: 1, stdout: "", stderr: "Message buffer exceeded 10485760 bytes" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    { terminateQueueOwner: async () => { terminated = true; } },
+  );
+
+  let caught: unknown;
+  try {
+    await runtime.prompt({ agent: "codex", cwd: "/repo", name: "worker", text: "run the task" });
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(calls.filter((args) => args.includes("prompt"))).toHaveLength(1);
+  expect(calls.filter((args) => args.includes("cancel"))).toHaveLength(1);
+  expect(terminated).toBe(false);
+  expect(caught).toMatchObject({ code: "ACPX_QUEUE_MESSAGE_OVERFLOW" });
+  expect((caught as Error).message).toContain("cancelled");
+  expect((caught as Error).message).not.toContain("queue was stopped");
+});
+
 test("prompt does not terminate the owner for an unrelated provider error", async () => {
   const calls: string[][] = [];
   let terminated = false;

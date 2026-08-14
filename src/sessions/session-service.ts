@@ -1,12 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { isLegacyCodexCommand, resolveAgentCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import { isAcpOutputGuardArgv, wrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
 import {
   classifyRecordedPreinstalledAdapterCommand,
   isManagedAdapterCommand,
 } from "../adapters/adapter-catalog";
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
-import { isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
+import { deriveAgentAlias, isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
@@ -85,7 +86,7 @@ interface SessionServiceOptions {
 }
 
 export interface ResolveSessionOptions {
-  /** Guard a newly-created structured launch before it reaches official acpx. */
+  /** Guard a newly-created structured launch before it reaches official acpx. Defaults to true. */
   guardAcpOutput?: boolean;
 }
 
@@ -188,7 +189,7 @@ export class SessionService {
       effort: sameAgentExisting?.effort,
       created_at: existing?.created_at ?? new Date().toISOString(),
       last_used_at: new Date().toISOString(),
-    }, options);
+    }, { ...options, guardAcpOutput: options.guardAcpOutput ?? true });
   }
 
   async attachSession(
@@ -943,6 +944,17 @@ export class SessionService {
     if (current.rawCommand || resolveAgentCommand(agentConfig.driver, agentConfig.command)) {
       return current;
     }
+    // Guarded structured launches persist the wrapper in their exact argv
+    // identity. Existing/persisted resolution is intentionally unguarded by
+    // default, but must still restore a wrapper that belongs to a new session
+    // instead of recomputing the old unguarded derived adapter command.
+    if (session.transport_acpx_agent && isAcpOutputGuardArgv(session.transport_agent_argv ?? [])) {
+      return {
+        acpxAgent: session.transport_acpx_agent,
+        agentCommand: session.transport_agent_command ?? renderAgentArgvIdentity(session.transport_agent_argv!),
+        agentArgv: [...session.transport_agent_argv!],
+      };
+    }
     // 2. Recorded custom argv stays sticky (like recorded raw commands): a
     // session created under argv A must keep operating as A even if the config
     // later changes to B — otherwise the session silently jumps to B's alias
@@ -956,10 +968,17 @@ export class SessionService {
       ? undefined
       : session.transport_agent_argv;
     if (recordedArgv && session.transport_acpx_agent) {
+      const effectiveArgv = options.guardAcpOutput
+        ? wrapAcpOutputGuardArgv(recordedArgv)
+        : recordedArgv;
       return {
-        acpxAgent: session.transport_acpx_agent,
-        agentCommand: session.transport_agent_command ?? renderAgentArgvIdentity(recordedArgv),
-        agentArgv: recordedArgv,
+        acpxAgent: options.guardAcpOutput
+          ? deriveAgentAlias(agentConfig.driver, effectiveArgv)
+          : session.transport_acpx_agent,
+        agentCommand: options.guardAcpOutput
+          ? renderAgentArgvIdentity(effectiveArgv)
+          : session.transport_agent_command ?? renderAgentArgvIdentity(effectiveArgv),
+        agentArgv: effectiveArgv,
       };
     }
     // 3. Explicit config `argv` (for sessions that have no recorded launch).
