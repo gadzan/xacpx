@@ -28,7 +28,7 @@ const takeControl = vi.fn();
 const onRebase = vi.fn(() => () => {});
 const onBytes = vi.fn(() => () => {});
 const onMeta = vi.fn((_cb?: (key: string, view: TerminalAttachmentView) => void) => () => {});
-const onAttachmentExit = vi.fn(() => () => {});
+const onAttachmentExit = vi.fn((_cb?: (key: string, reason: string, code?: number) => void) => () => {});
 
 vi.mock("../stores/terminal", async () => {
   const actual = await vi.importActual<typeof import("../stores/terminal")>("../stores/terminal");
@@ -257,9 +257,31 @@ describe("TerminalTab", () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await flushPromises();
     expect(w.find('[data-test="terminal-host"]').exists()).toBe(true);
+    if (!w.find('[data-test="keybar"]').exists()) {
+      await w.find('[data-test="toggle-keybar"]').trigger("click");
+    }
+    expect(w.find('[data-test="key-enter"]').attributes("disabled")).toBeUndefined();
     metaCb?.("i1\0demo", openedView({ lastErrorCode: "terminal-rmux-unavailable" }));
     await flushPromises();
     expect(w.text()).toContain("terminal.unsupported");
     expect(w.find('[data-test="terminal-host"]').isVisible()).toBe(false);
+    expect(w.find('[data-test="key-enter"]').attributes("disabled")).toBeDefined();
+    expect(w.find('[data-test="terminal-take-control"]').exists()).toBe(false);
+    await w.find('[data-test="key-enter"]').trigger("click");
+    expect(sendInput).not.toHaveBeenCalled();
+  });
+
+  it("does not count a detached controller as another viewer", async () => {
+    let exitCb: ((key: string, reason: string, code?: number) => void) | undefined;
+    onAttachmentExit.mockImplementation((cb) => {
+      exitCb = cb;
+      return () => {};
+    });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
+    exitCb?.("i1\0demo", "exited", 0);
+    await flushPromises();
+    expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
   });
 });

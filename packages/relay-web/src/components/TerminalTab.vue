@@ -86,9 +86,12 @@ function isController(): boolean {
   return role.value === "controller";
 }
 
-const canType = computed(() => attached.value && role.value === "controller");
+const canType = computed(
+  () => status.value === "open" && attached.value && role.value === "controller",
+);
+const canTakeControl = computed(() => status.value === "open" && role.value === "spectator");
 const otherViewerCount = computed(() =>
-  Math.max(0, viewerCount.value - (attached.value && role.value ? 1 : 0)),
+  attached.value && role.value ? Math.max(0, viewerCount.value - 1) : 0,
 );
 
 function handleData(d: string) {
@@ -289,8 +292,8 @@ async function openAttachment(): Promise<void> {
     }
     attached.value = true;
     autoRetried = false;
-    applyMeta(view);
     status.value = "open";
+    applyMeta(view);
     resizeObs = new ResizeObserver(() => applyFit());
     if (host.value) resizeObs.observe(host.value);
     applyFit(myEpoch);
@@ -318,7 +321,7 @@ async function openAttachment(): Promise<void> {
 }
 
 async function takeControl(): Promise<void> {
-  if (takingControl.value || isController()) return;
+  if (status.value !== "open" || takingControl.value || isController()) return;
   takingControl.value = true;
   try {
     const view = await terminals.takeControl(localKey.value);
@@ -334,7 +337,7 @@ async function takeControl(): Promise<void> {
 function onHostFocusIn() { hostFocused.value = true; updateKeyboardInset(); }
 function onHostFocusOut() { hostFocused.value = false; keyboardInset.value = 0; }
 function onHostMouseDown() {
-  if (role.value === "spectator") {
+  if (canTakeControl.value) {
     void takeControl();
     return;
   }
@@ -407,7 +410,7 @@ onBeforeUnmount(() => {
       </span>
       <span v-if="otherViewerCount > 0" data-test="terminal-viewers"
             class="shrink-0 text-[11px] text-fg-muted">{{ $t("terminal.viewers", { count: otherViewerCount }) }}</span>
-      <button v-if="role === 'spectator'" data-test="terminal-take-control"
+      <button v-if="canTakeControl" data-test="terminal-take-control"
               type="button"
               class="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
               :disabled="takingControl"
@@ -432,7 +435,7 @@ onBeforeUnmount(() => {
            tabindex="0"
            :data-spectator="role === 'spectator' ? '1' : '0'"
            @mousedown="onHostMouseDown"></div>
-      <div v-if="role === 'spectator'" data-test="terminal-spectator-overlay"
+      <div v-if="canTakeControl" data-test="terminal-spectator-overlay"
            class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-bg/75 px-4 text-center text-sm text-fg">
         <p>{{ $t("terminal.spectatorHint") }}</p>
         <button type="button"

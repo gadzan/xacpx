@@ -445,7 +445,7 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 - 用户文案使用「睡眠/唤醒」；API / 代码里仍可见 archive 拼写（兼容）。
 - ghostty-web 点画布会聚焦其 1×1 clipped textarea，而 keydown 监听在宿主上；看板会把该 textarea 铺满宿主并把焦点拉回宿主，否则键盘（含 Enter）无响应。底部快捷键栏的 Enter 不依赖画布焦点，可作对照。
 - 同一 `viewerId` 再次打开会替换旧 attachment，避免留下幽灵 controller 把新连接变成 spectator（快捷键栏全灰）。若仍是唯一观看者却是 spectator，看板会自动 take-control。
-- 快捷键栏没有本地回显：按键只发到 PTY，字符要等 recover 进入 live 后的 `terminal-bytes` 才画到画布。同一 pane 的 `recover` / `stop-recover` 在 connector sidecar driver 里按 FIFO 串行，避免旧 attachment 的 teardown 杀掉新 attachment 的 recovery。recover 启动失败会发 `terminal-recovery-failed`；致命错误（如 `terminal-rmux-unavailable`）不会死循环 resync。
+- 快捷键栏没有本地回显：按键只发到 PTY，字符要等 recover 进入 live 后的 `terminal-bytes` 才画到画布。同一 pane 的 `recover` / `stop-recover` 在 connector sidecar driver 里按 FIFO 串行；first subscriber 有 catch-up cache 时仍发幂等 `recover`，以免 Rust recovery task 已静默结束后永远不再出流。致命 `terminal-recovery-failed` 切到错误态并禁用输入 / take-control；顶栏观看者只在本地仍 attached 时显示其他人。
 
 实现入口：`packages/relay-web/src/stores/terminal.ts`、`TerminalTab.vue`、recovery reducer
 （`src/lib/terminal-recovery.ts`）。权威状态机见 RMUX terminal design spec。

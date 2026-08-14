@@ -83,9 +83,10 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private stderrTail = "";
   /**
    * Per-pane recovery snapshot for late multi-viewer subscribers: last rebase
-   * plus every bytes event since that rebase. A second `recover` against the
-   * Rust actor would abort the first stream, so late joiners must catch up
-   * from this cache before joining the live fan-out.
+   * plus every bytes event since that rebase. Late joiners catch up from this
+   * cache before joining the live fan-out. Cache presence is not proof the
+   * Rust recovery task is still running (`recover_output` can finish silently);
+   * the first subscriber still sends an idempotent `recover`.
    */
   private readonly recoveryCache = new Map<string, PaneRecoveryCache>();
   private readonly rebaseAssembly = new Map<string, RebaseAssembly>();
@@ -242,10 +243,11 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         set.add(sub);
         await this.enqueueRecoveryControl(paneId, async () => {
           if (!set.has(sub)) return;
-          // Stop was skipped because we arrived first: reuse the live stream.
+          // Cache may outlive a silently finished Rust recovery task. Catch up
+          // first, then always send recover: start_recover is idempotent
+          // (live task → no-op, finished → restart).
           if (this.recoveryCache.has(paneId)) {
             this.pushCatchUp(paneId, sub);
-            return;
           }
           await this.request({ type: "recover", pane_id: paneId });
         });
