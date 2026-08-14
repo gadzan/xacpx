@@ -3,6 +3,7 @@ import { setActivePinia, createPinia } from "pinia";
 import { mount, flushPromises } from "@vue/test-utils";
 import { TerminalRequestError } from "../api/events";
 import { initialRecoveryState } from "../lib/terminal-recovery";
+import type { TerminalAttachmentView } from "../stores/terminal";
 
 const adapter = {
   write: vi.fn(async () => {}),
@@ -26,7 +27,7 @@ const sendResize = vi.fn();
 const takeControl = vi.fn();
 const onRebase = vi.fn(() => () => {});
 const onBytes = vi.fn(() => () => {});
-const onMeta = vi.fn(() => () => {});
+const onMeta = vi.fn((_cb?: (key: string, view: TerminalAttachmentView) => void) => () => {});
 const onAttachmentExit = vi.fn(() => () => {});
 
 vi.mock("../stores/terminal", async () => {
@@ -64,7 +65,8 @@ function openedView(overrides?: Partial<{
   sessionAlias: string;
   role: "controller" | "spectator";
   viewerCount: number;
-}>) {
+  lastErrorCode: string;
+}>): TerminalAttachmentView {
   const sessionAlias = overrides?.sessionAlias ?? "demo";
   const localKey = overrides?.localKey ?? `i1\0${sessionAlias}`;
   return {
@@ -82,6 +84,7 @@ function openedView(overrides?: Partial<{
     active: true,
     terminatePending: false,
     terminateRetryable: false,
+    lastErrorCode: overrides?.lastErrorCode,
   };
 }
 
@@ -246,15 +249,15 @@ describe("TerminalTab", () => {
   });
 
   it("fatal recovery failure shows an error instead of a blank controller canvas", async () => {
-    let metaCb: ((key: string, view: ReturnType<typeof openedView> & { lastErrorCode?: string }) => void) | undefined;
-    onMeta.mockImplementation((cb: typeof metaCb) => {
+    let metaCb: ((key: string, view: TerminalAttachmentView) => void) | undefined;
+    onMeta.mockImplementation((cb) => {
       metaCb = cb;
       return () => {};
     });
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await flushPromises();
     expect(w.find('[data-test="terminal-host"]').exists()).toBe(true);
-    metaCb?.("i1\0demo", { ...openedView(), lastErrorCode: "terminal-rmux-unavailable" });
+    metaCb?.("i1\0demo", openedView({ lastErrorCode: "terminal-rmux-unavailable" }));
     await flushPromises();
     expect(w.text()).toContain("terminal.unsupported");
     expect(w.find('[data-test="terminal-host"]').isVisible()).toBe(false);

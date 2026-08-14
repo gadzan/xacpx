@@ -68,6 +68,7 @@
 - **配置**：`channels[].options.terminal`（见 `docs/config-reference.md`）；默认 `enabled=false`，不声明
   `terminal.rmux.recovery.v1` / `terminal.multi-view.v1`。
 - **运行时**：`packages/channel-relay/src/terminal/`（registry、runtime、reconciler、process-owned sidecar）。
+  同一 pane 的 `recover` / `stop-recover` 在 `RmuxSidecarDriver` 里按 FIFO 串行，避免旧 attachment 的 teardown 杀掉新 attachment 的 recovery。recover 启动失败走既有 `terminal-recovery-failed` 事件（不另开协议字段）。
 - **持久化**：`<xacpx-home>/relay/` 下 `terminal-owner.json` + `terminals.json`（与 `credential.json` 同目录惯例）；
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
 - **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；

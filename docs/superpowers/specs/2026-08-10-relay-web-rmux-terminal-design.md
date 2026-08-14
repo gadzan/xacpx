@@ -667,6 +667,7 @@ terminal resource 的唯一键是实例内 `logicalSessionId`。hub 已用登录
 - controller socket detach/TTL expiry后 controller 为空；terminal 继续 live，任一 spectator 可 take control。
 - 只有 controller resize RMUX pane；spectator 以 RMUX 权威 cols/rows 渲染，不向后端争抢尺寸。
 - 显式关 Tab 是全局 terminate，不是“只退出 viewer”。当 `viewerCount > 1` 时，web 必须确认“这会为所有设备终止终端”；确认后仍执行全局 terminate。
+- `viewerCount` 是当前 terminal 上的 **attachment 总数**（含自己）。看板顶栏展示的「X 位观看者」是 `max(0, viewerCount - 1)`，即其他连接者；不得把协议字段改成“其他人数量”。
 
 ## 14. Wire protocol 与严格顺序
 

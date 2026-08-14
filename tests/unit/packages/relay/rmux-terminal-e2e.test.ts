@@ -167,7 +167,13 @@ test("catalog delete retires the live terminal resource", async () => {
 
   const desc = demoDescriptor();
   h.catalog.emit({ type: "removed", session: desc });
-  await Bun.sleep(80);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const gone = (await h.driver.list()).length === 0;
+    const snap = await h.registrySnapshot();
+    if (gone && Object.keys(snap.terminals).length === 0) break;
+    await Bun.sleep(10);
+  }
 
   expect((await h.driver.list()).length).toBe(0);
   const snap = await h.registrySnapshot();
@@ -310,9 +316,10 @@ test("refresh openOrResume returns the same live terminal resource", async () =>
   expect(isOpened(first)).toBe(true);
   if (!isOpened(first)) return;
 
-  h.detach(a, first.attachmentId);
-  await Bun.sleep(30);
+  h.streamStart(a, first.attachmentId);
+  await a.waitFor((e) => e.kind === "terminal-rebase-start" && e.attachmentId === first.attachmentId);
 
+  h.detach(a, first.attachmentId);
   const second = await h.openTerminal(a, { requestId: "refresh-2" });
   expect(isOpened(second)).toBe(true);
   if (!isOpened(second)) return;
@@ -320,6 +327,71 @@ test("refresh openOrResume returns the same live terminal resource", async () =>
   expect(second.generation).toBe(first.generation);
   expect(second.attachmentId).not.toBe(first.attachmentId);
   expect((await h.driver.list()).length).toBe(1);
+
+  const mark = a.events.length;
+  h.streamStart(a, second.attachmentId);
+  await a.waitFor(
+    (e) =>
+      e.kind === "terminal-rebase-start" &&
+      e.attachmentId === second.attachmentId,
+  );
+
+  a.send({
+    kind: "terminal-input",
+    instanceId: h.instanceId,
+    attachmentId: second.attachmentId,
+    generation: second.generation,
+    dataBase64: b64("echo"),
+  });
+  const session = (await h.driver.list())[0]!;
+  h.driver.injectOutput(session.paneId, new TextEncoder().encode("echo-out"));
+  await a.waitFor(
+    (e) =>
+      e.kind === "terminal-bytes" &&
+      e.attachmentId === second.attachmentId &&
+      a.events.indexOf(e) >= mark,
+  );
+});
+
+test("immediate detach/reopen still delivers a fresh rebase each round", async () => {
+  const h = await boot();
+  const a = await h.connectBrowser();
+  let opened = await h.openTerminal(a, { requestId: "loop-0" });
+  expect(isOpened(opened)).toBe(true);
+  if (!isOpened(opened)) return;
+  const terminalId = opened.terminalId;
+  const generation = opened.generation;
+
+  for (let i = 0; i < 8; i++) {
+    h.streamStart(a, opened.attachmentId, `loop-stream-${i}`);
+    await a.waitFor(
+      (e) => e.kind === "terminal-rebase-start" && e.attachmentId === opened.attachmentId,
+    );
+    h.detach(a, opened.attachmentId);
+    const next = await h.openTerminal(a, { requestId: `loop-open-${i + 1}` });
+    expect(isOpened(next)).toBe(true);
+    if (!isOpened(next)) return;
+    expect(next.terminalId).toBe(terminalId);
+    expect(next.generation).toBe(generation);
+    opened = next;
+  }
+
+  h.streamStart(a, opened.attachmentId, "loop-final-stream");
+  await a.waitFor(
+    (e) => e.kind === "terminal-rebase-start" && e.attachmentId === opened.attachmentId,
+  );
+  a.send({
+    kind: "terminal-input",
+    instanceId: h.instanceId,
+    attachmentId: opened.attachmentId,
+    generation: opened.generation,
+    dataBase64: b64("final"),
+  });
+  const session = (await h.driver.list())[0]!;
+  h.driver.injectOutput(session.paneId, new TextEncoder().encode("final-out"));
+  await a.waitFor(
+    (e) => e.kind === "terminal-bytes" && e.attachmentId === opened.attachmentId,
+  );
 });
 
 test("stream resync after rebase delivers a fresh keyframe without messages DB writes", async () => {
