@@ -1425,24 +1425,29 @@ test("persists effort before launching the queue owner so reconnect replays it",
     return { code: 0, stdout: "worker response", stderr: "" };
   });
   const queueOwnerLauncher = {
+    wouldReuse: async () => false,
     launch: async () => {
       events.push("launch");
     },
-  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  };
   const transport = new AcpxCliTransport(
-    { command: "acpx" },
+    {
+      command: "acpx",
+      terminateQueueOwner: async () => {
+        events.push("cool");
+      },
+    },
     run,
     undefined,
     queueOwnerLauncher,
   );
-  spyOn(transport, "isSessionWarm").mockResolvedValue(false);
 
   await transport.prompt(effortSession, "hello");
 
-  expect(events).toEqual(["set:high", "launch", "prompt"]);
+  expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
 });
 
-test("skips effort reapply when the queue owner is already warm", async () => {
+test("skips effort reapply when a reusable owner already holds the persisted value", async () => {
   const events: string[] = [];
   const effortSession: ResolvedSession = {
     ...session,
@@ -1452,27 +1457,157 @@ test("skips effort reapply when the queue owner is already warm", async () => {
   const run = mock(async (_command: string, args: string[]) => {
     if (args.includes("set")) events.push("set");
     if (args.includes("show")) {
-      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "max",
+              options: [{ value: "medium" }, { value: "max" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
     }
     events.push(args.includes("prompt") ? "prompt" : "other");
     return { code: 0, stdout: "ok", stderr: "" };
   });
   const queueOwnerLauncher = {
+    wouldReuse: async () => true,
     launch: async () => {
       events.push("launch");
     },
-  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  };
   const transport = new AcpxCliTransport(
-    { command: "acpx" },
+    {
+      command: "acpx",
+      terminateQueueOwner: async () => {
+        events.push("cool");
+      },
+    },
     run,
     undefined,
     queueOwnerLauncher,
   );
-  spyOn(transport, "isSessionWarm").mockResolvedValue(true);
 
   await transport.prompt(effortSession, "hello");
 
   expect(events).toEqual(["launch", "prompt"]);
+});
+
+test("cools a reusable owner and reapplies persisted effort when adapter current drifted", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "high",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "medium",
+              options: [{ value: "low" }, { value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) {
+      events.push("set:high");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    events.push("prompt");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    wouldReuse: async () => true,
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const transport = new AcpxCliTransport(
+    {
+      command: "acpx",
+      terminateQueueOwner: async () => {
+        events.push("cool");
+      },
+    },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
+});
+
+test("writes persisted effort while cold when the next launch will replace the owner", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "high",
+    model: "model-b",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "high",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) {
+      events.push("set:high");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    events.push("prompt");
+    return { code: 0, stdout: "ok", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    wouldReuse: async () => false,
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const transport = new AcpxCliTransport(
+    {
+      command: "acpx",
+      terminateQueueOwner: async () => {
+        events.push("cool");
+      },
+    },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
 });
 
 test("does not block a prompt when the persisted effort is no longer advertised", async () => {
@@ -1515,7 +1650,6 @@ test("does not block a prompt when the persisted effort is no longer advertised"
     undefined,
     queueOwnerLauncher,
   );
-  spyOn(transport, "isSessionWarm").mockResolvedValue(false);
 
   await expect(transport.prompt(staleSession, "hello")).resolves.toEqual({ text: "worker response" });
   expect(events).toEqual(["launch", "prompt"]);

@@ -18,7 +18,7 @@ import { createStreamingPromptState, parseStreamingDataChunk } from "../transpor
 import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
@@ -161,12 +161,18 @@ interface BridgeRuntimeOptions {
   now?: () => number;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  /** Test seam: cool a live queue owner before `acpx set` releases exclusive leases. */
+  terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
   createAdapterContext?: (input: {
     id: "codex" | "claude";
     sessionKey: string;
     agentCommand: string;
   }) => QueueOwnerAdapterContext;
 }
+
+type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
+  wouldReuse?(input: LaunchQueueOwnerInput): Promise<boolean>;
+};
 
 export class BridgeRuntime {
   // undefined = not yet probed; true/false = probed result.
@@ -182,7 +188,7 @@ export class BridgeRuntime {
     private readonly options: BridgeRuntimeOptions = {},
     private readonly runPromptCommand: PromptRunner = defaultPromptRunner,
     private readonly repairSessionIndex: RepairSessionIndexFn = tryRepairAcpxSessionIndex,
-    private readonly queueOwnerLauncher: Pick<AcpxQueueOwnerLauncher, "launch"> = new AcpxQueueOwnerLauncher({
+    private readonly queueOwnerLauncher: QueueOwnerLaunchPort = new AcpxQueueOwnerLauncher({
       acpxCommand: command,
       // Coordinator sessions pre-spawn the queue owner here (before `acpx prompt`),
       // so the owner's warm window must be set at launch — the prompt's `--ttl`
@@ -547,13 +553,7 @@ export class BridgeRuntime {
   }
 
   async prompt(input: BridgeSessionInput & { text: string }, onEvent?: (event: BridgePromptStreamEvent) => void): Promise<{ text: string }> {
-    const effort = await sessionEffortToReapply(
-      input.effort,
-      async () => (await this.isSessionWarm(input)).warm,
-    );
-    if (effort) {
-      await this.reapplySessionEffort(input, effort);
-    }
+    await this.syncPersistedSessionEffort(input);
     await this.launchMcpQueueOwnerIfNeeded(input);
     const structuredPrompt = await createStructuredPromptFile(input.text, input.media);
     const spawnSpec = resolveSpawnCommand(this.command, this.buildPromptArgs(input, [
@@ -596,26 +596,7 @@ export class BridgeRuntime {
       return;
     }
     const record = await this.readSessionRecord(input);
-    const env = this.spawnEnvironment(input);
-    const adapterId = classifyPreinstalledAdapterCommandShape(input.agentCommand);
-    const adapterContext = adapterId && input.agentCommand
-      ? this.options.createAdapterContext?.({
-          id: adapterId,
-          sessionKey: input.sessionKey ?? input.name,
-          agentCommand: input.agentCommand,
-        })
-      : undefined;
-    const prepared = await this.queueOwnerLauncher.launch({
-      acpxRecordId: record.acpxRecordId,
-      coordinatorSession: input.mcpCoordinatorSession,
-      ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
-      permissionMode: this.options.permissionMode ?? "approve-all",
-      nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
-      ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
-      ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
-      ...(adapterContext ? { adapterContext } : {}),
-      ...(env ? { env } : {}),
-    });
+    const prepared = await this.queueOwnerLauncher.launch(this.queueOwnerLaunchInput(input, record.acpxRecordId));
     if (prepared?.agentCommand) input.agentCommand = prepared.agentCommand;
   }
 
@@ -841,13 +822,58 @@ export class BridgeRuntime {
     return {};
   }
 
-  private async reapplySessionEffort(input: BridgeSessionInput, effort: string): Promise<void> {
+  private async syncPersistedSessionEffort(input: BridgeSessionInput): Promise<void> {
+    const persisted = input.effort?.trim();
+    if (!persisted) return;
     const record = await this.readRawSessionRecord(input, "get-session-effort", "json");
     const observed = parseSessionEffortRecord(record);
-    if (!observed?.available.includes(effort)) {
-      return;
-    }
+    const acpxRecordId = parseAcpxSessionRecordId(record)?.acpxRecordId;
+    const effort = sessionEffortToReapply({
+      persisted,
+      observedCurrent: observed?.current,
+      advertised: observed?.available,
+      ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(input, acpxRecordId),
+    });
+    if (!effort) return;
+    if (acpxRecordId) await this.terminateQueueOwner(acpxRecordId);
     await this.applyAdvertisedSessionEffort(input, effort, record);
+  }
+
+  private async queueOwnerWillBeReplaced(
+    input: BridgeSessionInput,
+    acpxRecordId: string | undefined,
+  ): Promise<boolean> {
+    if (!input.mcpCoordinatorSession || !acpxRecordId) return false;
+    const wouldReuse = this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher);
+    if (!wouldReuse) return true;
+    return !(await wouldReuse(this.queueOwnerLaunchInput(input, acpxRecordId)));
+  }
+
+  private queueOwnerLaunchInput(input: BridgeSessionInput, acpxRecordId: string): LaunchQueueOwnerInput {
+    const env = this.spawnEnvironment(input);
+    const adapterId = classifyPreinstalledAdapterCommandShape(input.agentCommand);
+    const adapterContext = adapterId && input.agentCommand
+      ? this.options.createAdapterContext?.({
+          id: adapterId,
+          sessionKey: input.sessionKey ?? input.name,
+          agentCommand: input.agentCommand,
+        })
+      : undefined;
+    return {
+      acpxRecordId,
+      coordinatorSession: input.mcpCoordinatorSession!,
+      ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
+      permissionMode: this.options.permissionMode ?? "approve-all",
+      nonInteractivePermissions: this.options.nonInteractivePermissions ?? "deny",
+      ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
+      ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+      ...(adapterContext ? { adapterContext } : {}),
+      ...(env ? { env } : {}),
+    };
+  }
+
+  private terminateQueueOwner(acpxRecordId: string): Promise<void> {
+    return (this.options.terminateQueueOwner ?? terminateAcpxQueueOwner)(acpxRecordId);
   }
 
   private async applyAdvertisedSessionEffort(

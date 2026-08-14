@@ -9,22 +9,32 @@ const EFFORT_CONFIG_IDS = new Set([
 
 type EffortConfigOption = SessionEffortState & { configId: string };
 
+export interface SessionEffortReapplyInput {
+  persisted?: string;
+  observedCurrent?: string;
+  advertised?: string[];
+  /**
+   * True when the next queue-owner launch will kill and respawn (fingerprint
+   * change or no reusable owner). A replacement adapter can reset effort even
+   * when the current record still matches, so write desired effort while cold.
+   */
+  ownerWillBeReplaced: boolean;
+}
+
 /**
- * Reapply persisted effort only on a cold queue owner. `acpx set` against a
- * live owner falls back to spawning a second ACP process and `session/resume`.
- * Agents with exclusive session leases (Reasonix) reject that as "in use by
- * another process" — the warm owner already holds the configured effort.
- *
- * Skip the warmth probe when there is no effort: `isSessionWarm` is a
- * management command and must not run on every prompt.
+ * Persisted `session.effort` is the user's desired value and can differ from
+ * the adapter's advertised current — ControlService prefers persisted when it
+ * is still advertised. Skip `acpx set` only when the live record already
+ * matches AND the current owner will be reused. Otherwise return the value to
+ * apply after cooling the owner: `acpx set` against a live owner can spawn a
+ * second ACP process and break exclusive session leases (Reasonix).
  */
-export async function sessionEffortToReapply(
-  effort: string | undefined,
-  isWarm: () => Promise<boolean>,
-): Promise<string | undefined> {
-  const value = effort?.trim();
-  if (!value) return undefined;
-  return (await isWarm()) ? undefined : value;
+export function sessionEffortToReapply(input: SessionEffortReapplyInput): string | undefined {
+  const effort = input.persisted?.trim();
+  if (!effort) return undefined;
+  if (!input.advertised?.includes(effort)) return undefined;
+  if (input.observedCurrent === effort && !input.ownerWillBeReplaced) return undefined;
+  return effort;
 }
 
 export function requireAdvertisedSessionEffort(raw: string, value: string): EffortConfigOption {

@@ -35,7 +35,7 @@ import {
 } from "../quota-gated-reply-sink";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
-import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
+import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
 import { classifyPreinstalledAdapterCommandShape } from "../../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../../config/agent-launch";
@@ -77,6 +77,8 @@ interface AcpxCliTransportOptions {
   queueOwnerTtlSeconds?: number;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  /** Test seam: cool a live queue owner before `acpx set` releases exclusive leases. */
+  terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
   createAdapterContext?: (input: {
     id: "codex" | "claude";
     sessionKey: string;
@@ -219,6 +221,10 @@ async function defaultPtyRunner(command: string, args: string[], options?: RunOp
   });
 }
 
+type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
+  wouldReuse?(input: LaunchQueueOwnerInput): Promise<boolean>;
+};
+
 export class AcpxCliTransport implements SessionTransport {
   private readonly command: string;
   private readonly sessionInitTimeoutMs: number;
@@ -229,16 +235,17 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly queueOwnerTtlSeconds: number | undefined;
   private readonly runCommand: CommandRunner;
   private readonly runPtyCommand: PtyRunner;
-  private readonly queueOwnerLauncher: Pick<AcpxQueueOwnerLauncher, "launch">;
+  private readonly queueOwnerLauncher: QueueOwnerLaunchPort;
   private readonly streamingHooks: StreamingPromptHooks;
   private readonly resolveSpawnEnvironment: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
   private readonly createAdapterContext?: AcpxCliTransportOptions["createAdapterContext"];
+  private readonly terminateQueueOwner: (acpxRecordId: string) => Promise<void>;
 
   constructor(
     options: AcpxCliTransportOptions,
     runCommand: CommandRunner = defaultRunner,
     runPtyCommand: PtyRunner = defaultPtyRunner,
-    queueOwnerLauncher?: Pick<AcpxQueueOwnerLauncher, "launch">,
+    queueOwnerLauncher?: QueueOwnerLaunchPort,
     streamingHooks: StreamingPromptHooks = {},
   ) {
     this.command = options.command ?? "acpx";
@@ -262,6 +269,7 @@ export class AcpxCliTransport implements SessionTransport {
     this.streamingHooks = streamingHooks;
     this.resolveSpawnEnvironment = options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment;
     this.createAdapterContext = options.createAdapterContext;
+    this.terminateQueueOwner = options.terminateQueueOwner ?? terminateAcpxQueueOwner;
   }
 
   // acpx-cli transport does not stream stderr back to the caller, so "note" progress
@@ -397,10 +405,7 @@ export class AcpxCliTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
-    const effort = await sessionEffortToReapply(session.effort, () => this.isSessionWarm(session));
-    if (effort) {
-      await this.reapplySessionEffort(session, effort);
-    }
+    await this.syncPersistedSessionEffort(session);
     await this.launchMcpQueueOwnerIfNeeded(session);
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
     const args = this.buildPromptArgs(session, text, structuredPrompt?.filePath);
@@ -540,13 +545,50 @@ export class AcpxCliTransport implements SessionTransport {
     await this.applyAdvertisedSessionEffort(session, effort, record);
   }
 
-  private async reapplySessionEffort(session: ResolvedSession, effort: string): Promise<void> {
+  private async syncPersistedSessionEffort(session: ResolvedSession): Promise<void> {
+    const persisted = session.effort?.trim();
+    if (!persisted) return;
     const record = await this.readSessionEffortRecord(session);
     const observed = parseSessionEffortRecord(record);
-    if (!observed?.available.includes(effort)) {
-      return;
-    }
+    const acpxRecordId = parseAcpxSessionRecordId(record)?.acpxRecordId;
+    const effort = sessionEffortToReapply({
+      persisted,
+      observedCurrent: observed?.current,
+      advertised: observed?.available,
+      ownerWillBeReplaced: await this.queueOwnerWillBeReplaced(session, acpxRecordId),
+    });
+    if (!effort) return;
+    if (acpxRecordId) await this.terminateQueueOwner(acpxRecordId);
     await this.applyAdvertisedSessionEffort(session, effort, record);
+  }
+
+  private async queueOwnerWillBeReplaced(
+    session: ResolvedSession,
+    acpxRecordId: string | undefined,
+  ): Promise<boolean> {
+    if (!session.mcpCoordinatorSession || !acpxRecordId) return false;
+    const wouldReuse = this.queueOwnerLauncher.wouldReuse?.bind(this.queueOwnerLauncher);
+    if (!wouldReuse) return true;
+    return !(await wouldReuse(this.queueOwnerLaunchInput(session, acpxRecordId)));
+  }
+
+  private queueOwnerLaunchInput(session: ResolvedSession, acpxRecordId: string): LaunchQueueOwnerInput {
+    const env = this.spawnEnvironment(session);
+    const adapterId = classifyPreinstalledAdapterCommandShape(session.agentCommand);
+    const adapterContext = adapterId && session.agentCommand
+      ? this.createAdapterContext?.({ id: adapterId, sessionKey: session.alias, agentCommand: session.agentCommand })
+      : undefined;
+    return {
+      acpxRecordId,
+      coordinatorSession: session.mcpCoordinatorSession!,
+      ...(session.mcpSourceHandle ? { sourceHandle: session.mcpSourceHandle } : {}),
+      permissionMode: this.permissionMode,
+      nonInteractivePermissions: this.nonInteractivePermissions,
+      ...(adapterId && session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+      ...(adapterContext ? { adapterContext } : {}),
+      ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
+      ...(env ? { env } : {}),
+    };
   }
 
   private async readSessionEffortRecord(session: ResolvedSession): Promise<string> {
@@ -719,22 +761,7 @@ export class AcpxCliTransport implements SessionTransport {
       return;
     }
     const record = await this.readSessionRecord(session);
-    const env = this.spawnEnvironment(session);
-    const adapterId = classifyPreinstalledAdapterCommandShape(session.agentCommand);
-    const adapterContext = adapterId && session.agentCommand
-      ? this.createAdapterContext?.({ id: adapterId, sessionKey: session.alias, agentCommand: session.agentCommand })
-      : undefined;
-    const prepared = await this.queueOwnerLauncher.launch({
-      acpxRecordId: record.acpxRecordId,
-      coordinatorSession: session.mcpCoordinatorSession,
-      ...(session.mcpSourceHandle ? { sourceHandle: session.mcpSourceHandle } : {}),
-      permissionMode: this.permissionMode,
-      nonInteractivePermissions: this.nonInteractivePermissions,
-      ...(adapterId && session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-      ...(adapterContext ? { adapterContext } : {}),
-      ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
-      ...(env ? { env } : {}),
-    });
+    const prepared = await this.queueOwnerLauncher.launch(this.queueOwnerLaunchInput(session, record.acpxRecordId));
     if (prepared?.agentCommand) session.agentCommand = prepared.agentCommand;
   }
 
