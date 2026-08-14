@@ -46,7 +46,8 @@
           "sourceHandle": "backend:claude:backend:main",
           "coordinatorSession": "backend:main",
           "workspace": "backend",
-          "targetAgent": "claude"
+          "targetAgent": "claude",
+          "guardAcpOutput": true
         }
       },
       "groups": {
@@ -191,7 +192,8 @@
               "sourceHandle": "backend:claude:backend:main",
               "coordinatorSession": "backend:main",
               "workspace": "backend",
-              "targetAgent": "claude"
+              "targetAgent": "claude",
+              "guardAcpOutput": true
             }
           }
         ]
@@ -293,7 +295,8 @@
               "sourceHandle": "backend:claude:backend:main",
               "coordinatorSession": "backend:main",
               "workspace": "backend",
-              "targetAgent": "claude"
+              "targetAgent": "claude",
+              "guardAcpOutput": true
             }
           }
         ]

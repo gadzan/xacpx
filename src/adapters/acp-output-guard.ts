@@ -1,5 +1,7 @@
 import { fileURLToPath } from "node:url";
 
+import { resolveExecutableOnPath } from "../config/local-agent-bin";
+
 export const SAFE_ACP_LINE_CHARS = 2 * 1024 * 1024;
 export const TEXT_CHUNK_CHARS = 256 * 1024;
 export const MAX_RAW_ACP_LINE_BYTES = 64 * 1024 * 1024;
@@ -83,19 +85,27 @@ export function buildAcpAgentSpawnSpec(
   commandArgv: readonly string[],
   platform: NodeJS.Platform = process.platform,
   comspec: string = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe",
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutableFile?: (path: string) => boolean,
 ): AcpAgentSpawnSpec {
   const command = commandArgv[0];
   if (!command) {
     throw new AcpOutputGuardError("missing agent command after --");
   }
   const args = [...commandArgv.slice(1)];
-  if (platform !== "win32" || !isWindowsScriptLauncher(command)) {
+  const resolvedCommand = platform === "win32"
+    ? resolveExecutableOnPath(command, platform, env, isExecutableFile)
+    : undefined;
+  const launcherCommand = resolvedCommand && isWindowsScriptLauncher(resolvedCommand)
+    ? resolvedCommand
+    : command;
+  if (platform !== "win32" || !isWindowsScriptLauncher(launcherCommand)) {
     return { command, args, shell: false };
   }
 
   return {
     command: comspec,
-    args: ["/d", "/s", "/c", commandArgv.map(quoteWindowsCmdArg).join(" ")],
+    args: ["/d", "/s", "/c", [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ")],
     shell: false,
   };
 }

@@ -362,6 +362,7 @@ export class WorkerSessionManager {
             targetAgent: task.targetAgent,
             ...(task.role ? { role: task.role } : {}),
             ephemeral: true,
+            guardAcpOutput: true,
           };
           await this.deps.saveState(state);
           return { ...task };

@@ -19,6 +19,7 @@ import type {
   OrchestrationServiceDeps,
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
+import { workerBindingGuardFields } from "../worker-launch";
 import type { QuestionFlowCore } from "./question-flow-core";
 import type { TaskLifecycleService } from "./task-lifecycle-service";
 import type { WorkerSessionManager } from "./worker-session-manager";
@@ -184,6 +185,7 @@ export class TaskApprovalService {
           ...(task.cwd ? { cwd: task.cwd } : {}),
           targetAgent: task.targetAgent,
           role: task.role,
+          ...workerBindingGuardFields(previousBinding),
           ...(task.ephemeralWorkerSession ? { ephemeral: true } : {}),
         };
 

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { collectReapTargets, workerBindingReapTargets } from "../../../src/transport/collect-reap-targets";
+import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
 import type { AppConfig } from "../../../src/config/types";
 import type { ResolvedSession } from "../../../src/transport/types";
 import { createEmptyState } from "../../../src/state/types";
@@ -80,6 +81,44 @@ test("falls back to workspace cwd when the binding has no explicit cwd", () => {
       agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
+    },
+  ]);
+});
+
+test("reap resolution honors the persisted worker guard rollout while legacy bindings stay unguarded", () => {
+  const state = createEmptyState();
+  state.orchestration.workerBindings["legacy-worker"] = {
+    sourceHandle: "legacy",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  state.orchestration.workerBindings["guarded-worker"] = {
+    sourceHandle: "guarded",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    guardAcpOutput: true,
+  } as typeof state.orchestration.workerBindings[string];
+
+  const config = createConfig();
+  const guarded = resolveConfiguredAgentLaunch(config.agents.codex!, config.transport, { guardAcpOutput: true });
+  const targets = workerBindingReapTargets(state.orchestration, config);
+
+  expect(targets).toEqual([
+    {
+      agent: "codex",
+      acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+      cwd: "/tmp/backend",
+      transportSession: "legacy-worker",
+    },
+    {
+      agent: "codex",
+      acpxAgent: guarded.acpxAgent,
+      agentCommand: guarded.agentCommand,
+      cwd: "/tmp/backend",
+      transportSession: "guarded-worker",
     },
   ]);
 });

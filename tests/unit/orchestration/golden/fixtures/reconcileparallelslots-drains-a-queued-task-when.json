@@ -81,7 +81,8 @@
           "coordinatorSession": "backend:main",
           "workspace": "backend",
           "targetAgent": "claude",
-          "ephemeral": true
+          "ephemeral": true,
+          "guardAcpOutput": true
         }
       },
       "groups": {},
@@ -163,6 +164,7 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
+              "guardAcpOutput": true,
               "ephemeral": true
             }
           }
@@ -274,6 +276,7 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
+              "guardAcpOutput": true,
               "ephemeral": true
             }
           }
@@ -380,6 +383,7 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
+              "guardAcpOutput": true,
               "ephemeral": true
             }
           }
@@ -584,7 +588,8 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "ephemeral": true
+              "ephemeral": true,
+              "guardAcpOutput": true
             }
           }
         ]
@@ -709,7 +714,8 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "ephemeral": true
+              "ephemeral": true,
+              "guardAcpOutput": true
             }
           }
         ]

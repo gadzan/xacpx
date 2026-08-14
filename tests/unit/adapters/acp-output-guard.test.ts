@@ -230,3 +230,67 @@ test("Windows real executables keep exact argv while cmd launchers use an explic
   expect(launcher.args[3]).toContain('"a&b"');
   expect(launcher.args[3]).toContain('"(quoted)"');
 });
+
+test("Windows resolves bare PATH commands through PATHEXT before choosing the launcher", () => {
+  const launcher = buildAcpAgentSpawnSpec(
+    ["opencode", "acp"],
+    "win32",
+    "C:\\Windows\\System32\\cmd.exe",
+    { PATH: "C:\\Tools", PATHEXT: ".EXE;.CMD;.BAT;.COM" },
+    (path) => path === "C:\\Tools\\opencode.CMD",
+  );
+
+  expect(launcher).toEqual({
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", '"C:\\Tools\\opencode.CMD" "acp"'],
+    shell: false,
+  });
+
+  const npxLauncher = buildAcpAgentSpawnSpec(
+    ["npx", "-y", "@agentclientprotocol/codex-acp@1.1.9"],
+    "win32",
+    "C:\\Windows\\System32\\cmd.exe",
+    { PATH: "C:\\Node", PATHEXT: ".EXE;.CMD;.BAT;.COM" },
+    (path) => path === "C:\\Node\\npx.CMD",
+  );
+  expect(npxLauncher).toEqual({
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", '"C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9"'],
+    shell: false,
+  });
+});
+
+test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boundary", async () => {
+  if (process.platform !== "win32") return;
+
+  const dir = mkdtempSync(join(tmpdir(), "acp-output-guard-win-"));
+  try {
+    const argvProbe = join(dir, "argv-probe.cjs");
+    const launcher = join(dir, "fake-agent.cmd");
+    writeFileSync(argvProbe, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+    writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "%~dp0argv-probe.cjs" %*\r\n`);
+    const env = {
+      ...process.env,
+      PATH: dir,
+      PATHEXT: ".EXE;.CMD;.BAT;.COM",
+    };
+    const spec = buildAcpAgentSpawnSpec(
+      ["fake-agent", "a&b", "(quoted)"],
+      "win32",
+      env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
+      env,
+    );
+    const child = spawn(spec.command, spec.args, { shell: false, env, stdio: ["ignore", "pipe", "pipe"] });
+    const output = await new Promise<string>((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+      child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+      child.on("error", reject);
+      child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(`probe exited ${code}: ${stderr}`)));
+    });
+    expect(JSON.parse(output)).toEqual(["a&b", "(quoted)"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

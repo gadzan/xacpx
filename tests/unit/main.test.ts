@@ -678,6 +678,7 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     workspace: "backend",
     transportSession: "backend:claude:backend:main",
   });
+  expect(ensureSession.mock.calls.at(1)?.[0].agentArgv?.[1]).toContain("acp-output-guard-main.");
   expect(prompt.mock.calls).toHaveLength(1);
   expect(prompt.mock.calls.at(0)?.[0]).toMatchObject({
     alias: "backend:claude:backend:main",
@@ -744,6 +745,7 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     coordinatorSession: "backend:main",
     workspace: "backend",
     targetAgent: "claude",
+    guardAcpOutput: true,
   });
 
   await runtime.dispose();
@@ -1624,6 +1626,7 @@ test("propagates running task cancellation to the worker transport and completes
     workspace: "backend",
     transportSession: "backend:claude:backend:main",
   });
+  expect(cancel.mock.calls[0]?.[0].agentArgv?.some((arg: string) => arg.includes("acp-output-guard-main."))).toBe(false);
 
   const saved = await readJsonWithRetry<{
     orchestration: {

@@ -274,7 +274,36 @@ test("creates a running task and reuses an injected worker session", async () =>
     workspace: "backend",
     targetAgent: "claude",
     role: "reviewer",
+    guardAcpOutput: true,
   });
+});
+
+test("reusing a legacy worker binding does not silently switch it to the guarded rollout", async () => {
+  const legacyWorkerSession = "backend:claude:shared-worker";
+  const initialState = createEmptyState();
+  initialState.orchestration.workerBindings[legacyWorkerSession] = {
+    sourceHandle: legacyWorkerSession,
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+  };
+  const harness = makeDeps({
+    createId: () => "task-legacy-worker-1",
+    reusableWorkerSession: legacyWorkerSession,
+    initialState,
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "continue the existing worker",
+  });
+
+  expect(harness.getState().orchestration.workerBindings[legacyWorkerSession]).not.toHaveProperty("guardAcpOutput");
 });
 
 test("stores chat reply context on human delegate tasks", async () => {
@@ -1081,6 +1110,7 @@ test("auto-runs and dispatches coordinator-originated rpc delegations", async ()
     workspace: "backend",
     targetAgent: "claude",
     role: "reviewer",
+    guardAcpOutput: true,
   });
 });
 
@@ -7019,6 +7049,7 @@ test("approves a worker-chained needs_confirmation task by assigning a worker se
     workspace: "backend",
     targetAgent: "codex",
     role: "reviewer",
+    guardAcpOutput: true,
   });
 });
 

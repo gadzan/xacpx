@@ -11,7 +11,6 @@ import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
-import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
@@ -25,6 +24,7 @@ import { OrchestrationService } from "./orchestration/orchestration-service";
 import { buildCoordinatorPrompt } from "./orchestration/build-coordinator-prompt";
 import { sameCoordinatorSession } from "./orchestration/coordinator-identity";
 import { buildWorkerAnswerPrompt, buildWorkerTaskPrompt } from "./orchestration/worker-prompts";
+import { resolveWorkerAgentLaunch, shouldGuardWorkerAcpOutput } from "./orchestration/worker-launch";
 import { ScheduledTaskScheduler } from "./scheduled/scheduled-scheduler";
 import { ScheduledTaskService } from "./scheduled/scheduled-service";
 import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
@@ -619,13 +619,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     workspace: string;
     cwd?: string;
   }): ResolvedSession => {
+    const binding = state.orchestration.workerBindings[input.workerSession];
+    const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
     if (!input.cwd) {
       return sessions.resolveSession(
         input.workerSession,
         input.targetAgent,
         input.workspace,
         input.workerSession,
-        { guardAcpOutput: true },
+        { guardAcpOutput },
       );
     }
 
@@ -634,7 +636,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       throw new Error(`agent "${input.targetAgent}" is not configured`);
     }
 
-    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport, { guardAcpOutput: true });
+    const launch = resolveWorkerAgentLaunch(agentConfig, config.transport, binding);
     return {
       alias: input.workerSession,
       agent: input.targetAgent,

@@ -51,7 +51,8 @@
           "coordinatorSession": "backend:main",
           "workspace": "backend",
           "targetAgent": "codex",
-          "role": "reviewer"
+          "role": "reviewer",
+          "guardAcpOutput": true
         }
       },
       "groups": {},
@@ -239,7 +240,8 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "codex",
-              "role": "reviewer"
+              "role": "reviewer",
+              "guardAcpOutput": true
             }
           }
         ]

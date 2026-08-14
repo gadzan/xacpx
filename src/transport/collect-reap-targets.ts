@@ -1,6 +1,6 @@
-import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AppConfig } from "../config/types";
 import type { OrchestrationState } from "../orchestration/orchestration-types";
+import { resolveWorkerAgentLaunch } from "../orchestration/worker-launch";
 import type { ResolvedSession } from "./types";
 import type { ReapTarget } from "./queue-owner-reaper";
 
@@ -57,7 +57,7 @@ export function workerBindingReapTargets(
     if (!cwd) {
       continue;
     }
-    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
+    const launch = resolveWorkerAgentLaunch(agentConfig, config.transport, binding);
     targets.push({
       agent: binding.targetAgent,
       ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),

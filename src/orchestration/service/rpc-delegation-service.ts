@@ -24,6 +24,7 @@ import type {
 } from "../orchestration-service";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../coordinator-identity";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
+import { workerBindingGuardFields } from "../worker-launch";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type RpcDelegationDeps = Pick<
@@ -208,6 +209,7 @@ export class RpcDelegationService {
               ...(preflight.targetLocation.cwd ? { cwd: preflight.targetLocation.cwd } : {}),
               targetAgent: input.targetAgent,
               role: preflight.role,
+              ...workerBindingGuardFields(previousBinding),
               ...(input.parallel ? { ephemeral: true } : {}),
             };
           } else {
