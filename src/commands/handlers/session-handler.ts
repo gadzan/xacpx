@@ -244,6 +244,7 @@ export async function handleSessionNew(
       agent,
       workspace,
       context.sessions.buildFreshTransportSession(stableTransportSession),
+      { guardAcpOutput: true },
     );
   // An explicit --model overrides the agent default for this session, and must be
   // on the ResolvedSession before ensureTransportSession so acpx creates the

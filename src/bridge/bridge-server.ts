@@ -16,6 +16,7 @@ import {
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
 import { isClaudeSettingsPolicy, type ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import { PromptCommandError } from "../transport/prompt-output";
+import { AcpxQueueOverflowError } from "../transport/acpx-queue-overflow";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
@@ -121,11 +122,16 @@ export class BridgeServer {
             },
           }
         : {};
+      const errorCode = error instanceof AcpxQueueOverflowError
+        ? error.code
+        : error instanceof BridgeInvalidRequestError
+          ? "BRIDGE_INVALID_REQUEST"
+          : "BRIDGE_INTERNAL_ERROR";
       return `${JSON.stringify({
         id: requestId,
         ok: false,
         error: {
-          code: error instanceof BridgeInvalidRequestError ? "BRIDGE_INVALID_REQUEST" : "BRIDGE_INTERNAL_ERROR",
+          code: errorCode,
           message,
           ...ensureSessionFields,
           ...promptDetails,

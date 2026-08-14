@@ -52,13 +52,22 @@ export function computeAgentOverlayEntries(config: AppConfig): AcpxAgentOverlayE
   const entries: AcpxAgentOverlayEntry[] = [];
   const seen = new Set<string>();
   for (const agent of Object.values(config.agents)) {
-    const spec = resolveConfiguredAgentLaunch(agent, config.transport);
-    if (!spec.agentArgv || !spec.acpxAgent.startsWith(ACPX_MANAGED_ALIAS_PREFIX)) {
-      continue;
+    // Keep both forms available during rollout: new sessions use the guarded
+    // alias, while existing sessions retain their persisted unguarded alias.
+    // This additive overlay is what lets old sessions continue without a silent
+    // identity migration.
+    const specs = [
+      resolveConfiguredAgentLaunch(agent, config.transport),
+      resolveConfiguredAgentLaunch(agent, config.transport, { guardAcpOutput: true }),
+    ];
+    for (const spec of specs) {
+      if (!spec.agentArgv || !spec.acpxAgent.startsWith(ACPX_MANAGED_ALIAS_PREFIX)) {
+        continue;
+      }
+      if (seen.has(spec.acpxAgent)) continue;
+      seen.add(spec.acpxAgent);
+      entries.push({ alias: spec.acpxAgent, argv: spec.agentArgv });
     }
-    if (seen.has(spec.acpxAgent)) continue;
-    seen.add(spec.acpxAgent);
-    entries.push({ alias: spec.acpxAgent, argv: spec.agentArgv });
   }
   return entries;
 }

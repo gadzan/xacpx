@@ -9,6 +9,7 @@ import { SessionService } from "../../../src/sessions/session-service";
 import type { SessionResourceLifecyclePublishInput } from "../../../src/sessions/session-resource-catalog";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { setLocale, t } from "../../../src/i18n";
+import { deriveAgentAlias, renderAgentArgvIdentity } from "../../../src/config/agent-launch";
 
 beforeAll(() => {
   registerKnownChannelId("feishu");
@@ -1103,6 +1104,36 @@ test("resolves managed launches to an overlay alias with canonical identity", as
   expect(session.rawCommand).toBeUndefined();
 });
 
+test("new sessions persist the guarded structured launch identity", async () => {
+  const service = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transient = service.resolveSession(
+    "guarded-run",
+    "codex",
+    "backend",
+    "backend:guarded-run",
+    { guardAcpOutput: true },
+  );
+  const created = await service.attachSession(
+    "guarded-run",
+    "codex",
+    "backend",
+    transient.transportSession,
+    transient.agentCommand,
+    transient.acpxAgent,
+    transient.agentArgv,
+  );
+
+  expect(created.agentArgv?.[0]).toBe(process.execPath);
+  expect(created.agentArgv?.[1]).toContain("acp-output-guard-main.");
+  expect(created.agentArgv?.[2]).toBe("--");
+  expect(created.agentCommand).toBe(renderAgentArgvIdentity(created.agentArgv!));
+  expect(created.acpxAgent).toBe(deriveAgentAlias("codex", created.agentArgv!));
+
+  const afterRestart = await service.getSession("guarded-run");
+  expect(afterRestart?.agentArgv).toEqual(created.agentArgv);
+  expect(afterRestart?.agentCommand).toBe(created.agentCommand);
+});
+
 test("resolves bare built-in drivers positionally", async () => {
   const config = createConfig();
   config.agents.pool = { driver: "pool" };
@@ -1653,4 +1684,3 @@ test("deriveFreeAlias treats archived sessions as taken (collisions still suffix
   await service.setArchived("demo", true);
   expect(service.deriveFreeAlias("demo")).toBe("demo-2");
 });
-

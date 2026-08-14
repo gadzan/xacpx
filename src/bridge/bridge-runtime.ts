@@ -19,6 +19,7 @@ import { parseMissingOptionalDep } from "./parse-missing-optional-dep";
 import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
+import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow } from "../transport/acpx-queue-overflow";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
@@ -166,6 +167,8 @@ interface BridgeRuntimeOptions {
     sessionKey: string;
     agentCommand: string;
   }) => QueueOwnerAdapterContext;
+  /** Test seam and fail-safe owner terminator for an oversized queue event. */
+  terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
 }
 
 export class BridgeRuntime {
@@ -578,6 +581,13 @@ export class BridgeRuntime {
           })
         : await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input));
       return { text: getPromptText(result) };
+    } catch (error) {
+      if (!isAcpxQueueMessageOverflow(error)) {
+        throw error;
+      }
+
+      const cleanupDiagnostic = await this.cleanupOverflowedOwner(input);
+      throw new AcpxQueueOverflowError(cleanupDiagnostic);
     } finally {
       try {
         await structuredPrompt?.cleanup();
@@ -585,6 +595,37 @@ export class BridgeRuntime {
         // Prompt outcome is more important than best-effort temp file cleanup.
       }
     }
+  }
+
+  /**
+   * A queue client can disconnect after its newline-delimited receive buffer
+   * overflows while the queue owner keeps executing the accepted turn. Cancel
+   * first when the normal acpx control path is available, then use the existing
+   * provenance-aware verified terminator so the owner cannot become a ghost
+   * turn. Neither step is allowed to replace the original overflow diagnosis.
+   */
+  private async cleanupOverflowedOwner(input: BridgeSessionInput): Promise<string | undefined> {
+    let record: { acpxRecordId: string };
+    try {
+      record = await this.readSessionRecord(input);
+    } catch (error) {
+      return `could not resolve the queue owner record: ${describeCleanupError(error)}`;
+    }
+
+    const diagnostics: string[] = [];
+    try {
+      await this.cancel(input);
+    } catch (error) {
+      diagnostics.push(`cancel failed: ${describeCleanupError(error)}`);
+    }
+
+    try {
+      await (this.options.terminateQueueOwner ?? terminateAcpxQueueOwnerVerified)(record.acpxRecordId);
+    } catch (error) {
+      diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
+    }
+
+    return diagnostics.length > 0 ? diagnostics.join("; ") : undefined;
   }
 
   private async launchMcpQueueOwnerIfNeeded(input: BridgeSessionInput): Promise<void> {
@@ -1386,4 +1427,9 @@ function isUnknownVerboseOption(stderr: string, stdout: string): boolean {
   const combined = `${stderr}\n${stdout}`;
   // Commander-style ("error: unknown option '--verbose'"), yargs, and generic "unrecognized".
   return /(unknown|unrecognized)\b[^\n]*--verbose/i.test(combined);
+}
+
+function describeCleanupError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > 512 ? `${message.slice(0, 512)}…` : message;
 }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "../../../src/bridge/bridge-runtime";
 import { BridgeServer } from "../../../src/bridge/bridge-server";
+import { AcpxQueueOverflowError } from "../../../src/transport/acpx-queue-overflow";
 import { PromptCommandError } from "../../../src/transport/prompt-output";
 
 test("returns whether a named session exists", async () => {
@@ -1463,6 +1464,30 @@ test("includes prompt diagnostics in bridge error responses", async () => {
     ),
   ).resolves.toEqual(
     '{"id":"3","ok":false,"error":{"code":"BRIDGE_INTERNAL_ERROR","message":"command failed with exit code 5","details":{"exitCode":5,"stdout":"partial stdout","stderr":"partial stderr"}}}\n',
+  );
+});
+
+test("serializes queue overflow with a stable error code and no giant diagnostics", async () => {
+  const runtime = {
+    prompt: async () => {
+      throw new AcpxQueueOverflowError("owner termination failed: lock remained live");
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  await expect(
+    server.handleLine(JSON.stringify({
+      id: "queue-overflow",
+      method: "prompt",
+      params: {
+        agent: "codex",
+        cwd: "/repo",
+        name: "demo",
+        text: "hello",
+      },
+    })),
+  ).resolves.toBe(
+    '{"id":"queue-overflow","ok":false,"error":{"code":"ACPX_QUEUE_MESSAGE_OVERFLOW","message":"Agent emitted an oversized ACP event. The local agent queue was stopped to prevent the turn from continuing in the background. The prompt was not retried automatically. Cleanup diagnostic: owner termination failed: lock remained live"}}\n',
   );
 });
 

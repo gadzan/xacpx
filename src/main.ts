@@ -633,7 +633,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       throw new Error(`agent "${input.targetAgent}" is not configured`);
     }
 
-    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
+    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport, { guardAcpOutput: true });
     return {
       alias: input.workerSession,
       agent: input.targetAgent,

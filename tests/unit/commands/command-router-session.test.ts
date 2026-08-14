@@ -6,6 +6,7 @@ import { CommandRouter } from "../../../src/commands/command-router";
 import { getChannelIdFromChatKey, registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { QuotaManager } from "../../../src/weixin/messaging/quota-manager";
 import { setLocale, t } from "../../../src/i18n";
+import { wrapAcpOutputGuardArgv } from "../../../src/adapters/acp-output-guard";
 
 beforeAll(() => {
   registerKnownChannelId("feishu");
@@ -145,12 +146,13 @@ test("createSessionWithTransport persists the exact structured launch across con
 
   await router.createSessionWithTransport("relay:demo", "custom", "home");
 
+  const guardedArgv = wrapAcpOutputGuardArgv(["/opt/agent-a", "--acp", ""]);
   expect(state.sessions["relay:demo"]?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions["relay:demo"]?.transport_agent_argv).toEqual(["/opt/agent-a", "--acp", ""]);
+  expect(state.sessions["relay:demo"]?.transport_agent_argv).toEqual(guardedArgv);
 
   config.agents.custom = { driver: "custom", argv: ["/opt/agent-b", "--acp"] };
   const reloaded = new SessionService(config, new MemoryStateStore(), state);
-  expect((await reloaded.getSession("relay:demo"))?.agentArgv).toEqual(["/opt/agent-a", "--acp", ""]);
+  expect((await reloaded.getSession("relay:demo"))?.agentArgv).toEqual(guardedArgv);
 });
 
 test("chat session creation persists the exact structured launch across config changes", async () => {
@@ -163,12 +165,13 @@ test("chat session creation persists the exact structured launch across config c
 
   await router.handle("wx:user", "/session new sticky --agent custom --ws backend");
 
+  const guardedArgv = wrapAcpOutputGuardArgv(["/opt/chat-agent-a", "--acp"]);
   expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/chat-agent-a", "--acp"]);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(guardedArgv);
 
   config.agents.custom = { driver: "custom", argv: ["/opt/chat-agent-b", "--acp"] };
   const reloaded = new SessionService(config, new MemoryStateStore(), state);
-  expect((await reloaded.getSession("sticky"))?.agentArgv).toEqual(["/opt/chat-agent-a", "--acp"]);
+  expect((await reloaded.getSession("sticky"))?.agentArgv).toEqual(guardedArgv);
 });
 
 test("chat attach and reset persist the structured launch they actually use", async () => {

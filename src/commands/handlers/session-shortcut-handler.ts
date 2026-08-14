@@ -83,6 +83,7 @@ export async function handleSessionShortcutCommand(
       agent,
       workspace.name,
       context.sessions.buildFreshTransportSession(stableTransportSession),
+      { guardAcpOutput: true },
     );
     const releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);
     try {

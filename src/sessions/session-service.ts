@@ -84,6 +84,11 @@ interface SessionServiceOptions {
   runtimeRoot?: string;
 }
 
+export interface ResolveSessionOptions {
+  /** Guard a newly-created structured launch before it reaches official acpx. */
+  guardAcpOutput?: boolean;
+}
+
 export interface SessionStateWriter extends Pick<StateStore, "save"> {
   saveNow(state: AppState): Promise<void>;
 }
@@ -154,7 +159,13 @@ export class SessionService {
     return resolved;
   }
 
-  resolveSession(alias: string, agent: string, workspace: string, transportSession: string): ResolvedSession {
+  resolveSession(
+    alias: string,
+    agent: string,
+    workspace: string,
+    transportSession: string,
+    options: ResolveSessionOptions = {},
+  ): ResolvedSession {
     this.validateSession(alias, agent, workspace);
     const existing = this.state.sessions[alias];
     // A cached transport agent command is only valid for the same agent; never
@@ -177,7 +188,7 @@ export class SessionService {
       effort: sameAgentExisting?.effort,
       created_at: existing?.created_at ?? new Date().toISOString(),
       last_used_at: new Date().toISOString(),
-    });
+    }, options);
   }
 
   async attachSession(
@@ -841,7 +852,7 @@ export class SessionService {
     });
   }
 
-  private toResolvedSession(session: LogicalSession): ResolvedSession {
+  private toResolvedSession(session: LogicalSession, options: ResolveSessionOptions = {}): ResolvedSession {
     const agentConfig = this.config.agents[session.agent];
     if (!agentConfig) {
       throw new Error(
@@ -877,7 +888,7 @@ export class SessionService {
     // resolution (including per-session overrides via `session.reply_mode`) is unchanged.
     const channelId = getChannelIdFromChatKey(session.alias);
     const effectiveReplyMode = channelId === "relay" ? "stream" : undefined;
-    const launch = this.resolveLaunchSpec(session, agentConfig);
+    const launch = this.resolveLaunchSpec(session, agentConfig, this.platform, options);
 
     return {
       alias: session.alias,
@@ -918,10 +929,12 @@ export class SessionService {
     session: LogicalSession,
     agentConfig: AgentConfig,
     platform: NodeJS.Platform = this.platform,
+    options: ResolveSessionOptions = {},
   ): AgentLaunchSpec {
     const current = resolveConfiguredAgentLaunch(agentConfig, this.config.transport, {
       platform,
       runtimeRoot: this.runtimeRoot,
+      guardAcpOutput: options.guardAcpOutput,
     });
     // 1. Explicit config `command` wins over any recording. On Unix this is a
     // raw `--agent` override; on Windows a single-token command is synthesized

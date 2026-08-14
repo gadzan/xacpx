@@ -12,6 +12,7 @@ import {
 import { effectiveAdapterRegistry } from "../adapters/adapter-registry";
 import { resolveActiveAdapterArgvSync, resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
 import { hermesAcpShimArgv, hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
+import { wrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
 import { deriveAgentAlias, renderAgentArgvIdentity, type AgentLaunchSpec } from "./agent-launch";
 import type { AgentConfig, TransportConfig } from "./types";
 import { resolveConfigPathForCurrentEnv } from "./config-path";
@@ -99,6 +100,8 @@ export interface ResolveAgentLaunchOptions {
   platform?: NodeJS.Platform;
   /** Runtime root for preinstalled adapter releases; defaults like the runtime resolver. */
   runtimeRoot?: string;
+  /** Wrap a newly-created structured launch before raw ACP reaches official acpx. */
+  guardAcpOutput?: boolean;
 }
 
 /**
@@ -129,7 +132,9 @@ export function resolveConfiguredAgentLaunch(
             "Migrate it to an argv array in config: agents.<name>.argv = [\"agent.exe\", \"--acp\", ...]",
         );
       }
-      const argv = [explicit];
+      const argv = options.guardAcpOutput
+        ? wrapAcpOutputGuardArgv([explicit])
+        : [explicit];
       return {
         acpxAgent: deriveAgentAlias(agent.driver, argv),
         agentCommand: renderAgentArgvIdentity(argv),
@@ -141,7 +146,10 @@ export function resolveConfiguredAgentLaunch(
     return { acpxAgent: agent.driver, rawCommand: explicit, agentCommand: explicit };
   }
 
-  const argv = structuredAgentArgv(agent, transport, options.runtimeRoot);
+  const resolvedArgv = structuredAgentArgv(agent, transport, options.runtimeRoot);
+  const argv = resolvedArgv && options.guardAcpOutput
+    ? wrapAcpOutputGuardArgv(resolvedArgv)
+    : resolvedArgv;
   if (argv) {
     return {
       acpxAgent: deriveAgentAlias(agent.driver, argv),
