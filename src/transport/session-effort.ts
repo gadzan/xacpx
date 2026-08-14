@@ -9,6 +9,24 @@ const EFFORT_CONFIG_IDS = new Set([
 
 type EffortConfigOption = SessionEffortState & { configId: string };
 
+/**
+ * Reapply persisted effort only on a cold queue owner. `acpx set` against a
+ * live owner falls back to spawning a second ACP process and `session/resume`.
+ * Agents with exclusive session leases (Reasonix) reject that as "in use by
+ * another process" — the warm owner already holds the configured effort.
+ *
+ * Skip the warmth probe when there is no effort: `isSessionWarm` is a
+ * management command and must not run on every prompt.
+ */
+export async function sessionEffortToReapply(
+  effort: string | undefined,
+  isWarm: () => Promise<boolean>,
+): Promise<string | undefined> {
+  const value = effort?.trim();
+  if (!value) return undefined;
+  return (await isWarm()) ? undefined : value;
+}
+
 export function requireAdvertisedSessionEffort(raw: string, value: string): EffortConfigOption {
   const advertised = parseSessionEffortRecord(raw);
   if (!advertised) {

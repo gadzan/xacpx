@@ -44,7 +44,7 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
-import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../session-effort";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../session-effort";
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -397,12 +397,9 @@ export class AcpxCliTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
-    // Reapply only on a cold owner: `acpx set` against a live queue owner
-    // falls back to spawning a second ACP process and `session/resume`. Agents
-    // with exclusive session leases (Reasonix) reject that as "in use by
-    // another process" — the warm owner already holds the configured effort.
-    if (session.effort?.trim() && !(await this.isSessionWarm(session))) {
-      await this.reapplySessionEffort(session, session.effort.trim());
+    const effort = await sessionEffortToReapply(session.effort, () => this.isSessionWarm(session));
+    if (effort) {
+      await this.reapplySessionEffort(session, effort);
     }
     await this.launchMcpQueueOwnerIfNeeded(session);
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);

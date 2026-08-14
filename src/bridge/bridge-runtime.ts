@@ -49,7 +49,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
-import { parseSessionEffortRecord, requireAdvertisedSessionEffort } from "../transport/session-effort";
+import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
 
 type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
@@ -547,10 +547,12 @@ export class BridgeRuntime {
   }
 
   async prompt(input: BridgeSessionInput & { text: string }, onEvent?: (event: BridgePromptStreamEvent) => void): Promise<{ text: string }> {
-    // Same cold-only rule as AcpxCliTransport.prompt: a live queue owner
-    // already holds the effort, and `acpx set` would race a second ACP process.
-    if (input.effort?.trim() && !(await this.isSessionWarm(input)).warm) {
-      await this.reapplySessionEffort(input, input.effort.trim());
+    const effort = await sessionEffortToReapply(
+      input.effort,
+      async () => (await this.isSessionWarm(input)).warm,
+    );
+    if (effort) {
+      await this.reapplySessionEffort(input, effort);
     }
     await this.launchMcpQueueOwnerIfNeeded(input);
     const structuredPrompt = await createStructuredPromptFile(input.text, input.media);
