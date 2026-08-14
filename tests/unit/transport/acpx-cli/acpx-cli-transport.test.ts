@@ -1,4 +1,4 @@
-import { expect, mock, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1425,10 +1425,14 @@ test("persists effort before launching the queue owner so reconnect replays it",
     return { code: 0, stdout: "worker response", stderr: "" };
   });
   const queueOwnerLauncher = {
+    wouldReuse: async () => false,
+    cool: async () => {
+      events.push("cool");
+    },
     launch: async () => {
       events.push("launch");
     },
-  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  };
   const transport = new AcpxCliTransport(
     { command: "acpx" },
     run,
@@ -1438,7 +1442,217 @@ test("persists effort before launching the queue owner so reconnect replays it",
 
   await transport.prompt(effortSession, "hello");
 
-  expect(events).toEqual(["set:high", "launch", "prompt"]);
+  expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
+});
+
+test("skips effort reapply when a reusable owner already holds the persisted value", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "max",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("set")) events.push("set");
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "max",
+              options: [{ value: "medium" }, { value: "max" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    events.push(args.includes("prompt") ? "prompt" : "other");
+    return { code: 0, stdout: "ok", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    wouldReuse: async () => true,
+    cool: async () => {
+      events.push("cool");
+    },
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["launch", "prompt"]);
+});
+
+test("cools a reusable owner and reapplies persisted effort when adapter current drifted", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "high",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "medium",
+              options: [{ value: "low" }, { value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) {
+      events.push("set:high");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    events.push("prompt");
+    return { code: 0, stdout: "worker response", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    wouldReuse: async () => true,
+    cool: async () => {
+      events.push("cool");
+    },
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
+});
+
+test("writes persisted effort while cold when the next launch will replace the owner", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "high",
+    model: "model-b",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "high",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) {
+      events.push("set:high");
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    events.push("prompt");
+    return { code: 0, stdout: "ok", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    wouldReuse: async () => false,
+    cool: async () => {
+      events.push("cool");
+    },
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(effortSession, "hello");
+
+  expect(events).toEqual(["cool", "set:high", "launch", "prompt"]);
+});
+
+test("does not acpx set when the queue owner cannot be cooled", async () => {
+  const events: string[] = [];
+  const effortSession: ResolvedSession = {
+    ...session,
+    effort: "high",
+    mcpCoordinatorSession: "backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          acpxRecordId: "acpx-record-1",
+          acpx: {
+            config_options: [{
+              id: "reasoning_effort",
+              category: "thought_level",
+              currentValue: "medium",
+              options: [{ value: "medium" }, { value: "high" }],
+            }],
+          },
+        }),
+        stderr: "",
+      };
+    }
+    if (args.includes("set")) events.push("set");
+    events.push(args.includes("prompt") ? "prompt" : "other");
+    return { code: 0, stdout: "ok", stderr: "" };
+  });
+  const queueOwnerLauncher = {
+    wouldReuse: async () => true,
+    cool: async () => {
+      events.push("cool");
+      throw new Error(
+        "queue owner for session acpx-record-1 is still live after termination; " +
+          "refusing to apply session effort while the owner may still be running",
+      );
+    },
+    launch: async () => {
+      events.push("launch");
+    },
+  };
+  const transport = new AcpxCliTransport(
+    { command: "acpx" },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await expect(transport.prompt(effortSession, "hello")).rejects.toThrow(/still live after termination/);
+  expect(events).toEqual(["cool"]);
 });
 
 test("does not block a prompt when the persisted effort is no longer advertised", async () => {

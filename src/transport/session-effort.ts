@@ -9,6 +9,34 @@ const EFFORT_CONFIG_IDS = new Set([
 
 type EffortConfigOption = SessionEffortState & { configId: string };
 
+export interface SessionEffortReapplyInput {
+  persisted?: string;
+  observedCurrent?: string;
+  advertised?: string[];
+  /**
+   * True when the next queue-owner launch will kill and respawn (fingerprint
+   * change or no reusable owner). A replacement adapter can reset effort even
+   * when the current record still matches, so write desired effort while cold.
+   */
+  ownerWillBeReplaced: boolean;
+}
+
+/**
+ * Persisted `session.effort` is the user's desired value and can differ from
+ * the adapter's advertised current — ControlService prefers persisted when it
+ * is still advertised. Skip `acpx set` only when the live record already
+ * matches AND the current owner will be reused. Otherwise return the value to
+ * apply after cooling the owner: `acpx set` against a live owner can spawn a
+ * second ACP process and break exclusive session leases (Reasonix).
+ */
+export function sessionEffortToReapply(input: SessionEffortReapplyInput): string | undefined {
+  const effort = input.persisted?.trim();
+  if (!effort) return undefined;
+  if (!input.advertised?.includes(effort)) return undefined;
+  if (input.observedCurrent === effort && !input.ownerWillBeReplaced) return undefined;
+  return effort;
+}
+
 export function requireAdvertisedSessionEffort(raw: string, value: string): EffortConfigOption {
   const advertised = parseSessionEffortRecord(raw);
   if (!advertised) {

@@ -203,6 +203,41 @@ export class AcpxQueueOwnerLauncher {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
+  async cool(acpxRecordId: string): Promise<void> {
+    const key = acpxRecordId;
+    const previous = this.launchLocks.get(key) ?? Promise.resolve();
+    const next = previous.then(
+      () => this.doCool(acpxRecordId),
+      () => this.doCool(acpxRecordId),
+    );
+    const tracked = next.then(() => ({}), () => ({}));
+    this.launchLocks.set(key, tracked);
+    void tracked.finally(() => {
+      if (this.launchLocks.get(key) === tracked) {
+        this.launchLocks.delete(key);
+      }
+    });
+    await next;
+  }
+
+  private async doCool(acpxRecordId: string): Promise<void> {
+    await this.terminateOwner(acpxRecordId);
+    if (await this.isOwnerAlive(acpxRecordId)) {
+      throw new Error(
+        `queue owner for session ${acpxRecordId} is still live after termination; ` +
+          "refusing to apply session effort while the owner may still be running",
+      );
+    }
+    this.lastLaunchFingerprint.delete(acpxRecordId);
+  }
+
+  async wouldReuse(input: LaunchQueueOwnerInput): Promise<boolean> {
+    const childEnv = input.env ?? this.baseEnv;
+    const fingerprint = launchFingerprint(input, childEnv);
+    return await this.isOwnerAlive(input.acpxRecordId)
+      && this.lastLaunchFingerprint.get(input.acpxRecordId) === fingerprint;
+  }
+
   async launch(input: LaunchQueueOwnerInput): Promise<{ agentCommand?: string }> {
     const key = input.acpxRecordId;
     const previous = this.launchLocks.get(key) ?? Promise.resolve();
@@ -227,14 +262,10 @@ export class AcpxQueueOwnerLauncher {
     // model options, and the agent command are all baked into the owner's
     // payload at spawn time. Reusing it under changed parameters would keep an
     // old permission/MCP/model/command profile alive (forever with ttl=0).
-    const childEnv = input.env ?? this.baseEnv;
-    const fingerprint = launchFingerprint(input, childEnv);
-    if (
-      await this.isOwnerAlive(input.acpxRecordId)
-      && this.lastLaunchFingerprint.get(input.acpxRecordId) === fingerprint
-    ) {
+    if (await this.wouldReuse(input)) {
       return { agentCommand: input.agentCommand };
     }
+    const childEnv = input.env ?? this.baseEnv;
     await this.terminateOwner(input.acpxRecordId);
     if (await this.isOwnerAlive(input.acpxRecordId)) {
       throw new Error(
