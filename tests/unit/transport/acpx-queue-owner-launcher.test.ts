@@ -346,6 +346,65 @@ test("reuses a live warm owner only when launch parameters are unchanged", async
   expect(spawns).toHaveLength(2);
 });
 
+test("wouldReuse is true only for a live owner with a matching launch fingerprint", async () => {
+  let alive = false;
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async () => {
+      alive = true;
+      return 41;
+    },
+    terminateOwner: async () => {
+      alive = false;
+    },
+    isOwnerAlive: async () => alive,
+  });
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+  };
+
+  await expect(launcher.wouldReuse(input)).resolves.toBe(false);
+  await launcher.launch(input);
+  await expect(launcher.wouldReuse(input)).resolves.toBe(true);
+  await expect(launcher.wouldReuse({ ...input, sessionOptions: { model: "model-b" } })).resolves.toBe(false);
+});
+
+test("cool fails closed when the owner remains alive after a Windows no-op terminate", async () => {
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async () => 41,
+    terminateOwner: async () => {},
+    isOwnerAlive: async () => true,
+  });
+
+  await expect(launcher.cool("acpx-record-1")).rejects.toThrow(/still live after termination/);
+});
+
+test("cool proves the owner is gone before returning", async () => {
+  let alive = true;
+  const launcher = new AcpxQueueOwnerLauncher({
+    acpxCommand: "acpx",
+    spawnOwner: async () => 41,
+    terminateOwner: async () => {
+      alive = false;
+    },
+    isOwnerAlive: async () => alive,
+  });
+  const input = {
+    acpxRecordId: "acpx-record-1",
+    coordinatorSession: "backend:main",
+    permissionMode: "approve-all" as const,
+    nonInteractivePermissions: "deny" as const,
+  };
+  await launcher.launch(input);
+  alive = true;
+  await launcher.cool("acpx-record-1");
+  await expect(launcher.wouldReuse(input)).resolves.toBe(false);
+});
+
 test("a changed effective environment replaces the warm owner without exposing secrets in the fingerprint", async () => {
   const spawns: Array<Record<string, string>> = [];
   let alive = false;
