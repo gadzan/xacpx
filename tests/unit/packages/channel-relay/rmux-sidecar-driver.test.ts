@@ -706,6 +706,78 @@ test("replacement after last-subscriber stop does not see old-stream bytes first
   await Promise.all([aDone, bDone]);
 });
 
+test("stop-recover request timeout does not arm a late joiner on the old stream", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child, { stopRecoverTimeoutMs: 40 });
+  await withHandshake(driver, fake);
+
+  const aAbort = new AbortController();
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1", aAbort.signal)) {
+      aEvents.push(ev);
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "old", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  aAbort.abort();
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "stop written");
+  const stopReq = parsedWrites(fake).findLast((r) => r.type === "stop-recover");
+  expect(stopReq?.id).toBeTruthy();
+
+  await Bun.sleep(80);
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes") break;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence: 0,
+        data_base64: Buffer.from("stale").toString("base64"),
+      },
+    })}\n`,
+  );
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(bEvents).toEqual([]);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover after timeout");
+
+  fake.reply({ type: "ok", id: stopReq!.id! });
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  expect(bEvents.some((e) => e.type === "bytes")).toBe(false);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after rebase");
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+  await Promise.all([aDone, bDone]);
+});
+
 test("in-flight stop-recover completes before a replacement recover is written", async () => {
   const fake = makeFakeChild();
   const driver = new RmuxSidecarDriver(fake.child);

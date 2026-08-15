@@ -19,6 +19,8 @@ import {
 const MAX_LINE_BYTES = 96 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+/** Node-side wait for stop-recover. Native RPC is not cancelled on timeout. */
+const STOP_RECOVER_TIMEOUT_MS = 1_000;
 const SIDECAR_PROTOCOL_VERSION = 2;
 /** Must match the Rust sidecar `REBASE_CHUNK_BYTES`. */
 const REBASE_CHUNK_BYTES = 48 * 1024;
@@ -86,6 +88,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private handshaken = false;
   private diagnosticsCache: RmuxDiagnostics | null = null;
   private readonly requestTimeoutMs: number;
+  private readonly stopRecoverTimeoutMs: number;
   /** Trailing sidecar stderr (protocol stays on stdout). Surfaced on crash. */
   private stderrTail = "";
   /**
@@ -108,13 +111,18 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   /**
    * A stop-recover is queued or in flight (last subscriber left, or catch-up
    * cache overflow started a snapshot refresh). New joiners stay unarmed until
-   * that stop finishes and the next recover acks.
+   * a later recover RPC acks. Node's stop-recover timeout must not clear this:
+   * the native RPC is not cancelled, so the old stream may still be live.
    */
   private readonly recoveryStopping = new Set<string>();
 
-  constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
+  constructor(
+    child: SidecarStdio,
+    opts: { requestTimeoutMs?: number; stopRecoverTimeoutMs?: number } = {},
+  ) {
     this.child = child;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.stopRecoverTimeoutMs = opts.stopRecoverTimeoutMs ?? STOP_RECOVER_TIMEOUT_MS;
     child.stdout.on("data", (chunk: Buffer | string) => {
       this.onStdout(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
@@ -289,10 +297,14 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         this.recoveryStopping.add(paneId);
         void this.enqueueRecoveryControl(paneId, async () => {
           try {
-            await this.request({ type: "stop-recover", pane_id: paneId }, 1_000);
+            await this.request(
+              { type: "stop-recover", pane_id: paneId },
+              this.stopRecoverTimeoutMs,
+            );
           } finally {
+            // Timeout does not cancel native stop-recover. Keep stopping until
+            // a later recover acks so a late joiner cannot arm on the old stream.
             this.recoveryLive.delete(paneId);
-            this.recoveryStopping.delete(paneId);
             this.recoveryCache.delete(paneId);
             this.rebaseAssembly.delete(paneId);
             this.snapshotRefresh.delete(paneId);
@@ -316,7 +328,10 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     const set = this.recoveries.get(paneId);
     const started = this.enqueueRecoveryControl(paneId, async () => {
       if (!set || set.size === 0) return;
-      if (this.recoveryLive.has(paneId)) return;
+      if (this.recoveryLive.has(paneId)) {
+        this.recoveryStopping.delete(paneId);
+        return;
+      }
       // Replacement starter needs the previous snapshot before recover acks.
       // First-ever start has an empty cache, so this is a no-op.
       for (const s of set) {
@@ -324,6 +339,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       }
       await this.request({ type: "recover", pane_id: paneId });
       this.recoveryLive.add(paneId);
+      this.recoveryStopping.delete(paneId);
     });
     const shared = started.finally(() => {
       if (this.recoveryStarts.get(paneId) === shared) {
@@ -642,10 +658,12 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         this.recoveryLive.delete(paneId);
         this.recoveryStopping.add(paneId);
         try {
-          await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
+          await this.request(
+            { type: "stop-recover", pane_id: paneId },
+            this.stopRecoverTimeoutMs,
+          ).catch(() => {});
         } finally {
           this.recoveryLive.delete(paneId);
-          this.recoveryStopping.delete(paneId);
           this.recoveryCache.delete(paneId);
           this.rebaseAssembly.delete(paneId);
         }
