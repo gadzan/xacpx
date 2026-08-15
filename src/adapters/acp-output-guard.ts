@@ -104,7 +104,10 @@ export function buildAcpAgentSpawnSpec(
     return { command, args, shell: false };
   }
 
-  const commandLine = [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ");
+  const commandLine = [
+    escapeWindowsCmdCommand(launcherCommand),
+    ...args.map(quoteWindowsCmdArg),
+  ].join(" ");
   return {
     command: comspec,
     // /s /c needs one outer quote pair around the complete command. Without
@@ -125,17 +128,24 @@ function isWindowsScriptLauncher(command: string): boolean {
   return basename.endsWith(".cmd") || basename.endsWith(".bat");
 }
 
+const WINDOWS_CMD_META_CHARACTERS = /([()\][%!^"`<>&|;, *?])/gu;
+
+function escapeWindowsCmdCommand(value: string): string {
+  return value.replace(WINDOWS_CMD_META_CHARACTERS, "^$1");
+}
+
 function quoteWindowsCmdArg(value: string): string {
-  if (value.length === 0) return '""';
-  const escaped = value
-    // /c runs in command-line mode, where %% is not a percent escape. A caret
-    // changes the variable name seen by cmd's percent-expansion pass; the
-    // later command pass removes it and leaves the percent literal.
-    .replace(/%/gu, "^%")
-    // cmd uses doubled quotes for an embedded quote in a batch-file argument;
-    // backslash quoting is for CommandLineToArgvW, not cmd's parser.
-    .replace(/"/gu, '""');
-  return `"${escaped}"`;
+  // First encode quotes and trailing backslashes for the Windows argv parser
+  // used by the process that the .cmd/.bat launcher eventually invokes.
+  let escaped = value
+    .replace(/(?=(\\+?)?)\1"/gu, "$1$1\\\"")
+    .replace(/(?=(\\+?)?)\1$/gu, "$1$1");
+
+  // Then protect the complete quoted argument from cmd.exe. In particular,
+  // the carets for %, !, and embedded quotes must sit outside cmd's quote
+  // state; placing them inside a normal quoted argument makes them literal.
+  escaped = `"${escaped}"`;
+  return escaped.replace(WINDOWS_CMD_META_CHARACTERS, "^$1");
 }
 
 export class AcpOutputGuardError extends Error {
