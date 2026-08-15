@@ -295,13 +295,13 @@ test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boun
       PATH: dir,
       PATHEXT: ".EXE;.CMD;.BAT;.COM",
     };
-    const spec = buildAcpAgentSpawnSpec(
-      ["fake-agent", "a&b", "(quoted)", "%PATH%", 'a"b', "!value!"],
-      "win32",
-      env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
-      env,
+    const expectedArgv = ["a&b", "(quoted)", "%PATH%", 'a"b', "!value!"];
+    const guardEntry = join(process.cwd(), "src/adapters/acp-output-guard-main.ts");
+    const child = spawn(
+      process.execPath,
+      [guardEntry, "--", "fake-agent", ...expectedArgv],
+      { shell: false, env, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const child = spawn(spec.command, spec.args, { shell: false, env, stdio: ["ignore", "pipe", "pipe"] });
     const output = await new Promise<string>((resolve, reject) => {
       let stdout = "";
       let stderr = "";
@@ -310,7 +310,7 @@ test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boun
       child.on("error", reject);
       child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(`probe exited ${code}: ${stderr}`)));
     });
-    expect(JSON.parse(output)).toEqual(["a&b", "(quoted)", "%PATH%", 'a"b', "!value!"]);
+    expect(JSON.parse(output)).toEqual(expectedArgv);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
