@@ -16,7 +16,7 @@ import type { AppConfig, LoggingLevel } from "./config/types";
 import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
 import { resolveDaemonOrchestrationSocketPath, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
-import type { OrchestrationTaskRecord } from "./orchestration/orchestration-types";
+import type { OrchestrationTaskRecord, WorkerBindingRecord } from "./orchestration/orchestration-types";
 import { createOrchestrationEndpoint, resolveOrchestrationEndpoint } from "./orchestration/orchestration-ipc";
 import { AsyncMutex } from "./orchestration/async-mutex";
 import { OrchestrationServer } from "./orchestration/orchestration-server";
@@ -618,8 +618,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     targetAgent: string;
     workspace: string;
     cwd?: string;
-  }): ResolvedSession => {
-    const binding = state.orchestration.workerBindings[input.workerSession];
+  }, bindingSnapshot?: Pick<WorkerBindingRecord, "guardAcpOutput">): ResolvedSession => {
+    const binding = bindingSnapshot ?? state.orchestration.workerBindings[input.workerSession];
     const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
     if (!input.cwd) {
       return sessions.resolveSession(
@@ -820,11 +820,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         throw new Error(result.message || "worker task cancel was not acknowledged");
       }
     },
-    closeWorkerSession: async ({ workerSession, targetAgent, workspace, cwd }) => {
+    closeWorkerSession: async ({ workerSession, targetAgent, workspace, cwd, guardAcpOutput }) => {
       if (!transport.removeSession) {
         return;
       }
-      const session = resolveWorkerRuntimeSession({ workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) });
+      const session = resolveWorkerRuntimeSession(
+        { workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) },
+        { guardAcpOutput },
+      );
       await transport.removeSession(session);
     },
     resumeWorkerTask: async ({ taskId, workerSession, coordinatorSession, targetAgent, workspace, cwd, answer }) => {

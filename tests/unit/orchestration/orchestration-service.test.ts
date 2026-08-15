@@ -9271,6 +9271,53 @@ test("reconcileParallelSlots is idempotent and survives closeWorkerSession error
   expect(harness.closeCalls.length).toBe(1);
 });
 
+test("reconcileParallelSlots snapshots a legacy ephemeral binding before deleting it", async () => {
+  const workerSession = "backend:codex:p-legacy";
+  const harness = makeDeps({
+    initialState: {
+      ...createEmptyState(),
+      orchestration: {
+        tasks: {
+          "task-legacy": {
+            taskId: "task-legacy",
+            sourceHandle: "wx:user-1",
+            sourceKind: "human",
+            coordinatorSession: "backend:main",
+            workerSession,
+            workspace: "backend",
+            targetAgent: "codex",
+            task: "legacy work",
+            status: "completed",
+            ephemeralWorkerSession: true,
+            summary: "done",
+            resultText: "done",
+            createdAt: "2026-04-13T10:00:00.000Z",
+            updatedAt: "2026-04-13T10:00:00.000Z",
+            eventSeq: 0,
+            events: [],
+          },
+        },
+        workerBindings: {
+          [workerSession]: {
+            sourceHandle: workerSession,
+            coordinatorSession: "backend:main",
+            workspace: "backend",
+            targetAgent: "codex",
+            ephemeral: true,
+          },
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.reconcileParallelSlots();
+
+  expect(harness.closeCalls).toHaveLength(1);
+  expect(harness.closeCalls[0]).toMatchObject({ workerSession });
+  expect(harness.closeCalls[0]).toHaveProperty("guardAcpOutput", undefined);
+});
+
 test("reconcileParallelSlots drains multiple queued tasks for one agent in a single call", async () => {
   let idCounter = 0;
   const config = createConfig();

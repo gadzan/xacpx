@@ -105,7 +105,7 @@ export function buildAcpAgentSpawnSpec(
 
   return {
     command: comspec,
-    args: ["/d", "/s", "/c", [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ")],
+    args: ["/d", "/v:off", "/s", "/c", [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ")],
     shell: false,
   };
 }
@@ -118,8 +118,13 @@ function isWindowsScriptLauncher(command: string): boolean {
 function quoteWindowsCmdArg(value: string): string {
   if (value.length === 0) return '""';
   const escaped = value
-    .replace(/(\\*)"/gu, "$1$1\\\"")
-    .replace(/(\\+)$/gu, "$1$1");
+    // /c runs in command-line mode, where %% is not a percent escape. A caret
+    // changes the variable name seen by cmd's percent-expansion pass; the
+    // later command pass removes it and leaves the percent literal.
+    .replace(/%/gu, "^%")
+    // cmd uses doubled quotes for an embedded quote in a batch-file argument;
+    // backslash quoting is for CommandLineToArgvW, not cmd's parser.
+    .replace(/"/gu, '""');
   return `"${escaped}"`;
 }
 

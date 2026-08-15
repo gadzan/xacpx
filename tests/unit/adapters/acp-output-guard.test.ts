@@ -224,11 +224,11 @@ test("Windows real executables keep exact argv while cmd launchers use an explic
     "C:\\Windows\\System32\\cmd.exe",
   );
   expect(launcher.command).toBe("C:\\Windows\\System32\\cmd.exe");
-  expect(launcher.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+  expect(launcher.args.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
   expect(launcher.shell).toBe(false);
-  expect(launcher.args[3]).toContain('"C:\\Program Files\\agent.cmd"');
-  expect(launcher.args[3]).toContain('"a&b"');
-  expect(launcher.args[3]).toContain('"(quoted)"');
+  expect(launcher.args[4]).toContain('"C:\\Program Files\\agent.cmd"');
+  expect(launcher.args[4]).toContain('"a&b"');
+  expect(launcher.args[4]).toContain('"(quoted)"');
 });
 
 test("Windows resolves bare PATH commands through PATHEXT before choosing the launcher", () => {
@@ -242,7 +242,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
 
   expect(launcher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/s", "/c", '"C:\\Tools\\opencode.CMD" "acp"'],
+    args: ["/d", "/v:off", "/s", "/c", '"C:\\Tools\\opencode.CMD" "acp"'],
     shell: false,
   });
 
@@ -255,9 +255,25 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
   );
   expect(npxLauncher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/s", "/c", '"C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9"'],
+    args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9"'],
     shell: false,
   });
+});
+
+test("Windows cmd launchers preserve percent, embedded quotes, and exclamation marks", () => {
+  const launcher = buildAcpAgentSpawnSpec(
+    ["C:\\Program Files\\agent.cmd", "--pattern", "%PATH%", 'a"b', "!value!"],
+    "win32",
+    "C:\\Windows\\System32\\cmd.exe",
+  );
+
+  expect(launcher.args).toEqual([
+    "/d",
+    "/v:off",
+    "/s",
+    "/c",
+    '"C:\\Program Files\\agent.cmd" "--pattern" "^%PATH^%" "a""b" "!value!"',
+  ]);
 });
 
 test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boundary", async () => {
@@ -275,7 +291,7 @@ test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boun
       PATHEXT: ".EXE;.CMD;.BAT;.COM",
     };
     const spec = buildAcpAgentSpawnSpec(
-      ["fake-agent", "a&b", "(quoted)"],
+      ["fake-agent", "a&b", "(quoted)", "%PATH%", 'a"b', "!value!"],
       "win32",
       env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
       env,
@@ -289,7 +305,7 @@ test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boun
       child.on("error", reject);
       child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(`probe exited ${code}: ${stderr}`)));
     });
-    expect(JSON.parse(output)).toEqual(["a&b", "(quoted)"]);
+    expect(JSON.parse(output)).toEqual(["a&b", "(quoted)", "%PATH%", 'a"b', "!value!"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

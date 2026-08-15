@@ -495,7 +495,8 @@
         "workerSession": "backend:claude:backend:main:p-task-1-slot",
         "coordinatorSession": "backend:main",
         "workspace": "backend",
-        "targetAgent": "claude"
+        "targetAgent": "claude",
+        "guardAcpOutput": true
       }
     },
     {

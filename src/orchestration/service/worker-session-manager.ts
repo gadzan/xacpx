@@ -289,6 +289,7 @@ export class WorkerSessionManager {
         cwd?: string;
         targetAgent: string;
         role?: string;
+        guardAcpOutput?: boolean;
       }> = [];
       for (const task of Object.values(state.orchestration.tasks)) {
         if (
@@ -306,7 +307,8 @@ export class WorkerSessionManager {
           // log. Mark them closed anyway so Phase 1 does not re-check them on future
           // reconcile calls.
           task.ephemeralWorkerSessionClosed = true;
-          if (state.orchestration.workerBindings[task.workerSession] !== undefined) {
+          const binding = state.orchestration.workerBindings[task.workerSession];
+          if (binding !== undefined) {
             delete state.orchestration.workerBindings[task.workerSession];
             collected.push({
               workerSession: task.workerSession,
@@ -315,6 +317,7 @@ export class WorkerSessionManager {
               ...(task.cwd ? { cwd: task.cwd } : {}),
               targetAgent: task.targetAgent,
               ...(task.role ? { role: task.role } : {}),
+              guardAcpOutput: binding.guardAcpOutput,
             });
           }
         }
