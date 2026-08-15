@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.22.1-beta.0] - 2026-08-15
+
+### Fixed
+
+- Transport: fail closed when Windows cannot cool a queue owner; reapply persisted effort when a warm owner drifted; skip effort reapply on a warm queue owner.
+- Agents: guard oversized ACP output before forwarding to acpx; preserve guarded worker and legacy ephemeral close identity.
+- Windows: preserve, wrap, and escape cmd launcher arguments.
+
+## [relay 0.12.1-beta.1] - 2026-08-15
+
+### Fixed
+
+- Relay: restart silent RMUX recover and freeze error input; surface terminal recovery startup failures; show only other terminal viewers.
+
+## [channel-relay 0.6.1-beta.1] - 2026-08-15
+
+### Fixed
+
+- RMUX terminal: serialize recovery lifecycle per pane; require initial rebase before recover succeeds; order recover rebase and keep shell on stream errors; surface dead recover streams and unblock sidecar stdin; stop old recover before arming a replacement; keep snapshot refresh joiners unarmed during stop; keep stopping until recover acks after stop timeout.
+
 ## [relay-protocol 0.4.1] - 2026-08-13
 
 ### Added

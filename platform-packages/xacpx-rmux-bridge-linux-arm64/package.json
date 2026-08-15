@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-rmux-bridge-linux-arm64",
-  "version": "0.6.1-beta.0",
+  "version": "0.6.1-beta.1",
   "description": "Process-owned xacpx RMUX bridge binary for linux-arm64.",
   "license": "MIT",
   "os": [

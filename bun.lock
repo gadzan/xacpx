@@ -42,18 +42,18 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.6.1-beta.0",
+      "version": "0.6.1-beta.1",
       "dependencies": {
         "@ganglion/xacpx-relay-protocol": "^0.4.0",
         "proper-lockfile": "^4.1.2",
         "ws": "^8.20.0",
       },
       "optionalDependencies": {
-        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.6.1-beta.0",
-        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.6.1-beta.0",
-        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.6.1-beta.0",
-        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.6.1-beta.0",
-        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.6.1-beta.0",
+        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.6.1-beta.1",
+        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.6.1-beta.1",
+        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.6.1-beta.1",
+        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.6.1-beta.1",
+        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.6.1-beta.1",
       },
       "peerDependencies": {
         "xacpx": ">=0.17.0",
@@ -86,7 +86,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.12.1-beta.0",
+      "version": "0.12.1-beta.1",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
