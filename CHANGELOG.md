@@ -1,5 +1,11 @@
 # Changelog
 
+## [channel-relay 0.6.1-beta.2] - 2026-08-15
+
+### Fixed
+
+- Recompile and re-publish the RMUX Windows sidecar (xacpx-rmux-bridge-*) so the Windows Rust binary matches the 0.6.1 line.
+
 ## [0.22.1-beta.0] - 2026-08-15
 
 ### Fixed
