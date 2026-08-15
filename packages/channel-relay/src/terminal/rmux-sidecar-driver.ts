@@ -105,6 +105,8 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private readonly recoveryLive = new Set<string>();
   /** In-flight start barrier: waiters share success or the same failure. */
   private readonly recoveryStarts = new Map<string, Promise<void>>();
+  /** Last subscriber left; a stop-recover is queued and must still run. */
+  private readonly recoveryStopping = new Set<string>();
 
   constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
     this.child = child;
@@ -247,8 +249,8 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     if (signal?.aborted) onAbort();
     else signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      // Join the interested set before waiting on control RPCs so a queued
-      // stop-recover can see the new subscriber and skip tearing the task down.
+      // Join before control RPCs so a last-subscriber stop stays ahead of the
+      // replacement recover in the FIFO. Do not skip that stop if B joins.
       set.add(sub);
       if (this.recoveryLive.has(paneId)) {
         this.pushCatchUp(paneId, sub);
@@ -257,14 +259,16 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         let inFlight = this.recoveryStarts.get(paneId);
         const starter = !inFlight;
         if (starter) {
-          // Starter must be armed before recover acks: tests (and RMUX) may
-          // emit rebase/exit on the same turn, and those events are not all
-          // in the catch-up cache.
-          sub.armed = true;
+          // First-ever start arms immediately so same-turn rebase/exit is not
+          // lost. A replacement after last-subscriber stop stays unarmed until
+          // the old Rust task is stopped and recover acks.
+          if (!this.recoveryStopping.has(paneId)) {
+            sub.armed = true;
+          }
           inFlight = this.beginRecoveryStart(paneId);
         }
         await inFlight;
-        if (!starter && set.has(sub) && this.recoveryLive.has(paneId)) {
+        if (set.has(sub) && this.recoveryLive.has(paneId) && !sub.armed) {
           this.pushCatchUp(paneId, sub);
           sub.armed = true;
         }
@@ -278,13 +282,13 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       set.delete(sub);
       if (set.size === 0) {
         this.recoveryLive.delete(paneId);
+        this.recoveryStopping.add(paneId);
         void this.enqueueRecoveryControl(paneId, async () => {
-          const current = this.recoveries.get(paneId);
-          if (current && current.size > 0) return;
           try {
             await this.request({ type: "stop-recover", pane_id: paneId }, 1_000);
           } finally {
             this.recoveryLive.delete(paneId);
+            this.recoveryStopping.delete(paneId);
             this.recoveryCache.delete(paneId);
             this.rebaseAssembly.delete(paneId);
             this.snapshotRefresh.delete(paneId);
@@ -674,6 +678,7 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.recoveryControls.clear();
     this.recoveryLive.clear();
     this.recoveryStarts.clear();
+    this.recoveryStopping.clear();
     this.emitter.emit("crash", crashed);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {

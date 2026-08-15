@@ -124,11 +124,10 @@ async fn run() -> Result<(), String> {
             continue;
         }
 
-        // Handshake stays on the stdin task so later requests cannot race it.
-        // Shutdown stays here so we stop reading before tearing the process down.
-        // Everything else — including Recover startup — is spawned so a pending
-        // first Rebase cannot HOL-block input/stop/kill for other panes.
-        let inline = !handshaken || matches!(msg, ClientMessage::Shutdown { .. });
+        // Handshake/shutdown stay on the stdin task. Only Recover is spawned:
+        // its first-rebase wait must not HOL-block other RPCs, but Create/List
+        // stay serial so reconciler cannot observe a half-created session.
+        let inline = !handshaken || !matches!(msg, ClientMessage::Recover { .. });
         outstanding.fetch_add(1, Ordering::SeqCst);
         if inline {
             let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;

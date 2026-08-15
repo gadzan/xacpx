@@ -345,6 +345,7 @@ impl BridgeState {
             loop {
                 match stream.next().await {
                     Ok(Some(event)) => {
+                        let ended = followup_event_ends_reader(&event);
                         let dtos = map_recovery_events(event);
                         let mut send_failed = false;
                         for dto in dtos {
@@ -360,7 +361,7 @@ impl BridgeState {
                                 break;
                             }
                         }
-                        if send_failed {
+                        if ended || send_failed {
                             break;
                         }
                     }
@@ -515,6 +516,10 @@ fn rebase_reason_name(reason: PaneRecoveryRebaseReason) -> &'static str {
     }
 }
 
+fn followup_event_ends_reader(event: &PaneRecoveryEvent) -> bool {
+    matches!(event, PaneRecoveryEvent::End(_))
+}
+
 fn unexpected_stream_end_event() -> RecoveryEventDto {
     RecoveryEventDto::Error {
         code: RECOVERY_STREAM_ENDED_CODE.to_owned(),
@@ -579,6 +584,17 @@ mod tests {
         .await
         .expect_err("pending rebase must fail closed");
         assert_eq!(err, "recovery timed out waiting for initial rebase");
+    }
+
+    #[test]
+    fn end_stops_followup_reader_before_eof() {
+        let event = PaneRecoveryEvent::End(PaneStreamEndReason::PaneRemoved);
+        assert!(followup_event_ends_reader(&event));
+        assert!(!followup_event_ends_reader(&PaneRecoveryEvent::Bytes {
+            epoch: 1,
+            sequence: 0,
+            bytes: b"x".to_vec(),
+        }));
     }
 
     #[test]

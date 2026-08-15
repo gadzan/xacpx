@@ -637,7 +637,7 @@ test("protocol fatal crash fails recover iterators as RmuxDriverCrashedError", a
   expect(thrown.current).toBeInstanceOf(RmuxDriverCrashedError);
 });
 
-test("new subscriber before stop executes skips stop-recover and keeps the live stream", async () => {
+test("replacement after last-subscriber stop does not see old-stream bytes first", async () => {
   const fake = makeFakeChild();
   const driver = new RmuxSidecarDriver(fake.child);
   await withHandshake(driver, fake);
@@ -651,26 +651,20 @@ test("new subscriber before stop executes skips stop-recover and keeps the live 
   })();
   await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
   expect(ackLast(fake, "recover")).toBe(true);
-  writeRebase(fake.stdout, "%1", "prompt", { nextSequence: 0 });
+  writeRebase(fake.stdout, "%1", "old", { nextSequence: 0 });
   await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
 
   aAbort.abort();
-  // Generator finally enqueues stop; the stop op itself is the next microtask.
   await Promise.resolve();
 
   const bEvents: RmuxRecoveryEvent[] = [];
   const bDone = (async () => {
     for await (const ev of driver.recover("%1")) {
       bEvents.push(ev);
-      if (ev.type === "bytes" && ev.sequence === 0) break;
+      if (ev.type === "bytes") break;
     }
   })();
-  await pumpUntil(() => requestCount(fake, "recover") === 2, "B idempotent recover");
-  expect(requestCount(fake, "stop-recover")).toBe(0);
-  expect(ackLast(fake, "recover")).toBe(true);
-  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B catch-up rebase");
-  expect(bEvents[0]).toMatchObject({ type: "rebase", nextSequence: 0 });
-
+  for (let i = 0; i < 8; i++) await Promise.resolve();
   fake.stdout.write(
     `${JSON.stringify({
       type: "event",
@@ -679,15 +673,36 @@ test("new subscriber before stop executes skips stop-recover and keeps the live 
         type: "bytes",
         epoch: 1,
         sequence: 0,
-        data_base64: Buffer.from("echo").toString("base64"),
+        data_base64: Buffer.from("stale").toString("base64"),
       },
     })}\n`,
   );
-  await pumpUntil(
-    () => bEvents.some((e) => e.type === "bytes" && e.sequence === 0),
-    "B live bytes",
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(bEvents).toEqual([]);
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "queued stop still runs");
+  expect(requestCount(fake, "recover")).toBe(1);
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover after stop");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  expect(bEvents.some((e) => e.type === "bytes")).toBe(false);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
   );
-  aAbort.abort();
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after rebase");
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes"]);
   await Promise.all([aDone, bDone]);
 });
 
@@ -773,12 +788,10 @@ test("cache hit still writes recover so a finished server-side task restarts", a
       if (ev.type === "bytes" && ev.sequence === 0) break;
     }
   })();
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "gap still stops old stream");
+  expect(ackLast(fake, "stop-recover")).toBe(true);
   await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover despite cache");
-  expect(requestCount(fake, "stop-recover")).toBe(0);
   expect(ackLast(fake, "recover")).toBe(true);
-  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B catch-up");
-  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 1 });
-
   writeRebase(fake.stdout, "%1", "restarted", { epoch: 2, nextSequence: 0 });
   await pumpUntil(
     () => bEvents.some((e) => e.type === "rebase" && e.epoch === 2),
