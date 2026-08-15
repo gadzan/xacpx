@@ -854,6 +854,99 @@ test("recover RPC failure rejects waiters that joined during start", async () =>
   expect(bEvents).toEqual([]);
 });
 
+test("snapshot refresh stop pending does not let a late joiner see old-stream bytes first", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      aEvents.push(ev);
+      if (ev.type === "exit") break;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  const chunk = Buffer.alloc(48 * 1024, 0x61);
+  const chunkB64 = chunk.toString("base64");
+  let sent = 0;
+  let sequence = 0;
+  while (sent <= 2 * 1024 * 1024) {
+    fake.stdout.write(
+      `${JSON.stringify({
+        type: "event",
+        pane_id: "%1",
+        event: {
+          type: "bytes",
+          epoch: 1,
+          sequence,
+          data_base64: chunkB64,
+        },
+      })}\n`,
+    );
+    sent += chunk.byteLength;
+    sequence += 1;
+  }
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "refresh stop written", 256);
+  expect(requestCount(fake, "recover")).toBe(1);
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes") break;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence,
+        data_base64: Buffer.from("stale").toString("base64"),
+      },
+    })}\n`,
+  );
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(bEvents).toEqual([]);
+  expect(requestCount(fake, "recover")).toBe(1);
+
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "refresh recover after stop");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  expect(bEvents.some((e) => e.type === "bytes")).toBe(false);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after rebase");
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+
+  fake.stdout.write(
+    `${JSON.stringify({ type: "event", pane_id: "%1", event: { type: "exit", code: 0 } })}\n`,
+  );
+  await Promise.all([aDone, bDone]);
+});
+
 test("snapshot refresh recover failure fails every live subscriber", async () => {
   const fake = makeFakeChild();
   const driver = new RmuxSidecarDriver(fake.child);

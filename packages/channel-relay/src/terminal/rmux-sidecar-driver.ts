@@ -105,7 +105,11 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private readonly recoveryLive = new Set<string>();
   /** In-flight start barrier: waiters share success or the same failure. */
   private readonly recoveryStarts = new Map<string, Promise<void>>();
-  /** Last subscriber left; a stop-recover is queued and must still run. */
+  /**
+   * A stop-recover is queued or in flight (last subscriber left, or catch-up
+   * cache overflow started a snapshot refresh). New joiners stay unarmed until
+   * that stop finishes and the next recover acks.
+   */
   private readonly recoveryStopping = new Set<string>();
 
   constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
@@ -260,8 +264,8 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         const starter = !inFlight;
         if (starter) {
           // First-ever start arms immediately so same-turn rebase/exit is not
-          // lost. A replacement after last-subscriber stop stays unarmed until
-          // the old Rust task is stopped and recover acks.
+          // lost. A replacement after last-subscriber stop or snapshot-refresh
+          // stop stays unarmed until the old Rust task is stopped and recover acks.
           if (!this.recoveryStopping.has(paneId)) {
             sub.armed = true;
           }
@@ -618,6 +622,10 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       // rebase cap. Keep the last real snapshot and ask RMUX for a fresh one.
       if (!this.snapshotRefresh.has(paneId)) {
         this.snapshotRefresh.add(paneId);
+        // Mark stopping before the queued stop runs so a late joiner cannot
+        // arm on the old stream and see Bytes before the fresh rebase.
+        this.recoveryLive.delete(paneId);
+        this.recoveryStopping.add(paneId);
         void this.refreshPaneSnapshot(paneId);
       }
       return;
@@ -632,9 +640,15 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
         const current = this.recoveries.get(paneId);
         if (!current || current.size === 0) return;
         this.recoveryLive.delete(paneId);
-        await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
-        this.recoveryCache.delete(paneId);
-        this.rebaseAssembly.delete(paneId);
+        this.recoveryStopping.add(paneId);
+        try {
+          await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
+        } finally {
+          this.recoveryLive.delete(paneId);
+          this.recoveryStopping.delete(paneId);
+          this.recoveryCache.delete(paneId);
+          this.rebaseAssembly.delete(paneId);
+        }
       });
       const current = this.recoveries.get(paneId);
       if (!current || current.size === 0 || this.crashed) return;
