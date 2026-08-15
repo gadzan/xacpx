@@ -38,9 +38,13 @@ test("small ACP stdout lines are passed through byte-for-byte as strings", () =>
 });
 
 test("the bundled launch identity points at the published adapters entry", () => {
-  expect(resolveAcpOutputGuardEntry("file:///opt/xacpx/dist/cli.js")).toBe(
-    "/opt/xacpx/dist/adapters/acp-output-guard-main.js",
-  );
+  const moduleUrl = process.platform === "win32"
+    ? "file:///C:/opt/xacpx/dist/cli.js"
+    : "file:///opt/xacpx/dist/cli.js";
+  const expected = process.platform === "win32"
+    ? "C:\\opt\\xacpx\\dist\\adapters\\acp-output-guard-main.js"
+    : "/opt/xacpx/dist/adapters/acp-output-guard-main.js";
+  expect(resolveAcpOutputGuardEntry(moduleUrl)).toBe(expected);
 });
 
 test("oversized agent messages are split without losing text or metadata", () => {
@@ -226,9 +230,8 @@ test("Windows real executables keep exact argv while cmd launchers use an explic
   expect(launcher.command).toBe("C:\\Windows\\System32\\cmd.exe");
   expect(launcher.args.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
   expect(launcher.shell).toBe(false);
-  expect(launcher.args[4]).toContain('"C:\\Program Files\\agent.cmd"');
-  expect(launcher.args[4]).toContain('"a&b"');
-  expect(launcher.args[4]).toContain('"(quoted)"');
+  expect(launcher.windowsVerbatimArguments).toBe(true);
+  expect(launcher.args[4]).toBe('"C:\\Program^ Files\\agent.cmd ^"--arg^" ^"a^&b^" ^"^(quoted^)^""');
 });
 
 test("Windows resolves bare PATH commands through PATHEXT before choosing the launcher", () => {
@@ -242,8 +245,9 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
 
   expect(launcher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/v:off", "/s", "/c", '"C:\\Tools\\opencode.CMD" "acp"'],
+    args: ["/d", "/v:off", "/s", "/c", '"C:\\Tools\\opencode.CMD ^"acp^""'],
     shell: false,
+    windowsVerbatimArguments: true,
   });
 
   const npxLauncher = buildAcpAgentSpawnSpec(
@@ -255,8 +259,9 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
   );
   expect(npxLauncher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9"'],
+    args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD ^"-y^" ^"@agentclientprotocol/codex-acp@1.1.9^""'],
     shell: false,
+    windowsVerbatimArguments: true,
   });
 });
 
@@ -272,7 +277,7 @@ test("Windows cmd launchers preserve percent, embedded quotes, and exclamation m
     "/v:off",
     "/s",
     "/c",
-    '"C:\\Program Files\\agent.cmd" "--pattern" "^%PATH^%" "a""b" "!value!"',
+    '"C:\\Program^ Files\\agent.cmd ^"--pattern^" ^"^%PATH^%^" ^"a\\^"b^" ^"^!value^!^""',
   ]);
 });
 
@@ -290,13 +295,13 @@ test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boun
       PATH: dir,
       PATHEXT: ".EXE;.CMD;.BAT;.COM",
     };
-    const spec = buildAcpAgentSpawnSpec(
-      ["fake-agent", "a&b", "(quoted)", "%PATH%", 'a"b', "!value!"],
-      "win32",
-      env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
-      env,
+    const expectedArgv = ["a&b", "(quoted)", "%PATH%", 'a"b', "!value!"];
+    const guardEntry = join(process.cwd(), "src/adapters/acp-output-guard-main.ts");
+    const child = spawn(
+      process.execPath,
+      [guardEntry, "--", "fake-agent", ...expectedArgv],
+      { shell: false, env, stdio: ["ignore", "pipe", "pipe"] },
     );
-    const child = spawn(spec.command, spec.args, { shell: false, env, stdio: ["ignore", "pipe", "pipe"] });
     const output = await new Promise<string>((resolve, reject) => {
       let stdout = "";
       let stderr = "";
@@ -305,7 +310,7 @@ test("Windows bare .cmd PATH launchers round-trip argv through the real cmd boun
       child.on("error", reject);
       child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(`probe exited ${code}: ${stderr}`)));
     });
-    expect(JSON.parse(output)).toEqual(["a&b", "(quoted)", "%PATH%", 'a"b', "!value!"]);
+    expect(JSON.parse(output)).toEqual(expectedArgv);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

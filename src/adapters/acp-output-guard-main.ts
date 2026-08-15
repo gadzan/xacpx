@@ -23,6 +23,7 @@ const spawnSpec = buildAcpAgentSpawnSpec(commandArgv);
 const child = spawn(spawnSpec.command, spawnSpec.args, {
   stdio: ["pipe", "pipe", "pipe"],
   shell: spawnSpec.shell,
+  windowsVerbatimArguments: spawnSpec.windowsVerbatimArguments,
 });
 
 let stopping = false;
