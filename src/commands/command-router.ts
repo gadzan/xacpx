@@ -414,6 +414,7 @@ export class CommandRouter {
                 descriptor.agent,
                 descriptor.workspace,
                 descriptor.transportSession,
+                { guardAcpOutput: true },
               ),
               transient: true,
             };
@@ -513,8 +514,8 @@ export class CommandRouter {
 
   private createSessionLifecycleOps(reply?: (text: string) => Promise<void>, perfSpan?: PerfSpan): SessionLifecycleOps {
     return {
-      resolveSession: (alias, agent, workspace, transportSession) =>
-        this.sessions.resolveSession(alias, agent, workspace, transportSession),
+      resolveSession: (alias, agent, workspace, transportSession, options) =>
+        this.sessions.resolveSession(alias, agent, workspace, transportSession, options),
       ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
       checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       markSessionReady: () => perfSpan?.mark("session.ready"),
@@ -629,8 +630,8 @@ export class CommandRouter {
       ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
       checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       reserveTransportSession: (transportSession) => this.reserveLogicalTransportSession(transportSession),
-      resolveSession: (alias, agent, workspace, transportSession) =>
-        this.sessions.resolveSession(alias, agent, workspace, transportSession),
+      resolveSession: (alias, agent, workspace, transportSession, options) =>
+        this.sessions.resolveSession(alias, agent, workspace, transportSession, options),
       refreshSessionTransportAgentCommand: (alias) => this.transportInvoker.refreshSessionTransportAgentCommand(alias),
       now: () => Date.now(),
     };
@@ -646,8 +647,8 @@ export class CommandRouter {
 
   private createSessionShortcutOps(reply?: (text: string) => Promise<void>, perfSpan?: PerfSpan): SessionShortcutOps {
     return {
-      resolveSession: (alias, agent, workspace, transportSession) =>
-        this.sessions.resolveSession(alias, agent, workspace, transportSession),
+      resolveSession: (alias, agent, workspace, transportSession, options) =>
+        this.sessions.resolveSession(alias, agent, workspace, transportSession, options),
       ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
       checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       reserveTransportSession: (transportSession) => this.reserveLogicalTransportSession(transportSession),

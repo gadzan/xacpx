@@ -5,6 +5,7 @@ import { toDisplaySessionAlias } from "../channels/channel-scope";
 import { preview } from "./scheduled-render";
 import type { ScheduledTaskRecord } from "./scheduled-types";
 import { t } from "../i18n/index.js";
+import type { ResolveSessionOptions } from "../sessions/session-service";
 
 export interface ScheduledDispatchDeps {
   getSession: (alias: string) => Promise<ResolvedSession | null>;
@@ -18,6 +19,7 @@ export interface ScheduledDispatchDeps {
     agent: string,
     workspace: string,
     transportSession: string,
+    options?: ResolveSessionOptions,
   ) => ResolvedSession;
   sendScheduledMessage: (input: ScheduledChannelMessageInput) => Promise<void>;
   removeSession?: (session: ResolvedSession) => Promise<void>;
@@ -70,7 +72,7 @@ async function dispatchTemp(
   }
   const alias = `later-${task.id}`;
   const transportSession = `${task.workspace}:${alias}`;
-  const session = deps.resolveSession(alias, task.agent, task.workspace, transportSession);
+  const session = deps.resolveSession(alias, task.agent, task.workspace, transportSession, { guardAcpOutput: true });
   const noticeText = t().misc.scheduledDispatchNoticeTemp(task.id, task.workspace, task.agent, preview(task.message));
 
   try {

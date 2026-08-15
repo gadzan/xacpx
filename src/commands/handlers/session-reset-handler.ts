@@ -26,6 +26,7 @@ export async function handleSessionResetCommand(
       previous.agent,
       previous.workspace,
       context.sessions.buildFreshTransportSession(stableTransportSession),
+      { guardAcpOutput: true },
     );
 
     const releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);

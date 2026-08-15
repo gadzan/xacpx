@@ -329,7 +329,9 @@ export class AcpxBridgeClient {
       return;
     }
 
-    pending.reject(new Error(response.error.message));
+    const bridgeError = new Error(response.error.message) as Error & { code?: string };
+    bridgeError.code = response.error.code;
+    pending.reject(bridgeError);
   }
 
   handleExit(error: Error): void {

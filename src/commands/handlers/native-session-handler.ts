@@ -256,7 +256,13 @@ async function attachNativeSession(
   }
 
   const transportSession = context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplayAlias);
-  const resolvedSession = context.lifecycle.resolveSession(finalInternalAlias, nativeTarget.agent, nativeTarget.workspace, transportSession);
+  const resolvedSession = context.lifecycle.resolveSession(
+    finalInternalAlias,
+    nativeTarget.agent,
+    nativeTarget.workspace,
+    transportSession,
+    { guardAcpOutput: true },
+  );
   const releaseTransportReservation = await context.lifecycle.reserveTransportSession(resolvedSession.transportSession);
 
   try {
@@ -275,9 +281,9 @@ async function attachNativeSession(
       agent: nativeTarget.agent,
       workspace: nativeTarget.workspace,
       transportSession,
-      ...(target.agentCommand ? { transportAgentCommand: target.agentCommand } : {}),
-      ...(target.acpxAgent ? { transportAcpxAgent: target.acpxAgent } : {}),
-      ...(target.agentArgv ? { transportAgentArgv: target.agentArgv } : {}),
+      ...(resolvedSession.agentCommand ? { transportAgentCommand: resolvedSession.agentCommand } : {}),
+      ...(resolvedSession.acpxAgent ? { transportAcpxAgent: resolvedSession.acpxAgent } : {}),
+      ...(resolvedSession.agentArgv ? { transportAgentArgv: resolvedSession.agentArgv } : {}),
       agentSessionId: session.sessionId,
       title: session.title,
       updatedAt: session.updatedAt,

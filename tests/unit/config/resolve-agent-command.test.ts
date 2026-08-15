@@ -160,6 +160,27 @@ test("managed adapters resolve to pinned structured npx argv", () => {
   ]);
 });
 
+test("new structured launches can wrap the real agent in the ACP output guard", () => {
+  const spec = resolveConfiguredAgentLaunch(
+    { driver: "codex" },
+    { preferLocalAgents: false },
+    { guardAcpOutput: true },
+  );
+
+  expect(spec.agentArgv?.[0]).toBe(process.execPath);
+  expect(spec.agentArgv?.[1]).toContain("acp-output-guard-main.");
+  expect(spec.agentArgv?.[2]).toBe("--");
+  expect(spec.agentArgv?.slice(3)).toEqual([
+    "npx",
+    "-y",
+    "--registry=https://registry.npmjs.org",
+    "--@agentclientprotocol:registry=https://registry.npmjs.org",
+    "@agentclientprotocol/codex-acp@1.1.9",
+  ]);
+  expect(spec.agentCommand).toBe(renderAgentArgvIdentity(spec.agentArgv!));
+  expect(spec.acpxAgent).toBe(deriveAgentAlias("codex", spec.agentArgv!));
+});
+
 test("hermes resolves to the structured shim argv", () => {
   const spec = resolveConfiguredAgentLaunch(
     { driver: "hermes" },
@@ -199,6 +220,17 @@ test("windows converts a single-token raw command to argv", () => {
   );
   expect(spec.agentArgv).toEqual(["claude.exe"]);
   expect(spec.agentCommand).toBe("claude.exe");
+});
+
+test("windows structured command launches can use the ACP output guard", () => {
+  const spec = resolveConfiguredAgentLaunch(
+    { driver: "claude", command: "claude.exe" },
+    undefined,
+    { platform: "win32", guardAcpOutput: true },
+  );
+  expect(spec.agentArgv?.slice(3)).toEqual(["claude.exe"]);
+  expect(spec.agentCommand).toBe(renderAgentArgvIdentity(spec.agentArgv!));
+  expect(spec.acpxAgent).toBe(deriveAgentAlias("claude", spec.agentArgv!));
 });
 
 test("windows rejects a multi-token raw command with migration guidance", () => {

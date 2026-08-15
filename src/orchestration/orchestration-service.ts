@@ -209,6 +209,8 @@ export interface OrchestrationServiceDeps {
     cwd?: string;
     targetAgent: string;
     role?: string;
+    /** Snapshot from before reconcile removes the binding; absent means legacy identity. */
+    guardAcpOutput?: boolean;
   }) => Promise<void>;
   wakeCoordinatorSession?: (request: WakeCoordinatorRequest) => Promise<void>;
   deliverCoordinatorMessage?: (

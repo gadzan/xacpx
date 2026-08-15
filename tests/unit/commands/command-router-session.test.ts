@@ -6,6 +6,7 @@ import { CommandRouter } from "../../../src/commands/command-router";
 import { getChannelIdFromChatKey, registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { QuotaManager } from "../../../src/weixin/messaging/quota-manager";
 import { setLocale, t } from "../../../src/i18n";
+import { wrapAcpOutputGuardArgv } from "../../../src/adapters/acp-output-guard";
 
 beforeAll(() => {
   registerKnownChannelId("feishu");
@@ -145,12 +146,13 @@ test("createSessionWithTransport persists the exact structured launch across con
 
   await router.createSessionWithTransport("relay:demo", "custom", "home");
 
+  const guardedArgv = wrapAcpOutputGuardArgv(["/opt/agent-a", "--acp", ""]);
   expect(state.sessions["relay:demo"]?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions["relay:demo"]?.transport_agent_argv).toEqual(["/opt/agent-a", "--acp", ""]);
+  expect(state.sessions["relay:demo"]?.transport_agent_argv).toEqual(guardedArgv);
 
   config.agents.custom = { driver: "custom", argv: ["/opt/agent-b", "--acp"] };
   const reloaded = new SessionService(config, new MemoryStateStore(), state);
-  expect((await reloaded.getSession("relay:demo"))?.agentArgv).toEqual(["/opt/agent-a", "--acp", ""]);
+  expect((await reloaded.getSession("relay:demo"))?.agentArgv).toEqual(guardedArgv);
 });
 
 test("chat session creation persists the exact structured launch across config changes", async () => {
@@ -163,12 +165,13 @@ test("chat session creation persists the exact structured launch across config c
 
   await router.handle("wx:user", "/session new sticky --agent custom --ws backend");
 
+  const guardedArgv = wrapAcpOutputGuardArgv(["/opt/chat-agent-a", "--acp"]);
   expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/chat-agent-a", "--acp"]);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(guardedArgv);
 
   config.agents.custom = { driver: "custom", argv: ["/opt/chat-agent-b", "--acp"] };
   const reloaded = new SessionService(config, new MemoryStateStore(), state);
-  expect((await reloaded.getSession("sticky"))?.agentArgv).toEqual(["/opt/chat-agent-a", "--acp"]);
+  expect((await reloaded.getSession("sticky"))?.agentArgv).toEqual(guardedArgv);
 });
 
 test("chat attach and reset persist the structured launch they actually use", async () => {
@@ -184,12 +187,13 @@ test("chat attach and reset persist the structured launch they actually use", as
     "/session attach sticky --agent custom --ws backend --name existing-sticky",
   );
   expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/attached-agent", "--acp", ""]);
+  const guardedArgv = wrapAcpOutputGuardArgv(["/opt/attached-agent", "--acp", ""]);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(guardedArgv);
 
   const reset = await router.handle("wx:user", "/session reset");
   expect(reset.text).toBe(t().misc.sessionResetSuccess("sticky"));
   expect(state.sessions.sticky?.transport_acpx_agent).toMatch(/^xacpx-managed-custom-/);
-  expect(state.sessions.sticky?.transport_agent_argv).toEqual(["/opt/attached-agent", "--acp", ""]);
+  expect(state.sessions.sticky?.transport_agent_argv).toEqual(guardedArgv);
 });
 
 test("createSessionWithTransport applies a model override to the session and persists it", async () => {
@@ -1403,6 +1407,8 @@ test("/ssn explicit target auto-attaches a single native session", async () => {
     source: "agent-side",
     agentSessionId: "61456d60-b7e1-47e6-8641-72bbe8e552e7",
   });
+  const attached = await sessions.getCurrentSession("wx:user");
+  expect(attached?.agentArgv?.[1]).toContain("acp-output-guard-main.");
 });
 
 test("/ssn avoids clobbering an existing transport session owned by another alias", async () => {
@@ -1803,6 +1809,8 @@ test("attachNativeSessionWithTransport resumes the agent session and records a n
   const stored = await sessions.getSession("relay:resumed");
   expect(stored?.source).toBe("agent-side");
   expect(stored?.agentSessionId).toBe("ses_42");
+  expect(session.agentArgv?.[1]).toContain("acp-output-guard-main.");
+  expect(stored?.agentArgv).toEqual(session.agentArgv);
 });
 
 test("attachNativeSessionWithTransport auto-derives a free alias when the desired alias collides", async () => {

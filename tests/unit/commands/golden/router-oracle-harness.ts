@@ -23,6 +23,12 @@ function makeRecorder() {
 // are byte-identical across runs (control-service's oracle went flaky by skipping this).
 function scrubText(text: string): string {
   return text
+    // New structured sessions deliberately persist the real guard wrapper in
+    // agent identity. Keep this characterization fixture independent of the
+    // local Bun/Node and checkout paths used to run the oracle.
+    .replaceAll(process.execPath, "<runtime>")
+    .replaceAll(`${process.cwd()}/src/adapters/acp-output-guard-main.ts`, "<xacpx>/src/adapters/acp-output-guard-main.ts")
+    .replace(/xacpx-managed-(?!codex-f4349e35c3c8\b)[A-Za-z0-9_-]+-[a-f0-9]{12}/g, "xacpx-managed-<driver>-<hash>")
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<ts>")
     .replace(/\belapsed \d+/g, "elapsed <n>")
     .replace(/\b\d+s\b/g, "<n>s")

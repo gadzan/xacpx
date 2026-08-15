@@ -24,6 +24,7 @@ import type {
   RequestDelegateRpcResult,
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
+import { workerBindingGuardFields } from "../worker-launch";
 import type { RpcDelegationService } from "./rpc-delegation-service";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
@@ -199,6 +200,7 @@ export class HumanDelegationService {
             ...(input.cwd ? { cwd: input.cwd } : {}),
             targetAgent: input.targetAgent,
             role,
+            ...workerBindingGuardFields(previousBinding),
             ...(input.parallel ? { ephemeral: true } : {}),
           };
 

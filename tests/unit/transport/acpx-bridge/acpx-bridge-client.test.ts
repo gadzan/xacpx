@@ -50,6 +50,29 @@ test("rejects responses with bridge error payloads", async () => {
   await expect(pending).rejects.toThrow("boom");
 });
 
+test("preserves a stable bridge error code on generic errors", async () => {
+  const client = new AcpxBridgeClient(() => {});
+  const pending = client.request("prompt", {});
+  client.handleLine(JSON.stringify({
+    id: "1",
+    ok: false,
+    error: {
+      code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
+      message: "oversized ACP event",
+    },
+  }));
+
+  try {
+    await pending;
+    throw new Error("expected rejection");
+  } catch (error) {
+    expect(error).toMatchObject({
+      code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
+      message: "oversized ACP event",
+    });
+  }
+});
+
 test("reconstructs management timeout identity and diagnostics from bridge errors", async () => {
   const client = new AcpxBridgeClient(() => {});
   const pending = client.request("setModel", {});

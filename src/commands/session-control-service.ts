@@ -68,6 +68,7 @@ export class SessionControlService {
         agent,
         workspace,
         this.sessions.buildFreshTransportSession(stableTransportSession),
+        { guardAcpOutput: true },
       );
       // An explicit model override must be on the ResolvedSession BEFORE
       // ensureTransportSession so acpx creates the session under that model
@@ -311,6 +312,7 @@ export class SessionControlService {
         agent,
         workspace,
         `${workspace}:${finalInternalAlias}`,
+        { guardAcpOutput: true },
       );
       const release = await this.reserveLogicalTransportSession(session.transportSession);
       try {

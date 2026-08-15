@@ -139,6 +139,8 @@ export interface WorkerBindingRecord {
   role?: string;
   /** True for ephemeral parallel-slot sessions; excluded from findReusableWorkerSession matching. */
   ephemeral?: boolean;
+  /** New bindings use the ACP stdout guard; absent means a legacy unguarded binding. */
+  guardAcpOutput?: boolean;
 }
 
 export interface OrchestrationQueuedQuestionRecord {

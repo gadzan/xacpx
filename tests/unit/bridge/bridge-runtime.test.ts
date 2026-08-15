@@ -806,6 +806,150 @@ test("prompt starts queue owner with orchestration MCP identity", async () => {
   }]);
 });
 
+test("prompt stops the queue owner after an ACP queue overflow and never retries", async () => {
+  const calls: string[][] = [];
+  const cleanup: string[] = [];
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-overflow" }), stderr: "" };
+    }
+    if (args.includes("cancel")) {
+      cleanup.push("cancel");
+      return { code: 0, stdout: "cancelled", stderr: "" };
+    }
+    return { code: 1, stdout: "", stderr: "Message buffer exceeded 10485760 bytes" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    {
+      terminateQueueOwner: async (recordId: string) => {
+        cleanup.push(`terminate:${recordId}`);
+      },
+    },
+  );
+
+  await expect(runtime.prompt({
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "run the task",
+  })).rejects.toMatchObject({
+    code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
+  });
+
+  expect(calls.filter((args) => args.includes("prompt"))).toHaveLength(1);
+  expect(cleanup).toEqual(["cancel", "terminate:acpx-record-overflow"]);
+});
+
+test("prompt keeps the overflow as the primary error when owner cleanup fails", async () => {
+  const calls: string[][] = [];
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-overflow" }), stderr: "" };
+    }
+    if (args.includes("cancel")) {
+      return { code: 1, stdout: "", stderr: "cancel unavailable" };
+    }
+    return { code: 1, stdout: "", stderr: "QUEUE_EVENT_TOO_LARGE" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    {
+      terminateQueueOwner: async () => {
+        throw new Error("owner cleanup unavailable");
+      },
+    },
+  );
+
+  let caught: unknown;
+  try {
+    await runtime.prompt({
+      agent: "codex",
+      cwd: "/repo",
+      name: "worker",
+      text: "run the task",
+    });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toMatchObject({ code: "ACPX_QUEUE_MESSAGE_OVERFLOW" });
+  expect(caught).toBeInstanceOf(Error);
+  expect((caught as Error).message).toContain("owner cleanup unavailable");
+  expect((caught as Error).message).toContain("not retried automatically");
+
+  expect(calls.filter((args) => args.includes("prompt"))).toHaveLength(1);
+});
+
+test("prompt still attempts cancel when the queue owner record cannot be read", async () => {
+  const calls: string[][] = [];
+  let terminated = false;
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      return { code: 1, stdout: "", stderr: "session index unavailable" };
+    }
+    if (args.includes("cancel")) {
+      return { code: 0, stdout: "cancelled", stderr: "" };
+    }
+    return { code: 1, stdout: "", stderr: "Message buffer exceeded 10485760 bytes" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    { terminateQueueOwner: async () => { terminated = true; } },
+  );
+
+  let caught: unknown;
+  try {
+    await runtime.prompt({ agent: "codex", cwd: "/repo", name: "worker", text: "run the task" });
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(calls.filter((args) => args.includes("prompt"))).toHaveLength(1);
+  expect(calls.filter((args) => args.includes("cancel"))).toHaveLength(1);
+  expect(terminated).toBe(false);
+  expect(caught).toMatchObject({ code: "ACPX_QUEUE_MESSAGE_OVERFLOW" });
+  expect((caught as Error).message).toContain("cancelled");
+  expect((caught as Error).message).not.toContain("queue was stopped");
+});
+
+test("prompt does not terminate the owner for an unrelated provider error", async () => {
+  const calls: string[][] = [];
+  let terminated = false;
+  const run = async (_command: string, args: string[]) => {
+    calls.push(args);
+    return { code: 1, stdout: "", stderr: "provider failed" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    {
+      terminateQueueOwner: async () => {
+        terminated = true;
+      },
+    },
+  );
+
+  await expect(runtime.prompt({
+    agent: "codex",
+    cwd: "/repo",
+    name: "worker",
+    text: "run the task",
+  })).rejects.toThrow("provider failed");
+
+  expect(terminated).toBe(false);
+  expect(calls.some((args) => args.includes("show"))).toBe(false);
+});
+
 test("prompt replaces a bridge queue owner when the resolved model changes", async () => {
   const payloads: Array<{ sessionOptions?: { model?: string } }> = [];
   let alive = false;

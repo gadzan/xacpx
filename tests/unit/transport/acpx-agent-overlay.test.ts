@@ -12,6 +12,7 @@ import {
   parseAgentOverlayEntries,
 } from "../../../src/transport/acpx-agent-overlay";
 import { deriveAgentAlias } from "../../../src/config/agent-launch";
+import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
 import { withPrivateFileLock } from "../../../src/util/private-file";
 import { parseConfig } from "../../../src/config/load-config";
 
@@ -85,6 +86,11 @@ test("computeAgentOverlayEntries covers managed, hermes and user argv but skips 
   expect(aliases).not.toContain("pool");
   expect(aliases).not.toContain("zeroclaw");
   expect(aliases).toContain(codexAlias);
+  expect(aliases).toContain(resolveConfiguredAgentLaunch(
+    { driver: "codex" },
+    config.transport,
+    { guardAcpOutput: true },
+  ).acpxAgent);
   expect(aliases).toContain(deriveAgentAlias("custom", ["C:\\Program Files\\agent.exe", "--acp"]));
   expect(new Set(aliases).size).toBe(aliases.length);
 });

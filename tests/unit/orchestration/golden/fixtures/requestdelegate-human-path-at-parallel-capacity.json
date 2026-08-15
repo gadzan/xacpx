@@ -64,6 +64,7 @@
           "coordinatorSession": "backend:main",
           "workspace": "backend",
           "targetAgent": "claude",
+          "guardAcpOutput": true,
           "ephemeral": true
         }
       },
@@ -146,6 +147,7 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
+              "guardAcpOutput": true,
               "ephemeral": true
             }
           }
@@ -257,6 +259,7 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
+              "guardAcpOutput": true,
               "ephemeral": true
             }
           }

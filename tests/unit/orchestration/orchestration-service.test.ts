@@ -274,7 +274,36 @@ test("creates a running task and reuses an injected worker session", async () =>
     workspace: "backend",
     targetAgent: "claude",
     role: "reviewer",
+    guardAcpOutput: true,
   });
+});
+
+test("reusing a legacy worker binding does not silently switch it to the guarded rollout", async () => {
+  const legacyWorkerSession = "backend:claude:shared-worker";
+  const initialState = createEmptyState();
+  initialState.orchestration.workerBindings[legacyWorkerSession] = {
+    sourceHandle: legacyWorkerSession,
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+  };
+  const harness = makeDeps({
+    createId: () => "task-legacy-worker-1",
+    reusableWorkerSession: legacyWorkerSession,
+    initialState,
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "continue the existing worker",
+  });
+
+  expect(harness.getState().orchestration.workerBindings[legacyWorkerSession]).not.toHaveProperty("guardAcpOutput");
 });
 
 test("stores chat reply context on human delegate tasks", async () => {
@@ -1081,6 +1110,7 @@ test("auto-runs and dispatches coordinator-originated rpc delegations", async ()
     workspace: "backend",
     targetAgent: "claude",
     role: "reviewer",
+    guardAcpOutput: true,
   });
 });
 
@@ -7019,6 +7049,7 @@ test("approves a worker-chained needs_confirmation task by assigning a worker se
     workspace: "backend",
     targetAgent: "codex",
     role: "reviewer",
+    guardAcpOutput: true,
   });
 });
 
@@ -9238,6 +9269,53 @@ test("reconcileParallelSlots is idempotent and survives closeWorkerSession error
   // Second reconcile: ephemeralWorkerSessionClosed is already set, so must NOT close again
   await service.reconcileParallelSlots();
   expect(harness.closeCalls.length).toBe(1);
+});
+
+test("reconcileParallelSlots snapshots a legacy ephemeral binding before deleting it", async () => {
+  const workerSession = "backend:codex:p-legacy";
+  const harness = makeDeps({
+    initialState: {
+      ...createEmptyState(),
+      orchestration: {
+        tasks: {
+          "task-legacy": {
+            taskId: "task-legacy",
+            sourceHandle: "wx:user-1",
+            sourceKind: "human",
+            coordinatorSession: "backend:main",
+            workerSession,
+            workspace: "backend",
+            targetAgent: "codex",
+            task: "legacy work",
+            status: "completed",
+            ephemeralWorkerSession: true,
+            summary: "done",
+            resultText: "done",
+            createdAt: "2026-04-13T10:00:00.000Z",
+            updatedAt: "2026-04-13T10:00:00.000Z",
+            eventSeq: 0,
+            events: [],
+          },
+        },
+        workerBindings: {
+          [workerSession]: {
+            sourceHandle: workerSession,
+            coordinatorSession: "backend:main",
+            workspace: "backend",
+            targetAgent: "codex",
+            ephemeral: true,
+          },
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.reconcileParallelSlots();
+
+  expect(harness.closeCalls).toHaveLength(1);
+  expect(harness.closeCalls[0]).toMatchObject({ workerSession });
+  expect(harness.closeCalls[0]).toHaveProperty("guardAcpOutput", undefined);
 });
 
 test("reconcileParallelSlots drains multiple queued tasks for one agent in a single call", async () => {

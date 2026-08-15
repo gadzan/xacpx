@@ -8,6 +8,7 @@ import { coreHomeDir } from "../../src/runtime/core-home";
 import { sameWorkspacePath } from "../../src/commands/workspace-path";
 import { setLocale } from "../../src/i18n";
 import { OrphanRegistry } from "../../src/transport/orphan-registry";
+import { createEmptyState } from "../../src/state/types";
 
 beforeEach(() => { setLocale("zh"); });
 afterAll(() => { setLocale("en"); });
@@ -678,6 +679,7 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     workspace: "backend",
     transportSession: "backend:claude:backend:main",
   });
+  expect(ensureSession.mock.calls.at(1)?.[0].agentArgv?.[1]).toContain("acp-output-guard-main.");
   expect(prompt.mock.calls).toHaveLength(1);
   expect(prompt.mock.calls.at(0)?.[0]).toMatchObject({
     alias: "backend:claude:backend:main",
@@ -744,6 +746,7 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     coordinatorSession: "backend:main",
     workspace: "backend",
     targetAgent: "claude",
+    guardAcpOutput: true,
   });
 
   await runtime.dispose();
@@ -1624,6 +1627,7 @@ test("propagates running task cancellation to the worker transport and completes
     workspace: "backend",
     transportSession: "backend:claude:backend:main",
   });
+  expect(cancel.mock.calls[0]?.[0].agentArgv?.some((arg: string) => arg.includes("acp-output-guard-main."))).toBe(false);
 
   const saved = await readJsonWithRetry<{
     orchestration: {
@@ -2622,6 +2626,69 @@ test("closeWorkerSession dep calls transport.removeSession with the resolved ses
     agent: "codex",
     workspace: "backend",
   });
+
+  await runtime.dispose();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("legacy ephemeral close keeps the unguarded launch identity after binding deletion", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-legacy-ephemeral-close-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  const workerSession = "backend:codex:p-legacy";
+  const state = createEmptyState();
+  state.orchestration.tasks["task-legacy"] = {
+    taskId: "task-legacy",
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession,
+    workspace: "backend",
+    cwd: "/tmp/backend",
+    targetAgent: "codex",
+    task: "legacy work",
+    status: "completed",
+    ephemeralWorkerSession: true,
+    summary: "done",
+    resultText: "done",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 0,
+    events: [],
+  };
+  state.orchestration.workerBindings[workerSession] = {
+    sourceHandle: workerSession,
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    cwd: "/tmp/backend",
+    ephemeral: true,
+  };
+
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend", allowed_agents: ["codex"] } },
+  }));
+  await writeFile(statePath, JSON.stringify(state));
+
+  const removeSession = mock(async () => {});
+  const runtime = await buildApp({ configPath, statePath }, {
+    createCliTransport: () => ({
+      ensureSession: async () => {},
+      prompt: async () => ({ text: "ok" }),
+      cancel: async () => ({ cancelled: true, message: "cancelled" }),
+      hasSession: async () => true,
+      listSessions: async () => [],
+      removeSession,
+    }),
+  });
+
+  await runtime.orchestration.service.reconcileParallelSlots();
+
+  expect(removeSession).toHaveBeenCalledTimes(1);
+  const session = removeSession.mock.calls[0]?.[0];
+  expect(session?.agentArgv?.some((arg) => arg.includes("acp-output-guard-main"))).toBe(false);
 
   await runtime.dispose();
   await rm(dir, { recursive: true, force: true });

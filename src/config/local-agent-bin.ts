@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, join, win32 as win32Path } from "node:path";
 
 /**
  * Drivers whose acpx default is an UNPINNED `npx -y <pkg> acp` — these re-resolve
@@ -41,14 +41,47 @@ export function executableExtensions(platform: NodeJS.Platform, env: NodeJS.Proc
  * and non-exec files means a stray `opencode/` dir or a non-+x file on PATH can't
  * yield a false positive — which would spawn-fail, i.e. WORSE than the npx fallback.
  */
-function defaultIsExecutableFile(p: string): boolean {
+function defaultIsExecutableFile(p: string, platform: NodeJS.Platform = process.platform): boolean {
   try {
     const st = statSync(p);
     if (!st.isFile()) return false;
-    return process.platform === "win32" || (st.mode & 0o111) !== 0;
+    return platform === "win32" || (st.mode & 0o111) !== 0;
   } catch {
     return false;
   }
+}
+
+/**
+ * Resolve a command to the executable file selected by PATH/PATHEXT. The
+ * result is used only to distinguish Windows script launchers from real
+ * executables; callers that need exact argv should continue to invoke the
+ * original command when the result is an .exe/.com or otherwise direct.
+ */
+export function resolveExecutableOnPath(
+  name: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutableFile?: (path: string) => boolean,
+): string | undefined {
+  const pathValue = env.PATH ?? env.Path ?? "";
+  if (!pathValue) return undefined;
+
+  const pathJoin = platform === "win32" ? win32Path.join : join;
+  const pathEntries = pathValue.split(platform === "win32" ? ";" : delimiter).filter(Boolean);
+  const extensions = executableExtensions(platform, env);
+  const basename = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
+  const hasExtension = platform === "win32" && /\.[^\\/]+$/u.test(basename);
+  const hasPath = /[\\/]/u.test(name) || (platform === "win32" && /^[A-Za-z]:/u.test(name));
+  const fileCheck = isExecutableFile ?? ((path: string) => defaultIsExecutableFile(path, platform));
+
+  for (const directory of hasPath ? [""] : pathEntries) {
+    const base = hasPath ? name : pathJoin(directory, name);
+    const candidates = hasExtension ? [base] : extensions.map((extension) => `${base}${extension}`);
+    for (const candidate of candidates) {
+      if (fileCheck(candidate)) return candidate;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -60,16 +93,7 @@ export function isExecutableOnPath(
   env: NodeJS.ProcessEnv = process.env,
   isExecutableFile: (p: string) => boolean = defaultIsExecutableFile,
 ): boolean {
-  const pathValue = env.PATH ?? env.Path ?? "";
-  if (!pathValue) return false;
-  const exts = executableExtensions(process.platform, env);
-  for (const dir of pathValue.split(delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      if (isExecutableFile(join(dir, name + ext))) return true;
-    }
-  }
-  return false;
+  return resolveExecutableOnPath(name, process.platform, env, isExecutableFile) !== undefined;
 }
 
 /**

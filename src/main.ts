@@ -11,13 +11,12 @@ import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
-import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
 import { resolveDaemonOrchestrationSocketPath, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
-import type { OrchestrationTaskRecord } from "./orchestration/orchestration-types";
+import type { OrchestrationTaskRecord, WorkerBindingRecord } from "./orchestration/orchestration-types";
 import { createOrchestrationEndpoint, resolveOrchestrationEndpoint } from "./orchestration/orchestration-ipc";
 import { AsyncMutex } from "./orchestration/async-mutex";
 import { OrchestrationServer } from "./orchestration/orchestration-server";
@@ -25,6 +24,7 @@ import { OrchestrationService } from "./orchestration/orchestration-service";
 import { buildCoordinatorPrompt } from "./orchestration/build-coordinator-prompt";
 import { sameCoordinatorSession } from "./orchestration/coordinator-identity";
 import { buildWorkerAnswerPrompt, buildWorkerTaskPrompt } from "./orchestration/worker-prompts";
+import { resolveWorkerAgentLaunch, shouldGuardWorkerAcpOutput } from "./orchestration/worker-launch";
 import { ScheduledTaskScheduler } from "./scheduled/scheduled-scheduler";
 import { ScheduledTaskService } from "./scheduled/scheduled-service";
 import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
@@ -618,13 +618,16 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     targetAgent: string;
     workspace: string;
     cwd?: string;
-  }): ResolvedSession => {
+  }, bindingSnapshot?: Pick<WorkerBindingRecord, "guardAcpOutput">): ResolvedSession => {
+    const binding = bindingSnapshot ?? state.orchestration.workerBindings[input.workerSession];
+    const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
     if (!input.cwd) {
       return sessions.resolveSession(
         input.workerSession,
         input.targetAgent,
         input.workspace,
         input.workerSession,
+        { guardAcpOutput },
       );
     }
 
@@ -633,7 +636,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       throw new Error(`agent "${input.targetAgent}" is not configured`);
     }
 
-    const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
+    const launch = resolveWorkerAgentLaunch(agentConfig, config.transport, binding);
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
@@ -817,11 +820,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         throw new Error(result.message || "worker task cancel was not acknowledged");
       }
     },
-    closeWorkerSession: async ({ workerSession, targetAgent, workspace, cwd }) => {
+    closeWorkerSession: async ({ workerSession, targetAgent, workspace, cwd, guardAcpOutput }) => {
       if (!transport.removeSession) {
         return;
       }
-      const session = resolveWorkerRuntimeSession({ workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) });
+      const session = resolveWorkerRuntimeSession(
+        { workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) },
+        { guardAcpOutput },
+      );
       await transport.removeSession(session);
     },
     resumeWorkerTask: async ({ taskId, workerSession, coordinatorSession, targetAgent, workspace, cwd, answer }) => {
@@ -1068,8 +1074,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     dispatchTask: buildScheduledDispatchTask({
       getSession: (alias) => sessions.getSession(alias),
       resolveAliasForChat: (chatKey, alias) => sessions.resolveAliasForChat(chatKey, alias),
-      resolveSession: (alias, agent, workspace, transportSession) =>
-        sessions.resolveSession(alias, agent, workspace, transportSession),
+      resolveSession: (alias, agent, workspace, transportSession, options) =>
+        sessions.resolveSession(alias, agent, workspace, transportSession, options),
       sendScheduledMessage: async (input) => {
         if (!deps.channel?.sendScheduledMessage) {
           throw new Error("no channel runtime available for scheduled task dispatch");

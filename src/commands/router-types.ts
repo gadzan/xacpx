@@ -2,7 +2,7 @@ import type { ConfigStore } from "../config/config-store";
 import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
 import type { OrchestrationService } from "../orchestration/orchestration-service";
-import type { SessionService } from "../sessions/session-service";
+import type { ResolveSessionOptions, SessionService } from "../sessions/session-service";
 import type { AgentCommand, PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
@@ -112,7 +112,7 @@ export interface OrchestrationRouterOps {
 }
 
 export interface SessionLifecycleOps {
-  resolveSession: (alias: string, agent: string, workspace: string, transportSession: string) => import("../transport/types").ResolvedSession;
+  resolveSession: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
   ensureTransportSession: (
     session: import("../transport/types").ResolvedSession,
     reply?: (text: string) => Promise<void>,
@@ -168,7 +168,7 @@ export interface SessionRenderRecoveryOps {
 }
 
 export interface SessionShortcutOps {
-  resolveSession: (alias: string, agent: string, workspace: string, transportSession: string) => import("../transport/types").ResolvedSession;
+  resolveSession: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
   ensureTransportSession: (
     session: import("../transport/types").ResolvedSession,
     reply?: (text: string) => Promise<void>,
@@ -196,7 +196,7 @@ export interface SessionResetOps {
   ) => Promise<void>;
   checkTransportSession: (session: import("../transport/types").ResolvedSession) => Promise<boolean>;
   reserveTransportSession: (transportSession: string) => Promise<() => Promise<void>>;
-  resolveSession: (alias: string, agent: string, workspace: string, transportSession: string) => import("../transport/types").ResolvedSession;
+  resolveSession: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
   refreshSessionTransportAgentCommand: (alias: string) => Promise<void>;
   now: () => number;
 }

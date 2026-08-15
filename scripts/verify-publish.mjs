@@ -20,7 +20,7 @@ const DEFAULT_PACKAGES = [
     id: "root",
     dir: ".",
     expectedName: "@ganglion/xacpx",
-    requiredFiles: ["dist/cli.js", "dist/bridge/bridge-main.js", "dist/adapters/hermes-acp-shim.js", "dist/plugin-api.js", "dist/plugin-api.d.ts", "README.md", "config.example.json", "package.json"],
+    requiredFiles: ["dist/cli.js", "dist/bridge/bridge-main.js", "dist/adapters/hermes-acp-shim.js", "dist/adapters/acp-output-guard-main.js", "dist/plugin-api.js", "dist/plugin-api.d.ts", "README.md", "config.example.json", "package.json"],
     forbiddenPathPatterns: [
       "^dist/channels/feishu/",
       "^dist/channels/cli/feishu-provider",
