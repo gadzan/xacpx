@@ -24,6 +24,7 @@ jobs:
       pull-requests: read
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
+      rmux_bridge: ${{ steps.filter.outputs.rmux_bridge }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,6 +53,9 @@ jobs:
               - 'package.json'
               - 'bun.lock'
               - 'package-lock.json'
+              - '.github/workflows/test.yml'
+            rmux_bridge:
+              - 'packages/channel-relay/native/rmux-bridge/**'
               - '.github/workflows/test.yml'
 
   test:
@@ -91,6 +95,26 @@ jobs:
       # them, so package-level type/build errors used to surface only at publish.
       - name: Build (all packages)
         run: bun run build:packages
+
+  rmux-bridge:
+    # On PRs, only when the native sidecar (or this workflow) changed.
+    # Always runs on push to main so the default branch compiles the bridge.
+    needs: paths
+    if: github.event_name == 'push' || needs.paths.outputs.rmux_bridge == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo test
+        run: cargo test --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+
+      - name: cargo check
+        run: cargo check --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
 
   terminal-windows:
     # On PRs, only run when the diff touches the Windows/daemon/transport/

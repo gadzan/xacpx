@@ -440,12 +440,12 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 - **Tab 上的 `X` = 全局终止**该共享 shell（有 ack：`terminated` 或 `cleanup-pending`）。`viewerCount > 1` 时必须确认。打开从未成功（没有 `terminalId`）时只丢掉本地 Tab，不走 terminate RPC，避免误报「无法打开终端」。
 - 看板 `/ws` 断开或 connector 重连中途的 open 失败分别是 `events-offline` / `instance-reconnected`，**不是**实例离线；Tab 会在连接恢复后自动重试。
 - **关闭浏览器窗口 / 刷新 / 断网**只 detach 本地 attachment，**不** kill RMUX session；其他设备上的 viewer 继续。
-- **多设备**共享同一个 `terminalId`/`generation`：首个打开方为 controller，其余为 spectator；spectator 可 **take control**。
+- **多设备**共享同一个 `terminalId`/`generation`：首个打开方为 controller，其余为 spectator；spectator 可 **take control**。顶栏「X 位观看者」是**除自己以外**的连接数（协议 `viewerCount` 仍是总 attachment 数，关闭确认和容量上限继续用总数）。
 - Tab 布局 / 本地 UI 状态不跨设备共享；只共享底层 shell。
 - 用户文案使用「睡眠/唤醒」；API / 代码里仍可见 archive 拼写（兼容）。
 - ghostty-web 点画布会聚焦其 1×1 clipped textarea，而 keydown 监听在宿主上；看板会把该 textarea 铺满宿主并把焦点拉回宿主，否则键盘（含 Enter）无响应。底部快捷键栏的 Enter 不依赖画布焦点，可作对照。
 - 同一 `viewerId` 再次打开会替换旧 attachment，避免留下幽灵 controller 把新连接变成 spectator（快捷键栏全灰）。若仍是唯一观看者却是 spectator，看板会自动 take-control。
-- 快捷键栏没有本地回显：按键只发到 PTY，字符要等 recover 进入 live 后的 `terminal-bytes` 才画到画布。take-control 或控制者首次输入时，若 recover 仍停在 waiting，会再发一次 `terminal-stream-start`；waiting 期间先到的 bytes 会触发 resync，而不是被丢掉（否则栏能点、画面没反应）。
+- 快捷键栏没有本地回显：按键只发到 PTY，字符要等 recover 进入 live 后的 `terminal-bytes` 才画到画布。open 成功后会发一次 `terminal-stream-start`；若 recover 一直停在 waiting，controller 第一次输入和 take-control 会再补发一次，避免 rebase-start 丢失后画布空白。同一 pane 的 `recover` / `stop-recover` 在 connector sidecar driver 里按 FIFO 串行，并用 start barrier 让同时打开的 viewer 共享同一次 recover；最后一个 viewer 离开后的 stop 不会因为立即 reopen 而跳过；catch-up cache 超预算触发的 snapshot refresh 同样进入 stopping barrier。Node 的 stop-recover 超时不会解除 stopping，要等 fresh recover ACK。replacement 的 first event 必须是 fresh rebase。显式 `recover` 在 sidecar 里总是重启 recovery task，且 RPC 成功表示已经拿到 initial rebase（stdout 先排队 rebase 再读后续 bytes；启动含 `recover_output` 最多等 10s）。stdin 上只有 Recover 异步，Create/List 仍串行。致命 `terminal-recovery-failed`（含 snapshot refresh 失败、以及 live 后 recovery stream 断开）切到错误态并禁用输入 / take-control，但**不会**把还活着的 shell 收掉；sidecar 进程本身崩溃则按 owner-loss 清理。顶栏观看者只在本地仍 attached 时显示其他人。
 
 实现入口：`packages/relay-web/src/stores/terminal.ts`、`TerminalTab.vue`、recovery reducer
 （`src/lib/terminal-recovery.ts`）。权威状态机见 RMUX terminal design spec。

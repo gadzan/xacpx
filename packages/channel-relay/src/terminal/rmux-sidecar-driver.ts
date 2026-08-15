@@ -19,10 +19,17 @@ import {
 const MAX_LINE_BYTES = 96 * 1024;
 const MAX_INPUT_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+/** Node-side wait for stop-recover. Native RPC is not cancelled on timeout. */
+const STOP_RECOVER_TIMEOUT_MS = 1_000;
 const SIDECAR_PROTOCOL_VERSION = 2;
 /** Must match the Rust sidecar `REBASE_CHUNK_BYTES`. */
 const REBASE_CHUNK_BYTES = 48 * 1024;
 const MAX_REBASE_TOTAL_BYTES = 2 * 1024 * 1024;
+/** Must match Rust `RECOVERY_STREAM_ENDED_CODE` / `RECOVERY_STREAM_FAILED_CODE`. */
+const RECOVERY_STREAM_FAILURE_CODES = new Set([
+  "recovery-stream-ended",
+  "recovery-stream-failed",
+]);
 /** Cap for bytes buffered after the last rebase for late multi-viewer joins.
  *  Matches the recovery size budget. Overflow asks RMUX for a fresh snapshot
  *  instead of synthesizing an oversized keyframe. */
@@ -66,6 +73,8 @@ type Pending = {
 type RecoverSubscriber = {
   push: (event: RmuxRecoveryEvent) => void;
   close: (err?: Error) => void;
+  /** True after this subscriber's start barrier succeeds and catch-up is queued. */
+  armed: boolean;
 };
 
 export class RmuxSidecarDriver implements RmuxTerminalDriver {
@@ -79,22 +88,41 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
   private handshaken = false;
   private diagnosticsCache: RmuxDiagnostics | null = null;
   private readonly requestTimeoutMs: number;
+  private readonly stopRecoverTimeoutMs: number;
   /** Trailing sidecar stderr (protocol stays on stdout). Surfaced on crash. */
   private stderrTail = "";
   /**
    * Per-pane recovery snapshot for late multi-viewer subscribers: last rebase
-   * plus every bytes event since that rebase. A second `recover` against the
-   * Rust actor would abort the first stream, so late joiners must catch up
-   * from this cache before joining the live fan-out.
+   * plus every bytes event since that rebase. Late joiners catch up from this
+   * cache before being armed for live fan-out. Cache presence is not proof the
+   * Rust recovery task is still running; an explicit `recover` always restarts
+   * it. Node only sends `recover` from the pane start barrier.
    */
   private readonly recoveryCache = new Map<string, PaneRecoveryCache>();
   private readonly rebaseAssembly = new Map<string, RebaseAssembly>();
   /** Panes waiting for a fresh RMUX rebase after the catch-up cache hit its budget. */
   private readonly snapshotRefresh = new Set<string>();
+  /** Per-pane FIFO for recover / stop-recover control RPCs. */
+  private readonly recoveryControls = new Map<string, Promise<void>>();
+  /** Panes whose recover RPC has succeeded and has not yet been stopped. */
+  private readonly recoveryLive = new Set<string>();
+  /** In-flight start barrier: waiters share success or the same failure. */
+  private readonly recoveryStarts = new Map<string, Promise<void>>();
+  /**
+   * A stop-recover is queued or in flight (last subscriber left, or catch-up
+   * cache overflow started a snapshot refresh). New joiners stay unarmed until
+   * a later recover RPC acks. Node's stop-recover timeout must not clear this:
+   * the native RPC is not cancelled, so the old stream may still be live.
+   */
+  private readonly recoveryStopping = new Set<string>();
 
-  constructor(child: SidecarStdio, opts: { requestTimeoutMs?: number } = {}) {
+  constructor(
+    child: SidecarStdio,
+    opts: { requestTimeoutMs?: number; stopRecoverTimeoutMs?: number } = {},
+  ) {
     this.child = child;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.stopRecoverTimeoutMs = opts.stopRecoverTimeoutMs ?? STOP_RECOVER_TIMEOUT_MS;
     child.stdout.on("data", (chunk: Buffer | string) => {
       this.onStdout(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     });
@@ -220,7 +248,6 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     this.assertReady();
     const queue = new AsyncQueue<RmuxRecoveryEvent>();
     let set = this.recoveries.get(paneId);
-    const isFirst = !set || set.size === 0;
     if (!set) {
       set = new Set();
       this.recoveries.set(paneId, set);
@@ -228,21 +255,35 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     const sub: RecoverSubscriber = {
       push: (e) => queue.push(e),
       close: (err) => queue.close(err),
+      armed: false,
     };
     const onAbort = () => queue.close();
     if (signal?.aborted) onAbort();
     else signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      // One sidecar recover stream per pane; fan out to all Node subscribers.
-      // A second recover request would abort the first in the Rust actor.
-      if (isFirst) {
-        set.add(sub);
-        await this.request({ type: "recover", pane_id: paneId });
-      } else {
-        // Catch up BEFORE joining live fan-out so buffered bytes are not
-        // interleaved after a live event that arrived during subscribe.
+      // Join before control RPCs so a last-subscriber stop stays ahead of the
+      // replacement recover in the FIFO. Do not skip that stop if B joins.
+      set.add(sub);
+      if (this.recoveryLive.has(paneId)) {
         this.pushCatchUp(paneId, sub);
-        set.add(sub);
+        sub.armed = true;
+      } else {
+        let inFlight = this.recoveryStarts.get(paneId);
+        const starter = !inFlight;
+        if (starter) {
+          // First-ever start arms immediately so same-turn rebase/exit is not
+          // lost. A replacement after last-subscriber stop or snapshot-refresh
+          // stop stays unarmed until the old Rust task is stopped and recover acks.
+          if (!this.recoveryStopping.has(paneId)) {
+            sub.armed = true;
+          }
+          inFlight = this.beginRecoveryStart(paneId);
+        }
+        await inFlight;
+        if (set.has(sub) && this.recoveryLive.has(paneId) && !sub.armed) {
+          this.pushCatchUp(paneId, sub);
+          sub.armed = true;
+        }
       }
       for await (const event of queue) {
         yield event;
@@ -252,12 +293,78 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       signal?.removeEventListener("abort", onAbort);
       set.delete(sub);
       if (set.size === 0) {
-        this.recoveries.delete(paneId);
-        this.recoveryCache.delete(paneId);
-        // Best-effort unsubscribe — never block stream teardown on a hung sidecar.
-        void this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
+        this.recoveryLive.delete(paneId);
+        this.recoveryStopping.add(paneId);
+        void this.enqueueRecoveryControl(paneId, async () => {
+          try {
+            await this.request(
+              { type: "stop-recover", pane_id: paneId },
+              this.stopRecoverTimeoutMs,
+            );
+          } finally {
+            // Timeout does not cancel native stop-recover. Keep stopping until
+            // a later recover acks so a late joiner cannot arm on the old stream.
+            this.recoveryLive.delete(paneId);
+            this.recoveryCache.delete(paneId);
+            this.rebaseAssembly.delete(paneId);
+            this.snapshotRefresh.delete(paneId);
+            const latest = this.recoveries.get(paneId);
+            if (latest?.size === 0) {
+              this.recoveries.delete(paneId);
+            }
+          }
+        }).catch(() => {});
       }
     }
+  }
+
+  /**
+   * starting → live barrier for one pane. Concurrent subscribers share the
+   * same recover RPC: success sets `recoveryLive`; failure rejects everyone.
+   * A subscriber gap clears `recoveryLive` so the replacement sends a fresh
+   * recover (Rust always restarts).
+   */
+  private beginRecoveryStart(paneId: string): Promise<void> {
+    const set = this.recoveries.get(paneId);
+    const started = this.enqueueRecoveryControl(paneId, async () => {
+      if (!set || set.size === 0) return;
+      if (this.recoveryLive.has(paneId)) {
+        this.recoveryStopping.delete(paneId);
+        return;
+      }
+      // Replacement starter needs the previous snapshot before recover acks.
+      // First-ever start has an empty cache, so this is a no-op.
+      for (const s of set) {
+        if (s.armed) this.pushCatchUp(paneId, s);
+      }
+      await this.request({ type: "recover", pane_id: paneId });
+      this.recoveryLive.add(paneId);
+      this.recoveryStopping.delete(paneId);
+    });
+    const shared = started.finally(() => {
+      if (this.recoveryStarts.get(paneId) === shared) {
+        this.recoveryStarts.delete(paneId);
+      }
+    });
+    this.recoveryStarts.set(paneId, shared);
+    return shared;
+  }
+
+  /**
+   * Serialize recover / stop-recover for one pane. Previous op rejection must
+   * not poison the queue; drain cleans the map only for this tail.
+   */
+  private enqueueRecoveryControl(paneId: string, op: () => Promise<void>): Promise<void> {
+    const prev = this.recoveryControls.get(paneId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(op);
+    const tail = run.catch(() => {});
+    this.recoveryControls.set(paneId, tail);
+    void tail.finally(() => {
+      if (this.recoveryControls.get(paneId) === tail) {
+        this.recoveryControls.delete(paneId);
+      }
+    });
+    return run;
   }
 
   /** Replay cached rebase (+ post-rebase bytes) so a late viewer starts at the
@@ -383,7 +490,9 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       this.rememberRecoveryEvent(paneId, event);
       const set = this.recoveries.get(paneId);
       if (!set) return;
-      for (const sub of set) sub.push(event);
+      for (const sub of set) {
+        if (sub.armed) sub.push(event);
+      }
       return;
     }
 
@@ -415,6 +524,14 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
     raw: Record<string, unknown> | undefined,
   ): RmuxRecoveryEvent | null {
     if (!raw || typeof raw.type !== "string") return null;
+    if (raw.type === "error") {
+      const code = String(raw.code ?? "");
+      if (RECOVERY_STREAM_FAILURE_CODES.has(code)) {
+        this.rebaseAssembly.delete(paneId);
+        this.failPaneSubscribers(paneId, new Error(String(raw.message ?? code)));
+        return null;
+      }
+    }
     if (raw.type === "rebase-start") {
       const totalBytes = Number(raw.total_bytes ?? 0);
       const chunkCount = Number(raw.chunk_count ?? 0);
@@ -521,6 +638,10 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
       // rebase cap. Keep the last real snapshot and ask RMUX for a fresh one.
       if (!this.snapshotRefresh.has(paneId)) {
         this.snapshotRefresh.add(paneId);
+        // Mark stopping before the queued stop runs so a late joiner cannot
+        // arm on the old stream and see Bytes before the fresh rebase.
+        this.recoveryLive.delete(paneId);
+        this.recoveryStopping.add(paneId);
         void this.refreshPaneSnapshot(paneId);
       }
       return;
@@ -531,30 +652,66 @@ export class RmuxSidecarDriver implements RmuxTerminalDriver {
 
   private async refreshPaneSnapshot(paneId: string): Promise<void> {
     try {
-      await this.request({ type: "stop-recover", pane_id: paneId }, 1_000).catch(() => {});
-      if (this.crashed) return;
-      await this.request({ type: "recover", pane_id: paneId });
-    } catch {
+      await this.enqueueRecoveryControl(paneId, async () => {
+        const current = this.recoveries.get(paneId);
+        if (!current || current.size === 0) return;
+        this.recoveryLive.delete(paneId);
+        this.recoveryStopping.add(paneId);
+        try {
+          await this.request(
+            { type: "stop-recover", pane_id: paneId },
+            this.stopRecoverTimeoutMs,
+          ).catch(() => {});
+        } finally {
+          this.recoveryLive.delete(paneId);
+          this.recoveryCache.delete(paneId);
+          this.rebaseAssembly.delete(paneId);
+        }
+      });
+      const current = this.recoveries.get(paneId);
+      if (!current || current.size === 0 || this.crashed) return;
+      if (this.recoveryLive.has(paneId)) return;
+      const start = this.recoveryStarts.get(paneId) ?? this.beginRecoveryStart(paneId);
+      await start;
+      if (!this.recoveryLive.has(paneId) && (this.recoveries.get(paneId)?.size ?? 0) > 0) {
+        throw new Error("snapshot refresh recover failed");
+      }
+    } catch (err) {
+      this.failPaneSubscribers(paneId, err);
+    } finally {
       this.snapshotRefresh.delete(paneId);
     }
+  }
+
+  private failPaneSubscribers(paneId: string, err: unknown): void {
+    const set = this.recoveries.get(paneId);
+    if (!set || set.size === 0) return;
+    const error = err instanceof Error ? err : new Error(String(err));
+    this.recoveryLive.delete(paneId);
+    for (const sub of [...set]) sub.close(error);
   }
 
   private crash(err: Error): void {
     if (this.crashed) return;
     this.crashed = true;
+    const crashed = err instanceof RmuxDriverCrashedError ? err : this.crashError();
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(err instanceof RmuxDriverCrashedError ? err : this.crashError());
+      p.reject(crashed);
     }
     this.pending.clear();
     for (const set of this.recoveries.values()) {
-      for (const sub of set) sub.close(err);
+      for (const sub of set) sub.close(crashed);
     }
     this.recoveries.clear();
     this.recoveryCache.clear();
     this.rebaseAssembly.clear();
     this.snapshotRefresh.clear();
-    this.emitter.emit("crash", err);
+    this.recoveryControls.clear();
+    this.recoveryLive.clear();
+    this.recoveryStarts.clear();
+    this.recoveryStopping.clear();
+    this.emitter.emit("crash", crashed);
     // Fatal protocol corruption: kill the child so the supervisor can restart.
     try {
       this.child.kill?.("SIGTERM");

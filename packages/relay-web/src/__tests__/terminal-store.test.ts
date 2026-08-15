@@ -363,4 +363,26 @@ describe("terminal store", () => {
       generation: "g1",
     });
   });
+
+  it("fatal recovery failure does not resync and keeps a visible error code", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    FakeWS.instances[0].onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, FakeWS.instances[0]);
+    FakeWS.instances[0].send.mockClear();
+
+    await store.applyEvent({
+      kind: "terminal-recovery-failed",
+      instanceId: "i1",
+      attachmentId: "a1",
+      generation: "g1",
+      code: "terminal-rmux-unavailable",
+      message: "terminal-rmux-unavailable",
+    });
+    expect(store.get(key)?.lastErrorCode).toBe("terminal-rmux-unavailable");
+    expect(store.get(key)?.recovery.phase).toBe("waiting");
+    expect(store.get(key)?.role).toBe("controller");
+    expect(FakeWS.instances[0].send.mock.calls.length).toBe(0);
+  });
 });

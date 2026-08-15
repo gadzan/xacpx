@@ -4,6 +4,8 @@ mod actors;
 mod protocol;
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use actors::connect_bridge;
 use protocol::{
@@ -29,14 +31,14 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), String> {
-    let (event_tx, mut event_rx) = mpsc::channel::<ServerMessage>(256);
     let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(512);
 
-    let bridge = connect_bridge(event_tx)
+    let bridge = connect_bridge()
         .await
         .map_err(|e| format!("bridge connect: {e}"))?;
 
-    // stdout writer task — sole owner of stdout.
+    // stdout writer task — sole owner of stdout. Recover events and RPC
+    // replies share this FIFO so initial Rebase cannot race follow-up Bytes.
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(msg) = out_rx.recv().await {
@@ -59,19 +61,9 @@ async fn run() -> Result<(), String> {
         }
     });
 
-    // Forward recovery events to stdout queue.
-    let out_tx_events = out_tx.clone();
-    tokio::spawn(async move {
-        while let Some(msg) = event_rx.recv().await {
-            if out_tx_events.send(msg).await.is_err() {
-                break;
-            }
-        }
-    });
-
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.split(b'\n');
-    let mut outstanding: usize = 0;
+    let outstanding = Arc::new(AtomicUsize::new(0));
     let mut handshaken = false;
 
     while let Some(chunk) = lines
@@ -120,7 +112,7 @@ async fn run() -> Result<(), String> {
             }
         };
 
-        if outstanding >= MAX_OUTSTANDING_REQUESTS {
+        if outstanding.load(Ordering::SeqCst) >= MAX_OUTSTANDING_REQUESTS {
             let id = request_id(&msg).to_owned();
             let _ = out_tx
                 .send(ServerMessage::Error {
@@ -131,26 +123,43 @@ async fn run() -> Result<(), String> {
                 .await;
             continue;
         }
-        outstanding += 1;
 
-        let response = handle_message(&bridge, msg, &mut handshaken).await;
-        let is_shutdown = matches!(
-            &response,
-            ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown")
-        );
-        let response = match response {
-            ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown") => ServerMessage::Ok {
-                id: id.trim_end_matches("\u{0}shutdown").to_owned(),
-            },
-            other => other,
-        };
-        outstanding = outstanding.saturating_sub(1);
-        if out_tx.send(response).await.is_err() {
-            break;
+        // Handshake/shutdown stay on the stdin task. Only Recover is spawned:
+        // its first-rebase wait must not HOL-block other RPCs, but Create/List
+        // stay serial so reconciler cannot observe a half-created session.
+        let inline = !handshaken || !matches!(msg, ClientMessage::Recover { .. });
+        outstanding.fetch_add(1, Ordering::SeqCst);
+        if inline {
+            let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;
+            outstanding.fetch_sub(1, Ordering::SeqCst);
+            let is_shutdown = matches!(
+                &response,
+                ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown")
+            );
+            let response = match response {
+                ServerMessage::Ok { id } if id.ends_with("\u{0}shutdown") => ServerMessage::Ok {
+                    id: id.trim_end_matches("\u{0}shutdown").to_owned(),
+                },
+                other => other,
+            };
+            if out_tx.send(response).await.is_err() {
+                break;
+            }
+            if is_shutdown {
+                break;
+            }
+            continue;
         }
-        if is_shutdown {
-            break;
-        }
+
+        let bridge = Arc::clone(&bridge);
+        let out_tx = out_tx.clone();
+        let outstanding = Arc::clone(&outstanding);
+        tokio::spawn(async move {
+            let mut handshaken = true;
+            let response = handle_message(&bridge, msg, &mut handshaken, &out_tx).await;
+            let _ = out_tx.send(response).await;
+            outstanding.fetch_sub(1, Ordering::SeqCst);
+        });
     }
 
     bridge.shutdown_all().await;
@@ -175,9 +184,10 @@ fn request_id(msg: &ClientMessage) -> &str {
 }
 
 async fn handle_message(
-    bridge: &std::sync::Arc<actors::BridgeState>,
+    bridge: &Arc<actors::BridgeState>,
     msg: ClientMessage,
     handshaken: &mut bool,
+    out_tx: &mpsc::Sender<ServerMessage>,
 ) -> ServerMessage {
     match msg {
         ClientMessage::Handshake {
@@ -289,7 +299,8 @@ async fn handle_message(
                 message: redact_error_message(&err),
             },
         },
-        ClientMessage::Recover { id, pane_id } => match bridge.start_recover(pane_id).await {
+        ClientMessage::Recover { id, pane_id } => match bridge.start_recover(pane_id, out_tx).await
+        {
             Ok(()) => ServerMessage::Ok { id },
             Err(err) => ServerMessage::Error {
                 id,

@@ -243,7 +243,7 @@ test("sidecar driver recover stream delivers rebase then exit", async () => {
       events.push(ev);
     }
   })();
-  await Promise.resolve();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
   const recoverLine = fake.written.find((w) => w.includes('"recover"'));
   const recoverReq = JSON.parse(recoverLine!.trim()) as { id: string };
   fake.reply({ type: "ok", id: recoverReq.id });
@@ -271,7 +271,7 @@ test("sidecar driver fans out recover to a late second subscriber without restar
       if (aEvents.length >= 2) break;
     }
   })();
-  await Promise.resolve();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
   const recoverLines = fake.written.filter((w) => w.includes('"recover"'));
   expect(recoverLines.length).toBe(1);
   const recoverReq = JSON.parse(recoverLines[0]!.trim()) as { id: string };
@@ -314,7 +314,7 @@ test("late subscriber receives post-rebase bytes so live sequence does not gap",
       if (ev.type === "exit") break;
     }
   })();
-  await Promise.resolve();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
   const recoverReq = JSON.parse(
     fake.written.find((w) => w.includes('"recover"'))!.trim(),
   ) as { id: string };
@@ -401,7 +401,7 @@ test("sidecar driver reassembles a keyframe that would overflow a 96KiB NDJSON l
       if (ev.type === "rebase") break;
     }
   })();
-  await Promise.resolve();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
   const recoverReq = JSON.parse(
     fake.written.find((w) => w.includes('"recover"'))!.trim(),
   ) as { id: string };
@@ -429,6 +429,43 @@ function ackLast(fake: ReturnType<typeof makeFakeChild>, type: string): boolean 
   return false;
 }
 
+function nackLast(fake: ReturnType<typeof makeFakeChild>, type: string, message: string): boolean {
+  for (let i = fake.written.length - 1; i >= 0; i--) {
+    for (const line of fake.written[i]!.trim().split("\n")) {
+      if (!line.includes(`"${type}"`)) continue;
+      const req = JSON.parse(line) as { id: string; type: string };
+      if (req.type === type) {
+        fake.reply({ type: "error", id: req.id, message });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function parsedWrites(fake: ReturnType<typeof makeFakeChild>): Array<{ id?: string; type?: string }> {
+  const out: Array<{ id?: string; type?: string }> = [];
+  for (const chunk of fake.written) {
+    for (const line of chunk.trim().split("\n")) {
+      if (!line) continue;
+      out.push(JSON.parse(line) as { id?: string; type?: string });
+    }
+  }
+  return out;
+}
+
+function requestCount(fake: ReturnType<typeof makeFakeChild>, type: string): number {
+  return parsedWrites(fake).filter((r) => r.type === type).length;
+}
+
+async function pumpUntil(pred: () => boolean, label: string, turns = 32): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    if (pred()) return;
+    await Promise.resolve();
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 test("catch-up cache over budget asks RMUX for a fresh rebase instead of synthesizing an oversized keyframe", async () => {
   const fake = makeFakeChild();
   const driver = new RmuxSidecarDriver(fake.child);
@@ -441,7 +478,7 @@ test("catch-up cache over budget asks RMUX for a fresh rebase instead of synthes
       if (ev.type === "exit") break;
     }
   })();
-  await Promise.resolve();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
   expect(ackLast(fake, "recover")).toBe(true);
 
   writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
@@ -516,7 +553,7 @@ test("sidecar oversized rebase error is forwarded instead of dropped", async () 
       if (ev.type === "error") break;
     }
   })();
-  await Promise.resolve();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
   expect(ackLast(fake, "recover")).toBe(true);
   fake.stdout.write(
     `${JSON.stringify({
@@ -529,4 +566,521 @@ test("sidecar oversized rebase error is forwarded instead of dropped", async () 
   expect(events).toEqual([
     { type: "error", code: "rebase-too-large", message: "rebase keyframe too large" },
   ]);
+});
+
+test("post-start recovery stream error fails live subscribers", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const events: RmuxRecoveryEvent[] = [];
+  const thrown: { current?: unknown } = {};
+  const iterP = (async () => {
+    try {
+      for await (const ev of driver.recover("%1")) {
+        events.push(ev);
+      }
+    } catch (err) {
+      thrown.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "hi", { nextSequence: 0 });
+  await pumpUntil(() => events.some((e) => e.type === "rebase"), "rebase");
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: { type: "bytes", epoch: 1, sequence: 0, data_base64: Buffer.from("x").toString("base64") },
+    })}\n`,
+  );
+  await pumpUntil(() => events.some((e) => e.type === "bytes"), "bytes");
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "error",
+        code: "recovery-stream-failed",
+        message: "recover_output failed: connection reset",
+      },
+    })}\n`,
+  );
+  await iterP;
+  expect(events.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+  expect(thrown.current).toBeInstanceOf(Error);
+  expect(String(thrown.current)).toContain("recover_output failed");
+});
+
+test("protocol fatal crash fails recover iterators as RmuxDriverCrashedError", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const thrown: { current?: unknown } = {};
+  const iterP = (async () => {
+    try {
+      for await (const _ev of driver.recover("%1")) {
+        // wait for crash
+      }
+    } catch (err) {
+      thrown.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "recover written");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "hi");
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write("this is not json\n");
+  await iterP;
+  expect(thrown.current).toBeInstanceOf(RmuxDriverCrashedError);
+});
+
+test("replacement after last-subscriber stop does not see old-stream bytes first", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aAbort = new AbortController();
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1", aAbort.signal)) {
+      aEvents.push(ev);
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "old", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  aAbort.abort();
+  await Promise.resolve();
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes") break;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence: 0,
+        data_base64: Buffer.from("stale").toString("base64"),
+      },
+    })}\n`,
+  );
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(bEvents).toEqual([]);
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "queued stop still runs");
+  expect(requestCount(fake, "recover")).toBe(1);
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover after stop");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  expect(bEvents.some((e) => e.type === "bytes")).toBe(false);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after rebase");
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+  await Promise.all([aDone, bDone]);
+});
+
+test("stop-recover request timeout does not arm a late joiner on the old stream", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child, { stopRecoverTimeoutMs: 40 });
+  await withHandshake(driver, fake);
+
+  const aAbort = new AbortController();
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1", aAbort.signal)) {
+      aEvents.push(ev);
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "old", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  aAbort.abort();
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "stop written");
+  const stopReq = parsedWrites(fake).findLast((r) => r.type === "stop-recover");
+  expect(stopReq?.id).toBeTruthy();
+
+  await Bun.sleep(80);
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes") break;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence: 0,
+        data_base64: Buffer.from("stale").toString("base64"),
+      },
+    })}\n`,
+  );
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(bEvents).toEqual([]);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover after timeout");
+
+  fake.reply({ type: "ok", id: stopReq!.id! });
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  expect(bEvents.some((e) => e.type === "bytes")).toBe(false);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after rebase");
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+  await Promise.all([aDone, bDone]);
+});
+
+test("in-flight stop-recover completes before a replacement recover is written", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aAbort = new AbortController();
+  const aGotRebase = { value: false };
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1", aAbort.signal)) {
+      if (ev.type === "rebase") {
+        aGotRebase.value = true;
+        break;
+      }
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "old", { nextSequence: 0 });
+  await pumpUntil(() => aGotRebase.value, "A consumed rebase");
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "stop-recover written");
+  expect(requestCount(fake, "recover")).toBe(1);
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes") break;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(requestCount(fake, "recover")).toBe(1);
+
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B bytes after fresh rebase");
+  await Promise.all([aDone, bDone]);
+});
+
+test("cache hit still writes recover so a finished server-side task restarts", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aAbort = new AbortController();
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1", aAbort.signal)) {
+      aEvents.push(ev);
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "stale", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  aAbort.abort();
+  await Promise.resolve();
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes" && ev.sequence === 0) break;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "gap still stops old stream");
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "replacement recover despite cache");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "restarted", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(
+    () => bEvents.some((e) => e.type === "rebase" && e.epoch === 2),
+    "B fresh rebase after silent finish",
+  );
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after restart");
+  await Promise.all([aDone, bDone]);
+});
+
+test("recover RPC failure rejects waiters that joined during start", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aErr: { current?: unknown } = {};
+  const aDone = (async () => {
+    try {
+      for await (const _ev of driver.recover("%1")) {
+        // should not yield
+      }
+    } catch (err) {
+      aErr.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+
+  const bErr: { current?: unknown } = {};
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    try {
+      for await (const ev of driver.recover("%1")) {
+        bEvents.push(ev);
+      }
+    } catch (err) {
+      bErr.current = err;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(requestCount(fake, "recover")).toBe(1);
+  expect(nackLast(fake, "recover", "recover_output failed")).toBe(true);
+
+  await Promise.all([aDone, bDone]);
+  expect(aErr.current).toBeInstanceOf(Error);
+  expect(String(aErr.current)).toContain("recover_output failed");
+  expect(bErr.current).toBeInstanceOf(Error);
+  expect(String(bErr.current)).toContain("recover_output failed");
+  expect(bEvents).toEqual([]);
+});
+
+test("snapshot refresh stop pending does not let a late joiner see old-stream bytes first", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      aEvents.push(ev);
+      if (ev.type === "exit") break;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  const chunk = Buffer.alloc(48 * 1024, 0x61);
+  const chunkB64 = chunk.toString("base64");
+  let sent = 0;
+  let sequence = 0;
+  while (sent <= 2 * 1024 * 1024) {
+    fake.stdout.write(
+      `${JSON.stringify({
+        type: "event",
+        pane_id: "%1",
+        event: {
+          type: "bytes",
+          epoch: 1,
+          sequence,
+          data_base64: chunkB64,
+        },
+      })}\n`,
+    );
+    sent += chunk.byteLength;
+    sequence += 1;
+  }
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "refresh stop written", 256);
+  expect(requestCount(fake, "recover")).toBe(1);
+
+  const bEvents: RmuxRecoveryEvent[] = [];
+  const bDone = (async () => {
+    for await (const ev of driver.recover("%1")) {
+      bEvents.push(ev);
+      if (ev.type === "bytes") break;
+    }
+  })();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 1,
+        sequence,
+        data_base64: Buffer.from("stale").toString("base64"),
+      },
+    })}\n`,
+  );
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(bEvents).toEqual([]);
+  expect(requestCount(fake, "recover")).toBe(1);
+
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "refresh recover after stop");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "fresh", { epoch: 2, nextSequence: 0 });
+  await pumpUntil(() => bEvents.some((e) => e.type === "rebase"), "B fresh rebase");
+  expect(bEvents[0]).toMatchObject({ type: "rebase", epoch: 2 });
+  expect(bEvents.some((e) => e.type === "bytes")).toBe(false);
+
+  fake.stdout.write(
+    `${JSON.stringify({
+      type: "event",
+      pane_id: "%1",
+      event: {
+        type: "bytes",
+        epoch: 2,
+        sequence: 0,
+        data_base64: Buffer.from("live").toString("base64"),
+      },
+    })}\n`,
+  );
+  await pumpUntil(() => bEvents.some((e) => e.type === "bytes"), "B live bytes after rebase");
+  expect(bEvents.map((e) => e.type)).toEqual(["rebase", "bytes"]);
+
+  fake.stdout.write(
+    `${JSON.stringify({ type: "event", pane_id: "%1", event: { type: "exit", code: 0 } })}\n`,
+  );
+  await Promise.all([aDone, bDone]);
+});
+
+test("snapshot refresh recover failure fails every live subscriber", async () => {
+  const fake = makeFakeChild();
+  const driver = new RmuxSidecarDriver(fake.child);
+  await withHandshake(driver, fake);
+
+  const aErr: { current?: unknown } = {};
+  const aEvents: RmuxRecoveryEvent[] = [];
+  const aDone = (async () => {
+    try {
+      for await (const ev of driver.recover("%1")) {
+        aEvents.push(ev);
+      }
+    } catch (err) {
+      aErr.current = err;
+    }
+  })();
+  await pumpUntil(() => requestCount(fake, "recover") === 1, "A recover");
+  expect(ackLast(fake, "recover")).toBe(true);
+  writeRebase(fake.stdout, "%1", "base", { nextSequence: 0 });
+  await pumpUntil(() => aEvents.some((e) => e.type === "rebase"), "A rebase");
+
+  const bErr: { current?: unknown } = {};
+  const bDone = (async () => {
+    try {
+      for await (const _ev of driver.recover("%1")) {
+        // stay subscribed through refresh
+      }
+    } catch (err) {
+      bErr.current = err;
+    }
+  })();
+  await pumpUntil(() => bErr.current === undefined && aEvents.length >= 1, "B joined");
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+
+  const chunk = Buffer.alloc(48 * 1024, 0x61);
+  const chunkB64 = chunk.toString("base64");
+  let sent = 0;
+  let sequence = 0;
+  while (sent <= 2 * 1024 * 1024) {
+    fake.stdout.write(
+      `${JSON.stringify({
+        type: "event",
+        pane_id: "%1",
+        event: {
+          type: "bytes",
+          epoch: 1,
+          sequence,
+          data_base64: chunkB64,
+        },
+      })}\n`,
+    );
+    sent += chunk.byteLength;
+    sequence += 1;
+  }
+  await pumpUntil(() => requestCount(fake, "stop-recover") === 1, "refresh stop-recover", 256);
+  expect(ackLast(fake, "stop-recover")).toBe(true);
+  await pumpUntil(() => requestCount(fake, "recover") === 2, "refresh recover", 64);
+  expect(nackLast(fake, "recover", "recover_output failed")).toBe(true);
+
+  await Promise.all([aDone, bDone]);
+  expect(aErr.current).toBeInstanceOf(Error);
+  expect(String(aErr.current)).toContain("recover_output failed");
+  expect(bErr.current).toBeInstanceOf(Error);
+  expect(String(bErr.current)).toContain("recover_output failed");
 });

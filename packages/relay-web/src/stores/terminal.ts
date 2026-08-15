@@ -50,6 +50,19 @@ export function terminalLocalKey(instanceId: string, sessionAlias: string): stri
   return `${instanceId}\0${sessionAlias}`;
 }
 
+const FATAL_RECOVERY_FAILURE_CODES = new Set([
+  "terminal-rmux-unavailable",
+  "terminal-terminating",
+  "terminal-attachment-not-found",
+  "terminal-generation-mismatch",
+  "terminal-disabled",
+]);
+
+/** Fatal recovery start failures must not loop on resync or look like a healthy blank canvas. */
+export function isFatalTerminalRecoveryCode(code: string): boolean {
+  return FATAL_RECOVERY_FAILURE_CODES.has(code);
+}
+
 function utf8ToCanonicalBase64(text: string): string {
   const bytes = new TextEncoder().encode(text);
   if (typeof Buffer !== "undefined") {
@@ -492,6 +505,10 @@ export const useTerminalStore = defineStore("terminal", () => {
       const view = findByAttachmentId(event.attachmentId);
       if (!view) return;
       if (view.generation && event.generation && view.generation !== event.generation) return;
+      if (isFatalTerminalRecoveryCode(event.code)) {
+        put({ ...view, lastErrorCode: event.code });
+        return;
+      }
       const stepped = reduceRecovery(view.recovery, { kind: "resync-started" });
       put({ ...view, lastErrorCode: event.code, recovery: stepped.state });
       // Fire-and-forget: do not block event application on the resync ack.

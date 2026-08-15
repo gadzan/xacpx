@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const BRIDGE_VERSION: &str = "0.1.0";
+/// Follow-up `stream.next()` returned `Ok(None)` after a successful initial Rebase.
+pub const RECOVERY_STREAM_ENDED_CODE: &str = "recovery-stream-ended";
+/// Follow-up `stream.next()` returned `Err` after a successful initial Rebase.
+pub const RECOVERY_STREAM_FAILED_CODE: &str = "recovery-stream-failed";
 
 /// Hard caps (decoded / line lengths).
 pub const MAX_LINE_BYTES: usize = 96 * 1024;
@@ -108,7 +112,8 @@ pub enum ServerMessage {
         code: String,
         message: String,
     },
-    /// Unsolicited recovery stream event (after a successful Recover).
+    /// Recovery stream event. The initial rebase is written immediately before
+    /// the Recover RPC ack; later bytes follow asynchronously.
     Event {
         pane_id: String,
         event: RecoveryEventDto,

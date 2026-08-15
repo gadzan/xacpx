@@ -3,6 +3,7 @@ import { setActivePinia, createPinia } from "pinia";
 import { mount, flushPromises } from "@vue/test-utils";
 import { TerminalRequestError } from "../api/events";
 import { initialRecoveryState } from "../lib/terminal-recovery";
+import type { TerminalAttachmentView } from "../stores/terminal";
 
 const adapter = {
   write: vi.fn(async () => {}),
@@ -26,8 +27,8 @@ const sendResize = vi.fn();
 const takeControl = vi.fn();
 const onRebase = vi.fn(() => () => {});
 const onBytes = vi.fn(() => () => {});
-const onMeta = vi.fn(() => () => {});
-const onAttachmentExit = vi.fn(() => () => {});
+const onMeta = vi.fn((_cb?: (key: string, view: TerminalAttachmentView) => void) => () => {});
+const onAttachmentExit = vi.fn((_cb?: (key: string, reason: string, code?: number) => void) => () => {});
 
 vi.mock("../stores/terminal", async () => {
   const actual = await vi.importActual<typeof import("../stores/terminal")>("../stores/terminal");
@@ -64,7 +65,8 @@ function openedView(overrides?: Partial<{
   sessionAlias: string;
   role: "controller" | "spectator";
   viewerCount: number;
-}>) {
+  lastErrorCode: string;
+}>): TerminalAttachmentView {
   const sessionAlias = overrides?.sessionAlias ?? "demo";
   const localKey = overrides?.localKey ?? `i1\0${sessionAlias}`;
   return {
@@ -82,6 +84,7 @@ function openedView(overrides?: Partial<{
     active: true,
     terminatePending: false,
     terminateRetryable: false,
+    lastErrorCode: overrides?.lastErrorCode,
   };
 }
 
@@ -136,6 +139,32 @@ describe("TerminalTab", () => {
     await flushPromises();
     expect(w.text()).toContain("terminal.eventsOffline");
     expect(w.text()).not.toContain("terminal.offline");
+  });
+
+  it("sole controller does not count itself as a viewer", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-role"]').text()).toContain("terminal.role.controller");
+    expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
+  });
+
+  it("shows other viewers as total attachments minus self", async () => {
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "controller", viewerCount: 2 }),
+    );
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-viewers"]').text()).toContain("\"count\":1");
+  });
+
+  it("spectator with two attachments also shows one other viewer", async () => {
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
+    );
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-role"]').text()).toContain("terminal.role.spectator");
+    expect(w.find('[data-test="terminal-viewers"]').text()).toContain("\"count\":1");
   });
 
   it("spectator disables input and shows take-control", async () => {
@@ -217,5 +246,42 @@ describe("TerminalTab", () => {
     const before = w.find('[data-test="keybar"]').exists();
     await btn.trigger("click");
     expect(w.find('[data-test="keybar"]').exists()).toBe(!before);
+  });
+
+  it("fatal recovery failure shows an error instead of a blank controller canvas", async () => {
+    let metaCb: ((key: string, view: TerminalAttachmentView) => void) | undefined;
+    onMeta.mockImplementation((cb) => {
+      metaCb = cb;
+      return () => {};
+    });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-host"]').exists()).toBe(true);
+    if (!w.find('[data-test="keybar"]').exists()) {
+      await w.find('[data-test="toggle-keybar"]').trigger("click");
+    }
+    expect(w.find('[data-test="key-enter"]').attributes("disabled")).toBeUndefined();
+    metaCb?.("i1\0demo", openedView({ lastErrorCode: "terminal-rmux-unavailable" }));
+    await flushPromises();
+    expect(w.text()).toContain("terminal.unsupported");
+    expect(w.find('[data-test="terminal-host"]').isVisible()).toBe(false);
+    expect(w.find('[data-test="key-enter"]').attributes("disabled")).toBeDefined();
+    expect(w.find('[data-test="terminal-take-control"]').exists()).toBe(false);
+    await w.find('[data-test="key-enter"]').trigger("click");
+    expect(sendInput).not.toHaveBeenCalled();
+  });
+
+  it("does not count a detached controller as another viewer", async () => {
+    let exitCb: ((key: string, reason: string, code?: number) => void) | undefined;
+    onAttachmentExit.mockImplementation((cb) => {
+      exitCb = cb;
+      return () => {};
+    });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
+    exitCb?.("i1\0demo", "exited", 0);
+    await flushPromises();
+    expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
   });
 });
