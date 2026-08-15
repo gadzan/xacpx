@@ -38,9 +38,13 @@ test("small ACP stdout lines are passed through byte-for-byte as strings", () =>
 });
 
 test("the bundled launch identity points at the published adapters entry", () => {
-  expect(resolveAcpOutputGuardEntry("file:///opt/xacpx/dist/cli.js")).toBe(
-    "/opt/xacpx/dist/adapters/acp-output-guard-main.js",
-  );
+  const moduleUrl = process.platform === "win32"
+    ? "file:///C:/opt/xacpx/dist/cli.js"
+    : "file:///opt/xacpx/dist/cli.js";
+  const expected = process.platform === "win32"
+    ? "C:\\opt\\xacpx\\dist\\adapters\\acp-output-guard-main.js"
+    : "/opt/xacpx/dist/adapters/acp-output-guard-main.js";
+  expect(resolveAcpOutputGuardEntry(moduleUrl)).toBe(expected);
 });
 
 test("oversized agent messages are split without losing text or metadata", () => {
@@ -226,6 +230,7 @@ test("Windows real executables keep exact argv while cmd launchers use an explic
   expect(launcher.command).toBe("C:\\Windows\\System32\\cmd.exe");
   expect(launcher.args.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
   expect(launcher.shell).toBe(false);
+  expect(launcher.windowsVerbatimArguments).toBe(true);
   expect(launcher.args[4]).toContain('"C:\\Program Files\\agent.cmd"');
   expect(launcher.args[4]).toContain('"a&b"');
   expect(launcher.args[4]).toContain('"(quoted)"');
@@ -244,6 +249,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
     command: "C:\\Windows\\System32\\cmd.exe",
     args: ["/d", "/v:off", "/s", "/c", '"C:\\Tools\\opencode.CMD" "acp"'],
     shell: false,
+    windowsVerbatimArguments: true,
   });
 
   const npxLauncher = buildAcpAgentSpawnSpec(
@@ -257,6 +263,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
     command: "C:\\Windows\\System32\\cmd.exe",
     args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9"'],
     shell: false,
+    windowsVerbatimArguments: true,
   });
 });
 

@@ -77,6 +77,7 @@ export interface AcpAgentSpawnSpec {
   command: string;
   args: string[];
   shell: false;
+  windowsVerbatimArguments?: boolean;
 }
 
 /** Keep real Windows executables on the exact argv path. cmd/bat launchers are
@@ -107,6 +108,11 @@ export function buildAcpAgentSpawnSpec(
     command: comspec,
     args: ["/d", "/v:off", "/s", "/c", [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ")],
     shell: false,
+    // The /c command string intentionally contains cmd.exe quoting. Letting
+    // Node quote that argument again adds literal backslashes before the
+    // embedded quotes, so cmd.exe tries to execute `\"C:\\...\"` as the
+    // command name instead of the .cmd/.bat launcher.
+    windowsVerbatimArguments: true,
   };
 }
 
