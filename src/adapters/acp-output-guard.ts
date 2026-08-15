@@ -104,9 +104,13 @@ export function buildAcpAgentSpawnSpec(
     return { command, args, shell: false };
   }
 
+  const commandLine = [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ");
   return {
     command: comspec,
-    args: ["/d", "/v:off", "/s", "/c", [launcherCommand, ...args].map(quoteWindowsCmdArg).join(" ")],
+    // /s /c needs one outer quote pair around the complete command. Without
+    // it, cmd.exe treats the quotes around the launcher path as part of the
+    // command name after its special /c quote stripping rules run.
+    args: ["/d", "/v:off", "/s", "/c", `"${commandLine}"`],
     shell: false,
     // The /c command string intentionally contains cmd.exe quoting. Letting
     // Node quote that argument again adds literal backslashes before the

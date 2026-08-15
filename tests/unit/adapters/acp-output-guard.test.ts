@@ -231,9 +231,7 @@ test("Windows real executables keep exact argv while cmd launchers use an explic
   expect(launcher.args.slice(0, 4)).toEqual(["/d", "/v:off", "/s", "/c"]);
   expect(launcher.shell).toBe(false);
   expect(launcher.windowsVerbatimArguments).toBe(true);
-  expect(launcher.args[4]).toContain('"C:\\Program Files\\agent.cmd"');
-  expect(launcher.args[4]).toContain('"a&b"');
-  expect(launcher.args[4]).toContain('"(quoted)"');
+  expect(launcher.args[4]).toBe('""C:\\Program Files\\agent.cmd" "--arg" "a&b" "(quoted)""');
 });
 
 test("Windows resolves bare PATH commands through PATHEXT before choosing the launcher", () => {
@@ -247,7 +245,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
 
   expect(launcher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/v:off", "/s", "/c", '"C:\\Tools\\opencode.CMD" "acp"'],
+    args: ["/d", "/v:off", "/s", "/c", '""C:\\Tools\\opencode.CMD" "acp""'],
     shell: false,
     windowsVerbatimArguments: true,
   });
@@ -261,7 +259,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
   );
   expect(npxLauncher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9"'],
+    args: ["/d", "/v:off", "/s", "/c", '""C:\\Node\\npx.CMD" "-y" "@agentclientprotocol/codex-acp@1.1.9""'],
     shell: false,
     windowsVerbatimArguments: true,
   });
@@ -279,7 +277,7 @@ test("Windows cmd launchers preserve percent, embedded quotes, and exclamation m
     "/v:off",
     "/s",
     "/c",
-    '"C:\\Program Files\\agent.cmd" "--pattern" "^%PATH^%" "a""b" "!value!"',
+    '""C:\\Program Files\\agent.cmd" "--pattern" "^%PATH^%" "a""b" "!value!""',
   ]);
 });
 
