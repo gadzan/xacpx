@@ -1,5 +1,17 @@
 # Changelog
 
+## [relay-protocol 0.4.2-beta.0] - 2026-08-16
+
+### Fixed
+
+- Decode canonical base64 without Node `Buffer` so browsers stop dropping `terminal-rebase-chunk` and `terminal-bytes` (previously looping recovery into a permanent black canvas).
+
+## [relay 0.12.1-beta.2] - 2026-08-16
+
+### Fixed
+
+- Rebuild relay-web against relay-protocol 0.4.2-beta.0 so terminal recovery works in browsers without global `Buffer`.
+
 ## [channel-relay 0.6.1-beta.2] - 2026-08-15
 
 ### Fixed
