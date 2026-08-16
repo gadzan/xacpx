@@ -16,6 +16,17 @@ function textB64(s: string): string {
   return Buffer.from(s, "utf8").toString("base64");
 }
 
+function withBufferHidden<T>(fn: () => T): T {
+  const desc = Object.getOwnPropertyDescriptor(globalThis, "Buffer");
+  Object.defineProperty(globalThis, "Buffer", { configurable: true, value: undefined });
+  try {
+    return fn();
+  } finally {
+    if (desc) Object.defineProperty(globalThis, "Buffer", desc);
+    else delete (globalThis as { Buffer?: unknown }).Buffer;
+  }
+}
+
 describe("terminal recovery reducer", () => {
   it("waits until rebase-start, then applies empty keyframe into live", () => {
     let state = initialRecoveryState("g1");
@@ -286,6 +297,52 @@ describe("terminal recovery reducer", () => {
     });
     expect(stale.action.type).toBe("ignore");
     expect(stale.state.phase).toBe("live");
+  });
+
+  it("reaches live and writes bytes when global Buffer is unavailable", () => {
+    const keyframe = textB64("prompt> ");
+    const live = textB64("ls");
+    withBufferHidden(() => {
+      let state = initialRecoveryState("g1");
+      state = reduceRecovery(state, {
+        kind: "rebase-start",
+        generation: "g1",
+        epoch: 1,
+        nextSequence: 0,
+        cols: 80,
+        rows: 24,
+        alternate: false,
+        totalBytes: 8,
+        chunkCount: 1,
+      }).state;
+      state = reduceRecovery(state, {
+        kind: "rebase-chunk",
+        generation: "g1",
+        epoch: 1,
+        index: 0,
+        dataBase64: keyframe,
+      }).state;
+      const end = reduceRecovery(state, { kind: "rebase-end", generation: "g1", epoch: 1 });
+      expect(end.state.phase).toBe("live");
+      expect(end.action.type).toBe("apply-rebase");
+      if (end.action.type === "apply-rebase") {
+        expect(new TextDecoder().decode(end.action.keyframe)).toBe("prompt> ");
+      }
+
+      const bytes = reduceRecovery(end.state, {
+        kind: "bytes",
+        generation: "g1",
+        epoch: 1,
+        sequence: 0,
+        dataBase64: live,
+      });
+      expect(bytes.action.type).toBe("write-bytes");
+      if (bytes.action.type === "write-bytes") {
+        expect(new TextDecoder().decode(bytes.action.data)).toBe("ls");
+      }
+      expect(bytes.state.expectedSequence).toBe(1);
+      expect(bytes.action.type).not.toBe("request-resync");
+    });
   });
 
   it("marks exited and ignores further frames", () => {

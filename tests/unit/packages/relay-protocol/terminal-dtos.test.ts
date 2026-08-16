@@ -286,6 +286,48 @@ test("targeted terminal events reject invalid generation/size/index/count/sequen
   }))).toBeNull();
 });
 
+function withBufferHidden<T>(fn: () => T): T {
+  const desc = Object.getOwnPropertyDescriptor(globalThis, "Buffer");
+  Object.defineProperty(globalThis, "Buffer", { configurable: true, value: undefined });
+  try {
+    return fn();
+  } finally {
+    if (desc) Object.defineProperty(globalThis, "Buffer", desc);
+    else delete (globalThis as { Buffer?: unknown }).Buffer;
+  }
+}
+
+test("parseWebServerEvent keeps rebase-chunk and bytes when Buffer is unavailable", () => {
+  const chunk = webEventEnvelope({
+    kind: "terminal-rebase-chunk",
+    instanceId: "i1",
+    attachmentId: "a1",
+    generation: "g1",
+    epoch: 1,
+    index: 0,
+    dataBase64: "aGVsbG8=",
+  });
+  const bytes = webEventEnvelope({
+    kind: "terminal-bytes",
+    instanceId: "i1",
+    attachmentId: "a1",
+    generation: "g1",
+    epoch: 1,
+    sequence: 0,
+    dataBase64: "aGVsbG8=",
+  });
+  withBufferHidden(() => {
+    expect(parseWebServerEvent(chunk)).toMatchObject({
+      kind: "terminal-rebase-chunk",
+      dataBase64: "aGVsbG8=",
+    });
+    expect(parseWebServerEvent(bytes)).toMatchObject({
+      kind: "terminal-bytes",
+      dataBase64: "aGVsbG8=",
+    });
+  });
+});
+
 test("parseCanonicalBase64 bounds encoded length before decode and requires round-trip", () => {
   const ok = Buffer.from("hi").toString("base64");
   expect(Buffer.from(parseCanonicalBase64(ok, 16)!).toString()).toBe("hi");

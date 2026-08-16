@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { encodeEnvelope, webEventEnvelope, decodeEnvelope, parseWebClientMessage } from "@ganglion/xacpx-relay-protocol";
+import { encodeEnvelope, webEventEnvelope, decodeEnvelope, parseWebClientMessage, parseWebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import {
   connectEvents,
   _resetTerminalRequestStateForTests,
@@ -384,5 +384,76 @@ describe("terminal store", () => {
     expect(store.get(key)?.recovery.phase).toBe("waiting");
     expect(store.get(key)?.role).toBe("controller");
     expect(FakeWS.instances[0].send.mock.calls.length).toBe(0);
+  });
+
+  it("ws rebase-chunk and bytes survive when global Buffer is unavailable", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    const rebases: Uint8Array[] = [];
+    const written: Uint8Array[] = [];
+    store.onRebase((_k, kf) => { rebases.push(kf); });
+    store.onBytes((_k, d) => { written.push(d); });
+    await openAttached(store, key, ws);
+    ws.send.mockClear();
+
+    const desc = Object.getOwnPropertyDescriptor(globalThis, "Buffer");
+    Object.defineProperty(globalThis, "Buffer", { configurable: true, value: undefined });
+    try {
+      const chunk = parseWebServerEvent(webEventEnvelope({
+        kind: "terminal-rebase-chunk",
+        instanceId: "i1",
+        attachmentId: "a1",
+        generation: "g1",
+        epoch: 1,
+        index: 0,
+        dataBase64: "cHJvbXB0PiA=",
+      }));
+      const bytes = parseWebServerEvent(webEventEnvelope({
+        kind: "terminal-bytes",
+        instanceId: "i1",
+        attachmentId: "a1",
+        generation: "g1",
+        epoch: 1,
+        sequence: 0,
+        dataBase64: "bHM=",
+      }));
+      expect(chunk?.kind).toBe("terminal-rebase-chunk");
+      expect(bytes?.kind).toBe("terminal-bytes");
+
+      await store.applyEvent({
+        kind: "terminal-rebase-start",
+        instanceId: "i1",
+        attachmentId: "a1",
+        generation: "g1",
+        epoch: 1,
+        nextSequence: 0,
+        cols: 80,
+        rows: 24,
+        alternate: false,
+        totalBytes: 8,
+        chunkCount: 1,
+      });
+      await store.applyEvent(chunk!);
+      await store.applyEvent({
+        kind: "terminal-rebase-end",
+        instanceId: "i1",
+        attachmentId: "a1",
+        generation: "g1",
+        epoch: 1,
+      });
+      expect(store.get(key)?.recovery.phase).toBe("live");
+      expect(rebases).toHaveLength(1);
+      expect(new TextDecoder().decode(rebases[0])).toBe("prompt> ");
+
+      await store.applyEvent(bytes!);
+      expect(new TextDecoder().decode(written[0])).toBe("ls");
+      expect(store.get(key)?.recovery.expectedSequence).toBe(1);
+      expect(sentMessages(ws).some((m) => (m as { kind?: string }).kind === "terminal-resync")).toBe(false);
+    } finally {
+      if (desc) Object.defineProperty(globalThis, "Buffer", desc);
+    }
   });
 });
