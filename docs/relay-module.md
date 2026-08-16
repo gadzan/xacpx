@@ -143,7 +143,7 @@
 
 协议（packages/relay-protocol）：
 
-- **web 事件深度校验**：`parseWebServerEvent` 现在深度校验内层 `ControlEventDto` 的判别式/各变体字段
+- **web 事件深度校验**：`parseWebServerEvent` 现在深度校验内层 `ControlEventDto` 的判别式/各变体字段。`parseCanonicalBase64` 是 runtime-neutral 的（浏览器 `atob`/`btoa`，Node/Bun 可回退 `Buffer`），避免浏览器 bundle 因缺少 `Buffer` 静默丢掉 `terminal-rebase-chunk` / `terminal-bytes`。
   以及 notice 形状（原先只校验外层信封），收紧 web 线信任边界。
 
 连接器（packages/channel-relay）：

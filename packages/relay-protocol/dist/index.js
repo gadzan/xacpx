@@ -203,22 +203,38 @@ var optBool = (v) => v === undefined || typeof v === "boolean";
 var isBoundedStr = (v, maxLen) => typeof v === "string" && v.length > 0 && v.length <= maxLen;
 var isIntInRange = (v, min, max) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 var isNonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+function decodeCanonicalBase64(encoded) {
+  if (typeof globalThis.atob === "function" && typeof globalThis.btoa === "function") {
+    const binary = globalThis.atob(encoded);
+    if (globalThis.btoa(binary) !== encoded)
+      return null;
+    const decoded2 = new Uint8Array(binary.length);
+    for (let i = 0;i < binary.length; i++) {
+      decoded2[i] = binary.charCodeAt(i) & 255;
+    }
+    return decoded2;
+  }
+  const BufferCtor = globalThis.Buffer;
+  if (!BufferCtor)
+    return null;
+  const decoded = BufferCtor.from(encoded, "base64");
+  if (decoded.toString("base64") !== encoded)
+    return null;
+  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+}
 function parseCanonicalBase64(encoded, maxDecodedBytes) {
   if (typeof encoded !== "string")
     return null;
   if (encoded.length > maxBase64EncodedLength(maxDecodedBytes))
     return null;
-  let decoded;
   try {
-    decoded = Buffer.from(encoded, "base64");
+    const decoded = decodeCanonicalBase64(encoded);
+    if (!decoded || decoded.length > maxDecodedBytes)
+      return null;
+    return decoded;
   } catch {
     return null;
   }
-  if (decoded.length > maxDecodedBytes)
-    return null;
-  if (decoded.toString("base64") !== encoded)
-    return null;
-  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
 }
 
 // packages/relay-protocol/src/web-dtos.ts

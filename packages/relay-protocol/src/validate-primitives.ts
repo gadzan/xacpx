@@ -33,22 +33,50 @@ export const isIntInRange = (v: unknown, min: number, max: number): v is number 
 export const isNonNegInt = (v: unknown): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= 0;
 
+type Base64BufferCtor = {
+  from(value: string, encoding: "base64"): {
+    length: number;
+    buffer: ArrayBufferLike;
+    byteOffset: number;
+    byteLength: number;
+    toString(encoding: "base64"): string;
+  };
+};
+
+function decodeCanonicalBase64(encoded: string): Uint8Array | null {
+  if (typeof globalThis.atob === "function" && typeof globalThis.btoa === "function") {
+    const binary = globalThis.atob(encoded);
+    if (globalThis.btoa(binary) !== encoded) return null;
+    const decoded = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      decoded[i] = binary.charCodeAt(i) & 0xff;
+    }
+    return decoded;
+  }
+
+  const BufferCtor = (globalThis as typeof globalThis & { Buffer?: Base64BufferCtor }).Buffer;
+  if (!BufferCtor) return null;
+  const decoded = BufferCtor.from(encoded, "base64");
+  if (decoded.toString("base64") !== encoded) return null;
+  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+}
+
 /**
  * Decode a canonical base64 payload with an encoded-length pre-check.
- * Returns null when the encoded length exceeds the bound for `maxDecodedBytes`,
- * the payload is not valid base64, the decoded size exceeds the cap, or the
- * string is a non-canonical encoding of the same bytes (round-trip mismatch).
+ * Runtime-neutral: browsers use `atob`/`btoa`; Node/Bun can fall back to
+ * `Buffer`. Returns null when the encoded length exceeds the bound for
+ * `maxDecodedBytes`, the payload is not valid base64, the decoded size
+ * exceeds the cap, or the string is a non-canonical encoding of the same
+ * bytes (round-trip mismatch).
  */
 export function parseCanonicalBase64(encoded: unknown, maxDecodedBytes: number): Uint8Array | null {
   if (typeof encoded !== "string") return null;
   if (encoded.length > maxBase64EncodedLength(maxDecodedBytes)) return null;
-  let decoded: Buffer;
   try {
-    decoded = Buffer.from(encoded, "base64");
+    const decoded = decodeCanonicalBase64(encoded);
+    if (!decoded || decoded.length > maxDecodedBytes) return null;
+    return decoded;
   } catch {
     return null;
   }
-  if (decoded.length > maxDecodedBytes) return null;
-  if (decoded.toString("base64") !== encoded) return null;
-  return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
 }
