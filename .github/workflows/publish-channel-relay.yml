@@ -130,7 +130,11 @@ jobs:
             cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
           fi
 
-      - name: Pack platform package
+      # pack-rmux-bridge-platform.mjs downloads the pinned RMUX
+      # (RMUX_VERSION + SHA-256 fixed in scripts/rmux-release.mjs), verifies it,
+      # copies bridge + bin/rmux + libexec/rmux/rmux into the package, and runs
+      # the REAL `rmux -V` on this native host (must print `rmux 0.10.0`).
+      - name: Pack platform package with bundled RMUX
         run: |
           BIN="packages/channel-relay/native/rmux-bridge/${BIN_REL:-target/release}/xacpx-rmux-bridge"
           if [[ "${{ matrix.platform }}" == "win32" ]]; then
@@ -141,7 +145,9 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --binary "$BIN"
           test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json"
-          node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1)"
+          node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1); if(!c.artifacts?.rmux?.sha256) process.exit(1); if(!c.artifacts?.rmuxHelper?.sha256) process.exit(1)"
+          test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/bin/rmux${{ matrix.platform == 'win32' && '.exe' || '' }}"
+          test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/libexec/rmux/rmux${{ matrix.platform == 'win32' && '.exe' || '' }}"
         env:
           BIN_REL: ${{ matrix.bin_path && 'target/x86_64-apple-darwin/release' || 'target/release' }}
 
@@ -152,7 +158,71 @@ jobs:
           path: platform-packages/xacpx-rmux-bridge-${{ matrix.package }}
           if-no-files-found: error
 
-  smoke-linux:
+  # Production-package smoke: NO machine-local RMUX anywhere (no
+  # install-rmux-release.sh, no ~/.local/libexec/rmux, no PATH rmux). The only
+  # RMUX that can resolve is the one bundled in the packed npm package. The
+  # test fabricates a hostile fake rmux at the front of PATH and proves it is
+  # never executed while a live create/input/recover/kill cycle runs.
+  smoke-platform-package:
+    needs: [meta, build-platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download linux-x64 platform package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rmux-bridge-linux-x64
+          path: platform-packages/xacpx-rmux-bridge-linux-x64
+
+      # Production install layout: the resolver prefers the channel-relay-local
+      # node_modules copy; replace the registry stub with the packed package.
+      - name: Install packed package into node_modules
+        run: |
+          rm -rf packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-linux-x64
+          cp -R platform-packages/xacpx-rmux-bridge-linux-x64 packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-linux-x64
+          chmod +x packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
+          chmod +x packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-linux-x64/bin/rmux
+          chmod +x packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-linux-x64/libexec/rmux/rmux
+
+      - name: Assert no machine-local RMUX could mask the bundled one
+        run: |
+          if command -v rmux >/dev/null 2>&1; then echo "rmux unexpectedly on PATH"; exit 1; fi
+          if [[ -e "$HOME/.local/libexec/rmux" ]]; then echo "managed helper unexpectedly present"; exit 1; fi
+
+      - name: Production package hostile smoke (bundled RMUX only)
+        env:
+          XACPX_RMUX_PLATFORM_PACKAGE: "1"
+        run: |
+          bun test tests/smoke/relay-rmux-platform-package.test.ts
+
+  # Developer / legacy environment smoke: RMUX from the managed helper
+  # ~/.local/libexec/rmux + PATH. This exercises the fallback chain for
+  # source checkouts and old installs — it must NOT be the only gate, because
+  # it can mask a platform package that forgot to bundle RMUX.
+  smoke-legacy:
     needs: [meta, build-platform]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -186,14 +256,14 @@ jobs:
           name: rmux-bridge-linux-x64
           path: platform-packages/xacpx-rmux-bridge-linux-x64
 
-      - name: Install pinned RMUX 0.10.0
+      - name: Install pinned RMUX 0.10.0 (legacy managed helper)
         run: |
           chmod +x scripts/install-rmux-release.sh
           bash scripts/install-rmux-release.sh
           echo "RMUX_SDK_DAEMON_BINARY=$HOME/.local/libexec/rmux/rmux" >> "$GITHUB_ENV"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Run real RMUX smoke matrix
+      - name: Run real RMUX smoke matrix (legacy env)
         env:
           XACPX_RMUX_INTEGRATION: "1"
           XACPX_RMUX_BRIDGE: ${{ github.workspace }}/platform-packages/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
@@ -201,8 +271,57 @@ jobs:
           chmod +x "$XACPX_RMUX_BRIDGE"
           bun test tests/smoke/relay-rmux-terminal.test.ts
 
+  # Windows production-package smoke on the real win32 platform package
+  # (bundled bin/rmux.exe + libexec helper), native host. Same hostile PATH
+  # fake regression as the Linux package smoke.
+  smoke-windows:
+    needs: [meta, build-platform]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download win32-x64 platform package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rmux-bridge-win32-x64
+          path: platform-packages/xacpx-rmux-bridge-win32-x64
+
+      - name: Install packed package into node_modules
+        run: |
+          $dest = 'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64'
+          Remove-Item -Recurse -Force $dest
+          Copy-Item -Recurse 'platform-packages/xacpx-rmux-bridge-win32-x64' $dest
+
+      - name: Production package hostile smoke (Windows)
+        env:
+          XACPX_RMUX_PLATFORM_PACKAGE: "1"
+        run: |
+          bun test tests/smoke/relay-rmux-platform-package.test.ts
+
   publish-platforms:
-    needs: [meta, build-platform, smoke-linux]
+    needs: [meta, build-platform, smoke-platform-package, smoke-legacy, smoke-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -253,7 +372,7 @@ jobs:
           done
 
   publish-channel-relay:
-    needs: [meta, publish-platforms, smoke-linux]
+    needs: [meta, publish-platforms, smoke-platform-package, smoke-legacy, smoke-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

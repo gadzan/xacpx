@@ -3,6 +3,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+
+import { RMUX_VERSION } from "./rmux-release.mjs";
 
 /**
  * @typedef {Object} PublishPackageConfig
@@ -95,7 +98,128 @@ export async function collectPublishVerificationFailures(input = {}) {
 
   await verifyNoStaleConsoleReferences(repoRoot, scanPaths, failures);
 
+  await verifyPlatformPackages(repoRoot, failures);
+
   return failures;
+}
+
+/**
+ * Platform packages bundle a pinned RMUX next to the bridge. Verify:
+ *   - the three version pins agree (release manifest ↔ TS resolver constant ↔
+ *     Cargo.toml rmux-sdk), so the packaged RMUX provably matches the bridge
+ *   - every packed package contains bridge + rmux + libexec helper binaries
+ *   - checksums.json artifacts match the actual file bytes
+ * Unpacked (post-checkout placeholder) packages pass as long as their
+ * checksums are null; a non-null checksum must always match its file.
+ */
+export async function verifyPlatformPackages(repoRoot, failures = []) {
+  const root = join(repoRoot, "platform-packages");
+  if (!existsSync(root)) return failures;
+
+  // Pin cross-check: scripts/rmux-release.mjs ↔ resolve-rmux-binaries.ts
+  // ↔ packages/channel-relay/native/rmux-bridge/Cargo.toml.
+  const resolverPath = join(
+    repoRoot,
+    "packages/channel-relay/src/terminal/resolve-rmux-binaries.ts",
+  );
+  if (existsSync(resolverPath)) {
+    const resolverSource = await readFile(resolverPath, "utf8");
+    const match = resolverSource.match(/export const RMUX_BUNDLED_VERSION = "([^"]+)"/);
+    if (!match) {
+      failures.push("channel-relay: resolve-rmux-binaries.ts missing RMUX_BUNDLED_VERSION");
+    } else if (match[1] !== RMUX_VERSION) {
+      failures.push(
+        `channel-relay: RMUX_BUNDLED_VERSION=${match[1]} != rmux-release.mjs RMUX_VERSION=${RMUX_VERSION}`,
+      );
+    }
+  }
+  const cargoToml = join(repoRoot, "packages/channel-relay/native/rmux-bridge/Cargo.toml");
+  if (existsSync(cargoToml)) {
+    const cargo = await readFile(cargoToml, "utf8");
+    if (!cargo.includes(`rmux-sdk = "=${RMUX_VERSION}"`)) {
+      failures.push(
+        `channel-relay: rmux-bridge must pin rmux-sdk = "=${RMUX_VERSION}" to match the packaged RMUX`,
+      );
+    }
+  }
+
+  const packageDirs = (await readdir(root, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("xacpx-rmux-bridge-"))
+    .map((entry) => entry.name)
+    .sort();
+
+  for (const dir of packageDirs) {
+    const pkgRoot = join(root, dir);
+    const checksumsPath = join(pkgRoot, "checksums.json");
+    if (!existsSync(checksumsPath)) {
+      failures.push(`${dir}: missing checksums.json`);
+      continue;
+    }
+    const checksums = JSON.parse(await readFile(checksumsPath, "utf8"));
+    if (checksums.rmuxVersion !== RMUX_VERSION || checksums.rmuxSdk !== RMUX_VERSION) {
+      failures.push(
+        `${dir}: checksums must record rmuxVersion + rmuxSdk = ${RMUX_VERSION} (got ${checksums.rmuxSdk}/${checksums.rmuxVersion})`,
+      );
+    }
+    const artifacts = checksums.artifacts;
+    if (!artifacts?.bridge?.path || !artifacts?.rmux?.path || !artifacts?.rmuxHelper?.path) {
+      failures.push(
+        `${dir}: checksums.artifacts must list bridge + rmux + rmuxHelper paths`,
+      );
+      continue;
+    }
+
+    const bridgeBin = join(pkgRoot, artifacts.bridge.path);
+    const anyArtifactPresent = Object.values(artifacts).some((entry) =>
+      existsSync(join(pkgRoot, entry.path)),
+    );
+    if (anyArtifactPresent) {
+      // Packed (or partially packed) state: every artifact must exist and
+      // match its recorded SHA-256 — including the bundled RMUX + helper.
+      await verifyArtifactBytes(dir, artifacts.bridge, pkgRoot, checksums, failures);
+      await verifyArtifactBytes(dir, artifacts.rmux, pkgRoot, checksums, failures);
+      await verifyArtifactBytes(dir, artifacts.rmuxHelper, pkgRoot, checksums, failures);
+      // Legacy single-artifact fields must stay the bridge entry.
+      if (checksums.artifact !== artifacts.bridge.path) {
+        failures.push(`${dir}: legacy checksums.artifact must equal artifacts.bridge.path`);
+      }
+      if (checksums.sha256 !== artifacts.bridge.sha256) {
+        failures.push(`${dir}: legacy checksums.sha256 must equal artifacts.bridge.sha256`);
+      }
+    } else {
+      // Unpacked placeholder state: fine only if nothing claims a packed sha.
+      for (const [kind, entry] of Object.entries(artifacts)) {
+        if (entry.sha256 != null) {
+          failures.push(
+            `${dir}: checksums artifact ${kind} has sha256 but file ${entry.path} is missing`,
+          );
+        }
+      }
+      if (checksums.sha256 != null) {
+        failures.push(`${dir}: legacy checksums.sha256 set but platform binaries are not packed`);
+      }
+    }
+  }
+
+  return failures;
+}
+
+async function verifyArtifactBytes(dir, entry, pkgRoot, checksums, failures) {
+  const abs = join(pkgRoot, entry.path);
+  if (!existsSync(abs)) {
+    failures.push(`${dir}: checksums artifact missing on disk: ${entry.path}`);
+    return;
+  }
+  if (!entry.sha256) {
+    failures.push(`${dir}: checksums artifact ${entry.path} missing sha256`);
+    return;
+  }
+  const actual = createHash("sha256").update(await readFile(abs)).digest("hex");
+  if (actual !== entry.sha256) {
+    failures.push(
+      `${dir}: SHA-256 mismatch for ${entry.path}: expected ${entry.sha256}, got ${actual} (re-pack the platform package)`,
+    );
+  }
 }
 
 async function verifyPackage(repoRoot, pkg, failures, runDryRun) {
