@@ -32,6 +32,8 @@ export interface TerminalViewportControllerOptions {
   canResizeRemote(): boolean;
   /** Backend resize forwarder (terminal store owns the syncedResize dedupe). */
   sendRemoteResize(cols: number, rows: number): void;
+  /** Optional: observe the last successful local fit (E2E / diagnostics). */
+  onLocalFit?(dim: { cols: number; rows: number }): void;
   /** Test seam: frame scheduler. Defaults to requestAnimationFrame. */
   requestFrame?(cb: () => void): () => void;
 }
@@ -54,7 +56,7 @@ export interface TerminalViewportController {
 export function createTerminalViewportController(
   opts: TerminalViewportControllerOptions,
 ): TerminalViewportController {
-  const { host, adapter, canResizeRemote, sendRemoteResize } = opts;
+  const { host, adapter, canResizeRemote, sendRemoteResize, onLocalFit } = opts;
   const requestFrame = opts.requestFrame
     ?? ((cb: () => void) => {
       const id = requestAnimationFrame(() => cb());
@@ -109,6 +111,7 @@ export function createTerminalViewportController(
     if (dim.cols !== adapter.cols() || dim.rows !== adapter.rows()) {
       adapter.resize(dim.cols, dim.rows);
     }
+    onLocalFit?.(dim);
     return dim;
   }
 
