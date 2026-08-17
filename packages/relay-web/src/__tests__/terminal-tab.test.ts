@@ -210,6 +210,54 @@ describe("TerminalTab", () => {
     expect(sendInput).toHaveBeenCalledWith("i1\0demo", "\r");
   });
 
+  it("initial fit skips local resize but still forwards the backend resize", async () => {
+    // fit() agrees with the adapter's current geometry (80x24 default) — the
+    // local emulator must not reflow, but the backend push is unconditional:
+    // the store owns "last synced" semantics, not the adapter size.
+    mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    expect(adapter.resize).not.toHaveBeenCalled();
+    expect(sendResize).toHaveBeenCalledTimes(1);
+    expect(sendResize).toHaveBeenCalledWith("i1\0demo", 80, 24);
+  });
+
+  it("fit-driven local resize changes forward exactly one backend resize", async () => {
+    adapter.fit.mockReturnValue({ cols: 70, rows: 40 });
+    try {
+      mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await flushPromises();
+      expect(adapter.resize).toHaveBeenCalledWith(70, 40);
+      expect(sendResize).toHaveBeenCalledTimes(1);
+      expect(sendResize).toHaveBeenCalledWith("i1\0demo", 70, 40);
+    } finally {
+      // clearAllMocks does not reset mockReturnValue — restore the shared default.
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
+
+  it("spectator fits stay local; take-control re-syncs backend geometry even when unchanged", async () => {
+    adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
+    );
+    takeControl.mockResolvedValue(openedView({ role: "controller", viewerCount: 2 }));
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+
+    // Spectator: adapter fitted locally (fit() returns 80x24 == adapter) but
+    // no backend resize is ever pushed.
+    expect(sendResize).not.toHaveBeenCalled();
+
+    // Take control: even though the adapter is already at the target geometry,
+    // applyFit must still forward the resize — the pane may be at another size.
+    await w.find('[data-test="terminal-take-control"]').trigger("click");
+    await flushPromises();
+    expect(takeControl).toHaveBeenCalledWith("i1\0demo");
+    expect(adapter.resize).not.toHaveBeenCalled();
+    expect(sendResize).toHaveBeenCalledTimes(1);
+    expect(sendResize).toHaveBeenCalledWith("i1\0demo", 80, 24);
+  });
+
   it("host is keyboard-focusable", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await flushPromises();

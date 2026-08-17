@@ -37,6 +37,12 @@ export interface TerminalAttachmentView {
   lastErrorCode?: string;
   exitReason?: string;
   exitCode?: number;
+  /** Geometry last pushed to the backend on the current attachment binding.
+   *  Undefined until this controller has synced once — and after any rebinding
+   *  (reopen, take-control, role-changed) that breaks the "backend is at this
+   *  size" guarantee. Drives sendResize dedupe; NOT the same as cols/rows
+   *  (those are the local tab's latest fit, which spectators update too). */
+  syncedResize?: { cols: number; rows: number };
 }
 
 type RebaseCb = (localKey: string, keyframe: Uint8Array, cols: number, rows: number) => void | Promise<void>;
@@ -252,6 +258,9 @@ export const useTerminalStore = defineStore("terminal", () => {
         viewerCount: opened.viewerCount,
         recovery: initialRecoveryState(opened.generation),
         lastErrorCode: undefined,
+        // Resume of an existing pane does NOT resize it to the browser's fit —
+        // the new binding carries no "backend already at this size" guarantee.
+        syncedResize: undefined,
       };
       put(view);
       // Spec §14.5: stream starts only after opened metadata is applied locally.
@@ -390,12 +399,13 @@ export const useTerminalStore = defineStore("terminal", () => {
     ensureOutputStreamIfWaiting(view);
   }
 
-  /** RMUX path: controller-only resize for a local tab attachment. */
+  /** RMUX path: controller-only resize for a local tab attachment. Dedupes on
+   *  syncedResize so identical geometry never re-sends, while role/rebind
+   *  transitions reset the belief so required syncs are never swallowed. */
   function sendResize(localKey: string, cols: number, rows: number): void {
     const view = get(localKey);
     if (!view?.attachmentId || !view.generation || view.role !== "controller") return;
-    if (view.cols === cols && view.rows === rows) return;
-    put({ ...view, cols, rows });
+    if (view.syncedResize?.cols === cols && view.syncedResize.rows === rows) return;
     sendWebClientMessage({
       kind: "terminal-resize",
       instanceId: view.instanceId,
@@ -404,6 +414,7 @@ export const useTerminalStore = defineStore("terminal", () => {
       cols,
       rows,
     });
+    put({ ...view, cols, rows, syncedResize: { cols, rows } });
   }
 
   async function takeControl(localKey: string): Promise<TerminalAttachmentView> {
@@ -428,6 +439,7 @@ export const useTerminalStore = defineStore("terminal", () => {
       attachmentId: opened.attachmentId,
       role: opened.role,
       viewerCount: opened.viewerCount,
+      syncedResize: undefined,
     };
     put(next);
     // Open already sent stream-start; take-control does not. If recover never
@@ -477,6 +489,9 @@ export const useTerminalStore = defineStore("terminal", () => {
         role: event.role,
         viewerCount: event.viewerCount,
         terminalId: event.terminalId,
+        // Control authority moved; the pane may have been resized under the
+        // other controller, so drop the synced-geometry belief.
+        syncedResize: undefined,
       });
       return;
     }

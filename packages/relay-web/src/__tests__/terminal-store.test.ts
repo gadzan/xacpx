@@ -31,6 +31,17 @@ function sentMessages(ws: FakeWS): unknown[] {
   });
 }
 
+function resizeFrames(ws: FakeWS): Array<{ cols: number; rows: number }> {
+  const frames: Array<{ cols: number; rows: number }> = [];
+  for (const m of sentMessages(ws)) {
+    if (typeof m !== "object" || m === null || !("kind" in m) || m.kind !== "terminal-resize") continue;
+    if ("cols" in m && "rows" in m && typeof m.cols === "number" && typeof m.rows === "number") {
+      frames.push({ cols: m.cols, rows: m.rows });
+    }
+  }
+  return frames;
+}
+
 async function openAttached(
   store: ReturnType<typeof useTerminalStore>,
   key: string,
@@ -455,5 +466,120 @@ describe("terminal store", () => {
     } finally {
       if (desc) Object.defineProperty(globalThis, "Buffer", desc);
     }
+  });
+
+  it("sendResize dedupes identical geometry and sends once per change", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller" });
+
+    // Initial fit + duplicate ResizeObserver callbacks at the same geometry.
+    store.sendResize(key, 70, 40);
+    store.sendResize(key, 70, 40);
+    store.sendResize(key, 70, 40);
+    // Actual geometry change must still go through exactly once.
+    store.sendResize(key, 71, 40);
+    store.sendResize(key, 71, 40);
+
+    expect(resizeFrames(ws)).toEqual([
+      { cols: 70, rows: 40 },
+      { cols: 71, rows: 40 },
+    ]);
+    expect(store.get(key)?.syncedResize).toEqual({ cols: 71, rows: 40 });
+  });
+
+  it("role-changed back to controller re-allows the same geometry", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller" });
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toHaveLength(1);
+
+    // Another viewer takes control, may resize the pane, then hands it back.
+    await store.applyEvent({
+      kind: "terminal-role-changed", instanceId: "i1", attachmentId: "a1",
+      terminalId: "t1", role: "spectator", viewerCount: 2,
+    });
+    await store.applyEvent({
+      kind: "terminal-role-changed", instanceId: "i1", attachmentId: "a1",
+      terminalId: "t1", role: "controller", viewerCount: 1,
+    });
+
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toEqual([
+      { cols: 70, rows: 40 },
+      { cols: 70, rows: 40 },
+    ]);
+  });
+
+  it("take-control re-syncs geometry that was already pushed before demotion", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller" });
+    store.sendResize(key, 70, 40);
+
+    await store.applyEvent({
+      kind: "terminal-role-changed", instanceId: "i1", attachmentId: "a1",
+      terminalId: "t1", role: "spectator", viewerCount: 2,
+    });
+    const takePromise = store.takeControl(key);
+    const takeDecoded = decodeEnvelope(ws.send.mock.calls.at(-1)![0] as string);
+    if (!takeDecoded.ok) throw new Error("decode");
+    const takeMsg = parseWebClientMessage(takeDecoded.envelope) as { requestId: string };
+    pushEvent(ws, {
+      kind: "terminal-opened", requestId: takeMsg.requestId, instanceId: "i1",
+      terminalId: "t1", generation: "g1", attachmentId: "a1",
+      role: "controller", viewerCount: 2,
+    });
+    await takePromise;
+
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toEqual([
+      { cols: 70, rows: 40 },
+      { cols: 70, rows: 40 },
+    ]);
+  });
+
+  it("reopen resets the synced belief so a resumed pane re-syncs its geometry", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller" });
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toHaveLength(1);
+
+    // Detach + reopen (e.g. reconnect/rebind): the existing pane kept its own
+    // size, so the same fit must be pushed again instead of being deduped.
+    await openAttached(store, key, ws, { role: "controller" });
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toEqual([
+      { cols: 70, rows: 40 },
+      { cols: 70, rows: 40 },
+    ]);
+  });
+
+  it("spectator fits never push a backend resize", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "spectator", viewerCount: 2 });
+
+    store.sendResize(key, 70, 40);
+    store.sendResize(key, 90, 30);
+    expect(resizeFrames(ws)).toEqual([]);
+    expect(store.get(key)?.syncedResize).toBeUndefined();
   });
 });
