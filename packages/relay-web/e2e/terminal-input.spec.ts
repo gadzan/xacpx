@@ -84,6 +84,23 @@ test.describe("terminal input lifecycle", () => {
     const center = page.getByTestId("terminal-center");
     await expect.poll(async () => center.evaluate((el) => (el as HTMLElement).style.paddingBottom)).not.toBe("");
     await expect.poll(() => hub.resizes.length).toBe(resizesBefore);
+
+    // The IME anchor (one-cell textarea at the cursor) must still sit inside
+    // the visible host rect once the keyboard is up. The remote grid didn't
+    // resize, so the taller canvas has to be scrolled to keep it in view.
+    const anchor = await page.locator('[data-test="terminal-host"]').evaluate((host) => {
+      const ta = host.querySelector("textarea");
+      if (!ta) return null;
+      const h = host.getBoundingClientRect();
+      const t = ta.getBoundingClientRect();
+      return {
+        visible: t.bottom <= h.bottom + 1 && t.top >= h.top - 1,
+        hostHeight: h.height,
+        scrollTop: (host as HTMLElement).scrollTop,
+      };
+    });
+    expect(anchor).not.toBeNull();
+    expect(anchor!.visible).toBe(true);
   });
 
   test("touch: 2px stay pending, 20px scroll the terminal", async ({ page }, testInfo) => {

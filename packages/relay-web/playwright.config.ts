@@ -29,10 +29,13 @@ export default defineConfig({
     {
       name: "chromium-desktop",
       use: {
+        // Spread the device descriptor first so the explicit viewport below
+        // always wins (a spread after it would clobber 1440x900 on CI).
+        ...(useSystemChrome ? {} : devices["Desktop Chrome"]),
+        ...(useSystemChrome ? { channel: "chrome" } : {}),
         viewport: { width: 1440, height: 900 },
         isMobile: false,
         hasTouch: false,
-        ...(useSystemChrome ? { channel: "chrome" } : { ...devices["Desktop Chrome"] }),
       },
     },
     {
