@@ -518,6 +518,68 @@ describe("terminal store", () => {
     ]);
   });
 
+  it("same-role viewerCount churn keeps the synced belief (join)", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller" });
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toHaveLength(1);
+
+    // A spectator attaches: the registry broadcasts role-changed to EVERY
+    // attachment, but this one's role did not change — only viewerCount did.
+    await store.applyEvent({
+      kind: "terminal-role-changed", instanceId: "i1", attachmentId: "a1",
+      terminalId: "t1", role: "controller", viewerCount: 2,
+    });
+
+    // A duplicate applyFit at the same geometry must still be deduped.
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toEqual([{ cols: 70, rows: 40 }]);
+    expect(store.get(key)?.syncedResize).toEqual({ cols: 70, rows: 40 });
+  });
+
+  it("same-role viewerCount churn keeps the synced belief (leave)", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller", viewerCount: 2 });
+    store.sendResize(key, 70, 40);
+
+    // The other spectator detaches: viewerCount 2→1, role unchanged.
+    await store.applyEvent({
+      kind: "terminal-role-changed", instanceId: "i1", attachmentId: "a1",
+      terminalId: "t1", role: "controller", viewerCount: 1,
+    });
+
+    store.sendResize(key, 70, 40);
+    expect(resizeFrames(ws)).toEqual([{ cols: 70, rows: 40 }]);
+    expect(store.get(key)?.syncedResize).toEqual({ cols: 70, rows: 40 });
+  });
+
+  it("same-role spectator churn never arms a belief", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "spectator", viewerCount: 2 });
+
+    await store.applyEvent({
+      kind: "terminal-role-changed", instanceId: "i1", attachmentId: "a1",
+      terminalId: "t1", role: "spectator", viewerCount: 3,
+    });
+    store.sendResize(key, 70, 40);
+
+    expect(resizeFrames(ws)).toEqual([]);
+    expect(store.get(key)?.syncedResize).toBeUndefined();
+    expect(store.get(key)?.role).toBe("spectator");
+  });
+
   it("take-control re-syncs geometry that was already pushed before demotion", async () => {
     connectEvents((e) => { void useTerminalStore().applyEvent(e); });
     const ws = FakeWS.instances[0];

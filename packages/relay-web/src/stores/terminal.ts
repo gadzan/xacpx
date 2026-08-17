@@ -39,9 +39,11 @@ export interface TerminalAttachmentView {
   exitCode?: number;
   /** Geometry last pushed to the backend on the current attachment binding.
    *  Undefined until this controller has synced once — and after any rebinding
-   *  (reopen, take-control, role-changed) that breaks the "backend is at this
-   *  size" guarantee. Drives sendResize dedupe; NOT the same as cols/rows
-   *  (those are the local tab's latest fit, which spectators update too). */
+   *  or authority transition (reopen, take-control, role change) that breaks
+   *  the "backend is at this size" guarantee; pure viewerCount churn keeps it.
+   *  Drives sendResize dedupe. Distinct from cols/rows: those record the last
+   *  controller push only (spectator fits never touch the store), and the
+   *  local emulator's live size lives in the adapter, not here at all. */
   syncedResize?: { cols: number; rows: number };
 }
 
@@ -484,14 +486,19 @@ export const useTerminalStore = defineStore("terminal", () => {
     if (event.kind === "terminal-role-changed") {
       const view = findByAttachmentId(event.attachmentId);
       if (!view) return;
+      // role-changed is a broadcast to EVERY attachment on the terminal —
+      // attach/detach/takeControl/TTL expiry all recompute and fan it out even
+      // when this attachment's own role is unchanged. Only an actual authority
+      // transition breaks the "backend is at this size" guarantee (the pane
+      // may have been resized under a different controller); pure viewerCount
+      // churn must keep the belief or duplicate resizes reopen.
+      const authorityChanged = view.role !== event.role;
       put({
         ...view,
         role: event.role,
         viewerCount: event.viewerCount,
         terminalId: event.terminalId,
-        // Control authority moved; the pane may have been resized under the
-        // other controller, so drop the synced-geometry belief.
-        syncedResize: undefined,
+        syncedResize: authorityChanged ? undefined : view.syncedResize,
       });
       return;
     }
