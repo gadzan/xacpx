@@ -1,5 +1,21 @@
 # Changelog
 
+## [relay 0.12.1-beta.3] - 2026-08-18
+
+### Fixed
+
+- Rebuild relay-web with terminal input/viewport fixes: keep the IME composition UI anchored to the shell cursor, re-fit the canvas after recovery rebase, keep the cursor visible under the open mobile keyboard, dedupe terminal resize on backend-synced geometry instead of local adapter size, and keep syncedResize across same-role role-changed broadcasts.
+
+## [channel-relay 0.6.1-beta.3] - 2026-08-18
+
+### Changed
+
+- Bundle the pinned RMUX release (0.10.0, SHA-256 verified) inside each `xacpx-rmux-bridge-*` platform package so terminal sessions resolve the bundled binary rather than a machine-local RMUX.
+
+### Fixed
+
+- Prefer the bundled RMUX in bootstrap resolution and expose binary diagnostics; inject `TERM=screen-256color` on macOS work windows; harden the bootstrap via the smoke-legacy standalone bridge from the publish tarball.
+
 ## [relay-protocol 0.4.2-beta.0] - 2026-08-16
 
 ### Fixed
