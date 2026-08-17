@@ -267,6 +267,10 @@ async function openAttachment(): Promise<void> {
   offRebase = terminals.onRebase(async (key, keyframe, cols, rows) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
     await currentAdapter.resetAndReplay(keyframe, cols, rows);
+    // Rebase resizes to the recovery geometry; the host size did not change,
+    // so ResizeObserver never re-fires — re-fit or the canvas stays shrunk.
+    if (myEpoch !== epoch || adapter !== currentAdapter) return;
+    applyFit(myEpoch);
   });
   offBytes = terminals.onBytes(async (key, data) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
