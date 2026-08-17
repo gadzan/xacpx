@@ -96,6 +96,38 @@ jobs:
       - name: Build (all packages)
         run: bun run build:packages
 
+  relay-web-e2e:
+    name: Relay Web terminal E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: packages/relay-web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        working-directory: .
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Chromium desktop + mobile E2E
+        run: bun run test:e2e
+
   rmux-bridge:
     # On PRs, only when the native sidecar (or this workflow) changed.
     # Always runs on push to main so the default branch compiles the bridge.

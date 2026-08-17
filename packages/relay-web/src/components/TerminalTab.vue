@@ -284,6 +284,12 @@ async function openAttachment(): Promise<void> {
       adapter: currentAdapter,
       canResizeRemote: () => canType.value,
       sendRemoteResize: (cols, rows) => terminals.sendResize(localKey.value, cols, rows),
+      onLocalFit: (dim) => {
+        const el = host.value;
+        if (!el) return;
+        el.dataset.cols = String(dim.cols);
+        el.dataset.rows = String(dim.rows);
+      },
     });
     // Set the inset BEFORE start(): start() force-syncs immediately, and it
     // must carry the keyboard height on the very first fit. Ordering this the
