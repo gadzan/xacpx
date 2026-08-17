@@ -67,8 +67,10 @@ export interface TerminalAdapter {
   /** Scroll the viewport by N lines (positive = toward the newest/bottom rows). */
   scrollLines(amount: number): void;
   /** Compute cols/rows that fit the host element, using the rendered canvas cell size.
-   *  Returns null until the canvas has a measurable size. */
-  fit(): { cols: number; rows: number } | null;
+   *  Returns null until the canvas has a measurable size. `extraHeightPx` adds
+   *  height the host visually lost to local occlusion (soft keyboard) so the
+   *  grid stays keyboard-independent - see TerminalViewportController. */
+  fit(extraHeightPx?: number): { cols: number; rows: number } | null;
   cols(): number;
   rows(): number;
 }
@@ -231,7 +233,7 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       else t.renderer?.setTheme?.(theme);
     }); },
     scrollLines: (n) => live?.scrollLines?.(n),
-    fit: () => {
+    fit: (extraHeightPx = 0) => {
       if (!live?.element || !live.cols || !live.rows) return null;
       const canvas = live.element.querySelector("canvas");
       if (!canvas) return null;
@@ -241,7 +243,7 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       if (!(cellW > 0) || !(cellH > 0)) return null;
       return {
         cols: Math.max(2, Math.floor(el.clientWidth / cellW)),
-        rows: Math.max(1, Math.floor(el.clientHeight / cellH)),
+        rows: Math.max(1, Math.floor((el.clientHeight + extraHeightPx) / cellH)),
       };
     },
     cols: () => live?.cols ?? opts.cols,

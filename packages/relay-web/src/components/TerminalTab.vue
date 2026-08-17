@@ -2,6 +2,10 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { Keyboard, ClipboardPaste, Copy, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import { createTerminalAdapter, type TerminalAdapter, type TerminalTheme } from "../lib/terminal-adapter";
+import {
+  createTerminalViewportController,
+  type TerminalViewportController,
+} from "../lib/terminal-viewport";
 import { useTerminalStore, terminalLocalKey, isFatalTerminalRecoveryCode, type TerminalAttachmentView } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
 import { useConnectionStore } from "../stores/connection";
@@ -56,11 +60,11 @@ function toggleKeybar() {
 }
 
 let adapter: TerminalAdapter | null = null;
+let viewport: TerminalViewportController | null = null;
 let offRebase: (() => void) | null = null;
 let offBytes: (() => void) | null = null;
 let offMeta: (() => void) | null = null;
 let offExit: (() => void) | null = null;
-let resizeObs: ResizeObserver | null = null;
 let epoch = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let autoRetried = false;
@@ -185,25 +189,6 @@ function onTouchEnd(e: TouchEvent) {
   if (touchMoved) { e.preventDefault(); e.stopPropagation(); }
 }
 
-function applyFit(myEpoch = epoch) {
-  if (myEpoch !== epoch || !attached.value || !adapter) return;
-  const dim = adapter.fit();
-  if (!dim) {
-    if (host.value && host.value.clientWidth > 0) requestAnimationFrame(() => applyFit(myEpoch));
-    return;
-  }
-  // Local emulator: skip redundant reflow when geometry is unchanged. The
-  // backend push below is intentionally unconditional — the local adapter size
-  // is NOT backend truth (spectator fits, resume of an existing pane,
-  // take-control handoff), so the store owns the "last synced" belief and
-  // dedupes. Early-returning here would swallow required syncs.
-  if (dim.cols !== adapter.cols() || dim.rows !== adapter.rows()) {
-    adapter.resize(dim.cols, dim.rows);
-  }
-  // Spectator: local fit only — never push backend resize.
-  if (canType.value) terminals.sendResize(localKey.value, dim.cols, dim.rows);
-}
-
 function mapErrorCode(code: string): string {
   switch (code) {
     case "terminal-disabled": return "terminal.disabled";
@@ -240,7 +225,7 @@ function releaseFrontend(detachBackend: boolean): void {
   offBytes?.(); offBytes = null;
   offMeta?.(); offMeta = null;
   offExit?.(); offExit = null;
-  resizeObs?.disconnect(); resizeObs = null;
+  viewport?.dispose(); viewport = null;
   adapter?.dispose(); adapter = null;
   if (detachBackend && attached.value) {
     terminals.detach(localKey.value);
@@ -270,7 +255,7 @@ async function openAttachment(): Promise<void> {
     // Rebase resizes to the recovery geometry; the host size did not change,
     // so ResizeObserver never re-fires — re-fit or the canvas stays shrunk.
     if (myEpoch !== epoch || adapter !== currentAdapter) return;
-    applyFit(myEpoch);
+    viewport?.forceSync("rebase");
   });
   offBytes = terminals.onBytes(async (key, data) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
@@ -305,9 +290,14 @@ async function openAttachment(): Promise<void> {
     autoRetried = false;
     status.value = "open";
     applyMeta(view);
-    resizeObs = new ResizeObserver(() => applyFit());
-    if (host.value) resizeObs.observe(host.value);
-    applyFit(myEpoch);
+    viewport = createTerminalViewportController({
+      host: host.value!,
+      adapter: currentAdapter,
+      canResizeRemote: () => canType.value,
+      sendRemoteResize: (cols, rows) => terminals.sendResize(localKey.value, cols, rows),
+      getKeyboardInset: () => 0,
+    });
+    viewport.start();
     currentAdapter.focus();
   } catch (e) {
     if (myEpoch !== epoch) return;
@@ -337,7 +327,9 @@ async function takeControl(): Promise<void> {
   try {
     const view = await terminals.takeControl(localKey.value);
     applyMeta(view);
-    applyFit();
+    // New authority: force a sync so the store's syncedResize belief resets
+    // and the backend converges on this browser's geometry.
+    viewport?.forceSync("take-control");
   } catch {
     /* server remains the authority; role-changed will update if another path succeeds */
   } finally {
