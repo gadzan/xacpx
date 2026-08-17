@@ -394,6 +394,7 @@ export const useTerminalStore = defineStore("terminal", () => {
   function sendResize(localKey: string, cols: number, rows: number): void {
     const view = get(localKey);
     if (!view?.attachmentId || !view.generation || view.role !== "controller") return;
+    if (view.cols === cols && view.rows === rows) return;
     put({ ...view, cols, rows });
     sendWebClientMessage({
       kind: "terminal-resize",

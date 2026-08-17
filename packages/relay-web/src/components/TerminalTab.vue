@@ -192,6 +192,7 @@ function applyFit(myEpoch = epoch) {
     if (host.value && host.value.clientWidth > 0) requestAnimationFrame(() => applyFit(myEpoch));
     return;
   }
+  if (dim.cols === adapter.cols() && dim.rows === adapter.rows()) return;
   adapter.resize(dim.cols, dim.rows);
   // Spectator: local fit only — never push backend resize.
   if (canType.value) terminals.sendResize(localKey.value, dim.cols, dim.rows);
