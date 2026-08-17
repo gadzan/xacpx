@@ -69,7 +69,6 @@ function setup(opts?: Partial<Parameters<typeof createTerminalViewportController
     adapter,
     canResizeRemote: canResizeRemote,
     sendRemoteResize,
-    getKeyboardInset: opts?.getKeyboardInset ?? vi.fn(() => 0),
     requestFrame: frames.requestFrame,
   });
   return { controller, adapter, fit, el, frames, canResizeRemote, sendRemoteResize };
@@ -176,7 +175,6 @@ describe("terminal viewport controller", () => {
         adapter,
         canResizeRemote: () => true,
         sendRemoteResize,
-        getKeyboardInset: () => 0,
         requestFrame: (cb) => {
           const t = setTimeout(() => cb(), 0);
           return () => clearTimeout(t);
@@ -206,7 +204,6 @@ describe("terminal viewport controller", () => {
         adapter,
         canResizeRemote: () => true,
         sendRemoteResize,
-        getKeyboardInset: () => 0,
         requestFrame: (cb) => {
           const t = setTimeout(() => cb(), 0);
           return () => clearTimeout(t);
@@ -229,13 +226,11 @@ describe("terminal viewport controller", () => {
     const frames = manualFrames();
     const { adapter, fit } = fakeAdapter();
     const sendRemoteResize = vi.fn();
-    let inset = 0;
     const controller = createTerminalViewportController({
       host: host(),
       adapter,
       canResizeRemote: () => true,
       sendRemoteResize,
-      getKeyboardInset: () => inset,
       requestFrame: frames.requestFrame,
     });
     // Simulate the adapter's inset-aware fit: 600px host, 20px cells, inset added back.
@@ -290,7 +285,6 @@ describe("terminal viewport controller", () => {
         adapter,
         canResizeRemote: () => true,
         sendRemoteResize: vi.fn(),
-        getKeyboardInset: () => 0,
         requestFrame: frames.requestFrame,
       });
       controller.start();

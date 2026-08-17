@@ -32,9 +32,6 @@ export interface TerminalViewportControllerOptions {
   canResizeRemote(): boolean;
   /** Backend resize forwarder (terminal store owns the syncedResize dedupe). */
   sendRemoteResize(cols: number, rows: number): void;
-  /** Soft-keyboard occlusion px to add back to the host height when fitting,
-   *  so the remote grid is keyboard-independent (local occlusion only). */
-  getKeyboardInset(): number;
   /** Test seam: frame scheduler. Defaults to requestAnimationFrame. */
   requestFrame?(cb: () => void): () => void;
 }
