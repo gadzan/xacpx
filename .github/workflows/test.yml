@@ -202,22 +202,34 @@ jobs:
 
       # Downloads the pinned RMUX release, SHA-verifies it, and runs the
       # bundled `rmux -V` on this native host — must print `rmux 0.10.0`.
-      - name: Pack platform package with bundled RMUX
+      - name: Pack and npm-pack platform package with bundled RMUX
         run: |
           node ./scripts/pack-rmux-bridge-platform.mjs `
             --platform win32 --arch x64 `
             --binary packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge.exe
           if (-not (Test-Path 'platform-packages/xacpx-rmux-bridge-win32-x64/bin/rmux.exe')) { throw 'packed package missing bundled rmux.exe' }
           if (-not (Test-Path 'platform-packages/xacpx-rmux-bridge-win32-x64/libexec/rmux/rmux.exe')) { throw 'packed package missing rmux helper' }
+          Push-Location 'platform-packages/xacpx-rmux-bridge-win32-x64'
+          npm pack
+          Pop-Location
 
-      # Production install layout: the resolver finds the platform package via
-      # require.resolve, which prefers the channel-relay-local node_modules
-      # copy. Replace the registry stub with the freshly packed package.
-      - name: Install packed platform package into node_modules
+      # Test what we publish: resolve + lifecycle run against the exact tgz
+      # npm will publish, installed the way a real user installs it (no manual
+      # copies, no chmod). Windows has no exec-bit concept, so X_OK here
+      # passes if the files exist (Node on win32).
+      - name: Install platform package from the publish tarball
         run: |
-          $dest = 'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64'
-          Remove-Item -Recurse -Force $dest
-          Copy-Item -Recurse 'platform-packages/xacpx-rmux-bridge-win32-x64' $dest
+          $tgz = Get-ChildItem 'platform-packages/xacpx-rmux-bridge-win32-x64/*.tgz' | Select-Object -First 1
+          Remove-Item -Recurse -Force 'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64' -ErrorAction SilentlyContinue
+          npm install --prefix packages/channel-relay --no-save --no-audit --no-fund --no-package-lock $tgz.FullName
+          $candidates = @(
+            'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64',
+            'node_modules/@ganglion/xacpx-rmux-bridge-win32-x64'
+          )
+          $pkgDir = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $pkgDir) { throw 'platform package not installed from tarball' }
+          if (-not (Test-Path "$pkgDir/bin/rmux.exe")) { throw 'installed package missing bundled rmux.exe' }
+          if (-not (Test-Path "$pkgDir/libexec/rmux/rmux.exe")) { throw 'installed package missing rmux helper' }
 
       - name: Resolver unit tests
         run: bun test tests/unit/packages/channel-relay/resolve-rmux-binaries.test.ts

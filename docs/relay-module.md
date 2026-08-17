@@ -80,7 +80,10 @@
   （source=`managed-helper`）→ PATH `rmux-daemon`/`rmux`（source=`path`）。机器本地 stale RMUX（PATH WinGet 0.9.0、
   `~/.local/libexec/rmux` 旧版）永远不会盖过 bundled 0.10.0。pack 脚本（`scripts/pack-rmux-bridge-platform.mjs` +
   `scripts/rmux-release.mjs` 固定 URL/SHA-256）按原生 host 执行 `rmux -V` 校验，`verify-publish.mjs` 交叉核对
-  TS 常量 / Cargo.toml / manifest 三处 pin 与 checksums 字节。
+  TS 常量 / Cargo.toml / manifest 三处 pin 与 checksums 字节。发布链路 **test what you publish**：native build
+  job 在 chmod 正确时直接 `npm pack` 出最终 tgz（artifact zip 会丢 POSIX exec bit，tgz 不丢），smoke 安装并测试
+  **同一份 tgz**（断言 `test -x bin/rmux` / `libexec/rmux/rmux` + 真实 hostile lifecycle），`npm publish` 也发布
+  同一份 tgz。
 - **Doctor**：`ChannelCliProvider.diagnose` → `diagnoseRelayTerminal`（只读）；core 的 Plugins 检查只呈现结构化 finding，
   不理解 RMUX。terminal disabled → skip；cleanup-pending / 未打包 sidecar → warn；缺失 `bridgeCommand` 路径 → fail；
   bridge 找到但 RMUX daemon 未解析 → `terminal-rmux-daemon-unresolved` warn；解析出的 RMUX 版本 ≠ 0.10.0 →

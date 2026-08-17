@@ -63,8 +63,10 @@ function pathExists(path: string): boolean {
  * short-lived fork here is acceptable. Never spawns a daemon: `-V` prints and
  * exits, and SDK daemon-start env vars are scrubbed so a misbehaving binary
  * cannot start anything under the hood.
+ * Exported for unit tests; doctor treats probe failure (null actualVersion)
+ * as a distinct WARN state, never as healthy.
  */
-function probeRmuxVersion(rmuxCommand: string): {
+export function probeRmuxVersion(rmuxCommand: string): {
   actualVersion: string | null;
   probeError: string | null;
 } {
@@ -170,25 +172,38 @@ export async function diagnoseRelayTerminal(
       const rmuxProbe = resolved.rmuxCommand
         ? probeRmuxVersion(resolved.rmuxCommand)
         : { actualVersion: null, probeError: null };
+      // Three states: probe failed (unknown) ≠ version mismatch ≠ healthy.
       const mismatch =
         rmuxProbe.actualVersion !== null &&
         rmuxProbe.actualVersion !== RMUX_BUNDLED_VERSION;
+      const probeFailed = rmuxProbe.probeError !== null;
       findings.push({
-        level: mismatch ? "warn" : "ok",
-        code: mismatch ? "terminal-binaries-resolved-mismatch" : "terminal-binaries-resolved",
-        message: mismatch
-          ? `RMUX version mismatch: expected ${RMUX_BUNDLED_VERSION}, resolved ${rmuxProbe.actualVersion} from ${resolved.source.rmux}`
-          : "RMUX bridge + daemon binaries resolved",
-        ...(mismatch
+        level: probeFailed || mismatch ? "warn" : "ok",
+        code: probeFailed
+          ? "terminal-rmux-version-probe-failed"
+          : mismatch
+            ? "terminal-binaries-resolved-mismatch"
+            : "terminal-binaries-resolved",
+        message: probeFailed
+          ? `RMUX version probe failed (${rmuxProbe.probeError}); run rmux -V manually to verify the resolved binary`
+          : mismatch
+            ? `RMUX version mismatch: expected ${RMUX_BUNDLED_VERSION}, resolved ${rmuxProbe.actualVersion} from ${resolved.source.rmux}`
+            : "RMUX bridge + daemon binaries resolved",
+        ...(probeFailed
           ? {
               suggestion:
-                resolved.source.rmux === "platform-package"
-                  ? "bundled RMUX reports the wrong version — re-install the channel-relay platform optional package"
-                  : resolved.source.rmux === "config"
-                    ? "terminal.rmuxCommand points at a stale RMUX; unset it (the bundled 0.10.x is preferred) or point it at RMUX 0.10.x"
-                    : "machine-local RMUX (PATH or ~/.local/libexec/rmux) shadows the bundled 0.10.x; reinstall the channel-relay platform optional package",
+                "run `rmux -V` on the resolved binary (`${resolved.rmuxCommand}`) or re-install the channel-relay platform optional package",
             }
-          : {}),
+          : mismatch
+            ? {
+                suggestion:
+                  resolved.source.rmux === "platform-package"
+                    ? "bundled RMUX reports the wrong version — re-install the channel-relay platform optional package"
+                    : resolved.source.rmux === "config"
+                      ? "terminal.rmuxCommand points at a stale RMUX; unset it (the bundled 0.10.x is preferred) or point it at RMUX 0.10.x"
+                      : "machine-local RMUX (PATH or ~/.local/libexec/rmux) shadows the bundled 0.10.x; reinstall the channel-relay platform optional package",
+              }
+            : {}),
         details: {
           bridgeSource: resolved.source.bridge,
           bridgePath: redactPathForDoctor(resolved.bridgeCommand),

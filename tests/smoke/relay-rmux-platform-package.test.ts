@@ -113,58 +113,68 @@ test.skipIf(!enabled)("bundled RMUX is resolved over a hostile PATH fake; live l
     marker,
   );
   const hostilePath = hostileDir + delimiter + (process.env.PATH ?? "");
-  const fakePathCaptured = hostilePath;
 
-  // --- Production resolution must pick the bundled platform-package RMUX -----
-  const resolved = resolveRmuxBinaries({
-    pathEnv: hostilePath,
-    platformPackageResolver: undefined,
-  });
-  expect(resolved.source.bridge).toBe("platform-package");
-  expect(resolved.rmuxCommand, "bundled RMUX must exist next to the platform bridge").toBeDefined();
-  expect(resolved.source.rmux).toBe("platform-package");
-  expect(resolved.rmuxCommand).not.toBe(fakeRmux);
-  expect(resolved.rmuxCommand).not.toBe(fakeDaemon);
+  // Resolution AND the production lifecycle must see the hostile PATH. The
+  // supervisor reads process.env.PATH at resolution time and the bridge child
+  // inherits { ...process.env }, so swapping PATH for the whole lifecycle
+  // proves the fake can never be selected or executed anywhere in the chain.
+  const oldPath = process.env.PATH;
+  process.env.PATH = hostilePath;
+  try {
+    // --- Production resolution must pick the bundled platform-package RMUX ---
+    const resolved = resolveRmuxBinaries({
+      pathEnv: process.env.PATH,
+      platformPackageResolver: undefined,
+    });
+    expect(resolved.source.bridge).toBe("platform-package");
+    expect(resolved.rmuxCommand, "bundled RMUX must exist next to the platform bridge").toBeDefined();
+    expect(resolved.source.rmux).toBe("platform-package");
+    expect(resolved.rmuxCommand).not.toBe(fakeRmux);
+    expect(resolved.rmuxCommand).not.toBe(fakeDaemon);
 
-  // The bundled binary must be the pinned version (proves it is not the fake).
-  const probe = Bun.spawnSync([resolved.rmuxCommand!, "-V"], { encoding: "utf8" });
-  expect(probe.exitCode).toBe(0);
-  expect(`${probe.stdout}${probe.stderr}`).toContain(`rmux ${RMUX_BUNDLED_VERSION}`);
+    // The bundled binary must be the pinned version (proves it is not the fake).
+    const probe = Bun.spawnSync([resolved.rmuxCommand!, "-V"], { encoding: "utf8" });
+    expect(probe.exitCode).toBe(0);
+    expect(`${probe.stdout}${probe.stderr}`).toContain(`rmux ${RMUX_BUNDLED_VERSION}`);
 
-  // --- Live lifecycle through the PRODUCTION sidecar (no explicit commands) --
-  const cwd = tempDir("rmux-smoke-pkg-");
-  const config = parseRelayTerminalConfig({ enabled: true, ownerLeaseTtlSeconds: 30 });
-  const prod = await createProductionTerminalDriver(config);
-  live.push(prod);
+    // --- Live lifecycle through the PRODUCTION sidecar (no explicit commands) --
+    const cwd = tempDir("rmux-smoke-pkg-");
+    const config = parseRelayTerminalConfig({ enabled: true, ownerLeaseTtlSeconds: 30 });
+    const prod = await createProductionTerminalDriver(config);
+    live.push(prod);
 
-  const name = `xacpx-pkg-smoke-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const handle = await prod.driver.create({
-    name,
-    cwd,
-    cols: 80,
-    rows: 24,
-    historyLimit: 2000,
-    tags: ["xacpx:relay", "smoke:platform-package"],
-    ownerLeaseTtlSeconds: 30,
-  });
+    const name = `xacpx-pkg-smoke-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const handle = await prod.driver.create({
+      name,
+      cwd,
+      cols: 80,
+      rows: 24,
+      historyLimit: 2000,
+      tags: ["xacpx:relay", "smoke:platform-package"],
+      ownerLeaseTtlSeconds: 30,
+    });
 
-  const recoveryP = collectUntil(
-    prod.driver.recover(handle.paneId),
-    (events) => events.some((e) => e.type === "rebase") && events.some((e) => e.type === "bytes" && e.data.byteLength > 0),
-  );
-  await Bun.sleep(200);
-  await prod.driver.input(handle.paneId, new TextEncoder().encode("echo pkg-smoke-ok\n"));
-  const events = await recoveryP;
-  expect(events[0]?.type).toBe("rebase");
+    const recoveryP = collectUntil(
+      prod.driver.recover(handle.paneId),
+      (events) => events.some((e) => e.type === "rebase") && events.some((e) => e.type === "bytes" && e.data.byteLength > 0),
+    );
+    await Bun.sleep(200);
+    await prod.driver.input(handle.paneId, new TextEncoder().encode("echo pkg-smoke-ok\n"));
+    const events = await recoveryP;
+    expect(events[0]?.type).toBe("rebase");
 
-  await prod.driver.kill(handle.sessionId);
-  expect((await prod.driver.list()).every((e) => e.name !== name)).toBe(true);
+    await prod.driver.kill(handle.sessionId);
+    expect((await prod.driver.list()).every((e) => e.name !== name)).toBe(true);
 
-  // --- Hostile regression proof: the PATH fake(s) were never executed --------
-  // PATH is restored the moment the process dies; the marker lives on disk.
-  await live.pop()?.supervisor.stop();
-  expect(existsSync(marker), "PATH fake rmux must never execute").toBe(false);
-  expect(fakePathCaptured.includes(hostileDir)).toBe(true);
+    // --- Hostile regression proof: the PATH fake(s) were never executed ------
+    // PATH is still hostile here; the marker would exist if anything on PATH
+    // had been invoked by the resolver, the sidecar, or the terminal shell.
+    await live.pop()?.supervisor.stop();
+    expect(existsSync(marker), "PATH fake rmux must never execute").toBe(false);
+    expect(hostilePath.includes(hostileDir)).toBe(true);
+  } finally {
+    process.env.PATH = oldPath;
+  }
 
   // Sanity: the fake would have marked if actually invoked.
   const direct = Bun.spawnSync([fakeDaemon, "-V"], {
