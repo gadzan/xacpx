@@ -12,6 +12,8 @@
   "files": [
     "bin",
     "libexec",
+    "THIRD_PARTY_LICENSES",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "checksums.json"
   ],

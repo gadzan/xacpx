@@ -138,3 +138,29 @@ test("probeRmuxVersion treats garbage output as a probe failure", () => {
   expect(probe.actualVersion).toBeNull();
   expect(probe.probeError).toContain("unexpected rmux -V output");
 });
+
+test("diagnose emits unresolved WARN and no fake OK when no RMUX is resolvable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "term-diag-none-"));
+  dirs.push(dir);
+  const bridgeDir = mkdtempSync(join(tmpdir(), "term-diag-bridge-"));
+  dirs.push(bridgeDir);
+  const bridge = join(bridgeDir, "xacpx-rmux-bridge");
+  writeFileSync(bridge, "#!/bin/sh\nexit 1\n");
+  chmodSync(bridge, 0o755);
+
+  const findings = await diagnoseRelayTerminal({
+    options: { terminal: { enabled: true, bridgeCommand: bridge } },
+    registryDir: dir,
+    // Empty home + empty PATH → no managed helper, no PATH rmux → unresolved.
+    homeDir: join(dir, "empty-home"),
+    pathEnv: "/definitely-missing",
+    createDriver: undefined,
+  });
+  const unresolved = findings.find((f) => f.code === "terminal-rmux-daemon-unresolved");
+  expect(unresolved?.level).toBe("warn");
+  expect(unresolved?.details?.bridgeSource).toBe("config");
+  // Exactly one resolution finding — never an OK alongside the WARN.
+  expect(findings.filter((f) => f.code === "terminal-binaries-resolved")).toHaveLength(0);
+  expect(findings.filter((f) => f.code === "terminal-binaries-resolved-mismatch")).toHaveLength(0);
+  expect(findings.filter((f) => f.code === "terminal-rmux-version-probe-failed")).toHaveLength(0);
+});

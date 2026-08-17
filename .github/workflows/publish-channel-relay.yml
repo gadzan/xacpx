@@ -73,16 +73,17 @@ jobs:
             platform: linux
             arch: arm64
             package: linux-arm64
-          - runner: macos-14
+          # Native-host cells only: the pack script executes the downloaded
+          # `rmux -V` on the runner, so ARM runners cannot pack an x64 darwin
+          # package without Rosetta. macos-15 = arm64, macos-15-intel = x64.
+          - runner: macos-15
             platform: darwin
             arch: arm64
             package: darwin-arm64
-          - runner: macos-14
+          - runner: macos-15-intel
             platform: darwin
             arch: x64
             package: darwin-x64
-            rust_target: x86_64-apple-darwin
-            bin_path: target/x86_64-apple-darwin/release/xacpx-rmux-bridge
           - runner: windows-latest
             platform: win32
             arch: x64
@@ -120,15 +121,9 @@ jobs:
           fi
           grep -F 'rmux-sdk = "=0.10.0"' packages/channel-relay/native/rmux-bridge/Cargo.toml
 
-      - name: Build release sidecar
+      - name: Build release sidecar (native host)
         run: |
-          if [[ -n "${{ matrix.rust_target }}" ]]; then
-            rustup target add "${{ matrix.rust_target }}"
-            cargo build --release --target "${{ matrix.rust_target }}" \
-              --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
-          else
-            cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
-          fi
+          cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
 
       # pack-rmux-bridge-platform.mjs downloads the pinned RMUX
       # (RMUX_VERSION + SHA-256 fixed in scripts/rmux-release.mjs), verifies it,
@@ -136,7 +131,7 @@ jobs:
       # the REAL `rmux -V` on this native host (must print `rmux 0.10.0`).
       - name: Pack platform package with bundled RMUX
         run: |
-          BIN="packages/channel-relay/native/rmux-bridge/${BIN_REL:-target/release}/xacpx-rmux-bridge"
+          BIN="packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
           if [[ "${{ matrix.platform }}" == "win32" ]]; then
             BIN="${BIN}.exe"
           fi
@@ -148,8 +143,6 @@ jobs:
           node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1); if(!c.artifacts?.rmux?.sha256) process.exit(1); if(!c.artifacts?.rmuxHelper?.sha256) process.exit(1)"
           test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/bin/rmux${{ matrix.platform == 'win32' && '.exe' || '' }}"
           test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/libexec/rmux/rmux${{ matrix.platform == 'win32' && '.exe' || '' }}"
-        env:
-          BIN_REL: ${{ matrix.bin_path && 'target/x86_64-apple-darwin/release' || 'target/release' }}
 
       # Build the FINAL publishable artifact on the native runner while file
       # modes are still correct. upload-artifact zips lose POSIX exec bits, so
@@ -164,10 +157,18 @@ jobs:
           TGZ="$PKG_DIR/ganglion-xacpx-rmux-bridge-${{ matrix.package }}-${VERSION}.tgz"
           test -f "$TGZ"
           echo "packed $TGZ"
+          # Inspect the tgz content (npm member paths are package/...):
+          # redistributed-RMUX license + notice must be inside on every
+          # platform; exec bits must be present for the POSIX builds.
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          tar -xzf "$TGZ" -C "$TMP"
+          test -f "$TMP/package/THIRD_PARTY_NOTICES.md"
+          test -f "$TMP/package/THIRD_PARTY_LICENSES/RMUX-LICENSE-MIT.txt"
           if [[ "${{ matrix.platform }}" != "win32" ]]; then
-            # The tarball must carry exec bits for bridge + rmux + helper;
-            # npm preserves them on install, a raw copy does not.
-            tar -tzvf "$TGZ" | grep -E '^-rwxr-xr-x.* (bin/xacpx-rmux-bridge|bin/rmux|libexec/rmux/rmux)$'
+            test -x "$TMP/package/bin/xacpx-rmux-bridge"
+            test -x "$TMP/package/bin/rmux"
+            test -x "$TMP/package/libexec/rmux/rmux"
           fi
 
       - name: Upload platform package tarball
@@ -232,6 +233,9 @@ jobs:
           test -x "$PKG_DIR/bin/xacpx-rmux-bridge"
           test -x "$PKG_DIR/bin/rmux"
           test -x "$PKG_DIR/libexec/rmux/rmux"
+          # The redistributed-RMUX MIT license + notice must ship in the tgz.
+          test -f "$PKG_DIR/THIRD_PARTY_NOTICES.md"
+          test -f "$PKG_DIR/THIRD_PARTY_LICENSES/RMUX-LICENSE-MIT.txt"
 
       - name: Assert no machine-local RMUX could mask the bundled one
         run: |

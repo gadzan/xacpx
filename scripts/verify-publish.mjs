@@ -150,6 +150,23 @@ export async function verifyPlatformPackages(repoRoot, failures = []) {
 
   for (const dir of packageDirs) {
     const pkgRoot = join(root, dir);
+    // The package redistributes the official RMUX binary (MIT OR Apache-2.0);
+    // MIT redistribution requires the copyright + permission notice to ride
+    // along — never publish a bundled RMUX without it.
+    if (!existsSync(join(pkgRoot, "THIRD_PARTY_NOTICES.md"))) {
+      failures.push(`${dir}: missing redistributed-RMUX notice THIRD_PARTY_NOTICES.md`);
+    }
+    const mitLicense = join(pkgRoot, "THIRD_PARTY_LICENSES", "RMUX-LICENSE-MIT.txt");
+    if (!existsSync(mitLicense)) {
+      failures.push(
+        `${dir}: missing redistributed-RMUX license THIRD_PARTY_LICENSES/RMUX-LICENSE-MIT.txt`,
+      );
+    } else {
+      const mitText = await readFile(mitLicense, "utf8");
+      if (!mitText.includes("The RMUX Authors") || !mitText.includes("MIT License")) {
+        failures.push(`${dir}: RMUX-LICENSE-MIT.txt does not carry the upstream MIT notice`);
+      }
+    }
     const checksumsPath = join(pkgRoot, "checksums.json");
     if (!existsSync(checksumsPath)) {
       failures.push(`${dir}: missing checksums.json`);

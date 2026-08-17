@@ -27,8 +27,9 @@ import { createControlBridge, subscribeControlEvents, dispatchControlEvent } fro
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
 import { createStateMirror } from "./state-mirror.js";
 import {
+  RmuxSidecarSupervisor,
+  SupervisedRmuxDriver,
   createProductionTerminalDriver,
-  type RmuxSidecarSupervisor,
 } from "./terminal/rmux-sidecar-supervisor.js";
 import type { RmuxTerminalDriver } from "./terminal/rmux-driver.js";
 import { TerminalRegistryStore } from "./terminal/terminal-registry-store.js";
@@ -381,9 +382,15 @@ export class RelayChannel implements MessageChannelRuntime {
       if (this.deps.createTerminalDriver) {
         driver = this.deps.createTerminalDriver();
       } else {
-        const prod = await createProductionTerminalDriver(this.config.terminal);
-        this.terminalSupervisor = prod.supervisor;
-        driver = prod.driver;
+        // Own the supervisor BEFORE start() so a handshake/spawn failure still
+        // leaves this.terminalSupervisor populated with the binary resolution
+        // (bridge/rmux source + redacted paths) for relay.terminal_bootstrap_failed.
+        // createProductionTerminalDriver would only return after a successful
+        // start and swallow this resolution on the failure path.
+        const supervisor = new RmuxSidecarSupervisor({ config: this.config.terminal });
+        this.terminalSupervisor = supervisor;
+        driver = new SupervisedRmuxDriver(supervisor);
+        await supervisor.start();
       }
 
       const runtime = new DefaultRelayTerminalRuntime({

@@ -37,13 +37,29 @@ function sha256Of(path: string): string {
 function createFakePlatformPackage(packagesRoot: string, platform: string): string {
   const pkgDir = join(packagesRoot, `xacpx-rmux-bridge-${platform}`);
   mkdirSync(join(pkgDir, "bin"), { recursive: true });
+  mkdirSync(join(pkgDir, "THIRD_PARTY_LICENSES"), { recursive: true });
+  writeFileSync(
+    join(pkgDir, "THIRD_PARTY_NOTICES.md"),
+    "# notices\nRMUX 0.10.0, MIT, The RMUX Authors\n",
+  );
+  writeFileSync(
+    join(pkgDir, "THIRD_PARTY_LICENSES", "RMUX-LICENSE-MIT.txt"),
+    "MIT License\n\nCopyright (c) 2026 The RMUX Authors\n",
+  );
   writeFileSync(
     join(pkgDir, "package.json"),
     JSON.stringify(
       {
         name: `@ganglion/xacpx-rmux-bridge-${platform}`,
         version: "0.0.0-test",
-        files: ["bin", "libexec", "README.md", "checksums.json"],
+        files: [
+          "bin",
+          "libexec",
+          "THIRD_PARTY_LICENSES",
+          "THIRD_PARTY_NOTICES.md",
+          "README.md",
+          "checksums.json",
+        ],
       },
       null,
       2,
@@ -93,6 +109,13 @@ test("pack script bundles bridge + rmux + helper and writes the new checksums sc
   expect(readFileSync(bridgeDest, "utf8")).toBe("bridge-binary");
   expect(readFileSync(rmuxDest, "utf8")).toBe("rmux-binary");
   expect(readFileSync(helperDest, "utf8")).toBe("rmux-helper-binary");
+
+  // Redistributed-RMUX license + notice must ride along in the packaged dir
+  // (pack must never strip them).
+  expect(readFileSync(join(pkgDir, "THIRD_PARTY_NOTICES.md"), "utf8")).toContain("RMUX");
+  expect(readFileSync(join(pkgDir, "THIRD_PARTY_LICENSES", "RMUX-LICENSE-MIT.txt"), "utf8")).toContain(
+    "The RMUX Authors",
+  );
 
   const checksums = JSON.parse(readFileSync(join(pkgDir, "checksums.json"), "utf8"));
   expect(checksums.rmuxSdk).toBe(RMUX_VERSION);
@@ -193,10 +216,23 @@ function createVerifyRepo(): string {
   return root;
 }
 
+function writeLicenseFiles(pkgDir: string): void {
+  mkdirSync(join(pkgDir, "THIRD_PARTY_LICENSES"), { recursive: true });
+  writeFileSync(
+    join(pkgDir, "THIRD_PARTY_NOTICES.md"),
+    "# notices\nRMUX 0.10.0, MIT, The RMUX Authors\n",
+  );
+  writeFileSync(
+    join(pkgDir, "THIRD_PARTY_LICENSES", "RMUX-LICENSE-MIT.txt"),
+    "MIT License\n\nCopyright (c) 2026 The RMUX Authors\n",
+  );
+}
+
 function writePackedPackage(repoRoot: string, tamperRmuxSha = false): void {
   const pkgDir = join(repoRoot, "platform-packages", "xacpx-rmux-bridge-linux-x64");
   mkdirSync(join(pkgDir, "bin"), { recursive: true });
   mkdirSync(join(pkgDir, "libexec", "rmux"), { recursive: true });
+  writeLicenseFiles(pkgDir);
   const bridge = writeExecutable(join(pkgDir, "bin", "xacpx-rmux-bridge"), "bridge");
   const rmux = writeExecutable(join(pkgDir, "bin", "rmux"), "rmux");
   const helper = writeExecutable(join(pkgDir, "libexec", "rmux", "rmux"), "helper");
@@ -251,6 +287,7 @@ test("verifyRepo accepts the unpacked placeholder state (null checksums, no bina
   const repoRoot = createVerifyRepo();
   const pkgDir = join(repoRoot, "platform-packages", "xacpx-rmux-bridge-win32-x64");
   mkdirSync(join(pkgDir, "bin"), { recursive: true });
+  writeLicenseFiles(pkgDir);
   writeFileSync(
     join(pkgDir, "checksums.json"),
     `${JSON.stringify(
@@ -296,4 +333,35 @@ test("verifyRepo rejects drift between the resolver constant and the release man
   expect(
     failures.some((f) => f.includes("RMUX_BUNDLED_VERSION=0.9.0 != rmux-release.mjs")),
   ).toBe(true);
+});
+test("verifyRepo rejects a platform package that lacks the redistributed-RMUX license", async () => {
+  const repoRoot = createVerifyRepo();
+  const pkgDir = join(repoRoot, "platform-packages", "xacpx-rmux-bridge-linux-x64");
+  mkdirSync(join(pkgDir, "bin"), { recursive: true });
+  mkdirSync(join(pkgDir, "libexec", "rmux"), { recursive: true });
+  writeExecutable(join(pkgDir, "bin", "xacpx-rmux-bridge"), "bridge");
+  writeExecutable(join(pkgDir, "bin", "rmux"), "rmux");
+  writeExecutable(join(pkgDir, "libexec", "rmux", "rmux"), "helper");
+  writeFileSync(
+    join(pkgDir, "checksums.json"),
+    `${JSON.stringify({
+      package: "@ganglion/xacpx-rmux-bridge-linux-x64",
+      version: "0.0.0-test",
+      rmuxSdk: RMUX_VERSION,
+      rmuxVersion: RMUX_VERSION,
+      platform: "linux-x64",
+      artifact: "bin/xacpx-rmux-bridge",
+      sha256: sha256Of(join(pkgDir, "bin", "xacpx-rmux-bridge")),
+      artifacts: { bridge: { path: "bin/xacpx-rmux-bridge", sha256: sha256Of(join(pkgDir, "bin", "xacpx-rmux-bridge")) } },
+    }, null, 2)}\n`,
+  );
+  const failures = await collectPublishVerificationFailures({
+    repoRoot,
+    packages: [],
+    scanPaths: [],
+    runDryRun: false,
+  });
+  const relevant = failures.filter((f) => f.includes("xacpx-rmux-bridge-linux-x64"));
+  expect(relevant.some((f) => f.includes("missing redistributed-RMUX notice"))).toBe(true);
+  expect(relevant.some((f) => f.includes("missing redistributed-RMUX license"))).toBe(true);
 });
