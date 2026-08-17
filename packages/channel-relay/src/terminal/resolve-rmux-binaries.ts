@@ -1,5 +1,16 @@
 // Resolve RMUX bridge + daemon binaries for process-owned terminal mode.
-// Order: explicit config absolute path → platform package optional dep → PATH.
+//
+// Bridge order: explicit config absolute path → platform package optional dep → PATH.
+// RMUX order:   explicit config absolute path → beside selected bridge (bundled
+//               platform-package RMUX when the bridge came from a platform
+//               package) → legacy managed helper ~/.local/libexec/rmux → PATH.
+//
+// The platform packages bundle a pinned RMUX whose version matches the native
+// bridge's rmux-sdk pin (`RMUX_BUNDLED_VERSION` below), so a machine-local
+// stale RMUX on PATH or in ~/.local/libexec/rmux must never shadow the bundled
+// binary — that was the Windows field bug (PATH WinGet rmux 0.9.0 vs bridge
+// rmux-sdk 0.10.0). Explicit terminal.rmuxCommand always wins.
+//
 // Never downloads latest; never path-depends on a workspace `../rmux`.
 
 import { accessSync, constants } from "node:fs";
@@ -7,12 +18,27 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 
+/**
+ * Pinned RMUX release bundled into the platform packages and the rmux-sdk pin
+ * of the native bridge. Must stay in lock-step with:
+ *   - scripts/rmux-release.mjs (pack-time artifact download + SHA checks)
+ *   - packages/channel-relay/native/rmux-bridge/Cargo.toml (rmux-sdk = "=0.10.0")
+ * verify-publish.mjs cross-checks all three.
+ */
+export const RMUX_BUNDLED_VERSION = "0.10.0";
+
 export interface ResolvedRmuxBinaries {
   bridgeCommand: string;
   rmuxCommand?: string;
   source: {
     bridge: "config" | "platform-package" | "path";
-    rmux?: "config" | "path";
+    /** Where the RMUX daemon binary came from. */
+    rmux?:
+      | "config"
+      | "platform-package"
+      | "beside-bridge"
+      | "managed-helper"
+      | "path";
   };
 }
 
@@ -144,13 +170,24 @@ export function resolveRmuxBinaries(input: {
     rmuxCommand = input.rmuxCommand;
     rmuxSource = "config";
   } else {
-    // Prefer the release helper (Windows ships `rmux.exe`), then a daemon
-    // sitting next to the bridge, then PATH `rmux-daemon` / `rmux`.
-    const helper = resolveDaemonHelper(input.homeDir ?? homedir());
+    // Bundled RMUX beside the selected bridge is the production default: the
+    // platform package ships `bin/rmux[.exe]` pinned to RMUX_BUNDLED_VERSION.
+    // Only fall back to the legacy managed helper, then PATH, when no bundled
+    // RMUX exists — so a stale ~/.local/libexec/rmux or PATH RMUX never
+    // shadows an up-to-date platform package.
     const beside = resolveDaemonBesideBridge(bridgeCommand);
+    const helper = resolveDaemonHelper(input.homeDir ?? homedir());
     const onPath = resolveDaemonOnPath(input.pathEnv ?? process.env.PATH ?? "");
-    rmuxCommand = helper ?? beside ?? onPath;
-    if (rmuxCommand) rmuxSource = "path";
+    rmuxCommand = beside ?? helper ?? onPath;
+    if (rmuxCommand) {
+      rmuxSource = beside
+        ? bridgeSource === "platform-package"
+          ? "platform-package"
+          : "beside-bridge"
+        : helper
+          ? "managed-helper"
+          : "path";
+    }
   }
 
   return {

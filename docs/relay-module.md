@@ -73,14 +73,24 @@
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
 - **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；
   hub disconnect → 只 `detachAllAttachments`。CLI `channel disable|rm` 在 daemon **已停止**时走 one-shot retirement；daemon 仍在跑时推迟到重启，由旧进程 `stop()` 杀会话，避免再起一个看不到 HashMap 的 sidecar。`terminals.lock` 保证 registry 同一时刻只有一个 writer。
+- **二进制解析**：`resolveRmuxBinaries`（`src/terminal/resolve-rmux-binaries.ts`）。bridge：explicit
+  `terminal.bridgeCommand` → platform optional package → PATH。RMUX：explicit `terminal.rmuxCommand` → **bridge 同目录的
+  bundled RMUX**（platform package 自包含 `bin/rmux[.exe]` + `libexec/rmux/rmux[.exe]`，版本 `RMUX_VERSION=0.10.0` 与
+  bridge `rmux-sdk` pin 一致，source=`platform-package`）→ legacy managed helper `~/.local/libexec/rmux`
+  （source=`managed-helper`）→ PATH `rmux-daemon`/`rmux`（source=`path`）。机器本地 stale RMUX（PATH WinGet 0.9.0、
+  `~/.local/libexec/rmux` 旧版）永远不会盖过 bundled 0.10.0。pack 脚本（`scripts/pack-rmux-bridge-platform.mjs` +
+  `scripts/rmux-release.mjs` 固定 URL/SHA-256）按原生 host 执行 `rmux -V` 校验，`verify-publish.mjs` 交叉核对
+  TS 常量 / Cargo.toml / manifest 三处 pin 与 checksums 字节。
 - **Doctor**：`ChannelCliProvider.diagnose` → `diagnoseRelayTerminal`（只读）；core 的 Plugins 检查只呈现结构化 finding，
   不理解 RMUX。terminal disabled → skip；cleanup-pending / 未打包 sidecar → warn；缺失 `bridgeCommand` 路径 → fail；
-  bridge 找到但 RMUX daemon 未解析 → `terminal-rmux-daemon-unresolved` warn。
+  bridge 找到但 RMUX daemon 未解析 → `terminal-rmux-daemon-unresolved` warn；解析出的 RMUX 版本 ≠ 0.10.0 →
+  `terminal-binaries-resolved-mismatch` warn（含 source、expected/actualVersion，例如 WinGet PATH 0.9.0 场景）。
 - **日志**：`relay.terminal.*` 事件（spec §19）；只记 ID / sizes / counts / error class，不记 bytes / credential / cwd。
-  Sidecar 启动失败会把 stderr 尾部附在 `relay.terminal_bootstrap_failed`（例如 `rmux driver has crashed: xacpx-rmux-bridge fatal: …`）。
-- **Windows**：`@ganglion/xacpx-rmux-bridge-win32-x64` 只带 `xacpx-rmux-bridge.exe`。还需要 RMUX 0.10.x daemon
-  （`rmux.exe` / `rmux-daemon.exe` 在 PATH，或 `options.terminal.rmuxCommand` 指向绝对路径），否则 handshake 前 sidecar 退出、
-  不声明 terminal capability。发布包：https://github.com/Helvesec/rmux/releases （`rmux-*-windows-x86_64.zip`）。
+  Sidecar 启动失败会把 stderr 尾部附在 `relay.terminal_bootstrap_failed`（例如 `rmux driver has crashed: xacpx-rmux-bridge fatal: …`），
+  并附 redacted bridge/rmux path + source + expected RMUX 版本。
+- **Windows**：`@ganglion/xacpx-rmux-bridge-win32-x64` 自带 `xacpx-rmux-bridge.exe` + `rmux.exe`（+ `libexec/rmux/rmux.exe`
+  helper），完全离线可装、无需 PATH 上有任何 RMUX。发布包：https://github.com/Helvesec/rmux/releases
+  （`rmux-0.10.0-windows-x86_64.zip`，固定 SHA-256 在 `scripts/rmux-release.mjs`）。
 
 ## 阶段三服务端接缝（Web 看板扇出）
 

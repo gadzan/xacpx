@@ -45,6 +45,11 @@ import {
 } from "./terminal-bridge.js";
 import { retireRelayTerminals } from "./terminal/retire-terminals.js";
 import { logTerminalEvent } from "./terminal/terminal-log.js";
+import {
+  RMUX_BUNDLED_VERSION,
+  type ResolvedRmuxBinaries,
+} from "./terminal/resolve-rmux-binaries.js";
+import { redactPathForDoctor } from "./terminal/terminal-diagnostics.js";
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -316,6 +321,27 @@ export class RelayChannel implements MessageChannelRuntime {
   }
 
   /**
+   * Safe, redacted resolution snapshot for bootstrap-failure logs. Paths are
+   * trimmed to ~/… / last-two-segments; no env vars, credentials, or full PATH.
+   */
+  private resolutionForBootstrapLog(
+    resolution: ResolvedRmuxBinaries | null | undefined,
+  ): Record<string, string> {
+    if (!resolution) return {};
+    return {
+      bridgeSource: resolution.source.bridge,
+      bridgePath: redactPathForDoctor(resolution.bridgeCommand),
+      ...(resolution.rmuxCommand && resolution.source.rmux
+        ? {
+            rmuxSource: resolution.source.rmux,
+            rmuxPath: redactPathForDoctor(resolution.rmuxCommand),
+            rmuxExpectedVersion: RMUX_BUNDLED_VERSION,
+          }
+        : {}),
+    };
+  }
+
+  /**
    * Registry → driver → reconcile, then return the capability snapshot for
    * handshake. Terminal disabled / unavailable → empty caps; chat still works.
    * When config flips enabled→disabled, still reads the existing registry and
@@ -401,13 +427,17 @@ export class RelayChannel implements MessageChannelRuntime {
         RELAY_CAPABILITIES.terminalMultiViewV1,
       ];
     } catch (err) {
+      const resolution = this.resolutionForBootstrapLog(
+        this.terminalSupervisor?.getResolution(),
+      );
       void logTerminalEvent(input.logger, "relay.terminal.runtime_unavailable", {
         errorClass: err instanceof Error ? err.name : "Error",
+        ...resolution,
       });
       void input.logger?.error(
         "relay.terminal_bootstrap_failed",
         `RMUX terminal runtime failed to start; continuing without terminal capabilities: ${err instanceof Error ? err.message : String(err)}`,
-        {},
+        resolution,
       );
       const running = this.terminal;
       this.terminal = null;
