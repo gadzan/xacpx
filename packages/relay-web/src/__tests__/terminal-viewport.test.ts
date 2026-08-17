@@ -33,7 +33,8 @@ function manualFrames() {
 function fakeAdapter() {
   let cols = 80;
   let rows = 24;
-  const fit = vi.fn((): { cols: number; rows: number } | null => ({ cols: 150, rows: 45 }));
+  const fit = vi.fn((_extraHeightPx = 0): { cols: number; rows: number } | null => ({ cols: 150, rows: 45 }));
+  const localGeometry = vi.fn((): { cellHeight: number; canvasHeight: number; cursorY: number } | null => null);
   const adapter: TerminalAdapter = {
     write: vi.fn(),
     resize: vi.fn((c: number, r: number) => { cols = c; rows = r; }),
@@ -45,10 +46,12 @@ function fakeAdapter() {
     scrollLines: vi.fn(),
     ready: vi.fn(async () => {}),
     fit,
+    localGeometry,
+    syncInputAnchor: vi.fn(),
     cols: () => cols,
     rows: () => rows,
   };
-  return { adapter, fit };
+  return { adapter, fit, localGeometry };
 }
 
 function host(width = 800, height = 600) {
@@ -60,7 +63,7 @@ function host(width = 800, height = 600) {
 
 function setup(opts?: Partial<Parameters<typeof createTerminalViewportController>[0]>) {
   const frames = manualFrames();
-  const { adapter, fit } = fakeAdapter();
+  const { adapter, fit, localGeometry } = fakeAdapter();
   const canResizeRemote = opts?.canResizeRemote ?? vi.fn(() => true);
   const sendRemoteResize = opts?.sendRemoteResize ?? vi.fn();
   const el = host();
@@ -71,7 +74,7 @@ function setup(opts?: Partial<Parameters<typeof createTerminalViewportController
     sendRemoteResize,
     requestFrame: frames.requestFrame,
   });
-  return { controller, adapter, fit, el, frames, canResizeRemote, sendRemoteResize };
+  return { controller, adapter, fit, localGeometry, el, frames, canResizeRemote, sendRemoteResize };
 }
 
 describe("terminal viewport controller", () => {
@@ -248,6 +251,125 @@ describe("terminal viewport controller", () => {
     expect(fit).toHaveBeenLastCalledWith(300);
     expect(adapter.resize).toHaveBeenLastCalledWith(150, 45);
     controller.dispose();
+  });
+
+  describe("keyboard-open local cursor-follow", () => {
+    it("scrolls the host so the cursor row stays visible without resizing the grid", async () => {
+      // 40 rows × 20px = 800px canvas; keyboard shrinks the host to 500px.
+      const frames = manualFrames();
+      const { adapter, fit, localGeometry } = fakeAdapter();
+      const el = host(800, 500);
+      const controller = createTerminalViewportController({
+        host: el,
+        adapter,
+        canResizeRemote: () => true,
+        sendRemoteResize: vi.fn(),
+        requestFrame: frames.requestFrame,
+      });
+      fit.mockReturnValue({ cols: 150, rows: 40 });
+      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+      controller.start();
+      frames.flushAll();
+
+      controller.setKeyboardInset(300);
+      frames.flushAll();
+
+      // Cursor row 39 bottom = 40*20 = 800px; visible is 500px -> scroll 300px.
+      expect(el.style.alignItems).toBe("flex-start");
+      expect(el.scrollTop).toBe(300);
+      // The scroll moved the canvas under a stationary IME anchor: re-anchor.
+      expect(adapter.syncInputAnchor).toHaveBeenCalled();
+      // Remote grid stayed at the fit rows — never shrunk for the keyboard.
+      expect(adapter.resize).toHaveBeenLastCalledWith(150, 40);
+    });
+
+    it("clears the local follow when the keyboard closes", async () => {
+      const frames = manualFrames();
+      const { adapter, fit, localGeometry } = fakeAdapter();
+      const el = host(800, 500);
+      const controller = createTerminalViewportController({
+        host: el,
+        adapter,
+        canResizeRemote: () => true,
+        sendRemoteResize: vi.fn(),
+        requestFrame: frames.requestFrame,
+      });
+      fit.mockReturnValue({ cols: 150, rows: 40 });
+      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+      controller.start();
+      frames.flushAll();
+      controller.setKeyboardInset(300);
+      frames.flushAll();
+      expect(el.scrollTop).toBe(300);
+
+      controller.setKeyboardInset(0);
+      frames.flushAll();
+      expect(el.style.alignItems).toBe("");
+      expect(el.scrollTop).toBe(0);
+    });
+
+    it("revealCursor re-scrolls on live output without a fit or remote push", async () => {
+      const frames = manualFrames();
+      const { adapter, fit, localGeometry } = fakeAdapter();
+      const sendRemoteResize = vi.fn();
+      const el = host(800, 500);
+      const controller = createTerminalViewportController({
+        host: el,
+        adapter,
+        canResizeRemote: () => true,
+        sendRemoteResize,
+        requestFrame: frames.requestFrame,
+      });
+      fit.mockReturnValue({ cols: 150, rows: 40 });
+      controller.start();
+      frames.flushAll();
+      controller.setKeyboardInset(300);
+      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 30 });
+      frames.flushAll();
+      expect(el.scrollTop).toBe(120); // (30+1)*20 - 500
+
+      // Cursor moves down on output; revealCursor must follow without re-fitting.
+      const fitCalls = fit.mock.calls.length;
+      const resizeCalls = sendRemoteResize.mock.calls.length;
+      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+      controller.revealCursor();
+      expect(el.scrollTop).toBe(300);
+      expect(fit.mock.calls.length).toBe(fitCalls);
+      expect(sendRemoteResize.mock.calls.length).toBe(resizeCalls);
+    });
+  });
+
+  it("honors a keyboard inset set before start() on the very first fit (re-attach while keyboard open)", () => {
+    // Re-attach with the keyboard already up: the keyboardInset is remembered,
+    // so setKeyboardInset() runs BEFORE start(). The first forceSync must then
+    // fit the full (pre-keyboard) grid, never the shrunken host — otherwise the
+    // remote grid would temporarily collapse 40→25 rows and reflow back to 40.
+    const frames = manualFrames();
+    const { adapter, fit, localGeometry } = fakeAdapter();
+    const sendRemoteResize = vi.fn();
+    const el = host(800, 500); // keyboard-shrunk visible host
+    const controller = createTerminalViewportController({
+      host: el,
+      adapter,
+      canResizeRemote: () => true,
+      sendRemoteResize,
+      requestFrame: frames.requestFrame,
+    });
+    fit.mockImplementation((extraHeightPx = 0) => ({
+      cols: 150,
+      rows: Math.floor((500 + extraHeightPx) / 20),
+    }));
+    localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+
+    controller.setKeyboardInset(300);
+    controller.start();
+    frames.flushAll();
+
+    // The first fit already carried the inset; no fit(0) ever happened.
+    expect(fit.mock.calls[0][0]).toBe(300);
+    const rowsSeen = fit.mock.calls.map((c) => Math.floor((500 + (c[0] ?? 0)) / 20));
+    expect(rowsSeen).not.toContain(25);
+    expect(sendRemoteResize).toHaveBeenCalledWith(150, 40);
   });
 
   it("start() syncs immediately and re-syncs on window resize", () => {

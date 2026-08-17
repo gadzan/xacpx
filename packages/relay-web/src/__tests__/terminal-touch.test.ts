@@ -15,12 +15,12 @@ function touchEvent(type: "touchstart" | "touchmove" | "touchend", point: { clie
   return e;
 }
 
-function setupHost(rows = 24, hostHeight = 600) {
+function setupHost(cellHeight = 25, hostHeight = 600) {
   const host = document.createElement("div");
   Object.defineProperty(host, "clientHeight", { value: hostHeight, configurable: true });
   document.body.appendChild(host);
   const scrollLines = vi.fn();
-  const dispose = bindTerminalTouchScroll({ host, rows: () => rows, scrollLines });
+  const dispose = bindTerminalTouchScroll({ host, lineHeight: () => cellHeight, scrollLines });
   return { host, scrollLines, dispose };
 }
 
@@ -69,6 +69,17 @@ describe("bindTerminalTouchScroll", () => {
     host.dispatchEvent(touchEvent("touchstart", { clientX: 0, clientY: 0 }));
     host.dispatchEvent(touchEvent("touchmove", { clientX: 0, clientY: 5 }));
     expect(scrollLines).toHaveBeenCalledTimes(1); // still pending, no scroll
+  });
+
+  it("scrolls by the renderer cell height, independent of the host height (keyboard-open)", () => {
+    // A 40-row terminal at 20px cells is an 800px canvas. The open keyboard
+    // shrinks the HOST to 500px without shrinking rows; host-derived math
+    // (500/40 = 12.5px) would over-count lines. The lineHeight callback reads
+    // the real rendered cell height, so a 40px drag is exactly 2 lines.
+    const { host, scrollLines } = setupHost(20, 500);
+    host.dispatchEvent(touchEvent("touchstart", { clientX: 0, clientY: 0 }));
+    host.dispatchEvent(touchEvent("touchmove", { clientX: 0, clientY: 40 }));
+    expect(scrollLines).toHaveBeenCalledWith(-2);
   });
 
   it("multi-touch resets to idle", () => {

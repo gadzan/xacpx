@@ -246,6 +246,9 @@ async function openAttachment(): Promise<void> {
   offBytes = terminals.onBytes(async (key, data) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
     await currentAdapter.write(data);
+    // Live output moves the cursor without a geometry change; keep the prompt
+    // visible under the open keyboard (no fit / no remote push).
+    viewport?.revealCursor();
   });
   offMeta = terminals.onMeta((key, view) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
@@ -282,9 +285,13 @@ async function openAttachment(): Promise<void> {
       canResizeRemote: () => canType.value,
       sendRemoteResize: (cols, rows) => terminals.sendResize(localKey.value, cols, rows),
     });
-    viewport.start();
-    // A soft keyboard opened before this (re)attach must keep compensating.
+    // Set the inset BEFORE start(): start() force-syncs immediately, and it
+    // must carry the keyboard height on the very first fit. Ordering this the
+    // other way (start, then setKeyboardInset) fits the shrunken host once —
+    // e.g. 40→25 rows — then re-fits back to 40, a spurious remote reflow on
+    // every re-attach while the keyboard is open.
     if (keyboardInset.value > 0) viewport.setKeyboardInset(keyboardInset.value);
+    viewport.start();
     currentAdapter.focus();
   } catch (e) {
     if (myEpoch !== epoch) return;
@@ -339,7 +346,9 @@ function attachInputLifecycles() {
   if (!el) return;
   offTouchScroll = bindTerminalTouchScroll({
     host: el,
-    rows: () => adapter?.rows() ?? 24,
+    // Real rendered cell height — the keyboard shrinks the host without
+    // shrinking rows, so host.clientHeight/rows under-reports the cell height.
+    lineHeight: () => adapter?.localGeometry()?.cellHeight ?? null,
     scrollLines: (n) => adapter?.scrollLines(n),
   });
   offKeyboardInset = bindTerminalKeyboardInset({

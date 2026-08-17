@@ -8,16 +8,18 @@
 //   touchend/pointercancel         back to idle
 //
 // Sub-threshold moves never preventDefault, so long-press selection stays
-// native. Scrolling converts pixel deltas to lines using the live cell height
-// (host height / current rows), with a per-gesture pixel remainder.
+// native. Scrolling converts pixel deltas to lines using the RENDERED cell
+// height — never host.clientHeight / rows: the on-screen keyboard shrinks the
+// host without shrinking the grid, so the host-derived ratio under-reports the
+// real cell height the more the keyboard occludes.
 
 /** Drag distance before a touch becomes a terminal scroll. */
 const TOUCH_SCROLL_THRESHOLD_PX = 8;
 
 export interface TerminalTouchScrollOptions {
   host: HTMLElement;
-  /** Current terminal rows; used to derive the cell height. */
-  rows(): number;
+  /** Rendered canvas cell height in px; null until the canvas is measurable. */
+  lineHeight(): number | null;
   scrollLines(amount: number): void;
 }
 
@@ -28,14 +30,8 @@ type TouchState =
 
 /** Binds touch scroll listeners on the host (capture phase). Returns dispose. */
 export function bindTerminalTouchScroll(opts: TerminalTouchScrollOptions): () => void {
-  const { host, rows, scrollLines } = opts;
+  const { host, lineHeight, scrollLines } = opts;
   let state: TouchState = { kind: "idle" };
-
-  function lineHeight(): number {
-    const rowsNow = Math.max(1, rows());
-    const h = host.clientHeight / rowsNow;
-    return h > 0 ? h : 0;
-  }
 
   function onTouchStart(e: TouchEvent) {
     if (e.touches.length !== 1) {
@@ -59,7 +55,7 @@ export function bindTerminalTouchScroll(opts: TerminalTouchScrollOptions): () =>
     e.preventDefault();
     e.stopPropagation();
     const lineH = lineHeight();
-    if (!(lineH > 0)) return;
+    if (!lineH || !(lineH > 0)) return;
     state.residual += t.clientY - state.lastY;
     state.lastY = t.clientY;
     const lines = Math.trunc(state.residual / lineH);

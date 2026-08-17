@@ -19,6 +19,8 @@ const adapter = {
   scrollLines: vi.fn(),
   resetAndReplay: vi.fn(async () => {}),
   fit: vi.fn((): { cols: number; rows: number } | null => ({ cols: 80, rows: 24 })),
+  localGeometry: vi.fn(() => null),
+  syncInputAnchor: vi.fn(),
   cols: () => 80,
   rows: () => 24,
 };
