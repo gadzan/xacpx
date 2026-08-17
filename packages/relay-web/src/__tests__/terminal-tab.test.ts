@@ -19,6 +19,8 @@ const adapter = {
   scrollLines: vi.fn(),
   resetAndReplay: vi.fn(async () => {}),
   fit: vi.fn((): { cols: number; rows: number } | null => ({ cols: 80, rows: 24 })),
+  localGeometry: vi.fn(() => null),
+  syncInputAnchor: vi.fn(),
   cols: () => 80,
   rows: () => 24,
 };
@@ -468,6 +470,106 @@ describe("TerminalTab", () => {
       vi.useRealTimers();
       adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
     }
+  });
+
+  it("keyboard inset lifts locally and compensates the remote fit height", async () => {
+    // Soft keyboard is local occlusion: the visible surface lifts by the inset
+    // while the viewport controller adds it back into the fit height, so the
+    // remote grid stays keyboard-independent.
+    const realMM = window.matchMedia;
+    const vvListeners = new Set<() => void>();
+    const fakeVV = {
+      height: 800, offsetTop: 0, scale: 1,
+      addEventListener(type: string, cb: () => void) { if (type === "resize") vvListeners.add(cb); },
+      removeEventListener(type: string, cb: () => void) { if (type === "resize") vvListeners.delete(cb); },
+    };
+    Object.defineProperty(window, "visualViewport", { value: fakeVV, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("coarse"),
+      media: q, onchange: null,
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      document.body.appendChild(w.element); // focus tracking needs document attachment
+      await flushPromises();
+      const host = w.find('[data-test="terminal-host"]').element as HTMLElement;
+      const ta = document.createElement("textarea");
+      host.appendChild(ta);
+      ta.focus();
+      expect(document.activeElement).toBe(ta);
+
+      fakeVV.height = 500; // keyboard opens
+      for (const cb of vvListeners) cb();
+      await flushPromises();
+
+      // The keyboard-inset sync coalesces into the pending settling frame;
+      // poll until it lands (no fixed sleeps).
+      await vi.waitFor(() => expect(adapter.fit).toHaveBeenLastCalledWith(300));
+      const center = w.find('[data-test="terminal-center"]').element as HTMLElement;
+      expect(center.style.paddingBottom).toBe("300px");
+    } finally {
+      window.matchMedia = realMM;
+      delete (window as { visualViewport?: unknown }).visualViewport;
+    }
+  });
+
+  it("toolbar keys do not focus the terminal on touch; Enter and Paste do", async () => {
+    const realMM = window.matchMedia;
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("coarse"),
+      media: q, onchange: null,
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await flushPromises();
+      const keybar = w.find('[data-test="keybar"]');
+      expect(keybar.exists()).toBe(true); // mobile default
+
+      adapter.focus.mockClear();
+      await w.find('[data-test="key-esc"]').trigger("click");
+      expect(sendInput).toHaveBeenCalledWith("i1\0demo", "\u001b");
+      expect(adapter.focus).not.toHaveBeenCalled();
+
+      await w.find('[data-test="key-enter"]').trigger("click");
+      expect(adapter.focus).toHaveBeenCalledTimes(1);
+    } finally {
+      window.matchMedia = realMM;
+    }
+  });
+
+  it("desktop keybar keeps terminal focus after sending a key", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    if (!w.find('[data-test="keybar"]').exists()) {
+      await w.find('[data-test="toggle-keybar"]').trigger("click");
+    }
+    adapter.focus.mockClear();
+    await w.find('[data-test="key-esc"]').trigger("click");
+    expect(adapter.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("copy prefers the native selection and ignores clipboard denial", async () => {
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    if (!w.find('[data-test="keybar"]').exists()) {
+      await w.find('[data-test="toggle-keybar"]').trigger("click");
+    }
+    const getSelection = vi.spyOn(window, "getSelection").mockReturnValue({
+      toString: () => "native-selection",
+    } as unknown as Selection);
+    adapter.getSelection.mockReturnValue("adapter-selection");
+    // navigator.clipboard is undefined in jsdom -> writeText is skipped, and the
+    // failure must not detach the terminal or throw.
+    await w.find('[data-test="key-copy"]').trigger("click");
+    await flushPromises();
+    expect(getSelection).toHaveBeenCalled();
+    getSelection.mockRestore();
+    expect(detach).not.toHaveBeenCalled();
   });
 
   it("stops settling syncs once the tab unmounts", async () => {

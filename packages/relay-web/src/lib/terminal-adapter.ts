@@ -45,6 +45,18 @@ export interface GhosttyTerminalLike {
   rows: number;
 }
 
+/** Local rendered-canvas geometry used for keyboard-open cursor-follow. Distinct from
+ *  the remote grid: the soft keyboard shrinks the HOST without shrinking rows, so a
+ *  taller canvas must be scrolled to keep the cursor row visible locally. */
+export interface TerminalLocalGeometry {
+  /** Rendered canvas cell height in px. */
+  cellHeight: number;
+  /** Rendered canvas total height in px (= rows × cellHeight). */
+  canvasHeight: number;
+  /** Active-screen cursor row (0-indexed, absolute viewport). */
+  cursorY: number;
+}
+
 export interface TerminalAdapter {
   /** Resolves once the underlying terminal is open and wired. Rejects if construction fails
    *  or the adapter is disposed before that happens — never hangs forever either way. */
@@ -71,6 +83,13 @@ export interface TerminalAdapter {
    *  height the host visually lost to local occlusion (soft keyboard) so the
    *  grid stays keyboard-independent - see TerminalViewportController. */
   fit(extraHeightPx?: number): { cols: number; rows: number } | null;
+  /** Local cursor/canvas metrics (cell height, canvas height, cursor row) for
+   *  keyboard-open cursor-follow. Null until the canvas is measurable. */
+  localGeometry(): TerminalLocalGeometry | null;
+  /** Re-anchor the IME helper textarea at the cursor using the CURRENT canvas
+   *  rect. The host can be scrolled (keyboard cursor-follow) without the canvas
+   *  resizing, so the anchor must re-measure after any such scroll. */
+  syncInputAnchor(): void;
   cols(): number;
   rows(): number;
 }
@@ -245,6 +264,21 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
         cols: Math.max(2, Math.floor(el.clientWidth / cellW)),
         rows: Math.max(1, Math.floor((el.clientHeight + extraHeightPx) / cellH)),
       };
+    },
+    localGeometry: () => {
+      if (!live?.element || !live.rows) return null;
+      const canvas = live.element.querySelector("canvas");
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      if (!(rect.height > 0)) return null;
+      return {
+        cellHeight: rect.height / live.rows,
+        canvasHeight: rect.height,
+        cursorY: live.buffer?.active?.cursorY ?? 0,
+      };
+    },
+    syncInputAnchor: () => {
+      if (live) syncGhosttyInputAnchor(el, live);
     },
     cols: () => live?.cols ?? opts.cols,
     rows: () => live?.rows ?? opts.rows,

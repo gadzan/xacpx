@@ -32,9 +32,6 @@ export interface TerminalViewportControllerOptions {
   canResizeRemote(): boolean;
   /** Backend resize forwarder (terminal store owns the syncedResize dedupe). */
   sendRemoteResize(cols: number, rows: number): void;
-  /** Soft-keyboard occlusion px to add back to the host height when fitting,
-   *  so the remote grid is keyboard-independent (local occlusion only). */
-  getKeyboardInset(): number;
   /** Test seam: frame scheduler. Defaults to requestAnimationFrame. */
   requestFrame?(cb: () => void): () => void;
 }
@@ -47,6 +44,10 @@ export interface TerminalViewportController {
   scheduleSync(reason?: string): void;
   /** Immediate sync: runs now and replaces any pending frame. */
   forceSync(reason?: string): void;
+  /** Re-run local cursor-follow only (no fit / no remote push) — the cursor row
+   *  can move on live output without any geometry change, so a write must keep
+   *  the prompt visible while the keyboard is open. */
+  revealCursor(): void;
   setKeyboardInset(px: number): void;
 }
 
@@ -86,7 +87,10 @@ export function createTerminalViewportController(
   function runSync(reason?: string): void {
     if (disposed) return;
     const dim = fitLocal();
-    if (dim) syncRemote(dim);
+    if (dim) {
+      applyLocalCursorFollow();
+      syncRemote(dim);
+    }
   }
 
   /** Reflow the local emulator to the host; returns the applied geometry.
@@ -117,6 +121,37 @@ export function createTerminalViewportController(
     sendRemoteResize(dim.cols, dim.rows);
   }
 
+  /** Keep the cursor row visible while the soft keyboard occludes the host. The
+   *  grid is keyboard-independent — rows stay put, so the canvas is taller than
+   *  the shrunken host and flex-center would clip BOTH edges (the prompt at the
+   *  bottom out of view). Top-align the canvas and scroll it so the cursor row
+   *  sits at the visible bottom. Never shrinks the Ghostty grid. */
+  function applyLocalCursorFollow(): void {
+    if (keyboardInset <= 0) {
+      clearLocalFollow();
+      return;
+    }
+    const vis = host.clientHeight;
+    const geo = adapter.localGeometry();
+    if (!geo || geo.canvasHeight <= vis) {
+      clearLocalFollow();
+      return;
+    }
+    host.style.alignItems = "flex-start";
+    const cursorBottom = Math.min(geo.canvasHeight, (geo.cursorY + 1) * geo.cellHeight);
+    host.scrollTop = Math.max(0, cursorBottom - vis);
+    // The scroll moved the canvas under a stationary IME anchor; re-measure it.
+    adapter.syncInputAnchor();
+  }
+
+  /** Restore the neutral (flex-centered) layout when the keyboard is closed. */
+  function clearLocalFollow(): void {
+    const changed = host.style.alignItems !== "" || host.scrollTop !== 0;
+    if (host.style.alignItems) host.style.alignItems = "";
+    if (host.scrollTop !== 0) host.scrollTop = 0;
+    if (changed) adapter.syncInputAnchor();
+  }
+
   return {
     start(): void {
       if (started || disposed) return;
@@ -145,6 +180,10 @@ export function createTerminalViewportController(
     },
     scheduleSync,
     forceSync,
+    revealCursor(): void {
+      if (disposed) return;
+      applyLocalCursorFollow();
+    },
     setKeyboardInset(px: number): void {
       const next = Math.max(0, Math.round(px));
       if (next === keyboardInset) return;

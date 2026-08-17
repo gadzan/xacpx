@@ -6,6 +6,8 @@ import {
   createTerminalViewportController,
   type TerminalViewportController,
 } from "../lib/terminal-viewport";
+import { bindTerminalKeyboardInset } from "../lib/terminal-viewport-insets";
+import { bindTerminalTouchScroll } from "../lib/terminal-touch";
 import { useTerminalStore, terminalLocalKey, isFatalTerminalRecoveryCode, type TerminalAttachmentView } from "../stores/terminal";
 import { useThemeStore } from "../stores/theme";
 import { useConnectionStore } from "../stores/connection";
@@ -126,27 +128,33 @@ function applyMods(seq: string): string {
   return seq;
 }
 
-function sendKey(seq: string) {
+function sendKey(seq: string, opts?: { refocus?: boolean }) {
   if (!canType.value) return;
   const out = applyMods(seq);
   if (anyModArmed()) disarmMods();
   terminals.sendInput(localKey.value, out);
-  adapter?.focus();
+  // Toolbar keys must not pop the soft keyboard on touch devices - only
+  // keyboard-requiring actions (Paste, Enter) and the terminal surface tap
+  // re-focus the IME anchor there. Desktop always keeps focus after the keybar.
+  if (opts?.refocus || !isCoarsePointer()) adapter?.focus();
 }
 
 async function pasteClipboard() {
   if (!canType.value) return;
   try {
     const text = await navigator.clipboard?.readText();
-    if (text) sendKey(text);
+    // Clipboard failures are browser-policy dependent: ignore this action
+    // only - never detach the terminal or trip recovery.
+    if (text) sendKey(text, { refocus: true });
   } catch { /* clipboard blocked/unavailable — ignore */ }
 }
 
 async function copySelection() {
-  const sel = adapter?.getSelection() ?? "";
+  // Prefer a native long-press selection (mobile) over the renderer's own.
+  const sel = window.getSelection()?.toString() || adapter?.getSelection() || "";
   if (!sel) return;
   try { await navigator.clipboard?.writeText(sel); } catch { /* clipboard blocked — ignore */ }
-  adapter?.focus();
+  if (!isCoarsePointer()) adapter?.focus();
 }
 
 function pageLines(): number {
@@ -155,39 +163,17 @@ function pageLines(): number {
 function pageUp() { adapter?.scrollLines(-pageLines()); }
 function pageDown() { adapter?.scrollLines(pageLines()); }
 
-const KEYBOARD_MIN_INSET = 120;
-const hostFocused = ref(false);
+function isCoarsePointer(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(pointer: coarse)").matches;
+}
+// Soft-keyboard occlusion px (mobile). Local-only: it lifts the visible
+// surface via paddingBottom AND is added back to the fit height through the
+// viewport controller, so the remote grid never churns as the keyboard
+// opens/closes. Fed by bindTerminalKeyboardInset (debounced measurement).
 const keyboardInset = ref(0);
-function updateKeyboardInset() {
-  const vv = typeof window !== "undefined" ? window.visualViewport : null;
-  if (!vv || !hostFocused.value) { keyboardInset.value = 0; return; }
-  const raw = Math.round(window.innerHeight - vv.height - vv.offsetTop);
-  keyboardInset.value = raw > KEYBOARD_MIN_INSET ? raw : 0;
-}
 
-let touchStartY = 0, touchStartX = 0, touchLastY = 0, touchResidual = 0, touchMoved = false;
-function onTouchStart(e: TouchEvent) {
-  if (e.touches.length !== 1) return;
-  const t = e.touches[0];
-  touchStartY = touchLastY = t.clientY; touchStartX = t.clientX;
-  touchResidual = 0; touchMoved = false;
-}
-function onTouchMove(e: TouchEvent) {
-  if (e.touches.length !== 1 || !adapter || !host.value) return;
-  const t = e.touches[0];
-  if (!touchMoved && Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY) < 8) return;
-  touchMoved = true;
-  e.preventDefault(); e.stopPropagation();
-  const lineH = host.value.clientHeight / Math.max(1, adapter.rows());
-  if (!(lineH > 0)) return;
-  touchResidual += t.clientY - touchLastY;
-  touchLastY = t.clientY;
-  const lines = Math.trunc(touchResidual / lineH);
-  if (lines !== 0) { adapter.scrollLines(-lines); touchResidual -= lines * lineH; }
-}
-function onTouchEnd(e: TouchEvent) {
-  if (touchMoved) { e.preventDefault(); e.stopPropagation(); }
-}
+
 
 function mapErrorCode(code: string): string {
   switch (code) {
@@ -260,6 +246,9 @@ async function openAttachment(): Promise<void> {
   offBytes = terminals.onBytes(async (key, data) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
     await currentAdapter.write(data);
+    // Live output moves the cursor without a geometry change; keep the prompt
+    // visible under the open keyboard (no fit / no remote push).
+    viewport?.revealCursor();
   });
   offMeta = terminals.onMeta((key, view) => {
     if (key !== localKey.value || myEpoch !== epoch) return;
@@ -295,8 +284,13 @@ async function openAttachment(): Promise<void> {
       adapter: currentAdapter,
       canResizeRemote: () => canType.value,
       sendRemoteResize: (cols, rows) => terminals.sendResize(localKey.value, cols, rows),
-      getKeyboardInset: () => 0,
     });
+    // Set the inset BEFORE start(): start() force-syncs immediately, and it
+    // must carry the keyboard height on the very first fit. Ordering this the
+    // other way (start, then setKeyboardInset) fits the shrunken host once —
+    // e.g. 40→25 rows — then re-fits back to 40, a spurious remote reflow on
+    // every re-attach while the keyboard is open.
+    if (keyboardInset.value > 0) viewport.setKeyboardInset(keyboardInset.value);
     viewport.start();
     currentAdapter.focus();
   } catch (e) {
@@ -337,8 +331,6 @@ async function takeControl(): Promise<void> {
   }
 }
 
-function onHostFocusIn() { hostFocused.value = true; updateKeyboardInset(); }
-function onHostFocusOut() { hostFocused.value = false; keyboardInset.value = 0; }
 function onHostMouseDown() {
   if (canTakeControl.value) {
     void takeControl();
@@ -347,23 +339,31 @@ function onHostMouseDown() {
   if (isController()) adapter?.focus();
 }
 
-function attachTouch() {
+let offTouchScroll: (() => void) | null = null;
+let offKeyboardInset: (() => void) | null = null;
+function attachInputLifecycles() {
   const el = host.value;
   if (!el) return;
-  el.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
-  el.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
-  el.addEventListener("touchend", onTouchEnd, { capture: true });
-  el.addEventListener("focusin", onHostFocusIn);
-  el.addEventListener("focusout", onHostFocusOut);
+  offTouchScroll = bindTerminalTouchScroll({
+    host: el,
+    // Real rendered cell height — the keyboard shrinks the host without
+    // shrinking rows, so host.clientHeight/rows under-reports the cell height.
+    lineHeight: () => adapter?.localGeometry()?.cellHeight ?? null,
+    scrollLines: (n) => adapter?.scrollLines(n),
+  });
+  offKeyboardInset = bindTerminalKeyboardInset({
+    host: el,
+    isMobile: isCoarsePointer,
+    isConnected: () => status.value === "open" && attached.value,
+    onKeyboardInset: (px) => {
+      keyboardInset.value = px;
+      viewport?.setKeyboardInset(px);
+    },
+  });
 }
-function detachTouch() {
-  const el = host.value;
-  if (!el) return;
-  el.removeEventListener("touchstart", onTouchStart, { capture: true });
-  el.removeEventListener("touchmove", onTouchMove, { capture: true });
-  el.removeEventListener("touchend", onTouchEnd, { capture: true });
-  el.removeEventListener("focusin", onHostFocusIn);
-  el.removeEventListener("focusout", onHostFocusOut);
+function detachInputLifecycles() {
+  offTouchScroll?.(); offTouchScroll = null;
+  offKeyboardInset?.(); offKeyboardInset = null;
 }
 
 function onPageHide() {
@@ -373,9 +373,7 @@ function onPageHide() {
 
 onMounted(() => {
   void openAttachment();
-  attachTouch();
-  window.visualViewport?.addEventListener("resize", updateKeyboardInset);
-  window.visualViewport?.addEventListener("scroll", updateKeyboardInset);
+  attachInputLifecycles();
   window.addEventListener("pagehide", onPageHide);
 });
 watch(() => [props.instanceId, props.sessionAlias], () => { void openAttachment(); });
@@ -394,9 +392,7 @@ watch(() => instances.byId(props.instanceId)?.online, (online) => {
 });
 onBeforeUnmount(() => {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-  detachTouch();
-  window.visualViewport?.removeEventListener("resize", updateKeyboardInset);
-  window.visualViewport?.removeEventListener("scroll", updateKeyboardInset);
+  detachInputLifecycles();
   window.removeEventListener("pagehide", onPageHide);
   releaseFrontend(true);
 });
@@ -476,7 +472,7 @@ onBeforeUnmount(() => {
       <button data-test="key-pageup" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageUp">PgUp</button>
       <button data-test="key-pagedown" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageDown">PgDn</button>
       <button data-test="key-insert" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.insert)">Ins</button>
-      <button data-test="key-enter" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.enter)">Enter</button>
+      <button data-test="key-enter" :disabled="!canType" class="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.enter, { refocus: true })">Enter</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <button data-test="key-copy" class="ml-auto flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="copySelection">
         <Copy :size="14" />{{ $t("terminal.keybar.copy") }}
