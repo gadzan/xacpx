@@ -2,7 +2,8 @@
 //!
 //! Create path (no rmux patches):
 //! 1. `OwnedSession` with `KillOnOwnerExit` + lease TTL
-//! 2. `new_window_with().cwd(...)` for the work pane
+//! 2. `new_window_with().cwd(...)` for the work pane, plus a macOS-only
+//!    `TERM=screen-256color` override on that pane (not daemon-global)
 //! 3. close default window 0
 //! 4. resize + `history-limit` on the stable pane id
 
@@ -12,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmux_sdk::{
-    CleanupPolicy, OwnedSession, PaneId, PaneRecoveryEvent, PaneRecoveryRebaseReason, Rmux,
-    SessionName, TerminalSizeSpec,
+    CleanupPolicy, NewWindowBuilder, OwnedSession, PaneId, PaneRecoveryEvent,
+    PaneRecoveryRebaseReason, Rmux, SessionName, TerminalSizeSpec,
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -86,7 +87,12 @@ impl BridgeState {
             .await
             .map_err(|e| format!("owned_session create failed: {e}"))?;
 
-        let work = match owned.new_window_with().name("shell").cwd(PathBuf::from(&cwd)).await {
+        let work_builder = owned
+            .new_window_with()
+            .name("shell")
+            .cwd(PathBuf::from(&cwd));
+        let work_builder = apply_production_work_window_env(work_builder, std::env::consts::OS);
+        let work = match work_builder.await {
             Ok(w) => w,
             Err(e) => {
                 let _ = owned.cleanup().await;
@@ -433,6 +439,34 @@ impl BridgeState {
     }
 }
 
+/// Process environment overrides for xacpx-created shell work windows.
+///
+/// `os` is [`std::env::consts::OS`] (`macos`, `linux`, `windows`, ...).
+///
+/// On macOS, inject `TERM=screen-256color`. RMUX's daemon default is
+/// `tmux-256color`, which is a valid terminal type, but the current macOS
+/// system terminfo database has no readable entry for it. Async prompts such
+/// as Powerlevel10k then cannot emit CUU/ED and append a duplicate prompt
+/// after every command. This is a host compatibility fallback, not a claim
+/// that `screen-256color` is a better default than `tmux-256color`. Other
+/// platforms keep the daemon `default-terminal`.
+fn production_work_window_env(os: &str) -> Vec<(&'static str, &'static str)> {
+    match os {
+        "macos" => vec![("TERM", "screen-256color")],
+        _ => Vec::new(),
+    }
+}
+
+fn apply_production_work_window_env<'a>(
+    mut builder: NewWindowBuilder<'a>,
+    os: &str,
+) -> NewWindowBuilder<'a> {
+    for (key, value) in production_work_window_env(os) {
+        builder = builder.env(key, value);
+    }
+    builder
+}
+
 fn parse_pane_id(raw: &str) -> Result<PaneId, String> {
     let trimmed = raw.trim().trim_start_matches('%');
     let n: u32 = trimmed
@@ -547,6 +581,43 @@ async fn with_initial_rebase_deadline<T>(
 mod tests {
     use super::*;
     use rmux_sdk::PaneStreamEndReason;
+
+    #[test]
+    fn macos_work_window_injects_screen_256color_term() {
+        assert_eq!(
+            production_work_window_env("macos"),
+            vec![("TERM", "screen-256color")]
+        );
+    }
+
+    #[test]
+    fn macos_work_window_does_not_prefer_xterm_256color() {
+        assert!(
+            !production_work_window_env("macos")
+                .iter()
+                .any(|(key, value)| *key == "TERM" && *value == "xterm-256color"),
+            "macOS fallback must be screen-256color, not xterm-256color"
+        );
+    }
+
+    #[test]
+    fn linux_work_window_keeps_daemon_default_term() {
+        assert!(production_work_window_env("linux").is_empty());
+    }
+
+    #[test]
+    fn windows_work_window_keeps_daemon_default_term() {
+        assert!(production_work_window_env("windows").is_empty());
+    }
+
+    #[test]
+    fn host_work_window_env_matches_production_helper() {
+        let env = production_work_window_env(std::env::consts::OS);
+        #[cfg(target_os = "macos")]
+        assert_eq!(env, vec![("TERM", "screen-256color")]);
+        #[cfg(not(target_os = "macos"))]
+        assert!(env.is_empty());
+    }
 
     #[test]
     fn startup_rejects_bytes_before_rebase() {
