@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
 import { TerminalRequestError } from "../api/events";
 import { initialRecoveryState } from "../lib/terminal-recovery";
 import type { TerminalAttachmentView } from "../stores/terminal";
+
+// The viewport controller keeps settling timers alive after mount; unmount
+// every wrapper so they are disposed before the next test's mock assertions.
+enableAutoUnmount(afterEach);
 
 const adapter = {
   write: vi.fn(async () => {}),
@@ -440,5 +444,48 @@ describe("TerminalTab", () => {
     expect(adapter.fit.mock.calls.length).toBe(fitCallsBefore);
     expect(adapter.resize.mock.calls.length).toBe(resizesBefore);
     expect(sendResize.mock.calls.length).toBe(sendResizesBefore);
+  });
+
+  it("re-fits when font/canvas metrics settle after open (initial layout settling)", async () => {
+    // The terminal renderer initializes asynchronously (WASM, webfont, canvas
+    // mount, CSS layout). The first measurable geometry can be the fallback
+    // font's; once the webfont lands the same host pixels fit a different
+    // grid, and nothing re-fires ResizeObserver - settling syncs must re-fit.
+    vi.useFakeTimers();
+    try {
+      adapter.fit.mockReturnValueOnce({ cols: 80, rows: 24 }).mockReturnValue({ cols: 150, rows: 45 });
+      mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await vi.advanceTimersByTimeAsync(0);
+      // The adapter starts at 80x24, so the first fit is a local no-op - the
+      // backend push is what proves the sync ran.
+      expect(adapter.resize).not.toHaveBeenCalled();
+      expect(sendResize).toHaveBeenCalledWith("i1\0demo", 80, 24);
+
+      await vi.advanceTimersByTimeAsync(1100); // settling window elapses
+      expect(adapter.resize).toHaveBeenLastCalledWith(150, 45);
+      expect(sendResize).toHaveBeenLastCalledWith("i1\0demo", 150, 45);
+    } finally {
+      vi.useRealTimers();
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
+
+  it("stops settling syncs once the tab unmounts", async () => {
+    vi.useFakeTimers();
+    try {
+      adapter.fit.mockReturnValue({ cols: 150, rows: 45 });
+      const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await vi.advanceTimersByTimeAsync(0);
+      w.unmount();
+      adapter.fit.mockClear();
+      adapter.resize.mockClear();
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(adapter.fit).not.toHaveBeenCalled();
+      expect(adapter.resize).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
   });
 });
