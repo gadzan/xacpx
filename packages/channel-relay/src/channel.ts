@@ -328,15 +328,18 @@ export class RelayChannel implements MessageChannelRuntime {
   private resolutionForBootstrapLog(
     resolution: ResolvedRmuxBinaries | null | undefined,
   ): Record<string, string> {
-    if (!resolution) return {};
+    const base = {
+      rmuxExpectedVersion: RMUX_BUNDLED_VERSION,
+    };
+    if (!resolution) return base;
     return {
+      ...base,
       bridgeSource: resolution.source.bridge,
       bridgePath: redactPathForDoctor(resolution.bridgeCommand),
       ...(resolution.rmuxCommand && resolution.source.rmux
         ? {
             rmuxSource: resolution.source.rmux,
             rmuxPath: redactPathForDoctor(resolution.rmuxCommand),
-            rmuxExpectedVersion: RMUX_BUNDLED_VERSION,
           }
         : {}),
     };
