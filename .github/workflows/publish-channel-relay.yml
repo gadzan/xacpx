@@ -276,11 +276,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download linux-x64 bridge artifact
+      - name: Download linux-x64 platform package tarball
         uses: actions/download-artifact@v4
         with:
           name: rmux-bridge-linux-x64
           path: platform-packages/xacpx-rmux-bridge-linux-x64
+
+      # Legacy env must NOT get the bundled RMUX beside the bridge (it would
+      # mask the managed-helper fallback this smoke exists to prove), so DO
+      # NOT install the whole package — extract only the standalone bridge
+      # from the publish tarball into a temp dir.
+      - name: Extract standalone bridge from the publish tarball
+        run: |
+          set -euo pipefail
+          TGZ="$(ls platform-packages/xacpx-rmux-bridge-linux-x64/*.tgz | head -1)"
+          LEGACY_DIR="$RUNNER_TEMP/xacpx-rmux-legacy"
+          rm -rf "$LEGACY_DIR"
+          mkdir -p "$LEGACY_DIR"
+          tar -xzf "$TGZ" -C "$LEGACY_DIR" package/bin/xacpx-rmux-bridge
+          BRIDGE="$LEGACY_DIR/package/bin/xacpx-rmux-bridge"
+          test -x "$BRIDGE"
+          # Guard: no bundled RMUX may sit next to the standalone bridge.
+          test ! -e "$(dirname "$BRIDGE")/rmux"
+          test ! -e "$(dirname "$BRIDGE")/rmux-daemon"
+          echo "XACPX_RMUX_BRIDGE=$BRIDGE" >> "$GITHUB_ENV"
 
       - name: Install pinned RMUX 0.10.0 (legacy managed helper)
         run: |
@@ -289,12 +308,13 @@ jobs:
           echo "RMUX_SDK_DAEMON_BINARY=$HOME/.local/libexec/rmux/rmux" >> "$GITHUB_ENV"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # Environment under test: standalone bridge + ~/.local/libexec/rmux 0.10
+      # + PATH rmux, with NO bundled RMUX — proves explicit bridge → no beside
+      # RMUX → managed-helper fallback still works.
       - name: Run real RMUX smoke matrix (legacy env)
         env:
           XACPX_RMUX_INTEGRATION: "1"
-          XACPX_RMUX_BRIDGE: ${{ github.workspace }}/platform-packages/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
         run: |
-          chmod +x "$XACPX_RMUX_BRIDGE"
           bun test tests/smoke/relay-rmux-terminal.test.ts
 
   # Windows production-package smoke on the real win32 platform package

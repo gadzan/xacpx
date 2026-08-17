@@ -192,7 +192,7 @@ export async function diagnoseRelayTerminal(
         ...(probeFailed
           ? {
               suggestion:
-                "run `rmux -V` on the resolved binary (`${resolved.rmuxCommand}`) or re-install the channel-relay platform optional package",
+                "run `rmux -V` on the resolved rmuxPath shown in details, or re-install the channel-relay platform optional package",
             }
           : mismatch
             ? {
