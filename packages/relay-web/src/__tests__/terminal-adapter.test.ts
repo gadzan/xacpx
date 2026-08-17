@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTerminalAdapter, revealGhosttyInputSurface, type GhosttyTerminalLike } from "../lib/terminal-adapter";
+import { createTerminalAdapter, syncGhosttyInputAnchor, type GhosttyTerminalLike } from "../lib/terminal-adapter";
 
 type Call = { op: "write" | "resize" | "reset" | "setTheme"; args: unknown[] };
+type RectLike = { left: number; top: number; width: number; height: number };
+
+const asRect = (r: RectLike) => r as unknown as DOMRect;
 
 /** A fake ghostty terminal that records every mutating call (and its arguments) in
  * invocation order, so tests can assert exact ordering — not just individual calls. */
@@ -34,6 +37,46 @@ function deferredFactory(term: GhosttyTerminalLike) {
 async function flush(times = 4) {
   for (let i = 0; i < times; i++) await Promise.resolve();
 }
+
+/** Fake ghostty terminal whose host already contains the canvas + helper textarea (as
+ * ghostty's open() would have) plus mutable cursor geometry, for IME-anchor tests. write
+ * advances the cursor and reset homes it, so adapter-triggered re-anchors are observable. */
+function anchoredTerminal(
+  host: HTMLElement,
+  geometry: { hostRect: RectLike; canvasRect: RectLike; cols: number; rows: number },
+  cursor: { cursorX: number; cursorY: number },
+) {
+  host.getBoundingClientRect = () => asRect(geometry.hostRect);
+  const canvas = document.createElement("canvas");
+  canvas.getBoundingClientRect = () => asRect(geometry.canvasRect);
+  host.appendChild(canvas);
+  const ta = document.createElement("textarea");
+  ta.style.width = "1px";
+  ta.style.height = "1px";
+  ta.style.clipPath = "inset(50%)";
+  host.appendChild(ta);
+  const term: GhosttyTerminalLike = {
+    open: vi.fn(),
+    write: vi.fn(() => { cursor.cursorX += 10; cursor.cursorY += 1; }),
+    resize: vi.fn((c: number, r: number) => { term.cols = c; term.rows = r; }),
+    reset: vi.fn(() => { cursor.cursorX = 0; cursor.cursorY = 0; }),
+    dispose: vi.fn(),
+    onData: vi.fn(),
+    cols: geometry.cols,
+    rows: geometry.rows,
+    buffer: { active: cursor },
+  };
+  return { term, ta };
+}
+
+/** Default IME-anchor geometry: canvas 800×400 on an 80×20 grid (10×20 cells), host
+ * offset (20,30) with canvas at viewport (50,80) -> canvas offset inside host (30,50). */
+const ANCHOR_GEOMETRY = {
+  hostRect: { left: 20, top: 30, width: 900, height: 500 },
+  canvasRect: { left: 50, top: 80, width: 800, height: 400 },
+  cols: 80,
+  rows: 20,
+};
 
 describe("terminal-adapter", () => {
   it("opens the ghostty terminal on the element and wires onData", async () => {
@@ -90,20 +133,86 @@ describe("terminal-adapter", () => {
     expect(a.fit()).toBeNull();
   });
 
-  it("revealGhosttyInputSurface unclips the 1×1 helper textarea", () => {
+  it("syncGhosttyInputAnchor anchors the textarea one cell at the terminal cursor, never fullscreen", () => {
     const host = document.createElement("div");
+    host.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.hostRect);
+    const canvas = document.createElement("canvas");
+    canvas.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.canvasRect);
+    host.appendChild(canvas);
     const ta = document.createElement("textarea");
-    ta.style.width = "1px";
-    ta.style.height = "1px";
+    // Start from the old fullscreen-workaround styles to prove they are fully cleared.
+    ta.style.left = "0";
+    ta.style.top = "0";
+    ta.style.right = "0";
+    ta.style.bottom = "0";
+    ta.style.width = "100%";
+    ta.style.height = "100%";
     ta.style.clipPath = "inset(50%)";
     host.appendChild(ta);
-    revealGhosttyInputSurface(host);
-    expect(ta.style.width).toBe("100%");
-    expect(ta.style.height).toBe("100%");
+    const { term } = fakeTerminal();
+    term.cols = 80;
+    term.rows = 20;
+    term.buffer = { active: { cursorX: 10, cursorY: 5 } };
+
+    syncGhosttyInputAnchor(host, term);
+
+    // cellW = 800/80 = 10, cellH = 400/20 = 20; cursor (10,5) is +100/+100 from the
+    // canvas origin, which itself sits at (50-20, 80-30) inside the host.
+    expect(ta.style.left).toBe("130px");
+    expect(ta.style.top).toBe("150px");
+    expect(ta.style.width).toBe("10px");
+    expect(ta.style.height).toBe("20px");
+    expect(ta.style.right).toBe("");
+    expect(ta.style.bottom).toBe("");
+    // Focusable but invisible and click-through: the canvas owns pointer interaction.
     expect(ta.style.clipPath).toBe("none");
+    expect(ta.style.opacity).toBe("0");
+    expect(ta.style.pointerEvents).toBe("none");
   });
 
-  it("focus() proxies to the underlying terminal", async () => {
+  it("syncGhosttyInputAnchor clamps an out-of-range cursor into the grid", () => {
+    const host = document.createElement("div");
+    host.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.hostRect);
+    const canvas = document.createElement("canvas");
+    canvas.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.canvasRect);
+    host.appendChild(canvas);
+    const ta = document.createElement("textarea");
+    host.appendChild(ta);
+    const { term } = fakeTerminal();
+    term.cols = 80;
+    term.rows = 20;
+    term.buffer = { active: { cursorX: 999, cursorY: -3 } };
+
+    syncGhosttyInputAnchor(host, term);
+
+    expect(ta.style.left).toBe(`${30 + 79 * 10}px`); // clamped to cols-1
+    expect(ta.style.top).toBe(`${50 + 0 * 20}px`);   // clamped to 0
+  });
+
+  it("focus() focuses the helper textarea (the IME anchor), not the terminal host", async () => {
+    const host = document.createElement("div");
+    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, { cursorX: 10, cursorY: 5 });
+    const termFocus = vi.fn();
+    (term as unknown as { focus?: () => void }).focus = termFocus;
+    const hostFocus = vi.spyOn(host, "focus");
+    document.body.appendChild(host);
+    try {
+      const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
+      await a.ready();
+      a.focus();
+      await flush();
+      expect(document.activeElement).toBe(ta);
+      expect(termFocus).not.toHaveBeenCalled();
+      expect(hostFocus).not.toHaveBeenCalled();
+      // Focusing must not regress the anchor's invisible/click-through styling.
+      expect(ta.style.opacity).toBe("0");
+      expect(ta.style.pointerEvents).toBe("none");
+    } finally {
+      host.remove();
+    }
+  });
+
+  it("focus() falls back to terminal/host focus when no helper textarea exists", async () => {
     const { term } = fakeTerminal();
     const focus = vi.fn();
     (term as unknown as { focus: () => void }).focus = focus;
@@ -119,24 +228,48 @@ describe("terminal-adapter", () => {
     expect(elFocus).toHaveBeenCalled();
   });
 
-  it("open/focus unclip a helper textarea so canvas-click focus can receive keys", async () => {
-    const { term } = fakeTerminal();
-    const el = document.createElement("div");
-    const ta = document.createElement("textarea");
-    ta.style.width = "1px";
-    ta.style.height = "1px";
-    ta.style.clipPath = "inset(50%)";
-    el.appendChild(ta);
-    term.open = vi.fn(() => { el.appendChild(ta); });
-    const a = createTerminalAdapter(el, {
-      cols: 80, rows: 24, onData: () => {}, factory: () => term,
-    });
+  it("open/ready anchors the helper textarea and write() re-anchors as the cursor moves", async () => {
+    const host = document.createElement("div");
+    const cursor = { cursorX: 10, cursorY: 5 };
+    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, cursor);
+    const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
     await a.ready();
     expect(ta.style.clipPath).toBe("none");
-    ta.style.clipPath = "inset(50%)";
-    a.focus();
+    expect(ta.style.left).toBe("130px"); // (10,5) at 10×20 cells
+    expect(ta.style.top).toBe("150px");
+
+    await a.write("move"); // fake write advances the cursor to (20,6)
+    expect(ta.style.left).toBe(`${30 + 20 * 10}px`);
+    expect(ta.style.top).toBe(`${50 + 6 * 20}px`);
+  });
+
+  it("resize() recomputes the anchor from the new cell geometry", async () => {
+    const host = document.createElement("div");
+    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, { cursorX: 10, cursorY: 5 });
+    const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
+    await a.ready();
+    expect(ta.style.width).toBe("10px");
+
+    a.resize(100, 25); // fake resize updates cols/rows -> cell 8×16
     await flush();
-    expect(ta.style.clipPath).toBe("none");
+    expect(ta.style.width).toBe("8px");
+    expect(ta.style.height).toBe("16px");
+    expect(ta.style.left).toBe(`${30 + 10 * 8}px`);
+    expect(ta.style.top).toBe(`${50 + 5 * 16}px`);
+  });
+
+  it("resetAndReplay() re-anchors on the rebased grid after the keyframe lands", async () => {
+    const host = document.createElement("div");
+    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, { cursorX: 10, cursorY: 5 });
+    const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
+    await a.ready();
+
+    // reset homes the cursor to (0,0), resize regrids to 100×25 (8×16 cells), write
+    // advances it to (10,1) - the anchor must reflect the final cursor on the new grid.
+    await a.resetAndReplay(new Uint8Array([1]), 100, 25);
+    expect(ta.style.width).toBe("8px");
+    expect(ta.style.left).toBe(`${30 + 10 * 8}px`);
+    expect(ta.style.top).toBe(`${50 + 1 * 16}px`);
   });
 
   it("focus() issued before ready still lands after the terminal opens", async () => {
