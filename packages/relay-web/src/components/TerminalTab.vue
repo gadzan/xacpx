@@ -503,13 +503,7 @@ onBeforeUnmount(() => {
   outline: none !important;
   box-shadow: none !important;
 }
-/* ghostty-web 0.4 helper is 1×1 + clip-path; unclip so canvas-click focus can receive keys. */
-.term-host :deep(textarea) {
-  position: absolute !important;
-  inset: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-  clip-path: none !important;
-  opacity: 0 !important;
-}
+/* No fullscreen textarea overrides here: the IME anchor textarea is sized/positioned
+   inline by the adapter's syncGhosttyInputAnchor (one cell at the shell cursor), and
+   !important CSS would defeat that geometry - which is exactly where IMEs anchor. */
 </style>

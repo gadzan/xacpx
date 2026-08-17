@@ -12,6 +12,14 @@ export interface TerminalTheme {
   cursor?: string;
 }
 
+/** Cursor position on the active screen, via ghostty's xterm-compatible buffer API. */
+export interface GhosttyBufferCursor {
+  /** Cursor column (0-indexed, in cells). */
+  readonly cursorX: number;
+  /** Cursor row (0-indexed, relative to the viewport). */
+  readonly cursorY: number;
+}
+
 export interface GhosttyTerminalLike {
   open(el: HTMLElement): void;
   write(data: string | Uint8Array): void;
@@ -27,6 +35,9 @@ export interface GhosttyTerminalLike {
   setTheme?(theme: TerminalTheme): void;
   /** Scroll the viewport by N lines (positive = toward the newest/bottom rows). */
   scrollLines?(amount: number): void;
+  /** Active-screen cursor access. Optional so minimal test fakes can omit it - the IME
+   *  anchor then falls back to the canvas origin. */
+  buffer?: { readonly active: GhosttyBufferCursor };
   /** ghostty's Terminal has no public setTheme yet; its renderer does. */
   renderer?: { setTheme?(theme: TerminalTheme): void };
   element?: HTMLElement;
@@ -91,25 +102,47 @@ async function defaultFactory(
 }
 
 /**
- * ghostty-web 0.4 mounts a 1×1 `clip-path: inset(50%)` textarea and focuses it on
- * canvas click, while InputHandler listens for keydown on the host. Several browsers
- * then never deliver keydown. Stretch that textarea over the host so IME and keys work
- * whether focus lands on the host or the helper.
+ * Position ghostty-web's 1×1 helper textarea as an invisible one-cell IME anchor at the
+ * rendered terminal cursor. Windows IMEs place the composition/candidate UI at the focused
+ * editable element's caret geometry - stretching the textarea over the host (the old
+ * workaround) makes candidates pop up in a corner far from the shell cursor. The textarea
+ * stays invisible and click-through (the canvas owns pointer interaction); keydown and
+ * composition events still bubble from it to ghostty's host-level InputHandler.
  */
-export function revealGhosttyInputSurface(host: HTMLElement): void {
+export function syncGhosttyInputAnchor(host: HTMLElement, terminal: GhosttyTerminalLike): void {
   const ta = host.querySelector("textarea");
   if (!(ta instanceof HTMLTextAreaElement)) return;
+  const canvas = (terminal.element ?? host).querySelector("canvas") ?? host.querySelector("canvas");
+  if (!canvas) return;
+  const canvasRect = canvas.getBoundingClientRect();
+  const hostRect = host.getBoundingClientRect();
+  const cols = Math.max(1, terminal.cols);
+  const rows = Math.max(1, terminal.rows);
+  const cellW = canvasRect.width / cols;
+  const cellH = canvasRect.height / rows;
+  if (!(cellW > 0) || !(cellH > 0)) return;
+  const cursor = terminal.buffer?.active;
+  const cx = clampCell(cursor?.cursorX, cols - 1);
+  const cy = clampCell(cursor?.cursorY, rows - 1);
+  // Keep the textarea focusable but invisible - never fullscreen (IME anchor) and never a
+  // pointer target (canvas interaction). "absolute" also undoes the "fixed" ghostty's
+  // contextmenu-copy flow can leave behind; left/top are host-relative.
   ta.style.position = "absolute";
-  ta.style.left = "0";
-  ta.style.top = "0";
-  ta.style.right = "0";
-  ta.style.bottom = "0";
-  ta.style.width = "100%";
-  ta.style.height = "100%";
+  ta.style.left = `${canvasRect.left - hostRect.left + cx * cellW}px`;
+  ta.style.top = `${canvasRect.top - hostRect.top + cy * cellH}px`;
+  ta.style.right = "";
+  ta.style.bottom = "";
+  ta.style.width = `${cellW}px`;
+  ta.style.height = `${cellH}px`;
   ta.style.opacity = "0";
   ta.style.clipPath = "none";
   ta.style.overflow = "hidden";
-  ta.style.zIndex = "1";
+  ta.style.pointerEvents = "none";
+  ta.style.zIndex = "";
+}
+
+function clampCell(v: number | undefined, max: number): number {
+  return Number.isFinite(v) ? Math.min(max, Math.max(0, v as number)) : 0;
 }
 
 export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOptions): TerminalAdapter {
@@ -135,7 +168,7 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       live = t;
       t.open(el);
       t.onData(opts.onData);
-      revealGhosttyInputSurface(el);
+      syncGhosttyInputAnchor(el, t);
       settleReady();
     },
     (err) => {
@@ -160,12 +193,16 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
 
   return {
     ready: () => (disposed ? Promise.reject(new Error("terminal adapter disposed")) : readyPromise),
-    write: (data) => enqueue((t) => t.write(data)),
-    resize: (c, r) => { void enqueue((t) => t.resize(c, r)); },
+    // write/resize/resetAndReplay each re-sync the IME anchor afterwards: ordinary shell
+    // output moves the cursor without changing the host size, so a ResizeObserver alone
+    // would leave the composition UI anchored to a stale cell.
+    write: (data) => enqueue((t) => { t.write(data); syncGhosttyInputAnchor(el, t); }),
+    resize: (c, r) => { void enqueue((t) => { t.resize(c, r); syncGhosttyInputAnchor(el, t); }); },
     resetAndReplay: (data, cols, rows) => enqueue((t) => {
       t.reset();
       t.resize(cols, rows);
       t.write(data);
+      syncGhosttyInputAnchor(el, t);
     }),
     dispose: () => {
       if (disposed) return;
@@ -174,13 +211,19 @@ export function createTerminalAdapter(el: HTMLElement, opts: TerminalAdapterOpti
       live?.dispose();
       live = undefined;
     },
-    // Queue behind ready(): a focus() issued while WASM is still loading must not
-    // no-op. ghostty-web's canvas mousedown focuses a 1×1 clipped textarea; its
-    // keydown listener is on the host, so we unclip that textarea and focus the host.
+    // Queue behind ready(): a focus() issued while WASM is still loading must not no-op.
+    // ghostty-web 0.4's Terminal.focus() focuses the host (the canvas's parent), NOT its
+    // helper textarea - but the textarea is the IME anchor, so focus it directly. It is a
+    // host child, so keydown/composition events still bubble to ghostty's InputHandler.
     focus: () => { void enqueue((t) => {
-      revealGhosttyInputSurface(el);
-      t.focus?.();
-      el.focus?.();
+      syncGhosttyInputAnchor(el, t);
+      const ta = el.querySelector("textarea");
+      if (ta instanceof HTMLTextAreaElement) {
+        ta.focus({ preventScroll: true });
+      } else {
+        t.focus?.();
+        el.focus?.();
+      }
     }); },
     getSelection: () => live?.getSelection?.() ?? "",
     setTheme: (theme) => { void enqueue((t) => {
