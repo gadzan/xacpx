@@ -2,6 +2,7 @@
  * Read-only RMUX terminal diagnostics for `xacpx doctor` (spec §19).
  * Never kills or mutates registry/owner identity.
  */
+import { spawnSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 
 import { homedir } from "node:os";
@@ -12,7 +13,11 @@ import { coreHomeDir } from "xacpx/plugin-api";
 import type { RelayTerminalConfig } from "../config.js";
 import { parseRelayTerminalConfig } from "../config.js";
 import type { RmuxTerminalDriver } from "./rmux-driver.js";
-import { resolveRmuxBinaries, RmuxBinaryUnavailableError } from "./resolve-rmux-binaries.js";
+import {
+  resolveRmuxBinaries,
+  RmuxBinaryUnavailableError,
+  RMUX_BUNDLED_VERSION,
+} from "./resolve-rmux-binaries.js";
 import { createProductionTerminalDriver } from "./rmux-sidecar-supervisor.js";
 import { TerminalRegistryStore } from "./terminal-registry-store.js";
 
@@ -40,6 +45,9 @@ export interface DiagnoseRelayTerminalInput {
   registryDir?: string;
   /** Override driver factory (tests). Default: production sidecar. */
   createDriver?: () => RmuxTerminalDriver;
+  /** Test seams for binary resolution (same defaults as resolveRmuxBinaries). */
+  homeDir?: string;
+  pathEnv?: string;
   now?: () => number;
 }
 
@@ -49,6 +57,56 @@ function pathExists(path: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Probe the resolved RMUX binary's version via `rmux -V`. Doctor is an
+ * explicitly-invoked diagnostics path (not terminal runtime startup), so a
+ * short-lived fork here is acceptable. Never spawns a daemon: `-V` prints and
+ * exits, and SDK daemon-start env vars are scrubbed so a misbehaving binary
+ * cannot start anything under the hood.
+ * Exported for unit tests; doctor treats probe failure (null actualVersion)
+ * as a distinct WARN state, never as healthy.
+ */
+export function probeRmuxVersion(rmuxCommand: string): {
+  actualVersion: string | null;
+  probeError: string | null;
+} {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("RMUX_SDK_") || key.startsWith("RMUX_")) delete env[key];
+  }
+  try {
+    const probe = spawnSync(rmuxCommand, ["-V"], {
+      encoding: "utf8",
+      timeout: 8_000,
+      env,
+    });
+    const out = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.trim();
+    // Expected output like `rmux 0.10.0`.
+    const match = out.match(/^rmux\s+v?([0-9]+\.[0-9]+\.[0-9]+)/);
+    if (probe.error) {
+      return { actualVersion: null, probeError: `spawn failed: ${probe.error.message}` };
+    }
+    if (probe.status !== 0) {
+      return {
+        actualVersion: null,
+        probeError: `rmux -V exited ${probe.status}`,
+      };
+    }
+    if (!match) {
+      return {
+        actualVersion: null,
+        probeError: `unexpected rmux -V output: ${JSON.stringify(out.slice(0, 60))}`,
+      };
+    }
+    return { actualVersion: match[1]!, probeError: null };
+  } catch (err) {
+    return {
+      actualVersion: null,
+      probeError: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -113,27 +171,73 @@ export async function diagnoseRelayTerminal(
       const resolved = resolveRmuxBinaries({
         bridgeCommand: terminal.bridgeCommand,
         rmuxCommand: terminal.rmuxCommand,
+        homeDir: input.homeDir ?? homedir(),
+        pathEnv: input.pathEnv,
       });
-      findings.push({
-        level: "ok",
-        code: "terminal-binaries-resolved",
-        message: "RMUX bridge binary resolved",
-        details: {
-          bridgeSource: resolved.source.bridge,
-          ...(resolved.source.rmux ? { rmuxSource: resolved.source.rmux } : {}),
-          bridgePath: redactPathForDoctor(resolved.bridgeCommand),
-          ...(resolved.rmuxCommand
-            ? { rmuxPath: redactPathForDoctor(resolved.rmuxCommand) }
-            : {}),
-        },
-      });
+      // Four states — unresolved, probe failed, version mismatch, healthy —
+      // exactly one finding is emitted; unresolved must NOT also print OK.
+      const bridgeDetails = {
+        bridgeSource: resolved.source.bridge,
+        bridgePath: redactPathForDoctor(resolved.bridgeCommand),
+        rmuxExpectedVersion: RMUX_BUNDLED_VERSION,
+      };
       if (!resolved.rmuxCommand) {
         findings.push({
           level: "warn",
           code: "terminal-rmux-daemon-unresolved",
-          message: "RMUX daemon binary not found; sidecar will try PATH and likely crash on Windows",
+          message:
+            "RMUX daemon binary not found beside the bridge, in ~/.local/libexec/rmux, or on PATH; the sidecar's SDK will try its own defaults and the terminal will fail closed without capabilities",
           suggestion:
-            "install RMUX 0.10.x (rmux.exe / rmux-daemon.exe) or set absolute channels[].options.terminal.rmuxCommand",
+            "install @ganglion/xacpx-channel-relay with its platform optional package (bundles RMUX 0.10.x) or set absolute channels[].options.terminal.rmuxCommand",
+          details: bridgeDetails,
+        });
+      } else {
+        const rmuxProbe = probeRmuxVersion(resolved.rmuxCommand);
+        const probeFailed = rmuxProbe.probeError !== null;
+        const mismatch =
+          !probeFailed &&
+          rmuxProbe.actualVersion !== null &&
+          rmuxProbe.actualVersion !== RMUX_BUNDLED_VERSION;
+        findings.push({
+          level: probeFailed || mismatch ? "warn" : "ok",
+          code: probeFailed
+            ? "terminal-rmux-version-probe-failed"
+            : mismatch
+              ? "terminal-binaries-resolved-mismatch"
+              : "terminal-binaries-resolved",
+          message: probeFailed
+            ? `RMUX version probe failed (${rmuxProbe.probeError}); run rmux -V manually to verify the resolved binary`
+            : mismatch
+              ? `RMUX version mismatch: expected ${RMUX_BUNDLED_VERSION}, resolved ${rmuxProbe.actualVersion} from ${resolved.source.rmux}`
+              : "RMUX bridge + daemon binaries resolved",
+          ...(probeFailed
+            ? {
+                suggestion:
+                  "run `rmux -V` on the resolved rmuxPath shown in details, or re-install the channel-relay platform optional package",
+              }
+            : mismatch
+              ? {
+                  suggestion:
+                    resolved.source.rmux === "platform-package"
+                      ? "bundled RMUX reports the wrong version — re-install the channel-relay platform optional package"
+                      : resolved.source.rmux === "config"
+                        ? "terminal.rmuxCommand points at a stale RMUX; unset it (the bundled 0.10.x is preferred) or point it at RMUX 0.10.x"
+                        : "machine-local RMUX (PATH or ~/.local/libexec/rmux) shadows the bundled 0.10.x; reinstall the channel-relay platform optional package",
+                }
+              : {}),
+          details: {
+            ...bridgeDetails,
+            ...(resolved.source.rmux
+              ? { rmuxSource: resolved.source.rmux }
+              : {}),
+            rmuxPath: redactPathForDoctor(resolved.rmuxCommand),
+            ...(rmuxProbe.actualVersion !== null
+              ? { rmuxActualVersion: rmuxProbe.actualVersion }
+              : {}),
+            ...(rmuxProbe.probeError
+              ? { rmuxVersionProbeError: rmuxProbe.probeError }
+              : {}),
+          },
         });
       }
     } catch (err) {

@@ -73,16 +73,17 @@ jobs:
             platform: linux
             arch: arm64
             package: linux-arm64
-          - runner: macos-14
+          # Native-host cells only: the pack script executes the downloaded
+          # `rmux -V` on the runner, so ARM runners cannot pack an x64 darwin
+          # package without Rosetta. macos-15 = arm64, macos-15-intel = x64.
+          - runner: macos-15
             platform: darwin
             arch: arm64
             package: darwin-arm64
-          - runner: macos-14
+          - runner: macos-15-intel
             platform: darwin
             arch: x64
             package: darwin-x64
-            rust_target: x86_64-apple-darwin
-            bin_path: target/x86_64-apple-darwin/release/xacpx-rmux-bridge
           - runner: windows-latest
             platform: win32
             arch: x64
@@ -120,19 +121,17 @@ jobs:
           fi
           grep -F 'rmux-sdk = "=0.10.0"' packages/channel-relay/native/rmux-bridge/Cargo.toml
 
-      - name: Build release sidecar
+      - name: Build release sidecar (native host)
         run: |
-          if [[ -n "${{ matrix.rust_target }}" ]]; then
-            rustup target add "${{ matrix.rust_target }}"
-            cargo build --release --target "${{ matrix.rust_target }}" \
-              --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
-          else
-            cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
-          fi
+          cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
 
-      - name: Pack platform package
+      # pack-rmux-bridge-platform.mjs downloads the pinned RMUX
+      # (RMUX_VERSION + SHA-256 fixed in scripts/rmux-release.mjs), verifies it,
+      # copies bridge + bin/rmux + libexec/rmux/rmux into the package, and runs
+      # the REAL `rmux -V` on this native host (must print `rmux 0.10.0`).
+      - name: Pack platform package with bundled RMUX
         run: |
-          BIN="packages/channel-relay/native/rmux-bridge/${BIN_REL:-target/release}/xacpx-rmux-bridge"
+          BIN="packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge"
           if [[ "${{ matrix.platform }}" == "win32" ]]; then
             BIN="${BIN}.exe"
           fi
@@ -141,18 +140,52 @@ jobs:
             --arch "${{ matrix.arch }}" \
             --binary "$BIN"
           test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json"
-          node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1)"
-        env:
-          BIN_REL: ${{ matrix.bin_path && 'target/x86_64-apple-darwin/release' || 'target/release' }}
+          node -e "const c=require('./platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/checksums.json'); if(!c.sha256) process.exit(1); if(!c.artifacts?.rmux?.sha256) process.exit(1); if(!c.artifacts?.rmuxHelper?.sha256) process.exit(1)"
+          test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/bin/rmux${{ matrix.platform == 'win32' && '.exe' || '' }}"
+          test -f "platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/libexec/rmux/rmux${{ matrix.platform == 'win32' && '.exe' || '' }}"
 
-      - name: Upload platform package
+      # Build the FINAL publishable artifact on the native runner while file
+      # modes are still correct. upload-artifact zips lose POSIX exec bits, so
+      # everything downstream (smokes + publish) must consume this exact tgz,
+      # never re-copied directories — test what you publish.
+      - name: npm pack platform package (final publish artifact)
+        run: |
+          set -euo pipefail
+          PKG_DIR="platform-packages/xacpx-rmux-bridge-${{ matrix.package }}"
+          VERSION="$(node -p "require('./packages/channel-relay/package.json').version")"
+          (cd "$PKG_DIR" && npm pack)
+          TGZ="$PKG_DIR/ganglion-xacpx-rmux-bridge-${{ matrix.package }}-${VERSION}.tgz"
+          test -f "$TGZ"
+          echo "packed $TGZ"
+          # Inspect the tgz content (npm member paths are package/...):
+          # redistributed-RMUX license + notice must be inside on every
+          # platform; exec bits must be present for the POSIX builds.
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          tar -xzf "$TGZ" -C "$TMP"
+          test -f "$TMP/package/THIRD_PARTY_NOTICES.md"
+          test -f "$TMP/package/THIRD_PARTY_LICENSES/RMUX-LICENSE-MIT.txt"
+          if [[ "${{ matrix.platform }}" != "win32" ]]; then
+            test -x "$TMP/package/bin/xacpx-rmux-bridge"
+            test -x "$TMP/package/bin/rmux"
+            test -x "$TMP/package/libexec/rmux/rmux"
+          fi
+
+      - name: Upload platform package tarball
         uses: actions/upload-artifact@v4
         with:
+          # Single tgz preserves the npm-packed modes; the outer zip the
+          # artifact store applies does not touch them.
           name: rmux-bridge-${{ matrix.package }}
-          path: platform-packages/xacpx-rmux-bridge-${{ matrix.package }}
+          path: platform-packages/xacpx-rmux-bridge-${{ matrix.package }}/*.tgz
           if-no-files-found: error
 
-  smoke-linux:
+  # Production-package smoke: NO machine-local RMUX anywhere (no
+  # install-rmux-release.sh, no ~/.local/libexec/rmux, no PATH rmux). The only
+  # RMUX that can resolve is the one bundled in the packed npm package. The
+  # test fabricates a hostile fake rmux at the front of PATH and proves it is
+  # never executed while a live create/input/recover/kill cycle runs.
+  smoke-platform-package:
     needs: [meta, build-platform]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -180,29 +213,177 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download linux-x64 bridge artifact
+      - name: Download linux-x64 platform package tarball
         uses: actions/download-artifact@v4
         with:
           name: rmux-bridge-linux-x64
           path: platform-packages/xacpx-rmux-bridge-linux-x64
 
-      - name: Install pinned RMUX 0.10.0
+      # Test what we publish: install the EXACT tgz the publish job will push.
+      # No chmod anywhere — the exec bits must survive npm pack → npm install,
+      # exactly as they will for every Linux/macOS user.
+      - name: Install platform package from the publish tarball
+        run: |
+          set -euo pipefail
+          TGZ="$(ls platform-packages/xacpx-rmux-bridge-linux-x64/*.tgz | head -1)"
+          rm -rf packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-linux-x64
+          npm install --prefix packages/channel-relay --no-save --no-audit --no-fund --no-package-lock "$TGZ"
+          PKG_DIR="$(find packages/channel-relay/node_modules node_modules -maxdepth 4 -type d -name xacpx-rmux-bridge-linux-x64 2>/dev/null | head -1)"
+          echo "installed at: $PKG_DIR"
+          test -x "$PKG_DIR/bin/xacpx-rmux-bridge"
+          test -x "$PKG_DIR/bin/rmux"
+          test -x "$PKG_DIR/libexec/rmux/rmux"
+          # The redistributed-RMUX MIT license + notice must ship in the tgz.
+          test -f "$PKG_DIR/THIRD_PARTY_NOTICES.md"
+          test -f "$PKG_DIR/THIRD_PARTY_LICENSES/RMUX-LICENSE-MIT.txt"
+
+      - name: Assert no machine-local RMUX could mask the bundled one
+        run: |
+          if command -v rmux >/dev/null 2>&1; then echo "rmux unexpectedly on PATH"; exit 1; fi
+          if [[ -e "$HOME/.local/libexec/rmux" ]]; then echo "managed helper unexpectedly present"; exit 1; fi
+
+      - name: Production package hostile smoke (bundled RMUX only)
+        env:
+          XACPX_RMUX_PLATFORM_PACKAGE: "1"
+        run: |
+          bun test tests/smoke/relay-rmux-platform-package.test.ts
+
+  # Developer / legacy environment smoke: RMUX from the managed helper
+  # ~/.local/libexec/rmux + PATH. This exercises the fallback chain for
+  # source checkouts and old installs — it must NOT be the only gate, because
+  # it can mask a platform package that forgot to bundle RMUX.
+  smoke-legacy:
+    needs: [meta, build-platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download linux-x64 platform package tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: rmux-bridge-linux-x64
+          path: platform-packages/xacpx-rmux-bridge-linux-x64
+
+      # Legacy env must NOT get the bundled RMUX beside the bridge (it would
+      # mask the managed-helper fallback this smoke exists to prove), so DO
+      # NOT install the whole package — extract only the standalone bridge
+      # from the publish tarball into a temp dir.
+      - name: Extract standalone bridge from the publish tarball
+        run: |
+          set -euo pipefail
+          TGZ="$(ls platform-packages/xacpx-rmux-bridge-linux-x64/*.tgz | head -1)"
+          LEGACY_DIR="$RUNNER_TEMP/xacpx-rmux-legacy"
+          rm -rf "$LEGACY_DIR"
+          mkdir -p "$LEGACY_DIR"
+          tar -xzf "$TGZ" -C "$LEGACY_DIR" package/bin/xacpx-rmux-bridge
+          BRIDGE="$LEGACY_DIR/package/bin/xacpx-rmux-bridge"
+          test -x "$BRIDGE"
+          # Guard: no bundled RMUX may sit next to the standalone bridge.
+          test ! -e "$(dirname "$BRIDGE")/rmux"
+          test ! -e "$(dirname "$BRIDGE")/rmux-daemon"
+          echo "XACPX_RMUX_BRIDGE=$BRIDGE" >> "$GITHUB_ENV"
+
+      - name: Install pinned RMUX 0.10.0 (legacy managed helper)
         run: |
           chmod +x scripts/install-rmux-release.sh
           bash scripts/install-rmux-release.sh
           echo "RMUX_SDK_DAEMON_BINARY=$HOME/.local/libexec/rmux/rmux" >> "$GITHUB_ENV"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Run real RMUX smoke matrix
+      # Environment under test: standalone bridge + ~/.local/libexec/rmux 0.10
+      # + PATH rmux, with NO bundled RMUX — proves explicit bridge → no beside
+      # RMUX → managed-helper fallback still works.
+      - name: Run real RMUX smoke matrix (legacy env)
         env:
           XACPX_RMUX_INTEGRATION: "1"
-          XACPX_RMUX_BRIDGE: ${{ github.workspace }}/platform-packages/xacpx-rmux-bridge-linux-x64/bin/xacpx-rmux-bridge
         run: |
-          chmod +x "$XACPX_RMUX_BRIDGE"
           bun test tests/smoke/relay-rmux-terminal.test.ts
 
+  # Windows production-package smoke on the real win32 platform package
+  # (bundled bin/rmux.exe + libexec helper), native host. Same hostile PATH
+  # fake regression as the Linux package smoke.
+  smoke-windows:
+    needs: [meta, build-platform]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download win32-x64 platform package tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: rmux-bridge-win32-x64
+          path: platform-packages/xacpx-rmux-bridge-win32-x64
+
+      # Same exact-tarball install as smoke-platform-package (no manual
+      # copying): the smoke consumes the tgz that will be published.
+      - name: Install platform package from the publish tarball
+        shell: pwsh
+        run: |
+          $tgz = Get-ChildItem 'platform-packages/xacpx-rmux-bridge-win32-x64/*.tgz' | Select-Object -First 1
+          Remove-Item -Recurse -Force 'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64' -ErrorAction SilentlyContinue
+          npm install --prefix packages/channel-relay --no-save --no-audit --no-fund --no-package-lock $tgz.FullName
+          $candidates = @(
+            'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64',
+            'node_modules/@ganglion/xacpx-rmux-bridge-win32-x64'
+          )
+          $pkgDir = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $pkgDir) { throw 'platform package not installed from tarball' }
+          if (-not (Test-Path "$pkgDir/bin/rmux.exe")) { throw 'installed package missing bundled rmux.exe' }
+          if (-not (Test-Path "$pkgDir/libexec/rmux/rmux.exe")) { throw 'installed package missing rmux helper' }
+
+      - name: Production package hostile smoke (Windows)
+        shell: pwsh
+        env:
+          XACPX_RMUX_PLATFORM_PACKAGE: "1"
+        run: |
+          bun test tests/smoke/relay-rmux-platform-package.test.ts
+
   publish-platforms:
-    needs: [meta, build-platform, smoke-linux]
+    needs: [meta, build-platform, smoke-platform-package, smoke-legacy, smoke-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -235,16 +416,15 @@ jobs:
           set -euo pipefail
           NPM_TAG="${{ needs.meta.outputs.npm_tag }}"
           for pkg in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
-            src="artifacts/rmux-bridge-${pkg}"
-            dest="platform-packages/xacpx-rmux-bridge-${pkg}"
-            rm -rf "$dest"
-            mv "$src" "$dest"
-            echo "Publishing @ganglion/xacpx-rmux-bridge-${pkg}@${{ needs.meta.outputs.version }}"
+            # Publish the EXACT tarball the smokes tested — never re-copy the
+            # directory (artifact zips lose POSIX exec bits, the tgz keeps them).
+            tgz="$(ls "artifacts/rmux-bridge-${pkg}/"*.tgz | head -1)"
+            echo "Publishing $tgz (@ganglion/xacpx-rmux-bridge-${pkg}@${{ needs.meta.outputs.version }})"
             # Tolerate a re-publish after a partial run: a version already on the
             # registry is expected and should not abort the rest of the pipeline.
-            if (cd "$dest" && npm publish --tag "$NPM_TAG" --access public); then
+            if npm publish "$tgz" --tag "$NPM_TAG" --access public; then
               echo "published ${pkg}"
-            elif [[ "$(cd "$dest" && npm view "@ganglion/xacpx-rmux-bridge-${pkg}"@${{ needs.meta.outputs.version }} version 2>/dev/null || true)" == "${{ needs.meta.outputs.version }}" ]]; then
+            elif [[ "$(npm view "@ganglion/xacpx-rmux-bridge-${pkg}"@${{ needs.meta.outputs.version }} version 2>/dev/null || true)" == "${{ needs.meta.outputs.version }}" ]]; then
               echo "already published ${pkg}@${{ needs.meta.outputs.version }}, skipping"
             else
               echo "::error::failed to publish ${pkg}" >&2
@@ -253,7 +433,7 @@ jobs:
           done
 
   publish-channel-relay:
-    needs: [meta, publish-platforms, smoke-linux]
+    needs: [meta, publish-platforms, smoke-platform-package, smoke-legacy, smoke-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

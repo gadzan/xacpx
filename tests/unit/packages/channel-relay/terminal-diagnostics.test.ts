@@ -1,12 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   diagnoseRelayTerminal,
+  probeRmuxVersion,
   redactPathForDoctor,
 } from "../../../../packages/channel-relay/src/terminal/terminal-diagnostics";
+import { RMUX_BUNDLED_VERSION } from "../../../../packages/channel-relay/src/terminal/resolve-rmux-binaries";
 import { InMemoryRmuxDriver } from "../../../../packages/channel-relay/src/terminal/in-memory-rmux-driver";
 import { TerminalRegistryStore } from "../../../../packages/channel-relay/src/terminal/terminal-registry-store";
 import { relayCliProvider } from "../../../../packages/channel-relay/src/relay-provider";
@@ -102,4 +104,63 @@ test("diagnose rejects invalid terminal config", async () => {
     options: { terminal: { enabled: true, backend: "pty" } },
   });
   expect(findings[0]).toMatchObject({ level: "error", code: "terminal-config-invalid" });
+});
+
+function writeProbeScript(content: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "rmux-probe-"));
+  dirs.push(dir);
+  const path = join(dir, "rmux");
+  writeFileSync(path, content);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+test("probeRmuxVersion parses a matching version as healthy", () => {
+  const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'rmux 0.10.0'\n"));
+  expect(probe.actualVersion).toBe("0.10.0");
+  expect(probe.probeError).toBeNull();
+});
+
+test("probeRmuxVersion detects a stale version", () => {
+  const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'rmux 0.9.0'\n"));
+  expect(probe.actualVersion).toBe("0.9.0");
+  expect(probe.probeError).toBeNull();
+});
+
+test("probeRmuxVersion treats non-zero exit as a probe failure, not a version", () => {
+  const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'rmux 0.10.0' >&2\nexit 3\n"));
+  expect(probe.actualVersion).toBeNull();
+  expect(probe.probeError).toContain("exited 3");
+});
+
+test("probeRmuxVersion treats garbage output as a probe failure", () => {
+  const probe = probeRmuxVersion(writeProbeScript("#!/bin/sh\necho 'not a version'\n"));
+  expect(probe.actualVersion).toBeNull();
+  expect(probe.probeError).toContain("unexpected rmux -V output");
+});
+
+test("diagnose emits unresolved WARN and no fake OK when no RMUX is resolvable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "term-diag-none-"));
+  dirs.push(dir);
+  const bridgeDir = mkdtempSync(join(tmpdir(), "term-diag-bridge-"));
+  dirs.push(bridgeDir);
+  const bridge = join(bridgeDir, "xacpx-rmux-bridge");
+  writeFileSync(bridge, "#!/bin/sh\nexit 1\n");
+  chmodSync(bridge, 0o755);
+
+  const findings = await diagnoseRelayTerminal({
+    options: { terminal: { enabled: true, bridgeCommand: bridge } },
+    registryDir: dir,
+    // Empty home + empty PATH → no managed helper, no PATH rmux → unresolved.
+    homeDir: join(dir, "empty-home"),
+    pathEnv: "/definitely-missing",
+    createDriver: undefined,
+  });
+  const unresolved = findings.find((f) => f.code === "terminal-rmux-daemon-unresolved");
+  expect(unresolved?.level).toBe("warn");
+  expect(unresolved?.details?.bridgeSource).toBe("config");
+  // Exactly one resolution finding — never an OK alongside the WARN.
+  expect(findings.filter((f) => f.code === "terminal-binaries-resolved")).toHaveLength(0);
+  expect(findings.filter((f) => f.code === "terminal-binaries-resolved-mismatch")).toHaveLength(0);
+  expect(findings.filter((f) => f.code === "terminal-rmux-version-probe-failed")).toHaveLength(0);
 });

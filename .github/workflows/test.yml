@@ -25,6 +25,7 @@ jobs:
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
       rmux_bridge: ${{ steps.filter.outputs.rmux_bridge }}
+      terminal_rmux: ${{ steps.filter.outputs.terminal_rmux }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -57,6 +58,19 @@ jobs:
             rmux_bridge:
               - 'packages/channel-relay/native/rmux-bridge/**'
               - '.github/workflows/test.yml'
+            terminal_rmux:
+              # Any change to the RMUX resolver, packaging, or terminal smoke
+              # must re-run the Windows production-package + hostile PATH gate.
+              - 'packages/channel-relay/**'
+              - 'scripts/pack-rmux-bridge-platform.mjs'
+              - 'scripts/rmux-release.mjs'
+              - 'scripts/sync-rmux-bridge-versions.mjs'
+              - 'scripts/verify-publish.mjs'
+              - 'tests/unit/packages/channel-relay/**'
+              - 'tests/unit/scripts/**'
+              - 'tests/smoke/relay-rmux-platform-package.test.ts'
+              - '.github/workflows/test.yml'
+              - '.github/workflows/publish-channel-relay.yml'
 
   test:
     runs-on: ubuntu-latest
@@ -147,6 +161,87 @@ jobs:
 
       - name: cargo check
         run: cargo check --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+
+  # Windows production-package gate: build the real bridge, pack the platform
+  # package with the pinned RMUX 0.10.0 (pack script SHA-verifies the download
+  # AND runs `rmux -V` natively), then prove production resolution picks the
+  # bundled RMUX over a hostile fake on PATH and a live terminal lifecycle
+  # works end to end. This is the regression gate for the PATH-rmux-0.9 field
+  # bug (rmux-sdk 0.10.0 bridge vs WinGet rmux 0.9.0 on PATH).
+  terminal-rmux-windows:
+    needs: paths
+    if: github.event_name == 'push' || needs.paths.outputs.terminal_rmux == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release sidecar (Windows)
+        run: cargo build --release --manifest-path packages/channel-relay/native/rmux-bridge/Cargo.toml
+
+      # Downloads the pinned RMUX release, SHA-verifies it, and runs the
+      # bundled `rmux -V` on this native host — must print `rmux 0.10.0`.
+      - name: Pack and npm-pack platform package with bundled RMUX
+        run: |
+          node ./scripts/pack-rmux-bridge-platform.mjs `
+            --platform win32 --arch x64 `
+            --binary packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge.exe
+          if (-not (Test-Path 'platform-packages/xacpx-rmux-bridge-win32-x64/bin/rmux.exe')) { throw 'packed package missing bundled rmux.exe' }
+          if (-not (Test-Path 'platform-packages/xacpx-rmux-bridge-win32-x64/libexec/rmux/rmux.exe')) { throw 'packed package missing rmux helper' }
+          Push-Location 'platform-packages/xacpx-rmux-bridge-win32-x64'
+          npm pack
+          Pop-Location
+
+      # Test what we publish: resolve + lifecycle run against the exact tgz
+      # npm will publish, installed the way a real user installs it (no manual
+      # copies, no chmod). Windows has no exec-bit concept, so X_OK here
+      # passes if the files exist (Node on win32).
+      - name: Install platform package from the publish tarball
+        run: |
+          $tgz = Get-ChildItem 'platform-packages/xacpx-rmux-bridge-win32-x64/*.tgz' | Select-Object -First 1
+          Remove-Item -Recurse -Force 'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64' -ErrorAction SilentlyContinue
+          npm install --prefix packages/channel-relay --no-save --no-audit --no-fund --no-package-lock $tgz.FullName
+          $candidates = @(
+            'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64',
+            'node_modules/@ganglion/xacpx-rmux-bridge-win32-x64'
+          )
+          $pkgDir = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $pkgDir) { throw 'platform package not installed from tarball' }
+          if (-not (Test-Path "$pkgDir/bin/rmux.exe")) { throw 'installed package missing bundled rmux.exe' }
+          if (-not (Test-Path "$pkgDir/libexec/rmux/rmux.exe")) { throw 'installed package missing rmux helper' }
+
+      - name: Resolver unit tests
+        run: bun test tests/unit/packages/channel-relay/resolve-rmux-binaries.test.ts
+
+      # Hostile regression: the test fabricates fake `rmux.exe` /
+      # `rmux-daemon.exe` (marker-writing real PEs via Add-Type) at the front
+      # of PATH and asserts they are NEVER executed while a live
+      # create/input/recover/kill cycle runs against the bundled 0.10.0.
+      - name: Platform-package hostile smoke (Windows)
+        run: bun test tests/smoke/relay-rmux-platform-package.test.ts
+        env:
+          XACPX_RMUX_PLATFORM_PACKAGE: '1'
 
   terminal-windows:
     # On PRs, only run when the diff touches the Windows/daemon/transport/
