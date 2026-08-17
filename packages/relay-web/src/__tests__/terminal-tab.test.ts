@@ -25,7 +25,9 @@ const detach = vi.fn();
 const sendInput = vi.fn();
 const sendResize = vi.fn();
 const takeControl = vi.fn();
-const onRebase = vi.fn(() => () => {});
+const onRebase = vi.fn(
+  (_cb?: (key: string, keyframe: Uint8Array, cols: number, rows: number) => void | Promise<void>) => () => {},
+);
 const onBytes = vi.fn(() => () => {});
 const onMeta = vi.fn((_cb?: (key: string, view: TerminalAttachmentView) => void) => () => {});
 const onAttachmentExit = vi.fn((_cb?: (key: string, reason: string, code?: number) => void) => () => {});
@@ -331,5 +333,112 @@ describe("TerminalTab", () => {
     exitCb?.("i1\0demo", "exited", 0);
     await flushPromises();
     expect(w.find('[data-test="terminal-viewers"]').exists()).toBe(false);
+  });
+
+  type RebaseCb = (key: string, keyframe: Uint8Array, cols: number, rows: number) => void | Promise<void>;
+  const keyframe = new Uint8Array([1, 2, 3]);
+
+  it("late recovery rebase re-fits the canvas back to the host geometry", async () => {
+    adapter.fit.mockReturnValue({ cols: 150, rows: 45 });
+    let rebaseCb: RebaseCb | undefined;
+    onRebase.mockImplementation((cb) => {
+      rebaseCb = cb;
+      return () => {};
+    });
+    try {
+      mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await flushPromises();
+      // Initial fit applied the host geometry.
+      expect(adapter.resize).toHaveBeenLastCalledWith(150, 45);
+      adapter.resize.mockClear();
+
+      await rebaseCb?.("i1\0demo", keyframe, 70, 40);
+      await flushPromises();
+
+      // Keyframe rebuilt at the rebase geometry first, then re-fit to host.
+      expect(adapter.resetAndReplay).toHaveBeenCalledWith(keyframe, 70, 40);
+      expect(adapter.resize).toHaveBeenCalledWith(150, 45);
+      const replayOrder = adapter.resetAndReplay.mock.invocationCallOrder[0];
+      const resizeOrder = adapter.resize.mock.invocationCallOrder[0];
+      expect(resizeOrder).toBeGreaterThan(replayOrder);
+    } finally {
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
+
+  it("controller late rebase may re-send the backend resize; dedupe is the store's job", async () => {
+    adapter.fit.mockReturnValue({ cols: 150, rows: 45 });
+    let rebaseCb: RebaseCb | undefined;
+    onRebase.mockImplementation((cb) => {
+      rebaseCb = cb;
+      return () => {};
+    });
+    try {
+      mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await flushPromises();
+      expect(sendResize).toHaveBeenCalledTimes(1);
+
+      await rebaseCb?.("i1\0demo", keyframe, 70, 40);
+      await flushPromises();
+
+      expect(sendResize).toHaveBeenCalledTimes(2);
+      expect(sendResize).toHaveBeenLastCalledWith("i1\0demo", 150, 45);
+    } finally {
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
+
+  it("spectator late rebase re-fits locally but never pushes a backend resize", async () => {
+    adapter.fit.mockReturnValue({ cols: 150, rows: 45 });
+    openOrResume.mockImplementation(async (key: string, opts: { sessionAlias: string }) =>
+      openedView({ localKey: key, sessionAlias: opts.sessionAlias, role: "spectator", viewerCount: 2 }),
+    );
+    let rebaseCb: RebaseCb | undefined;
+    onRebase.mockImplementation((cb) => {
+      rebaseCb = cb;
+      return () => {};
+    });
+    try {
+      mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+      await flushPromises();
+      expect(sendResize).not.toHaveBeenCalled();
+      adapter.resize.mockClear();
+
+      await rebaseCb?.("i1\0demo", keyframe, 70, 40);
+      await flushPromises();
+
+      expect(adapter.resetAndReplay).toHaveBeenCalledWith(keyframe, 70, 40);
+      expect(adapter.resize).toHaveBeenCalledWith(150, 45);
+      expect(sendResize).not.toHaveBeenCalled();
+    } finally {
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
+
+  it("stale rebase after epoch change does not re-fit the adapter after replay", async () => {
+    let resolveReplay: (() => void) | undefined;
+    const replayGate = new Promise<void>((r) => { resolveReplay = r; });
+    adapter.resetAndReplay.mockReturnValueOnce(replayGate);
+    let rebaseCb: RebaseCb | undefined;
+    onRebase.mockImplementation((cb) => {
+      rebaseCb = cb;
+      return () => {};
+    });
+    const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
+    await flushPromises();
+    const fitCallsBefore = adapter.fit.mock.calls.length;
+    const resizesBefore = adapter.resize.mock.calls.length;
+    const sendResizesBefore = sendResize.mock.calls.length;
+
+    const pending = rebaseCb?.("i1\0demo", keyframe, 70, 40);
+    // Unmount bumps the epoch and disposes the adapter while replay is in flight.
+    w.unmount();
+    resolveReplay?.();
+    await pending;
+    await flushPromises();
+
+    expect(adapter.fit.mock.calls.length).toBe(fitCallsBefore);
+    expect(adapter.resize.mock.calls.length).toBe(resizesBefore);
+    expect(sendResize.mock.calls.length).toBe(sendResizesBefore);
   });
 });
