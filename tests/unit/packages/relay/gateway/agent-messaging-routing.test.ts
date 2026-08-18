@@ -81,7 +81,7 @@ async function authInstance(socket: WebSocket, pairingToken: string) {
   return res.payload as { instanceId: string; credential: string };
 }
 
-test("Relay Hub routes agent.message.route to target instance via agent.message.deliver", async () => {
+test("Relay Hub routes agent.message.route to target instance via agent.message.deliver and preserves source identity", async () => {
   const { instances, account, wss, url } = await makeGateway();
 
   // Instance A
@@ -91,7 +91,7 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
     600_000,
   ).token;
   const socketA = await connect(url);
-  const authA = await authInstance(socketA, tokenA);
+  await authInstance(socketA, tokenA);
 
   // Instance B
   const tokenB = instances.issuePairingToken(
@@ -100,7 +100,7 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
     600_000,
   ).token;
   const socketB = await connect(url);
-  const authB = await authInstance(socketB, tokenB);
+  await authInstance(socketB, tokenB);
 
   // Instance B publishes its endpoints
   const syncB: InstanceAgentEndpointsSyncPayload = {
@@ -132,7 +132,7 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
 
   await new Promise((r) => setTimeout(r, 50));
 
-  // Set up socket B handler to deliver response when it receives agentMessageDeliver
+  let deliveredPayload: AgentMessageDeliverPayload | null = null;
   socketB.on("message", (data) => {
     const decoded = decodeEnvelope(String(data));
     if (
@@ -140,9 +140,7 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
       decoded.envelope.kind === "req" &&
       decoded.envelope.type === MSG.agentMessageDeliver
     ) {
-      const payload = decoded.envelope.payload as AgentMessageDeliverPayload;
-      expect(payload.targetEndpointId).toBe("worker_b");
-      expect(payload.content).toBe("hello from node A");
+      deliveredPayload = decoded.envelope.payload as AgentMessageDeliverPayload;
       socketB.send(
         encodeEnvelope({
           protocolVersion: RELAY_PROTOCOL_VERSION,
@@ -150,7 +148,7 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
           id: decoded.envelope.id,
           type: decoded.envelope.type,
           payload: {
-            messageId: payload.messageId,
+            messageId: deliveredPayload.messageId,
             status: "queued",
             modeUsed: "queue",
           },
@@ -159,13 +157,15 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
     }
   });
 
-  // Instance A sends message to node_b_123
   const routeReq: AgentMessageRoutePayload = {
+    sourceNodeId: "node_a_999",
+    sourceEndpointId: "worker_a_sender",
     targetNodeId: "node_b_123",
     targetEndpointId: "worker_b",
     messageId: "msg_test_1",
     content: "hello from node A",
     requestedMode: "auto",
+    replyTo: "msg_orig_0",
   };
   socketA.send(
     encodeEnvelope({
@@ -184,6 +184,83 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
   expect(resPayload.status).toBe("queued");
   expect(resPayload.modeUsed).toBe("queue");
 
+  expect(deliveredPayload).toBeDefined();
+  expect(deliveredPayload!.sourceNodeId).toBe("node_a_999");
+  expect(deliveredPayload!.sourceEndpointId).toBe("worker_a_sender");
+  expect(deliveredPayload!.targetEndpointId).toBe("worker_b");
+  expect(deliveredPayload!.replyTo).toBe("msg_orig_0");
+  expect(deliveredPayload!.replyable).toBe(true);
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
+test("Relay Hub returns TARGET_NOT_FOUND when target endpoint is not in published directory", async () => {
+  const { instances, account, wss, url } = await makeGateway();
+
+  const tokenA = instances.issuePairingToken(
+    account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+
+  const tokenB = instances.issuePairingToken(
+    account.id,
+    "nodeB",
+    600_000,
+  ).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  socketB.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "event",
+      type: MSG.instanceAgentEndpointsSync,
+      payload: {
+        endpoints: [
+          {
+            nodeId: "node_b_123",
+            endpointId: "worker_other",
+            displayName: "Worker Other",
+            agent: "codex",
+            state: "idle",
+            capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+            updatedAt: Date.now(),
+          },
+        ],
+      },
+    }),
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const routeReq: AgentMessageRoutePayload = {
+    sourceNodeId: "node_a",
+    sourceEndpointId: "ep_a",
+    targetNodeId: "node_b_123",
+    targetEndpointId: "non_existent_worker",
+    messageId: "msg_test_not_found",
+    content: "hello",
+    requestedMode: "auto",
+  };
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "route-nf",
+      type: MSG.agentMessageRoute,
+      payload: routeReq,
+    }),
+  );
+
+  const resA = await nextMessage(socketA);
+  const errPayload = resA.payload as { error: { code: string } };
+  expect(errPayload.error.code).toBe("TARGET_NOT_FOUND");
+
   socketA.close();
   socketB.close();
   wss.close();
@@ -201,6 +278,8 @@ test("Relay Hub returns TARGET_NODE_OFFLINE when target node is not connected", 
   await authInstance(socketA, tokenA);
 
   const routeReq: AgentMessageRoutePayload = {
+    sourceNodeId: "node_a",
+    sourceEndpointId: "ep_a",
     targetNodeId: "node_unknown_999",
     targetEndpointId: "worker_x",
     messageId: "msg_test_2",
@@ -286,6 +365,8 @@ test("Relay Hub isolates messages across different accounts", async () => {
       id: "route-cross",
       type: MSG.agentMessageRoute,
       payload: {
+        sourceNodeId: "node_a",
+        sourceEndpointId: "ep_a",
         targetNodeId: "node_bob_1",
         targetEndpointId: "worker_bob",
         messageId: "msg_cross",

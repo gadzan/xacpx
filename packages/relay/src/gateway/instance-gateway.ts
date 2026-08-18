@@ -106,8 +106,6 @@ export class InstanceGateway {
     );
 
     socket.on("message", (data) => {
-      // A single bad frame (or a throwing onEvent consumer, e.g. a DB write) must
-      // not propagate out of the listener and tear down the whole connection.
       try {
         this.handleMessage(socket, data, authed, (identity) => {
           authed = identity;
@@ -275,12 +273,38 @@ export class InstanceGateway {
         const syncPayload =
           envelope.payload as InstanceAgentEndpointsSyncPayload;
         if (Array.isArray(syncPayload?.endpoints)) {
-          this.endpointsByInstance.set(
-            authed.instanceId,
-            syncPayload.endpoints,
-          );
+          if (syncPayload.endpoints.length === 0) {
+            this.endpointsByInstance.delete(authed.instanceId);
+          } else {
+            const claimedNodeIds = new Set(
+              syncPayload.endpoints.map((e) => e.nodeId),
+            );
+            for (const [otherInstId, conn] of this.connections) {
+              if (
+                otherInstId !== authed.instanceId &&
+                conn.accountId === authed.accountId
+              ) {
+                const otherEndpoints =
+                  this.endpointsByInstance.get(otherInstId) ?? [];
+                if (otherEndpoints.some((e) => claimedNodeIds.has(e.nodeId))) {
+                  this.logger.warn(
+                    "relay.instance.node_id_collision",
+                    "instance tried to claim nodeId owned by another active instance",
+                    { instanceId: authed.instanceId },
+                  );
+                  return;
+                }
+              }
+            }
+            this.endpointsByInstance.set(
+              authed.instanceId,
+              syncPayload.endpoints,
+            );
+          }
+          this.broadcastDirectorySnapshot(authed.accountId);
         }
       }
+      return;
     }
     if (envelope.kind === "req" && envelope.id) {
       const respond = (payload: unknown) => {
@@ -295,14 +319,25 @@ export class InstanceGateway {
         );
       };
 
+      if (envelope.type === MSG.agentDirectoryQuery) {
+        respond({ endpoints: this.getPublishedEndpoints(authed.accountId) });
+        return;
+      }
+
       if (envelope.type === MSG.agentMessageRoute) {
         const routePayload = envelope.payload as AgentMessageRoutePayload;
         let targetInstanceId: string | null = null;
+        let targetEndpointFound = false;
         for (const [instId, conn] of this.connections) {
           if (conn.accountId === authed.accountId) {
             const endpoints = this.endpointsByInstance.get(instId) ?? [];
             if (endpoints.some((e) => e.nodeId === routePayload.targetNodeId)) {
               targetInstanceId = instId;
+              targetEndpointFound = endpoints.some(
+                (e) =>
+                  e.nodeId === routePayload.targetNodeId &&
+                  e.endpointId === routePayload.targetEndpointId,
+              );
               break;
             }
           }
@@ -316,9 +351,18 @@ export class InstanceGateway {
           );
           return;
         }
+        if (!targetEndpointFound) {
+          respond(
+            errorPayload(
+              "TARGET_NOT_FOUND",
+              `Target endpoint ${routePayload.targetEndpointId} not found on node ${routePayload.targetNodeId}`,
+            ),
+          );
+          return;
+        }
         const deliverPayload: AgentMessageDeliverPayload = {
-          sourceNodeId: authed.instanceId,
-          sourceEndpointId: "",
+          sourceNodeId: routePayload.sourceNodeId,
+          sourceEndpointId: routePayload.sourceEndpointId,
           targetEndpointId: routePayload.targetEndpointId,
           messageId: routePayload.messageId,
           content: routePayload.content,
@@ -555,6 +599,26 @@ export class InstanceGateway {
         clearTimeout(p.timer);
         this.pending.delete(id);
         p.reject(new Error(reason));
+      }
+    }
+  }
+
+  getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[] {
+    const result: PublishedAgentEndpointDto[] = [];
+    for (const [instId, conn] of this.connections) {
+      if (conn.accountId === accountId) {
+        const endpoints = this.endpointsByInstance.get(instId) ?? [];
+        result.push(...endpoints);
+      }
+    }
+    return result;
+  }
+
+  private broadcastDirectorySnapshot(accountId: string): void {
+    const endpoints = this.getPublishedEndpoints(accountId);
+    for (const [instId, conn] of this.connections) {
+      if (conn.accountId === accountId) {
+        this.sendEvent(instId, MSG.agentDirectorySnapshot, { endpoints });
       }
     }
   }
