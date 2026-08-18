@@ -133,7 +133,10 @@ test("oracle: a cancel emptying the queue during hand-off clears draining (no we
   });
   const p1 = o.service.prompt({ ...C, text: "first" });
   await tick();
-  const r2 = await o.record("second", o.service.prompt({ ...C, text: "second" }));
+  const r2 = await o.record(
+    "second",
+    o.service.prompt({ ...C, text: "second" }),
+  );
   ref.itemId = (r2 as { queueItemId?: string }).queueItemId;
   armCancel = true;
   o.controls.resolveChat(); // finish "first" → draining set → post-turn getSession cancels "second"

@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
 import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
 
 // Minimal deps: a fake agent whose chat() invokes the streaming callbacks we want to
 // observe, then resolves; sessions/uploadStore stubbed just enough for run() to proceed.
@@ -35,7 +38,9 @@ test("onActivity is invoked on each agent event", async () => {
     opts.onCommands([]);
     return { text: "done" };
   });
-  await runner.run(REQ as never, new AbortController().signal, () => { calls++; });
+  await runner.run(REQ as never, new AbortController().signal, () => {
+    calls++;
+  });
   expect(calls).toBeGreaterThanOrEqual(6);
 });
 
@@ -43,7 +48,10 @@ test("a clean turn with no abort emits turn-finished ok:true carrying the reply 
   const { runner, captured } = makeRunner(async () => ({ text: "final" }));
   const result = await runner.run(REQ as never, new AbortController().signal);
   expect(result.ok).toBe(true);
-  const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
   expect(fin.ok).toBe(true);
   // The final reply rides along so a relay hub that lost the streamed chunks can persist it.
   expect(fin.text).toBe("final");
@@ -57,7 +65,10 @@ test("turn-finished.text accumulates ALL emitted chunks when response.text is mi
   });
   const result = await runner.run(REQ as never, new AbortController().signal);
   expect(result.ok).toBe(true);
-  const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
   // stream mode concatenates verbatim — the relay hub's no-buffer fallback must get
   // the FULL reply, not an empty or last-segment-only text.
   expect(fin.text).toBe("part 1part 2");
@@ -68,10 +79,13 @@ test("a TURN_IDLE_TIMEOUT_REASON abort surfaces as ok:false + timeout errorMessa
   const controller = new AbortController();
   const { runner, captured } = makeRunner(async () => {
     controller.abort(TURN_IDLE_TIMEOUT_REASON); // simulate the watchdog firing mid-chat
-    throw new Error("aborted");           // the transport throws on abort
+    throw new Error("aborted"); // the transport throws on abort
   });
   await runner.run(REQ as never, controller.signal);
-  const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
   expect(fin.ok).toBe(false);
   expect(fin.errorMessage).toBe("Turn timed out due to inactivity");
   expect("cancelled" in fin).toBe(false); // distinct from a user Stop
@@ -85,7 +99,10 @@ test("a plain user-Stop abort still surfaces as cancelled:true", async () => {
     throw new Error("aborted");
   });
   await runner.run(REQ as never, controller.signal);
-  const fin = captured.find((e) => e.type === "turn-finished") as Extract<ControlEvent, { type: "turn-finished" }>;
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
   expect(fin.ok).toBe(false);
   expect(fin.cancelled).toBe(true);
   expect("text" in fin).toBe(false); // failure paths never carry reply text

@@ -30,7 +30,11 @@ describe("WorkspaceFs content search: non-git dir routes through `git grep --no-
   });
 
   test("scoped search (opts.path) reconciles --no-index's base-relative path back to root-relative", async () => {
-    const r = await fs.search("ws", { query: "needle", mode: "content", path: "sub" });
+    const r = await fs.search("ws", {
+      query: "needle",
+      mode: "content",
+      path: "sub",
+    });
     expect(r.hits.map((h) => h.path)).toEqual(["sub/a.txt"]);
   });
 });
@@ -53,7 +57,9 @@ describe("WorkspaceFs content search: ReDoS pattern in a git repo returns prompt
   afterAll(() => rmSync(repo, { recursive: true, force: true }));
 
   test("resolves within a few seconds instead of hanging", async () => {
-    const timeout = new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 8000));
+    const timeout = new Promise<"timed-out">((resolve) =>
+      setTimeout(() => resolve("timed-out"), 8000),
+    );
     const result = await Promise.race([
       fs.search("g", { query: "(a+)+$", mode: "content", regex: true }),
       timeout,
@@ -98,6 +104,8 @@ describe("WorkspaceFs search: regressions", () => {
   });
 
   test("an invalid regex still degrades to a substring match instead of throwing", async () => {
-    await expect(fs.search("ws", { query: "(", mode: "content", regex: true })).resolves.toBeDefined();
+    await expect(
+      fs.search("ws", { query: "(", mode: "content", regex: true }),
+    ).resolves.toBeDefined();
   });
 });

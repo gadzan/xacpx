@@ -385,7 +385,6 @@ test(
           to: targetB.handle,
           content: "remote-hello-from-A",
           mode: "auto",
-          replyTo: "msg_orig_remote",
         },
       );
 
@@ -406,8 +405,9 @@ test(
         'from="agent:' + aNodeId + ":" + aEndpointId + '"',
       );
       expect(consumedEnvelope).toContain('replyable="true"');
-      expect(consumedEnvelope).toContain('reply-to="msg_orig_remote"');
-      // Exactly-once: the retried message did NOT produce a second consumption.
+      expect(consumedEnvelope).toContain(
+        'conversation-id="' + receiptAtoB.messageId + '"',
+      );
       expect(consumedEnvelope.split("remote-hello-from-A").length - 1).toBe(1);
       expect(promptsB1).toHaveLength(2);
 

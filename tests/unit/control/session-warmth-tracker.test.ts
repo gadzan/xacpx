@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 
 import { SessionWarmthTracker } from "../../../src/control/session-warmth-tracker";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
 import type { ResolvedSession } from "../../../src/transport/types";
 
-function makeSession(overrides: Partial<ResolvedSession> = {}): ResolvedSession {
+function makeSession(
+  overrides: Partial<ResolvedSession> = {},
+): ResolvedSession {
   return {
     alias: "backend",
     agent: "codex",
@@ -38,7 +43,10 @@ test("isWarm is undefined before the first check", () => {
 test("tick records warmth and emits sessions-changed only on a flip", async () => {
   const session = makeSession();
   let warm = true;
-  const { tracker, seen } = makeTracker({ sessions: [session], isWarm: async () => warm });
+  const { tracker, seen } = makeTracker({
+    sessions: [session],
+    isWarm: async () => warm,
+  });
 
   await tracker.tick(); // undefined -> true is a flip (first observation)
   expect(tracker.isWarm(session)).toBe(true);
@@ -97,7 +105,10 @@ test("a throwing check keeps the previous observation", async () => {
 
 test("markWarm/markCold correct the map without emitting", async () => {
   const session = makeSession();
-  const { tracker, seen } = makeTracker({ sessions: [session], isWarm: async () => true });
+  const { tracker, seen } = makeTracker({
+    sessions: [session],
+    isWarm: async () => true,
+  });
 
   tracker.markWarm(session);
   expect(tracker.isWarm(session)).toBe(true);

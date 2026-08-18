@@ -1345,6 +1345,7 @@ export class ControlService {
     return this.deps.agentMessaging?.getTraceRecords?.(limit) ?? [];
   }
   writeTerminal(terminalId: string, data: string): void {
+    this.deps.terminal.write(terminalId, data);
   }
 
   resizeTerminal(terminalId: string, cols: number, rows: number): void {

@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
-import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interface";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
+import type {
+  ChatRequest,
+  ChatResponse,
+} from "../../../src/weixin/agent/interface";
 
 // Harness mirrors control-service-prompt.test.ts's makeControl, but the fake
 // agent.chat blocks on a gate so a turn can be held "in flight" while the test
@@ -41,7 +47,11 @@ function makeService(opts?: {
       listAllResolvedSessions: () => [],
       useSession:
         opts?.useSession ??
-        (async (_chatKey: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" })),
+        (async (_chatKey: string, alias: string) => ({
+          alias,
+          agent: "claude",
+          workspace: "/ws",
+        })),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
       getSession: opts?.getSession ?? (async () => null),
     },
@@ -55,7 +65,9 @@ function makeService(opts?: {
     archiveSessionWithTransport: async (internalAlias: string) => {
       lifecycleCalls.push(`archive:${internalAlias}`);
     },
-    ...(opts?.cancelDrainTimeoutMs !== undefined ? { cancelDrainTimeoutMs: opts.cancelDrainTimeoutMs } : {}),
+    ...(opts?.cancelDrainTimeoutMs !== undefined
+      ? { cancelDrainTimeoutMs: opts.cancelDrainTimeoutMs }
+      : {}),
     events,
   } as never);
 
@@ -76,25 +88,42 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 test("a second prompt while a turn is running is queued, not rejected, and emits queue-updated", async () => {
   const { service, events, releaseChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   // let turn 1 register as in-flight before sending the second
   await tick();
-  const r2 = await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
+  const r2 = await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "second",
+    senderId: "u",
+  });
   expect(r2.ok).toBe(true);
   expect(r2.queued).toBe(true);
   expect(typeof r2.queueItemId).toBe("string");
   const qEvents = events.filter((e) => e.type === "queue-updated");
   expect(qEvents.at(-1)).toMatchObject({ chatKey: "c", sessionAlias: "s" });
-  expect((qEvents.at(-1) as Extract<ControlEvent, { type: "queue-updated" }>).items.map((i) => i.textPreview)).toEqual([
-    "second",
-  ]);
+  expect(
+    (
+      qEvents.at(-1) as Extract<ControlEvent, { type: "queue-updated" }>
+    ).items.map((i) => i.textPreview),
+  ).toEqual(["second"]);
   releaseChat();
   await p1;
 });
 
 test("scheduled turns are NOT queued (still reject) while a turn runs", async () => {
   const { service, releaseChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
   const r = await service.runScheduledTurn({
     chatKey: "c",
@@ -114,35 +143,72 @@ type QueueUpdated = Extract<ControlEvent, { type: "queue-updated" }>;
 
 test("queued prompts drain FIFO after the running turn finishes, each as its own turn", async () => {
   const { service, events, nextChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
-  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
-  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
+  await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "second",
+    senderId: "u",
+  });
+  await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "third",
+    senderId: "u",
+  });
   nextChat();
   await tick(); // finish turn 1 → drain "second"
-  const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
+  const started = events.filter(
+    (e) => e.type === "turn-started",
+  ) as TurnStarted[];
   // Drained turns identify the original queued prompt so web clients can move their
   // optimistic bubble to the point where the prompt actually starts executing.
   expect(started.at(-1)!.queueItemId).toBeDefined();
   expect(started.at(-1)!.prompt).toBe("second");
   // queue now shows only "third"
-  const q = (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!;
+  const q = (
+    events.filter((e) => e.type === "queue-updated") as QueueUpdated[]
+  ).at(-1)!;
   expect(q.items.map((i) => i.textPreview)).toEqual(["third"]);
   nextChat();
   await tick(); // finish "second" → drain "third"
   nextChat();
   await tick(); // finish "third" → queue empty
-  expect((events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!.items).toEqual([]);
+  expect(
+    (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!
+      .items,
+  ).toEqual([]);
   await p1;
 });
 
 test("a prompt arriving during the drain hand-off is queued (no parallel turn)", async () => {
   const { service, nextChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
-  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
+  await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "second",
+    senderId: "u",
+  });
   nextChat(); // finish turn1; drain starts "second"
-  const r3 = await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
+  const r3 = await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "third",
+    senderId: "u",
+  });
   expect(r3.queued).toBe(true); // saw the session busy, enqueued
   nextChat();
   nextChat();
@@ -162,22 +228,41 @@ test("a drained turn whose useSession fails still drains the following queued it
       return { alias, agent: "claude", workspace: "/ws" };
     },
   });
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
-  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
-  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "third", senderId: "u" });
+  await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "second",
+    senderId: "u",
+  });
+  await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "third",
+    senderId: "u",
+  });
 
   nextChat(); // finish turn 1 → drain "second" (its useSession throws) → must go on to "third"
   await tick();
 
   // "first" started (no queueItemId); "second" failed at useSession BEFORE emitting
   // turn-started; "third" must still have started as its own drained turn.
-  const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
+  const started = events.filter(
+    (e) => e.type === "turn-started",
+  ) as TurnStarted[];
   expect(started.length).toBe(2);
   expect(started.at(-1)!.queueItemId).toBeDefined(); // the drained "third"
 
   // The queue drained down to empty — nothing stranded behind the failed "second".
-  const q = (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!;
+  const q = (
+    events.filter((e) => e.type === "queue-updated") as QueueUpdated[]
+  ).at(-1)!;
   expect(q.items).toEqual([]);
 
   nextChat(); // finish "third" cleanly so no turn is left parked
@@ -210,9 +295,19 @@ test("a cancel that empties the queue during the drain hand-off clears draining 
   });
   ref.service = service;
 
-  const p1 = service.prompt({ chatKey, sessionAlias: alias, text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey,
+    sessionAlias: alias,
+    text: "first",
+    senderId: "u",
+  });
   await tick(); // "first" registers in-flight (pre-turn + streamMode getSession already ran, unarmed)
-  const r2 = await service.prompt({ chatKey, sessionAlias: alias, text: "second", senderId: "u" });
+  const r2 = await service.prompt({
+    chatKey,
+    sessionAlias: alias,
+    text: "second",
+    senderId: "u",
+  });
   expect(r2.queued).toBe(true);
   ref.queuedId = r2.queueItemId!;
 
@@ -226,10 +321,14 @@ test("a cancel that empties the queue during the drain hand-off clears draining 
   let afterResult: unknown = "unresolved";
   const pAfter = service
     .prompt({ chatKey, sessionAlias: alias, text: "after", senderId: "u" })
-    .then((r) => { afterResult = r; });
+    .then((r) => {
+      afterResult = r;
+    });
   await tick();
   expect(afterResult).toBe("unresolved"); // parked → a real turn started (not wedged/queued)
-  const started = events.filter((e) => e.type === "turn-started") as TurnStarted[];
+  const started = events.filter(
+    (e) => e.type === "turn-started",
+  ) as TurnStarted[];
   expect(started.length).toBe(2); // "first" + the fresh "after"; the cancelled "second" never started
   expect(started.at(-1)!.queueItemId).toBeUndefined(); // a fresh user turn, not a drained queue item
 
@@ -239,27 +338,56 @@ test("a cancel that empties the queue during the drain hand-off clears draining 
 
 test("cancelQueuedItem removes a queued item and emits queue-updated; false for unknown id", async () => {
   const { service, events, releaseChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
-  const r2 = await service.prompt({ chatKey: "c", sessionAlias: "s", text: "second", senderId: "u" });
-  expect(service.cancelQueuedItem("c", "s", r2.queueItemId!)).toEqual({ cancelled: true });
-  expect((events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!.items).toEqual([]);
-  expect(service.cancelQueuedItem("c", "s", "nope")).toEqual({ cancelled: false });
+  const r2 = await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "second",
+    senderId: "u",
+  });
+  expect(service.cancelQueuedItem("c", "s", r2.queueItemId!)).toEqual({
+    cancelled: true,
+  });
+  expect(
+    (events.filter((e) => e.type === "queue-updated") as QueueUpdated[]).at(-1)!
+      .items,
+  ).toEqual([]);
+  expect(service.cancelQueuedItem("c", "s", "nope")).toEqual({
+    cancelled: false,
+  });
   releaseChat();
   await p1;
 });
 
 test("removeSession drops queued prompts and aborts the running turn before transport removal", async () => {
   const { service, events, lifecycleCalls, nextChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
-  const r2 = await service.prompt({ chatKey: "c", sessionAlias: "s", text: "queued", senderId: "u" });
+  const r2 = await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "queued",
+    senderId: "u",
+  });
   expect(r2.queued).toBe(true);
 
   const removed = service.removeSession("c", "s");
   await tick();
   // The queue badge is cleared synchronously; removal then waits for the aborted turn.
-  const qEvents = events.filter((e): e is QueueUpdated => e.type === "queue-updated");
+  const qEvents = events.filter(
+    (e): e is QueueUpdated => e.type === "queue-updated",
+  );
   expect(qEvents.at(-1)?.items).toEqual([]);
   expect(lifecycleCalls).toEqual([]); // transport removal not reached while the turn unwinds
 
@@ -270,16 +398,28 @@ test("removeSession drops queued prompts and aborts the running turn before tran
   expect(lifecycleCalls).toEqual(["remove:s"]);
   // The queued prompt never started a drained turn on the removed session: exactly one
   // turn-started (the direct prompt), and none carrying a drained head's queueItemId.
-  const started = events.filter((e): e is TurnStarted => e.type === "turn-started");
+  const started = events.filter(
+    (e): e is TurnStarted => e.type === "turn-started",
+  );
   expect(started.length).toBe(1);
   expect(started.some((e) => e.queueItemId !== undefined)).toBe(false);
 });
 
 test("archiveSession drops queued prompts so no drained turn un-archives the session", async () => {
   const { service, events, lifecycleCalls, nextChat } = makeService();
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "first", senderId: "u" });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "first",
+    senderId: "u",
+  });
   await tick();
-  await service.prompt({ chatKey: "c", sessionAlias: "s", text: "queued", senderId: "u" });
+  await service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "queued",
+    senderId: "u",
+  });
 
   const archived = service.archiveSession("c", "s");
   await tick();
@@ -288,19 +428,30 @@ test("archiveSession drops queued prompts so no drained turn un-archives the ses
   await p1;
   await tick();
   expect(lifecycleCalls).toEqual(["archive:s"]);
-  const started = events.filter((e): e is TurnStarted => e.type === "turn-started");
+  const started = events.filter(
+    (e): e is TurnStarted => e.type === "turn-started",
+  );
   expect(started.length).toBe(1);
   expect(started.some((e) => e.queueItemId !== undefined)).toBe(false);
 });
 
 test("removeSession refuses to delete when the aborted turn outlives the drain timeout", async () => {
-  const { service, lifecycleCalls, releaseChat } = makeService({ cancelDrainTimeoutMs: 20 });
-  const p1 = service.prompt({ chatKey: "c", sessionAlias: "s", text: "wedged", senderId: "u" });
+  const { service, lifecycleCalls, releaseChat } = makeService({
+    cancelDrainTimeoutMs: 20,
+  });
+  const p1 = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "wedged",
+    senderId: "u",
+  });
   await tick();
 
   // The turn never unwinds within the timeout — removal must fail instead of deleting
   // under a live turn (whose later events would write ghost history).
-  await expect(service.removeSession("c", "s")).rejects.toThrow(/is still finishing a stopped turn/);
+  await expect(service.removeSession("c", "s")).rejects.toThrow(
+    /is still finishing a stopped turn/,
+  );
   expect(lifecycleCalls).toEqual([]); // transport removal never reached
 
   // After the turn actually unwinds, a retry deletes cleanly.
@@ -325,7 +476,11 @@ test("a scheduled turn firing during transport teardown is rejected, not cold-st
     agent: { chat },
     sessions: {
       listAllResolvedSessions: () => [],
-      useSession: async (_c: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" }),
+      useSession: async (_c: string, alias: string) => ({
+        alias,
+        agent: "claude",
+        workspace: "/ws",
+      }),
       resolveAliasForChat: async (_c: string, alias: string) => alias,
       getSession: async () => null,
     },
@@ -355,7 +510,9 @@ test("a scheduled turn firing during transport teardown is rejected, not cold-st
   releaseTeardown();
   await removed;
   // Nothing ever started a turn on the session being removed.
-  const started = seen.filter((e): e is TurnStarted => e.type === "turn-started");
+  const started = seen.filter(
+    (e): e is TurnStarted => e.type === "turn-started",
+  );
   expect(started.length).toBe(0);
 });
 
@@ -363,7 +520,12 @@ test("finishClear releases the teardown guard so the alias is reusable after rem
   const { service, releaseChat } = makeService();
   await service.removeSession("c", "s"); // no turn -> cleared, guard armed then released
   // A prompt on the same alias afterwards must run (guard not leaked as permanent busy).
-  const p = service.prompt({ chatKey: "c", sessionAlias: "s", text: "again", senderId: "u" });
+  const p = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "again",
+    senderId: "u",
+  });
   await tick();
   releaseChat();
   const r = await p;

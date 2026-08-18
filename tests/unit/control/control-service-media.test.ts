@@ -8,13 +8,18 @@ import { UploadStore } from "../../../src/control/upload-store";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 
 // Minimal deps stub — only what uploadFile/prompt() touch in this test.
-function buildService(chatSpy: ReturnType<typeof mock>, uploadStore: UploadStore) {
+function buildService(
+  chatSpy: ReturnType<typeof mock>,
+  uploadStore: UploadStore,
+) {
   const events = createControlEventBus();
   const deps = {
     agent: { chat: chatSpy },
     sessions: {
       listAllResolvedSessions: () => [],
-      resolveAliasForChat: mock(async (_chatKey: string, alias: string) => alias),
+      resolveAliasForChat: mock(
+        async (_chatKey: string, alias: string) => alias,
+      ),
       getSession: mock(async (_alias: string) => ({
         alias: "main",
         agent: "claude",
@@ -37,13 +42,24 @@ function buildService(chatSpy: ReturnType<typeof mock>, uploadStore: UploadStore
     events,
     workspaces: { list: () => [] },
     transport: {} as never,
-    createSessionWithTransport: mock(async () => { throw new Error("unused"); }),
+    createSessionWithTransport: mock(async () => {
+      throw new Error("unused");
+    }),
     removeSessionWithTransport: mock(async () => ({ wasActive: false })),
     archiveSessionWithTransport: mock(async () => {}),
     unarchiveSession: mock(async () => {}),
     listNativeSessions: mock(async () => []),
-    attachNativeSessionWithTransport: mock(async () => { throw new Error("unused"); }),
-    agents: { list: () => [], catalog: () => [], create: mock(async () => { throw new Error("unused"); }), remove: mock(async () => {}) },
+    attachNativeSessionWithTransport: mock(async () => {
+      throw new Error("unused");
+    }),
+    agents: {
+      list: () => [],
+      catalog: () => [],
+      create: mock(async () => {
+        throw new Error("unused");
+      }),
+      remove: mock(async () => {}),
+    },
     uploadStore,
   } as unknown as ConstructorParameters<typeof ControlService>[0];
   return new ControlService(deps);
@@ -53,9 +69,16 @@ describe("ControlService media", () => {
   it("uploadFile writes bytes and returns an absolute daemon path", async () => {
     const root = await mkdtemp(join(tmpdir(), "cs-upload-"));
     const store = new UploadStore({ rootDir: root });
-    const svc = buildService(mock(() => {}), store);
+    const svc = buildService(
+      mock(() => {}),
+      store,
+    );
 
-    const res = await svc.uploadFile({ filename: "shot.png", content: Buffer.from("PNG").toString("base64"), mimeType: "image/png" });
+    const res = await svc.uploadFile({
+      filename: "shot.png",
+      content: Buffer.from("PNG").toString("base64"),
+      mimeType: "image/png",
+    });
     expect(res.path.startsWith(root)).toBe(true);
     expect(res.filename).toBe("shot.png");
     expect(res.size).toBe(3);
@@ -75,11 +98,22 @@ describe("ControlService media", () => {
       text: "look at this",
       senderId: "a1",
       isOwner: true,
-      media: [{ id: "u-1", filePath: inSandbox, fileName: "shot.png", mimeType: "image/png", kind: "image", size: 3 }],
+      media: [
+        {
+          id: "u-1",
+          filePath: inSandbox,
+          fileName: "shot.png",
+          mimeType: "image/png",
+          kind: "image",
+          size: 3,
+        },
+      ],
     });
 
     expect(chat).toHaveBeenCalledTimes(1);
-    const arg = (chat.mock.calls[0] as unknown[])[0] as { media: Array<Record<string, unknown> & { source: { channelId: string } }> };
+    const arg = (chat.mock.calls[0] as unknown[])[0] as {
+      media: Array<Record<string, unknown> & { source: { channelId: string } }>;
+    };
     expect(Array.isArray(arg.media)).toBe(true);
     expect(arg.media[0]).toMatchObject({
       kind: "image",
@@ -104,14 +138,30 @@ describe("ControlService media", () => {
       isOwner: true,
       media: [
         // Out-of-sandbox absolute path — must be dropped.
-        { id: "u-evil", filePath: "/etc/passwd", fileName: "passwd", mimeType: "text/plain", kind: "file", size: 3 },
+        {
+          id: "u-evil",
+          filePath: "/etc/passwd",
+          fileName: "passwd",
+          mimeType: "text/plain",
+          kind: "file",
+          size: 3,
+        },
         // Legitimate in-sandbox path — must pass through.
-        { id: "u-2", filePath: inSandbox, fileName: "ok.png", mimeType: "image/png", kind: "image", size: 3 },
+        {
+          id: "u-2",
+          filePath: inSandbox,
+          fileName: "ok.png",
+          mimeType: "image/png",
+          kind: "image",
+          size: 3,
+        },
       ],
     });
 
     expect(chat).toHaveBeenCalledTimes(1);
-    const arg = (chat.mock.calls[0] as unknown[])[0] as { media: Array<Record<string, unknown>> };
+    const arg = (chat.mock.calls[0] as unknown[])[0] as {
+      media: Array<Record<string, unknown>>;
+    };
     expect(arg.media.length).toBe(1);
     expect(arg.media[0]).toMatchObject({ kind: "image", filePath: inSandbox });
   });

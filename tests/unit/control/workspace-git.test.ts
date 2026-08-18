@@ -1,10 +1,24 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { WorkspaceGit, worktreePathIsWithin, worktreePathsEqual } from "../../../src/control/workspace-git";
+import {
+  WorkspaceGit,
+  worktreePathIsWithin,
+  worktreePathsEqual,
+} from "../../../src/control/workspace-git";
 
 const cleanups: string[] = [];
 
@@ -15,17 +29,27 @@ function temp(prefix: string): string {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
-async function runGitWithWindowsWorktreePaths(_root: string, args: string[]): Promise<string> {
+async function runGitWithWindowsWorktreePaths(
+  _root: string,
+  args: string[],
+): Promise<string> {
   // runRaw hands the override the full argv, already prefixed with ["-C", root, "-c", "gc.auto=0"].
   const output = execFileSync("git", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (!args.join("\0").endsWith(["worktree", "list", "--porcelain"].join("\0"))) return output;
-  return output.replace(/^worktree (.+)$/gm, (_line, path: string) => `worktree ${path.replaceAll("/", "\\")}`);
+  if (!args.join("\0").endsWith(["worktree", "list", "--porcelain"].join("\0")))
+    return output;
+  return output.replace(
+    /^worktree (.+)$/gm,
+    (_line, path: string) => `worktree ${path.replaceAll("/", "\\")}`,
+  );
 }
 
 function initRepo(): { repo: string; remote: string } {
@@ -40,7 +64,13 @@ function initRepo(): { repo: string; remote: string } {
   git(repo, "commit", "-qm", "initial");
   git(repo, "remote", "add", "origin", remote);
   git(repo, "push", "-qu", "origin", "main");
-  execFileSync("git", ["--git-dir", remote, "symbolic-ref", "HEAD", "refs/heads/main"]);
+  execFileSync("git", [
+    "--git-dir",
+    remote,
+    "symbolic-ref",
+    "HEAD",
+    "refs/heads/main",
+  ]);
   return { repo, remote };
 }
 
@@ -53,16 +83,47 @@ async function waitForFile(path: string): Promise<void> {
 }
 
 afterEach(() => {
-  for (const path of cleanups.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of cleanups.splice(0))
+    rmSync(path, { recursive: true, force: true });
 });
 
 describe("worktreePathsEqual", () => {
   test("matches Git and Node representations of the same Windows path", () => {
-    expect(worktreePathsEqual("C:/Users/Alice/repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
-    expect(worktreePathsEqual("c:/users/alice/repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
-    expect(worktreePathsEqual("C:/Users/Alice/repo/", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
-    expect(worktreePathsEqual("\\\\?\\C:\\Users\\Alice\\repo", "C:\\Users\\Alice\\repo", "win32")).toBe(true);
-    expect(worktreePathsEqual("\\\\?\\UNC\\server\\share\\repo", "\\\\server\\share\\repo", "win32")).toBe(true);
+    expect(
+      worktreePathsEqual(
+        "C:/Users/Alice/repo",
+        "C:\\Users\\Alice\\repo",
+        "win32",
+      ),
+    ).toBe(true);
+    expect(
+      worktreePathsEqual(
+        "c:/users/alice/repo",
+        "C:\\Users\\Alice\\repo",
+        "win32",
+      ),
+    ).toBe(true);
+    expect(
+      worktreePathsEqual(
+        "C:/Users/Alice/repo/",
+        "C:\\Users\\Alice\\repo",
+        "win32",
+      ),
+    ).toBe(true);
+    expect(
+      worktreePathsEqual(
+        "\\\\?\\C:\\Users\\Alice\\repo",
+        "C:\\Users\\Alice\\repo",
+        "win32",
+      ),
+    ).toBe(true);
+    expect(
+      worktreePathsEqual(
+        "\\\\?\\UNC\\server\\share\\repo",
+        "\\\\server\\share\\repo",
+        "win32",
+      ),
+    ).toBe(true);
   });
 
   test("keeps POSIX path comparison case-sensitive", () => {
@@ -72,29 +133,43 @@ describe("worktreePathsEqual", () => {
 
 describe("worktreePathIsWithin", () => {
   test("matches Windows paths case-insensitively without accepting prefix siblings", () => {
-    expect(worktreePathIsWithin("C:/worktrees", "c:\\WORKTREES\\repo", "win32")).toBe(true);
-    expect(worktreePathIsWithin("C:/worktrees", "C:\\worktreesEVIL\\repo", "win32")).toBe(false);
-    expect(worktreePathIsWithin("C:/worktrees", "C:\\worktrees", "win32")).toBe(false);
+    expect(
+      worktreePathIsWithin("C:/worktrees", "c:\\WORKTREES\\repo", "win32"),
+    ).toBe(true);
+    expect(
+      worktreePathIsWithin("C:/worktrees", "C:\\worktreesEVIL\\repo", "win32"),
+    ).toBe(false);
+    expect(worktreePathIsWithin("C:/worktrees", "C:\\worktrees", "win32")).toBe(
+      false,
+    );
   });
 
   test("keeps POSIX containment case-sensitive", () => {
-    expect(worktreePathIsWithin("/tmp/worktrees", "/tmp/worktrees/repo", "linux")).toBe(true);
-    expect(worktreePathIsWithin("/tmp/worktrees", "/tmp/Worktrees/repo", "linux")).toBe(false);
+    expect(
+      worktreePathIsWithin("/tmp/worktrees", "/tmp/worktrees/repo", "linux"),
+    ).toBe(true);
+    expect(
+      worktreePathIsWithin("/tmp/worktrees", "/tmp/Worktrees/repo", "linux"),
+    ).toBe(false);
   });
 });
 
 describe("WorkspaceGit status", () => {
   test("matches Windows-shaped Git worktree output through the status wiring", async () => {
     const { repo } = initRepo();
-    const service = new WorkspaceGit(
-      () => [{ name: "project", cwd: repo }],
-      { platform: "win32", runGit: runGitWithWindowsWorktreePaths },
-    );
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }], {
+      platform: "win32",
+      runGit: runGitWithWindowsWorktreePaths,
+    });
 
     const status = await service.status("project");
 
-    expect(worktreePathsEqual(status.worktree.root, realpathSync(repo), "win32")).toBe(true);
-    expect(status.worktrees).toContainEqual(expect.objectContaining({ current: true }));
+    expect(
+      worktreePathsEqual(status.worktree.root, realpathSync(repo), "win32"),
+    ).toBe(true);
+    expect(status.worktrees).toContainEqual(
+      expect.objectContaining({ current: true }),
+    );
   });
 
   test("reports the symbolic branch in an unborn repository", async () => {
@@ -131,15 +206,15 @@ describe("WorkspaceGit status", () => {
   test("passes gc.auto=0 to every git invocation, visible through the runGit override", async () => {
     const { repo } = initRepo();
     const seen: string[][] = [];
-    const service = new WorkspaceGit(
-      () => [{ name: "project", cwd: repo }],
-      {
-        runGit: async (_root, args) => {
-          seen.push(args);
-          return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-        },
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }], {
+      runGit: async (_root, args) => {
+        seen.push(args);
+        return execFileSync("git", args, {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
       },
-    );
+    });
 
     await service.status("project");
 
@@ -191,8 +266,18 @@ describe("WorkspaceGit status", () => {
       { name: "review", current: false, worktreePath: realpathSync(linked) },
     ]);
     expect(status.worktrees).toEqual([
-      { path: status.worktree.root, branch: "feature", current: true, linked: false },
-      { path: realpathSync(linked), branch: "review", current: false, linked: true },
+      {
+        path: status.worktree.root,
+        branch: "feature",
+        current: true,
+        linked: false,
+      },
+      {
+        path: realpathSync(linked),
+        branch: "review",
+        current: false,
+        linked: true,
+      },
     ]);
     expect(basename(status.worktree.root)).toBe(basename(repo));
   });
@@ -311,8 +396,12 @@ describe("WorkspaceGit untrack", () => {
     const { repo } = initRepo();
     const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
 
-    await expect(service.untrack("project", ["../outside.txt"])).rejects.toThrow("invalid-git-path");
-    await expect(service.untrack("project", [])).rejects.toThrow("git-paths-required");
+    await expect(
+      service.untrack("project", ["../outside.txt"]),
+    ).rejects.toThrow("invalid-git-path");
+    await expect(service.untrack("project", [])).rejects.toThrow(
+      "git-paths-required",
+    );
   });
 });
 
@@ -384,7 +473,9 @@ describe("WorkspaceGit discard", () => {
 
     await service.discard("project", ["scratch.txt"]);
 
-    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("keep me dirty\n");
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe(
+      "keep me dirty\n",
+    );
     expect((await service.status("project")).files).toEqual([
       { path: "README.md", status: " M" },
     ]);
@@ -406,7 +497,9 @@ describe("WorkspaceGit discard", () => {
     const { repo } = initRepo();
     const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
 
-    await expect(service.discard("project", ["/etc/passwd"])).rejects.toThrow("invalid-git-path");
+    await expect(service.discard("project", ["/etc/passwd"])).rejects.toThrow(
+      "invalid-git-path",
+    );
   });
 });
 
@@ -417,7 +510,9 @@ describe("WorkspaceGit branches", () => {
     writeFileSync(join(repo, "README.md"), "dirty\n");
     const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
 
-    await expect(service.checkout("project", { branch: "feature" })).rejects.toThrow("dirty-worktree");
+    await expect(
+      service.checkout("project", { branch: "feature" }),
+    ).rejects.toThrow("dirty-worktree");
     expect((await service.status("project")).branch).toBe("main");
 
     git(repo, "restore", "README.md");
@@ -429,11 +524,19 @@ describe("WorkspaceGit branches", () => {
     const { repo } = initRepo();
     const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }]);
 
-    await service.checkout("project", { branch: "feature/ui", create: true, startPoint: "main" });
+    await service.checkout("project", {
+      branch: "feature/ui",
+      create: true,
+      startPoint: "main",
+    });
 
     const status = await service.status("project");
     expect(status.branch).toBe("feature/ui");
-    expect(status.branches.some((branch) => branch.name === "feature/ui" && branch.current)).toBe(true);
+    expect(
+      status.branches.some(
+        (branch) => branch.name === "feature/ui" && branch.current,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -459,7 +562,10 @@ describe("WorkspaceGit synchronization", () => {
 
     git(repo, "restore", "README.md");
     await service.pull("project");
-    expect(await service.status("project")).toMatchObject({ ahead: 0, behind: 0 });
+    expect(await service.status("project")).toMatchObject({
+      ahead: 0,
+      behind: 0,
+    });
   });
 
   test("requires explicit upstream setup for a first push", async () => {
@@ -492,7 +598,10 @@ describe("WorkspaceGit synchronization", () => {
     const entered = join(hookDir, "push-entered");
     const release = join(hookDir, "push-release");
     const hook = join(hookDir, "pre-push");
-    writeFileSync(hook, `#!/bin/sh\ntouch '${entered}'\nwhile [ ! -f '${release}' ]; do sleep 0.01; done\n`);
+    writeFileSync(
+      hook,
+      `#!/bin/sh\ntouch '${entered}'\nwhile [ ! -f '${release}' ]; do sleep 0.01; done\n`,
+    );
     chmodSync(hook, 0o755);
 
     const pushing = service.push("project");
@@ -502,11 +611,17 @@ describe("WorkspaceGit synchronization", () => {
 
     // The push is still blocked in its hook, so a same-workspace stage must remain queued.
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect((await service.status("project")).files).toContainEqual({ path: "second.txt", status: "??" });
+    expect((await service.status("project")).files).toContainEqual({
+      path: "second.txt",
+      status: "??",
+    });
 
     writeFileSync(release, "release\n");
     await Promise.all([pushing, staging]);
-    expect((await service.status("project")).files).toContainEqual({ path: "second.txt", status: "A " });
+    expect((await service.status("project")).files).toContainEqual({
+      path: "second.txt",
+      status: "A ",
+    });
   });
 });
 
@@ -542,20 +657,26 @@ describe("WorkspaceGit worktrees", () => {
     const { repo } = initRepo();
     const managedRoot = temp("wsgit-managed-");
     const outside = temp("wsgit-outside-");
-    const commonDir = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    const commonDir = git(
+      repo,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    );
     const top = git(repo, "rev-parse", "--show-toplevel");
     const repoKey = `${basename(top)}-${createHash("sha256").update(commonDir).digest("hex").slice(0, 8)}`;
     symlinkSync(outside, join(managedRoot, repoKey));
-    const service = new WorkspaceGit(
-      () => [{ name: "project", cwd: repo }],
-      { managedWorktreesRoot: managedRoot },
-    );
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }], {
+      managedWorktreesRoot: managedRoot,
+    });
 
-    await expect(service.createWorktree("project", {
-      branch: "feature/escaped",
-      createBranch: true,
-      startPoint: "main",
-    })).rejects.toThrow("worktree-path-unsafe");
+    await expect(
+      service.createWorktree("project", {
+        branch: "feature/escaped",
+        createBranch: true,
+        startPoint: "main",
+      }),
+    ).rejects.toThrow("worktree-path-unsafe");
     expect(existsSync(join(outside, "feature-escaped"))).toBe(false);
     expect((await service.status("project")).worktrees).toHaveLength(1);
   });
@@ -563,10 +684,9 @@ describe("WorkspaceGit worktrees", () => {
   test("creates a linked worktree under the server-managed root", async () => {
     const { repo } = initRepo();
     const managedRoot = temp("wsgit-managed-");
-    const service = new WorkspaceGit(
-      () => [{ name: "project", cwd: repo }],
-      { managedWorktreesRoot: managedRoot },
-    );
+    const service = new WorkspaceGit(() => [{ name: "project", cwd: repo }], {
+      managedWorktreesRoot: managedRoot,
+    });
 
     const created = await service.createWorktree("project", {
       branch: "feature/worktree-ui",
@@ -574,7 +694,10 @@ describe("WorkspaceGit worktrees", () => {
       startPoint: "main",
     });
 
-    expect(created).toMatchObject({ branch: "feature/worktree-ui", linked: true });
+    expect(created).toMatchObject({
+      branch: "feature/worktree-ui",
+      linked: true,
+    });
     expect(created.path.startsWith(realpathSync(managedRoot) + "/")).toBe(true);
     expect((await service.status("project")).worktrees).toContainEqual({
       path: created.path,

@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { ControlService } from "../../../src/control/control-service";
 
 function makeDeps(sessions: Array<{ agent: string; workspace: string }> = []) {
-  const created: Array<{ name: string; cwd: string; description?: string }> = [];
+  const created: Array<{ name: string; cwd: string; description?: string }> =
+    [];
   const calls: string[] = [];
   const deps = {
     sessions: {
@@ -13,7 +14,9 @@ function makeDeps(sessions: Array<{ agent: string; workspace: string }> = []) {
         { name: "codex", driver: "codex" },
         { name: "claude", driver: "claude" },
       ],
-      catalog: () => [{ driver: "codex", configured: true, installed: "builtin" as const }],
+      catalog: () => [
+        { driver: "codex", configured: true, installed: "builtin" as const },
+      ],
       create: async (name: string, driver: string) => {
         calls.push(`create:${name}:${driver}`);
         return { name, driver };
@@ -49,15 +52,27 @@ test("listAgents returns configured agents", () => {
 test("listWorkspaces returns configured workspaces", () => {
   const { deps } = makeDeps();
   const control = new ControlService(deps as never);
-  expect(control.listWorkspaces()).toEqual([{ name: "home", cwd: "/Users/me", description: "home dir" }]);
+  expect(control.listWorkspaces()).toEqual([
+    { name: "home", cwd: "/Users/me", description: "home dir" },
+  ]);
 });
 
 test("createWorkspace persists via the workspace creator and returns the dto", async () => {
   const { deps, created } = makeDeps();
   const control = new ControlService(deps as never);
-  const result = await control.createWorkspace("backend", "/srv/backend", "api");
-  expect(result).toEqual({ name: "backend", cwd: "/srv/backend", description: "api" });
-  expect(created).toEqual([{ name: "backend", cwd: "/srv/backend", description: "api" }]);
+  const result = await control.createWorkspace(
+    "backend",
+    "/srv/backend",
+    "api",
+  );
+  expect(result).toEqual({
+    name: "backend",
+    cwd: "/srv/backend",
+    description: "api",
+  });
+  expect(created).toEqual([
+    { name: "backend", cwd: "/srv/backend", description: "api" },
+  ]);
 });
 
 test("createWorkspace works without a description", async () => {
@@ -70,7 +85,9 @@ test("createWorkspace works without a description", async () => {
 test("listAgentCatalog delegates to the agents.catalog dep", () => {
   const { deps } = makeDeps();
   const control = new ControlService(deps as never);
-  expect(control.listAgentCatalog()).toEqual([{ driver: "codex", configured: true, installed: "builtin" }]);
+  expect(control.listAgentCatalog()).toEqual([
+    { driver: "codex", configured: true, installed: "builtin" },
+  ]);
 });
 
 test("createAgent delegates to agents.create", async () => {

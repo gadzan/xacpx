@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  symlinkSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceFs } from "../../../src/control/workspace-fs";
@@ -32,16 +38,24 @@ describe("WorkspaceFs containment", () => {
   });
 
   test("rejects an absolute path", async () => {
-    await expect(fs.readFile("ws", "/etc/passwd")).rejects.toThrow("path-must-be-relative");
+    await expect(fs.readFile("ws", "/etc/passwd")).rejects.toThrow(
+      "path-must-be-relative",
+    );
   });
 
   test("rejects a .. traversal escape", async () => {
-    await expect(fs.listDirectory("ws", "../")).rejects.toThrow(/escapes-workspace|not-found/);
+    await expect(fs.listDirectory("ws", "../")).rejects.toThrow(
+      /escapes-workspace|not-found/,
+    );
   });
 
   test("rejects a symlink that escapes the root", async () => {
-    await expect(fs.listDirectory("ws", "escape")).rejects.toThrow("path-escapes-workspace");
-    await expect(fs.readFile("ws", "escape/secret.txt")).rejects.toThrow("path-escapes-workspace");
+    await expect(fs.listDirectory("ws", "escape")).rejects.toThrow(
+      "path-escapes-workspace",
+    );
+    await expect(fs.readFile("ws", "escape/secret.txt")).rejects.toThrow(
+      "path-escapes-workspace",
+    );
   });
 });
 
@@ -100,19 +114,30 @@ describe("WorkspaceFs search", () => {
 
 describe("WorkspaceFs search: modes + flags", () => {
   test("name mode: regex + include filter on relative path", async () => {
-    const r = await fs.search("ws", { query: "\\.ts$", mode: "name", regex: true });
+    const r = await fs.search("ws", {
+      query: "\\.ts$",
+      mode: "name",
+      regex: true,
+    });
     expect(r.matches).toContain("src/a.ts");
     expect(r.matches.every((m) => m.endsWith(".ts"))).toBe(true);
     expect(r.hits).toEqual([]);
   });
 
   test("name mode: exclude glob drops matches", async () => {
-    const r = await fs.search("ws", { query: "a", mode: "name", exclude: "src/**" });
+    const r = await fs.search("ws", {
+      query: "a",
+      mode: "name",
+      exclude: "src/**",
+    });
     expect(r.matches.some((m) => m.startsWith("src/"))).toBe(false);
   });
 
   test("content mode: finds a line and returns path/line/text", async () => {
-    const r = await fs.search("ws", { query: "export const a", mode: "content" });
+    const r = await fs.search("ws", {
+      query: "export const a",
+      mode: "content",
+    });
     const hit = r.hits.find((h) => h.path === "src/a.ts");
     expect(hit).toBeDefined();
     expect(hit!.line).toBe(1);
@@ -121,9 +146,17 @@ describe("WorkspaceFs search: modes + flags", () => {
   });
 
   test("content mode: case-sensitive miss vs case-insensitive hit", async () => {
-    const sensitive = await fs.search("ws", { query: "EXPORT", mode: "content", matchCase: true });
+    const sensitive = await fs.search("ws", {
+      query: "EXPORT",
+      mode: "content",
+      matchCase: true,
+    });
     expect(sensitive.hits.length).toBe(0);
-    const insensitive = await fs.search("ws", { query: "EXPORT", mode: "content", matchCase: false });
+    const insensitive = await fs.search("ws", {
+      query: "EXPORT",
+      mode: "content",
+      matchCase: false,
+    });
     expect(insensitive.hits.length).toBeGreaterThan(0);
   });
 
@@ -153,27 +186,44 @@ describe("WorkspaceFs search: content grep in a git repo (include/exclude/path n
 
   test("finds hits across both files with no scoping", async () => {
     const r = await rfs.search("g", { query: "needle", mode: "content" });
-    expect(r.hits.map((h) => h.path).sort()).toEqual(["other/b.ts", "src/a.ts"]);
+    expect(r.hits.map((h) => h.path).sort()).toEqual([
+      "other/b.ts",
+      "src/a.ts",
+    ]);
   });
 
   test("include narrows to matching files only (no leak from outside the glob)", async () => {
-    const r = await rfs.search("g", { query: "needle", mode: "content", include: "src/**" });
+    const r = await rfs.search("g", {
+      query: "needle",
+      mode: "content",
+      include: "src/**",
+    });
     expect(r.hits.map((h) => h.path)).toEqual(["src/a.ts"]);
   });
 
   test("path scopes the search (no leak from outside the base dir)", async () => {
-    const r = await rfs.search("g", { query: "needle", mode: "content", path: "src" });
+    const r = await rfs.search("g", {
+      query: "needle",
+      mode: "content",
+      path: "src",
+    });
     expect(r.hits.map((h) => h.path)).toEqual(["src/a.ts"]);
   });
 
   test("exclude drops matching files", async () => {
-    const r = await rfs.search("g", { query: "needle", mode: "content", exclude: "other/**" });
+    const r = await rfs.search("g", {
+      query: "needle",
+      mode: "content",
+      exclude: "other/**",
+    });
     expect(r.hits.some((h) => h.path === "other/b.ts")).toBe(false);
     expect(r.hits.some((h) => h.path === "src/a.ts")).toBe(true);
   });
 
   test("path containment still applies to search scoping", async () => {
-    await expect(rfs.search("g", { query: "x", mode: "content", path: "../.." })).rejects.toThrow(/escapes-workspace|not-found/);
+    await expect(
+      rfs.search("g", { query: "x", mode: "content", path: "../.." }),
+    ).rejects.toThrow(/escapes-workspace|not-found/);
   });
 });
 
@@ -184,30 +234,36 @@ describe("WorkspaceFs git diff", () => {
 
   test("reports changed files and a unified diff", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "f.txt"), "one\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     writeFileSync(join(repo, "f.txt"), "one\ntwo\n"); // modify
     writeFileSync(join(repo, "new.txt"), "fresh\n"); // untracked
     const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
     const d = await gfs.gitDiff("g");
     expect(d.files.map((f) => f.path)).toContain("f.txt");
-    expect(d.files.some((f) => f.path === "new.txt" && f.status.includes("?"))).toBe(true);
+    expect(
+      d.files.some((f) => f.path === "new.txt" && f.status.includes("?")),
+    ).toBe(true);
     expect(d.diff).toContain("+two");
     rmSync(repo, { recursive: true, force: true });
   });
 
   test("reports the branch and the (primary) worktree context", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q", "-b", "trunk");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "f.txt"), "one\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
     const d = await gfs.gitDiff("g");
     expect(d.branch).toBe("trunk");
@@ -220,12 +276,14 @@ describe("WorkspaceFs git diff", () => {
 
   test("flags a detached HEAD without a branch name", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "f.txt"), "one\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     git("checkout", "-q", "--detach", "HEAD");
     const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
     const d = await gfs.gitDiff("g");
@@ -236,12 +294,14 @@ describe("WorkspaceFs git diff", () => {
 
   test("marks a linked worktree", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q", "-b", "main");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "f.txt"), "one\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     const wt = join(repo, "..", `wt-${repo.split("/").pop()}`);
     git("worktree", "add", "-q", "-b", "feature", wt);
     const gfs = new WorkspaceFs(() => [{ name: "wt", cwd: wt }]);
@@ -254,14 +314,17 @@ describe("WorkspaceFs git diff", () => {
 
   test("returns non-ASCII filenames unescaped (quotePath off + -z)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "首页.txt"), "hi\n"); // untracked, non-ASCII name
     const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
     const d = await gfs.gitDiff("g");
-    expect(d.files.some((f) => f.path === "首页.txt" && f.status.includes("?"))).toBe(true);
+    expect(
+      d.files.some((f) => f.path === "首页.txt" && f.status.includes("?")),
+    ).toBe(true);
     // The old plain --porcelain would have produced an octal-escaped, quoted path.
     expect(d.files.every((f) => !f.path.includes("\\"))).toBe(true);
     rmSync(repo, { recursive: true, force: true });
@@ -269,28 +332,34 @@ describe("WorkspaceFs git diff", () => {
 
   test("lists only the new path for a staged rename", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "old.txt"), "one\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     git("mv", "old.txt", "新名.txt");
     const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
     const d = await gfs.gitDiff("g");
-    expect(d.files.some((f) => f.path === "新名.txt" && f.status[0] === "R")).toBe(true);
+    expect(
+      d.files.some((f) => f.path === "新名.txt" && f.status[0] === "R"),
+    ).toBe(true);
     expect(d.files.some((f) => f.path === "old.txt")).toBe(false); // original path is consumed, not listed
     rmSync(repo, { recursive: true, force: true });
   });
 
   test("expands an untracked directory into individual files instead of a collapsed dir", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "seed.txt"), "x\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     mkdirSync(join(repo, "sub"));
     writeFileSync(join(repo, "sub", "a.txt"), "a\n");
     writeFileSync(join(repo, "sub", "b.txt"), "b\n");
@@ -305,12 +374,14 @@ describe("WorkspaceFs git diff", () => {
 
   test("synthesizes an all-additions diff for an untracked file", async () => {
     const repo = mkdtempSync(join(tmpdir(), "wsfs-git-"));
-    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
     git("init", "-q");
     git("config", "user.email", "t@t");
     git("config", "user.name", "t");
     writeFileSync(join(repo, "seed.txt"), "x\n");
-    git("add", "."); git("commit", "-qm", "init");
+    git("add", ".");
+    git("commit", "-qm", "init");
     writeFileSync(join(repo, "untracked.txt"), "alpha\nbeta\n"); // never added
     const gfs = new WorkspaceFs(() => [{ name: "g", cwd: repo }]);
     const d = await gfs.gitDiff("g", "untracked.txt");

@@ -273,7 +273,6 @@ test("Agent Messaging Federation: Daemon A <-> Relay Hub <-> Daemon B full end-t
         to: targetHandleB,
         content: "Hello Node B from Node A via Relay Hub Federation",
         mode: "auto",
-        replyTo: "msg_original_a",
       },
     );
 
@@ -291,9 +290,8 @@ test("Agent Messaging Federation: Daemon A <-> Relay Hub <-> Daemon B full end-t
     );
     expect(daemonB.injectedPrompts[0]!.text).toContain('replyable="true"');
     expect(daemonB.injectedPrompts[0]!.text).toContain(
-      'reply-to="msg_original_a"',
+      `conversation-id="${receiptFromA.messageId}"`,
     );
-
     // 3. Bidirectional: B replies to A using the canonical from handle
     const targetHandleA = encodeAgentHandle({
       nodeId: "node_A",
@@ -328,12 +326,12 @@ test("Agent Messaging Federation: Daemon A <-> Relay Hub <-> Daemon B full end-t
       sourceEndpointId: "worker_endpoint_node_A",
       targetEndpointId: "worker_endpoint_node_B",
       messageId: receiptFromA.messageId,
+      conversationId: receiptFromA.messageId,
+      depth: 0,
       content: "Hello Node B from Node A via Relay Hub Federation",
       requestedMode: "auto",
-      replyTo: "msg_original_a",
       replyable: true,
     });
-
     expect(duplicateDelivery.status).toBe("queued");
     expect(duplicateDelivery.deduplicated).toBe(true);
     // B's mock agent injection count must remain 1 (exactly-once injection effect)
