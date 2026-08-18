@@ -20,7 +20,6 @@ const adapter = {
   resetAndReplay: vi.fn(async () => {}),
   fit: vi.fn((): { cols: number; rows: number } | null => ({ cols: 80, rows: 24 })),
   localGeometry: vi.fn(() => null),
-  syncInputAnchor: vi.fn(),
   cols: () => 80,
   rows: () => 24,
 };
@@ -208,7 +207,7 @@ describe("TerminalTab", () => {
     expect(sendInput).toHaveBeenCalledWith("i1\0demo", "x");
   });
 
-  it("keybar Enter sends CR without needing ghostty focus", async () => {
+  it("keybar Enter sends CR without needing terminal focus", async () => {
     const w = mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
     await flushPromises();
     if (!w.find('[data-test="keybar"]').exists()) {

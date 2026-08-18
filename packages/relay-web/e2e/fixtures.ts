@@ -78,23 +78,23 @@ export async function loginAndOpenTerminal(page: Page): Promise<void> {
   await expect(page.getByTestId("terminal-host")).toBeVisible();
 }
 
-/** Wait until the terminal renderer has a measurable canvas (WASM + font). */
-export async function waitForTerminalCanvas(page: Page) {
-  const canvas = page.locator('[data-test="terminal-host"] canvas').first();
-  await expect(canvas).toBeVisible({ timeout: 20_000 });
+/** Wait until the terminal renderer has a measurable screen (module + font + grid mount). */
+export async function waitForTerminalScreen(page: Page) {
+  const screen = page.locator('[data-test="terminal-host"] .xterm-screen').first();
+  await expect(screen).toBeVisible({ timeout: 20_000 });
   await expect.poll(async () => {
-    return canvas.evaluate((el) => {
+    return screen.evaluate((el) => {
       const r = el.getBoundingClientRect();
       return r.width > 40 && r.height > 40;
     });
   }).toBe(true);
-  return canvas;
+  return screen;
 }
 
 export async function readTerminalGrid(page: Page): Promise<{
   cols: number;
   rows: number;
-  canvasWidth: number;
+  screenWidth: number;
   hostWidth: number;
   remainder: number;
 }> {
@@ -102,19 +102,19 @@ export async function readTerminalGrid(page: Page): Promise<{
     return page.locator('[data-test="terminal-host"]').getAttribute("data-cols");
   }).not.toBeNull();
   return page.locator('[data-test="terminal-host"]').evaluate((host) => {
-    const canvas = host.querySelector("canvas");
-    if (!canvas) throw new Error("no canvas");
-    const canvasRect = canvas.getBoundingClientRect();
+    const screen = host.querySelector(".xterm-screen");
+    if (!screen) throw new Error("no xterm-screen");
+    const screenRect = screen.getBoundingClientRect();
     const hostRect = host.getBoundingClientRect();
     const cols = Number(host.dataset.cols ?? 0);
     const rows = Number(host.dataset.rows ?? 0);
-    const cellW = cols > 0 ? canvasRect.width / cols : 0;
+    const cellW = cols > 0 ? screenRect.width / cols : 0;
     return {
       cols,
       rows,
-      canvasWidth: canvasRect.width,
+      screenWidth: screenRect.width,
       hostWidth: hostRect.width,
-      remainder: cellW > 0 ? hostRect.width - canvasRect.width : hostRect.width,
+      remainder: cellW > 0 ? hostRect.width - screenRect.width : hostRect.width,
     };
   });
 }

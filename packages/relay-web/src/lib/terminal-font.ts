@@ -1,7 +1,7 @@
 // Lazily injects the JetBrainsMono Nerd Font Mono webfont (via cdn.jsdmirror.com, a
-// China-reachable mirror of jsDelivr) and waits for it to load. Called before the ghostty
-// terminal is constructed so its first canvas font-measure uses the real font. Idempotent;
-// failures (blocked/offline/timeout) resolve silently — the terminal falls back to monospace.
+// China-reachable mirror of jsDelivr) and waits for it to load. Called before the xterm.js
+// terminal is constructed so its first char-size measure uses the real font. Idempotent;
+// failures (blocked/offline/timeout) resolve silently - the terminal falls back to monospace.
 
 const BASE = "https://cdn.jsdmirror.com/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts";
 export const TERMINAL_FONT_FAMILY = "JetBrainsMono NFM";

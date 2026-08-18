@@ -495,13 +495,12 @@ onBeforeUnmount(() => {
 .term-host:focus,
 .term-host:focus-visible,
 .term-host:focus-within,
-.term-host :deep(canvas),
 .term-host :deep(*:focus),
 .term-host :deep(*:focus-visible) {
   outline: none !important;
   box-shadow: none !important;
 }
-/* No fullscreen textarea overrides here: the IME anchor textarea is sized/positioned
-   inline by the adapter's syncGhosttyInputAnchor (one cell at the shell cursor), and
-   !important CSS would defeat that geometry - which is exactly where IMEs anchor. */
+/* No textarea overrides here: xterm.js keeps its own (invisible) helper textarea
+   anchored at the cursor cell for IME - resizing or repositioning it from outside
+   would defeat exactly where IMEs anchor their candidate UI. */
 </style>

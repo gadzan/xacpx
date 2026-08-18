@@ -1,9 +1,9 @@
-import { test, expect, loginAndOpenTerminal, waitForTerminalCanvas, readTerminalGrid } from "./fixtures";
+import { test, expect, loginAndOpenTerminal, waitForTerminalScreen, readTerminalGrid } from "./fixtures";
 
 test.describe("terminal viewport", () => {
   test("initial open fills the host instead of staying at 80x24", async ({ page, hub }) => {
     await loginAndOpenTerminal(page);
-    await waitForTerminalCanvas(page);
+    await waitForTerminalScreen(page);
     const grid = await readTerminalGrid(page);
     // Mobile viewports often fit fewer than 80 cols; the bug is staying at the
     // 80x24 bootstrap size, not "must be wider than 80".
@@ -11,7 +11,7 @@ test.describe("terminal viewport", () => {
     expect(grid.cols).toBeGreaterThan(20);
     expect(grid.rows).toBeGreaterThan(10);
     // Sub-cell remainder is expected (items-center); never a whole unused cell.
-    expect(grid.remainder).toBeLessThan(grid.canvasWidth / grid.cols + 1);
+    expect(grid.remainder).toBeLessThan(grid.screenWidth / grid.cols + 1);
     expect(hub.resizes.length).toBeGreaterThan(0);
     const last = hub.resizes.at(-1)!;
     expect(last.cols).toBe(grid.cols);
@@ -20,7 +20,7 @@ test.describe("terminal viewport", () => {
 
   test("late rebase rebuilds at the keyframe size then re-fits the host", async ({ page, hub }) => {
     await loginAndOpenTerminal(page);
-    await waitForTerminalCanvas(page);
+    await waitForTerminalScreen(page);
     const before = await readTerminalGrid(page);
     expect(before.cols === 80 && before.rows === 24).toBe(false);
 
@@ -41,7 +41,7 @@ test.describe("terminal viewport", () => {
   test("spectator host resize never sends a backend resize", async ({ page, hub }) => {
     hub.setRole("spectator");
     await loginAndOpenTerminal(page);
-    await waitForTerminalCanvas(page);
+    await waitForTerminalScreen(page);
     await expect(page.getByTestId("terminal-role")).toContainText(/spectator/i);
     expect(hub.resizes).toEqual([]);
 
@@ -56,7 +56,7 @@ test.describe("terminal viewport", () => {
 
   test("controller host resize pushes the final geometry", async ({ page, hub }) => {
     await loginAndOpenTerminal(page);
-    await waitForTerminalCanvas(page);
+    await waitForTerminalScreen(page);
     const before = await readTerminalGrid(page);
     const countBefore = hub.resizes.length;
 
@@ -73,7 +73,7 @@ test.describe("terminal viewport", () => {
   test("take-control syncs the current browser geometry to the backend", async ({ page, hub }) => {
     hub.setRole("spectator");
     await loginAndOpenTerminal(page);
-    await waitForTerminalCanvas(page);
+    await waitForTerminalScreen(page);
     expect(hub.resizes).toEqual([]);
     const grid = await readTerminalGrid(page);
 
@@ -87,7 +87,7 @@ test.describe("terminal viewport", () => {
 
   test("reconnect + rebase recovers a filled viewport", async ({ page, hub }) => {
     await loginAndOpenTerminal(page);
-    await waitForTerminalCanvas(page);
+    await waitForTerminalScreen(page);
     const before = await readTerminalGrid(page);
     expect(before.cols === 80 && before.rows === 24).toBe(false);
 

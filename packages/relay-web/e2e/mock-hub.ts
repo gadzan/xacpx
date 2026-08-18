@@ -222,8 +222,10 @@ export async function startMockHub(): Promise<MockHub> {
         viewerCount: role === "spectator" ? 2 : 1,
       });
       // Authoritative recovery geometry first; the browser must then re-fit
-      // the host (the late-rebase / initial-viewport invariant).
-      sendRebase(80, 24);
+      // the host (the late-rebase / initial-viewport invariant). The keyframe
+      // carries a prompt + a cursor move so the rendered grid actually places
+      // the cursor off home (xterm sizes/anchors its IME textarea on cursor move).
+      sendRebase(80, 24, "xacpx demo shell\r\n$ \x1b[1;3H");
       return;
     }
     if (msg.kind === "terminal-take-control") {
