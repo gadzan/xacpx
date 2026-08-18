@@ -95,6 +95,38 @@ test("listSessionsPage filters sleeping sessions and returns a server cursor", (
   expect(control.listSessionsPage("relay:acct", 0, 2, true).sessions.map((session) => session.alias)).toEqual(["s0", "s1"]);
 });
 
+test("listSessionsPage archivedOnly orders sleeping sessions newest-sleep-first", () => {
+  const { deps } = makeDeps();
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "oldest", agent: "claude", workspace: "/ws", transportSession: "t1", archived: true, archivedAt: "2026-08-01T00:00:00Z" },
+    { alias: "fresh", agent: "claude", workspace: "/ws", transportSession: "t2", archived: true, archivedAt: "2026-08-17T00:00:00Z" },
+    { alias: "mid", agent: "claude", workspace: "/ws", transportSession: "t3", archived: true, archivedAt: "2026-08-09T00:00:00Z" },
+    { alias: "live", agent: "claude", workspace: "/ws", transportSession: "t4" },
+  ];
+  const control = new ControlService(deps as never);
+
+  const page = control.listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true });
+  expect(page.sessions.map((s) => s.alias)).toEqual(["fresh", "mid", "oldest"]);
+  // Cursor math runs on the sorted set: paging yields the same order.
+  expect(control.listSessionsPage("relay:acct", 0, 2, false, { archivedOnly: true }))
+    .toMatchObject({ sessions: [expect.objectContaining({ alias: "fresh" }), expect.objectContaining({ alias: "mid" })], hasMore: true, nextOffset: 2 });
+});
+
+test("listSessions surfaces archivedAt for sleeping sessions and omits it otherwise", () => {
+  const { deps } = makeDeps();
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "slept", agent: "claude", workspace: "/ws", transportSession: "t1", archived: true, archivedAt: "2026-08-17T00:00:00Z" },
+    { alias: "legacy", agent: "claude", workspace: "/ws", transportSession: "t2", archived: true },
+    { alias: "awake", agent: "claude", workspace: "/ws", transportSession: "t3" },
+  ];
+  const control = new ControlService(deps as never);
+  const byAlias = new Map(control.listSessions("relay:acct").map((s) => [s.alias, s]));
+  expect(byAlias.get("slept")!.archivedAt).toBe("2026-08-17T00:00:00Z");
+  // Old records without archived_at keep the field omitted (wire stays minimal).
+  expect("archivedAt" in byAlias.get("legacy")!).toBe(false);
+  expect("archivedAt" in byAlias.get("awake")!).toBe(false);
+});
+
 test("listSessionsPage supports archivedOnly, workspace and agent filters", () => {
   const { deps } = makeDeps();
   deps.sessions.listAllResolvedSessions = () => [

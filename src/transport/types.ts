@@ -118,6 +118,8 @@ export interface ResolvedSession {
    * web dashboard). Surfaced to the control/web path via ControlSessionInfo.
    */
   archived?: boolean;
+  /** ISO timestamp when the session was archived. */
+  archivedAt?: string;
 }
 
 export interface AgentSession {

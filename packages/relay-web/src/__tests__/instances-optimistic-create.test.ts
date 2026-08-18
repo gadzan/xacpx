@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { flushPromises } from "@vue/test-utils";
 import { useInstancesStore } from "../stores/instances";
+import { useChatStore } from "../stores/chat";
 import { api, ApiError } from "../api/client";
+
 
 const inst = (sessions: unknown[] = []) => ({
   id: "i1", name: "pc", online: true, lastSeenAt: null,
@@ -113,6 +115,89 @@ describe("optimistic session creation", () => {
     const creatingRows = store.byId("i1")!.sessions.filter((s) => s.creating);
     expect(creatingRows).toHaveLength(1);
     expect(rpc).toHaveBeenCalled();
+  });
+
+  it("appends the optimistic row after existing active rows — sidebar order never jumps on create", () => {
+    const store = useInstancesStore();
+    store.instances = [inst([
+      { alias: "a", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false },
+      { alias: "z-sleeping", agent: "codex", workspace: "home", transportSession: "t2", running: false, archived: true },
+    ])] as never;
+    vi.spyOn(api, "rpc").mockReturnValue(Promise.withResolvers<never>().promise as never);
+    store.beginSessionCreation("i1", "new", "codex", "home");
+    // The server list appends new sessions last, so the optimistic row must sit at
+    // the same position the real row will land: end of the ACTIVE rows, before any
+    // archived tail. Prepending it would visibly reorder the sidebar on completion.
+    expect(store.byId("i1")!.sessions.map((s) => s.alias)).toEqual(["a", "new", "z-sleeping"]);
+  });
+
+  it("keeps an in-flight optimistic row across a sessions-changed list replace", async () => {
+    const store = useInstancesStore();
+    store.instances = [inst([
+      { alias: "a", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false },
+    ])] as never;
+    // Create RPC still pending; a sessions-changed refetch lands mid-boot.
+    vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+      if (type === "control.sessions.create") return Promise.withResolvers<never>().promise as never;
+      if (type === "control.sessions.list") {
+        // Server does not know the new session yet (cold agent start).
+        return { sessions: [{ alias: "a", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false }] } as never;
+      }
+      return { agents: [] } as never;
+    });
+    store.beginSessionCreation("i1", "booting", "codex", "home");
+    await store.loadSessions("i1");
+    const aliases = store.byId("i1")!.sessions.map((s) => s.alias);
+    expect(aliases).toEqual(["a", "booting"]);
+    expect(store.byId("i1")!.sessions.find((s) => s.alias === "booting")!.creating).toBe(true);
+});
+  it("materialises the row from the create RPC and keeps it while pagination may hide it", async () => {
+    // >20 actives: the server appends new sessions last, so the refreshed page-1
+    // (hasMore) cannot contain the fresh session — the materialised row must
+    // survive that replace instead of blanking the session the user is on.
+    const store = useInstancesStore();
+    store.instances = [inst()] as never;
+    vi.spyOn(api, "rpc")
+      .mockResolvedValueOnce({ alias: "backend", agent: "codex", workspace: "home", transportSession: "t", running: false, archived: false } as never)
+      .mockResolvedValueOnce({ sessions: [], hasMore: true, nextOffset: 0 } as never) // page-1 list omits the new session
+      .mockResolvedValue({ agents: [] } as never);
+    store.beginSessionCreation("i1", "backend", "codex", "home");
+    await flushPromises();
+    // The merged row keeps the server identity and stops spinning.
+    const row = store.byId("i1")!.sessions.find((s) => s.alias === "backend");
+    expect(row).toMatchObject({ alias: "backend", transportSession: "t" });
+    expect(row!.creating).toBeUndefined();
+  });
+
+  it("drops a just-created row once a COMPLETE list omits it (real removal converges)", async () => {
+    const store = useInstancesStore();
+    store.instances = [inst()] as never;
+    vi.spyOn(api, "rpc")
+      .mockResolvedValueOnce({ alias: "backend", agent: "codex", workspace: "home", transportSession: "t", running: false, archived: false } as never)
+      .mockResolvedValueOnce({ sessions: [{ alias: "other", agent: "codex", workspace: "home", transportSession: "t2", running: false, archived: false }], hasMore: false } as never)
+      .mockResolvedValue({ agents: [] } as never);
+    store.beginSessionCreation("i1", "backend", "codex", "home");
+    await flushPromises();
+    // hasMore=false means the list is complete and authoritative: an absent alias
+    // was deleted server-side, so the local row must not linger.
+    expect(store.byId("i1")!.sessions.map((s) => s.alias)).toEqual(["other"]);
+  });
+
+  it("follows the chat selection to the backend-derived alias when it differs", async () => {
+    const store = useInstancesStore();
+    store.instances = [inst()] as never;
+    const chat = useChatStore();
+    vi.spyOn(api, "rpc")
+      .mockResolvedValueOnce({ alias: "backend-2", agent: "codex", workspace: "home", transportSession: "t", running: false, archived: false } as never)
+      .mockResolvedValueOnce({ sessions: [{ alias: "backend-2", agent: "codex", workspace: "home", transportSession: "t", running: false, archived: false }] } as never)
+      .mockResolvedValue({ agents: [] } as never);
+    store.beginSessionCreation("i1", "backend", "codex", "home");
+    chat.select("i1", "backend");
+    await flushPromises();
+    // The user created "backend"; the backend named it "backend-2" — the view must
+    // end up ON the created session, not stranded on the requested-but-uncreated name.
+    expect(chat.instanceId).toBe("i1");
+    expect(chat.sessionAlias).toBe("backend-2");
   });
 
   it("cancelSessionCreation drops a booting/failed row but spares a materialised one", () => {
