@@ -4,13 +4,14 @@ Status: Proposed / v0.2
 Date: 2026-08-11  
 Scope: xacpx 内置 MCP 驱动的、location-independent Agent-to-Agent Messaging。目标覆盖同 daemon、跨 daemon、跨 OS user、跨机器，以及经显式信任关系授权的跨账号通信。
 
-Implementation status (2026-08-18): Local queue-first v0.1 is implemented and
-verified in this PR: stable node/endpoint identities, same-coordinator
-discovery, one-way `agent_send`, queue acceptance, typed receipts/errors,
-guardrails, both transports, daemon RPC, and MCP tools. Wire protocol constants
-and Relay Hub routing scaffolding are prepared. Same-turn steering remains
-gated by the separate acpx/codex-acp Phase 0 spike. Production multi-daemon
-Relay wiring and remote presence will be closed in the follow-up federation milestone.
+Implementation status (2026-08-18): Local queue-first v0.1 and Same-Account
+Relay Federation v0.1 are implemented and verified end-to-end: stable
+node/endpoint identities, same-coordinator and multi-node Relay discovery,
+one-way `agent_send`, Relay Hub soft directory cache, multi-daemon routing,
+destination-side deduplication, typed receipts/errors, guardrails, both
+transports, daemon RPC, and MCP tools. Same-turn steering remains gated by the
+separate acpx/codex-acp Phase 0 spike. Cross-account peer trust and durable mail
+remain future milestones.
 
 ## 1. Summary
 
