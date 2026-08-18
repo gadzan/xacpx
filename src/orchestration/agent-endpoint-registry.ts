@@ -11,7 +11,8 @@ import type {
   AgentEndpointView,
   AgentSenderBinding,
 } from "./agent-messaging-types";
-import type { WorkerBindingRecord } from "./orchestration-types";
+import { isAttentionRequiredTask, type WorkerBindingRecord } from "./orchestration-types";
+import type { AgentActivityView } from "./agent-messaging-types";
 
 type EndpointRuntime =
   | {
@@ -65,12 +66,18 @@ export class AgentEndpointRegistry {
       endpointId: string;
       displayName?: string;
       agent: string;
+      workspace?: string;
       state: "idle" | "running";
+      activity?: {
+        status: "idle" | "working" | "waiting";
+        summary?: string;
+      };
       capabilities: {
         receive: boolean;
         steer: boolean;
         queue: boolean;
         interrupt: boolean;
+        conversation?: boolean;
       };
     }>,
   ): void {
@@ -85,9 +92,17 @@ export class AgentEndpointRegistry {
             endpointId: ep.endpointId,
           }),
           node: ep.displayName ?? ep.nodeId,
+          displayName: ep.displayName,
           agent: ep.agent,
+          workspace: ep.workspace,
           state: ep.state,
-          capabilities: ep.capabilities,
+          activity: ep.activity ?? {
+            status: ep.state === "running" ? "working" : "idle",
+          },
+          capabilities: {
+            ...ep.capabilities,
+            conversation: ep.capabilities.conversation ?? false,
+          },
         });
         byNode.set(ep.nodeId, list);
       }
@@ -104,12 +119,18 @@ export class AgentEndpointRegistry {
       endpointId: string;
       displayName?: string;
       agent: string;
+      workspace?: string;
       state: "idle" | "running";
+      activity?: {
+        status: "idle" | "working" | "waiting";
+        summary?: string;
+      };
       capabilities: {
         receive: boolean;
         steer: boolean;
         queue: boolean;
         interrupt: boolean;
+        conversation?: boolean;
       };
       labels?: string[];
       updatedAt: number;
@@ -122,7 +143,9 @@ export class AgentEndpointRegistry {
         nodeId: candidate.endpoint.address.nodeId,
         endpointId: candidate.endpoint.address.endpointId,
         agent: candidate.endpoint.agent,
+        workspace: candidate.endpoint.workspace,
         state: candidate.endpoint.state === "running" ? "running" : "idle",
+        activity: candidate.endpoint.activity,
         capabilities: candidate.endpoint.capabilities,
         ...(candidate.endpoint.displayName
           ? { displayName: candidate.endpoint.displayName }
@@ -328,6 +351,12 @@ export class AgentEndpointRegistry {
       if (!endpointId) {
         continue;
       }
+      const { state: workerState, activity } = deriveWorkerActivity(
+        state,
+        workerSession,
+        worker.role,
+      );
+      const displayName = worker.role || worker.targetAgent;
       candidates.push({
         endpoint: {
           address: { nodeId: this.deps.nodeId, endpointId },
@@ -335,9 +364,9 @@ export class AgentEndpointRegistry {
           node: this.deps.nodeId,
           agent: worker.targetAgent,
           workspace: worker.workspace,
-          state: hasRunningWorkerTask(state, workerSession)
-            ? "running"
-            : "idle",
+          displayName,
+          state: workerState,
+          activity,
           capabilities: queueOnlyCapabilities(),
         },
         runtime: {
@@ -358,17 +387,71 @@ export class AgentEndpointRegistry {
       nodeId: this.deps.nodeId,
       endpointId: session.logical_session_id,
     };
+    const displayName = session.display_name || session.alias;
     return {
       address,
       handle: encodeAgentHandle(address),
       node: this.deps.nodeId,
       agent: session.agent,
       workspace: session.workspace,
-      ...(session.display_name ? { displayName: session.display_name } : {}),
+      displayName,
       state: "idle",
+      activity: {
+        status: "idle",
+      },
       capabilities: queueOnlyCapabilities(),
     };
   }
+}
+
+function deriveWorkerActivity(
+  state: AppState,
+  workerSession: string,
+  role?: string,
+): { state: "idle" | "running"; activity: AgentActivityView } {
+  const activeTask = Object.values(state.orchestration.tasks).find(
+    (task) =>
+      task.workerSession === workerSession &&
+      (task.status === "running" || isAttentionRequiredTask(task)),
+  );
+  if (!activeTask) {
+    return {
+      state: "idle",
+      activity: {
+        status: "idle",
+        summary: role ? `Idle (${role})` : "Idle",
+      },
+    };
+  }
+  if (activeTask.status === "running") {
+    const summary = sanitizePublishedActivity(activeTask.summary);
+    return {
+      state: "running",
+      activity: {
+        status: "working",
+        ...(summary ? { summary } : {}),
+      },
+    };
+  }
+  return {
+    state: "idle",
+    activity: {
+      status: "waiting",
+      summary:
+        activeTask.status === "needs_confirmation"
+          ? "Waiting for confirmation"
+          : "Waiting for question response",
+    },
+  };
+}
+
+function sanitizePublishedActivity(
+  summary: string | undefined,
+): string | undefined {
+  if (!summary) return undefined;
+  const cleaned = summary.replace(/[\r\n\t]+/g, " ").trim();
+  if (cleaned.length === 0) return undefined;
+  return cleaned.length > 80 ? cleaned.slice(0, 77) + "..." : cleaned;
 }
 
 function findLogicalSession(
@@ -382,18 +465,13 @@ function findLogicalSession(
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];
 }
 
-function hasRunningWorkerTask(state: AppState, workerSession: string): boolean {
-  return Object.values(state.orchestration.tasks).some(
-    (task) => task.workerSession === workerSession && task.status === "running",
-  );
-}
-
 function queueOnlyCapabilities(): AgentCapabilities {
   return {
     receive: true,
     steer: false,
     queue: true,
     interrupt: false,
+    conversation: true,
   };
 }
 

@@ -433,6 +433,12 @@ export class InstanceGateway {
           sourceEndpointId: routePayload.sourceEndpointId,
           targetEndpointId: routePayload.targetEndpointId,
           messageId: routePayload.messageId,
+          ...(routePayload.conversationId
+            ? { conversationId: routePayload.conversationId }
+            : {}),
+          ...(routePayload.depth !== undefined
+            ? { depth: routePayload.depth }
+            : {}),
           content: routePayload.content,
           requestedMode: routePayload.requestedMode,
           replyTo: routePayload.replyTo,
