@@ -252,3 +252,20 @@ export interface SessionHistoryRowDto {
   text: string;
   structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[] };
 }
+
+/** Wire DTO for an agent endpoint published to Relay Hub for remote discovery. */
+export interface PublishedAgentEndpointDto {
+  nodeId: string;
+  endpointId: string;
+  displayName?: string;
+  agent: string;
+  state: "idle" | "running";
+  capabilities: {
+    receive: boolean;
+    steer: boolean;
+    queue: boolean;
+    interrupt: boolean;
+  };
+  labels?: string[];
+  updatedAt: number;
+}

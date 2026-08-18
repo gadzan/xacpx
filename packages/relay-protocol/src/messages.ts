@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 
 // Instance <-> relay message types. Convention: chatKey for relay-driven chats
 // is `relay:<accountId>`; the relay server stamps chatKey/senderId/isOwner on
@@ -83,6 +83,10 @@ export const MSG = {
   terminalDetach: "instance.terminal.detach",
   terminalViewerEvent: "instance.terminal.viewer-event",
   terminalResourceExit: "instance.terminal.resource-exit",
+  // Agent messaging across daemons via Relay Hub
+  instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
+  agentMessageRoute: "instance.agent-message.route",
+  agentMessageDeliver: "instance.agent-message.deliver",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -828,4 +832,37 @@ export interface TerminalResourceExitPayload {
   generation: string;
   reason: string;
   code?: number;
+}
+
+// --- Agent Messaging across Relay ---
+export interface InstanceAgentEndpointsSyncPayload {
+  endpoints: PublishedAgentEndpointDto[];
+}
+
+export interface AgentMessageRoutePayload {
+  targetNodeId: string;
+  targetEndpointId: string;
+  messageId: string;
+  content: string;
+  requestedMode: string;
+  replyTo?: string;
+}
+
+export interface AgentMessageDeliverPayload {
+  sourceNodeId: string;
+  sourceEndpointId: string;
+  targetEndpointId: string;
+  messageId: string;
+  content: string;
+  requestedMode: string;
+  replyTo?: string;
+  replyable: boolean;
+}
+
+export interface AgentMessageRouteResult {
+  messageId: string;
+  status: "injected" | "queued" | "failed";
+  modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+  targetState?: "idle" | "running";
+  errorCode?: string;
 }
