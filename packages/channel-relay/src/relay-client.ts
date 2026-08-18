@@ -62,6 +62,16 @@ export class RelayClient {
   private stopped = false;
   private ready = false;
 
+  private readonly pendingRequests = new Map<
+    string,
+    {
+      resolve: (payload: unknown) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private requestSeq = 0;
+
   constructor(private readonly options: RelayClientOptions) {}
 
   start(abortSignal: AbortSignal): void {
@@ -90,6 +100,44 @@ export class RelayClient {
       encodeEnvelope({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload }),
       onFlush,
     );
+  }
+  async sendRequest<T = unknown>(
+    type: string,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
+    if (!this.isReady()) {
+      throw new Error("relay-offline");
+    }
+    const id = `client-req-${++this.requestSeq}`;
+    const timeoutMs = options?.timeoutMs ?? 30_000;
+    return await new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error("timeout"));
+      }, timeoutMs);
+      this.pendingRequests.set(id, {
+        resolve: (res) => resolve(res as T),
+        reject,
+        timer,
+      });
+      this.socket!.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "req",
+          id,
+          type,
+          payload,
+        }),
+        (err) => {
+          if (err) {
+            clearTimeout(timer);
+            this.pendingRequests.delete(id);
+            reject(err);
+          }
+        },
+      );
+    });
   }
 
   /** True only while authenticated with an open socket — the window in which
@@ -156,6 +204,11 @@ export class RelayClient {
       }
       if (this.stopped) return;
       const delays = this.options.reconnectDelaysMs ?? DEFAULT_DELAYS;
+      for (const [id, pending] of this.pendingRequests) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("relay-offline"));
+      }
+      this.pendingRequests.clear();
       const delay = delays[Math.min(this.attempts, delays.length - 1)] ?? 30_000;
       this.attempts += 1;
       setTimeout(() => this.connect(), applyReconnectJitter(delay));
@@ -281,6 +334,20 @@ export class RelayClient {
       this.options.onReady?.();
       return;
     }
+    if (envelope.kind === "res" && envelope.id && envelope.id !== HANDSHAKE_ID) {
+      const pending = this.pendingRequests.get(envelope.id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingRequests.delete(envelope.id);
+        if (isErrorPayload(envelope.payload)) {
+          pending.reject(new Error(envelope.payload.error.code));
+        } else {
+          pending.resolve(envelope.payload);
+        }
+        return;
+      }
+    }
+
 
     if (envelope.kind === "req") {
       const respond = (payload: unknown) => {
