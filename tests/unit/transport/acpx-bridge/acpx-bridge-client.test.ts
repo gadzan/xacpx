@@ -17,6 +17,7 @@ import { encodeBridgeRequest } from "../../../../src/transport/acpx-bridge/acpx-
 import { PromptCommandError } from "../../../../src/transport/prompt-output";
 import { MissingOptionalDepError } from "../../../../src/recovery/errors";
 import { CommandTimeoutError } from "../../../../src/transport/command-timeouts";
+import { MessageInjectionError } from "../../../../src/transport/message-injection";
 
 test("encodes a bridge request as ndjson", () => {
   expect(
@@ -69,6 +70,30 @@ test("preserves a stable bridge error code on generic errors", async () => {
     expect(error).toMatchObject({
       code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
       message: "oversized ACP event",
+    });
+  }
+});
+
+test("reconstructs typed message injection errors from bridge responses", async () => {
+  const client = new AcpxBridgeClient(() => {});
+  const pending = client.request("injectMessage", {});
+  client.handleLine(JSON.stringify({
+    id: "1",
+    ok: false,
+    error: {
+      code: "TARGET_NOT_STEERABLE",
+      message: "The target does not support same-turn steering.",
+    },
+  }));
+
+  try {
+    await pending;
+    throw new Error("expected rejection");
+  } catch (error) {
+    expect(error).toBeInstanceOf(MessageInjectionError);
+    expect(error).toMatchObject({
+      code: "TARGET_NOT_STEERABLE",
+      message: "The target does not support same-turn steering.",
     });
   }
 });

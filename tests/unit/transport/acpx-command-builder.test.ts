@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_PERMISSION_MODE, DEFAULT_NON_INTERACTIVE,
   buildPermissionArgs, buildQueueOwnerTtlArgs, buildModelArgs,
-  buildSessionArgs, buildPromptArgs, buildAgentQueryArgs,
+  buildSessionArgs, buildPromptArgs, buildQueueMessagePromptArgs, buildAgentQueryArgs,
   isMissingAcpxSessionError, parseAcpxSessionRecordId,
 } from "../../../src/transport/acpx-command-builder";
 
@@ -51,6 +51,19 @@ describe("buildPromptArgs", () => {
     expect(buildPromptArgs({ agent: "codex", agentCommand: "my-codex", cwd: "/w", model: "m", permission, queueOwnerTtlSeconds: 900 }, ["prompt", "-s", "s", "hi"]))
       .toEqual(["--format", "json", "--json-strict", "--cwd", "/w", "--approve-all", "--non-interactive-permissions", "deny", "--model", "m", "--ttl", "900", "--agent", "my-codex", "prompt", "-s", "s", "hi"]);
   });
+});
+
+test("buildQueueMessagePromptArgs pins next-turn delivery to prompt --no-wait", () => {
+  expect(buildQueueMessagePromptArgs(
+    { agent: "codex", cwd: "/w", permission, queueOwnerTtlSeconds: 900 },
+    "session-a",
+    "<xacpx-message>hello</xacpx-message>",
+  )).toEqual([
+    "--format", "json", "--json-strict", "--cwd", "/w",
+    "--approve-all", "--non-interactive-permissions", "deny",
+    "--ttl", "900", "codex", "prompt", "-s", "session-a",
+    "--no-wait", "<xacpx-message>hello</xacpx-message>",
+  ]);
 });
 
 describe("buildAgentQueryArgs", () => {

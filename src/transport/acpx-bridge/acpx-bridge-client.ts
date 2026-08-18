@@ -29,6 +29,10 @@ import {
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
   DEFAULT_SESSION_INIT_TIMEOUT_MS,
 } from "../command-timeouts";
+import {
+  isMessageInjectionErrorCode,
+  MessageInjectionError,
+} from "../message-injection";
 
 // `boolean | void` return mirrors Writable.write: `false` only signals
 // backpressure (the line is still queued and delivered), never failure.
@@ -326,6 +330,11 @@ export class AcpxBridgeClient {
           stderr: response.error.details.stderr ?? "",
         }),
       );
+      return;
+    }
+
+    if (isMessageInjectionErrorCode(response.error.code)) {
+      pending.reject(new MessageInjectionError(response.error.code, response.error.message));
       return;
     }
 

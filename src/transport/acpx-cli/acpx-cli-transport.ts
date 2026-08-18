@@ -20,6 +20,8 @@ import type {
   PromptUsage,
   ReplyQuotaContext,
   ResolvedSession,
+  SessionMessageInput,
+  SessionMessageReceipt,
   SessionTransport,
   SessionEffortState,
 } from "../types";
@@ -55,11 +57,13 @@ import {
   buildSessionArgs as sharedBuildSessionArgs,
   buildAgentQueryArgs as sharedBuildAgentQueryArgs,
   buildPromptArgs as sharedBuildPromptArgs,
+  buildQueueMessagePromptArgs as sharedBuildQueueMessagePromptArgs,
   isMissingAcpxSessionError,
   parseAcpxSessionRecordId,
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../acpx-command-builder";
+import { MessageInjectionError } from "../message-injection";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -462,6 +466,39 @@ export class AcpxCliTransport implements SessionTransport {
         // Prompt outcome is more important than best-effort temp file cleanup.
       }
     }
+  }
+
+  async injectMessage(
+    session: ResolvedSession,
+    input: SessionMessageInput,
+  ): Promise<SessionMessageReceipt> {
+    if (input.mode === "steer") {
+      throw new MessageInjectionError(
+        "TARGET_NOT_STEERABLE",
+        "The target does not support same-turn steering.",
+      );
+    }
+    if (input.mode === "interrupt") {
+      throw new MessageInjectionError(
+        "TARGET_NOT_INTERRUPTIBLE",
+        "The target does not support interrupt delivery.",
+      );
+    }
+
+    await this.syncPersistedSessionEffort(session);
+    await this.launchMcpQueueOwnerIfNeeded(session);
+    await this.run(
+      sharedBuildQueueMessagePromptArgs(
+        { ...this.sessionInput(session), queueOwnerTtlSeconds: this.queueOwnerTtlSeconds },
+        session.transportSession,
+        input.text,
+      ),
+      this.withSpawnEnvironment(session, {
+        timeoutMs: this.managementCommandTimeoutMs,
+        stage: "inject-message",
+      }),
+    );
+    return { status: "queued", modeUsed: "queue" };
   }
 
   async setMode(session: ResolvedSession, modeId: string): Promise<void> {
@@ -1154,7 +1191,11 @@ export class AcpxCliTransport implements SessionTransport {
     );
   }
 
-  private buildPromptArgs(session: ResolvedSession, text: string, promptFile?: string): string[] {
+  private buildPromptArgs(
+    session: ResolvedSession,
+    text: string,
+    promptFile?: string,
+  ): string[] {
     const tail = promptFile
       ? ["prompt", "-s", session.transportSession, "--file", promptFile]
       : ["prompt", "-s", session.transportSession, text];
