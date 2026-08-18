@@ -472,7 +472,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "agent_list",
       description:
-        "List peer agent sessions that the current xacpx-managed agent is authorized to message within the local coordinator scope. Use the returned opaque handle as agent_send.to and do not parse it.",
+        "List authorized peer agent sessions in scope, including their assigned roles, workspaces, and current activities (`status` and `summary`). Inspect this list before sending messages to ensure the target is relevant to your task.",
       inputSchema: z.object({}).strict(),
       handler: async () =>
         await asToolResult(async () => {
@@ -485,10 +485,19 @@ export function buildXacpxMcpToolRegistry(input: {
               ? "No authorized peer agent sessions are currently reachable."
               : [
                   "Authorized peer agent sessions:",
-                  ...agents.map(
-                    (agent) =>
-                      `- ${agent.handle}: ${agent.agent} (${agent.state}; receive=${agent.capabilities.receive}, steer=${agent.capabilities.steer}, queue=${agent.capabilities.queue}, interrupt=${agent.capabilities.interrupt})`,
-                  ),
+                  ...agents.map((agent) => {
+                    const namePart = agent.displayName
+                      ? `${agent.displayName} `
+                      : "";
+                    const wsPart = agent.workspace
+                      ? `[${agent.workspace}] `
+                      : "";
+                    const actPart = agent.activity?.summary
+                      ? `${agent.activity.status}: ${agent.activity.summary}`
+                      : (agent.activity?.status ?? agent.state);
+                    const caps = `receive=${agent.capabilities.receive}, queue=${agent.capabilities.queue}, conversation=${agent.capabilities.conversation}`;
+                    return `- ${agent.handle}: ${namePart}${wsPart}(${actPart}; ${caps})`;
+                  }),
                 ].join("\n");
           return createSuccessResult(text, { agents });
         }),
@@ -496,13 +505,28 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "agent_send",
       description:
-        "Send a one-way peer message to another authorized agent session in the local coordinator scope. This call returns only after the target runtime accepts injection or queue delivery and never waits for the target model to reply. Use mode=auto unless same-turn steering or interrupt semantics are explicitly required.",
+        "Send a high-value asynchronous peer message to another agent. ONLY use this when: (1) you have critical information that directly alters the target's current work (e.g. breaking schema change, interface takeover), or (2) you need an unblocking decision only the target can provide. DO NOT send acknowledgments ('Received', 'OK', 'Working on it'), status polling ('Are you done?'), or conversational chatter. One-way notifications require NO reply. Provide replyTo when answering an earlier message.",
       inputSchema: z
         .object({
-          to: z.string().min(1),
-          message: z.string().min(1),
-          mode: z.enum(["auto", "steer", "queue", "interrupt"]).optional(),
-          replyTo: z.string().min(1).optional(),
+          to: z
+            .string()
+            .min(1)
+            .describe("Target opaque handle from agent_list"),
+          message: z
+            .string()
+            .min(1)
+            .describe("Concise, actionable message content"),
+          mode: z
+            .enum(["auto", "steer", "queue", "interrupt"])
+            .optional()
+            .describe("Delivery mode (default: auto -> queue)"),
+          replyTo: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              "Message ID being replied to, if continuing a thread",
+            ),
         })
         .strict(),
       handler: async (args) =>
@@ -525,7 +549,6 @@ export function buildXacpxMcpToolRegistry(input: {
         }),
     },
   );
-
   if (internalSessionTools && !isExternalCoordinator && !sourceHandle) {
     tools.push({
       name: "scheduled_create",

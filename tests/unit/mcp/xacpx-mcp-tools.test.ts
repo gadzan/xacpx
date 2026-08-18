@@ -994,7 +994,8 @@ test("agent messaging tools use strict public schemas and inject the bound sende
       workspace: "backend",
       displayName: "reviewer",
       state: "running" as const,
-      capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+      activity: { status: "working" as const, summary: "Reviewing auth migration" },
+      capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
     },
   ];
   const receipt = {

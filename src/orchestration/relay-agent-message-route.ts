@@ -15,6 +15,8 @@ export interface RelayRouteClient {
     targetNodeId: string;
     targetEndpointId: string;
     messageId: string;
+    conversationId?: string;
+    depth?: number;
     content: string;
     requestedMode: string;
     replyTo?: string;
@@ -73,6 +75,10 @@ export class RelayAgentMessageRoute {
           // Same messageId across retries: the destination deduplicates by it,
           // so an ACK-loss retry cannot double-inject.
           messageId: message.id,
+          ...(message.conversationId
+            ? { conversationId: message.conversationId }
+            : {}),
+          ...(message.depth !== undefined ? { depth: message.depth } : {}),
           content: message.content,
           requestedMode: message.requestedMode,
           replyTo: message.replyTo,
