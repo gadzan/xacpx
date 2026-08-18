@@ -23,6 +23,7 @@ import type {
   AgentMessageSendInput,
   AgentSenderBinding,
 } from "./agent-messaging-types";
+import type { RelayAgentMessageRoute } from "./relay-agent-message-route";
 
 export interface LocalAgentMessageDelivery {
   deliver(
@@ -62,6 +63,7 @@ export class AgentMessageRouter {
         "listReachable" | "resolveSender" | "resolveTarget"
       >;
       delivery: LocalAgentMessageDelivery;
+      remoteRoute?: RelayAgentMessageRoute;
       createId?: () => string;
       now?: () => number;
       limits?: AgentMessageRouterLimits;
@@ -145,6 +147,27 @@ export class AgentMessageRouter {
         addressKey(sender.address) + "->" + addressKey(target.endpoint.address),
         createdAt,
       );
+      if (target.endpoint.address.nodeId !== sender.address.nodeId) {
+        if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
+          const err = new AgentMessagingError(
+            "ROUTE_UNAVAILABLE",
+            `Remote route is unavailable for destination node ${target.endpoint.address.nodeId}.`,
+          );
+          this.logDelivery(message, undefined, createdAt, err.code);
+          throw err;
+        }
+        let remoteReceipt: AgentMessageReceipt;
+        try {
+          remoteReceipt = await this.deps.remoteRoute.send(message);
+        } catch (error) {
+          const mapped = mapDeliveryError(error);
+          this.logDelivery(message, undefined, createdAt, mapped.code);
+          throw mapped;
+        }
+        this.cacheReceipt(remoteReceipt, createdAt);
+        this.logDelivery(message, remoteReceipt, createdAt);
+        return remoteReceipt;
+      }
       const renderedText = renderAgentMessageEnvelope({
         id: message.id,
         from: encodeAgentHandle(sender.address),
