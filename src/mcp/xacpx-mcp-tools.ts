@@ -524,9 +524,7 @@ export function buildXacpxMcpToolRegistry(input: {
             .string()
             .min(1)
             .optional()
-            .describe(
-              "Message ID being replied to, if continuing a thread",
-            ),
+            .describe("Message ID being replied to, if continuing a thread"),
         })
         .strict(),
       handler: async (args) =>

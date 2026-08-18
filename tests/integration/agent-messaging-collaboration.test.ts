@@ -225,8 +225,16 @@ async function waitUntil(
 // --------------------------------------------------------------------------
 test("Scenario A: Worker A sends high-value notification to Worker B, B consumes without ACK", async () => {
   const hub = await setupHub();
-  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
-  const tokenB = hub.instances.issuePairingToken(hub.account.id, "nodeB", 600_000).token;
+  const tokenA = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const tokenB = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeB",
+    600_000,
+  ).token;
   const nodeA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
   const nodeB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
 
@@ -250,8 +258,10 @@ test("Scenario A: Worker A sends high-value notification to Worker B, B consumes
     };
     nodeA.channel.syncAgentEndpointsNow();
     // Worker B is working on API consumer
-    nodeB.stateRef.state.orchestration.workerBindings.worker1.role = "api-client";
-    nodeB.stateRef.state.orchestration.workerBindings.worker1.workspace = "frontend";
+    nodeB.stateRef.state.orchestration.workerBindings.worker1.role =
+      "api-client";
+    nodeB.stateRef.state.orchestration.workerBindings.worker1.workspace =
+      "frontend";
     nodeB.stateRef.state.orchestration.tasks.taskB = {
       taskId: "task_B",
       sourceHandle: "worker1",
@@ -334,8 +344,16 @@ test("Scenario A: Worker A sends high-value notification to Worker B, B consumes
 // --------------------------------------------------------------------------
 test("Scenario B: Multi-step reply thread shares conversationId and increments depth", async () => {
   const hub = await setupHub();
-  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
-  const tokenB = hub.instances.issuePairingToken(hub.account.id, "nodeB", 600_000).token;
+  const tokenA = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const tokenB = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeB",
+    600_000,
+  ).token;
   const nodeA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
   const nodeB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
 
@@ -353,8 +371,14 @@ test("Scenario B: Multi-step reply thread shares conversationId and increments d
     });
 
     const targetB = endpointsA.find((e) => e.address.nodeId === "node_B")!;
-    const bindingA = { coordinatorSession: "coordinator", sourceHandle: "worker1" };
-    const bindingB = { coordinatorSession: "coordinator", sourceHandle: "worker1" };
+    const bindingA = {
+      coordinatorSession: "coordinator",
+      sourceHandle: "worker1",
+    };
+    const bindingB = {
+      coordinatorSession: "coordinator",
+      sourceHandle: "worker1",
+    };
 
     // Step 1: A sends root notification msg_1
     const r1 = await nodeA.router.send(bindingA, {
@@ -418,7 +442,11 @@ test("Scenario B: Multi-step reply thread shares conversationId and increments d
 // --------------------------------------------------------------------------
 test("Scenario C: Replying with missing/expired replyTo fails closed with REPLY_CONTEXT_UNAVAILABLE", async () => {
   const hub = await setupHub();
-  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
+  const tokenA = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeA",
+    600_000,
+  ).token;
   const nodeA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
 
   try {
@@ -426,7 +454,9 @@ test("Scenario C: Replying with missing/expired replyTo fails closed with REPLY_
       coordinatorSession: "coordinator",
       sourceHandle: "worker1",
     });
-    const targetCoord = endpoints.find((e) => e.displayName?.includes("Coordinator"))!;
+    const targetCoord = endpoints.find((e) =>
+      e.displayName?.includes("Coordinator"),
+    )!;
 
     // Reply to non-existent ID fails closed without guessing
     await expect(
@@ -452,7 +482,11 @@ test("Scenario C: Replying with missing/expired replyTo fails closed with REPLY_
 // --------------------------------------------------------------------------
 test("Scenario D: Hard limit on conversation depth and volume stops runaway loops", async () => {
   const hub = await setupHub();
-  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
+  const tokenA = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeA",
+    600_000,
+  ).token;
   const nodeA = await setupDaemonNode("node_A", hub.hubUrl, tokenA, {
     maxConversationDepth: 3,
     maxMessagesPerConversation: 4,
@@ -465,20 +499,42 @@ test("Scenario D: Hard limit on conversation depth and volume stops runaway loop
       sourceHandle: "worker1",
     });
     const target = endpoints[0]!;
-    const binding = { coordinatorSession: "coordinator", sourceHandle: "worker1" };
+    const binding = {
+      coordinatorSession: "coordinator",
+      sourceHandle: "worker1",
+    };
 
     // depth 0
-    const m1 = await nodeA.router.send(binding, { to: target.handle, content: "step 1" });
+    const m1 = await nodeA.router.send(binding, {
+      to: target.handle,
+      content: "step 1",
+    });
     // depth 1
-    const m2 = await nodeA.router.send(binding, { to: target.handle, content: "step 2", replyTo: m1.messageId });
+    const m2 = await nodeA.router.send(binding, {
+      to: target.handle,
+      content: "step 2",
+      replyTo: m1.messageId,
+    });
     // depth 2
-    const m3 = await nodeA.router.send(binding, { to: target.handle, content: "step 3", replyTo: m2.messageId });
+    const m3 = await nodeA.router.send(binding, {
+      to: target.handle,
+      content: "step 3",
+      replyTo: m2.messageId,
+    });
     // depth 3
-    const m4 = await nodeA.router.send(binding, { to: target.handle, content: "step 4", replyTo: m3.messageId });
+    const m4 = await nodeA.router.send(binding, {
+      to: target.handle,
+      content: "step 4",
+      replyTo: m3.messageId,
+    });
 
     // depth 4 -> Exceeds maxConversationDepth (3)
     await expect(
-      nodeA.router.send(binding, { to: target.handle, content: "step 5", replyTo: m4.messageId }),
+      nodeA.router.send(binding, {
+        to: target.handle,
+        content: "step 5",
+        replyTo: m4.messageId,
+      }),
     ).rejects.toMatchObject({
       code: "CONVERSATION_LIMIT_REACHED",
     });
@@ -493,8 +549,16 @@ test("Scenario D: Hard limit on conversation depth and volume stops runaway loop
 // --------------------------------------------------------------------------
 test("Scenario E: Duplicate content guard suppresses rapid duplicate spam to peer", async () => {
   const hub = await setupHub();
-  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
-  const tokenB = hub.instances.issuePairingToken(hub.account.id, "nodeB", 600_000).token;
+  const tokenA = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const tokenB = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeB",
+    600_000,
+  ).token;
   const nodeA = await setupDaemonNode("node_A", hub.hubUrl, tokenA, {
     duplicateContentWindowMs: 30_000,
   });
@@ -514,7 +578,10 @@ test("Scenario E: Duplicate content guard suppresses rapid duplicate spam to pee
     });
 
     const targetB = endpointsA.find((e) => e.address.nodeId === "node_B")!;
-    const bindingA = { coordinatorSession: "coordinator", sourceHandle: "worker1" };
+    const bindingA = {
+      coordinatorSession: "coordinator",
+      sourceHandle: "worker1",
+    };
 
     // First send succeeds
     await nodeA.router.send(bindingA, {

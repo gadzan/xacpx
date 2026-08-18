@@ -11,7 +11,10 @@ import type {
   AgentEndpointView,
   AgentSenderBinding,
 } from "./agent-messaging-types";
-import { isAttentionRequiredTask, type WorkerBindingRecord } from "./orchestration-types";
+import {
+  isAttentionRequiredTask,
+  type WorkerBindingRecord,
+} from "./orchestration-types";
 import type { AgentActivityView } from "./agent-messaging-types";
 
 type EndpointRuntime =

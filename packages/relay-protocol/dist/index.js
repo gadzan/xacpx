@@ -245,7 +245,12 @@ function parseCanonicalBase64(encoded, maxDecodedBytes) {
 // packages/relay-protocol/src/web-dtos.ts
 var WEB_EVENT_TYPE = "web.event";
 function webEventEnvelope(event) {
-  return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_EVENT_TYPE, payload: event };
+  return {
+    protocolVersion: RELAY_PROTOCOL_VERSION,
+    kind: "event",
+    type: WEB_EVENT_TYPE,
+    payload: event
+  };
 }
 var WEB_EVENT_KINDS = new Set([
   "instance-status",
@@ -281,7 +286,14 @@ var CONTROL_EVENT_TYPE_MAP = {
   "terminal-exit": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
-var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
+var TOOL_STEP_KINDS = new Set([
+  "read",
+  "search",
+  "execute",
+  "edit",
+  "think",
+  "other"
+]);
 var TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
 var finiteNonNegative = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
 function validUsageCost(value) {
@@ -298,7 +310,14 @@ function validUsageBreakdown(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return ["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens", "totalTokens"].every((key) => c[key] === undefined || finiteNonNegative(c[key]));
+  return [
+    "inputTokens",
+    "outputTokens",
+    "cachedReadTokens",
+    "cachedWriteTokens",
+    "thoughtTokens",
+    "totalTokens"
+  ].every((key) => c[key] === undefined || finiteNonNegative(c[key]));
 }
 function validAgentCommand(value) {
   if (typeof value !== "object" || value === null)
@@ -447,7 +466,11 @@ function validControlEvent(e) {
     }
   }
 }
-var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+var NOTICE_KINDS = new Set([
+  "task-completion",
+  "task-progress",
+  "coordinator-message"
+]);
 function validInstanceStateSync(p) {
   if (typeof p !== "object" || p === null)
     return false;
@@ -542,7 +565,12 @@ function parseWebServerEvent(envelope) {
 var WEB_CLIENT_TYPE = "web.client";
 var MAX_WEB_INSTANCE_ID_LENGTH = 128;
 function webClientEnvelope(msg) {
-  return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
+  return {
+    protocolVersion: RELAY_PROTOCOL_VERSION,
+    kind: "event",
+    type: WEB_CLIENT_TYPE,
+    payload: msg
+  };
 }
 function rejectsBrowserStampedIdentity(c) {
   return c.viewerId !== undefined || c.cwd !== undefined;

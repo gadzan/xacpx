@@ -311,7 +311,10 @@ export class AgentMessageRouter {
           throw mapped;
         }
         this.cacheReceipt(remoteReceipt, createdAt);
-        this.conversationMessageCounts.set(conversationId, currentConvCount + 1);
+        this.conversationMessageCounts.set(
+          conversationId,
+          currentConvCount + 1,
+        );
         this.recordMessageContext({
           messageId,
           conversationId,
@@ -320,8 +323,7 @@ export class AgentMessageRouter {
           to: target.endpoint.address,
           createdAt,
           expiresAt:
-            createdAt +
-            (this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000),
+            createdAt + (this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000),
         });
         this.recordDuplicateContent(pairKey, contentHash, createdAt);
         this.recordTrace({
@@ -395,8 +397,7 @@ export class AgentMessageRouter {
         to: target.endpoint.address,
         createdAt,
         expiresAt:
-          createdAt +
-          (this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000),
+          createdAt + (this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000),
       });
       this.recordDuplicateContent(pairKey, contentHash, createdAt);
       this.recordTrace({
