@@ -17,7 +17,7 @@ import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type CoordinatorRegistryDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "loadState" | "saveState" | "config"
+  "now" | "createAgentEndpointId" | "loadState" | "saveState" | "config"
 >;
 
 export class CoordinatorRegistryService {
@@ -67,8 +67,13 @@ export class CoordinatorRegistryService {
       }
       const now = this.deps.now().toISOString();
       const effectiveDefaultTargetAgent = defaultTargetAgent || existing?.defaultTargetAgent;
+      const agentEndpointId = existing?.agentEndpointId
+        ?? (this.deps.createAgentEndpointId
+          ? "endpoint_" + this.deps.createAgentEndpointId()
+          : undefined);
       const record: ExternalCoordinatorRecord = {
         coordinatorSession,
+        ...(agentEndpointId ? { agentEndpointId } : {}),
         ...(workspace ? { workspace } : existing?.workspace ? { workspace: existing.workspace } : {}),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,

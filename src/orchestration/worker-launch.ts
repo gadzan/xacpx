@@ -23,6 +23,17 @@ export function workerBindingGuardFields(
     : { guardAcpOutput: true };
 }
 
+/** Preserve a reusable worker's endpoint identity; mint one for a new binding. */
+export function workerBindingEndpointIdentityFields(
+  previousBinding: Pick<WorkerBindingRecord, "agentEndpointId"> | undefined,
+  createId?: () => string,
+): { agentEndpointId?: string } {
+  if (previousBinding?.agentEndpointId) {
+    return { agentEndpointId: previousBinding.agentEndpointId };
+  }
+  return createId ? { agentEndpointId: "endpoint_" + createId() } : {};
+}
+
 export function resolveWorkerAgentLaunch(
   agent: Pick<AgentConfig, "driver" | "command" | "argv">,
   transport: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry"> | undefined,

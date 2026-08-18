@@ -14,13 +14,14 @@ import { makeGoldenHarness } from "../golden/golden-harness";
 // `logger` or any of the other ports, and it must not silently reach for a dep outside its
 // declared HumanDelegationDeps.
 function makeService(ids: string[] = ["task-1"], initialState = createEmptyState()) {
-  const harness = makeGoldenHarness({ ids, initialState });
+  const harness = makeGoldenHarness({ ids, endpointIds: ["worker-endpoint-1"], initialState });
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const workerSessions = new WorkerSessionManager(harness.deps, kernel);
   const rpcDelegation = new RpcDelegationService(
     {
       now: harness.deps.now,
       createId: harness.deps.createId,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
       config: harness.deps.config,
@@ -33,6 +34,7 @@ function makeService(ids: string[] = ["task-1"], initialState = createEmptyState
     {
       now: harness.deps.now,
       createId: harness.deps.createId,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
       dispatchWorkerTask: harness.deps.dispatchWorkerTask,
@@ -44,7 +46,7 @@ function makeService(ids: string[] = ["task-1"], initialState = createEmptyState
   return { harness, humanDelegation };
 }
 
-test("constructible with only its five ports and delegates a human request", async () => {
+test("constructible with only its six ports and delegates a human request", async () => {
   const { harness, humanDelegation } = makeService();
 
   const callsBefore = harness.calls.length;
@@ -61,6 +63,9 @@ test("constructible with only its five ports and delegates a human request", asy
   expect(result.status).toBe("running");
   const persisted = harness.getState().orchestration.tasks["task-1"];
   expect(persisted.status).toBe("running");
+  expect(
+    harness.getState().orchestration.workerBindings[persisted.workerSession!]?.agentEndpointId,
+  ).toBe("endpoint_worker-endpoint-1");
   // The human path dispatches the worker turn synchronously before resolving.
   expect(
     harness.calls.slice(callsBefore).some((call) => call.port === "dispatchWorkerTask"),

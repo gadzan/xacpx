@@ -13,13 +13,18 @@ import { makeGoldenHarness, type GoldenHarness } from "../golden/golden-harness"
 // or any of the other ports, and it must not silently reach for a dep outside its declared
 // RpcDelegationDeps.
 function makeService(initialState = createEmptyState()) {
-  const harness = makeGoldenHarness({ ids: ["task-1"], initialState });
+  const harness = makeGoldenHarness({
+    ids: ["task-1"],
+    endpointIds: ["worker-endpoint-1"],
+    initialState,
+  });
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const workerSessions = new WorkerSessionManager(harness.deps, kernel);
   const rpcDelegation = new RpcDelegationService(
     {
       now: harness.deps.now,
       createId: harness.deps.createId,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
       config: harness.deps.config,
@@ -59,7 +64,7 @@ function seedExternalCoordinatorState() {
   return state;
 }
 
-test("constructible with only its six ports and delegates a registered external coordinator's RPC", async () => {
+test("constructible with only its seven ports and delegates a registered external coordinator's RPC", async () => {
   const { harness, rpcDelegation } = makeService(seedExternalCoordinatorState());
 
   const callsBefore = harness.calls.length;
@@ -76,6 +81,9 @@ test("constructible with only its six ports and delegates a registered external 
   expect(result.status).toBe("running");
   const persisted = harness.getState().orchestration.tasks["task-1"];
   expect(persisted.status).toBe("running");
+  expect(
+    harness.getState().orchestration.workerBindings[persisted.workerSession!]?.agentEndpointId,
+  ).toBe("endpoint_worker-endpoint-1");
 });
 
 test("validateRpcRequest rejects a request with a blank task", async () => {

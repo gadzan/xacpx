@@ -170,6 +170,8 @@ export interface GoldenHarnessOverrides {
   now?: string;
   /** Deterministic id sequence for `deps.createId`; throws once exhausted. */
   ids?: string[];
+  /** Independent deterministic sequence for Agent Messaging endpoint identities. */
+  endpointIds?: string[];
 }
 
 export interface GoldenHarness {
@@ -186,6 +188,8 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
   const instant = overrides.now ?? "2026-04-13T10:00:00.000Z";
   const ids = overrides.ids ?? ["id-1", "id-2", "id-3", "id-4", "id-5", "id-6", "id-7", "id-8"];
   let idCursor = 0;
+  const endpointIds = overrides.endpointIds;
+  let endpointIdCursor = 0;
 
   const record = (port: string, request: unknown) => {
     calls.push({ port, request: JSON.parse(JSON.stringify(request ?? null)) as unknown });
@@ -203,6 +207,19 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       }
       return id;
     },
+    ...(endpointIds
+      ? {
+          createAgentEndpointId: () => {
+            const id = endpointIds[endpointIdCursor++];
+            if (id === undefined) {
+              throw new Error(
+                `golden harness: createAgentEndpointId() exhausted its pool of ${endpointIds.length} ids`,
+              );
+            }
+            return id;
+          },
+        }
+      : {}),
     // `loadState` takes no argument, so `null` is all there is to record. The entry's
     // POSITION in `calls` is the whole point: it pins where each read sits relative to the
     // saves and effects around it.

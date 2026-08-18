@@ -80,6 +80,142 @@ test("loads native session metadata and native session list cache records", asyn
   await rm(dir, { recursive: true, force: true });
 });
 
+test("load migrates legacy worker and external coordinator endpoint ids durably", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const state = createEmptyState();
+  state.orchestration.workerBindings.worker = {
+    sourceHandle: "worker",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "codex",
+  };
+  state.orchestration.externalCoordinators.external = {
+    coordinatorSession: "external",
+    createdAt: "2026-08-18T00:00:00.000Z",
+    updatedAt: "2026-08-18T00:00:00.000Z",
+  };
+  await Bun.write(path, JSON.stringify(state));
+
+  try {
+    const store = new StateStore(path);
+    const loaded = await store.load();
+    const workerEndpointId = loaded.orchestration.workerBindings.worker?.agentEndpointId;
+    const externalEndpointId = loaded.orchestration.externalCoordinators.external?.agentEndpointId;
+
+    expect(workerEndpointId).toMatch(/^endpoint_[0-9a-f-]{36}$/);
+    expect(externalEndpointId).toMatch(/^endpoint_[0-9a-f-]{36}$/);
+    expect(store.lastLoadReport?.migrated).toEqual([
+      {
+        section: "orchestration.workerBindings",
+        key: "worker",
+        reason: expect.stringContaining("agentEndpointId"),
+      },
+      {
+        section: "orchestration.externalCoordinators",
+        key: "external",
+        reason: expect.stringContaining("agentEndpointId"),
+      },
+    ]);
+
+    const onDisk = JSON.parse(await readFile(path, "utf8")) as {
+      orchestration: {
+        workerBindings: Record<string, { agentEndpointId?: string }>;
+        externalCoordinators: Record<string, { agentEndpointId?: string }>;
+      };
+    };
+    expect(onDisk.orchestration.workerBindings.worker?.agentEndpointId).toBe(workerEndpointId);
+    expect(onDisk.orchestration.externalCoordinators.external?.agentEndpointId).toBe(externalEndpointId);
+
+    const reloaded = await new StateStore(path).load();
+    expect(reloaded.orchestration.workerBindings.worker?.agentEndpointId).toBe(workerEndpointId);
+    expect(reloaded.orchestration.externalCoordinators.external?.agentEndpointId).toBe(externalEndpointId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("load quarantines every current worker or external coordinator with a duplicate endpoint identity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const state = createEmptyState();
+  const worker = (sourceHandle: string, agentEndpointId: string) => ({
+    sourceHandle,
+    agentEndpointId,
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  });
+  const external = (coordinatorSession: string, agentEndpointId: string) => ({
+    coordinatorSession,
+    agentEndpointId,
+    createdAt: "2026-08-18T00:00:00.000Z",
+    updatedAt: "2026-08-18T00:00:00.000Z",
+  });
+
+  state.orchestration.workerBindings = {
+    "worker-a": worker("worker-a", "endpoint_duplicate_workers"),
+    "worker-b": worker("worker-b", "endpoint_duplicate_workers"),
+    "worker-cross": worker("worker-cross", "endpoint_duplicate_cross_section"),
+    "worker-ok": worker("worker-ok", "endpoint_unique_worker"),
+  };
+  state.orchestration.externalCoordinators = {
+    "external-cross": external("external-cross", "endpoint_duplicate_cross_section"),
+    "external-a": external("external-a", "endpoint_duplicate_externals"),
+    "external-b": external("external-b", "endpoint_duplicate_externals"),
+    "external-ok": external("external-ok", "endpoint_unique_external"),
+  };
+  await Bun.write(path, JSON.stringify(state));
+
+  try {
+    const store = new StateStore(path, { now: () => new Date("2026-08-18T12:00:00.000Z") });
+    const loaded = await store.load();
+
+    expect(Object.keys(loaded.orchestration.workerBindings)).toEqual(["worker-ok"]);
+    expect(Object.keys(loaded.orchestration.externalCoordinators)).toEqual(["external-ok"]);
+    expect(store.lastLoadReport?.migrated ?? []).toEqual([]);
+    expect(store.lastLoadReport?.dropped).toHaveLength(6);
+    expect(store.lastLoadReport?.dropped).toEqual(
+      expect.arrayContaining([
+        {
+          section: "orchestration.workerBindings",
+          key: "worker-a",
+          reason: expect.stringContaining("endpoint_duplicate_workers"),
+        },
+        {
+          section: "orchestration.workerBindings",
+          key: "worker-b",
+          reason: expect.stringContaining("endpoint_duplicate_workers"),
+        },
+        {
+          section: "orchestration.workerBindings",
+          key: "worker-cross",
+          reason: expect.stringContaining("endpoint_duplicate_cross_section"),
+        },
+        {
+          section: "orchestration.externalCoordinators",
+          key: "external-cross",
+          reason: expect.stringContaining("endpoint_duplicate_cross_section"),
+        },
+        {
+          section: "orchestration.externalCoordinators",
+          key: "external-a",
+          reason: expect.stringContaining("endpoint_duplicate_externals"),
+        },
+        {
+          section: "orchestration.externalCoordinators",
+          key: "external-b",
+          reason: expect.stringContaining("endpoint_duplicate_externals"),
+        },
+      ]),
+    );
+    expect(store.lastLoadReport?.quarantinePath).toBeDefined();
+    await expect(stat(store.lastLoadReport!.quarantinePath!)).resolves.toBeDefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("defaults missing native session lists to an empty cache", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
   const path = join(dir, "state.json");
@@ -241,6 +377,7 @@ test("persists sessions and chat context", async () => {
       workerBindings: {
         "backend:claude-reviewer:feature-x": {
           sourceHandle: "backend:claude-reviewer:feature-x",
+          agentEndpointId: "endpoint_44444444-4444-4444-8444-444444444444",
           coordinatorSession: "backend:main",
           workspace: "backend",
           targetAgent: "claude",
@@ -344,6 +481,7 @@ test("round-trips blocker-loop state records through load", async () => {
       workerBindings: {
         "backend:claude:backend:main": {
           sourceHandle: "backend:claude:backend:main",
+          agentEndpointId: "endpoint_55555555-5555-4555-8555-555555555555",
           coordinatorSession: "backend:main",
           workspace: "backend",
           targetAgent: "claude",

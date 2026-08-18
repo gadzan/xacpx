@@ -19,6 +19,7 @@ export type WorkerSessionDeps = Pick<
   OrchestrationServiceDeps,
   | "now"
   | "createId"
+  | "createAgentEndpointId"
   | "loadState"
   | "saveState"
   | "config"
@@ -359,6 +360,9 @@ export class WorkerSessionManager {
           // collision to guard against.
           state.orchestration.workerBindings[task.workerSession!] = {
             sourceHandle: task.workerSession!,
+            ...(this.deps.createAgentEndpointId
+              ? { agentEndpointId: "endpoint_" + this.deps.createAgentEndpointId() }
+              : {}),
             coordinatorSession: task.coordinatorSession,
             workspace: task.workspace,
             ...(task.cwd ? { cwd: task.cwd } : {}),

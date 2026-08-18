@@ -124,6 +124,8 @@ export interface OrchestrationGroupSummary {
 
 export interface ExternalCoordinatorRecord {
   coordinatorSession: string;
+  /** Stable Agent Messaging identity. Missing only while a legacy state record is migrated. */
+  agentEndpointId?: string;
   workspace?: string;
   createdAt: string;
   updatedAt: string;
@@ -132,6 +134,8 @@ export interface ExternalCoordinatorRecord {
 
 export interface WorkerBindingRecord {
   sourceHandle: string;
+  /** Stable Agent Messaging identity. Missing only while a legacy state record is migrated. */
+  agentEndpointId?: string;
   coordinatorSession: string;
   workspace: string;
   cwd?: string;
