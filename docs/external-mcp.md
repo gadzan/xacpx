@@ -298,6 +298,48 @@ sequenceDiagram
   Mcp-->>Host: status/result
 ```
 
+## Peer-to-Peer Agent Messaging (`agent_list` / `agent_send`)
+
+In addition to task delegation (`delegate_request`), xacpx provides direct Agent-to-Agent Messaging:
+
+- **`agent_list`**: List all discoverable and reachable peer agent endpoints within the authorized messaging scope (local daemon or remote instances via Relay Hub).
+- **`agent_send`**: Send a one-way peer message to an authorized target handle.
+
+### Location-Independent Routing
+
+Agent Messaging supports both local and remote communication:
+
+1. **Local Route**: When the target endpoint resides on the same daemon node, messages are delivered via the local `acpx` prompt queue.
+2. **Relay Route**: When the target endpoint resides on a different connected xacpx daemon under the same account, the message is routed securely via Relay Hub's WebSocket tunnel (`agent.message.route` $\to$ `agent.message.deliver`).
+
+### Example MCP Calls
+
+```json
+// List reachable peer agents
+{
+  "name": "agent_list",
+  "arguments": {}
+}
+```
+
+```json
+// Send a message to a peer agent
+{
+  "name": "agent_send",
+  "arguments": {
+    "to": "agent:node_7f8a:worker_b",
+    "message": "User schema updated: please adjust your validation logic.",
+    "mode": "auto"
+  }
+}
+```
+
+### Key Guardrails
+
+- **One-way delivery**: `agent_send` returns immediately after the target daemon accepts injection/queueing; it does not wait for the target LLM to respond.
+- **Unforgeable identity**: The sender address is derived server-side from the MCP session binding; client input cannot spoof `from`.
+- **Escaped envelope**: Peer messages are wrapped in `<xacpx-message id="..." from="..." replyable="true">` with XML escaping.
+
 ## Common tools
 
 Tools commonly used by external coordinators:
