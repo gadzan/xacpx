@@ -454,6 +454,78 @@ test("does not cache a rejected in-flight delivery as an accepted receipt", asyn
   expect(attempts).toBe(2);
 });
 
+test("single-flights concurrent inbound duplicates without a second injection", async () => {
+  // The source retry arrives while the FIRST delivery is still executing (ACK
+  // lost / socket dropped): the receipt cache has not been written yet, so only
+  // the in-flight single-flight map can stop the duplicate injection.
+  const gate = createDeferred<void>();
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    deliver: async () => {
+      deliveryCount += 1;
+      await gate.promise;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const input = {
+    sourceNodeId: "node_remote",
+    sourceEndpointId: "endpoint_remote",
+    targetEndpointId: "endpoint_worker-b",
+    messageId: "msg_inflight_1",
+    content: "concurrent retry",
+    requestedMode: "auto",
+    replyable: true,
+  };
+
+  const first = router.deliverInbound(input);
+  const second = router.deliverInbound(input);
+  await waitUntil(() => deliveryCount === 1);
+
+  // The second call joined the in-flight promise: still exactly one injection.
+  expect(deliveryCount).toBe(1);
+
+  gate.resolve();
+  const [receiptFirst, receiptSecond] = await Promise.all([first, second]);
+
+  expect(receiptFirst.status).toBe("queued");
+  expect(receiptFirst.deduplicated).toBeUndefined();
+  expect(receiptSecond).toEqual({ ...receiptFirst, deduplicated: true });
+  expect(deliveryCount).toBe(1);
+});
+
+test("rejects a concurrent messageId reuse with a different payload", async () => {
+  const gate = createDeferred<void>();
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    deliver: async () => {
+      deliveryCount += 1;
+      await gate.promise;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const base = {
+    sourceNodeId: "node_remote",
+    sourceEndpointId: "endpoint_remote",
+    targetEndpointId: "endpoint_worker-b",
+    messageId: "msg_inflight_2",
+    requestedMode: "auto",
+    replyable: true,
+  };
+
+  const first = router.deliverInbound({ ...base, content: "original" });
+  await waitUntil(() => deliveryCount === 1);
+
+  // Same id but different content: not a retry — a different message reusing
+  // the id. Never join/cache-return it.
+  await expect(
+    router.deliverInbound({ ...base, content: "tampered" }),
+  ).rejects.toMatchObject({ code: "DELIVERY_DENIED" });
+
+  gate.resolve();
+  await first;
+  expect(deliveryCount).toBe(1);
+});
+
 test("expires cached receipts after the configured dedupe TTL", async () => {
   let clock = 1_000;
   const { router, deliveries } = makeRouter({

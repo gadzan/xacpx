@@ -55,6 +55,17 @@ export class AgentMessageRouter {
     string,
     { receipt: AgentMessageReceipt; expiresAt: number }
   >();
+  /**
+   * In-flight inbound deliveries keyed by messageId. The receipt cache is only
+   * written AFTER delivery completes, so a source retry that arrives while the
+   * first delivery is still executing would otherwise see a cache miss and
+   * inject AGAIN. This map single-flights concurrent duplicates: the second
+   * caller joins the first delivery's promise and never re-injects.
+   */
+  private readonly inboundDeliveries = new Map<
+    string,
+    { work: Promise<AgentMessageReceipt>; fingerprint: string }
+  >();
 
   constructor(
     private readonly deps: {
@@ -219,6 +230,49 @@ export class AgentMessageRouter {
       return { ...cached, deduplicated: true };
     }
 
+    // In-flight single-flight: the receipt cache only covers COMPLETED
+    // deliveries, so a source retry (ACK lost / socket dropped) that arrives
+    // while the first delivery is still executing would otherwise inject
+    // twice. A concurrent duplicate joins the in-flight delivery's promise and
+    // never calls the delivery adapter again.
+    const fingerprint = inboundFingerprint(input);
+    const existing = this.inboundDeliveries.get(input.messageId);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) {
+        throw new AgentMessagingError(
+          "DELIVERY_DENIED",
+          "A delivery for this messageId is already in flight with a different source, target, or content.",
+        );
+      }
+      const receipt = await existing.work;
+      return { ...receipt, deduplicated: true };
+    }
+
+    const work = this.performInboundDelivery(input, createdAt);
+    this.inboundDeliveries.set(input.messageId, { work, fingerprint });
+
+    try {
+      return await work;
+    } finally {
+      if (this.inboundDeliveries.get(input.messageId)?.work === work) {
+        this.inboundDeliveries.delete(input.messageId);
+      }
+    }
+  }
+
+  private async performInboundDelivery(
+    input: {
+      sourceNodeId: string;
+      sourceEndpointId: string;
+      targetEndpointId: string;
+      messageId: string;
+      content: string;
+      requestedMode: string;
+      replyTo?: string;
+      replyable: boolean;
+    },
+    createdAt: number,
+  ): Promise<AgentMessageReceipt> {
     const target = await this.deps.registry.resolveLocalTargetByEndpointId(
       input.targetEndpointId,
     );
@@ -396,6 +450,27 @@ export class AgentMessageRouter {
 
 function addressKey(address: { nodeId: string; endpointId: string }): string {
   return address.nodeId + ":" + address.endpointId;
+}
+
+/** Canonical identity of an inbound delivery attempt: two deliveries with the
+ *  same messageId must match on every routing-relevant field or they are
+ *  different messages reusing an id (DELIVERY_DENIED, never joined). */
+function inboundFingerprint(input: {
+  sourceNodeId: string;
+  sourceEndpointId: string;
+  targetEndpointId: string;
+  content: string;
+  requestedMode: string;
+  replyTo?: string;
+}): string {
+  return JSON.stringify([
+    input.sourceNodeId,
+    input.sourceEndpointId,
+    input.targetEndpointId,
+    input.content,
+    input.requestedMode,
+    input.replyTo ?? "",
+  ]);
 }
 
 function mapDeliveryError(error: unknown): AgentMessagingError {

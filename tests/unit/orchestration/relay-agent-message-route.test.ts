@@ -117,7 +117,9 @@ test("RelayAgentMessageRoute stops retrying after maxAttempts and throws", async
     {
       sendAgentMessageRoute: async (payload) => {
         attempts += 1;
-        throw new Error("relay-offline");
+        // "timeout" is ambiguous (the message may have been delivered) → retried
+        // up to maxAttempts, then the typed error surfaces.
+        throw new Error("timeout");
       },
     },
     { maxAttempts: 3, backoffMs: 1, delay: async () => undefined },
@@ -127,6 +129,27 @@ test("RelayAgentMessageRoute stops retrying after maxAttempts and throws", async
     code: "DELIVERY_FAILED",
   });
   expect(attempts).toBe(3);
+});
+
+test("RelayAgentMessageRoute fails fast on relay-offline without retrying", async () => {
+  // relay-offline is DEFINITE (nothing left the process): the socket was not
+  // ready, so a same-id retry can never have been injected — and the default
+  // ~450ms retry window exhausts before the ~1s reconnect anyway. No retry.
+  let attempts = 0;
+  const route = new RelayAgentMessageRoute(
+    {
+      sendAgentMessageRoute: async () => {
+        attempts += 1;
+        throw new Error("relay-offline");
+      },
+    },
+    { maxAttempts: 3, backoffMs: 1, delay: async () => undefined },
+  );
+
+  await expect(route.send(sampleMessage())).rejects.toMatchObject({
+    code: "DELIVERY_FAILED",
+  });
+  expect(attempts).toBe(1);
 });
 
 test("RelayAgentMessageRoute does NOT retry typed business failures", async () => {

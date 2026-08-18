@@ -83,7 +83,15 @@ export function isAmbiguousDeliveryError(error: unknown): boolean {
       error.message as AgentMessagingErrorCode,
     );
   }
-  // Raw transport errors (relay-offline, timeout, socket errors) are ambiguous.
+  // `relay-offline` is DEFINITE, not ambiguous: RelayClient refused to send
+  // because the socket was not ready — nothing left the process, so a same-id
+  // retry can never have been injected. The default retry cadence (~450ms for
+  // three attempts) also exhausts before the ~1s first reconnect, so retrying
+  // cannot recover; fail fast instead and let the caller decide.
+  if (error instanceof Error && error.message === "relay-offline") {
+    return false;
+  }
+  // Raw transport errors (timeout, socket errors) are ambiguous.
   return true;
 }
 
