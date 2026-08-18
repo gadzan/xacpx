@@ -53,6 +53,8 @@ test("RelayAgentMessageRoute forwards to client and formats receipt", async () =
   expect(receipt.status).toBe("queued");
   expect(receipt.modeUsed).toBe("queue");
   expect(capturedPayload).toEqual({
+    sourceNodeId: "node_a",
+    sourceEndpointId: "ep_a",
     targetNodeId: "node_b",
     targetEndpointId: "ep_b",
     messageId: "msg_2",

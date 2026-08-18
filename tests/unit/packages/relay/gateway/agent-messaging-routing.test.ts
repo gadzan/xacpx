@@ -67,6 +67,14 @@ function nextMessage(socket: WebSocket): Promise<RelayEnvelope> {
   });
 }
 
+/** Wait for the next response envelope, skipping unsolicited events (directory snapshots). */
+async function nextResponse(socket: WebSocket): Promise<RelayEnvelope> {
+  for (;;) {
+    const envelope = await nextMessage(socket);
+    if (envelope.kind === "res") return envelope;
+  }
+}
+
 async function authInstance(socket: WebSocket, pairingToken: string) {
   socket.send(
     encodeEnvelope({
@@ -177,7 +185,7 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
     }),
   );
 
-  const resA = await nextMessage(socketA);
+  const resA = await nextResponse(socketA);
   expect(resA.kind).toBe("res");
   expect(resA.id).toBe("route-1");
   const resPayload = resA.payload as { status: string; modeUsed: string };
@@ -257,7 +265,7 @@ test("Relay Hub returns TARGET_NOT_FOUND when target endpoint is not in publishe
     }),
   );
 
-  const resA = await nextMessage(socketA);
+  const resA = await nextResponse(socketA);
   const errPayload = resA.payload as { error: { code: string } };
   expect(errPayload.error.code).toBe("TARGET_NOT_FOUND");
 
@@ -296,7 +304,7 @@ test("Relay Hub returns TARGET_NODE_OFFLINE when target node is not connected", 
     }),
   );
 
-  const resA = await nextMessage(socketA);
+  const resA = await nextResponse(socketA);
   expect(resA.kind).toBe("res");
   expect(resA.id).toBe("route-2");
   const errPayload = resA.payload as {
@@ -376,7 +384,7 @@ test("Relay Hub isolates messages across different accounts", async () => {
     }),
   );
 
-  const resA = await nextMessage(socketA);
+  const resA = await nextResponse(socketA);
   const errPayload = resA.payload as { error: { code: string } };
   expect(errPayload.error.code).toBe("TARGET_NODE_OFFLINE");
 
