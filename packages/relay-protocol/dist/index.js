@@ -146,7 +146,9 @@ var MSG = {
   terminalResourceExit: "instance.terminal.resource-exit",
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
-  agentMessageDeliver: "instance.agent-message.deliver"
+  agentMessageDeliver: "instance.agent-message.deliver",
+  agentDirectorySnapshot: "instance.agent-directory.snapshot",
+  agentDirectoryQuery: "instance.agent-directory.query"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };

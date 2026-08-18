@@ -105,6 +105,8 @@ export const MSG = {
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
   agentMessageDeliver: "instance.agent-message.deliver",
+  agentDirectorySnapshot: "instance.agent-directory.snapshot",
+  agentDirectoryQuery: "instance.agent-directory.query",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -917,12 +919,18 @@ export interface InstanceAgentEndpointsSyncPayload {
 }
 
 export interface AgentMessageRoutePayload {
+  sourceNodeId: string;
+  sourceEndpointId: string;
   targetNodeId: string;
   targetEndpointId: string;
   messageId: string;
   content: string;
   requestedMode: string;
   replyTo?: string;
+}
+
+export interface AgentDirectorySnapshotPayload {
+  endpoints: PublishedAgentEndpointDto[];
 }
 
 export interface AgentMessageDeliverPayload {

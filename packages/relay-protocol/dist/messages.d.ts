@@ -81,6 +81,8 @@ export declare const MSG: {
     readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
     readonly agentMessageRoute: "instance.agent-message.route";
     readonly agentMessageDeliver: "instance.agent-message.deliver";
+    readonly agentDirectorySnapshot: "instance.agent-directory.snapshot";
+    readonly agentDirectoryQuery: "instance.agent-directory.query";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -808,12 +810,17 @@ export interface InstanceAgentEndpointsSyncPayload {
     endpoints: PublishedAgentEndpointDto[];
 }
 export interface AgentMessageRoutePayload {
+    sourceNodeId: string;
+    sourceEndpointId: string;
     targetNodeId: string;
     targetEndpointId: string;
     messageId: string;
     content: string;
     requestedMode: string;
     replyTo?: string;
+}
+export interface AgentDirectorySnapshotPayload {
+    endpoints: PublishedAgentEndpointDto[];
 }
 export interface AgentMessageDeliverPayload {
     sourceNodeId: string;
