@@ -25,8 +25,11 @@ import type {
   ScheduledListFromRouteInput,
 } from "../scheduled/scheduled-route-manage";
 import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
+import type { AgentMessagingErrorCode } from "./agent-messaging-error";
 
 export type OrchestrationRpcMethod =
+  | "agent.list"
+  | "agent.send"
   | "coordinator.register_external"
   | "delegate.request"
   | "task.get"
@@ -62,11 +65,16 @@ export interface OrchestrationRpcSuccessResponse<Result = unknown> {
   result: Result;
 }
 
+export type OrchestrationRpcErrorCode =
+  | "ORCHESTRATION_INVALID_REQUEST"
+  | "ORCHESTRATION_INTERNAL_ERROR"
+  | AgentMessagingErrorCode;
+
 export interface OrchestrationRpcErrorResponse {
   id: string;
   ok: false;
   error: {
-    code: "ORCHESTRATION_INVALID_REQUEST" | "ORCHESTRATION_INTERNAL_ERROR";
+    code: OrchestrationRpcErrorCode;
     message: string;
   };
 }
