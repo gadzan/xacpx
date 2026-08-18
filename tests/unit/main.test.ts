@@ -77,6 +77,37 @@ test("builds the runtime services from config and state paths", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("buildApp persists one stable messaging node identity beside config", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-messaging-node-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  }));
+  const createCliTransport = () => ({
+    ensureSession: async () => {},
+    prompt: async () => ({ text: "ok" }),
+    cancel: async () => ({ cancelled: true, message: "cancelled" }),
+    hasSession: async () => true,
+    listSessions: async () => [],
+  });
+
+  const first = await buildApp({ configPath, statePath }, { createCliTransport });
+  await first.dispose();
+  const firstIdentity = await readFile(join(dir, "agent-messaging", "node.json"), "utf8");
+
+  const second = await buildApp({ configPath, statePath }, { createCliTransport });
+  await second.dispose();
+  const secondIdentity = await readFile(join(dir, "agent-messaging", "node.json"), "utf8");
+
+  expect(JSON.parse(firstIdentity)).toMatchObject({ version: 1, nodeId: expect.stringMatching(/^node_/) });
+  expect(secondIdentity).toBe(firstIdentity);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("an unowned runtime cannot sweep the active daemon's orphan registry during cleanup", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-app-unowned-"));
   const configPath = join(dir, "config.json");
