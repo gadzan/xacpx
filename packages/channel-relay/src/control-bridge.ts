@@ -2,6 +2,7 @@ import {
   MSG,
   errorPayload,
   parseControlPayload,
+  type AgentMessageDeliverPayload,
   type OrchestrationTaskDto,
   type RelayEnvelope,
   type ScheduledTaskDto,
@@ -482,6 +483,20 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.terminalAttach}: malformed payload`);
       if (!input.terminalId) return errorPayload("bad-request", "terminalId is required");
       return control.attachTerminal(input.terminalId);
+    }
+    case MSG.agentMessageDeliver: {
+      const input = payload as AgentMessageDeliverPayload | undefined;
+      if (!input || typeof input !== "object" || !input.targetEndpointId || !input.content) {
+        return errorPayload("invalid-payload", `${MSG.agentMessageDeliver}: malformed payload`);
+      }
+      if ("deliverAgentMessage" in control && typeof (control as unknown as { deliverAgentMessage: (i: unknown) => Promise<unknown> }).deliverAgentMessage === "function") {
+        return await (control as unknown as { deliverAgentMessage: (i: unknown) => Promise<unknown> }).deliverAgentMessage(input);
+      }
+      return {
+        messageId: input.messageId,
+        status: "queued",
+        modeUsed: "queue",
+      };
     }
     case MSG.upload: {
       const input = parseControlPayload(MSG.upload, payload);

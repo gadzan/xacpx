@@ -186,6 +186,16 @@ export class RelayChannel implements MessageChannelRuntime {
         client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
           if (!error) mirror.pruneStateMirror(liveAliases, aliases);
         });
+        if ("getPublishedAgentEndpoints" in control && typeof (control as unknown as { getPublishedAgentEndpoints: () => unknown[] }).getPublishedAgentEndpoints === "function") {
+          try {
+            const endpoints = (control as unknown as { getPublishedAgentEndpoints: () => unknown[] }).getPublishedAgentEndpoints();
+            if (Array.isArray(endpoints) && endpoints.length > 0) {
+              client.sendEvent(MSG.instanceAgentEndpointsSync, { endpoints });
+            }
+          } catch {
+            // Ignore optional endpoint sync failure
+          }
+        }
       },
     });
 
