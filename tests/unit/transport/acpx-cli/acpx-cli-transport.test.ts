@@ -264,6 +264,65 @@ test("uses the normal command runner for prompt and cancel", async () => {
   expect(runPty).not.toHaveBeenCalled();
 });
 
+test("queues injected messages with acpx no-wait", async () => {
+  const calls: string[][] = [];
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run);
+
+  await expect(
+    transport.injectMessage?.(session, {
+      text: "<xacpx-message id=\"msg_1\">hello</xacpx-message>",
+      messageId: "msg_1",
+      mode: "queue",
+    }),
+  ).resolves.toEqual({ status: "queued", modeUsed: "queue" });
+
+  expect(calls).toEqual([[
+    "--format",
+    "json",
+    "--json-strict",
+    "--cwd",
+    "/tmp/backend",
+    "--approve-all",
+    "--non-interactive-permissions",
+    "deny",
+    "--agent",
+    "./node_modules/.bin/codex-acp",
+    "prompt",
+    "-s",
+    "backend:api-fix",
+    "--no-wait",
+    "<xacpx-message id=\"msg_1\">hello</xacpx-message>",
+  ]]);
+});
+
+test("rejects strict unsupported message modes before invoking acpx", async () => {
+  const run = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run);
+
+  await expect(transport.injectMessage?.(session, {
+    text: "hello",
+    messageId: "msg_steer",
+    mode: "steer",
+  })).rejects.toMatchObject({
+    name: "MessageInjectionError",
+    code: "TARGET_NOT_STEERABLE",
+  });
+
+  await expect(transport.injectMessage?.(session, {
+    text: "hello",
+    messageId: "msg_interrupt",
+    mode: "interrupt",
+  })).rejects.toMatchObject({
+    name: "MessageInjectionError",
+    code: "TARGET_NOT_INTERRUPTIBLE",
+  });
+  expect(run).not.toHaveBeenCalled();
+});
+
 test("uses the normal command runner for setMode", async () => {
   const run = mock(async () => ({ code: 0, stdout: "mode set: plan", stderr: "" }));
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));

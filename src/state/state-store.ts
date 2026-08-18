@@ -45,9 +45,9 @@ export interface StateLoadDroppedRecord {
 export interface StateLoadReport {
   dropped: StateLoadDroppedRecord[];
   /**
-   * Legacy session records that were assigned a fresh logical_session_id
-   * during load. Kept separate from {@link dropped}: a migrated record is
-   * healthy and survives, a dropped record is corrupt and was removed.
+   * Legacy records that were assigned a stable identity during load. Kept
+   * separate from {@link dropped}: a migrated record is healthy and survives,
+   * a dropped record is corrupt and was removed.
    */
   migrated?: StateLoadDroppedRecord[];
   /** Backup copy of the original file, written because records were dropped. */
@@ -96,6 +96,17 @@ function isStringArray(value: unknown): value is string[] {
 
 function isOptionalBoolean(value: unknown): value is boolean | undefined {
   return value === undefined || typeof value === "boolean";
+}
+
+function isAgentEndpointId(value: unknown): value is string {
+  return (
+    typeof value === "string"
+    && /^endpoint_[A-Za-z0-9_-]{1,128}$/.test(value)
+  );
+}
+
+function createAgentEndpointId(): string {
+  return "endpoint_" + randomUUID();
 }
 
 function isTaskStatus(value: unknown): value is OrchestrationTaskStatus {
@@ -239,6 +250,7 @@ function isExternalCoordinatorRecord(value: unknown): value is ExternalCoordinat
 
   return (
     isString(value.coordinatorSession) &&
+    (value.agentEndpointId === undefined || isAgentEndpointId(value.agentEndpointId)) &&
     isOptionalString(value.workspace) &&
     isString(value.createdAt) &&
     isString(value.updatedAt) &&
@@ -253,6 +265,7 @@ function isWorkerBindingRecord(value: unknown): value is WorkerBindingRecord {
 
   return (
     isString(value.sourceHandle) &&
+    (value.agentEndpointId === undefined || isAgentEndpointId(value.agentEndpointId)) &&
     isString(value.coordinatorSession) &&
     isString(value.workspace) &&
     isOptionalString(value.cwd) &&
@@ -371,6 +384,7 @@ function isHumanQuestionPackageRecord(value: unknown): value is OrchestrationHum
 function parseOrchestrationState(
   raw: unknown,
   dropped: StateLoadDroppedRecord[],
+  migrated: StateLoadDroppedRecord[],
 ): OrchestrationState {
   if (raw === undefined) {
     return createEmptyOrchestrationState();
@@ -428,7 +442,17 @@ function parseOrchestrationState(
       });
       continue;
     }
-    parsedWorkerBindings[workerSession] = binding;
+    if (binding.agentEndpointId === undefined) {
+      migrated.push({
+        section: "orchestration.workerBindings",
+        key: workerSession,
+        reason: "legacy worker binding missing agentEndpointId; assigned a new endpoint id",
+      });
+    }
+    parsedWorkerBindings[workerSession] = {
+      ...binding,
+      agentEndpointId: binding.agentEndpointId ?? createAgentEndpointId(),
+    };
   }
 
   const parsedGroups: OrchestrationState["groups"] = {};
@@ -504,8 +528,25 @@ function parseOrchestrationState(
       });
       continue;
     }
-    parsedExternalCoordinators[coordinatorSession] = externalCoordinator;
+    if (externalCoordinator.agentEndpointId === undefined) {
+      migrated.push({
+        section: "orchestration.externalCoordinators",
+        key: coordinatorSession,
+        reason: "legacy external coordinator missing agentEndpointId; assigned a new endpoint id",
+      });
+    }
+    parsedExternalCoordinators[coordinatorSession] = {
+      ...externalCoordinator,
+      agentEndpointId: externalCoordinator.agentEndpointId ?? createAgentEndpointId(),
+    };
   }
+
+  repairAgentEndpointIdCollisions(
+    parsedWorkerBindings,
+    parsedExternalCoordinators,
+    dropped,
+    migrated,
+  );
 
   return {
     tasks: parsedTasks,
@@ -516,6 +557,70 @@ function parseOrchestrationState(
     coordinatorRoutes: parsedCoordinatorRoutes,
     externalCoordinators: parsedExternalCoordinators,
   };
+}
+
+type AgentEndpointIdentityRef =
+  | { section: "orchestration.workerBindings"; key: string }
+  | { section: "orchestration.externalCoordinators"; key: string };
+
+/**
+ * A duplicated endpoint identity makes every participant ambiguous. Drop all
+ * colliding current records so no caller can route to an arbitrary winner;
+ * StateStore.load() will quarantine the original bytes before publishing the
+ * cleaned state.
+ */
+function repairAgentEndpointIdCollisions(
+  workerBindings: OrchestrationState["workerBindings"],
+  externalCoordinators: OrchestrationState["externalCoordinators"],
+  dropped: StateLoadDroppedRecord[],
+  migrated: StateLoadDroppedRecord[],
+): void {
+  const refsByEndpointId = new Map<string, AgentEndpointIdentityRef[]>();
+  const addRef = (agentEndpointId: string | undefined, ref: AgentEndpointIdentityRef) => {
+    if (agentEndpointId === undefined) {
+      return;
+    }
+    const refs = refsByEndpointId.get(agentEndpointId) ?? [];
+    refs.push(ref);
+    refsByEndpointId.set(agentEndpointId, refs);
+  };
+
+  for (const [workerSession, binding] of Object.entries(workerBindings)) {
+    addRef(binding.agentEndpointId, {
+      section: "orchestration.workerBindings",
+      key: workerSession,
+    });
+  }
+  for (const [coordinatorSession, externalCoordinator] of Object.entries(externalCoordinators)) {
+    addRef(externalCoordinator.agentEndpointId, {
+      section: "orchestration.externalCoordinators",
+      key: coordinatorSession,
+    });
+  }
+
+  for (const [agentEndpointId, refs] of refsByEndpointId) {
+    if (refs.length < 2) {
+      continue;
+    }
+    for (const ref of refs) {
+      if (ref.section === "orchestration.workerBindings") {
+        delete workerBindings[ref.key];
+      } else {
+        delete externalCoordinators[ref.key];
+      }
+      const migratedIndex = migrated.findIndex(
+        (record) => record.section === ref.section && record.key === ref.key,
+      );
+      if (migratedIndex >= 0) {
+        migrated.splice(migratedIndex, 1);
+      }
+      dropped.push({
+        section: ref.section,
+        key: ref.key,
+        reason: `duplicate agentEndpointId "${agentEndpointId}"; all colliding records dropped`,
+      });
+    }
+  }
 }
 
 function isReplyMode(value: unknown): value is AppState["sessions"][string]["reply_mode"] {
@@ -742,7 +847,7 @@ export function parseState(
   }
 
   const parsedSessions = parseSessions(sectionRecord(raw.sessions, "sessions", dropped), dropped, migrated);
-  const orchestration = parseOrchestrationState(raw.orchestration, dropped);
+  const orchestration = parseOrchestrationState(raw.orchestration, dropped, migrated);
   repairExternalCoordinatorIdentityCollisions(parsedSessions, orchestration, dropped);
 
   return {

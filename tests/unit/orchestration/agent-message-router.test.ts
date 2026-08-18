@@ -1,0 +1,719 @@
+import { expect, test } from "bun:test";
+
+import type { AppLogger } from "../../../src/logging/app-logger";
+import {
+  AgentEndpointRegistry,
+  type ResolvedAgentEndpoint,
+} from "../../../src/orchestration/agent-endpoint-registry";
+import { encodeAgentHandle } from "../../../src/orchestration/agent-handle";
+import {
+  AgentMessageRouter,
+  type AgentMessageRouterLimits,
+} from "../../../src/orchestration/agent-message-router";
+import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
+import type { AgentMessage } from "../../../src/orchestration/agent-messaging-types";
+import type { SessionMessageReceipt } from "../../../src/transport/message-injection";
+import { MessageInjectionError } from "../../../src/transport/message-injection";
+import { createEmptyState } from "../../../src/state/types";
+
+const nodeId = "node_11111111-1111-4111-8111-111111111111";
+
+function makeRouter(
+  options: {
+    deliver?: (
+      target: ResolvedAgentEndpoint,
+      message: AgentMessage,
+      renderedText: string,
+    ) => Promise<SessionMessageReceipt>;
+    createId?: () => string;
+    limits?: AgentMessageRouterLimits;
+    now?: () => number;
+    logger?: Pick<AppLogger, "info">;
+  } = {},
+) {
+  const state = createEmptyState();
+  state.sessions.main = {
+    alias: "main",
+    agent: "codex",
+    workspace: "project",
+    transport_session: "coordinator",
+    logical_session_id: "22222222-2222-4222-8222-222222222222",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+  state.orchestration.workerBindings.workerA = {
+    sourceHandle: "workerA",
+    agentEndpointId: "endpoint_worker-a",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "claude",
+  };
+  state.orchestration.workerBindings.workerB = {
+    sourceHandle: "workerB",
+    agentEndpointId: "endpoint_worker-b",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "gemini",
+  };
+  state.orchestration.workerBindings.externalWorker = {
+    sourceHandle: "externalWorker",
+    agentEndpointId: "endpoint_external-worker",
+    coordinatorSession: "external-coordinator",
+    workspace: "project",
+    targetAgent: "codex",
+  };
+  state.orchestration.externalCoordinators["external-coordinator"] = {
+    coordinatorSession: "external-coordinator",
+    agentEndpointId: "endpoint_external",
+    createdAt: "2026-08-18T00:00:00.000Z",
+    updatedAt: "2026-08-18T00:00:00.000Z",
+  };
+
+  const registry = new AgentEndpointRegistry({
+    nodeId,
+    loadState: async () => structuredClone(state),
+  });
+  const deliveries: Array<{ message: AgentMessage; renderedText: string }> = [];
+  const router = new AgentMessageRouter({
+    registry,
+    delivery: {
+      deliver: async (target, message, renderedText) => {
+        deliveries.push({ message, renderedText });
+        return await (options.deliver?.(target, message, renderedText) ??
+          Promise.resolve({
+            status: "queued" as const,
+            modeUsed: "queue" as const,
+          }));
+      },
+    },
+    createId: options.createId ?? (() => "message-1"),
+    now: options.now ?? (() => 1_000),
+    limits: options.limits,
+    logger: options.logger,
+  });
+
+  return { router, deliveries };
+}
+
+test("lists only the current sender's reachable peer endpoints", async () => {
+  const { router } = makeRouter();
+
+  const endpoints = await router.listReachable({
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  });
+
+  expect(endpoints.map((endpoint) => endpoint.address.endpointId)).toEqual([
+    "22222222-2222-4222-8222-222222222222",
+    "endpoint_worker-b",
+  ]);
+});
+
+test("sends an auto message as an escaped one-way queue delivery", async () => {
+  const { router, deliveries } = makeRouter();
+
+  const receipt = await router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    {
+      to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+      content: "Use <schema> & tests.",
+    },
+  );
+
+  expect(receipt).toEqual({
+    messageId: "msg_message-1",
+    status: "queued",
+    modeUsed: "queue",
+    route: "local",
+  });
+  expect(deliveries).toEqual([
+    {
+      message: {
+        id: "msg_message-1",
+        from: { nodeId, endpointId: "endpoint_worker-a" },
+        to: { nodeId, endpointId: "endpoint_worker-b" },
+        content: "Use <schema> & tests.",
+        requestedMode: "auto",
+        createdAt: 1_000,
+      },
+      renderedText:
+        '<xacpx-message id="msg_message-1" ' +
+        'from="agent:node_11111111-1111-4111-8111-111111111111:endpoint_worker-a" ' +
+        'replyable="true">\n' +
+        "Use &lt;schema&gt; &amp; tests.\n" +
+        "</xacpx-message>",
+    },
+  ]);
+});
+
+test("rejects an oversized Unicode message before resolving the target", async () => {
+  const { router } = makeRouter();
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      { to: "not-a-handle", content: "界".repeat(5_462) },
+    ),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "MESSAGE_TOO_LARGE",
+  });
+});
+
+test("rejects unsafe reply correlation ids before resolving the target", async () => {
+  const { router } = makeRouter();
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      { to: "not-a-handle", content: "hello", replyTo: "msg_bad!" },
+    ),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "DELIVERY_DENIED",
+  });
+});
+
+test("rejects reply correlation ids over 128 bytes", async () => {
+  const { router } = makeRouter();
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "hello",
+        replyTo: "m".repeat(129),
+      },
+    ),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "MESSAGE_TOO_LARGE",
+  });
+});
+
+test("strict steer fails without invoking queue delivery", async () => {
+  const { router, deliveries } = makeRouter();
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "change direction",
+        mode: "steer",
+      },
+    ),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_NOT_STEERABLE",
+  });
+  expect(deliveries).toEqual([]);
+});
+
+test("explicit interrupt fails when the target cannot interrupt", async () => {
+  const { router, deliveries } = makeRouter();
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "stop now",
+        mode: "interrupt",
+      },
+    ),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_NOT_INTERRUPTIBLE",
+  });
+  expect(deliveries).toEqual([]);
+});
+
+test("explicit queue mode remains a next-turn queue request", async () => {
+  const { router, deliveries } = makeRouter();
+
+  await router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    {
+      to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+      content: "read this next",
+      mode: "queue",
+    },
+  );
+
+  expect(deliveries[0]?.message.requestedMode).toBe("queue");
+});
+
+test("serializes concurrent deliveries to the same target", async () => {
+  const firstDelivery = createDeferred<void>();
+  const started: string[] = [];
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `message-${++nextId}`,
+    deliver: async (_target, message) => {
+      started.push(message.content);
+      if (message.content === "first") {
+        await firstDelivery.promise;
+      }
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const first = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    { to, content: "first" },
+  );
+  const second = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    { to, content: "second" },
+  );
+  await waitUntil(() => started.length > 0);
+
+  expect(started).toEqual(["first"]);
+  firstDelivery.resolve();
+  await Promise.all([first, second]);
+  expect(started).toEqual(["first", "second"]);
+});
+
+test("keeps one target FIFO across different authorized senders", async () => {
+  const firstDelivery = createDeferred<void>();
+  const started: string[] = [];
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `message-${++nextId}`,
+    deliver: async (_target, message) => {
+      started.push(message.content);
+      if (message.content === "worker first") await firstDelivery.promise;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const fromWorker = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    { to, content: "worker first" },
+  );
+  const fromCoordinator = router.send(
+    { coordinatorSession: "coordinator" },
+    { to, content: "coordinator second" },
+  );
+  await waitUntil(() => started.length > 0);
+
+  expect(started).toEqual(["worker first"]);
+  firstDelivery.resolve();
+  await Promise.all([fromWorker, fromCoordinator]);
+  expect(started).toEqual(["worker first", "coordinator second"]);
+});
+
+test("allows deliveries to different targets to proceed in parallel", async () => {
+  const workerDelivery = createDeferred<void>();
+  const started: string[] = [];
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `message-${++nextId}`,
+    deliver: async (target) => {
+      started.push(target.endpoint.address.endpointId);
+      if (target.endpoint.address.endpointId === "endpoint_worker-b") {
+        await workerDelivery.promise;
+      }
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+
+  const worker = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    {
+      to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+      content: "worker",
+    },
+  );
+  const coordinator = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    {
+      to: encodeAgentHandle({
+        nodeId,
+        endpointId: "22222222-2222-4222-8222-222222222222",
+      }),
+      content: "coordinator",
+    },
+  );
+  await waitUntil(() => started.length === 2);
+
+  expect(started).toContain("endpoint_worker-b");
+  expect(started).toContain("22222222-2222-4222-8222-222222222222");
+  workerDelivery.resolve();
+  await Promise.all([worker, coordinator]);
+});
+
+test("rejects a delivery when the target pending depth is full", async () => {
+  const firstDelivery = createDeferred<void>();
+  let deliveryCount = 0;
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `message-${++nextId}`,
+    limits: { maxPendingPerTarget: 2 },
+    deliver: async () => {
+      deliveryCount += 1;
+      if (deliveryCount === 1) await firstDelivery.promise;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const first = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    { to, content: "first" },
+  );
+  const second = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    { to, content: "second" },
+  );
+  const third = router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    { to, content: "third" },
+  );
+  firstDelivery.resolve();
+
+  await expect(third).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "MESSAGE_QUEUE_FULL",
+  });
+  await Promise.all([first, second]);
+  expect(deliveryCount).toBe(2);
+});
+
+test("rate limits repeated deliveries from one sender to one target", async () => {
+  let nextId = 0;
+  const { router, deliveries } = makeRouter({
+    createId: () => `message-${++nextId}`,
+    limits: {
+      rateLimit: { maxMessages: 2, windowMs: 1_000 },
+    },
+  });
+  const binding = {
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  await router.send(binding, { to, content: "one" });
+  await router.send(binding, { to, content: "two" });
+  await expect(
+    router.send(binding, { to, content: "three" }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "MESSAGE_RATE_LIMITED",
+  });
+  expect(deliveries).toHaveLength(2);
+});
+
+test("deduplicates a repeated generated message id without a second injection", async () => {
+  const { router, deliveries } = makeRouter({
+    createId: () => "same-id",
+  });
+  const binding = {
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const first = await router.send(binding, { to, content: "only once" });
+  const duplicate = await router.send(binding, { to, content: "only once" });
+
+  expect(first).toEqual({
+    messageId: "msg_same-id",
+    status: "queued",
+    modeUsed: "queue",
+    route: "local",
+  });
+  expect(duplicate).toEqual({ ...first, deduplicated: true });
+  expect(deliveries).toHaveLength(1);
+});
+
+test("does not cache a rejected in-flight delivery as an accepted receipt", async () => {
+  let attempts = 0;
+  const { router } = makeRouter({
+    createId: () => "retry-id",
+    deliver: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient failure");
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const binding = {
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  };
+  const input = {
+    to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+    content: "retry me",
+  };
+
+  await expect(router.send(binding, input)).rejects.toMatchObject({
+    code: "DELIVERY_FAILED",
+  });
+  await expect(router.send(binding, input)).resolves.toMatchObject({
+    messageId: "msg_retry-id",
+    status: "queued",
+  });
+  expect(attempts).toBe(2);
+});
+
+test("expires cached receipts after the configured dedupe TTL", async () => {
+  let clock = 1_000;
+  const { router, deliveries } = makeRouter({
+    createId: () => "expiring-id",
+    now: () => clock,
+    limits: {
+      receiptCache: { maxEntries: 4, ttlMs: 100 },
+    },
+  });
+  const binding = {
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  };
+  const input = {
+    to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+    content: "fresh context",
+  };
+
+  await router.send(binding, input);
+  clock = 1_101;
+  const receipt = await router.send(binding, input);
+
+  expect(receipt.deduplicated).toBeUndefined();
+  expect(deliveries).toHaveLength(2);
+});
+
+test("bounds the receipt cache by evicting its oldest accepted receipt", async () => {
+  const ids = ["old", "new", "old"];
+  const { router, deliveries } = makeRouter({
+    createId: () => ids.shift() ?? "unexpected",
+    limits: {
+      receiptCache: { maxEntries: 1, ttlMs: 10_000 },
+    },
+  });
+  const binding = {
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  await router.send(binding, { to, content: "old" });
+  await router.send(binding, { to, content: "new" });
+  const oldAgain = await router.send(binding, { to, content: "old again" });
+
+  expect(oldAgain.deduplicated).toBeUndefined();
+  expect(deliveries).toHaveLength(3);
+});
+
+test("maps a transport timeout to a stable error without leaking diagnostics", async () => {
+  const { router } = makeRouter({
+    deliver: async () => {
+      throw new MessageInjectionError(
+        "DELIVERY_TIMEOUT",
+        "timed out writing /private/tmp/xacpx-secret.sock --token secret",
+      );
+    },
+  });
+
+  try {
+    await router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "hello",
+      },
+    );
+    throw new Error("expected send to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(AgentMessagingError);
+    expect(error).toMatchObject({ code: "DELIVERY_TIMEOUT" });
+    expect((error as Error).message).not.toContain("/private/tmp");
+    expect((error as Error).message).not.toContain("secret");
+  }
+});
+
+test.each([
+  "TARGET_NOT_RUNNING",
+  "TARGET_NOT_STEERABLE",
+  "TARGET_NOT_INTERRUPTIBLE",
+  "DELIVERY_RACE",
+  "DELIVERY_FAILED",
+] as const)(
+  "preserves the typed transport outcome %s at the router seam",
+  async (code) => {
+    const { router } = makeRouter({
+      deliver: async () => {
+        throw new MessageInjectionError(code, "private transport detail");
+      },
+    });
+
+    await expect(
+      router.send(
+        { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+        {
+          to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+          content: "hello",
+        },
+      ),
+    ).rejects.toMatchObject<Partial<AgentMessagingError>>({ code });
+  },
+);
+
+test("propagates the target runtime state from the delivery receipt", async () => {
+  const { router } = makeRouter({
+    deliver: async () => ({
+      status: "queued",
+      modeUsed: "queue",
+      targetState: "running",
+    }),
+  });
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "hello",
+      },
+    ),
+  ).resolves.toMatchObject({
+    status: "queued",
+    modeUsed: "queue",
+    targetState: "running",
+  });
+});
+
+test("maps an unknown transport failure to a safe delivery error", async () => {
+  const { router } = makeRouter({
+    deliver: async () => {
+      throw new Error("spawn failed: /secret/acpx --credential hunter2");
+    },
+  });
+
+  try {
+    await router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "hello",
+      },
+    );
+    throw new Error("expected send to fail");
+  } catch (error) {
+    expect(error).toMatchObject({ code: "DELIVERY_FAILED" });
+    expect((error as Error).message).not.toContain("/secret");
+    expect((error as Error).message).not.toContain("hunter2");
+  }
+});
+
+test("marks messages from a non-receive-capable external sender as not replyable", async () => {
+  const { router, deliveries } = makeRouter();
+
+  await router.send(
+    {
+      coordinatorSession: "external-coordinator",
+      sourceHandle: "external-coordinator",
+    },
+    {
+      to: encodeAgentHandle({ nodeId, endpointId: "endpoint_external-worker" }),
+      content: "external notice",
+      replyTo: "msg_parent",
+    },
+  );
+
+  expect(deliveries[0]?.renderedText).toContain('replyable="false"');
+  expect(deliveries[0]?.renderedText).toContain('reply-to="msg_parent"');
+  expect(deliveries[0]?.message.replyTo).toBe("msg_parent");
+});
+
+test("emits a safe structured delivery log without message content", async () => {
+  const logs: Array<{
+    event: string;
+    message: string;
+    context?: Record<string, unknown>;
+  }> = [];
+  const { router } = makeRouter({
+    logger: {
+      info: async (event, message, context) => {
+        logs.push({ event, message, context });
+      },
+    },
+  });
+
+  await router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    {
+      to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+      content: "TOP SECRET schema text",
+      replyTo: "msg_parent",
+    },
+  );
+
+  expect(logs).toEqual([
+    {
+      event: "agent.message.delivery",
+      message: "Agent message delivery accepted.",
+      context: {
+        messageId: "msg_message-1",
+        sourceAddress: { nodeId, endpointId: "endpoint_worker-a" },
+        targetAddress: { nodeId, endpointId: "endpoint_worker-b" },
+        route: "local",
+        requestedMode: "auto",
+        modeUsed: "queue",
+        status: "queued",
+        targetState: undefined,
+        latencyMs: 0,
+        contentLength: 22,
+      },
+    },
+  ]);
+  expect(JSON.stringify(logs)).not.toContain("TOP SECRET");
+  expect(JSON.stringify(logs)).not.toContain("msg_parent");
+});
+
+test("failure logs expose only the stable error code and safe metadata", async () => {
+  const logs: Array<{ context?: Record<string, unknown> }> = [];
+  const { router } = makeRouter({
+    logger: {
+      info: async (_event, _message, context) => {
+        logs.push({ context });
+      },
+    },
+    deliver: async () => {
+      throw new Error("socket /private/tmp/hidden.sock rejected SECRET BODY");
+    },
+  });
+
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      {
+        to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+        content: "SECRET BODY",
+      },
+    ),
+  ).rejects.toMatchObject({ code: "DELIVERY_FAILED" });
+
+  expect(logs[0]?.context).toMatchObject({
+    status: "failed",
+    errorCode: "DELIVERY_FAILED",
+    contentLength: 11,
+  });
+  expect(JSON.stringify(logs)).not.toContain("SECRET BODY");
+  expect(JSON.stringify(logs)).not.toContain("/private/tmp");
+});
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await Bun.sleep(0);
+  }
+  throw new Error("condition did not become true");
+}

@@ -24,12 +24,21 @@ import type {
 } from "../orchestration-service";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../coordinator-identity";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
-import { workerBindingGuardFields } from "../worker-launch";
+import {
+  workerBindingEndpointIdentityFields,
+  workerBindingGuardFields,
+} from "../worker-launch";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type RpcDelegationDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "loadState" | "saveState" | "config" | "dispatchWorkerTask"
+  | "now"
+  | "createId"
+  | "createAgentEndpointId"
+  | "loadState"
+  | "saveState"
+  | "config"
+  | "dispatchWorkerTask"
 >;
 
 export class RpcDelegationService {
@@ -210,6 +219,7 @@ export class RpcDelegationService {
               targetAgent: input.targetAgent,
               role: preflight.role,
               ...workerBindingGuardFields(previousBinding),
+              ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
               ...(input.parallel ? { ephemeral: true } : {}),
             };
           } else {

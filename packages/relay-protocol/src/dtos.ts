@@ -74,12 +74,7 @@ export interface FsDiffFileDto {
 
 // Keep in sync with ScheduledTaskStatus in src/scheduled/scheduled-types.ts
 export type ScheduledTaskStatusDto =
-  | "pending"
-  | "triggering"
-  | "executed"
-  | "cancelled"
-  | "missed"
-  | "failed";
+  "pending" | "triggering" | "executed" | "cancelled" | "missed" | "failed";
 
 /** Wire DTO for a scheduled task; maps from core ScheduledTaskRecord. */
 export interface ScheduledTaskDto {
@@ -128,13 +123,20 @@ export interface OrchestrationTaskDto {
 }
 
 export type ToolStepStatus = "running" | "success" | "error";
-export type ToolStepKind = "read" | "search" | "execute" | "edit" | "think" | "other";
+export type ToolStepKind =
+  "read" | "search" | "execute" | "edit" | "think" | "other";
 
 /** Friendly, presentation-ready detail for one tool call (no raw JSON crosses the wire). */
 export type ToolDetailDto =
   // `instruction` carries an edit's human-readable intent (Edit's instruction/description);
   // optional so old connectors and old web builds stay wire-compatible.
-  | { type: "diff"; path: string; oldText: string; newText: string; instruction?: string }
+  | {
+      type: "diff";
+      path: string;
+      oldText: string;
+      newText: string;
+      instruction?: string;
+    }
   | { type: "read"; path: string; lines?: string; preview?: string }
   | { type: "command"; command: string; output?: string; exitCode?: number }
   | { type: "search"; query: string; output?: string }
@@ -142,7 +144,11 @@ export type ToolDetailDto =
   // rendered as its report; ordinary prose text steps omit it. Optional so old connectors
   // and old web builds stay wire-compatible.
   | { type: "text"; text: string; output?: string }
-  | { type: "fields"; fields: Array<{ label: string; value: string }>; output?: string };
+  | {
+      type: "fields";
+      fields: Array<{ label: string; value: string }>;
+      output?: string;
+    };
 
 /** One collapsed tool-call step, normalized at the connector from a core ToolUseEvent. */
 export interface ToolStepDto {
@@ -209,23 +215,73 @@ export interface QueueItemDto {
 
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
-  | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
+  | {
+      type: "turn-output";
+      chatKey: string;
+      sessionAlias: string;
+      chunk: string;
+    }
   // `prompt` is set for scheduled turns and drained queued prompts. `queueItemId`
   // associates the latter with the message originally persisted at enqueue time.
   // `promptRequestId` (new connectors) correlates a drained queue item back to the
   // hub pre-written inbound row when the queued RPC response was lost.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOriginDto; queueItemId?: string; promptRequestId?: string }
-  | { type: "tool-event"; chatKey: string; sessionAlias: string; step: ToolStepDto }
-  | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
-  | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntryDto[] }
+  | {
+      type: "turn-started";
+      chatKey: string;
+      sessionAlias: string;
+      prompt?: string;
+      scheduled?: ScheduledOriginDto;
+      queueItemId?: string;
+      promptRequestId?: string;
+    }
+  | {
+      type: "tool-event";
+      chatKey: string;
+      sessionAlias: string;
+      step: ToolStepDto;
+    }
+  | {
+      type: "turn-thought";
+      chatKey: string;
+      sessionAlias: string;
+      chunk: string;
+    }
+  | {
+      type: "plan";
+      chatKey: string;
+      sessionAlias: string;
+      entries: PlanEntryDto[];
+    }
   // Context-usage meter: `used` tokens in context, `size` total context window. Replace-latest.
   // `cost`/`breakdown` are optional extras (acpx ≥0.11.0); absent for adapters that don't report them.
-  | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }
+  | {
+      type: "turn-usage";
+      chatKey: string;
+      sessionAlias: string;
+      used: number;
+      size: number;
+      cost?: UsageCostDto;
+      breakdown?: UsageBreakdownDto;
+    }
   // Agent-advertised slash commands (e.g. /compact). Session-scoped, replace-latest.
-  | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommandDto[] }
+  | {
+      type: "agent-commands";
+      chatKey: string;
+      sessionAlias: string;
+      commands: AgentCommandDto[];
+    }
   // `text` carries the final reply text for hub-side fallback persistence: a hub that
   // restarted mid-turn has no buffer for this finish, so it persists `text` directly.
-  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; recoveryId?: string }
+  | {
+      type: "turn-finished";
+      chatKey: string;
+      sessionAlias: string;
+      ok: boolean;
+      errorMessage?: string;
+      cancelled?: boolean;
+      text?: string;
+      recoveryId?: string;
+    }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
   // re-fetches the workspace list. No payload.
@@ -233,24 +289,54 @@ export type ControlEventDto =
   | { type: "scheduled-changed"; chatKey: string }
   // Recovered prior conversation for a freshly-attached native session; the hub seeds
   // these rows into the session's history so the dashboard isn't blank.
-  | { type: "session-history"; chatKey: string; sessionAlias: string; messages: SessionHistoryRowDto[] }
+  | {
+      type: "session-history";
+      chatKey: string;
+      sessionAlias: string;
+      messages: SessionHistoryRowDto[];
+    }
   | { type: "terminal-output"; terminalId: string; seq: number; data: string }
   | { type: "terminal-exit"; terminalId: string; code: number }
   | { type: "orchestration-changed" }
   // The session's server-side prompt queue changed (item enqueued/dequeued/cancelled);
   // replace-latest snapshot of the pending items.
-  | { type: "queue-updated"; chatKey: string; sessionAlias: string; items: QueueItemDto[] };
+  | {
+      type: "queue-updated";
+      chatKey: string;
+      sessionAlias: string;
+      items: QueueItemDto[];
+    };
 
 export interface TerminalAttachRequest {
   terminalId: string;
 }
 export type TerminalAttachResult =
-  | { ok: false }
-  | { ok: true; buffer: string; lastSeq: number };
+  { ok: false } | { ok: true; buffer: string; lastSeq: number };
 
 /** One recovered history row (a persisted-shaped message) for a native-session seed. */
 export interface SessionHistoryRowDto {
   direction: "in" | "out";
   text: string;
-  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[] };
+  structured?: {
+    toolSteps?: ToolStepDto[];
+    reasoning?: string;
+    parts?: TurnPartDto[];
+  };
+}
+
+/** Wire DTO for an agent endpoint published to Relay Hub for remote discovery. */
+export interface PublishedAgentEndpointDto {
+  nodeId: string;
+  endpointId: string;
+  displayName?: string;
+  agent: string;
+  state: "idle" | "running";
+  capabilities: {
+    receive: boolean;
+    steer: boolean;
+    queue: boolean;
+    interrupt: boolean;
+  };
+  labels?: string[];
+  updatedAt: number;
 }

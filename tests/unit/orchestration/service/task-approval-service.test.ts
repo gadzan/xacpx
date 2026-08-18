@@ -9,13 +9,13 @@ import type { OrchestrationTaskRecord } from "../../../../src/orchestration/orch
 import { createEmptyState } from "../../../../src/state/types";
 import { makeGoldenHarness } from "../golden/golden-harness";
 
-// Construct the service from a bare object literal of exactly its four ports — never
+// Construct the service from a bare object literal of exactly its five ports — never
 // `harness.deps` wholesale — plus the kernel and its three collaborators. This is the
 // isolation-testability deliverable of the split: the service must build without
-// `createId`, `config`, `wakeCoordinatorSession`, or the other ten ports, and it must
+// `createId`, `config`, `wakeCoordinatorSession`, or the other ports, and it must
 // not silently reach for a dep outside its declared TaskApprovalDeps.
 function makeService(initialState = createEmptyState()) {
-  const harness = makeGoldenHarness({ initialState });
+  const harness = makeGoldenHarness({ endpointIds: ["worker-endpoint-1"], initialState });
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const workerSessions = new WorkerSessionManager(harness.deps, kernel);
   const questionFlow = new QuestionFlowCore(harness.deps, kernel);
@@ -23,6 +23,7 @@ function makeService(initialState = createEmptyState()) {
   const approvals = new TaskApprovalService(
     {
       now: harness.deps.now,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
       dispatchWorkerTask: harness.deps.dispatchWorkerTask,
@@ -54,7 +55,7 @@ function seedTask(overrides: Partial<OrchestrationTaskRecord> = {}): Orchestrati
   };
 }
 
-test("constructible with only its four ports and approves a needs_confirmation task", async () => {
+test("constructible with only its five ports and approves a needs_confirmation task", async () => {
   const initialState = createEmptyState();
   const seeded = seedTask();
   initialState.orchestration.tasks[seeded.taskId] = seeded;
@@ -69,6 +70,9 @@ test("constructible with only its four ports and approves a needs_confirmation t
   expect(approved.workerSession).toBe("backend:codex:coord-1");
   const persisted = harness.getState().orchestration.tasks["t1"];
   expect(persisted.status).toBe("running");
+  expect(
+    harness.getState().orchestration.workerBindings[persisted.workerSession!]?.agentEndpointId,
+  ).toBe("endpoint_worker-endpoint-1");
   expect(harness.calls.some((call) => call.port === "dispatchWorkerTask")).toBe(true);
 });
 

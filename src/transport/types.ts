@@ -3,8 +3,17 @@ import type { ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
+import type {
+  SessionMessageInput,
+  SessionMessageReceipt,
+} from "./message-injection";
 
 export type { ToolEventMode } from "./tool-event-mode.js";
+export type {
+  SessionMessageInput,
+  SessionMessageMode,
+  SessionMessageReceipt,
+} from "./message-injection";
 
 /** Cumulative session cost the agent reported (ACP `usage_update.cost`). Both optional. */
 export interface UsageCost {
@@ -231,6 +240,10 @@ export interface SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }>;
+  injectMessage?(
+    session: ResolvedSession,
+    input: SessionMessageInput,
+  ): Promise<SessionMessageReceipt>;
   setMode(session: ResolvedSession, modeId: string): Promise<void>;
   /** Switch the running session's model. Optional: transports that can't omit it. */
   setModel?(session: ResolvedSession, modelId: string): Promise<void>;

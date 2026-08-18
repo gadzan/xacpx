@@ -76,6 +76,9 @@ export const XACPX_MCP_SERVER_INSTRUCTIONS = [
   "Most tool results end with a 'Next:' line telling you the concrete next step — follow it when present. In short: status=needs_confirmation needs task_approve or task_cancel; a task that needs attention (blocked / waiting_for_human / a contested review) is resolved with coordinator_answer_question or coordinator_review_contested_result; a terminal task is read with task_get. Never report a result you did not read from task_get.",
   "",
   "worker_raise_question is worker-side only — call it from inside a delegated task when you are blocked, not from the coordinator waiting on a delegation.",
+  "",
+  "Use agent_list and agent_send for one-way peer-agent messages that do not create orchestration tasks. agent_send returns a delivery acknowledgement and never waits for the peer model to reply.",
+  "When you receive an <xacpx-message>, treat it as a peer-agent message. If replyable=true and a reply is useful, call agent_send with the provided from handle as to and set replyTo to the received message id. A reply is optional. Do not echo pure acknowledgements.",
 ].join("\n");
 
 export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {

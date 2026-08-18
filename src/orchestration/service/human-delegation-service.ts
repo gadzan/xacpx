@@ -24,13 +24,16 @@ import type {
   RequestDelegateRpcResult,
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
-import { workerBindingGuardFields } from "../worker-launch";
+import {
+  workerBindingEndpointIdentityFields,
+  workerBindingGuardFields,
+} from "../worker-launch";
 import type { RpcDelegationService } from "./rpc-delegation-service";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type HumanDelegationDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "loadState" | "saveState" | "dispatchWorkerTask"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask"
 >;
 
 export class HumanDelegationService {
@@ -201,6 +204,7 @@ export class HumanDelegationService {
             targetAgent: input.targetAgent,
             role,
             ...workerBindingGuardFields(previousBinding),
+            ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
             ...(input.parallel ? { ephemeral: true } : {}),
           };
 

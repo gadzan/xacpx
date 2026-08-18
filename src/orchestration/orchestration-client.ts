@@ -4,6 +4,7 @@ import { createConnection } from "node:net";
 import {
   encodeOrchestrationRpcRequest,
   type OrchestrationIpcEndpoint,
+  type OrchestrationRpcErrorCode,
   type OrchestrationRpcMethod,
   type OrchestrationRpcResponse,
 } from "./orchestration-ipc";
@@ -36,14 +37,38 @@ import {
   MAX_TASK_WATCH_TIMEOUT_MS,
   TASK_WATCH_RPC_TIMEOUT_PADDING_MS,
 } from "./task-watch-timeouts";
+import type {
+  AgentEndpointView,
+  AgentMessageMode,
+  AgentMessageReceipt,
+  AgentSenderBinding,
+} from "./agent-messaging-types";
 
 export type CoordinatorTaskListFilter = Pick<OrchestrationTaskFilter, "status" | "stuck" | "sort" | "order"> & {
   coordinatorSession: string;
 };
 
+export interface AgentSendRpcInput extends AgentSenderBinding {
+  to: string;
+  message: string;
+  mode?: AgentMessageMode;
+  replyTo?: string;
+}
+
 interface OrchestrationClientDeps {
   createId?: () => string;
   timeoutMs?: number;
+}
+
+export class OrchestrationClientError extends Error {
+  override readonly name = "OrchestrationClientError";
+
+  constructor(
+    readonly code: OrchestrationRpcErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 export class OrchestrationClient {
@@ -184,6 +209,14 @@ export class OrchestrationClient {
     return await this.request<{ id: string; cancelled: boolean }>("scheduled.cancel", input);
   }
 
+  async agentList(input: AgentSenderBinding): Promise<AgentEndpointView[]> {
+    return await this.request<AgentEndpointView[]>("agent.list", input);
+  }
+
+  async agentSend(input: AgentSendRpcInput): Promise<AgentMessageReceipt> {
+    return await this.request<AgentMessageReceipt>("agent.send", input);
+  }
+
   async request<Result>(method: OrchestrationRpcMethod, params: unknown, timeoutMs = this.timeoutMs): Promise<Result> {
     const id = this.createId();
 
@@ -241,7 +274,7 @@ export class OrchestrationClient {
             return;
           }
           if (!response.ok) {
-            reject(new Error(response.error.message));
+            reject(new OrchestrationClientError(response.error.code, response.error.message));
             return;
           }
           resolve(response.result);

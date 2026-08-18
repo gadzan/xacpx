@@ -13,6 +13,7 @@ export type BridgeMethod =
   | "listAgentSessions"
   | "resumeAgentSession"
   | "prompt"
+  | "injectMessage"
   | "setMode"
   | "setModel"
   | "getSessionModel"

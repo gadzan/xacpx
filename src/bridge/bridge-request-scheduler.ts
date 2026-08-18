@@ -1,10 +1,12 @@
-export type BridgeRequestLane = "normal" | "control";
+export type BridgeRequestLane = "normal" | "message" | "control";
 
 type Task<T> = () => T | Promise<T>;
 
 interface SessionState {
   pendingNormals: number;
-  tail: Promise<void>;
+  pendingMessages: number;
+  normalTail: Promise<void>;
+  messageTail: Promise<void>;
 }
 
 export class BridgeRequestScheduler {
@@ -16,17 +18,19 @@ export class BridgeRequestScheduler {
     }
 
     const state = this.sessions.get(sessionName) ?? this.createSessionState(sessionName);
-    state.pendingNormals += 1;
+    const tailName = lane === "message" ? "messageTail" : "normalTail";
+    const pendingName = lane === "message" ? "pendingMessages" : "pendingNormals";
+    state[pendingName] += 1;
 
-    const result = state.tail.then(() => task());
-    state.tail = result.then(
+    const result = state[tailName].then(() => task());
+    state[tailName] = result.then(
       () => undefined,
       () => undefined,
     );
 
     return result.finally(() => {
-      state.pendingNormals -= 1;
-      if (state.pendingNormals === 0 && this.sessions.get(sessionName) === state) {
+      state[pendingName] -= 1;
+      if (state.pendingNormals === 0 && state.pendingMessages === 0 && this.sessions.get(sessionName) === state) {
         this.sessions.delete(sessionName);
       }
     });
@@ -35,7 +39,9 @@ export class BridgeRequestScheduler {
   private createSessionState(sessionName: string): SessionState {
     const state: SessionState = {
       pendingNormals: 0,
-      tail: Promise.resolve(),
+      pendingMessages: 0,
+      normalTail: Promise.resolve(),
+      messageTail: Promise.resolve(),
     };
     this.sessions.set(sessionName, state);
     return state;

@@ -5,13 +5,14 @@ import { OrchestrationStateKernel } from "../../../../src/orchestration/service/
 import { WorkerSessionManager } from "../../../../src/orchestration/service/worker-session-manager";
 import { makeGoldenHarness } from "../golden/golden-harness";
 
-test("constructible with only its four ports and persists a coordinator route context", async () => {
+test("constructible with only its five ports and persists a coordinator route context", async () => {
   const harness = makeGoldenHarness();
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const workerSessions = new WorkerSessionManager(harness.deps, kernel);
   const coordinators = new CoordinatorRegistryService(
     {
       now: harness.deps.now,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
       config: harness.deps.config,
@@ -44,6 +45,29 @@ test("constructible with only its four ports and persists a coordinator route co
   expect(persisted!.senderId).toBe("u1");
 });
 
+test("registerExternalCoordinator mints and preserves its endpoint identity", async () => {
+  const harness = makeGoldenHarness({ endpointIds: ["external-endpoint-1"] });
+  const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
+  const workerSessions = new WorkerSessionManager(harness.deps, kernel);
+  const coordinators = new CoordinatorRegistryService(
+    {
+      now: harness.deps.now,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
+      loadState: harness.deps.loadState,
+      saveState: harness.deps.saveState,
+      config: harness.deps.config,
+    },
+    kernel,
+    workerSessions,
+  );
+
+  const first = await coordinators.registerExternalCoordinator({ coordinatorSession: "external:main" });
+  const second = await coordinators.registerExternalCoordinator({ coordinatorSession: "external:main" });
+
+  expect(first.agentEndpointId).toBe("endpoint_external-endpoint-1");
+  expect(second.agentEndpointId).toBe(first.agentEndpointId);
+});
+
 test("registerExternalCoordinator throws when the session collides with a live worker-session reservation", async () => {
   const harness = makeGoldenHarness();
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
@@ -51,6 +75,7 @@ test("registerExternalCoordinator throws when the session collides with a live w
   const coordinators = new CoordinatorRegistryService(
     {
       now: harness.deps.now,
+      createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
       config: harness.deps.config,

@@ -21,6 +21,10 @@ import { createOrchestrationEndpoint, resolveOrchestrationEndpoint } from "./orc
 import { AsyncMutex } from "./orchestration/async-mutex";
 import { OrchestrationServer } from "./orchestration/orchestration-server";
 import { OrchestrationService } from "./orchestration/orchestration-service";
+import { MessagingNodeIdentityStore } from "./orchestration/messaging-node-identity-store";
+import { AgentEndpointRegistry } from "./orchestration/agent-endpoint-registry";
+import { AgentMessageRouter } from "./orchestration/agent-message-router";
+import { LocalAgentMessageDeliveryAdapter } from "./orchestration/local-agent-message-delivery";
 import { buildCoordinatorPrompt } from "./orchestration/build-coordinator-prompt";
 import { sameCoordinatorSession } from "./orchestration/coordinator-identity";
 import { buildWorkerAnswerPrompt, buildWorkerTaskPrompt } from "./orchestration/worker-prompts";
@@ -291,12 +295,20 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       });
     }
     for (const record of stateLoadReport.migrated ?? []) {
-      await logger.info("state.session_id_migrated", "assigned a new logical_session_id to a legacy session record", {
+      const endpointIdentity = record.section === "orchestration.workerBindings"
+        || record.section === "orchestration.externalCoordinators";
+      await logger.info(
+        endpointIdentity ? "state.agent_endpoint_id_migrated" : "state.session_id_migrated",
+        endpointIdentity
+          ? "assigned a stable Agent Messaging endpoint id to a legacy orchestration record"
+          : "assigned a new logical_session_id to a legacy session record",
+        {
         statePath: paths.statePath,
         section: record.section,
         key: record.key,
         reason: record.reason,
-      });
+        },
+      );
     }
   }
   const stateMutex = new AsyncMutex();
@@ -310,6 +322,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     },
   });
   const runtimeRoot = dirname(paths.configPath);
+  const messagingNodeIdentity = await new MessagingNodeIdentityStore(
+    join(runtimeRoot, "agent-messaging", "node.json"),
+  ).loadOrCreate();
   const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
   // Generic catalog over logical session resources (immutable id, aliases,
   // authoritative workspace cwd, archived flag). Structured channels consume
@@ -781,6 +796,7 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   orchestration = new OrchestrationService({
     now: deps.loggerNow ?? (() => new Date()),
     createId: () => randomUUID(),
+    createAgentEndpointId: () => randomUUID(),
     config,
     loadState: async () => JSON.parse(JSON.stringify(state)) as typeof state,
     saveState: async (nextState) => {
@@ -893,10 +909,37 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     }
   }
   const progressHeartbeatInterval = startProgressHeartbeat(orchestration, config, logger, deps.channel ?? null);
+  const agentEndpointRegistry = new AgentEndpointRegistry({
+    nodeId: messagingNodeIdentity.nodeId,
+    loadState: async () => state,
+  });
+  const localAgentMessageDelivery = new LocalAgentMessageDeliveryAdapter({
+    transport,
+    resolveLogicalSession: async (transportSession) =>
+      await sessions.getPreferredSessionForTransport(transportSession),
+    resolveWorkerSession: (target) => {
+      try {
+        return resolveWorkerRuntimeSession({
+          workerSession: target.workerSession,
+          targetAgent: target.binding.targetAgent,
+          workspace: target.binding.workspace,
+          ...(target.binding.cwd ? { cwd: target.binding.cwd } : {}),
+        }, target.binding);
+      } catch {
+        return null;
+      }
+    },
+  });
+  const agentMessaging = new AgentMessageRouter({
+    registry: agentEndpointRegistry,
+    delivery: localAgentMessageDelivery,
+    logger,
+  });
   const orchestrationEndpoint = createOrchestrationEndpoint(
     paths.orchestrationSocketPath ?? resolveOrchestrationSocketPathFromConfigPath(paths.configPath),
   );
   const orchestrationServer = new OrchestrationServer(orchestrationEndpoint, orchestration, {
+    agentMessaging,
     onSocketHardenError: (error) => {
       void logger.error(
         "orchestration.socket.chmod_failed",

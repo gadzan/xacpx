@@ -6,8 +6,299 @@ import { EventEmitter } from "node:events";
 import { createConnection, type createServer } from "node:net";
 
 import { resolveOrchestrationEndpoint } from "../../../src/orchestration/orchestration-ipc";
+import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 import { OrchestrationServer } from "../../../src/orchestration/orchestration-server";
 import { skipIfLocalIpcUnavailable } from "../../helpers/ipc-capability";
+
+test("agent.list forwards only the trusted sender binding to Agent Messaging", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const listReachable = mock(async () => [
+    {
+      address: { nodeId: "node-local", endpointId: "endpoint-worker" },
+      handle: "agent:node-local:endpoint-worker",
+      node: "node-local",
+      agent: "codex",
+      workspace: "backend",
+      state: "idle" as const,
+      capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+    },
+  ]);
+  const server = new OrchestrationServer(endpoint, makeServerHandlers(), {
+    agentMessaging: {
+      listReachable,
+      send: async () => {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const response = JSON.parse(
+    await server.handleLine(
+      JSON.stringify({
+        id: "req-agent-list",
+        method: "agent.list",
+        params: {
+          coordinatorSession: "backend:main",
+          sourceHandle: "worker:review",
+        },
+      }),
+    ),
+  );
+
+  expect(response).toMatchObject({
+    id: "req-agent-list",
+    ok: true,
+    result: [{ handle: "agent:node-local:endpoint-worker" }],
+  });
+  expect(listReachable).toHaveBeenCalledWith({
+    coordinatorSession: "backend:main",
+    sourceHandle: "worker:review",
+  });
+});
+
+test("agent.send forwards sender binding separately from message intent", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const send = mock(async () => ({
+    messageId: "msg-1",
+    status: "queued" as const,
+    modeUsed: "queue" as const,
+    route: "local" as const,
+  }));
+  const server = new OrchestrationServer(endpoint, makeServerHandlers(), {
+    agentMessaging: {
+      listReachable: async () => [],
+      send,
+    },
+  });
+
+  const response = JSON.parse(
+    await server.handleLine(
+      JSON.stringify({
+        id: "req-agent-send",
+        method: "agent.send",
+        params: {
+          coordinatorSession: "backend:main",
+          sourceHandle: "worker:review",
+          to: "agent:node-local:endpoint-worker",
+          message: "schema updated",
+          mode: "queue",
+          replyTo: "msg-parent",
+        },
+      }),
+    ),
+  );
+
+  expect(response).toEqual({
+    id: "req-agent-send",
+    ok: true,
+    result: {
+      messageId: "msg-1",
+      status: "queued",
+      modeUsed: "queue",
+      route: "local",
+    },
+  });
+  expect(send).toHaveBeenCalledWith(
+    { coordinatorSession: "backend:main", sourceHandle: "worker:review" },
+    {
+      to: "agent:node-local:endpoint-worker",
+      content: "schema updated",
+      mode: "queue",
+      replyTo: "msg-parent",
+    },
+  );
+});
+
+test("agent messaging business errors retain their typed RPC code", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const server = new OrchestrationServer(endpoint, makeServerHandlers(), {
+    agentMessaging: {
+      listReachable: async () => [],
+      send: async () => {
+        throw new AgentMessagingError("TARGET_NOT_REACHABLE", "Target is not reachable.");
+      },
+    },
+  });
+
+  const response = JSON.parse(
+    await server.handleLine(
+      JSON.stringify({
+        id: "req-agent-send-denied",
+        method: "agent.send",
+        params: {
+          coordinatorSession: "backend:main",
+          to: "agent:node-other:endpoint-worker",
+          message: "schema updated",
+        },
+      }),
+    ),
+  );
+
+  expect(response).toEqual({
+    id: "req-agent-send-denied",
+    ok: false,
+    error: {
+      code: "TARGET_NOT_REACHABLE",
+      message: "Target is not reachable.",
+    },
+  });
+});
+
+test("Task RPC keeps mapping unexpected Agent Messaging errors to the existing internal code", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const server = new OrchestrationServer(
+    endpoint,
+    makeServerHandlers({
+      requestDelegate: async () => {
+        throw new AgentMessagingError("TARGET_NOT_REACHABLE", "unexpected domain error");
+      },
+    }),
+  );
+
+  const response = JSON.parse(
+    await server.handleLine(
+      JSON.stringify({
+        id: "req-task-domain-error",
+        method: "delegate.request",
+        params: {
+          sourceHandle: "backend:main",
+          targetAgent: "codex",
+          task: "review",
+        },
+      }),
+    ),
+  );
+
+  expect(response).toEqual({
+    id: "req-task-domain-error",
+    ok: false,
+    error: {
+      code: "ORCHESTRATION_INTERNAL_ERROR",
+      message: "unexpected domain error",
+    },
+  });
+});
+
+test("agent RPC rejects forged identity, scope, and malformed message fields before dispatch", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const listReachable = mock(async () => []);
+  const send = mock(async () => ({ messageId: "msg-1", status: "queued", route: "local" }));
+  const server = new OrchestrationServer(endpoint, makeServerHandlers(), {
+    agentMessaging: { listReachable, send },
+  });
+
+  const requests: Array<{ method: "agent.list" | "agent.send"; params: Record<string, unknown> }> = [
+    { method: "agent.list", params: { coordinatorSession: "backend:main", scope: "all" } },
+    { method: "agent.list", params: { coordinatorSession: "backend:main", from: "agent:forged" } },
+    { method: "agent.list", params: { coordinatorSession: "backend:main", nodeId: "node-forged" } },
+    { method: "agent.list", params: { coordinatorSession: "backend:main", accountId: "account-forged" } },
+    {
+      method: "agent.send",
+      params: {
+        coordinatorSession: "backend:main",
+        to: "agent:node-local:endpoint-worker",
+        message: "schema updated",
+        endpointId: "endpoint-forged",
+      },
+    },
+    {
+      method: "agent.send",
+      params: {
+        coordinatorSession: "backend:main",
+        to: "agent:node-local:endpoint-worker",
+        message: "schema updated",
+        busId: "bus-forged",
+      },
+    },
+    {
+      method: "agent.send",
+      params: {
+        coordinatorSession: "backend:main",
+        to: "agent:node-local:endpoint-worker",
+        message: "schema updated",
+        mode: "realtime",
+      },
+    },
+    {
+      method: "agent.send",
+      params: { coordinatorSession: "backend:main", message: "schema updated" },
+    },
+    {
+      method: "agent.send",
+      params: { coordinatorSession: "backend:main", to: "agent:node-local:endpoint-worker" },
+    },
+  ];
+
+  for (const [index, request] of requests.entries()) {
+    const response = JSON.parse(
+      await server.handleLine(JSON.stringify({ id: `req-agent-invalid-${index}`, ...request })),
+    );
+    expect(response).toMatchObject({
+      id: `req-agent-invalid-${index}`,
+      ok: false,
+      error: { code: "ORCHESTRATION_INVALID_REQUEST" },
+    });
+  }
+
+  expect(listReachable).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+});
+
+test("agent RPC reports internal error when Agent Messaging is not configured", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const server = new OrchestrationServer(endpoint, makeServerHandlers());
+
+  for (const request of [
+    {
+      id: "req-agent-list-unconfigured",
+      method: "agent.list",
+      params: { coordinatorSession: "backend:main" },
+    },
+    {
+      id: "req-agent-send-unconfigured",
+      method: "agent.send",
+      params: {
+        coordinatorSession: "backend:main",
+        to: "agent:node-local:endpoint-worker",
+        message: "schema updated",
+      },
+    },
+  ]) {
+    const response = JSON.parse(await server.handleLine(JSON.stringify(request)));
+    expect(response).toMatchObject({
+      id: request.id,
+      ok: false,
+      error: {
+        code: "ORCHESTRATION_INTERNAL_ERROR",
+        message: "agent messaging is not configured",
+      },
+    });
+  }
+});
+
+test("agent RPC validates required fields before checking whether Agent Messaging is configured", async () => {
+  const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
+  const server = new OrchestrationServer(endpoint, makeServerHandlers());
+
+  for (const request of [
+    { id: "req-agent-list-invalid-unconfigured", method: "agent.list", params: {} },
+    {
+      id: "req-agent-send-invalid-unconfigured",
+      method: "agent.send",
+      params: {
+        coordinatorSession: "backend:main",
+        to: "agent:node-local:endpoint-worker",
+      },
+    },
+  ]) {
+    const response = JSON.parse(await server.handleLine(JSON.stringify(request)));
+    expect(response).toMatchObject({
+      id: request.id,
+      ok: false,
+      error: { code: "ORCHESTRATION_INVALID_REQUEST" },
+    });
+  }
+});
 
 async function sendRequest(endpointPath: string, request: Record<string, unknown>) {
   return await new Promise<Record<string, unknown>>((resolve, reject) => {

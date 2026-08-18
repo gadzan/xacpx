@@ -6,11 +6,46 @@
 
 Core goal: make the "coding agent you are currently using" the coordinator, dispatch subtasks to other agents, and at the same time let each dispatched worker know exactly which directory it should work in.
 
+## Agent Messaging and Task Orchestration
+
+The MCP server exposes two separate collaboration models:
+
+- Use `delegate_request` and the `task_*` tools when another Agent owns a task and should eventually produce a result.
+- Use `agent_list` and `agent_send` when an already-running Agent only needs a peer update and should continue its own workflow.
+
+`agent_list` returns only receive-capable endpoints authorized for the current MCP binding. In the initial local rollout, this means the internal coordinator and workers under the same coordinator; the sender itself is excluded. Handles are opaque—pass the returned `handle` back as `agent_send.to` and do not parse it. Public endpoint data never includes cwd, PID, OS user, raw session handles, socket paths, or provider-native session ids.
+
+`agent_send` is one-way and returns after the target runtime accepts delivery. It never waits for the target model to understand, finish, or reply:
+
+```json
+{
+  "to": "<handle from agent_list>",
+  "message": "The auth schema changed; update the refresh-token branch.",
+  "mode": "auto"
+}
+```
+
+The local queue-first release reports:
+
+```json
+{
+  "messageId": "msg_...",
+  "status": "queued",
+  "modeUsed": "queue",
+  "route": "local"
+}
+```
+
+`auto` and `queue` both use the target acpx session's next-turn queue. `steer` and `interrupt` fail with typed unsupported errors until the formal acpx live-input capability is available; `steer` never silently degrades and `auto` never interrupts. Offline store-and-forward is not part of `agent_send`.
+
+The target sees an escaped `<xacpx-message>` envelope with a server-derived sender handle and message id. If `replyable="true"`, it may reply with a new `agent_send` call and set `replyTo` to the received id. Replies are optional; Agents should not create acknowledgement loops. An external MCP host can send, but standard MCP does not let xacpx inject input back into that host, so external coordinator endpoints are not receive targets and messages from them use `replyable="false"`.
+
 ## One-sentence model
 
 - **MCP host / current agent**: the coordinator, responsible for splitting tasks and reviewing results.
 - **`xacpx mcp-stdio`**: a very thin stdio shim, responsible only for turning MCP tool calls into local RPC against the xacpx daemon.
 - **xacpx daemon**: the one that actually holds the orchestration state, such as coordinators, tasks, and worker bindings.
+- **Agent Message Router**: derives the trusted sender, resolves an authorized endpoint, enforces FIFO/limits, and returns a live-delivery receipt without creating a Task.
 - **worker agent**: a Claude / Codex / opencode session dispatched by `delegate_request`.
 - **`workingDirectory`**: the task-level working directory. It determines where the worker works, not the coordinator identity.
 
@@ -31,7 +66,7 @@ The orchestration IPC endpoint performs no authentication of its own. Access con
 - On macOS / Linux the daemon keeps the runtime dir (`~/.xacpx/runtime`) at `0700` and the unix socket (`orchestration.sock`) at `0600`, so only the owning user (and root) can connect.
 - On Windows the endpoint is a named pipe that relies on the default pipe DACL, which restricts access to the creating user/session.
 
-Consequence: **any process running as your user account can drive your agents** — delegate prompts with an arbitrary working directory, list tasks, and so on. This is the same stance as `ssh-agent` or rootless Docker: same user = trusted, other users = denied by the OS. There is no per-process token or peer-credential check, because a same-user attacker could read any such token anyway. Do not loosen the permissions of `~/.xacpx/runtime`, and do not run the daemon on a shared account.
+Consequence: **any process running as your user account can drive your agents** — delegate prompts with an arbitrary working directory, list tasks, or inject an authorized peer message into a managed session. This is the same stance as `ssh-agent` or rootless Docker: same user = trusted, other users = denied by the OS. There is no per-process token or peer-credential check, because a same-user attacker could read any such token anyway. Do not loosen the permissions of `~/.xacpx/runtime`, and do not run the daemon on a shared account.
 
 ## MCP Tasks progress and input requests
 
@@ -109,11 +144,11 @@ This is intentional: when dispatching a task you must determine exactly where th
 
 The coordinator identity and the worker cwd are two different problems:
 
-| Concept | Role | Includes path |
-| --- | --- | --- |
-| external coordinator identity | Identifies "which MCP host / MCP subprocess is acting as coordinator" | Not by default |
-| `workingDirectory` | Identifies "where the worker dispatched this time will work" | Yes |
-| worker session | Identifies a working session of a given target agent under a given coordinator + cwd | Distinguished by cwd |
+| Concept                       | Role                                                                                 | Includes path        |
+| ----------------------------- | ------------------------------------------------------------------------------------ | -------------------- |
+| external coordinator identity | Identifies "which MCP host / MCP subprocess is acting as coordinator"                | Not by default       |
+| `workingDirectory`            | Identifies "where the worker dispatched this time will work"                         | Yes                  |
+| worker session                | Identifies a working session of a given target agent under a given coordinator + cwd | Distinguished by cwd |
 
 Putting the path into the coordinator identity would cause two problems:
 
@@ -162,10 +197,7 @@ The correct approach: `command` holds only the executable; the script path and a
 {
   "type": "stdio",
   "command": "C:\\Program Files\\nodejs\\node.exe",
-  "args": [
-    "C:\\path\\to\\xacpx\\dist\\cli.js",
-    "mcp-stdio"
-  ]
+  "args": ["C:\\path\\to\\xacpx\\dist\\cli.js", "mcp-stdio"]
 }
 ```
 
@@ -266,6 +298,43 @@ sequenceDiagram
   Mcp-->>Host: status/result
 ```
 
+## Peer-to-Peer Agent Messaging (`agent_list` / `agent_send`)
+
+In addition to task delegation (`delegate_request`), xacpx provides direct Agent-to-Agent Messaging:
+
+- **`agent_list`**: List all discoverable and reachable peer agent endpoints within the authorized messaging scope (local daemon or remote instances via Relay Hub).
+- **`agent_send`**: Send a one-way peer message to an authorized target handle.
+1. **Local Route** (production-enabled in v0.1): When the target endpoint resides on the same daemon node (same coordinator scope), messages are delivered via the local `acpx` prompt queue.
+2. **Relay Route** (protocol scaffolded): Location-independent addressing (`nodeId + endpointId`) and Relay protocol extensions are prepared for multi-daemon federation in the upcoming milestone.
+
+### Example MCP Calls
+
+```json
+// List reachable peer agents
+{
+  "name": "agent_list",
+  "arguments": {}
+}
+```
+
+```json
+// Send a message to a peer agent
+{
+  "name": "agent_send",
+  "arguments": {
+    "to": "agent:node_7f8a:worker_b",
+    "message": "User schema updated: please adjust your validation logic.",
+    "mode": "auto"
+  }
+}
+```
+
+### Key Guardrails
+
+- **One-way delivery**: `agent_send` returns immediately after the target daemon accepts injection/queueing; it does not wait for the target LLM to respond.
+- **Unforgeable identity**: The sender address is derived server-side from the MCP session binding; client input cannot spoof `from`.
+- **Escaped envelope**: Peer messages are wrapped in `<xacpx-message id="..." from="..." replyable="true">` with XML escaping.
+
 ## Common tools
 
 Tools commonly used by external coordinators:
@@ -293,8 +362,18 @@ Parallel tasks are constrained by `orchestration.maxParallelTasksPerAgent` (defa
 ```json
 {
   "tasks": [
-    { "targetAgent": "claude", "task": "审查 PR A", "workingDirectory": "/repo/a", "parallel": true },
-    { "targetAgent": "claude", "task": "审查 PR B", "workingDirectory": "/repo/b", "parallel": true }
+    {
+      "targetAgent": "claude",
+      "task": "审查 PR A",
+      "workingDirectory": "/repo/a",
+      "parallel": true
+    },
+    {
+      "targetAgent": "claude",
+      "task": "审查 PR B",
+      "workingDirectory": "/repo/b",
+      "parallel": true
+    }
   ]
 }
 ```
@@ -305,16 +384,16 @@ Parallel tasks are constrained by `orchestration.maxParallelTasksPerAgent` (defa
 
 When the host uses MCP Tasks, xacpx maps internal orchestration tasks to protocol statuses:
 
-| xacpx task status | MCP task status |
-|---|---|
-| `running` | `working` |
-| `queued` | `working` | the task is waiting for a parallel slot to be released; once a slot is available it is automatically promoted to `running` |
-| `needs_confirmation` | `input_required` |
+| xacpx task status               | MCP task status  |
+| ------------------------------- | ---------------- |
+| `running`                       | `working`        |
+| `queued`                        | `working`        | the task is waiting for a parallel slot to be released; once a slot is available it is automatically promoted to `running` |
+| `needs_confirmation`            | `input_required` |
 | `blocked` / `waiting_for_human` | `input_required` |
-| a task with `reviewPending` | `input_required` |
-| `completed` | `completed` |
-| `failed` | `failed` |
-| `cancelled` | `cancelled` |
+| a task with `reviewPending`     | `input_required` |
+| `completed`                     | `completed`      |
+| `failed`                        | `failed`         |
+| `cancelled`                     | `cancelled`      |
 
 Corresponding protocol methods:
 

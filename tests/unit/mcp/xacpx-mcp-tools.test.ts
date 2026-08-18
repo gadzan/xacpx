@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { buildXacpxMcpToolRegistry } from "../../../src/mcp/xacpx-mcp-tools";
 import { createMemoryTransport } from "../../../src/mcp/xacpx-mcp-transport";
 import type { OrchestrationTaskRecord } from "../../../src/orchestration/orchestration-types";
+import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 import { QuotaDeferredError } from "../../../src/weixin/messaging/quota-errors";
 
 function makeTaskRecord(overrides: Partial<OrchestrationTaskRecord> = {}): OrchestrationTaskRecord {
@@ -24,7 +25,7 @@ function makeTaskRecord(overrides: Partial<OrchestrationTaskRecord> = {}): Orche
   };
 }
 
-test("builds 11 MCP tools and appends blocker-loop actions after the original orchestration tools", async () => {
+test("builds 13 MCP tools and appends messaging tools after orchestration tools", async () => {
   const calls: unknown[] = [];
   const transport = createMemoryTransport(
     async (input) => {
@@ -53,7 +54,7 @@ test("builds 11 MCP tools and appends blocker-loop actions after the original or
     sourceHandle: "backend:worker",
   });
 
-  expect(registry).toHaveLength(11);
+  expect(registry).toHaveLength(13);
   expect(registry.map((tool) => tool.name)).toEqual([
     "delegate_request",
     "delegate_batch",
@@ -66,6 +67,8 @@ test("builds 11 MCP tools and appends blocker-loop actions after the original or
     "coordinator_answer_question",
     "coordinator_request_human_input",
     "coordinator_review_contested_result",
+    "agent_list",
+    "agent_send",
   ]);
 
   const delegateTool = registry.find((tool) => tool.name === "delegate_request");
@@ -713,13 +716,15 @@ test("registry hides human-input package tools when the coordinator is external"
   expect(externalNames).toContain("task_watch");
   expect(externalNames).toContain("coordinator_answer_question");
   expect(externalNames).toContain("coordinator_review_contested_result");
-  expect(externalRegistry).toHaveLength(10);
+  expect(externalNames).toContain("agent_list");
+  expect(externalNames).toContain("agent_send");
+  expect(externalRegistry).toHaveLength(12);
 
   const internalRegistry = buildXacpxMcpToolRegistry({
     transport,
     coordinatorSession: "backend:main",
   });
-  expect(internalRegistry).toHaveLength(11);
+  expect(internalRegistry).toHaveLength(13);
   expect(internalRegistry.map((tool) => tool.name)).toContain("coordinator_request_human_input");
 });
 
@@ -976,4 +981,148 @@ test("delegate_batch forwards per-task parallel and omits it when not provided",
     { method: "delegateRequest", input: { coordinatorSession: "backend:main", targetAgent: "claude", task: "review module A", groupId: "group-1", parallel: true } },
     { method: "delegateRequest", input: { coordinatorSession: "backend:main", targetAgent: "codex", task: "review module B", groupId: "group-1" } },
   ]);
+});
+
+test("agent messaging tools use strict public schemas and inject the bound sender identity", async () => {
+  const calls: unknown[] = [];
+  const agents = [
+    {
+      address: { nodeId: "node-local", endpointId: "endpoint-peer" },
+      handle: "agent:node-local:endpoint-peer",
+      node: "node-local",
+      agent: "codex",
+      workspace: "backend",
+      displayName: "reviewer",
+      state: "running" as const,
+      capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+    },
+  ];
+  const receipt = {
+    messageId: "msg-1",
+    status: "queued" as const,
+    modeUsed: "queue" as const,
+    route: "local" as const,
+  };
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        listAgentEndpoints: async (input) => {
+          calls.push(input);
+          return agents;
+        },
+        sendAgentMessage: async (input) => {
+          calls.push(input);
+          return receipt;
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+    sourceHandle: "backend:worker-a",
+  });
+
+  const listTool = registry.find((tool) => tool.name === "agent_list");
+  const sendTool = registry.find((tool) => tool.name === "agent_send");
+  expect(listTool).toBeDefined();
+  expect(sendTool).toBeDefined();
+  expect(listTool?.inputSchema.safeParse({}).success).toBe(true);
+  expect(listTool?.inputSchema.safeParse({ scope: "all" }).success).toBe(false);
+  expect(
+    sendTool?.inputSchema.safeParse({
+      to: "agent:node-local:endpoint-peer",
+      message: "schema changed",
+      mode: "auto",
+      replyTo: "msg-prior",
+    }).success,
+  ).toBe(true);
+  for (const forbidden of ["from", "coordinatorSession", "sourceHandle"]) {
+    expect(
+      sendTool?.inputSchema.safeParse({
+        to: "agent:node-local:endpoint-peer",
+        message: "schema changed",
+        [forbidden]: "spoofed",
+      }).success,
+    ).toBe(false);
+  }
+
+  const listResult = await listTool?.handler({});
+  const sendResult = await sendTool?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "schema changed",
+    mode: "auto",
+    replyTo: "msg-prior",
+  });
+
+  expect(listResult?.structuredContent).toEqual({ agents });
+  expect(sendResult?.structuredContent).toEqual(receipt);
+  expect(sendResult?.content[0]).toMatchObject({ type: "text" });
+  expect(calls).toEqual([
+    { coordinatorSession: "backend:main", sourceHandle: "backend:worker-a" },
+    {
+      coordinatorSession: "backend:main",
+      sourceHandle: "backend:worker-a",
+      to: "agent:node-local:endpoint-peer",
+      message: "schema changed",
+      mode: "auto",
+      replyTo: "msg-prior",
+    },
+  ]);
+});
+
+test("agent_send preserves typed messaging failures in structured and human-readable results", async () => {
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async () => {
+          throw new AgentMessagingError("TARGET_NOT_REACHABLE", "Target is not reachable.");
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+  });
+
+  const result = await registry.find((tool) => tool.name === "agent_send")?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "schema changed",
+  });
+
+  expect(result).toEqual({
+    content: [{ type: "text", text: "Target is not reachable." }],
+    structuredContent: {
+      error: {
+        code: "TARGET_NOT_REACHABLE",
+        message: "Target is not reachable.",
+      },
+    },
+    isError: true,
+  });
+});
+
+test.each([
+  ["TARGET_NOT_RUNNING", "Target has no active turn."],
+  ["DELIVERY_RACE", "The active turn changed before delivery."],
+] as const)("agent_send preserves %s as a structured messaging failure", async (code, message) => {
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async () => {
+          throw new AgentMessagingError(code, message);
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+  });
+
+  const result = await registry.find((tool) => tool.name === "agent_send")?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "schema changed",
+  });
+
+  expect(result).toEqual({
+    content: [{ type: "text", text: message }],
+    structuredContent: { error: { code, message } },
+    isError: true,
+  });
 });

@@ -89,6 +89,14 @@ export function buildPromptArgs(
   return appendAgentAndTail(prefix, input, tail);
 }
 
+export function buildQueueMessagePromptArgs(
+  input: SessionArgsInput & { queueOwnerTtlSeconds: number | undefined },
+  sessionName: string,
+  text: string,
+): string[] {
+  return buildPromptArgs(input, ["prompt", "-s", sessionName, "--no-wait", text]);
+}
+
 export function buildAgentQueryArgs(
   input: {
     agent: string;

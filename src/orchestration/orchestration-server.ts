@@ -30,10 +30,14 @@ import type {
   ScheduledListFromRouteInput,
 } from "../scheduled/scheduled-route-manage";
 import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
+import type { AgentMessageRouter } from "./agent-message-router";
+import { AgentMessagingError } from "./agent-messaging-error";
 
 class OrchestrationInvalidRequestError extends Error {}
 
 const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
+  "agent.list",
+  "agent.send",
   "coordinator.register_external",
   "delegate.request",
   "task.get",
@@ -62,6 +66,7 @@ interface OrchestrationServerDeps {
   createScheduledTaskFromRoute?: (input: ScheduledCreateFromRouteInput) => Promise<ScheduledTaskRecord>;
   listScheduledTasksFromRoute?: (input: ScheduledListFromRouteInput) => Promise<ScheduledTaskRecord[]>;
   cancelScheduledTaskFromRoute?: (input: ScheduledCancelFromRouteInput) => Promise<{ id: string; cancelled: boolean }>;
+  agentMessaging?: Pick<AgentMessageRouter, "listReachable" | "send">;
 }
 
 export class OrchestrationServer {
@@ -144,10 +149,12 @@ export class OrchestrationServer {
 
   async handleLine(line: string): Promise<string> {
     let requestId = extractRequestId(line);
+    let requestMethod: OrchestrationRpcMethod | undefined;
 
     try {
       const request = parseRequest(line);
       requestId = request.id;
+      requestMethod = request.method;
       const result = await this.dispatch(request.method, request.params);
       return encodeOrchestrationRpcResponse({ id: request.id, ok: true, result });
     } catch (error) {
@@ -158,7 +165,9 @@ export class OrchestrationServer {
           code:
             error instanceof OrchestrationInvalidRequestError
               ? "ORCHESTRATION_INVALID_REQUEST"
-              : "ORCHESTRATION_INTERNAL_ERROR",
+              : isAgentMessagingMethod(requestMethod) && error instanceof AgentMessagingError
+                ? error.code
+                : "ORCHESTRATION_INTERNAL_ERROR",
           message: error instanceof Error ? error.message : String(error),
         },
       });
@@ -174,6 +183,44 @@ export class OrchestrationServer {
 
   private async dispatch(method: OrchestrationRpcMethod, params: Record<string, unknown>): Promise<unknown> {
     switch (method) {
+      case "agent.list": {
+        requireOnlyKeys(params, ["coordinatorSession", "sourceHandle"], "params");
+        const sourceHandle = requireOptionalString(params, "sourceHandle");
+        const binding = {
+          coordinatorSession: requireString(params, "coordinatorSession"),
+          ...(sourceHandle !== undefined ? { sourceHandle } : {}),
+        };
+        const agentMessaging = this.deps.agentMessaging;
+        if (!agentMessaging) {
+          throw new Error("agent messaging is not configured");
+        }
+        return await agentMessaging.listReachable(binding);
+      }
+      case "agent.send": {
+        requireOnlyKeys(
+          params,
+          ["coordinatorSession", "sourceHandle", "to", "message", "mode", "replyTo"],
+          "params",
+        );
+        const sourceHandle = requireOptionalString(params, "sourceHandle");
+        const mode = requireOptionalEnum(params, "mode", ["auto", "steer", "queue", "interrupt"]);
+        const replyTo = requireOptionalString(params, "replyTo");
+        const binding = {
+          coordinatorSession: requireString(params, "coordinatorSession"),
+          ...(sourceHandle !== undefined ? { sourceHandle } : {}),
+        };
+        const input = {
+          to: requireString(params, "to"),
+          content: requireString(params, "message"),
+          ...(mode !== undefined ? { mode } : {}),
+          ...(replyTo !== undefined ? { replyTo } : {}),
+        };
+        const agentMessaging = this.deps.agentMessaging;
+        if (!agentMessaging) {
+          throw new Error("agent messaging is not configured");
+        }
+        return await agentMessaging.send(binding, input);
+      }
       case "coordinator.register_external":
         return await this.handlers.registerExternalCoordinator(this.parseRegisterExternalCoordinatorInput(params));
       case "delegate.request":
@@ -682,4 +729,8 @@ async function listen(server: Server, path: string): Promise<void> {
 
 function isServerNotRunningError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ERR_SERVER_NOT_RUNNING";
+}
+
+function isAgentMessagingMethod(method: OrchestrationRpcMethod | undefined): boolean {
+  return method === "agent.list" || method === "agent.send";
 }

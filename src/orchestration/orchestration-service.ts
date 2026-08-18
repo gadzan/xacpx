@@ -194,6 +194,8 @@ export interface ActiveHumanQuestionPackage {
 export interface OrchestrationServiceDeps {
   now: () => Date;
   createId: () => string;
+  /** Independent identity source so endpoint creation never perturbs task/group id ordering. */
+  createAgentEndpointId?: () => string;
   loadState: () => Promise<AppState>;
   saveState: (state: AppState) => Promise<void>;
   stateMutex?: AsyncMutex;

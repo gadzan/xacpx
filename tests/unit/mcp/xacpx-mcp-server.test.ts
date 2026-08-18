@@ -15,8 +15,9 @@ import {
 } from "../../../src/mcp/xacpx-mcp-server";
 import { createMemoryTransport } from "../../../src/mcp/xacpx-mcp-transport";
 import type { OrchestrationTaskRecord } from "../../../src/orchestration/orchestration-types";
+import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 
-test("lists 11 MCP tools and hides coordinator/source identity from input schemas", async () => {
+test("lists 13 MCP tools and hides coordinator/source identity from input schemas", async () => {
   const transport = createMemoryTransport(
     async () => ({ taskId: "task-1", status: "needs_confirmation" }),
     {
@@ -53,12 +54,14 @@ test("lists 11 MCP tools and hides coordinator/source identity from input schema
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(11);
+    expect(list.tools).toHaveLength(13);
     const delegate = list.tools.find((tool) => tool.name === "delegate_request");
     const workerRaiseQuestion = list.tools.find((tool) => tool.name === "worker_raise_question");
     const coordinatorAnswerQuestion = list.tools.find((tool) => tool.name === "coordinator_answer_question");
     const taskList = list.tools.find((tool) => tool.name === "task_list");
     const taskWatch = list.tools.find((tool) => tool.name === "task_watch");
+    const agentList = list.tools.find((tool) => tool.name === "agent_list");
+    const agentSend = list.tools.find((tool) => tool.name === "agent_send");
     expect(delegate?.inputSchema.properties).not.toHaveProperty("sourceHandle");
     expect(delegate?.inputSchema.properties).not.toHaveProperty("coordinatorSession");
     expect(delegate?.execution?.taskSupport).toBe("optional");
@@ -68,6 +71,10 @@ test("lists 11 MCP tools and hides coordinator/source identity from input schema
     expect(taskList?.inputSchema.properties?.status?.enum).toContain("blocked");
     expect(taskList?.inputSchema.properties?.status?.enum).toContain("waiting_for_human");
     expect(taskWatch?.inputSchema.properties).not.toHaveProperty("coordinatorSession");
+    expect(agentList?.inputSchema.properties).toEqual({});
+    expect(agentSend?.inputSchema.properties).not.toHaveProperty("from");
+    expect(agentSend?.inputSchema.properties).not.toHaveProperty("coordinatorSession");
+    expect(agentSend?.inputSchema.properties).not.toHaveProperty("sourceHandle");
   } finally {
     await client.close();
     await server.close();
@@ -103,7 +110,7 @@ test("lists scheduled_create only when internal session tools are enabled", asyn
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(14);
+    expect(list.tools).toHaveLength(16);
     expect(list.tools.map((tool) => tool.name)).toContain("scheduled_list");
     expect(list.tools.map((tool) => tool.name)).toContain("scheduled_cancel");
     const scheduledCreate = list.tools.find((tool) => tool.name === "scheduled_create");
@@ -539,7 +546,7 @@ test("hides coordinator human-input package tools when resolveIdentity reports a
 
     const list = await client.listTools();
     const names = list.tools.map((tool) => tool.name);
-    expect(list.tools).toHaveLength(10);
+    expect(list.tools).toHaveLength(12);
     expect(names).not.toContain("coordinator_request_human_input");
     expect(names).toContain("coordinator_answer_question");
     expect(names).toContain("coordinator_review_contested_result");
@@ -575,7 +582,7 @@ test("infers MCP identity from client roots before listing tools", async () => {
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(11);
+    expect(list.tools).toHaveLength(13);
     expect(resolved).toEqual([
       {
         clientName: "Claude Code",
@@ -607,7 +614,7 @@ test("uses resolveIdentity when both static and lazy MCP identities are configur
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(11);
+    expect(list.tools).toHaveLength(13);
     expect(resolved).toEqual([{ clientName: "Claude Code" }]);
   } finally {
     await client.close();
@@ -642,6 +649,11 @@ test("exposes the orchestration lifecycle as server instructions to the client",
     expect(instructions ?? "").toContain("Never report a result you did not read from task_get");
     // worker_raise_question is worker-side only — this must be explicit.
     expect(instructions ?? "").toContain("worker_raise_question is worker-side only");
+    expect(instructions ?? "").toContain("<xacpx-message>");
+    expect(instructions ?? "").toContain("provided from handle");
+    expect(instructions ?? "").toContain("replyTo");
+    expect(instructions ?? "").toContain("A reply is optional");
+    expect(instructions ?? "").toContain("Do not echo pure acknowledgements");
   } finally {
     await client.close();
     await server.close();
@@ -675,8 +687,8 @@ test("memoizes in-flight lazy MCP identity resolution across concurrent first re
     releaseResolve();
 
     const [first, second] = await Promise.all([firstList, secondList]);
-    expect(first.tools).toHaveLength(11);
-    expect(second.tools).toHaveLength(11);
+    expect(first.tools).toHaveLength(13);
+    expect(second.tools).toHaveLength(13);
     expect(resolveCalls).toBe(1);
   } finally {
     await client.close();
@@ -880,6 +892,140 @@ test("delegates through the MCP server and rejects spoofed sourceHandle params",
         },
       }),
     ).rejects.toThrow(/sourceHandle|unrecognized/i);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("agent messaging calls return delivery ACKs and use the server-bound sender", async () => {
+  const calls: unknown[] = [];
+  let targetModelSettled = false;
+  const targetModel = new Promise<void>(() => undefined).finally(() => {
+    targetModelSettled = true;
+  });
+  const agents = [
+    {
+      address: { nodeId: "node-local", endpointId: "endpoint-peer" },
+      handle: "agent:node-local:endpoint-peer",
+      node: "node-local",
+      agent: "codex",
+      state: "running" as const,
+      capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+    },
+  ];
+  const receipt = {
+    messageId: "msg-1",
+    status: "queued" as const,
+    modeUsed: "queue" as const,
+    route: "local" as const,
+  };
+  const server = createXacpxMcpServer({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        listAgentEndpoints: async (input) => {
+          calls.push(input);
+          return agents;
+        },
+        sendAgentMessage: async (input) => {
+          calls.push(input);
+          void targetModel;
+          return receipt;
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+    sourceHandle: "backend:worker-a",
+  });
+  const client = new Client({ name: "weacpx-test-client", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const listResult = await client.callTool({ name: "agent_list", arguments: {} });
+    const sendResult = await client.callTool({
+      name: "agent_send",
+      arguments: {
+        to: "agent:node-local:endpoint-peer",
+        message: "schema changed",
+        mode: "auto",
+        replyTo: "msg-prior",
+      },
+    });
+
+    expect(listResult.structuredContent).toEqual({ agents });
+    expect(sendResult.structuredContent).toEqual(receipt);
+    expect(targetModelSettled).toBe(false);
+    expect(calls).toEqual([
+      { coordinatorSession: "backend:main", sourceHandle: "backend:worker-a" },
+      {
+        coordinatorSession: "backend:main",
+        sourceHandle: "backend:worker-a",
+        to: "agent:node-local:endpoint-peer",
+        message: "schema changed",
+        mode: "auto",
+        replyTo: "msg-prior",
+      },
+    ]);
+
+    await expect(
+      client.callTool({
+        name: "agent_send",
+        arguments: {
+          to: "agent:node-local:endpoint-peer",
+          message: "schema changed",
+          from: "spoofed",
+          coordinatorSession: "spoofed",
+          sourceHandle: "spoofed",
+        },
+      }),
+    ).rejects.toThrow(/from|coordinatorSession|sourceHandle|unrecognized/i);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("agent_send exposes typed messaging failures through MCP structured content", async () => {
+  const server = createXacpxMcpServer({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async () => {
+          throw new AgentMessagingError("TARGET_NOT_REACHABLE", "Target is not reachable.");
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+  });
+  const client = new Client({ name: "weacpx-test-client", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const result = await client.callTool({
+      name: "agent_send",
+      arguments: {
+        to: "agent:node-local:endpoint-peer",
+        message: "schema changed",
+      },
+    });
+
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: "Target is not reachable." }],
+      structuredContent: {
+        error: {
+          code: "TARGET_NOT_REACHABLE",
+          message: "Target is not reachable.",
+        },
+      },
+      isError: true,
+    });
   } finally {
     await client.close();
     await server.close();

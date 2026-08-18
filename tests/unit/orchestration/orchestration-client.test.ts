@@ -3,7 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { getWatchRequestTimeoutMs, OrchestrationClient } from "../../../src/orchestration/orchestration-client";
+import {
+  getWatchRequestTimeoutMs,
+  OrchestrationClient,
+  OrchestrationClientError,
+} from "../../../src/orchestration/orchestration-client";
+import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 import { resolveOrchestrationEndpoint } from "../../../src/orchestration/orchestration-ipc";
 import { OrchestrationServer } from "../../../src/orchestration/orchestration-server";
 import { skipIfLocalIpcUnavailable } from "../../helpers/ipc-capability";
@@ -12,6 +17,151 @@ test("task watch RPC timeout follows one minute default and twenty minute cap", 
   expect(getWatchRequestTimeoutMs(undefined, 30_000)).toBe(65_000);
   expect(getWatchRequestTimeoutMs(1_200_000, 30_000)).toBe(1_205_000);
   expect(getWatchRequestTimeoutMs(9_999_999, 30_000)).toBe(1_205_000);
+});
+
+test("agent client methods forward trusted binding and message fields", async () => {
+  if (await skipIfLocalIpcUnavailable("orchestration-client socket integration tests")) return;
+
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-orch-agent-client-"));
+  const endpoint = resolveOrchestrationEndpoint(dir);
+  const listInputs: unknown[] = [];
+  const sendInputs: unknown[] = [];
+  const server = new OrchestrationServer(
+    endpoint,
+    {
+      requestDelegate: async () => ({ taskId: "task-1", status: "needs_confirmation" }),
+      getTask: async () => null,
+      listTasks: async () => [],
+      approveTask: async (input) => ({ taskId: input.taskId }) as never,
+      cancelTask: async (input) => ({ taskId: input.taskId }) as never,
+      recordWorkerReply: async () => ({ taskId: "task-1" }) as never,
+    },
+    {
+      agentMessaging: {
+        listReachable: async (binding) => {
+          listInputs.push(binding);
+          return [
+            {
+              address: { nodeId: "node-local", endpointId: "endpoint-worker" },
+              handle: "agent:node-local:endpoint-worker",
+              node: "node-local",
+              agent: "codex",
+              state: "idle",
+              capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+            },
+          ];
+        },
+        send: async (binding, input) => {
+          sendInputs.push({ binding, input });
+          return {
+            messageId: "msg-1",
+            status: "queued",
+            modeUsed: "queue",
+            route: "local",
+          };
+        },
+      },
+    },
+  );
+  const client = new OrchestrationClient(endpoint, { createId: () => "req-agent" });
+
+  try {
+    await server.start();
+
+    await expect(
+      client.agentList({ coordinatorSession: "backend:main", sourceHandle: "worker:review" }),
+    ).resolves.toEqual([
+      {
+        address: { nodeId: "node-local", endpointId: "endpoint-worker" },
+        handle: "agent:node-local:endpoint-worker",
+        node: "node-local",
+        agent: "codex",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+      },
+    ]);
+    await expect(
+      client.agentSend({
+        coordinatorSession: "backend:main",
+        sourceHandle: "worker:review",
+        to: "agent:node-local:endpoint-worker",
+        message: "schema updated",
+        mode: "queue",
+        replyTo: "msg-parent",
+      }),
+    ).resolves.toEqual({
+      messageId: "msg-1",
+      status: "queued",
+      modeUsed: "queue",
+      route: "local",
+    });
+
+    expect(listInputs).toEqual([{ coordinatorSession: "backend:main", sourceHandle: "worker:review" }]);
+    expect(sendInputs).toEqual([
+      {
+        binding: { coordinatorSession: "backend:main", sourceHandle: "worker:review" },
+        input: {
+          to: "agent:node-local:endpoint-worker",
+          content: "schema updated",
+          mode: "queue",
+          replyTo: "msg-parent",
+        },
+      },
+    ]);
+  } finally {
+    await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("client preserves Agent Messaging error codes", async () => {
+  if (await skipIfLocalIpcUnavailable("orchestration-client socket integration tests")) return;
+
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-orch-agent-error-"));
+  const endpoint = resolveOrchestrationEndpoint(dir);
+  const server = new OrchestrationServer(
+    endpoint,
+    {
+      requestDelegate: async () => ({ taskId: "task-1", status: "needs_confirmation" }),
+      getTask: async () => null,
+      listTasks: async () => [],
+      approveTask: async (input) => ({ taskId: input.taskId }) as never,
+      cancelTask: async (input) => ({ taskId: input.taskId }) as never,
+      recordWorkerReply: async () => ({ taskId: "task-1" }) as never,
+    },
+    {
+      agentMessaging: {
+        listReachable: async () => [],
+        send: async () => {
+          throw new AgentMessagingError("TARGET_NOT_REACHABLE", "Target is not reachable.");
+        },
+      },
+    },
+  );
+  const client = new OrchestrationClient(endpoint, { createId: () => "req-agent-error" });
+
+  try {
+    await server.start();
+    let received: unknown;
+    try {
+      await client.agentSend({
+        coordinatorSession: "backend:main",
+        to: "agent:node-other:endpoint-worker",
+        message: "schema updated",
+      });
+    } catch (error) {
+      received = error;
+    }
+
+    expect(received).toBeInstanceOf(OrchestrationClientError);
+    expect(received).toMatchObject({
+      code: "TARGET_NOT_REACHABLE",
+      message: "Target is not reachable.",
+    });
+  } finally {
+    await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("sends orchestration RPC requests through the client", async () => {

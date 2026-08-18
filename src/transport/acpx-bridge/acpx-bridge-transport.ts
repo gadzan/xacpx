@@ -7,6 +7,8 @@ import type {
   PromptOptions,
   ReplyQuotaContext,
   ResolvedSession,
+  SessionMessageInput,
+  SessionMessageReceipt,
   SessionTransport,
   SessionEffortState,
 } from "../types";
@@ -224,6 +226,19 @@ export class AcpxBridgeTransport implements SessionTransport {
       throw commandsError;
     }
     return result;
+  }
+
+  async injectMessage(
+    session: ResolvedSession,
+    input: SessionMessageInput,
+  ): Promise<SessionMessageReceipt> {
+    return await this.client.request<SessionMessageReceipt>("injectMessage", {
+      ...this.toParams(session),
+      sessionKey: session.alias,
+      text: input.text,
+      messageId: input.messageId,
+      mode: input.mode,
+    });
   }
 
   async setMode(session: ResolvedSession, modeId: string): Promise<void> {

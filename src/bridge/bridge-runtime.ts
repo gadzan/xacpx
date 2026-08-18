@@ -11,7 +11,7 @@ import {
 } from "../adapters/claude-settings-policy";
 import { resolveSpawnCommand } from "../process/spawn-command";
 import { terminateProcessTree } from "../process/terminate-process-tree";
-import { getPromptText } from "../transport/prompt-output";
+import { getPromptText, normalizeCommandError } from "../transport/prompt-output";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import { createStructuredPromptFile } from "../transport/prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../transport/streaming-prompt";
@@ -45,12 +45,14 @@ import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import {
   buildSessionArgs as sharedBuildSessionArgs,
   buildPromptArgs as sharedBuildPromptArgs,
+  buildQueueMessagePromptArgs as sharedBuildQueueMessagePromptArgs,
   isMissingAcpxSessionError,
   parseAcpxSessionRecordId,
   DEFAULT_PERMISSION_MODE,
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
+import { MessageInjectionError } from "../transport/message-injection";
 
 type BridgePromptStreamEvent =
   | { type: "prompt.segment"; text: string }
@@ -598,6 +600,59 @@ export class BridgeRuntime {
         // Prompt outcome is more important than best-effort temp file cleanup.
       }
     }
+  }
+
+  async injectMessage(input: BridgeSessionInput & {
+    text: string;
+    mode: "auto" | "steer" | "queue" | "interrupt";
+    messageId: string;
+  }): Promise<{ status: "queued"; modeUsed: "queue" }> {
+    if (input.mode === "steer") {
+      throw new MessageInjectionError(
+        "TARGET_NOT_STEERABLE",
+        "The target does not support same-turn steering.",
+      );
+    }
+    if (input.mode === "interrupt") {
+      throw new MessageInjectionError(
+        "TARGET_NOT_INTERRUPTIBLE",
+        "The target does not support interrupt delivery.",
+      );
+    }
+
+    await this.syncPersistedSessionEffort(input);
+    await this.launchMcpQueueOwnerIfNeeded(input);
+    const spawnSpec = resolveSpawnCommand(this.command, sharedBuildQueueMessagePromptArgs(
+      {
+        agent: input.agent,
+        agentCommand: input.agentCommand,
+        acpxAgent: input.acpxAgent,
+        rawCommand: input.rawCommand,
+        cwd: input.cwd,
+        model: input.model,
+        permission: this.permissionInput(),
+        queueOwnerTtlSeconds: this.options.queueOwnerTtlSeconds,
+      },
+      input.name,
+      input.text,
+    ));
+    const result = await this.run(
+      spawnSpec.command,
+      spawnSpec.args,
+      this.withSpawnEnvironment(input, {
+        timeoutMs: this.managementCommandTimeoutMs(),
+        stage: "inject-message",
+      }),
+    );
+    if (result.code !== 0) {
+      const detail =
+        normalizeCommandError(result) ??
+        (result.stderr ||
+          result.stdout ||
+          `inject-message failed with exit code ${result.code}`);
+      throw new Error(detail);
+    }
+    return { status: "queued", modeUsed: "queue" };
   }
 
   /**

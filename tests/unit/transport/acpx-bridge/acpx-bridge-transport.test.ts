@@ -110,6 +110,28 @@ test("proxies prompt through the bridge client", async () => {
   await expect(transport.prompt(session, "hello")).resolves.toEqual({ text: "ok" });
 });
 
+test("proxies queue message injection through the bridge client", async () => {
+  const request = mock(async () => ({ status: "queued", modeUsed: "queue" }));
+  const transport = new AcpxBridgeTransport({ request });
+
+  await expect(
+    transport.injectMessage?.(mcpSession, {
+      text: "<xacpx-message id=\"msg_1\">hello</xacpx-message>",
+      messageId: "msg_1",
+      mode: "queue",
+    }),
+  ).resolves.toEqual({ status: "queued", modeUsed: "queue" });
+
+  expect(request).toHaveBeenCalledWith("injectMessage", expect.objectContaining({
+    name: "backend:api-fix",
+    mcpCoordinatorSession: "backend:main",
+    mcpSourceHandle: "backend:claude:backend:main",
+    text: "<xacpx-message id=\"msg_1\">hello</xacpx-message>",
+    messageId: "msg_1",
+    mode: "queue",
+  }));
+});
+
 test("passes prompt media through to the bridge client", async () => {
   const request = mock(async () => ({ text: "ok" }));
   const transport = new AcpxBridgeTransport({
