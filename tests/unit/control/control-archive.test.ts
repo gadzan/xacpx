@@ -5,7 +5,9 @@ import {
   createControlEventBus,
   type ControlEvent,
 } from "../../../src/control/control-event-bus";
+import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 
+registerKnownChannelId("relay");
 function makeDeps() {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
