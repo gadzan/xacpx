@@ -408,6 +408,7 @@ export interface AgentMessageRoutePayload {
 | Error Code | Layer | Retryable | Cause | Agent Remediation |
 |---|---|---|---|---|
 | `REPLY_CONTEXT_UNAVAILABLE` | Router (Send) | No | `replyTo` context expired, unknown, or lost due to daemon restart. | Re-send as a fresh root message without `replyTo`. |
+| `REPLY_TARGET_MISMATCH` | Router (Send) | No | A reply was directed to an endpoint other than the parent message's author. | Send replies only back to the peer that authored the parent message. |
 | `REPLY_NOT_SUPPORTED` | Router (Send) | No | Target endpoint does not advertise `capabilities.conversation: true`. | Send a root message without `replyTo`. |
 | `CONVERSATION_LIMIT_REACHED` | Router (Send) | No | Thread depth (>6) or volume (>=12) exceeded. | Stop replying in this thread; start fresh task. |
 | `DUPLICATE_MESSAGE` | Router (Send) | No | Identical content sent to same target within 30s. | Do not repeat identical messages. |

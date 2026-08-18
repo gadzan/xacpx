@@ -370,7 +370,11 @@ test("Scenario B: Multi-step reply thread shares conversationId and increments d
       return endpointsA.some((e) => e.address.nodeId === "node_B");
     });
 
-    const targetB = endpointsA.find((e) => e.address.nodeId === "node_B")!;
+    const targetB = endpointsA.find(
+      (e) =>
+        e.address.nodeId === "node_B" &&
+        e.address.endpointId === "worker_ep_node_B",
+    )!;
     const bindingA = {
       coordinatorSession: "coordinator",
       sourceHandle: "worker1",
@@ -390,14 +394,17 @@ test("Scenario B: Multi-step reply thread shares conversationId and increments d
 
     // Step 2: B sends genuine blocking question reply msg_2 (replyTo = msg_1)
     let endpointsB = await nodeB.router.listReachable(bindingB);
-    const targetA = endpointsB.find((e) => e.address.nodeId === "node_A")!;
+    const targetA = endpointsB.find(
+      (e) =>
+        e.address.nodeId === "node_A" &&
+        e.address.endpointId === "worker_ep_node_A",
+    )!;
 
     const r2 = await nodeB.router.send(bindingB, {
       to: targetA.handle,
       content: "Do we still keep legacy_id for backward compatibility?",
       replyTo: r1.messageId,
     });
-
     expect(r2.status).toBe("queued");
     await waitUntil(() => nodeA.injectedPrompts.length === 1);
 
@@ -494,44 +501,51 @@ test("Scenario D: Hard limit on conversation depth and volume stops runaway loop
   });
 
   try {
-    const endpoints = await nodeA.router.listReachable({
-      coordinatorSession: "coordinator",
-      sourceHandle: "worker1",
-    });
-    const target = endpoints[0]!;
-    const binding = {
+    const bindingWorker = {
       coordinatorSession: "coordinator",
       sourceHandle: "worker1",
     };
+    const bindingCoord = {
+      coordinatorSession: "coordinator",
+    };
+    const endpointsForWorker = await nodeA.router.listReachable(bindingWorker);
+    const targetCoord = endpointsForWorker.find((e) =>
+      e.displayName?.includes("Coordinator"),
+    )!;
 
-    // depth 0
-    const m1 = await nodeA.router.send(binding, {
-      to: target.handle,
+    const endpointsForCoord = await nodeA.router.listReachable(bindingCoord);
+    const targetWorker = endpointsForCoord.find((e) =>
+      e.address.endpointId.startsWith("worker_ep_"),
+    )!;
+
+    // depth 0: Worker -> Coordinator
+    const m1 = await nodeA.router.send(bindingWorker, {
+      to: targetCoord.handle,
       content: "step 1",
     });
-    // depth 1
-    const m2 = await nodeA.router.send(binding, {
-      to: target.handle,
+    // depth 1: Coordinator -> Worker
+    const m2 = await nodeA.router.send(bindingCoord, {
+      to: targetWorker.handle,
       content: "step 2",
       replyTo: m1.messageId,
     });
-    // depth 2
-    const m3 = await nodeA.router.send(binding, {
-      to: target.handle,
+    // depth 2: Worker -> Coordinator
+    const m3 = await nodeA.router.send(bindingWorker, {
+      to: targetCoord.handle,
       content: "step 3",
       replyTo: m2.messageId,
     });
-    // depth 3
-    const m4 = await nodeA.router.send(binding, {
-      to: target.handle,
+    // depth 3: Coordinator -> Worker
+    const m4 = await nodeA.router.send(bindingCoord, {
+      to: targetWorker.handle,
       content: "step 4",
       replyTo: m3.messageId,
     });
 
     // depth 4 -> Exceeds maxConversationDepth (3)
     await expect(
-      nodeA.router.send(binding, {
-        to: target.handle,
+      nodeA.router.send(bindingWorker, {
+        to: targetCoord.handle,
         content: "step 5",
         replyTo: m4.messageId,
       }),

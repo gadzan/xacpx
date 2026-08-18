@@ -55,6 +55,13 @@ function makeRouter(
     workspace: "project",
     targetAgent: "gemini",
   };
+  state.orchestration.workerBindings.workerC = {
+    sourceHandle: "workerC",
+    agentEndpointId: "endpoint_worker-c",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "codex",
+  };
   state.orchestration.workerBindings.externalWorker = {
     sourceHandle: "externalWorker",
     agentEndpointId: "endpoint_external-worker",
@@ -106,6 +113,7 @@ test("lists only the current sender's reachable peer endpoints", async () => {
   expect(endpoints.map((endpoint) => endpoint.address.endpointId)).toEqual([
     "22222222-2222-4222-8222-222222222222",
     "endpoint_worker-b",
+    "endpoint_worker-c",
   ]);
 });
 
@@ -737,17 +745,6 @@ test("maps an unknown transport failure to a safe delivery error", async () => {
 test("marks messages from a non-receive-capable external sender as not replyable", async () => {
   const { router, deliveries } = makeRouter();
 
-  // First deliver an inbound message to seed parent context
-  await router.deliverInbound({
-    sourceNodeId: "node_other",
-    sourceEndpointId: "ep_other",
-    targetEndpointId: "endpoint_external-worker",
-    messageId: "msg_parent",
-    content: "seed context",
-    requestedMode: "auto",
-    replyable: true,
-  });
-
   await router.send(
     {
       coordinatorSession: "external-coordinator",
@@ -756,13 +753,10 @@ test("marks messages from a non-receive-capable external sender as not replyable
     {
       to: encodeAgentHandle({ nodeId, endpointId: "endpoint_external-worker" }),
       content: "external notice",
-      replyTo: "msg_parent",
     },
   );
 
-  expect(deliveries[1]?.renderedText).toContain('replyable="false"');
-  expect(deliveries[1]?.renderedText).toContain('reply-to="msg_parent"');
-  expect(deliveries[1]?.message.replyTo).toBe("msg_parent");
+  expect(deliveries[0]?.renderedText).toContain('replyable="false"');
 });
 
 test("emits a safe structured delivery log without message content", async () => {
@@ -901,6 +895,73 @@ test("rejects reply when target endpoint does not support conversation (REPLY_NO
   ).rejects.toMatchObject({
     code: "REPLY_NOT_SUPPORTED",
   });
+});
+
+test("rejects reply when target peer does not match parent sender (REPLY_TARGET_MISMATCH)", async () => {
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    deliver: async () => {
+      deliveryCount += 1;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+
+  const bindingA = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const bindingB = { coordinatorSession: "coordinator", sourceHandle: "workerB" };
+  const toB = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const toC = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-c" });
+
+  // A -> B : msg_1
+  const r1 = await router.send(bindingA, { to: toB, content: "hello B" });
+  expect(deliveryCount).toBe(1);
+
+  // B -> C with replyTo = msg_1 -> must throw REPLY_TARGET_MISMATCH
+  await expect(
+    router.send(bindingB, {
+      to: toC,
+      content: "hijacking thread to C",
+      replyTo: r1.messageId,
+    }),
+  ).rejects.toMatchObject({
+    code: "REPLY_TARGET_MISMATCH",
+  });
+
+  // Delivery count must NOT increment for C, conversation unchanged
+  expect(deliveryCount).toBe(1);
+});
+
+test("suppresses duplicate content across interleaved messages within 30s window", async () => {
+  let nextId = 0;
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    createId: () => `msg-${++nextId}`,
+    deliver: async () => {
+      deliveryCount += 1;
+      return { status: "queued", modeUsed: "queue" };
+    },
+    limits: { duplicateContentWindowMs: 30_000 },
+  });
+
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  // t=0: A -> B: X (accepted)
+  await router.send(binding, { to, content: "schema changed" });
+  expect(deliveryCount).toBe(1);
+
+  // t=5: A -> B: Y (accepted)
+  await router.send(binding, { to, content: "check tests" });
+  expect(deliveryCount).toBe(2);
+
+  // t=10: A -> B: X (within 30s) -> DUPLICATE_MESSAGE
+  await expect(
+    router.send(binding, { to, content: "schema changed" }),
+  ).rejects.toMatchObject({
+    code: "DUPLICATE_MESSAGE",
+  });
+
+  // Delivery count must remain 2
+  expect(deliveryCount).toBe(2);
 });
 
 test("rejects duplicate content within duplicate suppression window (DUPLICATE_MESSAGE)", async () => {

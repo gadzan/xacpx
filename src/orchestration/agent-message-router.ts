@@ -103,10 +103,7 @@ export class AgentMessageRouter {
   >();
   private readonly messageContexts = new Map<string, MessageContext>();
   private readonly conversationMessageCounts = new Map<string, number>();
-  private readonly recentDuplicateContent = new Map<
-    string,
-    { hash: string; expiresAt: number }
-  >();
+  private readonly recentDuplicateContent = new Map<string, number>();
   private readonly traceRingBuffer: AgentMessageTraceRecord[] = [];
   constructor(
     private readonly deps: {
@@ -202,6 +199,15 @@ export class AgentMessageRouter {
           throw new AgentMessagingError(
             "REPLY_CONTEXT_UNAVAILABLE",
             "The reply correlation id is unknown, expired, or was lost due to daemon restart. Please start a new root message.",
+          );
+        }
+        if (
+          !sameAddress(sender.address, parentContext.to) ||
+          !sameAddress(target.endpoint.address, parentContext.from)
+        ) {
+          throw new AgentMessagingError(
+            "REPLY_TARGET_MISMATCH",
+            "A reply must be sent back to the peer that sent the parent message.",
           );
         }
         conversationId = parentContext.conversationId;
@@ -799,8 +805,9 @@ export class AgentMessageRouter {
     now: number,
   ): void {
     const windowMs = this.deps.limits?.duplicateContentWindowMs ?? 30_000;
-    const existing = this.recentDuplicateContent.get(pairKey);
-    if (existing && existing.hash === hash && existing.expiresAt > now) {
+    if (windowMs <= 0) return;
+    const expiresAt = this.recentDuplicateContent.get(pairKey + ":" + hash);
+    if (expiresAt !== undefined && expiresAt > now) {
       throw new AgentMessagingError(
         "DUPLICATE_MESSAGE",
         "Identical message content was already sent to this peer within the duplicate suppression window.",
@@ -814,15 +821,28 @@ export class AgentMessageRouter {
     now: number,
   ): void {
     const windowMs = this.deps.limits?.duplicateContentWindowMs ?? 30_000;
-    this.recentDuplicateContent.set(pairKey, {
-      hash,
-      expiresAt: now + windowMs,
-    });
+    if (windowMs <= 0) return;
+    const maxEntries = this.deps.limits?.contextCache?.maxEntries ?? 2_048;
+    for (const [key, expiresAt] of this.recentDuplicateContent) {
+      if (expiresAt <= now) this.recentDuplicateContent.delete(key);
+    }
+    while (this.recentDuplicateContent.size >= maxEntries) {
+      const oldest = this.recentDuplicateContent.keys().next().value;
+      if (oldest === undefined) break;
+      this.recentDuplicateContent.delete(oldest);
+    }
+    this.recentDuplicateContent.set(pairKey + ":" + hash, now + windowMs);
   }
 }
-
 function addressKey(address: { nodeId: string; endpointId: string }): string {
   return address.nodeId + ":" + address.endpointId;
+}
+
+function sameAddress(
+  left: { nodeId: string; endpointId: string },
+  right: { nodeId: string; endpointId: string },
+): boolean {
+  return left.nodeId === right.nodeId && left.endpointId === right.endpointId;
 }
 
 /** Canonical identity of an inbound delivery attempt: two deliveries with the
