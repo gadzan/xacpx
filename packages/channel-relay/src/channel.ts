@@ -97,6 +97,12 @@ export interface RelayChannelDeps {
   /** Override terminal registry directory (tests). Default: ~/.xacpx/relay */
   terminalRegistryDir?: string;
   /**
+   * Trailing debounce window for the FULL endpoint directory sync pushed to the
+   * hub after sessions/worker bindings change. Defaults to 250ms; tests pass a
+   * smaller value (or 0) to shorten waits.
+   */
+  endpointSyncDebounceMs?: number;
+  /**
    * Driver factory for tests. Production resolves the Rust sidecar via
    * `createProductionTerminalDriver` — never falls back to InMemory.
    */
@@ -118,6 +124,7 @@ export class RelayChannel implements MessageChannelRuntime {
   private terminalSupervisor: RmuxSidecarSupervisor | null = null;
   private startLogger: ChannelStartInput["logger"] | undefined;
   private readonly pendingRetirements = new Set<Promise<void>>();
+  private endpointSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     options: Record<string, unknown> | undefined,
@@ -259,31 +266,9 @@ export class RelayChannel implements MessageChannelRuntime {
         client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
           if (!error) mirror.pruneStateMirror(liveAliases, aliases);
         });
-        if (
-          "getPublishedAgentEndpoints" in control &&
-          typeof (
-            control as unknown as {
-              getPublishedAgentEndpoints: () => unknown[] | Promise<unknown[]>;
-            }
-          ).getPublishedAgentEndpoints === "function"
-        ) {
-          Promise.resolve(
-            (
-              control as unknown as {
-                getPublishedAgentEndpoints: () =>
-                  unknown[] | Promise<unknown[]>;
-              }
-            ).getPublishedAgentEndpoints(),
-          )
-            .then((endpoints) => {
-              if (Array.isArray(endpoints)) {
-                client.sendEvent(MSG.instanceAgentEndpointsSync, {
-                  endpoints,
-                });
-              }
-            })
-            .catch(() => {});
-        }
+        // Full directory sync on (re)auth: the hub rebuilds this instance's
+        // presence from the authoritative snapshot.
+        this.syncAgentEndpointsNow();
       },
     });
 
@@ -316,6 +301,17 @@ export class RelayChannel implements MessageChannelRuntime {
             }
           : payload;
       client.sendEvent(type, forwardedPayload);
+      // Sessions or orchestration (worker bindings) changed → the published
+      // endpoint directory may have changed. Debounce and push the FULL
+      // snapshot; the hub replaces its copy and rebroadcasts to peers.
+      const eventType = (payload as { event?: { type?: string } } | undefined)
+        ?.event?.type;
+      if (
+        eventType === "sessions-changed" ||
+        eventType === "orchestration-changed"
+      ) {
+        this.scheduleEndpointSync();
+      }
     });
     client.start(input.abortSignal);
 
@@ -342,6 +338,10 @@ export class RelayChannel implements MessageChannelRuntime {
   async stop(reason: ChannelStopReason = "shutdown"): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    if (this.endpointSyncTimer) {
+      clearTimeout(this.endpointSyncTimer);
+      this.endpointSyncTimer = null;
+    }
     await this.detachCatalogAndDrainRetirements();
 
     if (this.terminal) {
@@ -643,5 +643,48 @@ export class RelayChannel implements MessageChannelRuntime {
     if (this.client && typeof this.client.sendEvent === "function") {
       this.client.sendEvent(MSG.instanceAgentEndpointsSync, { endpoints });
     }
+  }
+
+  /** Trailing-debounce the FULL directory sync after endpoint-affecting control
+   *  events (sessions/worker bindings changed). Multiple mutations in a burst
+   *  collapse into one snapshot push. */
+  private scheduleEndpointSync(): void {
+    if (this.endpointSyncTimer) clearTimeout(this.endpointSyncTimer);
+    this.endpointSyncTimer = setTimeout(() => {
+      this.endpointSyncTimer = null;
+      this.syncAgentEndpointsNow();
+    }, this.deps.endpointSyncDebounceMs ?? 250);
+  }
+
+  /** Read the authoritative local endpoint directory from the control facade and
+   *  push it to the hub as a full snapshot (replace semantics). Best-effort. */
+  private syncAgentEndpointsNow(): void {
+    const control = this.control;
+    if (!control || !this.client) return;
+    if (
+      typeof (
+        control as unknown as {
+          getPublishedAgentEndpoints?: () => unknown[] | Promise<unknown[]>;
+        }
+      ).getPublishedAgentEndpoints !== "function"
+    ) {
+      return;
+    }
+    Promise.resolve(
+      (
+        control as unknown as {
+          getPublishedAgentEndpoints: () => unknown[] | Promise<unknown[]>;
+        }
+      ).getPublishedAgentEndpoints(),
+    )
+      .then((endpoints) => {
+        if (Array.isArray(endpoints) && this.client) {
+          this.client.sendEvent(MSG.instanceAgentEndpointsSync, { endpoints });
+        }
+      })
+      .catch(() => {
+        // Best-effort: a transient control read failure must not break the
+        // channel; the next event/onReady will retry the full sync.
+      });
   }
 }

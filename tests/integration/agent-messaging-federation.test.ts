@@ -45,11 +45,24 @@ interface DaemonNode {
   channel: RelayChannel;
   registry: AgentEndpointRegistry;
   router: AgentMessageRouter;
+  stateRef: {
+    state: ReturnType<typeof createEmptyState>;
+  };
+  /** Control event bus the channel subscribes to (real ControlService events in
+   *  production; the fake control exposes one here so tests can fire the same
+   *  sessions-changed / orchestration-changed signals). */
+  controlEvents: ReturnType<typeof createControlEventBus>;
   injectedPrompts: Array<{ session: string; text: string }>;
   dispose: () => Promise<void>;
 }
 
-async function setupHub() {
+async function setupHub(options?: {
+  dropRequestResponse?: (
+    instanceId: string,
+    type: string,
+    payload: unknown,
+  ) => boolean;
+}) {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
@@ -60,6 +73,9 @@ async function setupHub() {
     instances,
     accounts,
     requestTimeoutMs: 2000,
+    ...(options?.dropRequestResponse
+      ? { dropRequestResponse: options.dropRequestResponse }
+      : {}),
   });
 
   const wss = new WebSocketServer({ port: 0 });
@@ -89,8 +105,8 @@ async function setupDaemonNode(
   const ws = await mkdtemp(join(tmpdir(), `xacpx-fed-ws-${nodeId}-`));
   const injectedPrompts: Array<{ session: string; text: string }> = [];
 
-  const state = createEmptyState();
-  state.sessions.main = {
+  const stateRef = { state: createEmptyState() };
+  stateRef.state.sessions.main = {
     alias: "main",
     agent: "codex",
     workspace: "project",
@@ -99,7 +115,7 @@ async function setupDaemonNode(
     created_at: "2026-08-18T00:00:00.000Z",
     last_used_at: "2026-08-18T00:00:00.000Z",
   };
-  state.orchestration.workerBindings.worker1 = {
+  stateRef.state.orchestration.workerBindings.worker1 = {
     sourceHandle: "worker1",
     agentEndpointId: `worker_endpoint_${nodeId}`,
     coordinatorSession: "coordinator",
@@ -109,7 +125,7 @@ async function setupDaemonNode(
 
   const registry = new AgentEndpointRegistry({
     nodeId,
-    loadState: async () => structuredClone(state),
+    loadState: async () => structuredClone(stateRef.state),
   });
 
   const localDelivery: LocalAgentMessageDelivery = {
@@ -144,6 +160,7 @@ async function setupDaemonNode(
     remoteRoute: relayRoute,
   });
 
+  const controlEvents = createControlEventBus();
   const fakeControl = {
     deliverAgentMessage: async (
       input: Parameters<typeof router.deliverInbound>[0],
@@ -163,7 +180,7 @@ async function setupDaemonNode(
       registry.syncRemoteDirectorySnapshot(endpoints as never);
     },
     listSessions: () => [{ alias: "main" }],
-    events: createControlEventBus(),
+    events: controlEvents,
   };
   const abortController = new AbortController();
   channel = new RelayChannel(
@@ -176,6 +193,7 @@ async function setupDaemonNode(
     {
       credentialStore: new CredentialStore(join(home, "credential.json")),
       terminalRegistryDir: home,
+      endpointSyncDebounceMs: 20,
     },
   );
 
@@ -191,6 +209,8 @@ async function setupDaemonNode(
     channel,
     registry,
     router,
+    stateRef,
+    controlEvents,
     injectedPrompts,
     dispose: async () => {
       abortController.abort();
@@ -319,10 +339,23 @@ test("Agent Messaging Federation: Daemon A <-> Relay Hub <-> Daemon B full end-t
     // B's mock agent injection count must remain 1 (exactly-once injection effect)
     expect(daemonB.injectedPrompts).toHaveLength(1);
 
-    // 5. Target offline handling
+    // 5. Target offline handling: B disconnects → hub drops B's endpoints and
+    // broadcasts the shrunken snapshot → A's remote agent_list auto-updates.
     await daemonB.dispose();
-    // Hub notices B disconnected, clears B from directory and broadcasts to A
-    await Bun.sleep(100);
+    const offlineDeadline = Date.now() + 5000;
+    let bGoneFromList = false;
+    while (Date.now() < offlineDeadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (!list.some((e) => e.address.nodeId === "node_B")) {
+        bGoneFromList = true;
+        break;
+      }
+      await Bun.sleep(50);
+    }
+    expect(bGoneFromList).toBe(true);
 
     await expect(
       daemonA.router.send(
@@ -334,7 +367,7 @@ test("Agent Messaging Federation: Daemon A <-> Relay Hub <-> Daemon B full end-t
         },
       ),
     ).rejects.toMatchObject({
-      code: "TARGET_NODE_OFFLINE",
+      code: "ROUTE_UNAVAILABLE",
     });
   } finally {
     await daemonA.dispose();
@@ -392,3 +425,170 @@ test("Agent Messaging Federation: empty presence sync clears stale endpoints", a
     await hub.close();
   }
 });
+
+test("Agent Messaging Federation: endpoint create/delete auto-updates remote agent_list via debounced full sync", async () => {
+  const hub = await setupHub();
+
+  const tokenA = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const tokenB = hub.instances.issuePairingToken(
+    hub.account.id,
+    "nodeB",
+    600_000,
+  ).token;
+
+  const daemonA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
+  const daemonB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
+
+  try {
+    // A sees B's initial worker endpoint
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (list.some((e) => e.address.endpointId === "worker_endpoint_node_B")) {
+        break;
+      }
+      await Bun.sleep(50);
+    }
+
+    // CREATE: B gains a second worker endpoint, then fires the production
+    // event worker-binding mutations emit (orchestration-changed). The channel
+    // debounces, reads the FULL directory from control, and pushes it to the
+    // hub, which rebroadcasts to A.
+    daemonB.stateRef.state.orchestration.workerBindings.worker2 = {
+      sourceHandle: "worker2",
+      agentEndpointId: "worker_endpoint_2_node_B",
+      coordinatorSession: "coordinator",
+      workspace: "project",
+      targetAgent: "codex",
+    };
+    daemonB.controlEvents.emit({ type: "orchestration-changed" });
+
+    const createDeadline = Date.now() + 5000;
+    let createdSeen = false;
+    while (Date.now() < createDeadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (
+        list.some((e) => e.address.endpointId === "worker_endpoint_2_node_B")
+      ) {
+        createdSeen = true;
+        break;
+      }
+      await Bun.sleep(50);
+    }
+    expect(createdSeen).toBe(true);
+
+    // DELETE: B removes the endpoint and fires orchestration-changed again; the
+    // next debounced FULL sync prunes it from the hub directory and A's list.
+    delete daemonB.stateRef.state.orchestration.workerBindings.worker2;
+    daemonB.controlEvents.emit({ type: "orchestration-changed" });
+
+    const deleteDeadline = Date.now() + 5000;
+    let deletedSeen = false;
+    while (Date.now() < deleteDeadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (
+        !list.some((e) => e.address.endpointId === "worker_endpoint_2_node_B")
+      ) {
+        deletedSeen = true;
+        break;
+      }
+      await Bun.sleep(50);
+    }
+    expect(deletedSeen).toBe(true);
+  } finally {
+    await daemonA.dispose();
+    await daemonB.dispose();
+    await hub.close();
+  }
+});
+
+test(
+  "Agent Messaging Federation: ACK-loss retry reuses messageId and injects exactly once",
+  // The first attempt's ACK is intentionally dropped at the hub, so it waits out
+  // the hub's requestTimeoutMs (2s) before the retry — the default 5s bun test
+  // timeout is too tight for this real-network scenario.
+  async () => {
+    // Drop the FIRST agentMessageDeliver response (the ACK from B) at the hub.
+    // A's route then sees an ambiguous DELIVERY_FAILED and retries with the SAME
+    // messageId; B's destination-side dedupe returns the cached receipt.
+    let dropped = false;
+    const hub = await setupHub({
+      dropRequestResponse: (instanceId, type) => {
+        if (!dropped && type === MSG.agentMessageDeliver) {
+          dropped = true;
+          return true;
+        }
+        return false;
+      },
+    });
+
+    const tokenA = hub.instances.issuePairingToken(
+      hub.account.id,
+      "nodeA",
+      600_000,
+    ).token;
+    const tokenB = hub.instances.issuePairingToken(
+      hub.account.id,
+      "nodeB",
+      600_000,
+    ).token;
+
+    const daemonA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
+    const daemonB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
+
+    try {
+      // A sees B
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const list = await daemonA.router.listReachable({
+          coordinatorSession: "coordinator",
+          sourceHandle: "worker1",
+        });
+        if (list.some((e) => e.address.nodeId === "node_B")) break;
+        await Bun.sleep(50);
+      }
+      const targetHandleB = encodeAgentHandle({
+        nodeId: "node_B",
+        endpointId: "worker_endpoint_node_B",
+      });
+
+      // The ACK for this message is swallowed once at the hub; the source route
+      // retries internally with the same messageId.
+      const receipt = await daemonA.router.send(
+        { coordinatorSession: "coordinator", sourceHandle: "worker1" },
+        {
+          to: targetHandleB,
+          content: "ack-loss message",
+          mode: "auto",
+        },
+      );
+
+      expect(dropped).toBe(true);
+      expect(receipt.status).toBe("queued");
+      expect(receipt.route).toBe("relay");
+      // Destination dedupe surfaced on the retried delivery.
+      expect(receipt.deduplicated).toBe(true);
+      // Exactly-once injection: B's local agent saw the message exactly once.
+      expect(daemonB.injectedPrompts).toHaveLength(1);
+      expect(daemonB.injectedPrompts[0]!.text).toContain("ack-loss message");
+    } finally {
+      await daemonA.dispose();
+      await daemonB.dispose();
+      await hub.close();
+    }
+  },
+  { timeout: 30_000 },
+);

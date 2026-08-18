@@ -89,6 +89,43 @@ async function authInstance(socket: WebSocket, pairingToken: string) {
   return res.payload as { instanceId: string; credential: string };
 }
 
+function publishedEndpoint(
+  nodeId: string,
+  endpointId: string,
+  overrides: Partial<
+    InstanceAgentEndpointsSyncPayload["endpoints"][number]
+  > = {},
+): InstanceAgentEndpointsSyncPayload["endpoints"][number] {
+  return {
+    nodeId,
+    endpointId,
+    agent: "codex",
+    state: "idle",
+    capabilities: {
+      receive: true,
+      steer: false,
+      queue: true,
+      interrupt: false,
+    },
+    updatedAt: Date.now(),
+    ...overrides,
+  };
+}
+
+function publishEndpoints(
+  socket: WebSocket,
+  endpoints: InstanceAgentEndpointsSyncPayload["endpoints"],
+): void {
+  socket.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "event",
+      type: MSG.instanceAgentEndpointsSync,
+      payload: { endpoints },
+    }),
+  );
+}
+
 test("Relay Hub routes agent.message.route to target instance via agent.message.deliver and preserves source identity", async () => {
   const { instances, account, wss, url } = await makeGateway();
 
@@ -110,33 +147,17 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
   const socketB = await connect(url);
   await authInstance(socketB, tokenB);
 
+  // Instance A publishes its own endpoints (required for source identity)
+  publishEndpoints(socketA, [
+    publishedEndpoint("node_a_999", "worker_a_sender"),
+  ]);
+
   // Instance B publishes its endpoints
-  const syncB: InstanceAgentEndpointsSyncPayload = {
-    endpoints: [
-      {
-        nodeId: "node_b_123",
-        endpointId: "worker_b",
-        displayName: "Worker B",
-        agent: "codex",
-        state: "idle",
-        capabilities: {
-          receive: true,
-          steer: false,
-          queue: true,
-          interrupt: false,
-        },
-        updatedAt: Date.now(),
-      },
-    ],
-  };
-  socketB.send(
-    encodeEnvelope({
-      protocolVersion: RELAY_PROTOCOL_VERSION,
-      kind: "event",
-      type: MSG.instanceAgentEndpointsSync,
-      payload: syncB,
+  publishEndpoints(socketB, [
+    publishedEndpoint("node_b_123", "worker_b", {
+      displayName: "Worker B",
     }),
-  );
+  ]);
 
   await new Promise((r) => setTimeout(r, 50));
 
@@ -230,19 +251,15 @@ test("Relay Hub returns TARGET_NOT_FOUND when target endpoint is not in publishe
       type: MSG.instanceAgentEndpointsSync,
       payload: {
         endpoints: [
-          {
-            nodeId: "node_b_123",
-            endpointId: "worker_other",
+          publishedEndpoint("node_b_123", "worker_other", {
             displayName: "Worker Other",
-            agent: "codex",
-            state: "idle",
-            capabilities: { receive: true, steer: false, queue: true, interrupt: false },
-            updatedAt: Date.now(),
-          },
+          }),
         ],
       },
     }),
   );
+  // Instance A publishes its own endpoints (required for source identity)
+  publishEndpoints(socketA, [publishedEndpoint("node_a", "ep_a")]);
 
   await new Promise((r) => setTimeout(r, 50));
 
@@ -284,6 +301,9 @@ test("Relay Hub returns TARGET_NODE_OFFLINE when target node is not connected", 
   ).token;
   const socketA = await connect(url);
   await authInstance(socketA, tokenA);
+
+  // Instance A publishes its own endpoints (required for source identity)
+  publishEndpoints(socketA, [publishedEndpoint("node_a", "ep_a")]);
 
   const routeReq: AgentMessageRoutePayload = {
     sourceNodeId: "node_a",
@@ -344,26 +364,18 @@ test("Relay Hub isolates messages across different accounts", async () => {
       type: MSG.instanceAgentEndpointsSync,
       payload: {
         endpoints: [
-          {
-            nodeId: "node_bob_1",
-            endpointId: "worker_bob",
+          publishedEndpoint("node_bob_1", "worker_bob", {
             displayName: "Worker Bob",
-            agent: "codex",
-            state: "idle",
-            capabilities: {
-              receive: true,
-              steer: false,
-              queue: true,
-              interrupt: false,
-            },
-            updatedAt: Date.now(),
-          },
+          }),
         ],
       },
     }),
   );
 
   await new Promise((r) => setTimeout(r, 50));
+
+  // Instance A publishes its own endpoints (required for source identity)
+  publishEndpoints(socketA, [publishedEndpoint("node_a", "ep_a")]);
 
   // Alice tries to route to Bob's node
   socketA.send(
@@ -387,6 +399,170 @@ test("Relay Hub isolates messages across different accounts", async () => {
   const resA = await nextResponse(socketA);
   const errPayload = resA.payload as { error: { code: string } };
   expect(errPayload.error.code).toBe("TARGET_NODE_OFFLINE");
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
+test("Relay Hub rejects a spoofed source identity with DELIVERY_DENIED", async () => {
+  const { instances, account, wss, url } = await makeGateway();
+
+  const tokenA = instances.issuePairingToken(
+    account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+
+  const tokenB = instances.issuePairingToken(
+    account.id,
+    "nodeB",
+    600_000,
+  ).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  // A publishes ONLY its own endpoint; B publishes its own.
+  publishEndpoints(socketA, [publishedEndpoint("node_a", "ep_a")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Case 1: A claims B's published endpoint as its own source (identity theft).
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "spoof-1",
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: "node_b_123",
+        sourceEndpointId: "worker_b",
+        targetNodeId: "node_b_123",
+        targetEndpointId: "worker_b",
+        messageId: "msg_spoof_1",
+        content: "hello from a stolen identity",
+        requestedMode: "auto",
+      },
+    }),
+  );
+  const resSpoofB = await nextResponse(socketA);
+  const errSpoofB = resSpoofB.payload as { error: { code: string } };
+  expect(errSpoofB.error.code).toBe("DELIVERY_DENIED");
+
+  // Case 2: A claims a fabricated source that was never published.
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "spoof-2",
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: "node_a",
+        sourceEndpointId: "never_published_endpoint",
+        targetNodeId: "node_b_123",
+        targetEndpointId: "worker_b",
+        messageId: "msg_spoof_2",
+        content: "hello from an unpublished endpoint",
+        requestedMode: "auto",
+      },
+    }),
+  );
+  const resSpoofFabricated = await nextResponse(socketA);
+  const errSpoofFabricated = resSpoofFabricated.payload as {
+    error: { code: string };
+  };
+  expect(errSpoofFabricated.error.code).toBe("DELIVERY_DENIED");
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
+test("Relay Hub derives replyable from the source endpoint receive capability", async () => {
+  const { instances, account, wss, url } = await makeGateway();
+
+  const tokenA = instances.issuePairingToken(
+    account.id,
+    "nodeA",
+    600_000,
+  ).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+
+  const tokenB = instances.issuePairingToken(
+    account.id,
+    "nodeB",
+    600_000,
+  ).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  // A publishes a source endpoint that CANNOT receive replies.
+  publishEndpoints(socketA, [
+    publishedEndpoint("node_a", "ep_no_receive", {
+      capabilities: {
+        receive: false,
+        steer: false,
+        queue: true,
+        interrupt: false,
+      },
+    }),
+  ]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  let deliveredPayload: AgentMessageDeliverPayload | null = null;
+  socketB.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      deliveredPayload = decoded.envelope.payload as AgentMessageDeliverPayload;
+      socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: {
+            messageId: deliveredPayload.messageId,
+            status: "queued",
+            modeUsed: "queue",
+          },
+        }),
+      );
+    }
+  });
+
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "route-replyable",
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: "node_a",
+        sourceEndpointId: "ep_no_receive",
+        targetNodeId: "node_b_123",
+        targetEndpointId: "worker_b",
+        messageId: "msg_replyable",
+        content: "hello",
+        requestedMode: "auto",
+      },
+    }),
+  );
+
+  const resA = await nextResponse(socketA);
+  expect(resA.kind).toBe("res");
+  expect((resA.payload as { status: string }).status).toBe("queued");
+  expect(deliveredPayload).toBeDefined();
+  expect(deliveredPayload!.replyable).toBe(false);
 
   socketA.close();
   socketB.close();

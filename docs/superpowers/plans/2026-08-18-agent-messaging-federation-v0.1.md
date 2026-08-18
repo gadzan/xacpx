@@ -145,3 +145,15 @@
 - [ ] Update documentation and spec status reflecting production-wired same-account federation.
 - [ ] Run `prettier`, `tsc --noEmit`, `bun run build:packages`, and full `bun test`.
 - [ ] Commit: `docs(orchestration): document same-account agent messaging federation`
+
+---
+
+## Final Hardening (PR #284 review round)
+
+Closed after the initial federation delivery, without expanding feature scope:
+
+1. **Hub source identity fail-closed** — `agent.message.route` source node/endpoint must belong to the authenticated instance's currently published directory; mismatch → `DELIVERY_DENIED` (+ spoof regression tests). `replyable` derived from the source endpoint's `receive` capability + reverse-route availability, never hardcoded.
+2. **Presence lifecycle** — instance disconnect removes endpoints and immediately broadcasts the shrunken snapshot to remaining same-account instances; online endpoint create/delete/capability change triggers a debounced FULL endpoint sync to the Hub (full replace, no delta protocol). E2E: remote `agent_list` auto-updates on disconnect/create/delete.
+3. **Real network retry/idempotency** — the source route performs a bounded retry (default 3 attempts, linear backoff) on ambiguous network failures reusing the SAME `messageId`; typed business failures (`TARGET_NODE_OFFLINE`, `DELIVERY_DENIED`, …) never retry. ACK-loss E2E: target already injected, first ACK dropped at the Hub, source retries the same messageId, destination returns `deduplicated: true`, injection count exactly 1.
+4. **Federation hard gate** — new `tests/integration/agent-messaging-federation-hardgate.test.ts`: real `buildApp` daemon A → real Relay Hub → real `buildApp` daemon B, real `SessionTransport.injectMessage` (npm-installed acpx), mock ACP agent; final proof is the mock agent's actual `.mock-agent-prompts.json` consumption of the remote `<xacpx-message>` (plus B→A reply, offline fail-fast, ACK-loss exactly-once, disconnect auto-update).
+5. **Convergence** — `RelayClient.sendRequest` enforces an upward request-type allowlist (`agent.message.route`); remote Agent Message delivery logs report `route: "relay"` (derived from addresses, not hardcoded `"local"`); production `MessageChannelRegistry` now delegates `sendAgentMessageRoute`/`syncAgentEndpoints` so a real daemon's router actually reaches the relay channel (previously the registry lacked the method and the production route silently stayed unavailable); `AppRuntime.agentMessaging` exposes the production router for the hard gate.

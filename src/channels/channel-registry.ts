@@ -26,16 +26,25 @@ export class MessageChannelRegistry {
   }
 
   async startAll(input: ChannelStartInput): Promise<void> {
-    const outcomes = await Promise.allSettled([...this.channels.values()].map(async (channel) => {
-      try {
-        await channel.start(input);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await input.logger.error(`channel.${channel.id}.start_failed`, `channel ${channel.id} failed to start: ${message}`, { channel: channel.id });
-        throw error;
-      }
-    }));
-    const failed = outcomes.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const outcomes = await Promise.allSettled(
+      [...this.channels.values()].map(async (channel) => {
+        try {
+          await channel.start(input);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          await input.logger.error(
+            `channel.${channel.id}.start_failed`,
+            `channel ${channel.id} failed to start: ${message}`,
+            { channel: channel.id },
+          );
+          throw error;
+        }
+      }),
+    );
+    const failed = outcomes.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
     if (failed.length === this.channels.size) {
       throw new Error("all channels failed to start");
     }
@@ -53,7 +62,9 @@ export class MessageChannelRegistry {
    *
    * @param reason - The reason for stopping (defaults to "shutdown")
    */
-  async stopAll(reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown"): Promise<void> {
+  async stopAll(
+    reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown",
+  ): Promise<void> {
     let firstError: unknown;
     for (const channel of this.channels.values()) {
       try {
@@ -78,7 +89,10 @@ export class MessageChannelRegistry {
     await this.requireByChatKey(task.chatKey).notifyTaskCompletion(task);
   }
 
-  async notifyTaskProgress(task: OrchestrationTaskRecord, text: string): Promise<void> {
+  async notifyTaskProgress(
+    task: OrchestrationTaskRecord,
+    text: string,
+  ): Promise<void> {
     if (!task.chatKey) return;
     await this.requireByChatKey(task.chatKey).notifyTaskProgress(task, text);
   }
@@ -89,17 +103,25 @@ export class MessageChannelRegistry {
 
   supportsScheduledMessages(chatKey: string): boolean {
     const [candidateChannelId] = chatKey.split(":", 1);
-    if (chatKey.includes(":") && candidateChannelId && !this.channels.has(candidateChannelId)) {
+    if (
+      chatKey.includes(":") &&
+      candidateChannelId &&
+      !this.channels.has(candidateChannelId)
+    ) {
       return false;
     }
     const channel = this.getByChatKey(chatKey);
     return !!channel?.sendScheduledMessage;
   }
 
-  async sendScheduledMessage(input: ScheduledChannelMessageInput): Promise<void> {
+  async sendScheduledMessage(
+    input: ScheduledChannelMessageInput,
+  ): Promise<void> {
     const channel = this.requireByChatKey(input.chatKey);
     if (!channel.sendScheduledMessage) {
-      throw new Error(`channel '${channel.id}' does not support scheduled messages`);
+      throw new Error(
+        `channel '${channel.id}' does not support scheduled messages`,
+      );
     }
     await channel.sendScheduledMessage(input);
   }
@@ -108,11 +130,61 @@ export class MessageChannelRegistry {
     return this.getByChatKey(chatKey)?.nativeSessionListFormat ?? "table";
   }
 
-  createConsumerLocks(): Array<{ channel: MessageChannelRuntime; create: NonNullable<MessageChannelRuntime["createConsumerLock"]> }> {
-    const result: Array<{ channel: MessageChannelRuntime; create: NonNullable<MessageChannelRuntime["createConsumerLock"]> }> = [];
+  /** Delegate to the first registered channel that implements the relay agent
+   *  messaging route. Without a relay-capable channel the router stays
+   *  ROUTE_UNAVAILABLE. */
+  async sendAgentMessageRoute(payload: {
+    sourceNodeId: string;
+    sourceEndpointId: string;
+    targetNodeId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+  }): Promise<{
+    messageId: string;
+    status: "injected" | "queued" | "failed";
+    modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+    targetState?: "idle" | "running";
+    errorCode?: string;
+    deduplicated?: boolean;
+  }> {
+    for (const channel of this.channels.values()) {
+      if (typeof channel.sendAgentMessageRoute === "function") {
+        return await channel.sendAgentMessageRoute(payload);
+      }
+    }
+    throw new Error(
+      "no registered channel implements the agent messaging relay route",
+    );
+  }
+
+  /** Publish the full local agent endpoint directory to the relay hub (debounced
+   *  by the channel; no delta protocol). No-op when no channel implements it. */
+  syncAgentEndpoints(endpoints: unknown[]): void {
+    for (const channel of this.channels.values()) {
+      if (typeof channel.syncAgentEndpoints === "function") {
+        channel.syncAgentEndpoints(endpoints);
+        return;
+      }
+    }
+  }
+
+  createConsumerLocks(): Array<{
+    channel: MessageChannelRuntime;
+    create: NonNullable<MessageChannelRuntime["createConsumerLock"]>;
+  }> {
+    const result: Array<{
+      channel: MessageChannelRuntime;
+      create: NonNullable<MessageChannelRuntime["createConsumerLock"]>;
+    }> = [];
     for (const channel of this.channels.values()) {
       if (channel.createConsumerLock) {
-        result.push({ channel, create: channel.createConsumerLock.bind(channel) });
+        result.push({
+          channel,
+          create: channel.createConsumerLock.bind(channel),
+        });
       }
     }
     return result;

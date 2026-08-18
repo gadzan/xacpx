@@ -24,7 +24,10 @@ export interface RelayClientOptions {
    * set as-is (missing → []); do not connect first and backfill later.
    */
   capabilities?: string[];
-  onRequest: (envelope: RelayEnvelope, respond: (payload: unknown) => void) => void;
+  onRequest: (
+    envelope: RelayEnvelope,
+    respond: (payload: unknown) => void,
+  ) => void;
   onEvent?: (envelope: RelayEnvelope) => void;
   onReady?: () => void;
   /**
@@ -49,10 +52,22 @@ const DEFAULT_LIVENESS_TIMEOUT_MS = 90_000;
 const HANDSHAKE_ID = "handshake-1";
 
 /**
+ * Upward request types a connector may issue to the Hub. The Hub answers every
+ * request, so a misspelled or hijacked type must fail fast here instead of
+ * reaching the Hub — keep this list minimal and deliberate.
+ */
+const ALLOWED_UPWARD_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  MSG.agentMessageRoute,
+]);
+
+/**
  * +-20% random jitter so a fleet of connectors dropped by the same hub restart
  * does not reconnect in lockstep (thundering herd).
  */
-export function applyReconnectJitter(baseMs: number, random: () => number = Math.random): number {
+export function applyReconnectJitter(
+  baseMs: number,
+  random: () => number = Math.random,
+): number {
   return Math.round(baseMs * (0.8 + random() * 0.4));
 }
 
@@ -85,7 +100,11 @@ export class RelayClient {
     this.socket = null;
   }
 
-  sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void {
+  sendEvent(
+    type: string,
+    payload: unknown,
+    onFlush?: (error?: Error) => void,
+  ): void {
     if (!this.isReady()) {
       // Report the drop to senders that asked: an unconfirmed send must not be
       // treated as delivered (e.g. state sync keeps its finished-offline FIFO).
@@ -97,7 +116,12 @@ export class RelayClient {
     // callback fires on flush OR error after the frame left the process — a send
     // into a half-open socket surfaces there, not silently.
     this.socket!.send(
-      encodeEnvelope({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload }),
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "event",
+        type,
+        payload,
+      }),
       onFlush,
     );
   }
@@ -106,6 +130,9 @@ export class RelayClient {
     payload: unknown,
     options?: { timeoutMs?: number },
   ): Promise<T> {
+    if (!ALLOWED_UPWARD_REQUEST_TYPES.has(type)) {
+      throw new Error(`request type not allowed upward: ${type}`);
+    }
     if (!this.isReady()) {
       throw new Error("relay-offline");
     }
@@ -143,12 +170,18 @@ export class RelayClient {
   /** True only while authenticated with an open socket — the window in which
    *  sendEvent actually delivers (used by the state mirror's offline routing). */
   isReady(): boolean {
-    return this.ready && this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+    return (
+      this.ready &&
+      this.socket !== null &&
+      this.socket.readyState === WebSocket.OPEN
+    );
   }
 
   private connect(): void {
     if (this.stopped) return;
-    const socket = (this.options.createSocket ?? ((url: string) => new WebSocket(url)))(this.options.url);
+    const socket = (
+      this.options.createSocket ?? ((url: string) => new WebSocket(url))
+    )(this.options.url);
     this.socket = socket;
     this.ready = false;
 
@@ -209,7 +242,8 @@ export class RelayClient {
         pending.reject(new Error("relay-offline"));
       }
       this.pendingRequests.clear();
-      const delay = delays[Math.min(this.attempts, delays.length - 1)] ?? 30_000;
+      const delay =
+        delays[Math.min(this.attempts, delays.length - 1)] ?? 30_000;
       this.attempts += 1;
       setTimeout(() => this.connect(), applyReconnectJitter(delay));
     });
@@ -280,7 +314,9 @@ export class RelayClient {
 
     if (envelope.kind === "event" && envelope.type === "relay.protocol-error") {
       const p = envelope.payload;
-      const detail = isErrorPayload(p) ? `${p.error.code}: ${p.error.message}` : "protocol error";
+      const detail = isErrorPayload(p)
+        ? `${p.error.code}: ${p.error.message}`
+        : "protocol error";
       void this.options.logger?.error(
         "relay.protocol_error",
         `relay reported a protocol error: ${detail}`,
@@ -299,7 +335,10 @@ export class RelayClient {
         void this.options.logger?.error(
           "relay.event_dispatch_failed",
           `inbound event handler threw; swallowing to protect socket: ${err instanceof Error ? err.message : String(err)}`,
-          { error: err instanceof Error ? err.message : String(err), detail: envelope.type },
+          {
+            error: err instanceof Error ? err.message : String(err),
+            detail: envelope.type,
+          },
         );
       }
       return;
@@ -334,7 +373,11 @@ export class RelayClient {
       this.options.onReady?.();
       return;
     }
-    if (envelope.kind === "res" && envelope.id && envelope.id !== HANDSHAKE_ID) {
+    if (
+      envelope.kind === "res" &&
+      envelope.id &&
+      envelope.id !== HANDSHAKE_ID
+    ) {
       const pending = this.pendingRequests.get(envelope.id);
       if (pending) {
         clearTimeout(pending.timer);
@@ -347,7 +390,6 @@ export class RelayClient {
         return;
       }
     }
-
 
     if (envelope.kind === "req") {
       const respond = (payload: unknown) => {

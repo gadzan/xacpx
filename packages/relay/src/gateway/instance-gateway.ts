@@ -60,6 +60,19 @@ export interface InstanceGatewayDeps {
     accountId: string,
     online: boolean,
   ) => void;
+  /**
+   * Test seam: called when an authenticated instance delivers an RPC response
+   * that matched its pending request. Returning true simulates an ACK loss —
+   * the response is swallowed and the pending request fails as an ambiguous
+   * transport error ("timeout") without waiting out the request timeout, which
+   * exercises the source-side retry + destination dedupe path end to end while
+   * keeping tests free of wall-clock timeouts.
+   */
+  dropRequestResponse?: (
+    instanceId: string,
+    type: string,
+    payload: unknown,
+  ) => boolean;
   logger?: RelayLogger;
 }
 
@@ -148,6 +161,11 @@ export class InstanceGateway {
       }
     }
     this.deps.onStatusChange?.(instanceId, accountId, false);
+    // The directory shrank with this instance's endpoints: push the new snapshot
+    // to every remaining same-account instance immediately so peers stop
+    // advertising a dead node (agent_list auto-updates without waiting for the
+    // next sync). No-op when nobody is left in the account.
+    this.broadcastDirectorySnapshot(accountId);
   }
 
   private handleMessage(
@@ -264,6 +282,28 @@ export class InstanceGateway {
         );
         return;
       }
+      if (
+        this.deps.dropRequestResponse?.(
+          authed.instanceId,
+          envelope.type,
+          envelope.payload,
+        )
+      ) {
+        this.logger.info(
+          "relay.instance.response_dropped",
+          "dropped authenticated RPC response (test seam: simulated ACK loss)",
+          { instanceId: authed.instanceId, envelopeType: envelope.type },
+        );
+        // The response is lost from the caller's perspective: fail the pending
+        // request as an ambiguous transport error immediately (a real lost ACK
+        // would surface as a timeout). The target MAY already have accepted the
+        // message — the source retries with the same messageId and the
+        // destination deduplicates.
+        clearTimeout(waiting.timer);
+        this.pending.delete(envelope.id);
+        waiting.reject(new Error("timeout"));
+        return;
+      }
       clearTimeout(waiting.timer);
       this.pending.delete(envelope.id);
       waiting.resolve(envelope.payload);
@@ -329,6 +369,31 @@ export class InstanceGateway {
 
       if (envelope.type === MSG.agentMessageRoute) {
         const routePayload = envelope.payload as AgentMessageRoutePayload;
+        // Fail-closed source identity: the canonical source node/endpoint must
+        // belong to the authenticated instance's CURRENTLY published directory.
+        // A caller cannot spoof another node's (or another account's) identity —
+        // the Hub stamps the socket-derived instance, and a mismatched claim is
+        // denied outright rather than forwarded.
+        const sourceEndpoints =
+          this.endpointsByInstance.get(authed.instanceId) ?? [];
+        const sourceEndpoint = sourceEndpoints.find(
+          (e) =>
+            e.nodeId === routePayload.sourceNodeId &&
+            e.endpointId === routePayload.sourceEndpointId,
+        );
+        if (!sourceEndpoint) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `Source endpoint ${routePayload.sourceEndpointId} is not published by the authenticated instance ${authed.instanceId}`,
+            ),
+          );
+          return;
+        }
+        // replyable is derived, never hardcoded: the target may reply only when
+        // the source endpoint can receive AND the reverse route holds (the
+        // endpoint is published by an online instance — verified above).
+        const replyable = sourceEndpoint.capabilities.receive === true;
         let targetInstanceId: string | null = null;
         let targetEndpointFound = false;
         for (const [instId, conn] of this.connections) {
@@ -371,7 +436,7 @@ export class InstanceGateway {
           content: routePayload.content,
           requestedMode: routePayload.requestedMode,
           replyTo: routePayload.replyTo,
-          replyable: true,
+          replyable,
         };
         this.sendRequest(
           targetInstanceId,

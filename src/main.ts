@@ -166,6 +166,10 @@ export interface AppRuntime {
     server: OrchestrationServer;
     endpoint: ReturnType<typeof resolveOrchestrationEndpoint>;
   };
+  /** The production Agent Messaging router (local + relay routes), wired into
+   *  both the orchestration server and the control service. Exposed so tests
+   *  can drive the exact production object over a real multi-daemon topology. */
+  agentMessaging: AgentMessageRouter;
   scheduled: {
     service: ScheduledTaskService;
     scheduler: ScheduledTaskScheduler;
@@ -193,6 +197,8 @@ interface RuntimeDeps {
     | "notifyTaskProgress"
     | "sendCoordinatorMessage"
     | "sendScheduledMessage"
+    | "sendAgentMessageRoute"
+    | "syncAgentEndpoints"
   > & {
     configureOrchestration?: MessageChannelRuntime["configureOrchestration"];
     supportsScheduledMessages?: (chatKey: string) => boolean;
@@ -1252,10 +1258,7 @@ export async function buildApp(
     },
   });
   const relayAgentMessageRoute = new RelayAgentMessageRoute(
-    deps.channel &&
-      "sendAgentMessageRoute" in deps.channel &&
-      typeof (deps.channel as unknown as { sendAgentMessageRoute: unknown })
-        .sendAgentMessageRoute === "function"
+    deps.channel?.sendAgentMessageRoute
       ? (deps.channel as unknown as RelayRouteClient)
       : undefined,
   );
@@ -1639,6 +1642,7 @@ export async function buildApp(
       server: orchestrationServer,
       endpoint: orchestrationEndpoint,
     },
+    agentMessaging,
     scheduled: {
       service: scheduledService,
       scheduler: scheduledScheduler,

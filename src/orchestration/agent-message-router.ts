@@ -325,6 +325,9 @@ export class AgentMessageRouter {
     const logger = this.deps.logger;
     if (!logger) return;
     const latencyMs = Math.max(0, (this.deps.now ?? Date.now)() - startedAt);
+    // The route is an address fact, not a caller choice: any message whose
+    // destination is a different messaging node traveled over the relay.
+    const route = message.from.nodeId === message.to.nodeId ? "local" : "relay";
     void logger
       .info(
         "agent.message.delivery",
@@ -341,7 +344,7 @@ export class AgentMessageRouter {
             nodeId: message.to.nodeId,
             endpointId: message.to.endpointId,
           },
-          route: "local",
+          route,
           requestedMode: message.requestedMode,
           modeUsed: receipt?.modeUsed,
           status: receipt?.status ?? "failed",

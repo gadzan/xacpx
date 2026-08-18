@@ -950,4 +950,6 @@ export interface AgentMessageRouteResult {
   modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
   targetState?: "idle" | "running";
   errorCode?: string;
+  /** True when the destination had already delivered this messageId (ACK-loss retry). */
+  deduplicated?: boolean;
 }
